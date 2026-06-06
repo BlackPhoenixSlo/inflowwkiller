@@ -54,7 +54,7 @@ async function restoreCookies(cookies) {
       if (!c.session && c.expirationDate) set.expirationDate = c.expirationDate;
       await chrome.cookies.set(set);
     } catch (e) {
-      console.warn("[Chatterly] cookie restore failed", c.name, e);
+      console.warn("[Fastt] cookie restore failed", c.name, e);
     }
   }
 }
@@ -120,7 +120,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
 
   if (msg.type === "capture") {
-    console.log("[Chatterly] capture received", {
+    console.log("[Fastt] capture received", {
       user_id: msg.payload?.headers?.["user-id"],
       x_of_rev: msg.payload?.headers?.["x-of-rev"],
       at: msg.payload?.capturedAt,
@@ -232,5 +232,5 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log("[Chatterly] login capture extension installed");
+  console.log("[Fastt] login capture extension installed");
 });

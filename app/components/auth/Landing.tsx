@@ -86,7 +86,7 @@ export default function Landing() {
     <main className="min-h-screen flex items-center justify-center p-6 bg-bg text-fg">
       <div className="w-full max-w-3xl grid gap-10">
         <header className="space-y-3 text-center">
-          <h1 className="text-5xl font-bold tracking-tight">Chatterly</h1>
+          <h1 className="text-5xl font-bold tracking-tight">Fastt</h1>
           <p className="text-xl text-fg-dim">Very fast.</p>
           <p className="text-sm text-fg-dim mx-auto max-w-md">
             Conversations open instantly. Vault scrolls without spinners. Built for chatters

@@ -1,5 +1,5 @@
 """
-Database layer for the Chatterly relay.
+Database layer for the Fastt relay.
 
 This package owns the SQL persistence side of the relay — everything that
 was a JSON file under service/sessions/ + service/proxies.json + the

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Chrome Web Store icons + promo tile for the two Chatterly extensions."""
+"""Generate Chrome Web Store icons + promo tile for the two Fastt extensions."""
 from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
 
@@ -190,10 +190,10 @@ def make_promo(variant, label, sub):
                 return f
         return f
 
-    # Split label onto two lines: "Chatterly" + rest
-    if label.startswith("Chatterly "):
-        title_top = "Chatterly"
-        title_bottom = label[len("Chatterly "):]
+    # Split label onto two lines: "Fastt" + rest
+    if label.startswith("Fastt "):
+        title_top = "Fastt"
+        title_bottom = label[len("Fastt "):]
     else:
         title_top, title_bottom = label, ""
 
@@ -248,7 +248,7 @@ def write_icons(target_dir, variant):
         icon.save(out_dir / f"icon{s}.png", optimize=True)
     promo = make_promo(
         variant,
-        "Chatterly Login Capture" if variant == "login" else "Chatterly No-Teleport Login",
+        "Fastt Login Capture" if variant == "login" else "Fastt No-Teleport Login",
         "One-click OnlyFans login that produces a relay curl command."
         if variant == "login"
         else "Mint OnlyFans cookies through your relay's egress IP. No teleport.",

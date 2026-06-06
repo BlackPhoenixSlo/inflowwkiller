@@ -109,7 +109,7 @@ export default function ChatterLoginPage() {
     <main className="min-h-screen flex items-center justify-center p-6 bg-bg text-fg">
       <div className="w-full max-w-md grid gap-6">
         <header className="space-y-2 text-center">
-          <h1 className="text-3xl font-semibold tracking-tight">Chatterly</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">Fastt</h1>
           <p className="text-sm text-fg-dim">
             {isRegister ? "Set up your chatter account" : "Sign in as a chatter"}
           </p>

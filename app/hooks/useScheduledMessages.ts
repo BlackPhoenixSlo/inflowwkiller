@@ -10,7 +10,7 @@
  *
  * /schedules wraps each row as `{type:'chat'|'post', publishDateTime,
  * entity:{...real payload}}` — we flatten chat-type entries onto the
- * OFScheduledMessage shape and ignore posts (Chatterly is messaging-only
+ * OFScheduledMessage shape and ignore posts (Fastt is messaging-only
  * for now).
  *
  * Each row gets `__accountId` so the cancel mutation routes back through

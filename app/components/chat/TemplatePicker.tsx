@@ -6,7 +6,7 @@
  *
  * Two sources merged into one list:
  *   • OF welcome message (badge: 👋) — only one per account.
- *   • Local saved replies — Chatterly-side, since OF rejects template
+ *   • Local saved replies — Fastt-side, since OF rejects template
  *     creates for everything else.
  *
  * Pick a row → its text fills the textarea + its media attaches to the

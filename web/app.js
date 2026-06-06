@@ -1446,7 +1446,7 @@ loaders.setup = async () => {
         </div>
 
         <div class="card" style="padding:14px;grid-column:span 2">
-          <strong>③ Paste cURL — preferred (use the Chatterly Login extension)</strong>
+          <strong>③ Paste cURL — preferred (use the Fastt Login extension)</strong>
           <div style="color:var(--fg-dim);font-size:11px;margin:6px 0;line-height:1.5">
             Install <code>loginExtension/</code> as an unpacked Chrome extension, click
             <strong>Log in to OnlyFans</strong>, sign in, then <strong>Copy curl</strong>.
@@ -1629,7 +1629,7 @@ loaders.setup = async () => {
   await renderProxies();
 };
 
-// Re-capture is now done out-of-band via the Chatterly Login extension —
+// Re-capture is now done out-of-band via the Fastt Login extension —
 // the user signs in there, copies the fresh curl, and pastes it into the
 // Setup → Paste cURL card. No in-UI browser modal needed.
 
@@ -1801,14 +1801,14 @@ async function renderAccountsPanel() {
         return;
       }
 
-      // Preferred re-capture path now: install the Chatterly Login extension,
+      // Preferred re-capture path now: install the Fastt Login extension,
       // sign in on your own machine, copy the curl, paste into the Setup card.
       // Host-Playwright is still available for users who run uvicorn locally.
       if (!confirm(
         `Re-capture "${acctRow.nickname || aid}" — pick a path:\n\n` +
         `• OK  → launch host Chromium via proxy "${proxyLabel}" (requires uvicorn ` +
         `running locally with venv, NOT Docker).\n` +
-        `• Cancel → close this dialog. Recommended path: use the Chatterly Login ` +
+        `• Cancel → close this dialog. Recommended path: use the Fastt Login ` +
         `extension (loginExtension/) on the device you normally browse OF from, ` +
         `then paste the fresh curl into Setup → Paste cURL.`
       )) return;
@@ -3375,7 +3375,7 @@ async function refreshRevDrift() {
   const labels = stale.map(a => a.nickname || a.account_id).join(', ');
   msgEl.textContent =
     ` OnlyFans shipped a new frontend (rev ${drift.live_rev}). Stale: ` +
-    `${labels}. Sign in again with the Chatterly Login extension and ` +
+    `${labels}. Sign in again with the Fastt Login extension and ` +
     `paste the fresh curl into Setup.`;
   banner.style.display = 'block';
 

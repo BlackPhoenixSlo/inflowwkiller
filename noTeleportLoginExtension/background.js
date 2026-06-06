@@ -151,7 +151,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "capture") {
-    console.log("[ChatterlyNoTeleport] capture received", {
+    console.log("[FasttNoTeleport] capture received", {
       user_id:   msg.payload?.headers?.["user-id"],
       x_of_rev:  msg.payload?.headers?.["x-of-rev"],
       static_param: msg.payload?.rules?.static_param ? "(captured)" : "(missing)",
@@ -162,10 +162,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log("[ChatterlyNoTeleport] installed — proxy is off until you activate it from the popup");
+  console.log("[FasttNoTeleport] installed — proxy is off until you activate it from the popup");
 });
 
 // Sanity log on startup so devs can confirm the SW is alive.
 chrome.runtime.onStartup?.addListener(() => {
-  console.log("[ChatterlyNoTeleport] SW startup");
+  console.log("[FasttNoTeleport] SW startup");
 });
