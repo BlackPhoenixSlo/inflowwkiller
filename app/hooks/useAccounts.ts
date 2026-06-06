@@ -1,0 +1,109 @@
+"use client";
+
+/**
+ * useAccounts — list of model accounts with sessions.
+ *
+ * Phase B drives the Unified Inbox fan-out. When ScopeContext is `all`,
+ * we fan a chat-list query out across every account here and merge
+ * client-side. Per-account scope just filters this list down to one.
+ *
+ * Source of truth depends on the active principal:
+ *   - User (owner) session    → GET /admin/accounts
+ *   - Chatter-only session    → GET /chatter/me/accounts (union across
+ *                                 every linked owner, denormalised)
+ *
+ * The `{accounts, active_account_id}` envelope is preserved either way so
+ * downstream consumers (chat fan-out, mass composer, sidebar) don't need
+ * to know which principal is driving the request.
+ */
+
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
+
+import { relay, type AccountMeta } from "@/lib/relay";
+import { useUser } from "@/contexts/UserContext";
+import { useChatter, type ChatterFlatAccountDTO } from "@/contexts/ChatterContext";
+
+export interface AccountsResp {
+  accounts: AccountMeta[];
+  active_account_id: string | null;
+}
+
+export function useAccounts() {
+  const { user } = useUser();
+  const { chatter } = useChatter();
+  // Chatter-only principal reads from /chatter/me/accounts; the
+  // /admin/accounts endpoint is owner-only (403 under chatter session).
+  const isChatterOnly = !user && !!chatter;
+
+  const ownerQ = useQuery<AccountsResp>({
+    queryKey: ["accounts"],
+    queryFn: () => relay.get<AccountsResp>("/admin/accounts"),
+    staleTime: 3 * 24 * 60 * 60_000,
+    refetchOnWindowFocus: false,
+    enabled: !isChatterOnly,
+  });
+
+  const chatterQ = useQuery<ChatterFlatAccountDTO[]>({
+    // Reuse the ChatterContext key so the two share their cache —
+    // ChatterContext already fetches this on mount; we piggy-back here
+    // without firing a duplicate request.
+    queryKey: ["chatter", "self", "accounts"],
+    queryFn: () =>
+      fetch("/chatter/me/accounts", {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      }).then(async (r) => (r.ok ? (await r.json()) : [])),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+    enabled: isChatterOnly,
+  });
+
+  // Normalize chatter accounts into AccountMeta-shaped rows so every
+  // downstream consumer keeps working unmodified. has_session=true is a
+  // best-effort assumption — the relay grant is the source of truth that
+  // the owner intended this chatter to use this account.
+  const chatterAccounts: AccountMeta[] = useMemo(() => {
+    const rows = chatterQ.data || [];
+    return rows.map((r) => ({
+      id: r.account_id,
+      nickname: r.nickname,
+      color: r.color,
+      has_session: true,
+    } as AccountMeta));
+  }, [chatterQ.data]);
+
+  // Synthesize an AccountsResp envelope so consumers see the same shape
+  // either way. active_account_id is owner-only — no equivalent in
+  // chatter mode (the picker selection lives in ScopeContext anyway).
+  return useMemo(() => {
+    if (isChatterOnly) {
+      return {
+        ...chatterQ,
+        data: {
+          accounts: chatterAccounts,
+          active_account_id: null,
+        } as AccountsResp,
+      };
+    }
+    return ownerQ;
+  }, [isChatterOnly, chatterQ, chatterAccounts, ownerQ]);
+}
+
+/** Accounts that currently have a captured session — the only ones the
+ *  relay can scope to. Used by the chat-list fan-out (no point querying
+ *  /chats for an account with no session — it'll 503).
+ *
+ *  Memoized on the underlying accounts array so the returned reference is
+ *  stable when the data hasn't changed. Without this, consumers using the
+ *  result in `useEffect` / `useMemo` deps see a new reference every render
+ *  — e.g. the inbox warmer effect was cancelling and restarting on each
+ *  parent render, and the spend/activity memos were never hitting. */
+export function useActiveAccounts(): AccountMeta[] {
+  const q = useAccounts();
+  const all = q.data?.accounts;
+  return useMemo(
+    () => (all ?? []).filter((a) => a.has_session),
+    [all],
+  );
+}

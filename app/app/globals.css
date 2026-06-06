@@ -1,0 +1,176 @@
+/* Tailwind 4 — single `@import "tailwindcss"` brings the whole framework.
+ * Theme tokens go inside @theme { ... } per the v4 convention; consumed
+ * via the `text-fg`, `bg-bg-elev`, etc. utilities Tailwind generates.
+ *
+ * Palette matches the existing /ui/ relay UI so the new app feels like
+ * a continuation, not a fork. The dark theme is the default (the @theme
+ * block); a light variant is layered on via `[data-theme="light"]` and
+ * picked by TopNav's theme toggle (stored in localStorage). */
+
+@import "tailwindcss";
+
+@theme {
+  /* Surfaces — three depths so cards on cards still read clearly. */
+  --color-bg:        #0e1116;
+  --color-bg-elev-1: #161b22;
+  --color-bg-elev-2: #1f2530;
+  --color-panel:     #14151a;
+
+  /* Text */
+  --color-fg:        #e6edf3;
+  --color-fg-dim:    #8b949e;
+  --color-muted:     #6e7681;
+
+  /* Lines */
+  --color-border:       #2a313a;
+  --color-border-light: #3a414c;
+
+  /* Accent — purple, distinct from the loginExtension's blue so the two
+   * surfaces stay visually independent.  */
+  --color-accent:       #8b5cf6;
+  --color-accent-hover: #a78bfa;
+
+  /* Status */
+  --color-ok:    #2ea043;
+  --color-warn:  #d29922;
+  --color-err:   #f85149;
+  --color-pink:  #ec4899;
+  --color-info:  #3b82f6;  /* used for unread / "new" signals — visually distinct from the purple accent */
+
+  /* Type — Sora matches the desktop-app's font choice. */
+  --font-sans: "Sora", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Animation timing */
+  --ease-snappy: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Tell the UA which native widgets to render (scrollbars, default form
+ * fields, browser autofill). Without this, light mode still shows dark
+ * scrollbars + form text on macOS / iOS Safari. */
+:root { color-scheme: dark; }
+html[data-theme="light"] { color-scheme: light; }
+
+/* Light theme — same token names, daylit values. Tailwind v4's `bg-bg`,
+ * `text-fg`, etc. compile to `var(--color-...)`, so overriding the
+ * variable at higher specificity swaps colors live; no utility
+ * regeneration needed.
+ *
+ * Why `html[data-theme="light"]` (specificity 0,1,1) instead of plain
+ * `[data-theme="light"]` (0,1,0): @theme emits to `:root` (0,1,0) and
+ * source order on equal specificity is fragile across Tailwind builds.
+ * Bumping the override one notch sidesteps any cascade surprises. */
+html[data-theme="light"] {
+  --color-bg:        #ffffff;
+  --color-bg-elev-1: #f1f5f9;
+  --color-bg-elev-2: #e2e8f0;
+  --color-panel:     #f8fafc;
+
+  --color-fg:        #0f172a;
+  --color-fg-dim:    #475569;
+  --color-muted:     #94a3b8;
+
+  --color-border:       #e2e8f0;
+  --color-border-light: #cbd5e1;
+
+  --color-accent:       #7c3aed;
+  --color-accent-hover: #6d28d9;
+
+  --color-ok:    #16a34a;
+  --color-warn:  #b45309;  /* darker amber — yellow on white is illegible */
+  --color-err:   #dc2626;
+  --color-pink:  #db2777;
+  --color-info:  #2563eb;
+}
+
+html, body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Block iOS Safari's double-tap-to-zoom. Pinch-zoom is killed by the
+   * `gesturestart` listener in app/layout.tsx; this rule completes the
+   * picture. `manipulation` keeps panning + tap recognition; only the
+   * zoom gestures get suppressed. */
+  touch-action: manipulation;
+}
+
+/* Spinner used by the loading-state UI. Kept global because it's tiny
+ * and styled inline via animations the rest of the app doesn't need.  */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Toast slide-in for NotificationToaster cards. */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+.animate-toast-in { animation: toast-in 180ms ease-out both; }
+
+/* Skeleton shimmer — diagonal light bar sliding across a placeholder
+ * tile so the user sees motion while video storyboards are being
+ * extracted on the relay. Pairs with .scrub-shimmer below; the keyframe
+ * runs the gradient from off-left to off-right of the parent tile.    */
+@keyframes scrub-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.scrub-shimmer {
+  position: absolute; inset: 0; overflow: hidden;
+  background-color: var(--color-bg-elev-1);
+}
+.scrub-shimmer::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.12) 40%,
+    rgba(255, 255, 255, 0.20) 50%,
+    rgba(255, 255, 255, 0.12) 60%,
+    transparent 100%
+  );
+  animation: scrub-shimmer 1.4s linear infinite;
+}
+
+/* Utility: hide scrollbars on a horizontally-scrolling strip (chip rows,
+ * the chat-folder filter strip, etc.). Tailwind v4 doesn't ship this by
+ * default — small enough to inline here. */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Scrollbar: subtle. Default browser styling looks shouty on dark bg. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--color-border-light); }
+
+/* Mobile-only utilities — Tailwind covers most of this with `md:`
+ * prefixes, but a body-level overflow guard lives here so individual
+ * components don't have to repeat the same overrides.                  */
+@media (max-width: 767px) {
+  /* Prevent horizontal overflow caused by long usernames / fan ids
+   * in dense rows. Pairs with `min-w-0` on the truncate target.        */
+  body { overflow-x: hidden; }
+}
+
+/* `--vvh` follows `window.visualViewport.height` (px) when the inline
+ * boot script in app/layout.tsx is alive (modern browsers); fallback
+ * to `100dvh` otherwise. This is the only height unit we use for chat
+ * surfaces — `dvh` alone doesn't shrink when the iOS Safari keyboard
+ * opens, so the composer would slide under it. `visualViewport.height`
+ * does shrink, keeping the composer above the keyboard.                */
+:root { --vvh: 100dvh; }
+
+/* `.h-chat` — chat-surface height that tracks the visible viewport.
+ * Single `height:` declaration so PostCSS/Tailwind v4 doesn't strip
+ * the rule (which it does to dual-declaration legacy/modern fallbacks
+ * like `height: 100vh; height: 100dvh;` — bit us once already). PC is
+ * unaffected because vvh ≈ 100dvh when no keyboard is up.              */
+.h-chat { height: calc(var(--vvh) - 3.5rem); }

@@ -1,0 +1,612 @@
+"""
+service/automations/reply_mass_funnel.py — Automation A11: reply_mass_funnel.
+
+Spec: library/one_section_of_automations/11_reply_mass_funnel.md (+ 15_funnel_schema.md).
+
+The DOM-era script polled the OnlyFans chat sidebar every 2 minutes, matched the
+last model message against the funnel's `opening_message` to DISCOVER replying
+fans, and walked each one through the funnel's `steps` (clicking the composer,
+attaching vault media, setting a PPV price). This is the network-rewrite of that
+flow as a P4 automation — NO DOM. Per the mapping table at the bottom of spec 11:
+
+    sidebar discovery        → DB scan of `messages` (the broadcast's recipients,
+                               written by A10 send_mass_message with mass_run_id)
+    has_fan_replied()        → DB: an inbound message AFTER our last funnel-out
+    send next step           → of_client.send_message → write_outbound_attribution
+    PPV (vault + price)       → of_client.send_message(price=, media_files=)
+
+State machine (the acceptance bar — "advances one step per eligible reply and
+RESUMES from funnel_state after restart") lives entirely in the `funnel_state`
+table, keyed (mass_run_id, fan_id). Because every sweep reloads it from the DB
+and holds NO in-memory carry-over, a `run_once` after a crash continues from the
+persisted `current_step` — a restart is just the next sweep.
+
+What it does, per tick (`run(account_id, payload, *, run_id)`):
+
+  1. Find the account's active funnel broadcasts: `mass_runs` with status='ok'
+     and a non-NULL `funnel_id` (optionally narrowed to payload `mass_run_id`).
+  2. DISCOVERY — for each broadcast, the recipients are the fans with an outbound
+     `messages` row carrying that `mass_run_id` (A10 wrote one per recipient). A
+     recipient who has REPLIED since the broadcast and isn't tracked yet gets a
+     fresh `funnel_state` row at step 0. Non-repliers never enter the funnel
+     (mirrors the DOM "skip chats where You: spoke last").
+  3. PROCESS — every due `funnel_state` row (status='pending',
+     next_check_at <= now). For each:
+       • take the per-(account, fan) send-lease so A05/A06/A07/A09 can't
+         double-message the same fan in an overlapping cycle;
+       • if the fan has NOT replied since our last funnel message → bump
+         check_count, push next_check_at by this step's `check_intervals_min`
+         (default [2,4,10] then 10 forever) and move on (no send);
+       • if they HAVE replied → resolve the step's text (static `messages`
+         verbatim, OR generate via llm_client when the step opts in), send each
+         message, persist the outbound row (tagged mass_run_id + funnel_step),
+         advance `current_step`. A `paid_ppv` step (or the last step) marks the
+         row `done` — hand-off to the chatter team.
+
+Concurrency / sessions: each DB write uses its OWN AsyncSession — never one
+shared across branches (the SQLAlchemy parallel-session footgun). The daily-spend
+cap is serialized inside llm_client's atomic reserve, so this automation does NOT
+need the executor's account_spend_lock. The per-fan lease is the anti-double-send
+guard, mirroring of_ai_chat / send_welcome.
+
+Scheduling: self-registers via `@register("reply_mass_funnel")` on import. To run
+it on the spec's 2-minute cadence, insert an `automation_rules` row with
+`kind="reply_mass_funnel"` and `trigger_json={"every_seconds": 120}`. NO edit to
+automation_executor.py.
+
+Funnel step shape (from `mass_message_funnels.steps_json`, spec 15)::
+
+    {"step": 1, "check_intervals_min": [2,4,10], "messages": ["m1a", "m1b"]}
+    {"step": 4, "type": "paid_ppv", "price": 24, "media_files": [123],
+     "messages": ["open this..."]}
+
+Generation opt-in (the prompt's "generate step text via llm_client"): a step with
+no static `messages` but a `prompt` string — or `"generate": true` — is composed
+by llm_client.chat (which writes the `grok_calls` audit row + enforces the daily
+cost cap itself). Static-message steps (the reference `strokes_funnel`) send
+verbatim and never touch the LLM.
+
+Payload knobs (all optional): `mass_run_id` (process one broadcast only),
+`model` (LLM override), `dry_run` (resolve text but neither send nor advance),
+`max_chats` (per-run send cap), `test_fan` (process only this fan id).
+
+Returns a stats dict → automation_runs.stats_json.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import random
+import re
+from datetime import datetime, timedelta
+
+from sqlalchemy import func, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+import automation_executor as ax  # _make_client / _parse_iso / _to_cents / lease seams
+import llm_client                  # call .chat at runtime so tests can patch it
+from attribution import write_outbound_attribution
+from automation_registry import register
+from ._common import apply_word_restriction, resolve_model
+from db.engine import get_session
+from db.models import AccountAiConfig, FunnelState, MassMessageFunnel, MassRun, Message
+from llm_client import LLMCapExceeded
+
+log = logging.getLogger("of-relay.automation.reply_mass_funnel")
+
+# ── Knobs (ported from 11_reply_mass_funnel.md) ──────────────────────
+_DEFAULT_MODEL = "grok-4-1-fast-non-reasoning"   # llm_client fallback (19 §4)
+_PURPOSE = "reply_mass_funnel"   # also the account_ai_config.model_by_purpose key
+_DEFAULT_INTERVALS = [2, 4, 10]  # minutes between reply-checks (spec default)
+# This funnel walks ONE fan through steps paced by next_check_at (the intervals
+# above), so it re-messages the same fan every few minutes. The generic 30-min W3
+# cooldown + the 900s kept lease would BOTH clobber that cadence (every 2-min step
+# skipped as "resting"/"locked" until 30 min passed). So, like the other live
+# flows, set a SHORT cooldown and RELEASE the lease on success. Keep it safely
+# BELOW the smallest step interval (120s) so it never blocks a legit next step.
+_REPLY_COOLDOWN_S = 60
+_FALLBACK_CHECK_MIN = 10         # after the interval list is exhausted, re-poll forever
+_DEFAULT_MAX_CHATS = 40          # per-run send cap (logged when it bites)
+_DEFAULT_PPV_PRICE = 24          # spec default for a paid_ppv step with no price
+# Gap between the two back-to-back bubbles of one step — bumped above the old
+# 1.5s so it reads as "typing the next line" rather than an instant double-post.
+# Jittered ±_STEP_GAP_JITTER so sends don't land on a detectable metronome.
+# Tests set _STEP_GAP_S = 0 to skip the sleep.
+_STEP_GAP_S = 4.0
+_STEP_GAP_JITTER = 0.5           # ±50% → ~2-6s actual
+
+
+def _jittered_gap() -> float:
+    """A human-ish typing pause around _STEP_GAP_S (±_STEP_GAP_JITTER)."""
+    return _STEP_GAP_S * (1.0 + random.uniform(-_STEP_GAP_JITTER, _STEP_GAP_JITTER))
+_STEP_TEMPERATURE = 0.85         # warm/varied, matches the persona calls
+_MSG_CLIP = 400                  # clip each history message body for the prompt
+_HISTORY_TAIL = 20               # last N messages handed to the model on generate
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+# ── Text helpers (local copies — house pattern) ──────────────────────
+
+def _strip_html(s: str | None) -> str:
+    if not s:
+        return ""
+    if "<" not in s:
+        return s.strip()
+    return _TAG_RE.sub("", s).strip()
+
+
+def _step_intervals(steps: list[dict], idx: int) -> list[int]:
+    """The `check_intervals_min` of the step at `idx` (the one we just sent), or
+    the spec default [2,4,10] when missing/malformed."""
+    if 0 <= idx < len(steps):
+        iv = steps[idx].get("check_intervals_min")
+        if isinstance(iv, list) and iv and all(isinstance(x, (int, float)) for x in iv):
+            return [int(x) for x in iv]
+    return list(_DEFAULT_INTERVALS)
+
+
+def _wait_minutes(intervals: list[int], check_count: int) -> int:
+    """Minutes until the next reply-check: intervals[check_count], then the
+    10-minute fallback once the list is exhausted (spec: re-poll forever)."""
+    if 0 <= check_count < len(intervals):
+        return int(intervals[check_count])
+    return _FALLBACK_CHECK_MIN
+
+
+# ── Model resolution (per-account / per-purpose override, 19 §4) ──────
+
+async def _load_persona(account_id: str) -> str:
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, account_id)
+    return (cfg.persona if cfg and cfg.persona else "").strip() or (
+        "You are a warm, flirty OnlyFans creator chatting with one of your fans."
+    )
+
+
+# ── Funnel + broadcast lookup (own session each) ─────────────────────
+
+async def _active_mass_runs(account_id: str, only_id: int | None) -> list[tuple[int, int]]:
+    """The account's completed funnel broadcasts → [(mass_run_id, funnel_id)].
+    A run is a funnel anchor when status='ok' and funnel_id is set."""
+    async with get_session() as s:
+        q = select(MassRun.id, MassRun.funnel_id).where(
+            MassRun.account_id == str(account_id),
+            MassRun.status == "ok",
+            MassRun.funnel_id.is_not(None),
+        )
+        if only_id is not None:
+            q = q.where(MassRun.id == only_id)
+        rows = (await s.execute(q.order_by(MassRun.id))).all()
+    return [(int(r[0]), int(r[1])) for r in rows]
+
+
+async def _load_funnel_steps(funnel_id: int) -> list[dict]:
+    """Parse `mass_message_funnels.steps_json` → list of step dicts (or [])."""
+    async with get_session() as s:
+        fn = await s.get(MassMessageFunnel, funnel_id)
+    if fn is None or not fn.steps_json:
+        return []
+    try:
+        steps = json.loads(fn.steps_json)
+    except Exception:
+        log.warning("reply_mass_funnel_bad_steps_json funnel=%s", funnel_id)
+        return []
+    return [s for s in steps if isinstance(s, dict)] if isinstance(steps, list) else []
+
+
+# ── Reply detection (DB-first — the WS pump already wrote inbound) ────
+
+async def _last_funnel_out_at(account_id: str, fan_id: int, mass_run_id: int) -> datetime | None:
+    """Timestamp of the latest outbound message belonging to THIS funnel run
+    (the broadcast row, then each step we sent — all tagged mass_run_id). Scoping
+    to the run isolates the funnel from of_ai_chat/send_welcome noise."""
+    async with get_session() as s:
+        ts = (await s.execute(
+            select(func.max(Message.created_at)).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.mass_run_id == int(mass_run_id),
+                Message.direction == "out",
+            )
+        )).scalar_one_or_none()
+    return ts
+
+
+async def _has_fan_replied(account_id: str, fan_id: int, since: datetime | None) -> bool:
+    """True iff the fan sent an inbound message strictly AFTER `since` (our last
+    funnel message). `since` None → any inbound at all counts."""
+    async with get_session() as s:
+        q = select(Message.message_id).where(
+            Message.account_id == str(account_id),
+            Message.fan_id == int(fan_id),
+            Message.direction == "in",
+            Message.is_unsent.is_(False),
+        )
+        if since is not None:
+            q = q.where(Message.created_at > since)
+        hit = (await s.execute(q.limit(1))).first()
+    return hit is not None
+
+
+async def _recipient_fans(account_id: str, mass_run_id: int) -> list[int]:
+    """The broadcast's recipients = fans with an outbound row tagged this run
+    (A10 wrote one per recipient — real echo or optimistic placeholder)."""
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.fan_id).where(
+                Message.account_id == str(account_id),
+                Message.mass_run_id == int(mass_run_id),
+                Message.direction == "out",
+            ).distinct()
+        )).all()
+    return [int(r[0]) for r in rows]
+
+
+async def _tracked_fans(mass_run_id: int) -> set[int]:
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(FunnelState.fan_id).where(FunnelState.mass_run_id == int(mass_run_id))
+        )).all()
+    return {int(r[0]) for r in rows}
+
+
+async def _due_states(mass_run_id: int, now: datetime, only_fan: int | None) -> list[FunnelState]:
+    """Detached `funnel_state` rows ready to process: pending + due."""
+    async with get_session() as s:
+        q = select(FunnelState).where(
+            FunnelState.mass_run_id == int(mass_run_id),
+            FunnelState.status == "pending",
+            (FunnelState.next_check_at.is_(None)) | (FunnelState.next_check_at <= now),
+        )
+        if only_fan is not None:
+            q = q.where(FunnelState.fan_id == int(only_fan))
+        rows = (await s.execute(q.order_by(FunnelState.fan_id))).scalars().all()
+        # Detach so we can mutate copies and persist with explicit updates.
+        for r in rows:
+            s.expunge(r)
+    return rows
+
+
+# ── State writes (own session each) ──────────────────────────────────
+
+async def _ensure_state(mass_run_id: int, fan_id: int, now: datetime) -> bool:
+    """Insert a fresh step-0 state for a newly-discovered replier. Idempotent
+    (ON CONFLICT DO NOTHING) so a race never double-tracks. Returns True iff it
+    inserted a new row."""
+    async with get_session() as s:
+        res = await s.execute(
+            sqlite_insert(FunnelState)
+            .values(
+                mass_run_id=int(mass_run_id),
+                fan_id=int(fan_id),
+                current_step=0,
+                next_check_at=now,
+                check_count=0,
+                status="pending",
+                updated_at=now,
+            )
+            .on_conflict_do_nothing(index_elements=["mass_run_id", "fan_id"])
+        )
+    return (res.rowcount or 0) > 0
+
+
+async def _save_state(cs: FunnelState, now: datetime) -> None:
+    """Persist the mutated state machine fields for one (mass_run, fan)."""
+    async with get_session() as s:
+        row = await s.get(FunnelState, (int(cs.mass_run_id), int(cs.fan_id)))
+        if row is None:  # pragma: no cover — defensive (discovery just inserted it)
+            return
+        row.current_step = cs.current_step
+        row.next_check_at = cs.next_check_at
+        row.check_count = cs.check_count
+        row.status = cs.status
+        row.last_error = cs.last_error
+        row.updated_at = now
+
+
+# ── Step text (static verbatim, or generate via llm_client) ──────────
+
+def _is_generated(step: dict) -> bool:
+    msgs = step.get("messages")
+    if isinstance(msgs, list) and any(str(m).strip() for m in msgs):
+        return False  # static messages win — DOM parity, reference funnel verbatim
+    return bool(step.get("generate") or step.get("prompt"))
+
+
+async def _history_block(account_id: str, fan_id: int) -> str:
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.direction, Message.body).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.is_unsent.is_(False),
+            ).order_by(Message.created_at.desc(), Message.message_id.desc())
+            .limit(_HISTORY_TAIL)
+        )).all()
+    rows = list(reversed(rows))  # oldest → newest
+    return "\n".join(
+        f"{'FAN' if d == 'in' else 'YOU'}: {_strip_html(b)[:_MSG_CLIP]}"
+        for d, b in rows if _strip_html(b)
+    )
+
+
+async def _step_texts(
+    account_id: str, fan_id: int, step: dict, persona: str, model: str,
+) -> list[str]:
+    """Resolve the message(s) to send for one step. Static `messages` are sent
+    verbatim (max 2, per spec). A generated step composes ONE message through
+    llm_client (which writes grok_calls + enforces the cap). Raises
+    LLMCapExceeded straight through to the caller."""
+    if not _is_generated(step):
+        msgs = [str(m).strip() for m in (step.get("messages") or []) if str(m).strip()]
+        return msgs[:2]
+
+    prompt = (step.get("prompt") or "").strip() or (
+        "Continue the funnel naturally and nudge the conversation forward."
+    )
+    convo = await _history_block(account_id, fan_id)
+    system = (
+        f"{persona}\n\n"
+        f"Funnel goal for this message: {prompt}\n\n"
+        "Write ONE short reply (1-3 sentences, casual texting tone) as the "
+        "creator. Output ONLY the message text — no quotes, no name prefix, no "
+        "preamble."
+    )
+    user = (
+        f"Recent conversation (oldest→newest):\n{convo}\n\n"
+        "Send the next funnel message now."
+    )
+    res = await llm_client.chat(
+        model=model,
+        messages=[{"role": "system", "content": system},
+                  {"role": "user", "content": user}],
+        purpose=_PURPOSE,
+        account_id=account_id,
+        fan_id=fan_id,
+        temperature=_STEP_TEMPERATURE,
+    )
+    text = (res.content or "").strip()
+    return [text] if text else []
+
+
+# ── Sending one step (of_client + optimistic persistence) ────────────
+
+async def _send_step(
+    client, account_id: str, fan_id: int, mass_run_id: int, step: dict,
+    texts: list[str], is_ppv: bool,
+) -> int:
+    """Send the step's message(s) and persist each outbound row (tagged
+    mass_run_id + funnel_step, emit_live for the WORKER→SSE bridge). Returns the
+    count of messages actually sent. PPV: price + explicit media on the FIRST
+    (only) message."""
+    step_num = step.get("step")
+    try:
+        step_num = int(step_num)
+    except (TypeError, ValueError):
+        step_num = None
+
+    sent = 0
+    for i, text in enumerate(texts):
+        kwargs: dict = {}
+        if is_ppv and i == 0:
+            price = step.get("price")
+            try:
+                price = int(price) if price is not None else _DEFAULT_PPV_PRICE
+            except (TypeError, ValueError):
+                price = _DEFAULT_PPV_PRICE
+            media = [int(m) for m in (step.get("media_files") or []) if str(m).isdigit()]
+            # PPV: the TEXT is the sales pitch and must stay FREE/readable — only
+            # the MEDIA is paywalled. So lockedText defaults to False (fan reads the
+            # copy, the $24 image stays locked). A step may opt back into a fully
+            # locked text with `"locked_text": true`.
+            kwargs = {"price": price, "locked_text": bool(step.get("locked_text", False))}
+            if media:
+                kwargs["media_files"] = media
+                # Free teaser: the leading N media go out UNLOCKED (OF `previews`);
+                # keep only ids that are actually in this send's media set.
+                previews = [int(m) for m in (step.get("previews") or []) if str(m).isdigit()]
+                previews = [m for m in previews if m in media]
+                if previews:
+                    kwargs["previews"] = previews
+
+        if i > 0 and _STEP_GAP_S:
+            await asyncio.sleep(_jittered_gap())  # ~typing pause between bubbles
+
+        # Last-mile OF-restricted word substitution — covers both the LLM step
+        # replies and any verbatim funnel copy (V1 filtered every send).
+        text = apply_word_restriction(text)
+        result = await asyncio.to_thread(client.send_message, fan_id, text, **kwargs)
+        msg_id = result.get("id") if isinstance(result, dict) else None
+        if not msg_id:
+            log.warning("reply_mass_funnel send returned no id account=%s fan=%s step=%s",
+                        account_id, fan_id, step_num)
+            continue
+        await write_outbound_attribution(
+            account_id=account_id,
+            fan_id=int(fan_id),
+            message_id=int(msg_id),
+            sent_by_employee_id=None,  # → system Automation employee
+            body=str(result.get("text") or text),
+            price_cents=ax._to_cents(kwargs.get("price", 0)),
+            created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
+            mass_run_id=mass_run_id,
+            funnel_step=step_num,
+            emit_live=True,  # WORKER→SSE bridge: surface the funnel step live
+        )
+        sent += 1
+    return sent
+
+
+# ── The automation ───────────────────────────────────────────────────
+
+@register("reply_mass_funnel")
+async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
+    payload = payload or {}
+    dry_run = bool(payload.get("dry_run"))
+    only_run = payload.get("mass_run_id")
+    only_run = int(only_run) if only_run is not None else None
+    only_fan = payload.get("test_fan")
+    only_fan = int(only_fan) if only_fan is not None else None
+    max_chats = int(payload.get("max_chats") or _DEFAULT_MAX_CHATS)
+
+    model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
+    persona = await _load_persona(account_id)
+
+    runs = await _active_mass_runs(account_id, only_run)
+    if not runs:
+        return {"status": "skipped", "reason": "no_active_funnel_runs",
+                "runs": 0, "discovered": 0, "advanced": 0}
+
+    client = await asyncio.to_thread(ax._make_client, account_id)
+    now = datetime.utcnow()
+
+    discovered = 0
+    advanced = 0          # states that sent a step this tick
+    waiting = 0           # due but fan hasn't replied yet → rescheduled
+    completed = 0         # states marked done this tick
+    skipped_locked = 0
+    skipped_cooldown = 0
+    errors = 0
+    cap_hit = False
+
+    for mass_run_id, funnel_id in runs:
+        steps = await _load_funnel_steps(funnel_id)
+        if not steps:
+            log.info("reply_mass_funnel run=%s funnel=%s has no steps — skipping",
+                     mass_run_id, funnel_id)
+            continue
+
+        # ── 1) Discovery: new repliers → fresh step-0 state ──────────
+        tracked = await _tracked_fans(mass_run_id)
+        for fan_id in await _recipient_fans(account_id, mass_run_id):
+            if fan_id in tracked or (only_fan is not None and fan_id != only_fan):
+                continue
+            # Replied since the broadcast (our only funnel-out so far)?
+            broadcast_at = await _last_funnel_out_at(account_id, fan_id, mass_run_id)
+            if await _has_fan_replied(account_id, fan_id, broadcast_at):
+                if await _ensure_state(mass_run_id, fan_id, now):
+                    discovered += 1
+
+        # ── 2) Process due states ────────────────────────────────────
+        for cs in await _due_states(mass_run_id, now, only_fan):
+            if advanced >= max_chats:
+                log.info("reply_mass_funnel batch capped run=%s cap=%d (rest next tick)",
+                         mass_run_id, max_chats)
+                break
+
+            c = cs.current_step
+            if c >= len(steps):
+                cs.status = "done"
+                await _save_state(cs, now)
+                completed += 1
+                continue
+
+            fan_id = int(cs.fan_id)
+            # Another automation messaged this fan recently → rest it (W3 cooldown).
+            if await ax.fan_on_cooldown(account_id, fan_id):
+                skipped_cooldown += 1
+                continue
+            # One bot message per fan per cycle — don't race A05/A06/A07/A09.
+            if not await ax.acquire_fan_lease(account_id, fan_id, _PURPOSE):
+                skipped_locked += 1
+                continue
+            sent_ok = False
+            try:
+                last_out = await _last_funnel_out_at(account_id, fan_id, mass_run_id)
+                if not await _has_fan_replied(account_id, fan_id, last_out):
+                    # Not yet — reschedule on the just-sent step's interval list.
+                    intervals = _step_intervals(steps, max(c - 1, 0))
+                    wait = _wait_minutes(intervals, cs.check_count)
+                    cs.check_count += 1
+                    cs.next_check_at = now + timedelta(minutes=wait)
+                    await _save_state(cs, now)
+                    waiting += 1
+                    continue
+
+                step = steps[c]
+                is_ppv = step.get("type") == "paid_ppv"
+                try:
+                    texts = await _step_texts(account_id, fan_id, step, persona, model)
+                except LLMCapExceeded:
+                    cap_hit = True
+                    log.warning("reply_mass_funnel daily LLM cap reached account=%s — stopping",
+                                account_id)
+                    break
+                except Exception:
+                    errors += 1
+                    log.warning("reply_mass_funnel generate failed account=%s fan=%s step=%s",
+                                account_id, fan_id, c, exc_info=True)
+                    continue
+
+                if not texts:
+                    errors += 1
+                    log.warning("reply_mass_funnel empty step text account=%s fan=%s step=%s",
+                                account_id, fan_id, c)
+                    continue
+
+                if dry_run:
+                    advanced += 1  # would-send; do NOT send or advance state
+                    continue
+
+                try:
+                    n = await _send_step(client, account_id, fan_id, mass_run_id,
+                                         step, texts, is_ppv)
+                except Exception:
+                    errors += 1
+                    log.warning("reply_mass_funnel send failed account=%s fan=%s step=%s",
+                                account_id, fan_id, c, exc_info=True)
+                    continue
+                if n == 0:
+                    errors += 1
+                    continue
+
+                # Advance the state machine + schedule the next reply-check.
+                cs.current_step = c + 1
+                if is_ppv or cs.current_step >= len(steps):
+                    cs.status = "done"   # PPV is terminal → hand off to chatters
+                    completed += 1
+                else:
+                    cs.check_count = 0
+                    intervals = _step_intervals(steps, cs.current_step - 1)  # step just sent
+                    cs.next_check_at = now + timedelta(minutes=_wait_minutes(intervals, 0))
+                await _save_state(cs, now)
+                advanced += 1
+                sent_ok = True
+            finally:
+                # W3 (paced-funnel variant): on a confirmed step send set the
+                # SHORT cooldown then RELEASE the lease, so the next step (due in
+                # 2-10 min via next_check_at) isn't blocked by a 30-min rest or a
+                # 900s lease. Cooldown is committed BEFORE release so it guards the
+                # moment the lease drops; on a cooldown-write failure KEEP the
+                # lease (900s) as the fallback guard.
+                if sent_ok:
+                    try:
+                        await ax.start_fan_cooldown(
+                            account_id, fan_id, cooldown_s=_REPLY_COOLDOWN_S
+                        )
+                        await ax.release_fan_lease(account_id, fan_id)
+                    except Exception:
+                        log.warning("reply_mass_funnel cooldown set failed account=%s fan=%s "
+                                    "— keeping lease as fallback guard",
+                                    account_id, fan_id, exc_info=True)
+                else:
+                    await ax.release_fan_lease(account_id, fan_id)
+
+        if cap_hit or advanced >= max_chats:
+            break  # LLM cap or the per-run send cap → stop sweeping further runs
+
+    return {
+        "runs": len(runs),
+        "discovered": discovered,
+        "advanced": advanced,
+        "waiting": waiting,
+        "completed": completed,
+        "skipped_locked": skipped_locked,
+        "skipped_cooldown": skipped_cooldown,
+        "errors": errors,
+        "cap_hit": cap_hit,
+        "dry_run": dry_run,
+        "model": model,
+    }

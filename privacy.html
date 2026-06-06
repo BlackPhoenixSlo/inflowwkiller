@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Fastt Login Extensions</title>
+<style>
+  :root {
+    --bg: #f7f7fb;
+    --card: #ffffff;
+    --text: #1c1d24;
+    --muted: #5b5f6e;
+    --rule: #e6e7ec;
+    --accent: #6b56d2;
+    --code-bg: #f1f2f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171d;
+      --card: #1c1f27;
+      --text: #e9eaf0;
+      --muted: #9ba0b0;
+      --rule: #2a2d36;
+      --accent: #9d8bf0;
+      --code-bg: #232631;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  main {
+    max-width: 760px;
+    margin: 48px auto;
+    padding: 48px 56px;
+    background: var(--card);
+    border-radius: 14px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06);
+  }
+  h1 {
+    font-size: 28px;
+    margin: 0 0 6px;
+    line-height: 1.25;
+  }
+  h2 {
+    font-size: 19px;
+    margin: 36px 0 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .meta {
+    color: var(--muted);
+    font-size: 14px;
+    margin-bottom: 28px;
+  }
+  p { margin: 12px 0; }
+  ul { padding-left: 22px; margin: 12px 0; }
+  li { margin: 6px 0; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13.5px;
+    background: var(--code-bg);
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+  strong { color: var(--text); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  footer {
+    margin-top: 48px;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule);
+    color: var(--muted);
+    font-size: 13px;
+  }
+  @media (max-width: 640px) {
+    main { margin: 0; border-radius: 0; padding: 28px 22px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Privacy Policy — Fastt Login Capture &amp; Fastt No-Teleport Login</h1>
+  <p class="meta">Last updated: 2026-05-21</p>
+
+  <p>These two browser extensions (collectively, <strong>"the Extensions"</strong>) are companion tools for the self-hosted Fastt relay. They are intended to be installed only by the operator of a Fastt relay on their own browser profile.</p>
+
+  <h2>1. What the Extensions do</h2>
+  <ul>
+    <li><strong>Fastt Login Capture</strong> observes the user's own OnlyFans session in the user's own browser. When the user signs in to onlyfans.com, the extension records the request headers OnlyFans uses to authenticate API calls (<code>user-id</code>, <code>x-bc</code>, <code>sign</code>, <code>time</code>, <code>x-of-rev</code>, <code>user-agent</code>) and the signing parameters the page derives at runtime. When the user clicks <strong>Copy curl</strong>, the extension reads the user's own onlyfans.com cookies and assembles a <code>curl</code> command, which it writes to the system clipboard.</li>
+    <li><strong>Fastt No-Teleport Login</strong> does the same capture and adds an optional PAC-based proxy that routes only onlyfans.com traffic through a user-configured HTTP or SOCKS proxy. This lets the user produce OnlyFans session cookies that originate from the same egress IP as their relay.</li>
+  </ul>
+
+  <h2>2. Data collected</h2>
+  <p>The Extensions read and locally store the following data about the user's own OnlyFans session:</p>
+  <ul>
+    <li>HTTP request headers from the user's own outbound OnlyFans API calls (specifically: <code>user-id</code>, <code>x-bc</code>, <code>sign</code>, <code>time</code>, <code>x-of-rev</code>, <code>user-agent</code>).</li>
+    <li>Signing-rule fragments that OnlyFans's own front-end derives at runtime (<code>static_param</code>, <code>start</code>, <code>end</code>).</li>
+    <li>Cookies set by onlyfans.com on the user's own profile — read only when the user clicks <strong>Copy curl</strong>, only to embed them in the user's clipboard output.</li>
+    <li>For the No-Teleport variant only: the proxy host, port, username, and password the user themselves typed into the popup.</li>
+  </ul>
+
+  <h2>3. Where the data goes</h2>
+  <ul>
+    <li>All captured data is stored in <code>chrome.storage.local</code> on the user's own device. The Extensions do not transmit it to any server controlled by the developer.</li>
+    <li>When the user clicks <strong>Copy curl</strong>, the assembled command is written to the user's system clipboard. The user is responsible for where they paste it.</li>
+    <li>For the No-Teleport variant only: the user's own browser network traffic for onlyfans.com is routed through the proxy host the user themselves configured. The developer never sees this traffic.</li>
+  </ul>
+
+  <h2>4. What we do NOT do</h2>
+  <ul>
+    <li>We do not sell or transfer user data to third parties.</li>
+    <li>We do not use or transfer user data for purposes unrelated to the Extension's single purpose (capturing the user's own OnlyFans session for use with their own Fastt relay).</li>
+    <li>We do not use or transfer user data to determine creditworthiness or for lending purposes.</li>
+    <li>We do not run analytics, telemetry, crash reporting, or A/B experiments.</li>
+    <li>We do not load remote code.</li>
+  </ul>
+
+  <h2>5. Retention and deletion</h2>
+  <p>Captured data lives in <code>chrome.storage.local</code> until:</p>
+  <ul>
+    <li>The user clicks <strong>Reset</strong> in the popup, or</li>
+    <li>The user uninstalls the Extension (Chrome wipes <code>chrome.storage.local</code> on uninstall), or</li>
+    <li>The user clears the Extension's site data from <code>chrome://extensions</code>.</li>
+  </ul>
+
+  <h2>6. Permissions, justified</h2>
+  <ul>
+    <li><code>storage</code> — persist captured headers between popup opens.</li>
+    <li><code>tabs</code> — focus or open an onlyfans.com tab when the user clicks <strong>Log in</strong>.</li>
+    <li><code>cookies</code> — read onlyfans.com cookies to include in the user's clipboard output.</li>
+    <li><code>clipboardWrite</code> — write the assembled <code>curl</code> command to the user's clipboard.</li>
+    <li><code>proxy</code> <em>(No-Teleport only)</em> — install a PAC script that routes onlyfans.com traffic through the user's chosen proxy.</li>
+    <li><code>webRequest</code>, <code>webRequestAuthProvider</code> <em>(No-Teleport only)</em> — supply the user's proxy username/password when the proxy issues a 407 Proxy Authentication Required challenge.</li>
+    <li>Host permissions <code>https://onlyfans.com/*</code> and <code>https://*.onlyfans.com/*</code> — inject the capture script and read cookies on that origin only. The No-Teleport variant additionally filters its <code>webRequest.onAuthRequired</code> listener to these same hosts.</li>
+  </ul>
+
+  <h2>7. Contact</h2>
+  <p>Issues, deletion requests, and questions: open an issue on the project's source-code repository (link provided on the Chrome Web Store listing).</p>
+
+  <footer>© 2026 Fastt. This policy applies to the Fastt Login Capture and Fastt No-Teleport Login Chrome extensions.</footer>
+</main>
+</body>
+</html>
