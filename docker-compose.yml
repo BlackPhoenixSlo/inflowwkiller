@@ -1,0 +1,214 @@
+# OF Relay full stack — replaces `./scripts/start.sh`.
+#
+#   docker compose up -d --build       # build + start relay + Next.js UI
+#   docker compose logs -f             # tail both services
+#   docker compose down                # graceful stop (SIGTERM → 10s grace)
+#
+# What's running after `up`:
+#   relay  127.0.0.1:8787  — FastAPI / uvicorn  (the Python relay)
+#   app    127.0.0.1:3001  — Next.js prod build (the /inbox UI)
+#
+# The Next container reaches the relay container by DNS (`http://relay:8787`)
+# over the internal compose network. The browser only ever talks to 3001.
+#
+# Persisted on the host (so a rebuild never wipes your auth or history):
+#   ./service/chatterly.db        SQLite event store
+#   ./service/sessions/           captured OF sessions
+#   ./service/proxies.json        proxy registry
+#
+# To expose publicly: run `tailscale funnel --bg 3001` on the host (same as
+# start.sh's funnel block), OR put Caddy/Traefik in front and add a third
+# service. Don't change the `127.0.0.1:` ports here — the SHARE_TOKEN gate
+# is the only auth, so direct LAN exposure is intentionally opt-in.
+
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chatterly-relay:latest
+    container_name: chatterly-relay
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      # Same default token as start.sh prints. Override per-boot with
+      #   SHARE_TOKEN=$(openssl rand -hex 24) docker compose up -d
+      SHARE_TOKEN: "${SHARE_TOKEN:-}"
+      # Where the video scrub storyboard cache lives. Bind-mounted below
+      # so it persists across container restarts — without this every
+      # `docker compose down` wipes hours of accumulated extracts and
+      # every hover becomes a cold 3-7s build through the proxy.
+      STORYBOARD_DIR: "/app/service/storyboard_cache"
+      # LLM provider keys (Grok + DeepSeek) for service/llm_client.py. They also
+      # ride in via the COPYed service/.env, but declaring them here means a host
+      # that exports them (or a compose .env) flows them through on a clean build
+      # — the same Phase-F allowlist footgun as the Dockerfile. The `:-` empty
+      # default keeps compose from warning when the key is only in service/.env;
+      # llm_client recovers the real value from that file when the env is blank.
+      GROK_API_KEY: "${GROK_API_KEY:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      # Auth/chatter cookie signing keys. Set these in the server's .env so the
+      # secret lives ONLY on the host — env beats the on-disk .session_secret /
+      # .chatter_secret fallback, which this repo deliberately does NOT ship.
+      # Generate each with: openssl rand -hex 32
+      SESSION_SECRET: "${SESSION_SECRET:-}"
+      CHATTER_SESSION_SECRET: "${CHATTER_SESSION_SECRET:-}"
+    volumes:
+      # File bind-mount for the SQLite event store. WAL + SHM sidecars
+      # are created in /app/service/ inside the container; on `docker
+      # compose down` (SIGTERM) SQLite checkpoints them back into the
+      # bind-mounted file. Avoid `docker kill` if you can.
+      - ./service/chatterly.db:/app/service/chatterly.db
+      - ./service/sessions:/app/service/sessions
+      - ./service/proxies.json:/app/service/proxies.json
+      # Storyboard cache. Each video gets a dir of 12 small jpgs (~10-25
+      # KB each) keyed by URL hash. Survives container rebuilds so a
+      # familiar vault stays scrub-warm.
+      - ./service/storyboard_cache:/app/service/storyboard_cache
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/livez"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      # Picked up by the autoheal sidecar — when this container goes
+      # unhealthy (3 failed checks), autoheal restarts it. `restart:
+      # unless-stopped` only catches actual exits, not hangs or
+      # deadlocks where the process stays alive but stops answering.
+      autoheal: "true"
+    # Cap container log growth. Without this the JSON-file driver writes
+    # forever; a week of OF traffic at INFO can balloon to 1+ GB.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    image: chatterly-app:latest
+    container_name: chatterly-app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3001"
+    networks:
+      # default is the compose-internal network (so relay can resolve).
+      # n8n_default is the network the host's n8n-traefik-1 is on — putting
+      # the app there lets Traefik discover it via Docker labels (below)
+      # and route your-domain.example/* → chatterly-app:3001 with the
+      # already-working Let's Encrypt cert.
+      - default
+      - n8n_default
+    environment:
+      # `relay` resolves to the sibling container on the compose network.
+      # next.config.ts's rewrites() forwards /api/of/*, /admin/*, /events,
+      # /ws/*, /ui/*, /img, /health to this URL.
+      RELAY_URL: "http://relay:8787"
+    depends_on:
+      relay:
+        # service_healthy is the correct signal now that the relay's
+        # HEALTHCHECK probes /livez (process-alive only) instead of
+        # /health (which 503s with no sessions and used to deadlock
+        # fresh deploys). The app waits until uvicorn is actually
+        # answering, but no longer until a session exists — that step
+        # happens through the app itself, paste-cURL via Settings or
+        # the /ui/ bootstrap form.
+        condition: service_healthy
+    healthcheck:
+      # `next start` doesn't expose a dedicated health endpoint, but `/`
+      # is the home redirect to /inbox and is always served in prod.
+      # node:20-bookworm-slim has neither curl nor wget; use the node
+      # runtime that's already in the image. Exit 0 if status < 400,
+      # else 1. Network errors throw and exit 1 too.
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          require('http').get('http://127.0.0.1:3001/', r => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1));
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    labels:
+      autoheal: "true"
+      # Traefik discovery via the n8n-traefik-1 sidecar already running on
+      # this host. Host is the duckdns name; cert resolver name comes from
+      # n8n-traefik's CLI args (--certificatesresolvers.mytlschallenge.*).
+      # Port 3001 is the in-container Next prod port — Traefik talks to it
+      # over the n8n_default network, NOT through the 127.0.0.1 host bind.
+      traefik.enable: "true"
+      traefik.docker.network: "n8n_default"
+      traefik.http.routers.chatterly.rule: "Host(`your-domain.example`)"
+      traefik.http.routers.chatterly.entrypoints: "websecure"
+      traefik.http.routers.chatterly.tls.certresolver: "mytlschallenge"
+      traefik.http.services.chatterly.loadbalancer.server.port: "3001"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─── autoheal ───────────────────────────────────────────────────
+  # Restarts containers that go unhealthy. `restart: unless-stopped` on
+  # the other services only kicks in on actual process exit; a request
+  # handler stuck in a deadlock keeps the process alive but stops
+  # serving — autoheal catches that case by reacting to Docker's
+  # healthcheck verdict instead of process state.
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: chatterly-autoheal
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: "10"        # seconds between scans
+      AUTOHEAL_START_PERIOD: "60"    # grace before first action
+    volumes:
+      # RW socket access — autoheal calls `POST /containers/<id>/restart`
+      # via the docker API. `:ro` on a unix socket gives surprising
+      # behavior across Docker versions; stick with the upstream default.
+      - /var/run/docker.sock:/var/run/docker.sock
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"
+
+  # ─── tunnel (opt-in) ─────────────────────────────────────────────
+  # Cloudflare quick tunnel. Exposes the Next.js UI (port 3001) to a
+  # public https://<random>.trycloudflare.com URL with TLS termination at
+  # Cloudflare's edge — no router config, no account, no domain.
+  #
+  # Start with:
+  #   docker compose --profile tunnel up -d
+  #   docker compose logs -f tunnel       # wait for the trycloudflare line
+  #
+  # The subdomain changes every restart (quick tunnels are stateless).
+  # SHARE_TOKEN is the only auth between a leaked URL and full account
+  # access — keep it secret, rotate it if leaked.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: chatterly-tunnel
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate --url http://app:3001
+    depends_on:
+      app:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+networks:
+  # External network created by the separate n8n compose stack on this
+  # host. We attach `app` to it so n8n-traefik-1 can route the duckdns
+  # host to chatterly via the Traefik labels declared on the service.
+  # `external: true` means compose won't try to create or delete it.
+  n8n_default:
+    external: true

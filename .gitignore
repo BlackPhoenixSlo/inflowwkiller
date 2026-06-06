@@ -1,0 +1,41 @@
+# ---- secrets (NEVER commit) ----
+.env
+service/.env
+.session_secret
+.chatter_secret
+service/.session_secret
+service/.chatter_secret
+credentials.json
+token.json
+service/credentials.json
+service/token.json
+
+# ---- local DB + state (lives on the host / VPS, not in git) ----
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.db.*
+*.sqlite
+service/sessions/
+service/proxies.json
+service/storyboard_cache/
+
+# ---- build / deps ----
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+node_modules/
+app/node_modules/
+app/.next/
+app/.turbo/
+
+# ---- editor / OS ----
+.DS_Store
+.idea/
+.vscode/
+
+# ---- network captures / dumps (contain live cookies/PII) ----
+*.har

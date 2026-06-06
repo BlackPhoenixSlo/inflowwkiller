@@ -1,0 +1,139 @@
+# Deploying inflowwkiller to a VPS
+
+`scripts/deploy-vps.sh` does the whole deploy: installs Docker, clones this
+repo on the VPS, seeds the bind-mount targets, writes `.env`, and brings the
+stack up behind a Cloudflare quick-tunnel. This doc is the **what-to-change-
+before-you-run-it** checklist.
+
+> TL;DR: edit the `EDIT BEFORE RUNNING` block at the top of
+> `scripts/deploy-vps.sh`, then `./scripts/deploy-vps.sh`.
+
+---
+
+## 0. Prerequisites
+
+- A VPS (Hostinger / Hetzner / DO …) reachable over SSH **with your public key**
+  installed (`ssh root@<ip>` must work without a password).
+- This repo pushed to GitHub (e.g. `github.com/<you>/inflowwkiller`, branch
+  `public`). The deploy script clones from there — it does **not** rsync your
+  laptop.
+- A DeepSeek API key (house default LLM). Grok is optional.
+
+---
+
+## 1. Edit the config block in `scripts/deploy-vps.sh`
+
+Only the block between the two `EDIT BEFORE RUNNING` rules matters:
+
+| Variable | Set it to | Notes |
+|---|---|---|
+| `SSH_TARGET` | `root@<your-vps-ip>` | The Hostinger box. Placeholder `YOUR_VPS_IP` makes the script refuse to run. |
+| `SSH_PORT` | `22` (or custom) | |
+| `REMOTE_REPO_URL` | `https://github.com/<you>/inflowwkiller.git` | Placeholder `YOUR_GH_USER` makes it refuse to run. Use an HTTPS URL for a public repo; for a private repo use SSH (`git@github.com:...`) and make sure the VPS has a deploy key. |
+| `REMOTE_DIR` | `inflowwkiller` | Clones to `~/inflowwkiller` on the VPS. |
+| `BRANCH` | `public` | Must match the branch you pushed. |
+| `SESSION_SECRET` | `openssl rand -hex 32` | **Set once.** Cookie signing key. Leave empty on later redeploys to keep the existing value. |
+| `CHATTER_SESSION_SECRET` | `openssl rand -hex 32` | Same, for chatter cookies. |
+| `DEEPSEEK_API_KEY` | your key | Required before any AI send. |
+| `GROK_API_KEY` | your key | Optional / legacy. |
+| `SHARE_TOKEN` | empty, or `openssl rand -hex 24` | Empty = share-gate OFF (friend-auth cookie is the only gate). Non-empty = require `?t=<token>`. |
+| `COPY_STATE` | `0` | `0` = fresh box, capture OF sessions via the Chrome extension after boot. `1` = scp your laptop's `service/sessions` + `proxies.json` + `chatterly.db` up. See §4. |
+
+The secret values are written to `~/inflowwkiller/.env` **on the VPS** (chmod
+600) — never into the repo. Empty values are skipped, so a redeploy preserves
+keys you set on a previous run.
+
+---
+
+## 2. Run it
+
+```bash
+./scripts/deploy-vps.sh
+# or override the target inline:
+./scripts/deploy-vps.sh root@1.2.3.4 --branch public --no-state
+```
+
+Flags: `--port N`, `--branch B`, `--state` / `--no-state` (override `COPY_STATE`).
+
+Success prints a `https://<random>.trycloudflare.com` URL. Open it, sign in via
+friend-auth. The trycloudflare subdomain changes on every restart — fetch the
+current one with the command the script prints.
+
+---
+
+## 3. Secrets & how auth keys resolve
+
+This repo intentionally ships **no** secret files. `service/.session_secret`,
+`service/.chatter_secret`, `.env`, `credentials.json`, `token.json`, and all
+`*.db` files are gitignored and were never committed.
+
+At runtime the app reads `SESSION_SECRET` / `CHATTER_SESSION_SECRET` from the
+environment (env **beats** the on-disk fallback). Set them in the deploy config
+(→ written to the VPS `.env`) so the signing keys live only on the host. If you
+skip them, the app generates random keys into the fallback files on first boot —
+fine for a throwaway box, but then every container rebuild that wipes those
+files logs everyone out.
+
+---
+
+## 4. Database, migrations, and "send state later"
+
+- **Schema:** the app builds its schema on boot via `create_all` (it does **not**
+  run `alembic upgrade` on deploy). A fresh `chatterly.db` therefore comes up
+  with the full current schema, automations tables included. The `alembic`
+  migrations in `service/db/migrations/` are for evolving an existing DB, not
+  first boot.
+- **`CHATTERLY_DB_URL` vs `DATABASE_URL`:** the app reads `DATABASE_URL`; alembic
+  reads `CHATTERLY_DB_URL`. If you ever run migrations manually, point **both**
+  at the same DB or alembic silently targets the wrong file.
+- **Sending DB/sessions separately** (your plan): leave `COPY_STATE=0` for the
+  code deploy, then push state up afterwards:
+  ```bash
+  scp service/chatterly.db        root@<ip>:~/inflowwkiller/service/chatterly.db
+  scp -r service/sessions/accounts root@<ip>:~/inflowwkiller/service/sessions/
+  scp service/proxies.json        root@<ip>:~/inflowwkiller/service/proxies.json
+  ssh root@<ip> 'cd ~/inflowwkiller && docker compose restart relay'
+  ```
+  Wipe any `chatterly.db-wal` / `-shm` on the VPS before dropping a fresh `.db`
+  in, or SQLite replays a stale WAL into it.
+
+---
+
+## 5. Running ALONGSIDE another stack on the same VPS ⚠️
+
+`docker-compose.yml` uses fixed container names (`chatterly-relay`,
+`chatterly-app`, `chatterly-tunnel`) and binds `127.0.0.1:8787` / `:3001`. If
+this VPS already runs another copy of this codebase, you'll collide on both.
+Either deploy to a **fresh VPS** (simplest), or before step 2 change, in
+`docker-compose.yml`: the three `container_name:` values, the two host
+port binds, and the `image:` tags. The Cloudflare tunnel needs no domain/port
+config, so a fresh box is genuinely the least-effort path.
+
+---
+
+## 6. Redeploy / rollback
+
+```bash
+# redeploy current branch (idempotent — pulls, rebuilds, preserves .env + state)
+./scripts/deploy-vps.sh
+
+# roll back to a previous commit
+ssh root@<ip> 'cd ~/inflowwkiller && git checkout <sha> && docker compose up -d --build'
+
+# stop the public URL without tearing down the stack
+ssh root@<ip> 'cd ~/inflowwkiller && docker compose --profile tunnel stop tunnel'
+```
+
+---
+
+## 7. Recommended pre-production hardening (optional)
+
+Open items from review, not blockers — fix on the laptop and re-push when ready:
+
+- `service/webhook_dispatch.py` / `service/event_transcoder.py`: the inbound
+  dispatch is spawned with bare `asyncio.create_task` (no strong ref) — can be
+  GC'd mid-await, intermittently dropping a real-time reply (falls back to the
+  30s poll). Retain the task in a module-level set + `add_done_callback`.
+- `app/components/automations/FunnelLaunchPanel.tsx`: launch mutation doesn't
+  invalidate the `["messages-queue"]` query, so a just-launched run is invisible
+  and could be re-clicked → double-blast. Invalidate on success.

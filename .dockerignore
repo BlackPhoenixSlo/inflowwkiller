@@ -1,0 +1,78 @@
+# keep the build context small (and the image clean)
+.git
+.gitignore
+
+# never bake secrets or local DB state into an image
+service/.session_secret
+service/.chatter_secret
+.session_secret
+.chatter_secret
+*.db
+*.db-*
+*.db.*
+.env
+.claude/
+.run_public/
+venv/
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Next.js app belongs to its own image (app/Dockerfile) — the relay build
+# context doesn't need any of it, and the build artefacts are huge.
+app/node_modules/
+app/.next/
+app/.turbo/
+
+# capture artefacts that don't belong in the runtime image
+service/sessions/
+service/proxies.json
+service/audit/
+service/chunks/
+service/crawl/
+service/hunt_all/
+service/note_capture/
+service/note_nickname/
+service/schedule_capture/
+service/schedule_note_hunt/
+service/*.html
+service/*.png
+
+# Capture-only modules. The slim relay Dockerfile uses an explicit COPY
+# list so these don't end up in the slim image. But the OPTIONAL capture
+# sidecar (Dockerfile.capture, behind `--profile capture`) NEEDS several
+# of them, so we leave the needed ones available in the build context and
+# only exclude the ones no image uses.
+#
+# Available to Dockerfile.capture: capture_session_proxy.py,
+#   capture_remote_server.py, capture_entrypoint.sh, extract_rules.py,
+#   interceptor.js, session_bootstrap.py
+#
+# Excluded from every image (host-only / dev scripts):
+service/capture_session.py
+service/capture_session_with_send.py
+service/capture_upload.py
+service/capture_upload_instrumented.py
+service/capture_upload_with_send.py
+service/capture_settings_pages.py
+service/capture_settings_clicks.py
+service/capture_settings_deep.py
+service/capture_ws.py
+service/connect_incogniton.py
+service/deep_crawl_queue.py
+service/dump_of_chunks.py
+service/record_xhr.py
+service/test_call.py
+
+# repo housekeeping / one-off files
+apireferece
+bookmark_error_curl
+errors*
+Todo.txt
+CHANGES.md
+_sweep.md
+theOFchrackedextension/
+*.md
+!README.md

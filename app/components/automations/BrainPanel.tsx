@@ -1,0 +1,794 @@
+"use client";
+
+/**
+ * BrainPanel — the per-account "Brain" editor (account_ai_config) on
+ * /automations. The voice + caps a model speaks with: persona, welcome_rules,
+ * the 6 time-of-day activities + their per-slot vault images, location/utc_offset,
+ * the daily spend cap, and the LLM model (global + per-purpose override).
+ *
+ * gen_info / send_welcome / send_followup / of_ai_chat resolve this at run time,
+ * so it's the screen that fills the brain a fresh account starts without. Reuses
+ * the account picker pattern from AutomationsPanel and the VaultPicker image
+ * slots from the Nudge tab.
+ */
+
+import { useEffect, useState } from "react";
+
+import { Button, Card, Input } from "@/components/ui/primitives";
+import { cn } from "@/lib/utils";
+import { useActiveAccounts } from "@/hooks/useAccounts";
+import {
+  useAccountConfig,
+  useSaveAccountConfig,
+  type BrainConfig,
+} from "@/hooks/useAccountConfig";
+import {
+  useAutomationRules,
+  useCreateRule,
+  useUpdateRule,
+  useAutomationPreview,
+  type AutomationPreviewResult,
+} from "@/hooks/useAutomations";
+import { VaultPicker } from "@/components/chat/VaultPicker";
+import { proxyImage, type VaultMedia } from "@/lib/relay";
+
+// The welcome automation's default cadence: poll OF's new-subscriber feed every
+// 5 min (matches the send_welcome spec's {every_seconds: 300}).
+const WELCOME_DEFAULT_EVERY_S = 300;
+
+// send_followup's default per-step silence thresholds (hours) — mirrors
+// send_followup._STEP_THRESHOLDS_H {1:26, 2:64, 3:256}. Shown when the rule has
+// no payload.step_hours override yet.
+const FOLLOWUP_DEFAULT_STEP_HOURS = [26, 64, 256];
+// Follow-up sweep cadence — how often the rule checks for due nudges (V1 ran the
+// followup pass every 45 min). The per-fan silence thresholds above gate sends.
+const FOLLOWUP_DEFAULT_EVERY_S = 45 * 60;
+
+const SLOT_LABEL: Record<string, string> = {
+  morning_1: "Morning (early)",
+  morning_2: "Morning (late)",
+  afternoon_1: "Afternoon (early)",
+  afternoon_2: "Afternoon (late)",
+  evening: "Evening",
+  night: "Night",
+};
+
+const textareaCls =
+  "w-full rounded-lg bg-bg-elev-1 border border-border text-sm px-2 py-1.5 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40";
+const selectCls =
+  "w-full rounded-lg bg-bg-elev-1 border border-border text-sm px-2 py-1.5 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40";
+
+export default function BrainPanel() {
+  const accounts = useActiveAccounts();
+  const [accountId, setAccountId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!accountId && accounts.length > 0) setAccountId(accounts[0].id);
+  }, [accounts, accountId]);
+
+  const cfgQ = useAccountConfig(accountId);
+  const saveM = useSaveAccountConfig(accountId);
+
+  const [form, setForm] = useState<BrainConfig | null>(null);
+  const [mediaCache, setMediaCache] = useState<Record<number, VaultMedia>>({});
+  const [pickerSlot, setPickerSlot] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  // ── Welcome AUTOMATION (the send_welcome rule), surfaced here in the Brain
+  // now that its settings live here too. Find-or-create one rule per account. ──
+  const rulesQ = useAutomationRules(accountId);
+  const welcomeRule =
+    rulesQ.data?.find((r) => r.kind === "send_welcome") ?? null;
+  const createRule = useCreateRule(accountId);
+  const updateRule = useUpdateRule(accountId);
+  const previewM = useAutomationPreview();
+
+  const [welcomeEnabled, setWelcomeEnabled] = useState(false);
+  const [welcomeMinutes, setWelcomeMinutes] = useState(WELCOME_DEFAULT_EVERY_S / 60);
+  const [welcomeMsg, setWelcomeMsg] = useState<string | null>(null);
+  const [previewFan, setPreviewFan] = useState("");
+  const [preview, setPreview] = useState<AutomationPreviewResult | null>(null);
+
+  // ── Follow-ups AUTOMATION (the send_followup rule) — the 3 step-delay hours
+  // live on the rule's payload.step_hours; we find-or-create one rule per account. ──
+  const followupRule =
+    rulesQ.data?.find((r) => r.kind === "send_followup") ?? null;
+  const followupPreviewM = useAutomationPreview();
+  const [stepHours, setStepHours] = useState<number[]>(FOLLOWUP_DEFAULT_STEP_HOURS);
+  const [followupEnabled, setFollowupEnabled] = useState(false);
+  const [followupMinutes, setFollowupMinutes] = useState(FOLLOWUP_DEFAULT_EVERY_S / 60);
+  const [followupWithImage, setFollowupWithImage] = useState(true);
+  const [followupMsg, setFollowupMsg] = useState<string | null>(null);
+  const [followupPreviewFan, setFollowupPreviewFan] = useState("");
+  const [followupPreview, setFollowupPreview] = useState<AutomationPreviewResult | null>(null);
+
+  // Reset on account switch, then seed once the config arrives (don't clobber
+  // in-flight edits: only seed while the form is empty).
+  useEffect(() => {
+    setForm(null);
+    setMsg(null);
+    setWelcomeMsg(null);
+    setPreview(null);
+    setPreviewFan("");
+    setFollowupMsg(null);
+    setFollowupPreview(null);
+    setFollowupPreviewFan("");
+  }, [accountId]);
+  // Seed the welcome toggle/cadence from the existing rule (or the defaults when
+  // no rule exists yet). Keyed on the rule's identity so a later poll doesn't
+  // stomp an in-flight edit between saves.
+  useEffect(() => {
+    if (welcomeRule) {
+      setWelcomeEnabled(welcomeRule.is_enabled);
+      setWelcomeMinutes(
+        Math.max(1, Math.round((welcomeRule.every_seconds ?? WELCOME_DEFAULT_EVERY_S) / 60)),
+      );
+    } else {
+      setWelcomeEnabled(false);
+      setWelcomeMinutes(WELCOME_DEFAULT_EVERY_S / 60);
+    }
+  }, [welcomeRule?.id, welcomeRule?.is_enabled, welcomeRule?.every_seconds]);
+  // Seed the step-delay hours + enable/cadence/with_image from the rule (defaults
+  // when no rule exists yet). Keyed on rule identity so a poll won't stomp edits.
+  useEffect(() => {
+    const sh = followupRule?.payload?.step_hours;
+    if (Array.isArray(sh) && sh.length === 3 && sh.every((n) => typeof n === "number")) {
+      setStepHours(sh as number[]);
+    } else {
+      setStepHours(FOLLOWUP_DEFAULT_STEP_HOURS);
+    }
+    if (followupRule) {
+      setFollowupEnabled(followupRule.is_enabled);
+      setFollowupMinutes(
+        Math.max(1, Math.round((followupRule.every_seconds ?? FOLLOWUP_DEFAULT_EVERY_S) / 60)),
+      );
+      setFollowupWithImage(followupRule.payload?.with_image !== false);
+    } else {
+      setFollowupEnabled(false);
+      setFollowupMinutes(FOLLOWUP_DEFAULT_EVERY_S / 60);
+      setFollowupWithImage(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followupRule?.id, followupRule?.is_enabled, followupRule?.every_seconds, JSON.stringify(followupRule?.payload)]);
+  useEffect(() => {
+    if (form === null && cfgQ.data) setForm(cfgQ.data.config);
+  }, [cfgQ.data, form]);
+
+  const slots = cfgQ.data?.slots ?? [];
+  const modelOptions = cfgQ.data?.model_options ?? [];
+  const purposes = cfgQ.data?.purposes ?? [];
+
+  function set<K extends keyof BrainConfig>(key: K, val: BrainConfig[K]) {
+    setForm((f) => (f ? { ...f, [key]: val } : f));
+    setMsg(null);
+  }
+  function setActivity(slot: string, text: string) {
+    setForm((f) => (f ? { ...f, time_activities: { ...f.time_activities, [slot]: text } } : f));
+    setMsg(null);
+  }
+  function setImage(slot: string, mediaId: number | undefined) {
+    setForm((f) => {
+      if (!f) return f;
+      const next = { ...f.time_images };
+      if (mediaId === undefined) delete next[slot];
+      else next[slot] = mediaId;
+      return { ...f, time_images: next };
+    });
+    setMsg(null);
+  }
+  function setPurposeModel(purpose: string, model: string) {
+    setForm((f) => {
+      if (!f) return f;
+      const next = { ...f.model_by_purpose };
+      if (!model) delete next[purpose];
+      else next[purpose] = model;
+      return { ...f, model_by_purpose: next };
+    });
+    setMsg(null);
+  }
+
+  async function save() {
+    if (!form) return;
+    setMsg(null);
+    try {
+      const res = await saveM.mutateAsync(form);
+      setForm(res.config); // reflect server-side normalisation
+      setMsg("Saved.");
+    } catch (e) {
+      setMsg((e as Error)?.message || "Save failed");
+    }
+  }
+
+  // Find-or-create the account's send_welcome rule with the chosen enable +
+  // cadence. The per-run knobs (limit, image, etc.) keep their defaults — the
+  // Brain only owns the on/off + cadence here; richer knobs stay in the rules UI.
+  async function saveWelcome() {
+    if (!accountId) return;
+    setWelcomeMsg(null);
+    const every_seconds = Math.max(60, Math.round(welcomeMinutes * 60));
+    try {
+      if (welcomeRule) {
+        await updateRule.mutateAsync({
+          id: welcomeRule.id,
+          every_seconds,
+          is_enabled: welcomeEnabled,
+        });
+      } else {
+        await createRule.mutateAsync({
+          account_id: accountId,
+          kind: "send_welcome",
+          name: "Welcome new subscribers",
+          every_seconds,
+          is_enabled: welcomeEnabled,
+        });
+      }
+      setWelcomeMsg("Saved.");
+    } catch (e) {
+      setWelcomeMsg((e as Error)?.message || "Save failed");
+    }
+  }
+
+  async function runWelcomePreview() {
+    if (!accountId) return;
+    setWelcomeMsg(null);
+    try {
+      const res = await previewM.mutateAsync({
+        account_id: accountId,
+        kind: "send_welcome",
+        fan_id: previewFan.trim() ? Number(previewFan.trim()) : null,
+      });
+      setPreview(res);
+    } catch (e) {
+      setWelcomeMsg(`Preview failed: ${(e as Error)?.message || "unknown"}`);
+    }
+  }
+
+  const welcomeSaving = createRule.isPending || updateRule.isPending;
+
+  // Find-or-create the account's send_followup rule, writing the 3 step-delay
+  // hours onto its payload.step_hours (merged over any existing payload knobs).
+  async function saveFollowup() {
+    if (!accountId) return;
+    setFollowupMsg(null);
+    const step_hours = stepHours.map((h) => Math.max(1, Math.round(h)));
+    const every_seconds = Math.max(60, Math.round(followupMinutes * 60));
+    try {
+      if (followupRule) {
+        await updateRule.mutateAsync({
+          id: followupRule.id,
+          every_seconds,
+          is_enabled: followupEnabled,
+          payload: { ...followupRule.payload, step_hours, with_image: followupWithImage },
+        });
+      } else {
+        await createRule.mutateAsync({
+          account_id: accountId,
+          kind: "send_followup",
+          name: "Follow up quiet fans",
+          every_seconds,
+          payload: { step_hours, with_image: followupWithImage },
+          is_enabled: followupEnabled,
+        });
+      }
+      setFollowupMsg("Saved.");
+    } catch (e) {
+      setFollowupMsg((e as Error)?.message || "Save failed");
+    }
+  }
+
+  async function runFollowupPreview() {
+    if (!accountId) return;
+    setFollowupMsg(null);
+    try {
+      const res = await followupPreviewM.mutateAsync({
+        account_id: accountId,
+        kind: "send_followup",
+        fan_id: followupPreviewFan.trim() ? Number(followupPreviewFan.trim()) : null,
+      });
+      setFollowupPreview(res);
+    } catch (e) {
+      setFollowupMsg(`Preview failed: ${(e as Error)?.message || "unknown"}`);
+    }
+  }
+
+  const followupSaving = createRule.isPending || updateRule.isPending;
+  const STEP_LABELS = ["1st nudge after", "2nd nudge after", "3rd nudge after"];
+
+  return (
+    <Card className="p-4 space-y-3">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-sm font-medium text-fg">Brain</h2>
+          <p className="text-xs text-fg-dim">
+            The voice + caps this model speaks with — persona, time-of-day lines &amp;
+            images, location, spend cap, and LLM model. Used by gen_info, welcome,
+            follow-up and AI chat.
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="primary"
+          onClick={save}
+          disabled={!form || saveM.isPending}
+        >
+          {saveM.isPending ? "Saving…" : "Save brain"}
+        </Button>
+      </header>
+
+      {/* Account picker */}
+      {accounts.length > 1 && (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[10px] uppercase tracking-wide text-fg-dim mr-1">Account</span>
+          {accounts.map((a) => {
+            const active = accountId === a.id;
+            return (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => setAccountId(a.id)}
+                className={cn(
+                  "px-2.5 py-1 rounded-full text-xs border transition-colors",
+                  active
+                    ? "bg-accent text-white border-accent"
+                    : "bg-bg-elev-1 text-fg-dim border-border hover:text-fg hover:border-fg-dim",
+                )}
+              >
+                {a.nickname || a.id}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {cfgQ.isLoading || !form ? (
+        <div className="text-sm text-fg-dim py-2">Loading…</div>
+      ) : (
+        <div className="space-y-4">
+          {/* Persona + welcome rules */}
+          <label className="block space-y-1">
+            <span className="text-[11px] uppercase tracking-wide text-fg-dim">Persona</span>
+            <textarea
+              rows={4}
+              value={form.persona ?? ""}
+              onChange={(e) => set("persona", e.target.value)}
+              placeholder="Who this model is — name, vibe, how she talks…"
+              className={textareaCls}
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-[11px] uppercase tracking-wide text-fg-dim">Welcome rules</span>
+            <textarea
+              rows={3}
+              value={form.welcome_rules ?? ""}
+              onChange={(e) => set("welcome_rules", e.target.value)}
+              placeholder="Extra do/don'ts for welcomes…"
+              className={textareaCls}
+            />
+          </label>
+
+          {/* Location / offset / cap */}
+          <div className="grid gap-3 sm:grid-cols-3">
+            <label className="block space-y-1">
+              <span className="text-[11px] uppercase tracking-wide text-fg-dim">Location</span>
+              <Input
+                value={form.location ?? ""}
+                onChange={(e) => set("location", e.target.value)}
+                placeholder="e.g. Vancouver Island"
+              />
+            </label>
+            <label className="block space-y-1">
+              <span className="text-[11px] uppercase tracking-wide text-fg-dim">UTC offset (h)</span>
+              <Input
+                type="number"
+                min={-24}
+                max={24}
+                value={String(form.utc_offset)}
+                onChange={(e) => set("utc_offset", Number(e.target.value) || 0)}
+              />
+            </label>
+            <label className="block space-y-1">
+              <span className="text-[11px] uppercase tracking-wide text-fg-dim">Daily cap (¢)</span>
+              <Input
+                type="number"
+                min={0}
+                value={String(form.daily_cost_cap_cents)}
+                onChange={(e) => set("daily_cost_cap_cents", Math.max(0, Number(e.target.value) || 0))}
+              />
+            </label>
+          </div>
+
+          {/* Model + per-purpose overrides */}
+          <div className="space-y-2 border-t border-border pt-3">
+            <span className="text-[11px] uppercase tracking-wide text-fg-dim">Model</span>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <label className="block space-y-1">
+                <span className="text-[11px] text-fg-dim">Default (all purposes)</span>
+                <select
+                  value={form.model ?? ""}
+                  onChange={(e) => set("model", e.target.value || null)}
+                  className={selectCls}
+                >
+                  <option value="">— system default —</option>
+                  {modelOptions.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </label>
+              {purposes.map((p) => (
+                <label key={p} className="block space-y-1">
+                  <span className="text-[11px] text-fg-dim">{p}</span>
+                  <select
+                    value={form.model_by_purpose[p] ?? ""}
+                    onChange={(e) => setPurposeModel(p, e.target.value)}
+                    className={selectCls}
+                  >
+                    <option value="">inherit default</option>
+                    {modelOptions.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Time-of-day activities + images */}
+          <div className="space-y-2 border-t border-border pt-3">
+            <span className="text-[11px] uppercase tracking-wide text-fg-dim">
+              Time-of-day lines &amp; images
+            </span>
+            <p className="text-[11px] text-fg-dim">
+              The “it’s {`{weekday} {tod}`} here, I’m {`{activity}`}” line + the image
+              welcome/follow-up attach for each slot.
+            </p>
+            <div className="space-y-2">
+              {slots.map((slot) => {
+                const imgId = form.time_images[slot];
+                return (
+                  <div key={slot} className="flex items-start gap-2">
+                    <div className="w-28 shrink-0 pt-1.5 text-[11px] text-fg-dim">
+                      {SLOT_LABEL[slot] ?? slot}
+                    </div>
+                    <Input
+                      value={form.time_activities[slot] ?? ""}
+                      onChange={(e) => setActivity(slot, e.target.value)}
+                      placeholder="what she's doing…"
+                      className="flex-1"
+                    />
+                    <SlotImage
+                      id={imgId}
+                      media={imgId ? mediaCache[imgId] : undefined}
+                      accountId={accountId}
+                      onPick={() => setPickerSlot(slot)}
+                      onClear={() => setImage(slot, undefined)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Welcome automation — enable + cadence + live preview */}
+          <div className="space-y-2 border-t border-border pt-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] uppercase tracking-wide text-fg-dim">Welcome</span>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={saveWelcome}
+                disabled={welcomeSaving || !accountId}
+              >
+                {welcomeSaving ? "Saving…" : welcomeRule ? "Save welcome" : "Enable welcome"}
+              </Button>
+            </div>
+            <p className="text-[11px] text-fg-dim">
+              Auto-message every new subscriber, using the persona, welcome rules &amp;
+              time-of-day lines/images above.
+            </p>
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="flex items-center gap-2 text-sm text-fg">
+                <input
+                  type="checkbox"
+                  checked={welcomeEnabled}
+                  onChange={(e) => {
+                    setWelcomeEnabled(e.target.checked);
+                    setWelcomeMsg(null);
+                  }}
+                  className="accent-accent"
+                />
+                Enabled
+              </label>
+              <label className="flex items-center gap-1.5">
+                <span className="text-[11px] text-fg-dim">Check every</span>
+                <Input
+                  type="number"
+                  min={1}
+                  value={String(welcomeMinutes)}
+                  onChange={(e) => {
+                    setWelcomeMinutes(Math.max(1, Number(e.target.value) || 1));
+                    setWelcomeMsg(null);
+                  }}
+                  className="w-20"
+                />
+                <span className="text-[11px] text-fg-dim">min</span>
+              </label>
+            </div>
+
+            {/* Live preview — composes the welcome text + image WITHOUT sending */}
+            <div className="flex flex-wrap items-end gap-2 pt-1">
+              <label className="flex items-center gap-1.5">
+                <span className="text-[11px] text-fg-dim">Preview for fan id</span>
+                <Input
+                  value={previewFan}
+                  onChange={(e) => setPreviewFan(e.target.value)}
+                  placeholder="optional"
+                  className="w-32"
+                />
+              </label>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={runWelcomePreview}
+                disabled={previewM.isPending || !accountId}
+              >
+                {previewM.isPending ? "Composing…" : "Preview"}
+              </Button>
+            </div>
+            {preview && (
+              <div className="flex items-start gap-2 rounded-lg border border-border bg-bg-elev-1 p-2">
+                {preview.image ? (
+                  <PreviewThumb
+                    id={preview.image}
+                    media={mediaCache[preview.image]}
+                    accountId={accountId}
+                  />
+                ) : null}
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="text-[10px] uppercase tracking-wide text-fg-dim">
+                    Greeting “{preview.name}” · {preview.slot}
+                    {preview.image ? "" : " · no image"}
+                  </div>
+                  <p className="whitespace-pre-wrap text-sm text-fg">{preview.text}</p>
+                </div>
+              </div>
+            )}
+            {welcomeMsg && (
+              <div className={cn("text-xs", welcomeMsg === "Saved." ? "text-ok" : "text-err")}>
+                {welcomeMsg}
+              </div>
+            )}
+          </div>
+
+          {/* Follow-ups automation — the 3 step-delay hours + live preview */}
+          <div className="space-y-2 border-t border-border pt-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] uppercase tracking-wide text-fg-dim">Follow-ups</span>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={saveFollowup}
+                disabled={followupSaving || !accountId}
+              >
+                {followupSaving ? "Saving…" : "Save follow-ups"}
+              </Button>
+            </div>
+            <p className="text-[11px] text-fg-dim">
+              How long a fan stays quiet before each re-engagement nudge. Up to three,
+              each escalating in warmth. Enable + cadence are owned here — turn it on
+              and Save to start it.
+            </p>
+
+            {/* Enable + cadence + image — fully start follow-ups from here. */}
+            <div className="flex flex-wrap items-center gap-4">
+              <label className="flex items-center gap-1.5 text-sm">
+                <input
+                  type="checkbox"
+                  checked={followupEnabled}
+                  onChange={(e) => { setFollowupEnabled(e.target.checked); setFollowupMsg(null); }}
+                  className="accent-accent"
+                />
+                Enabled
+              </label>
+              <label className="flex items-center gap-1.5">
+                <span className="text-[11px] text-fg-dim">Check every</span>
+                <Input
+                  type="number"
+                  min={1}
+                  value={String(followupMinutes)}
+                  onChange={(e) => { setFollowupMinutes(Math.max(1, Number(e.target.value) || 1)); setFollowupMsg(null); }}
+                  className="w-20"
+                />
+                <span className="text-[11px] text-fg-dim">min</span>
+              </label>
+              <label className="flex items-center gap-1.5 text-sm">
+                <input
+                  type="checkbox"
+                  checked={followupWithImage}
+                  onChange={(e) => { setFollowupWithImage(e.target.checked); setFollowupMsg(null); }}
+                  className="accent-accent"
+                />
+                Attach image
+              </label>
+            </div>
+            {followupWithImage && (
+              <p className="text-[10px] text-fg-dim">
+                Uses the <span className="text-fg">time-of-day images set above</span> (the
+                per-slot pictures, shared with welcome). Set a picture for each slot up top —
+                the nudge attaches the one matching the fan&apos;s local time. Slots left
+                blank send text only.
+              </p>
+            )}
+
+            <div className="flex flex-wrap gap-3">
+              {stepHours.map((h, i) => (
+                <label key={i} className="flex items-center gap-1.5">
+                  <span className="text-[11px] text-fg-dim">{STEP_LABELS[i]}</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={String(h)}
+                    onChange={(e) => {
+                      const v = Math.max(1, Number(e.target.value) || 1);
+                      setStepHours((prev) => prev.map((x, j) => (j === i ? v : x)));
+                      setFollowupMsg(null);
+                    }}
+                    className="w-20"
+                  />
+                  <span className="text-[11px] text-fg-dim">h</span>
+                </label>
+              ))}
+            </div>
+
+            {/* Live preview — composes the nudge text + image WITHOUT sending */}
+            <div className="flex flex-wrap items-end gap-2 pt-1">
+              <label className="flex items-center gap-1.5">
+                <span className="text-[11px] text-fg-dim">Preview for fan id</span>
+                <Input
+                  value={followupPreviewFan}
+                  onChange={(e) => setFollowupPreviewFan(e.target.value)}
+                  placeholder="optional"
+                  className="w-32"
+                />
+              </label>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={runFollowupPreview}
+                disabled={followupPreviewM.isPending || !accountId}
+              >
+                {followupPreviewM.isPending ? "Composing…" : "Preview"}
+              </Button>
+            </div>
+            {followupPreview && (
+              <div className="flex items-start gap-2 rounded-lg border border-border bg-bg-elev-1 p-2">
+                {followupPreview.image ? (
+                  <PreviewThumb
+                    id={followupPreview.image}
+                    media={mediaCache[followupPreview.image]}
+                    accountId={accountId}
+                  />
+                ) : null}
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="text-[10px] uppercase tracking-wide text-fg-dim">
+                    Nudge to “{followupPreview.name}” · step {followupPreview.step ?? 1} · {followupPreview.slot}
+                    {followupPreview.image ? "" : " · no image"}
+                  </div>
+                  <p className="whitespace-pre-wrap text-sm text-fg">{followupPreview.text}</p>
+                </div>
+              </div>
+            )}
+            {followupMsg && (
+              <div className={cn("text-xs", followupMsg === "Saved." ? "text-ok" : "text-err")}>
+                {followupMsg}
+              </div>
+            )}
+          </div>
+
+          {cfgQ.isError && (
+            <div className="text-xs text-err">
+              {(cfgQ.error as Error)?.message || "Failed to load brain"}
+            </div>
+          )}
+          {msg && (
+            <div className={cn("text-xs", msg === "Saved." ? "text-ok" : "text-err")}>{msg}</div>
+          )}
+        </div>
+      )}
+
+      {pickerSlot && accountId && (
+        <VaultPicker
+          open
+          onClose={() => setPickerSlot(null)}
+          accountId={accountId}
+          fanId={null}
+          initialSelectedIds={form?.time_images[pickerSlot] ? [form.time_images[pickerSlot]] : []}
+          onConfirm={(picked) => {
+            const m = picked[0];
+            if (m) {
+              setMediaCache((prev) => ({ ...prev, [m.id]: m }));
+              setImage(pickerSlot, m.id);
+            }
+            setPickerSlot(null);
+          }}
+        />
+      )}
+    </Card>
+  );
+}
+
+function SlotImage({
+  id,
+  media,
+  accountId,
+  onPick,
+  onClear,
+}: {
+  id: number | undefined;
+  media: VaultMedia | undefined;
+  accountId: string | null;
+  onPick: () => void;
+  onClear: () => void;
+}) {
+  const thumb = media?.files?.thumb?.url || media?.files?.squarePreview?.url || media?.files?.preview?.url || "";
+  const url = thumb ? proxyImage(thumb, accountId) : "";
+  return (
+    <div className="flex items-center gap-1 shrink-0">
+      {id ? (
+        <>
+          <button
+            type="button"
+            onClick={onPick}
+            title="Change image"
+            className="w-9 h-9 rounded-md border border-border overflow-hidden bg-bg-elev-1 flex items-center justify-center text-[9px] text-fg-dim"
+          >
+            {url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={url} alt="" className="w-full h-full object-cover" />
+            ) : (
+              `#${id}`
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={onClear}
+            title="Remove image"
+            className="text-fg-dim hover:text-err text-xs"
+          >
+            ✕
+          </button>
+        </>
+      ) : (
+        <Button size="sm" variant="ghost" onClick={onPick}>
+          + Image
+        </Button>
+      )}
+    </div>
+  );
+}
+
+// Read-only thumbnail for the welcome preview — shows the chosen image, falling
+// back to its id badge when we don't have the VaultMedia cached (the preview
+// returns only the id; the slot editor populates mediaCache on pick).
+function PreviewThumb({
+  id,
+  media,
+  accountId,
+}: {
+  id: number;
+  media: VaultMedia | undefined;
+  accountId: string | null;
+}) {
+  const thumb =
+    media?.files?.thumb?.url || media?.files?.squarePreview?.url || media?.files?.preview?.url || "";
+  const url = thumb ? proxyImage(thumb, accountId) : "";
+  return (
+    <div className="w-12 h-12 shrink-0 rounded-md border border-border overflow-hidden bg-bg-elev-2 flex items-center justify-center text-[9px] text-fg-dim">
+      {url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={url} alt="" className="w-full h-full object-cover" />
+      ) : (
+        `#${id}`
+      )}
+    </div>
+  );
+}

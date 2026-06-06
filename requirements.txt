@@ -1,0 +1,40 @@
+# Runtime deps for the relay (Docker). Pinned to the versions that this
+# project was developed against — bump deliberately.
+#
+# Capture-only deps (Playwright, Incogniton automation, Pillow for image
+# hashing during upload tests) are intentionally NOT here. They live on the
+# host where the browser does, and the Docker container only ever runs the
+# server / paste-curl bootstrap / WebSocket pump.
+
+fastapi==0.136.1
+uvicorn[standard]==0.47.0
+curl_cffi==0.15.0
+pydantic==2.13.4
+python-multipart==0.0.29
+websockets==16.0
+# DB layer (phase A) — SQLAlchemy 2.x async + SQLModel for typed rows + Alembic
+# for versioned migrations. aiosqlite is the async SQLite driver; swap to
+# asyncpg if/when DATABASE_URL points at Postgres.
+sqlalchemy[asyncio]==2.0.35
+sqlmodel==0.0.22
+alembic==1.13.3
+aiosqlite==0.20.0
+python-dotenv==1.0.1
+# Backend the websockets lib uses for HTTP-CONNECT + SOCKS5 proxy tunneling.
+# We route the OF realtime WS through the same per-account proxy as REST,
+# so the egress IP matches; without python-socks, websockets would fall back
+# to a direct TCP connect even when proxy=... is passed (silent leak).
+python-socks==2.5.1
+# Optional: drops anti-bot / captcha frequency on capture by patching
+# navigator.webdriver, plugins, WebGL vendor strings, etc. before any page
+# script runs. Only used by the capture sidecar / local playwright-proxy
+# flow — the slim relay image still doesn't import it.
+playwright-stealth==2.0.3
+# Google Sheets export (automation A04 push_to_sheets). Reads fan_profiles +
+# transactions and writes them to a Google Sheet via the Sheets v4 API. Creds
+# are supplied at runtime via credentials.json / token.json (gitignored), never
+# baked into the image — see service/automations/push_to_sheets.py.
+google-api-python-client==2.197.0
+google-auth==2.53.0
+google-auth-oauthlib==1.4.0
+google-auth-httplib2==0.4.0

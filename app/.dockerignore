@@ -1,0 +1,8 @@
+node_modules
+.next
+.turbo
+.git
+*.log
+Dockerfile
+.dockerignore
+.env*.local

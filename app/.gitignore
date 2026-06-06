@@ -1,0 +1,24 @@
+# Next / build artifacts
+.next/
+out/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+.yarn/install-state.gz
+
+# Local env
+.env*.local
+.env
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+*.log

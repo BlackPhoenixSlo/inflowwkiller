@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OF RELAY · dashboard</title>
+  <style>
+    :root {
+      --bg: #0e1117;
+      --bg-elev: #161b22;
+      --bg-elev-2: #1f242c;
+      --border: #2a2f37;
+      --fg: #e6edf3;
+      --fg-dim: #8b949e;
+      --accent: #ff1cf7;
+      --accent-2: #00bbff;
+      --ok: #2ea043;
+      --warn: #d29922;
+      --err: #f85149;
+      --radius: 10px;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      grid-template-columns: 64px 1fr;
+      grid-template-areas: "header header" "nav views";
+      overflow: hidden;
+    }
+    header {
+      grid-area: header;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elev);
+      display: flex; align-items: center; gap: 10px;
+    }
+    header h1 {
+      font-size: 14px; margin: 0; color: var(--accent);
+      letter-spacing: 0.5px; font-weight: 700;
+    }
+    .pill {
+      padding: 3px 9px; border-radius: 999px; font-size: 11px;
+      background: var(--bg-elev-2); border: 1px solid var(--border);
+    }
+    .pill.ok  { color: var(--ok);  border-color: rgba(46,160,67,.4); }
+    .pill.err { color: var(--err); border-color: rgba(248,81,73,.4); }
+    .pill.warn{ color: var(--warn);border-color: rgba(210,153,34,.4); }
+    .grow { flex: 1; }
+    a { color: var(--accent-2); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* Left nav strip */
+    #nav-strip {
+      grid-area: nav;
+      background: var(--bg-elev);
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      padding: 8px 4px; gap: 4px;
+    }
+    #nav-strip a {
+      display: flex; flex-direction: column; align-items: center;
+      gap: 2px;
+      padding: 8px 0; border-radius: 8px;
+      color: var(--fg-dim); cursor: pointer; text-decoration: none;
+      font-size: 9px;
+    }
+    #nav-strip a .icon { font-size: 18px; line-height: 1; }
+    #nav-strip a:hover { background: var(--bg-elev-2); color: var(--fg); text-decoration: none; }
+    #nav-strip a.active {
+      background: rgba(255,28,247,.10); color: var(--accent);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+    #nav-strip a { position: relative; }
+    .nav-badge {
+      position: absolute; top: 4px; right: 8px;
+      background: var(--accent); color: #000; font-weight: 700;
+      border-radius: 10px; padding: 0 5px; font-size: 9px; line-height: 14px;
+    }
+    /* Inline tabs used by Statements + Collections */
+    .tabs {
+      display: flex; gap: 4px; padding: 0 20px 0 20px;
+      border-bottom: 1px solid var(--border); background: var(--bg-elev);
+    }
+    .tabs button {
+      background: transparent; color: var(--fg-dim); border: none;
+      padding: 8px 14px; cursor: pointer; font: inherit;
+      border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    .tabs button:hover { color: var(--fg); }
+    .tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* Views host */
+    #views { grid-area: views; min-height: 0; overflow: hidden; position: relative; }
+    .view { height: 100%; }
+    .view[hidden] { display: none !important; }
+
+    /* ── Chats view (sidebar + thread) ───────────────────────── */
+    .view-chats {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      height: 100%;
+    }
+    aside.chats-side {
+      border-right: 1px solid var(--border);
+      background: var(--bg-elev);
+      overflow-y: auto; min-height: 0;
+    }
+    .chats-toolbar {
+      padding: 10px 12px; display: flex; gap: 8px;
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; background: var(--bg-elev);
+    }
+    .chats-toolbar button {
+      background: var(--bg-elev-2); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 5px 10px; cursor: pointer; font-size: 12px;
+    }
+    .chats-toolbar button:hover { border-color: var(--accent); }
+    .chat-row {
+      padding: 10px 12px; border-bottom: 1px solid var(--border);
+      display: flex; gap: 10px; cursor: pointer;
+    }
+    .chat-row:hover { background: var(--bg-elev-2); }
+    .chat-row.active { background: rgba(255,28,247,.08); border-left: 3px solid var(--accent); padding-left: 9px; }
+    .avatar {
+      width: 36px; height: 36px; border-radius: 50%; flex: none;
+      background: var(--bg-elev-2); background-size: cover; background-position: center;
+      font-size: 14px; display: flex; align-items: center; justify-content: center;
+      color: var(--fg-dim);
+    }
+    .chat-meta { min-width: 0; flex: 1; }
+    .chat-meta .name { font-weight: 600; }
+    .chat-meta .last {
+      font-size: 12px; color: var(--fg-dim);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      max-width: 240px;
+    }
+    .badge {
+      background: var(--accent); color: #000; font-weight: 700;
+      border-radius: 10px; padding: 1px 7px; font-size: 11px;
+      align-self: center;
+    }
+
+    .chat-main {
+      display: grid; grid-template-rows: auto 1fr auto;
+      min-height: 0;
+    }
+    .convo-header {
+      padding: 10px 16px; border-bottom: 1px solid var(--border);
+      background: var(--bg-elev); display: flex; gap: 10px; align-items: center;
+    }
+    .messages {
+      overflow-y: auto; padding: 16px;
+      display: flex; flex-direction: column;
+    }
+    #msg-list { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+    .msg {
+      max-width: 75%; padding: 8px 12px; border-radius: var(--radius);
+      background: var(--bg-elev); border: 1px solid var(--border);
+      align-self: flex-start;
+    }
+    .msg.mine { align-self: flex-end; background: rgba(255,28,247,.10); border-color: rgba(255,28,247,.3); }
+    .msg .meta { font-size: 10px; color: var(--fg-dim); margin-top: 4px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .msg .text :is(p) { margin: 0; }
+    .msg .actions { display: inline-flex; gap: 4px; margin-left: auto; }
+    .msg .actions button {
+      background: transparent; color: var(--fg-dim); border: 1px solid var(--border);
+      border-radius: 6px; padding: 1px 6px; cursor: pointer; font-size: 10px;
+      transition: all 0.1s;
+    }
+    .msg .actions button:hover { color: var(--accent); border-color: var(--accent); }
+    .msg .actions button.on { color: var(--accent); border-color: var(--accent); background: rgba(255,28,247,.08); }
+    .msg .actions button:disabled { opacity: 0.5; cursor: wait; }
+    .stream-status { font-size: 11px; color: var(--fg-dim); text-align: center; padding: 6px; }
+    .load-older {
+      display: block; width: 100%; margin: 4px 0;
+      padding: 8px; border-radius: 8px; cursor: pointer;
+      background: var(--bg-elev-2); color: var(--fg); border: 1px solid var(--border);
+      font: inherit;
+    }
+    .load-older:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .load-older:disabled { opacity: 0.5; cursor: default; }
+
+    .send {
+      padding: 10px; border-top: 1px solid var(--border); background: var(--bg-elev);
+      display: flex; gap: 8px;
+    }
+    .send textarea {
+      flex: 1; min-height: 36px; max-height: 120px; resize: vertical;
+      padding: 8px 10px; border-radius: 8px;
+      background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      font: inherit;
+    }
+    .send button {
+      padding: 0 14px; border-radius: 8px; border: none; cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), #aa00ff);
+      color: #fff; font-weight: 700;
+    }
+    .send button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .empty { color: var(--fg-dim); text-align: center; padding: 40px; }
+
+    /* ── Generic page chrome (vault/posts/fans/etc) ──────────── */
+    .page {
+      height: 100%;
+      display: grid; grid-template-rows: auto 1fr;
+      min-height: 0;
+    }
+    .page-header {
+      padding: 12px 20px; border-bottom: 1px solid var(--border);
+      background: var(--bg-elev); display: flex; gap: 12px; align-items: center;
+    }
+    .page-header h2 { margin: 0; font-size: 16px; }
+    .page-body { overflow-y: auto; padding: 16px 20px; }
+    .toolbar-btn {
+      background: var(--bg-elev-2); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 5px 10px; cursor: pointer; font-size: 12px;
+    }
+    .toolbar-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .toolbar-btn.on { border-color: var(--accent); color: var(--accent); background: rgba(255,28,247,.08); }
+    select.toolbar-btn { font: inherit; }
+
+    /* Cards / grids / tables shared */
+    .grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      background: var(--bg-elev); border: 1px solid var(--border);
+      border-radius: var(--radius); overflow: hidden;
+    }
+    .thumb {
+      aspect-ratio: 1 / 1; background: var(--bg-elev-2);
+      background-size: cover; background-position: center;
+      position: relative;
+    }
+    .thumb-overlay {
+      position: absolute; right: 6px; top: 6px;
+      background: rgba(0,0,0,.7); color: #fff; padding: 2px 6px;
+      border-radius: 6px; font-size: 10px;
+    }
+    .card-body { padding: 8px 10px; font-size: 11px; color: var(--fg-dim); }
+
+    table.data {
+      width: 100%; border-collapse: collapse;
+    }
+    table.data th, table.data td {
+      padding: 8px 10px; border-bottom: 1px solid var(--border);
+      text-align: left;
+    }
+    table.data th { font-size: 11px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+    table.data tr:hover td { background: var(--bg-elev); }
+    table.data .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+    .stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .stat-card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+    .stat-card .label { color: var(--fg-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-card .value { font-size: 22px; font-weight: 700; color: var(--accent); margin-top: 4px; }
+
+    .post-row, .list-row {
+      display: flex; gap: 12px; padding: 10px; background: var(--bg-elev);
+      border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px;
+    }
+    .post-row .thumb-sm {
+      width: 60px; height: 60px; flex: none; border-radius: 8px;
+      background: var(--bg-elev-2); background-size: cover; background-position: center;
+    }
+    .post-row .meta-line { font-size: 11px; color: var(--fg-dim); margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>OF RELAY</h1>
+    <span id="account-switcher" class="pill account-pill" title="active account — click to switch">
+      <span id="account-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#666;margin-right:6px;vertical-align:middle"></span>
+      <span id="account-label">—</span>
+      <span style="opacity:.6;margin-left:6px">▾</span>
+      <div id="account-menu" style="display:none;position:absolute;top:36px;left:0;background:var(--bg-elev-1);border:1px solid var(--border);border-radius:6px;min-width:240px;z-index:1000;box-shadow:0 8px 24px rgba(0,0,0,.4);padding:6px 0">
+        <div id="account-menu-list"></div>
+        <div style="border-top:1px solid var(--border);margin:4px 0"></div>
+        <a href="#" data-account-action="manage" style="display:block;padding:8px 12px;color:var(--fg);font-size:12px">⚙ Manage accounts…</a>
+      </div>
+    </span>
+    <style>
+      .account-pill { position: relative; cursor: pointer; user-select: none; }
+      .account-pill:hover { background: var(--bg-elev-2); }
+      #account-menu {
+        background: #14151a;
+        border: 1px solid #2a2d36;
+        box-shadow: 0 12px 32px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.04) inset;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border-radius: 10px;
+        padding: 6px 0;
+        overflow: hidden;
+      }
+      #account-menu a { text-decoration: none; }
+      #account-menu .acc-row {
+        display:flex; align-items:center; padding:8px 14px; gap:10px;
+        cursor:pointer; font-size:12px; color: var(--fg);
+        transition: background .12s ease;
+      }
+      #account-menu .acc-row:hover { background: rgba(124,92,255,.12); }
+      #account-menu .acc-row.active { background: rgba(124,92,255,.08); }
+      #account-menu .acc-row .dot {
+        width:10px; height:10px; border-radius:50%; background:#666;
+        flex:0 0 auto; box-shadow: 0 0 0 2px rgba(255,255,255,.06);
+      }
+      #account-menu .acc-row .nick { flex:1; font-weight: 600; color: var(--fg); }
+      #account-menu .acc-row .uid { color: var(--fg-dim); font-size:10px; font-family: ui-monospace, monospace; }
+      #account-menu .acc-row.active .nick::after {
+        content: ' ●'; color: var(--ok); font-size: 10px;
+      }
+      #account-menu a[data-account-action="manage"] {
+        display:block; padding:8px 14px; color: var(--fg-dim);
+        font-size:11px; transition: color .12s, background .12s;
+      }
+      #account-menu a[data-account-action="manage"]:hover {
+        color: var(--accent); background: rgba(124,92,255,.10);
+      }
+
+      /* Folder picker (chat-sidebar) */
+      .folder-picker {
+        background: #14151a;
+        border: 1px solid #2a2d36;
+        box-shadow: 0 14px 36px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.04) inset;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border-radius: 10px;
+        min-width: 280px; max-width: 360px;
+        max-height: 60vh; overflow: auto;
+        z-index: 1000;
+        font-size: 12px;
+      }
+      .folder-picker-header {
+        padding: 10px 14px; font-weight: 600;
+        border-bottom: 1px solid #2a2d36; color: var(--fg);
+      }
+      .folder-picker-body { padding: 4px 0; }
+      .folder-picker-row {
+        display: flex; align-items: center; gap: 10px;
+        padding: 7px 14px; cursor: pointer;
+        transition: background .12s;
+      }
+      .folder-picker-row:hover { background: rgba(124,92,255,.10); }
+      .folder-picker-row input[type=checkbox] { accent-color: var(--accent); }
+      .folder-picker-name { flex: 1; color: var(--fg); }
+      .folder-picker-count { color: var(--fg-dim); font-size: 11px; }
+      .folder-picker-footer {
+        padding: 8px 14px; border-top: 1px solid #2a2d36;
+        text-align: right;
+      }
+    </style>
+    <span id="health-pill" class="pill warn">checking…</span>
+    <span id="stats-subs" class="pill" title="active subscribers (GET /subscriptions/count)"></span>
+    <span id="stats-unread" class="pill" title="unread chats (/chats?filter=unread)"></span>
+    <span id="stats-scheduled" class="pill" title="scheduled messages (/messages/queue)"></span>
+    <span class="grow"></span>
+    <span class="pill"><a href="/docs" target="_blank">API docs</a></span>
+  </header>
+
+  <!-- Rev-drift banner. Hidden by default. Populated by refreshRevDrift()
+       in app.js — surfaces when an account's stored x-of-rev no longer
+       matches the live OF build hash, meaning the captured signing rules
+       are stale and the user needs to re-capture (sign in again via the
+       Chatterly Login extension and paste the fresh curl). -->
+  <div id="drift-banner" style="display:none;background:#3b2d12;color:#f5c34a;border-bottom:1px solid #66501c;padding:10px 18px;font-size:13px;line-height:1.5;">
+    <strong>⚠ Session stale — re-capture required.</strong>
+    <span id="drift-banner-msg"></span>
+    <a href="#" data-view="setup" id="drift-banner-cta" style="color:#fff;text-decoration:underline;margin-left:8px;">Open Setup →</a>
+    <a href="#" id="drift-banner-dismiss" style="color:#f5c34a;text-decoration:underline;margin-left:8px;float:right;">dismiss</a>
+  </div>
+
+  <nav id="nav-strip">
+    <a data-view="home"><span class="icon">🏠</span>Home</a>
+    <a data-view="notifs"><span class="icon">🔔</span><span class="nav-badge" id="nav-notif-count" style="display:none"></span>Notifs</a>
+    <a data-view="chats" class="active"><span class="icon">💬</span>Messages</a>
+    <a data-view="collections"><span class="icon">📚</span>Lists</a>
+    <a data-view="posts"><span class="icon">📝</span>Posts</a>
+    <a data-view="vault"><span class="icon">🗄</span>Vault</a>
+    <a data-view="queue"><span class="icon">📅</span>Queue</a>
+    <a data-view="statements"><span class="icon">💰</span>Stats</a>
+    <a data-view="profile"><span class="icon">👤</span>Profile</a>
+    <a data-view="sandbox"><span class="icon">🧪</span>API</a>
+    <a data-view="realtime"><span class="icon">⚡</span>Events</a>
+    <a data-view="setup"><span class="icon">🔑</span>Setup</a>
+  </nav>
+
+  <div id="views">
+    <!-- CHATS (existing flow) -->
+    <section class="view view-chats" data-view="chats">
+      <aside class="chats-side">
+        <div class="chats-toolbar">
+          <button id="reload-chats" class="toolbar-btn">↻</button>
+          <input id="chat-search" placeholder="Search fans…" style="flex:1;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:5px 10px;font-size:12px;min-width:0">
+          <button id="hydrate-toggle" class="toolbar-btn" title="Resolve withUser.id → name/avatar">names: on</button>
+          <button id="mark-all-read" class="toolbar-btn" title="POST /chats/mark-as-read">✓✓</button>
+        </div>
+        <div id="chat-chips" style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border);overflow-x:auto;flex-wrap:nowrap;background:var(--bg-elev);position:sticky;top:36px;z-index:2"></div>
+        <div id="chats"></div>
+        <div id="chats-sentinel" style="padding:14px;text-align:center;font-size:11px;color:var(--fg-dim);display:none">loading more…</div>
+      </aside>
+      <style>
+        .chat-chip {
+          background: var(--bg-elev-2); color: var(--fg); border: 1px solid var(--border);
+          border-radius: 999px; padding: 4px 12px; font-size: 12px; white-space: nowrap;
+          cursor: pointer; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
+        }
+        .chat-chip:hover { border-color: var(--accent); }
+        .chat-chip.active {
+          background: rgba(124, 92, 255, .15); color: var(--accent);
+          border-color: var(--accent);
+        }
+        .chat-chip .chip-count {
+          background: #0EA5E9; color: #fff; font-weight: 700;
+          border-radius: 8px; padding: 0 5px; font-size: 10px; line-height: 16px; min-width: 16px;
+          display: inline-block; text-align: center;
+        }
+        .chat-chip.active .chip-count { background: var(--accent); color: #000; }
+        .chat-chip .chip-x { color: var(--fg-dim); margin-left: 4px; }
+        .chat-chip .chip-x:hover { color: var(--err); }
+      </style>
+      <main class="chat-main">
+        <div class="convo-header">
+          <div id="convo-title">Pick a chat ←</div>
+          <span class="grow"></span>
+          <span class="pill" id="msg-count"></span>
+          <button id="chat-act-markread"  class="toolbar-btn" title="Mark chat as read"  disabled>✓ read</button>
+          <button id="chat-act-markunrd"  class="toolbar-btn" title="Mark chat as unread" disabled>● unread</button>
+          <button id="chat-act-mute"      class="toolbar-btn" title="Mute notifications" disabled>🔕</button>
+          <button id="chat-act-hide"      class="toolbar-btn" title="Hide chat from inbox" disabled>👁</button>
+          <button id="chat-act-addlist"   class="toolbar-btn" title="Add this fan to a list" disabled>📋 +list</button>
+          <button id="chat-act-notenick"  class="toolbar-btn" title="Edit fan note + nickname" disabled>📝 note</button>
+        </div>
+        <div class="messages" id="messages">
+          <div class="stream-status" id="stream-status">No chat selected</div>
+          <div id="msg-list"></div>
+        </div>
+        <form class="send" id="send-form" autocomplete="off">
+          <button id="send-attach-btn" type="button" class="toolbar-btn" title="Attach media from vault" disabled>📎 vault</button>
+          <label id="send-upload-label" for="send-upload-input" class="toolbar-btn" style="cursor:pointer;opacity:.4;pointer-events:none" title="Upload from disk (works only for files already in OF vault — see Vault tab for first-time claims)">⬆ upload</label>
+          <input id="send-upload-input" type="file" style="display:none" accept="image/*,video/*,audio/*">
+          <input id="send-price" type="number" min="0" step="0.5" placeholder="$" style="width:60px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:6px;font:inherit" title="price (PPV); 0=free" disabled>
+          <textarea id="send-text" placeholder="Pick a chat first" disabled rows="1"></textarea>
+          <button id="send-btn" type="submit" disabled>Send</button>
+        </form>
+        <div id="send-attachments" style="display:none;padding:0 10px 8px;background:var(--bg-elev);border-top:1px dashed var(--border);font-size:11px;color:var(--fg-dim)"></div>
+      </main>
+    </section>
+
+    <!-- HOME (feed-ish — uses /init + on-this-day + my recent posts as a dashboard) -->
+    <section class="view" data-view="home" hidden>
+      <div class="page">
+        <div class="page-header">
+          <h2>Home</h2>
+          <button id="home-reload" class="toolbar-btn">↻ Reload</button>
+          <span class="grow"></span>
+        </div>
+        <div class="page-body" id="home-body"></div>
+      </div>
+    </section>
+
+    <!-- NOTIFICATIONS -->
+    <section class="view" data-view="notifs" hidden>
+      <div class="page">
+        <div class="page-header">
+          <h2>Notifications</h2>
+          <span class="grow"></span>
+          <span class="pill" id="notifs-meta"></span>
+          <button id="notifs-reload" class="toolbar-btn">↻ Reload</button>
+        </div>
+        <div class="tabs" id="notifs-tabs"></div>
+        <div class="page-body" id="notifs-body"></div>
+      </div>
+    </section>
+
+    <!-- COLLECTIONS (unified: User Lists + Fans-by-state + Bookmarks + Post Labels) -->
+    <section class="view" data-view="collections" hidden>
+      <div class="page">
+        <div class="page-header">
+          <h2>Lists & Collections</h2>
+          <span class="grow"></span>
+          <span class="pill" id="coll-meta"></span>
+          <button id="coll-reload" class="toolbar-btn">↻ Reload</button>
+        </div>
+        <div class="tabs" id="coll-tabs">
+          <button class="on" data-tab="lists">User lists</button>
+          <button data-tab="fans">Fans by state</button>
+          <button data-tab="bookmarks">Bookmarks</button>
+          <button data-tab="labels">Post labels</button>
+        </div>
+        <div class="page-body" id="coll-body"></div>
+      </div>
+    </section>
+
+    <!-- POSTS -->
+    <section class="view" data-view="posts" hidden>
+      <div class="page">
+        <div class="page-header">
+          <h2>Posts</h2>
+          <button id="posts-reload" class="toolbar-btn">↻ Reload</button>
+          <span class="grow"></span>
+          <span class="pill" id="posts-meta"></span>
+        </div>
+        <div class="page-body" id="posts-body"></div>
+      </div>
+    </section>
+
+    <!-- VAULT -->
+    <section class="view" data-view="vault" hidden>
+      <div class="page">
+        <div class="page-header">
+          <h2>Vault</h2>
+          <select id="vault-filter" class="toolbar-btn">
+            <option value="all">all</option>
+            <option value="photo">photo</option>
+            <option value="video">video</option>
+            <option value="audio">audio</option>
+            <option value="gif">gif</option>
+          </select>
+          <button id="vault-reload" class="toolbar-btn">↻ Reload</button>
+          <span class="grow"></span>
+          <span class="pill" id="vault-meta"></span>
+        </div>
+        <div class="page-body">
+          <div class="grid" id="vault-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- QUEUE (scheduled) -->
+    <section class="view" data-view="queue" hidden>
+      <div class="page">
+        <div class="page-header">
+          <h2>Scheduled messages</h2>
+          <button id="queue-reload" class="toolbar-btn">↻ Reload</button>
+          <span class="grow"></span>
+          <span class="pill" id="queue-meta"></span>
+        </div>
+        <div class="page-body" id="queue-body"></div>
+      </div>
+    </section>
+
+    <!-- STATEMENTS (was Money) — 4 tabs matching OF: Earnings/Payouts/Stats/Promos -->
+    <section class="view" data-view="statements" hidden>
+      <div class="page">
+        <div class="page-header">
+          <h2>Statements</h2>
+          <span class="grow"></span>
+          <span class="pill" id="stmts-balance"></span>
+          <button id="stmts-reload" class="toolbar-btn">↻ Reload</button>
+        </div>
+        <div class="tabs" id="stmts-tabs">
+          <button class="on" data-tab="earnings">Earnings</button>
+          <button data-tab="payouts">Payout requests</button>
+          <button data-tab="stats">Earning statistics</button>
+          <button data-tab="promotions">Promotions & trials</button>
+        </div>
+        <div class="page-body" id="stmts-body"></div>
+      </div>
+    </section>
+
+    <!-- API SANDBOX (every endpoint testable from UI) -->
+    <section class="view" data-view="sandbox" hidden>
+      <div class="page">
+        <div class="page-header">
+          <h2>API Endpoints</h2>
+          <input id="sandbox-filter" placeholder="filter…" class="toolbar-btn" style="min-width:160px"/>
+          <span class="grow"></span>
+          <span class="pill" id="sandbox-count"></span>
+        </div>
+        <div class="page-body" id="sandbox-body" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;min-height:0;height:100%">
+          <div id="sandbox-list" style="overflow-y:auto;min-height:0;border-right:1px solid var(--border);padding-right:16px"></div>
+          <div id="sandbox-result" style="overflow:auto;min-height:0;font-family:ui-monospace,monospace;font-size:11px;background:var(--bg-elev);border:1px solid var(--border);border-radius:8px;padding:10px">
+            <div class="empty">click [Run] on an endpoint to test it</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- REALTIME / events -->
+    <section class="view" data-view="realtime" hidden>
+      <div class="page">
+        <div class="page-header">
+          <h2>Realtime events</h2>
+          <span class="grow"></span>
+          <span class="pill" id="rt-status">disconnected</span>
+          <span class="pill" id="rt-count">0 events</span>
+        </div>
+        <div class="page-body" id="rt-body"></div>
+      </div>
+    </section>
+
+    <!-- SETUP / Session bootstrap -->
+    <section class="view" data-view="setup" hidden>
+      <div class="page">
+        <div class="page-header">
+          <h2>Session setup</h2>
+          <button id="setup-reload" class="toolbar-btn">↻ Status</button>
+          <span class="grow"></span>
+          <span class="pill" id="setup-meta"></span>
+        </div>
+        <div class="page-body" id="setup-body"></div>
+      </div>
+    </section>
+
+    <!-- PROFILE -->
+    <section class="view" data-view="profile" hidden>
+      <div class="page">
+        <div class="page-header">
+          <h2>My profile</h2>
+          <button id="profile-reload" class="toolbar-btn">↻ Reload</button>
+          <span class="grow"></span>
+        </div>
+        <div class="page-body" id="profile-body"></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Versioned URL so browsers refetch when we change app.js. Bump the
+       number when shipping a JS change that the user must pick up. -->
+  <script src="/ui/app.js?v=20260519-rt-row-bubble"></script>
+</body>
+</html>

@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>No-Teleport Login</title>
+  <style>
+    :root {
+      --bg: #0e1116;
+      --panel: #161b22;
+      --border: #2a313a;
+      --fg: #e6edf3;
+      --muted: #8b949e;
+      --accent: #2f81f7;
+      --accent-hover: #4493f8;
+      --ok: #2ea043;
+      --warn: #d29922;
+      --err: #f85149;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      width: 400px;
+    }
+    .wrap { padding: 14px; }
+    h1 {
+      font-size: 14px;
+      margin: 0 0 4px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .tag {
+      font-size: 10px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      background: rgba(46,160,67,0.16);
+      color: var(--ok);
+      border: 1px solid rgba(46,160,67,0.45);
+      padding: 1px 6px;
+      border-radius: 999px;
+    }
+    .sub { color: var(--muted); font-size: 12px; margin: 4px 0 14px; }
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px 12px;
+      margin: 0 0 12px;
+      background: var(--panel);
+    }
+    legend { padding: 0 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+    label { display: block; font-size: 11px; color: var(--muted); margin: 6px 0 3px; }
+    input, select {
+      width: 100%;
+      box-sizing: border-box;
+      background: var(--bg);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 6px 8px;
+      font: inherit;
+      font-size: 12px;
+    }
+    .row2 { display: grid; grid-template-columns: 1fr 80px; gap: 8px; }
+    .row-creds { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    button {
+      width: 100%;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 9px 12px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-hover); }
+    button.secondary {
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid var(--border);
+    }
+    button.secondary:hover { background: var(--panel); }
+    button.danger { background: var(--err); color: white; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btnrow { display: flex; gap: 8px; margin-top: 8px; }
+    .btnrow > * { flex: 1; }
+    .proxy-state {
+      margin-top: 6px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .proxy-state.on { border-color: var(--ok); color: var(--ok); background: rgba(46,160,67,0.06); }
+    .proxy-state.off { color: var(--muted); }
+    .toast {
+      margin-top: 10px;
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      display: none;
+    }
+    .toast.show { display: block; }
+    .toast.ok  { background: rgba(46,160,67,0.12); border: 1px solid rgba(46,160,67,0.4); color: var(--ok); }
+    .toast.err { background: rgba(248,81,73,0.12); border: 1px solid rgba(248,81,73,0.4); color: var(--err); }
+    .status {
+      margin-top: 10px;
+      padding: 10px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .meta { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; word-break: break-all; }
+    .meta div { margin: 2px 0; }
+    .hint {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    code { color: var(--fg); background: var(--bg); padding: 0 4px; border-radius: 3px; }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .err { color: var(--err); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>No-teleport login <span class="tag">proxy-first</span></h1>
+    <div class="sub">
+      Routes onlyfans.com traffic through your relay's proxy <strong>before</strong>
+      you sign in, so OF mints the cookies on the exact IP the relay will use later.
+    </div>
+
+    <fieldset>
+      <legend>1. Proxy</legend>
+
+      <label>From your relay (optional)</label>
+      <div class="row2">
+        <input id="relay-url" placeholder="http://127.0.0.1:8787">
+        <button id="relay-load" class="secondary" style="padding:6px;font-size:11px">Load</button>
+      </div>
+      <label>Share token (if your relay has one)</label>
+      <input id="relay-token" placeholder="optional — only if SHARE_TOKEN is set">
+
+      <label>Choose proxy</label>
+      <select id="proxy-pick">
+        <option value="">— enter manually below —</option>
+      </select>
+
+      <label>Manual proxy URL</label>
+      <input id="proxy-url" placeholder="socks5://user:pass@host:port  or  http://user:pass@host:port">
+
+      <div class="btnrow">
+        <button id="activate-btn">Activate proxy for OnlyFans</button>
+        <button id="deactivate-btn" class="secondary">Off</button>
+      </div>
+      <div class="proxy-state off" id="proxy-state">proxy: off</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>2. Sign in &amp; capture</legend>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;">
+        With the proxy active, clicking below opens OnlyFans through it. Log in
+        normally; the extension grabs <code>user-id</code>, <code>x-bc</code>,
+        <code>x-of-rev</code>, <code>sign</code>, <code>time</code>,
+        <code>user-agent</code> + <code>static_param</code>.
+      </div>
+      <button id="login-btn">Open OnlyFans</button>
+      <div class="btnrow">
+        <button id="copy-btn" class="secondary" disabled>Copy curl</button>
+        <button id="reset-btn" class="secondary">Reset capture</button>
+      </div>
+
+      <div class="status" id="status">
+        <div style="color:var(--muted)">Status</div>
+        <div id="status-line">Waiting…</div>
+        <div class="meta" id="meta"></div>
+      </div>
+    </fieldset>
+
+    <div class="toast" id="toast"></div>
+
+    <div class="hint">
+      <strong>How this avoids the teleport:</strong> normally, you log in from
+      your home IP, OF mints cookies anchored to that IP, then the relay (on a
+      proxy IP) starts sending signed calls — OF sees the account "jump" and
+      flags it. This extension flips the order: the proxy is in place for the
+      very first packet OF receives, so login and runtime egress from the same
+      IP. Deactivate the proxy when you're done — it stays off for the rest of
+      your browsing.
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

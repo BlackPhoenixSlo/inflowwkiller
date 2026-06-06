@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fastt Login Capture</title>
+  <style>
+    :root {
+      --bg: #0e1116;
+      --panel: #161b22;
+      --border: #2a313a;
+      --fg: #e6edf3;
+      --muted: #8b949e;
+      --accent: #2f81f7;
+      --accent-hover: #4493f8;
+      --ok: #2ea043;
+      --warn: #d29922;
+      --err: #f85149;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      width: 360px;
+    }
+    .wrap { padding: 14px; }
+    h1 {
+      font-size: 14px;
+      margin: 0 0 10px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
+    .sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+    button {
+      width: 100%;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 9px 12px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-hover); }
+    button.secondary {
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid var(--border);
+    }
+    button.secondary:hover { background: var(--panel); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .row { display: flex; gap: 8px; margin-top: 8px; }
+    .row > * { flex: 1; }
+    .status {
+      margin-top: 12px;
+      padding: 10px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .status .label { color: var(--muted); }
+    .status .ok { color: var(--ok); }
+    .status .warn { color: var(--warn); }
+    .status .err { color: var(--err); }
+    .meta { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; word-break: break-all; }
+    .meta div { margin: 2px 0; }
+    .toast {
+      margin-top: 10px;
+      padding: 7px 10px;
+      background: rgba(46, 160, 67, 0.12);
+      border: 1px solid rgba(46, 160, 67, 0.4);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--ok);
+      display: none;
+    }
+    .toast.show { display: block; }
+    .hint {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    code { color: var(--fg); background: var(--panel); padding: 0 4px; border-radius: 3px; }
+    .section-label {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin: 14px 0 6px;
+    }
+    .accounts { display: flex; flex-direction: column; gap: 4px; }
+    .acct-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 9px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .acct-row.active { border-color: var(--accent); }
+    .acct-row .id {
+      flex: 1;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .acct-row .when { color: var(--muted); font-size: 11px; }
+    .acct-row .badge {
+      color: var(--accent);
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .acct-row button {
+      width: auto;
+      padding: 4px 8px;
+      font-size: 11px;
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+    .acct-row button.danger { color: var(--err); border-color: rgba(248,81,73,0.4); }
+    .acct-row button:hover { background: var(--bg); }
+    .empty {
+      color: var(--muted);
+      font-size: 11px;
+      padding: 6px 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Fastt login capture</h1>
+    <div class="sub">Sign in to OnlyFans, then copy the curl into the relay's Setup tab.</div>
+
+    <button id="login-btn">Log in to OnlyFans</button>
+    <div class="row">
+      <button id="copy-btn" class="secondary" disabled>Copy curl</button>
+      <button id="reset-btn" class="secondary">Reset</button>
+    </div>
+    <button id="add-account-btn" class="secondary" style="margin-top:8px;" disabled>
+      + Save current &amp; log in to another
+    </button>
+
+    <div class="toast" id="toast"></div>
+
+    <div class="section-label">Saved logins</div>
+    <div class="accounts" id="accounts-list">
+      <div class="empty">No accounts saved yet — sign in to capture one.</div>
+    </div>
+
+    <div class="status" id="status">
+      <div class="label">Status</div>
+      <div id="status-line">Waiting for sign-in…</div>
+      <div class="meta" id="meta"></div>
+    </div>
+
+    <div class="hint">
+      How it works: this extension watches OnlyFans for the first signed
+      <code>/api2/v2/</code> request after you log in, grabs
+      <code>user-id</code>, <code>x-bc</code>, <code>x-of-rev</code>,
+      <code>sign</code>, <code>time</code>, <code>user-agent</code> + cookies,
+      and packages them as a curl command. Each sign-in captures a fresh
+      <code>x-of-rev</code>, so when the relay flags rev drift just log in
+      again and paste the new curl.
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

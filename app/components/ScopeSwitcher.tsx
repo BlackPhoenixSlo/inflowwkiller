@@ -1,0 +1,177 @@
+"use client";
+
+/**
+ * ScopeSwitcher — dropdown for "all models" + one entry per session-bearing
+ * account. Drives ScopeContext, which in turn drives the chat-list
+ * fan-out, the SSE filter, and the X-Account-Id header.
+ *
+ * Per-row UI is two-target:
+ *   • checkbox  → toggles inclusion in the all-models aggregate
+ *                 (does NOT swap scope; pure include-set edit).
+ *   • name area → setScope({kind:"model", accountId}) (existing behavior).
+ *
+ * Always visible in TopNav — the per-model include toggles need a
+ * persistent home so the user can prune models from the aggregate at any
+ * time without first hunting through inbox-settings to re-enable a chip.
+ */
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+
+import { useScope } from "@/contexts/ScopeContext";
+import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
+import { useUser } from "@/contexts/UserContext";
+import { useChatter } from "@/contexts/ChatterContext";
+import { cn } from "@/lib/utils";
+
+export default function ScopeSwitcher() {
+  const { scope, setScope } = useScope();
+  const accounts = useActiveAccounts();
+  const { isIncluded, toggle } = useAllModelsInclude();
+  const { user } = useUser();
+  const { chatter, accounts: chatterAccounts } = useChatter();
+  // Owner-grouping mode: only fires when a chatter principal is driving
+  // and the User cookie is absent. The dropdown then renders a header
+  // row per owner so a chatter linked to @alice and @bob can tell which
+  // models belong to whom without inspecting nicknames.
+  const groupByOwner = !user && !!chatter;
+  // Map account_id → owner_username so we can render group dividers
+  // without doing an O(owners × accounts) join in the render loop.
+  const accountOwner = useMemo(() => {
+    if (!groupByOwner) return null;
+    const m = new Map<string, { id: string; username: string }>();
+    for (const a of chatterAccounts) {
+      m.set(a.account_id, { id: a.owner_id, username: a.owner_username });
+    }
+    return m;
+  }, [groupByOwner, chatterAccounts]);
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  const currentLabel =
+    scope.kind === "all"
+      ? "all models"
+      : accounts.find((a) => a.id === scope.accountId)?.nickname || scope.accountId;
+  const currentColor =
+    scope.kind === "all"
+      ? "#a78bfa"
+      : accounts.find((a) => a.id === scope.accountId)?.color || "#666";
+
+  const allAccountIds = accounts.map((a) => a.id);
+
+  return (
+    <div ref={wrapRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 px-2 lg:px-3 py-1.5 rounded-lg text-sm bg-bg-elev-1 hover:bg-bg-elev-2 border border-border whitespace-nowrap max-w-[8rem] lg:max-w-none"
+      >
+        <span
+          className="w-2 h-2 rounded-full shrink-0"
+          style={{ background: currentColor }}
+        />
+        <span className="text-xs truncate">{currentLabel}</span>
+      </button>
+      {open && (
+        <div className="absolute top-full right-0 mt-1 w-64 bg-panel border border-border rounded-lg shadow-lg overflow-hidden z-40">
+          {/* "All models" toggle — no checkbox column; clicking swaps scope. */}
+          <button
+            type="button"
+            onClick={() => { setScope({ kind: "all" }); setOpen(false); }}
+            className={cn(
+              "w-full px-3 py-2 flex items-center gap-2 text-left text-sm hover:bg-bg-elev-1",
+              scope.kind === "all" && "bg-bg-elev-1/60",
+            )}
+          >
+            <span className="w-4" aria-hidden />
+            <span className="w-2 h-2 rounded-full" style={{ background: "#a78bfa" }} />
+            <span className="truncate flex-1">All models</span>
+            {scope.kind === "all" && <span className="text-[10px] text-fg-dim">●</span>}
+          </button>
+          <div className="h-px bg-border" />
+          {accounts.map((a, idx) => {
+            const active = scope.kind === "model" && scope.accountId === a.id;
+            const included = isIncluded(a.id);
+            // Owner-group header before the first account of each owner.
+            // Owner ordering matches the server-side sort (alphabetical
+            // username) so the dividers land in stable positions.
+            const ownerInfo = accountOwner?.get(a.id) ?? null;
+            const prevOwnerInfo =
+              idx > 0 ? accountOwner?.get(accounts[idx - 1].id) ?? null : null;
+            const showOwnerHeader =
+              groupByOwner && ownerInfo &&
+              (idx === 0 || ownerInfo.id !== prevOwnerInfo?.id);
+            return (
+              <div key={a.id}>
+                {showOwnerHeader && (
+                  <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wide text-fg-dim border-t border-border first:border-t-0">
+                    @{ownerInfo!.username}
+                  </div>
+                )}
+              <div
+                className={cn(
+                  "w-full flex items-center gap-2 text-sm hover:bg-bg-elev-1",
+                  active && "bg-bg-elev-1/60",
+                )}
+              >
+                <label
+                  className="pl-3 py-2 flex items-center cursor-pointer select-none"
+                  title={
+                    included
+                      ? "Included in the all-models aggregate"
+                      : "Excluded from the all-models aggregate"
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    checked={included}
+                    onChange={() => toggle(a.id, allAccountIds)}
+                    className="w-3.5 h-3.5 cursor-pointer"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setScope({ kind: "model", accountId: a.id });
+                    setOpen(false);
+                  }}
+                  className="flex-1 pr-3 py-2 flex items-center gap-2 text-left"
+                >
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ background: a.color || "#666" }}
+                  />
+                  <span className="truncate flex-1">{a.nickname || a.id}</span>
+                  {active && <span className="text-[10px] text-fg-dim">●</span>}
+                </button>
+              </div>
+              </div>
+            );
+          })}
+          {accounts.length === 0 && (
+            <div className="p-3 text-xs text-fg-dim space-y-2">
+              <div>No accounts yet.</div>
+              <Link
+                href="/setup"
+                onClick={() => setOpen(false)}
+                className="inline-block px-2 py-1 rounded border border-border hover:bg-bg-hover text-fg"
+              >
+                Go to Setup →
+              </Link>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
