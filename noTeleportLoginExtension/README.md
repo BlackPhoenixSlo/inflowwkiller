@@ -1,4 +1,4 @@
-# Chatterly No-Teleport Login
+# Fastt No-Teleport Login
 
 Sibling of [`loginExtension/`](../loginExtension/) with one extra superpower:
 it pushes onlyfans.com traffic through a proxy **before** sign-in, so OF

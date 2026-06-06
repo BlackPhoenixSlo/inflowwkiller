@@ -130,7 +130,7 @@ html, body {{ margin:0; padding:0; width:1280px; height:800px; overflow:hidden;
   <div class="left">
     <div class="logo">
       <img src="{icon_uri}" alt="">
-      <span class="brand">Chatterly</span>
+      <span class="brand">Fastt</span>
     </div>
     <h2>{subtitle}</h2>
     <p class="sub">{title}</p>
@@ -229,7 +229,7 @@ def build():
             "subtitle": "Sign in once. Copy the curl.",
             "bullets": [
                 "Captures user-id, x-bc, x-of-rev, sign, time, user-agent and cookies.",
-                "Packaged as a ready-to-paste curl for the Chatterly relay.",
+                "Packaged as a ready-to-paste curl for the Fastt relay.",
                 "When x-of-rev drifts, re-login and capture a fresh one.",
             ],
             "state": login_states(login_body)[0][1],

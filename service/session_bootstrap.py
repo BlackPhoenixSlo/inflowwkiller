@@ -405,7 +405,7 @@ def from_curl(curl_text: str, *,
     if not static_param:
         raise CurlParseError(
             f"No static_param available for x-of-rev {x_of_rev!r}.\n"
-            f"Use the Chatterly Login extension (loginExtension/) — sign in, "
+            f"Use the Fastt Login extension (loginExtension/) — sign in, "
             f"open a chat so OF's sign() fires once, then Copy curl. The "
             f"extension injects x-relay-static-param so the relay can derive "
             f"signing rules for this revision automatically.\n"

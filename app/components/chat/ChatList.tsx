@@ -78,7 +78,7 @@ export function ChatList({
 }: {
   selected: ChatListSelection | null;
   onSelect: (sel: ChatListSelection) => void;
-  /** When true (default) ChatList writes "(N) Chatterly" into document.title
+  /** When true (default) ChatList writes "(N) Inbox · Fastt" into document.title
    *  based on the All-set attention count. Pages that want a different
    *  tab-title format (e.g. /group) opt out and set their own. */
   setTabTitle?: boolean;

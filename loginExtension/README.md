@@ -1,4 +1,4 @@
-# Chatterly Login Capture (Chrome extension)
+# Fastt Login Capture (Chrome extension)
 
 Replaces the old `--profile capture` Docker sidecar with a one-click browser
 extension. Sign in to OnlyFans, click **Copy curl**, paste into the relay's

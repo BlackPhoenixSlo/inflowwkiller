@@ -3,7 +3,7 @@
 /**
  * PasteCurlCard — the primary bootstrap path.
  *
- * User installs the Chatterly Login (or No-Teleport Login) browser extension,
+ * User installs the Fastt Login (or No-Teleport Login) browser extension,
  * signs in to OF, clicks "Copy curl," and pastes the result here. We POST it
  * to /admin/session/bootstrap with `mode: 'paste-curl'`. The relay parses
  * cookies + signed headers + the `x-relay-static-param` extension header to
@@ -184,7 +184,7 @@ export default function PasteCurlCard() {
       <div>
         <h2 className="text-base font-semibold mb-1">Paste cURL</h2>
         <p className="text-sm text-fg-dim leading-relaxed mb-3">
-          Install the <strong>Chatterly Login Capture</strong> extension, sign
+          Install the <strong>Fastt Login Capture</strong> extension, sign
           in to OnlyFans, click <strong>Copy cURL</strong>, and paste here.
           The extension injects <code>x-relay-static-param</code> so this
           works on any new OF revision without re-running an Incogniton

@@ -1,4 +1,4 @@
-# Chatterly
+# Fastt
 
 Self-hosted creator dashboard for OnlyFans. A FastAPI relay that holds a
 captured browser session, replays requests with proper TLS/headers via
@@ -49,8 +49,8 @@ repo; they are created locally the first time you boot.
 Requires Docker 20+ with the `compose` plugin.
 
 ```bash
-git clone https://github.com/<your-fork>/chatterly.git
-cd chatterly
+git clone https://github.com/<your-fork>/fastt.git
+cd fastt
 
 # First boot needs an empty proxy registry so the bind-mount has something
 # to attach to. (You will fill it from the UI.)
@@ -70,7 +70,7 @@ The easiest path is the Chrome extension shipped in this repo.
 1. Load `loginExtension/` as an unpacked extension at `chrome://extensions`
    (toggle Developer mode, "Load unpacked").
 2. Log into onlyfans.com in that browser.
-3. Click the Chatterly extension icon → **Capture**. The extension reads
+3. Click the Fastt extension icon → **Capture**. The extension reads
    the live cookies + signing headers and posts them to the relay's
    bootstrap endpoint.
 4. The relay parses the payload, downloads OF's signing chunk through
@@ -181,7 +181,7 @@ Dockerfile, docker-compose.yml, requirements.txt
 ### Backing up state
 
 ```bash
-tar czf chatterly-backup-$(date +%F).tgz \
+tar czf fastt-backup-$(date +%F).tgz \
   service/sessions service/proxies.json service/chatterly.db
 ```
 

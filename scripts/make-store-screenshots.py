@@ -121,8 +121,8 @@ def make_screenshot(variant, idx, heading, sub, popup_title, popup_lines):
 make_screenshot(
     "login", 1,
     "Capture your OnlyFans session",
-    "One click. Curl on your clipboard. Paste into the Chatterly relay.",
-    "Chatterly Login Capture",
+    "One click. Curl on your clipboard. Paste into the Fastt relay.",
+    "Fastt Login Capture",
     [
         ("Status", "Captured (with signing rules)"),
         ("user-id", "1234567"),
@@ -135,7 +135,7 @@ make_screenshot(
     "login", 2,
     "Headers, signing rules, cookies",
     "The relay gets everything it needs in a single curl command.",
-    "Chatterly Login Capture",
+    "Fastt Login Capture",
     [
         ("Status", "Waiting for sign-in..."),
         ("Hint", "Click Log in, sign in to OnlyFans, open a chat."),
@@ -150,7 +150,7 @@ make_screenshot(
     "noteleport", 1,
     "No teleport. Same egress IP.",
     "Mint OnlyFans cookies through your relay's proxy. Nothing else routed.",
-    "Chatterly No-Teleport Login",
+    "Fastt No-Teleport Login",
     [
         ("Proxy", "active (http)"),
         ("Host", "relay.example.com:8443"),
@@ -163,7 +163,7 @@ make_screenshot(
     "noteleport", 2,
     "Scoped to OnlyFans by PAC",
     "Every other host goes DIRECT. Your normal browsing is unaffected.",
-    "Chatterly No-Teleport Login",
+    "Fastt No-Teleport Login",
     [
         ("PAC rule", "if host endsWith onlyfans.com -> proxy"),
         ("Else", "return DIRECT"),
