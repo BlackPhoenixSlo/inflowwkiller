@@ -44,6 +44,15 @@ repo; they are created locally the first time you boot.
 
 ---
 
+## Deploying to a server
+
+To put Fastt on a VPS (Hostinger etc.) behind a public URL, see
+**[DEPLOY.md](DEPLOY.md)** — an illustrated, one-command walkthrough you can also
+paste straight into Claude Code to have the deploy done with you.
+[DEPLOY_HOWTO.md](DEPLOY_HOWTO.md) is the dense reference for the same flow.
+
+---
+
 ## Quick start (Docker)
 
 Requires Docker 20+ with the `compose` plugin.
