@@ -378,7 +378,7 @@ def _local_welcome(name: str, cfg: dict) -> str:
         Hey S-S-S-Sexy Sofie ! !!
 
         By the way - just woke up and made myself a coffee ☕ my dogs are going crazy
-        wanting a walk lol (it's Friday morning in Vancouver Island, Canada where I am from)
+        wanting a walk lol (it's Friday morning in Los Angeles, California where I am from)
 
         Will reply when I am back :)
 

@@ -428,7 +428,7 @@ export default function BrainPanel() {
               <Input
                 value={form.location ?? ""}
                 onChange={(e) => set("location", e.target.value)}
-                placeholder="e.g. Vancouver Island"
+                placeholder="e.g. Los Angeles"
               />
             </label>
             <label className="block space-y-1">
