@@ -33,6 +33,7 @@ from db.models import (
     AutomationRun,
     Employee,
     Fan,
+    GrokCall,
     GrokDailyCost,
     Message,
     Transaction,
@@ -230,6 +231,100 @@ async def grok_cost(
             }
             for r in rows
         ]
+    }
+
+
+# ── 2b. Grok per-call breakdown (the cost ruler) ────────────────────
+
+@router.get("/admin/stats/grok-calls")
+async def grok_calls(
+    account_id: str | None = Query(None),
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+    status: str = Query("done", pattern="^(done|error|pending|all)$"),
+    by: str = Query("purpose_model", pattern="^(purpose_model|purpose|model|day)$"),
+) -> dict[str, Any]:
+    """Aggregate `grok_calls` so you can SEE which automation costs what — the
+    detail the daily rollup (`/admin/stats/grok-cost`) can't give you.
+
+    Unlike grok_cost (which reads the pre-summed grok_daily_cost), this groups
+    the raw call rows by purpose × model (default) and sums tokens, cost, and
+    DeepSeek cache-hit tokens — so you can compare a window's cost before/after
+    a prompt change and watch the cache-hit ratio climb.
+
+    `cost_millicents` is the internal unit (cents×100 — sub-cent DeepSeek calls
+    don't floor to 0); `cost_cents` is the human dollars figure. `cache_hit_ratio`
+    is cached-input ÷ total-input over the bucket (0 when the provider — e.g.
+    Grok — doesn't report cache hits). `status` defaults to 'done' so partial /
+    failed calls (which carry no real cost) don't skew the numbers; pass
+    status=all to include them. The time filter is on `called_at`."""
+    account_ids = clamp_account_filter(account_id)
+    start = _parse_date(from_, field="from")
+    end = _parse_date(to, field="to")
+
+    day_expr = func.strftime("%Y-%m-%d", GrokCall.called_at).label("day")
+    # Group key columns vary by `by`; everything else is summed the same way.
+    keys: dict[str, Any] = {
+        "purpose_model": [GrokCall.purpose.label("purpose"),
+                          GrokCall.model.label("model"),
+                          GrokCall.provider.label("provider")],
+        "purpose": [GrokCall.purpose.label("purpose")],
+        "model": [GrokCall.model.label("model"),
+                  GrokCall.provider.label("provider")],
+        "day": [day_expr, GrokCall.purpose.label("purpose")],
+    }[by]
+
+    metrics = [
+        func.count(GrokCall.id).label("calls"),
+        func.coalesce(func.sum(GrokCall.tokens_in), 0).label("tokens_in"),
+        func.coalesce(func.sum(GrokCall.tokens_out), 0).label("tokens_out"),
+        func.coalesce(func.sum(GrokCall.cache_hit_tokens), 0).label("cache_hit_tokens"),
+        func.coalesce(func.sum(GrokCall.cost_cents), 0).label("cost_millicents"),
+        func.coalesce(func.avg(GrokCall.latency_ms), 0).label("avg_latency_ms"),
+    ]
+
+    async with get_session() as s:
+        q = select(*keys, *metrics)
+        if account_ids is not None:
+            q = q.where(GrokCall.account_id.in_(account_ids))
+        if status != "all":
+            q = q.where(GrokCall.status == status)
+        if start:
+            q = q.where(GrokCall.called_at >= start)
+        if end:
+            q = q.where(GrokCall.called_at <= end)
+        q = q.group_by(*keys).order_by(func.sum(GrokCall.cost_cents).desc())
+        rows = (await s.execute(q)).all()
+
+    out = []
+    for r in rows:
+        m = r._mapping
+        t_in = int(m["tokens_in"] or 0)
+        cache = int(m["cache_hit_tokens"] or 0)
+        millicents = int(m["cost_millicents"] or 0)
+        out.append({
+            "day": m.get("day"),
+            "purpose": m.get("purpose"),
+            "model": m.get("model"),
+            "provider": m.get("provider"),
+            "calls": int(m["calls"] or 0),
+            "tokens_in": t_in,
+            "tokens_out": int(m["tokens_out"] or 0),
+            "cache_hit_tokens": cache,
+            "cache_hit_ratio": round(cache / t_in, 3) if t_in else 0.0,
+            "cost_millicents": millicents,
+            "cost_cents": round(millicents / 100, 4),
+            "avg_latency_ms": int(m["avg_latency_ms"] or 0),
+        })
+    total_mc = sum(r["cost_millicents"] for r in out)
+    total_calls = sum(r["calls"] for r in out)
+    return {
+        "rows": out,
+        "totals": {
+            "calls": total_calls,
+            "cost_millicents": total_mc,
+            "cost_cents": round(total_mc / 100, 4),
+        },
     }
 
 

@@ -68,6 +68,8 @@ from automation_preview_api import router as _automation_preview_router  # noqa:
 from funnels_api import router as _funnels_router  # noqa: E402
 from nudge_config_api import router as _nudge_config_router  # noqa: E402
 from webhook_config_api import router as _webhook_config_router  # noqa: E402
+from autoreply_config_api import router as _autoreply_config_router  # noqa: E402
+from style_config_api import router as _style_config_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
 from auth import (  # noqa: E402
     router as _auth_router,
@@ -165,6 +167,8 @@ app.include_router(_automation_preview_router)
 app.include_router(_funnels_router)
 app.include_router(_nudge_config_router)
 app.include_router(_webhook_config_router)
+app.include_router(_autoreply_config_router)
+app.include_router(_style_config_router)
 app.include_router(_account_config_router)
 app.include_router(_auth_router)
 app.include_router(_auth_admin_router)
@@ -531,7 +535,7 @@ async def _ws_pump_for_account(account_id: str) -> None:
     """Run the OF WS pump for one account until cancelled. OFWebSocket has
     its own reconnect-with-backoff loop, so this task is only torn down when
     the account is removed or the server is shutting down."""
-    from of_ws import OFWebSocket
+    from of_ws import OFWebSocket, register_pump, unregister_pump
     while True:
         try:
             client = _load_client(account_id)
@@ -539,18 +543,24 @@ async def _ws_pump_for_account(account_id: str) -> None:
             nickname = meta.get("nickname") or account_id
             color = meta.get("color")
             ws = OFWebSocket(client)
+            # Publish this live pump so the automation layer can push outbound
+            # frames (e.g. the typing indicator) on the same socket.
+            register_pump(account_id, ws)
             log.info("ws-pump[%s]: connecting to OF", nickname)
-            async for event in ws.events():
-                # Tag every event so multi-account subscribers can route.
-                # Use sentinel `__` keys so we never collide with real OF event names.
-                if isinstance(event, dict):
-                    event = {
-                        "__account_id": account_id,
-                        "__account_name": nickname,
-                        "__account_color": color,
-                        **event,
-                    }
-                await _broadcast_event(event)
+            try:
+                async for event in ws.events():
+                    # Tag every event so multi-account subscribers can route.
+                    # Use sentinel `__` keys so we never collide with real OF event names.
+                    if isinstance(event, dict):
+                        event = {
+                            "__account_id": account_id,
+                            "__account_name": nickname,
+                            "__account_color": color,
+                            **event,
+                        }
+                    await _broadcast_event(event)
+            finally:
+                unregister_pump(account_id, ws)
         except HTTPException as e:
             log.warning("ws-pump[%s]: %s — retry in 30s", account_id, e.detail)
             await asyncio.sleep(30)

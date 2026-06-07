@@ -55,6 +55,9 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
   const jitter = form.jitter_seconds ?? 0;
   const lo = delay;
   const hi = delay + jitter;
+  const manualYield = form.manual_yield_minutes ?? 1;
+  const typingWpm = form.typing_wpm ?? 60;
+  const typingIndicator = form.typing_indicator ?? true;  // ON by default
 
   return (
     <Card className="p-4 space-y-4 max-w-xl">
@@ -122,6 +125,76 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
           after a fan's message.
         </p>
       )}
+
+      {/* Manual-yield: how long the bot stands down after a human takes over. */}
+      <div className="pt-1 border-t border-border space-y-1.5">
+        <label className="space-y-1 block">
+          <div className="text-xs text-fg-dim">
+            Stand down after a human sends in the chat (minutes)
+          </div>
+          <input
+            type="number"
+            min={0}
+            max={1440}
+            step="0.5"
+            className={INPUT_CLS}
+            value={manualYield}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, manual_yield_minutes: Math.max(0, Number(e.target.value) || 0) }))
+            }
+          />
+        </label>
+        <p className="text-xs text-fg-dim">
+          {manualYield > 0
+            ? `When you (or a chatter) message a fan, the bot won't auto-reply to them for ${manualYield} min.`
+            : "0 = the bot is never paused by a human message (not recommended)."}
+        </p>
+      </div>
+
+      {/* Typing speed: each reply bubble is held for the time it'd take to type. */}
+      <div className="pt-1 border-t border-border space-y-1.5">
+        <label className="space-y-1 block">
+          <div className="text-xs text-fg-dim">Typing speed (words per minute)</div>
+          <input
+            type="number"
+            min={0}
+            max={400}
+            step="5"
+            className={INPUT_CLS}
+            value={typingWpm}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, typing_wpm: Math.max(0, Number(e.target.value) || 0) }))
+            }
+          />
+        </label>
+        <p className="text-xs text-fg-dim">
+          {typingWpm > 0
+            ? `Each reply bubble lands after the time it'd take to type it at ${typingWpm} wpm (a 10-word line ≈ ${Math.round((10 / typingWpm) * 60)}s). Applies to AI chat, Auto Convo and deep convo.`
+            : "0 = bubbles send instantly (no typing delay)."}
+        </p>
+      </div>
+
+      {/* Live "...is typing" indicator during the typing-speed hold. */}
+      <div className="pt-1 border-t border-border space-y-1.5">
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-[var(--accent)]"
+            checked={typingIndicator}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, typing_indicator: e.target.checked }))
+            }
+          />
+          <span className="text-sm">Show the fan a live “…is typing” bubble</span>
+        </label>
+        <p className="text-xs text-fg-dim">
+          {typingIndicator
+            ? typingWpm > 0
+              ? "While each bubble is “being typed”, the fan sees OnlyFans’ real typing indicator (re-sent every ~2.5s). Applies to AI chat, Auto Convo, deep convo and funnels."
+              : "Needs a typing speed above 0 — with no typing delay there’s no window to show the indicator."
+            : "Off — replies arrive after the typing delay with no visible typing bubble."}
+        </p>
+      </div>
 
       <div className="flex items-center gap-3 pt-1">
         <Button

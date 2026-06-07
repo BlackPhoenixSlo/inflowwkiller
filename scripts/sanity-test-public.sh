@@ -3,7 +3,7 @@
 # public repo (BlackPhoenixSlo/chatterly), with zero pre-existing state.
 #
 # Why this exists: we deploy chatterly-public to the VPS, but our laptop
-# normally runs ChatterlyExtension. If chatterly-public diverges and
+# normally runs FasttExtension. If chatterly-public diverges and
 # breaks the "fresh clone" path (missing module, broken Dockerfile,
 # unseeded DB schema, etc.) we'd only find out when the next VPS deploy
 # fails halfway through. This script catches that on the laptop, in
@@ -72,7 +72,7 @@ NEXT_PORT=3002
 # don't write a .env, so compose falls back to this value.
 TOKEN=""
 # Where to copy seed state from when --seed is passed. Defaults to the
-# ChatterlyExtension working tree (this script's repo root); override
+# FasttExtension working tree (this script's repo root); override
 # with SEED_SRC=/some/other/path if you have an alternative copy.
 SEED_SRC="${SEED_SRC:-$(cd "$(dirname "$0")/.." && pwd)}"
 

@@ -68,7 +68,18 @@ log = logging.getLogger("of-relay.automation")
 
 # ── Knobs ────────────────────────────────────────────────────────────
 _TICK_INTERVAL_S = 30          # supervisor cadence (sleep-at-end like tx-ingest)
-_MAX_CONCURRENT_RUNS = 4       # bound total in-flight (account, kind) runs per tick
+_MAX_CONCURRENT_RUNS = 4       # concurrent REAL-TIME / sender runs (own lane)
+# Separate lane for long account-wide BULK sweeps (scrape_chats etc.). Proven
+# live: the W7 startup seed fired 4 scrape_chats at once, they filled all the run
+# slots for ~2 min, and a real-time of_ai_chat reply was starved ~40s. Bulk kinds
+# now use their OWN small semaphore so they can NEVER consume a sender's slot —
+# real-time replies stay fast even mid-scrape. Senders keep _run_sem; bulk gets
+# _bulk_sem. Independent → at most RUNS+BULK concurrent (fine: per-account OF
+# pacing + different accounts/sessions).
+_MAX_CONCURRENT_BULK = 2
+_BULK_KINDS: frozenset[str] = frozenset({
+    "scrape_chats", "push_to_sheets", "process_old_fans",
+})
 # Fan-lease TTL (W3): held for the WHOLE send, NOT released on success (let it
 # expire) — only released on not-sent/error. So the TTL must clear the worst-case
 # LLM-generate + OF-send latency, else a slow run's lease expires mid-send and a
@@ -77,7 +88,9 @@ _LEASE_TTL_S = 900
 # After every CONFIRMED bot send, the fan rests: fans.automation_paused_until is
 # set this far out and EVERY sender skips a paused fan BEFORE acquiring the lease.
 # This is the load-bearing anti-double-message guard across overlapping ticks.
-_FAN_COOLDOWN_S = 1800         # 30 min
+_FAN_COOLDOWN_S = 600          # 10 min — drip senders (welcome/followup) rest a fan
+                              # this long after a send; chat senders use their own
+                              # shorter _REPLY_COOLDOWN_S (45-90s) so convo flows.
 _MAX_JOB_ATTEMPTS = 3          # transient-failure retries before a job is parked 'error'
 _JOB_RETRY_BACKOFF_S = 60      # requeue delay after a failed attempt
 
@@ -121,6 +134,26 @@ def wake_supervisor() -> None:
     ev = _wake_event
     if ev is not None:
         ev.set()
+
+
+# ── Non-blocking drain (W7) ──────────────────────────────────────────
+# The supervisor must NOT await all runs per tick. A single slow run (observed
+# live: a 5.7-min scrape_chats sweep on one account) would block the whole drain
+# and stall every real-time webhook dispatch for minutes. Instead each run is
+# spawned as a tracked background task bounded by a SHARED semaphore + an
+# in-flight (account,kind) guard, and the loop keeps ticking/waking. A slow run
+# on one account can no longer freeze a real-time of_ai_chat reply on another.
+_run_sem: asyncio.Semaphore | None = None
+_bulk_sem: asyncio.Semaphore | None = None
+_inflight_pairs: set[tuple[str, str]] = set()
+_inflight_tasks: set = set()
+
+
+async def _join_inflight_runs() -> None:
+    """Await every in-flight drain task. The SUPERVISOR never calls this (it must
+    not block on slow runs); tests use it to wait for spawned runs to finish."""
+    if _inflight_tasks:
+        await asyncio.gather(*list(_inflight_tasks), return_exceptions=True)
 
 # scrape_chats paging — mirror of_client.iter_messages' Fast Fetch defaults.
 # OF ignores `limit` and returns FEWER than asked, so every loop is bounded by a
@@ -1381,21 +1414,40 @@ async def _drain_due_jobs_once() -> None:
     # followup). Ties broken by account_id for determinism.
     pairs.sort(key=lambda p: (kind_priority(p[1]), p[0]))
 
-    sem = asyncio.Semaphore(_MAX_CONCURRENT_RUNS)
+    global _run_sem, _bulk_sem
+    if _run_sem is None:
+        _run_sem = asyncio.Semaphore(_MAX_CONCURRENT_RUNS)
+    if _bulk_sem is None:
+        _bulk_sem = asyncio.Semaphore(_MAX_CONCURRENT_BULK)
 
     async def _one(aid: str, kind: str) -> None:
-        async with sem:
-            try:
+        # Long bulk sweeps run in their own lane so they can't starve real-time
+        # senders of a slot (see _BULK_KINDS).
+        sem = _bulk_sem if kind in _BULK_KINDS else _run_sem
+        try:
+            async with sem:
                 await run_once(aid, kind)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.warning(
-                    "automation_run_dispatch_failed account=%s kind=%s",
-                    aid, kind, exc_info=True,
-                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.warning(
+                "automation_run_dispatch_failed account=%s kind=%s",
+                aid, kind, exc_info=True,
+            )
+        finally:
+            _inflight_pairs.discard((aid, kind))
 
-    await asyncio.gather(*(_one(a, k) for a, k in pairs))
+    # Spawn DETACHED, tracked tasks — do NOT await. The supervisor loop returns
+    # immediately and keeps ticking/waking, so a slow run can't stall real-time
+    # dispatch. The in-flight guard skips a pair already running (no stacking);
+    # the shared semaphore bounds total concurrency across overlapping drains.
+    for a, k in pairs:
+        if (a, k) in _inflight_pairs:
+            continue
+        _inflight_pairs.add((a, k))
+        t = asyncio.create_task(_one(a, k))
+        _inflight_tasks.add(t)
+        t.add_done_callback(_inflight_tasks.discard)
 
 
 async def automation_supervisor() -> None:

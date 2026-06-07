@@ -231,8 +231,15 @@ export function PremadeForm({
     },
   });
   const customLists = useMemo(() => {
+    // OF sometimes tags the built-in "fans"/"following" lists with a type the
+    // type-filter misses; drop any whose id already names a system audience so
+    // they don't show as redundant custom chips sharing a SYSTEM_AUDIENCES id.
+    const systemIds = new Set(SYSTEM_AUDIENCES.map((a) => a.id));
     const filtered = (listsQ.data ?? []).filter(
-      (l) => l.type !== "build-in" && l.type !== "built-in",
+      (l) =>
+        l.type !== "build-in" &&
+        l.type !== "built-in" &&
+        !systemIds.has(String(l.id)),
     );
     return filtered.slice().sort((a, b) => {
       const an = (a.name ?? "").toLowerCase();

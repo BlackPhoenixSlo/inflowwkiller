@@ -1,17 +1,21 @@
 "use client";
 
 /**
- * MassNudgeTab — Settings → "Mass Nudge" (also opened from +New).
+ * OnlineBlastTab — Settings → "Online Blast".
  *
- * The high-traffic sibling of Nudge online: instead of a personalized, delayed
- * per-fan DM, it broadcasts ONE time-of-day message + image to everyone online
- * right now (no {name}, no per-fan state). Config lives entirely in the
- * automation_rules payload (slots / exclude / unsend / with_image) + the rule's
- * cadence — read/written via the rules API, with a roll-out fan-out across models.
+ * The SCALE sibling of Mass Nudge. Where Mass Nudge resolves the online ids and
+ * sends explicit userIds (precise per-fan cooldown, but caps at a few thousand
+ * online), Online Blast does ONE OnlyFans list-broadcast to the whole online
+ * audience — OF resolves + fans out server-side in a single call, so it scales
+ * to 100k-fan accounts. No per-fan memory; it just excludes anyone you've
+ * chatted with recently in BOTH directions. Run hourly, not every few minutes.
+ *
+ * Shares the slot composition + preview endpoint with Mass Nudge; saves through
+ * the generic rules API with kind "online_blast".
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Megaphone, Play, Rocket, Eye, ChevronDown, Plus, X, Image as ImageIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Radio, Play, Eye, ChevronDown, Plus, X, Image as ImageIcon } from "lucide-react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
 import { VaultPicker } from "@/components/chat/VaultPicker";
@@ -24,11 +28,7 @@ import {
   useRunRuleNow,
   type AutomationRule,
 } from "@/hooks/useAutomations";
-import {
-  useMassNudgeBulk,
-  useMassNudgePreview,
-  type MassNudgeConfig,
-} from "@/hooks/useMassNudge";
+import { useMassNudgePreview, type MassNudgeConfig } from "@/hooks/useMassNudge";
 import type { NudgeSlots, NudgeSlotEntry } from "@/hooks/useNudgeConfig";
 
 const SELECT_CLS =
@@ -73,13 +73,13 @@ function ruleToForm(rule: AutomationRule | null): Form {
     enabled: rule?.is_enabled ?? true,
     withImage: p.with_image !== false,
     everyMinutes: every,
-    excludeRepliedHours: typeof p.exclude_replied_hours === "number" ? p.exclude_replied_hours : 12,
-    excludeInboundHours: typeof p.exclude_inbound_hours === "number" ? p.exclude_inbound_hours : 12,
-    unsendAfterHours: typeof p.unsend_after_hours === "number" ? p.unsend_after_hours : "",
+    excludeRepliedHours: typeof p.exclude_replied_hours === "number" ? p.exclude_replied_hours : 8,
+    excludeInboundHours: typeof p.exclude_inbound_hours === "number" ? p.exclude_inbound_hours : 8,
+    unsendAfterHours: typeof p.unsend_after_hours === "number" ? p.unsend_after_hours : 1,
   };
 }
 
-export default function MassNudgeTab() {
+export default function OnlineBlastTab() {
   const accounts = useActiveAccounts();
   const [accountId, setAccountId] = useState<string | null>(null);
   useEffect(() => {
@@ -87,15 +87,11 @@ export default function MassNudgeTab() {
   }, [accounts, accountId]);
 
   const rulesQ = useAutomationRules(accountId);
-  const rule = useMemo(
-    () => (rulesQ.data ?? []).find((r) => r.kind === "mass_nudge") ?? null,
-    [rulesQ.data],
-  );
+  const rule = (rulesQ.data ?? []).find((r) => r.kind === "online_blast") ?? null;
 
   const createM = useCreateRule(accountId);
   const updateM = useUpdateRule(accountId);
   const runM = useRunRuleNow(accountId);
-  const bulkM = useMassNudgeBulk();
   const previewM = useMassNudgePreview();
   const busy = createM.isPending || updateM.isPending;
 
@@ -108,27 +104,9 @@ export default function MassNudgeTab() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
-  // Preview + image picking.
   const [previewHour, setPreviewHour] = useState<number | "">("");
   const [pickerSlot, setPickerSlot] = useState<string | null>(null);
   const [mediaCache, setMediaCache] = useState<Record<number, VaultMedia>>({});
-
-  // Roll-out checklist.
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulkMsg, setBulkMsg] = useState<string | null>(null);
-  const initRef = useRef(false);
-  useEffect(() => {
-    if (!initRef.current && accounts.length > 0) {
-      setSelected(new Set(accounts.map((a) => a.id)));
-      initRef.current = true;
-    }
-  }, [accounts]);
-  const toggleModel = (id: string) =>
-    setSelected((prev) => {
-      const n = new Set(prev);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
 
   useEffect(() => {
     setForm(ruleToForm(rule));
@@ -180,7 +158,7 @@ export default function MassNudgeTab() {
         await updateM.mutateAsync({ id: rule.id, every_seconds, payload, is_enabled: form.enabled });
       } else {
         await createM.mutateAsync({
-          account_id: accountId, kind: "mass_nudge", name: "Mass Nudge",
+          account_id: accountId, kind: "online_blast", name: "Online Blast",
           every_seconds, payload, is_enabled: form.enabled,
         });
       }
@@ -206,25 +184,12 @@ export default function MassNudgeTab() {
   async function runNow() {
     if (!rule) return;
     setMsg(null);
-    if (!confirm("Send one Mass Nudge broadcast to everyone online now?")) return;
+    if (!confirm("Blast ONE broadcast to every fan online now?")) return;
     try {
       await runM.mutateAsync(rule.id);
-      setMsg("✓ Broadcasting to online fans now — appears in stats within ~30s.");
+      setMsg("✓ Broadcasting to all online fans now — appears in stats within ~30s.");
     } catch (e) {
       setMsg(`Run failed: ${(e as Error)?.message || "unknown"}`);
-    }
-  }
-
-  async function applyToModels() {
-    setBulkMsg(null);
-    const ids = [...selected];
-    if (ids.length === 0) { setBulkMsg("Pick at least one model."); return; }
-    const every_seconds = Math.max(60, Math.round(form.everyMinutes) * 60);
-    try {
-      const r = await bulkM.mutateAsync({ account_ids: ids, payload: buildPayload(), enable: form.enabled, every_seconds });
-      setBulkMsg(`✓ Mass Nudge set on ${r.count} model${r.count === 1 ? "" : "s"} (every ${Math.round(r.every_seconds / 60)} min).`);
-    } catch (e) {
-      setBulkMsg(`Failed: ${(e as Error)?.message || "unknown"}`);
     }
   }
 
@@ -233,13 +198,13 @@ export default function MassNudgeTab() {
   return (
     <div className="space-y-5 max-w-2xl">
       <header className="flex items-center gap-2">
-        <Megaphone className="size-5 text-accent" />
+        <Radio className="size-5 text-accent" />
         <div>
-          <h2 className="text-lg font-semibold">Mass Nudge</h2>
+          <h2 className="text-lg font-semibold">Online Blast</h2>
           <p className="text-sm text-fg-dim">
-            Broadcast ONE time-of-day message + image to everyone online right now —
-            no names, no per-fan delay. For accounts with lots of fans coming online,
-            where a personalized per-fan nudge would be too many sends.
+            ONE broadcast to <b>every fan online right now</b> — OnlyFans resolves the audience
+            server-side, so a single call reaches tens of thousands. Built for large (100k+) accounts;
+            skips anyone you’ve chatted with recently (both directions). No per-fan cap.
           </p>
         </div>
       </header>
@@ -264,12 +229,12 @@ export default function MassNudgeTab() {
               Attach per-slot image
             </label>
           </div>
-          <Hint>Targets fans <b>online now</b> (OnlyFans’ native online filter). A slot with several images sends <b>one</b> (rotated), not all.</Hint>
+          <Hint>Targets <b>every fan online now</b> (OnlyFans’ native online filter, one server-side broadcast). A slot with several images sends <b>one</b> (rotated), not all.</Hint>
         </div>
 
         <div className="grid grid-cols-4 gap-4">
           <NumField label="Send every (min)" value={form.everyMinutes} onChange={(v) => set("everyMinutes", v)} min={5} />
-          <NumField label="Re-nudge cooldown (hrs)" value={form.excludeRepliedHours === "" ? 0 : form.excludeRepliedHours}
+          <NumField label="Skip DMed within (hrs)" value={form.excludeRepliedHours === "" ? 0 : form.excludeRepliedHours}
             onChange={(v) => set("excludeRepliedHours", v > 0 ? v : "")} min={0} />
           <NumField label="Skip repliers within (hrs)" value={form.excludeInboundHours === "" ? 0 : form.excludeInboundHours}
             onChange={(v) => set("excludeInboundHours", v > 0 ? v : "")} min={0} />
@@ -277,10 +242,10 @@ export default function MassNudgeTab() {
             onChange={(v) => set("unsendAfterHours", v > 0 ? v : "")} min={0} />
         </div>
         <Hint>
-          <b>Send every</b>: how often to broadcast. <b>Re-nudge cooldown</b>: don’t nudge (or blast) a fan
-          again until N hours after the last nudge/DM (0 = off). <b>Skip repliers within</b>: skip fans who
-          <i> messaged us</i> in the last N hours — leave active conversations alone (0 = off). <b>Auto-unsend</b>:
-          remove the broadcast after N hours (0 = keep).
+          No per-fan cooldown here — the <b>cadence is the cooldown</b>, so run it <b>hourly</b>, not every few
+          minutes. <b>Skip DMed within</b>: skip fans you messaged in the last N hours. <b>Skip repliers within</b>:
+          skip fans who <i>messaged you</i> in the last N hours — both keep the blast off active threads (0 = off).
+          <b> Auto-unsend</b>: remove the broadcast after N hours (0 = keep).
         </Hint>
 
         {/* ── Preview ─────────────────────────────────────────────── */}
@@ -362,7 +327,7 @@ export default function MassNudgeTab() {
         <div className="flex items-center gap-2 pt-1">
           <Button onClick={save} disabled={busy || !accountId}>{rule ? "Save changes" : "Create automation"}</Button>
           {rule && (
-            <Button variant="ghost" onClick={runNow} disabled={runM.isPending} title="Broadcast one now (bypasses the timer)">
+            <Button variant="ghost" onClick={runNow} disabled={runM.isPending} title="Blast one now (bypasses the timer)">
               <Play className="size-4" /> {runM.isPending ? "Sending…" : "Send now"}
             </Button>
           )}
@@ -384,55 +349,24 @@ export default function MassNudgeTab() {
         )}
       </Card>
 
-      {/* Roll out to models */}
-      {accounts.length > 1 && (
-        <Card className="p-4 space-y-3">
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-semibold flex items-center gap-1.5">
-                <Rocket className="size-4 text-accent" /> Roll out to models
-              </h3>
-              <p className="text-xs text-fg-dim mt-0.5">Apply this Mass Nudge config + cadence to every checked model.</p>
-            </div>
-            <div className="flex gap-2 text-xs shrink-0">
-              <button className="text-accent hover:underline" onClick={() => setSelected(new Set(accounts.map((a) => a.id)))}>All</button>
-              <button className="text-fg-dim hover:underline" onClick={() => setSelected(new Set())}>None</button>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 max-h-56 overflow-auto border border-border rounded-lg p-2">
-            {accounts.map((a) => (
-              <label key={a.id} className="flex items-center gap-2 text-sm py-0.5 cursor-pointer">
-                <input type="checkbox" checked={selected.has(a.id)} onChange={() => toggleModel(a.id)} />
-                <span className="truncate">{a.nickname || a.id}</span>
-              </label>
-            ))}
-          </div>
-          <Button onClick={applyToModels} disabled={bulkM.isPending || selected.size === 0}>
-            <Rocket className="size-4" />
-            {bulkM.isPending ? "Applying…" : `Apply to ${selected.size} model${selected.size === 1 ? "" : "s"}`}
-          </Button>
-          {bulkMsg && <div className="text-sm text-accent border-t border-border pt-3">{bulkMsg}</div>}
-        </Card>
-      )}
-
-      <Collapsible open={helpOpen} onToggle={() => setHelpOpen((v) => !v)} title="How Mass Nudge works (full explanation)">
+      <Collapsible open={helpOpen} onToggle={() => setHelpOpen((v) => !v)} title="Online Blast vs Mass Nudge (when to use which)">
         <div className="text-sm text-fg-dim space-y-2 leading-relaxed">
           <p>
-            On its cadence, Mass Nudge sends <b>one</b> broadcast to every fan online at that moment
-            (OnlyFans resolves “online” server-side). It picks a line + image from the pool for the
-            current time of day / day of week and rotates through the lines over time. No
-            personalization — the same message to the whole online crowd — which is why it scales to
-            high-traffic accounts where a per-fan nudge would mean hundreds of DMs.
+            <b>Online Blast</b> fires <b>one</b> OnlyFans broadcast to everyone online at that moment —
+            OF resolves “online” server-side, so the cost is a <b>single API call no matter how many are
+            online</b>. That’s what makes it safe for 100k-fan accounts where tens of thousands can be
+            online at once. The trade: no per-fan memory, so the <b>cadence is the cooldown</b> — run it
+            hourly, not every few minutes.
           </p>
           <p>
-            <b>Nudge online vs Mass Nudge.</b> Nudge online sends a personalized, delayed DM to each
-            fan as they come online (best for normal accounts). Mass Nudge sends a single broadcast to
-            everyone online on a timer (best for high traffic). You can run either or both.
+            <b>Mass Nudge</b> instead resolves the online fans and sends them individually, which lets it
+            keep a precise per-fan cooldown (won’t re-nudge the same fan for N hours) — but it caps out at
+            a few thousand online. Use Mass Nudge for normal accounts, Online Blast for the giants.
           </p>
           <p>
-            <b>Exclude / unsend.</b> “Exclude DMed within N hours” keeps the blast off fans you’re
-            already chatting with. “Auto-unsend after N hours” cleans it up afterward. Images: one is
-            sent per broadcast (rotated), not all in a slot.
+            <b>Dedup.</b> Both “Skip DMed within” and “Skip repliers within” keep the blast off fans
+            you’re already talking to — outbound and inbound respectively. “Auto-unsend after N hours”
+            cleans the broadcast up afterward. Images: one is sent per broadcast (rotated), not all.
           </p>
         </div>
       </Collapsible>

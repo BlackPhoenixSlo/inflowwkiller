@@ -18,6 +18,7 @@ export interface MassNudgeConfig {
   with_image?: boolean;
   online_only?: boolean;
   exclude_replied_hours?: number | null;
+  exclude_inbound_hours?: number | null;
   unsend_after_hours?: number | null;
   slots?: NudgeSlots;
 }

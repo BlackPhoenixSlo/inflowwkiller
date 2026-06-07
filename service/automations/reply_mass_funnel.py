@@ -88,7 +88,10 @@ import automation_executor as ax  # _make_client / _parse_iso / _to_cents / leas
 import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from automation_registry import register
-from ._common import apply_word_restriction, resolve_model
+from ._common import (
+    apply_word_restriction, hold_with_typing, load_typing_indicator,
+    load_typing_wpm, resolve_model, typing_delay_seconds,
+)
 from db.engine import get_session
 from db.models import AccountAiConfig, FunnelState, MassMessageFunnel, MassRun, Message
 from llm_client import LLMCapExceeded
@@ -376,6 +379,7 @@ async def _step_texts(
 async def _send_step(
     client, account_id: str, fan_id: int, mass_run_id: int, step: dict,
     texts: list[str], is_ppv: bool,
+    *, typing_wpm: float = 0.0, typing_indicator: bool = False,
 ) -> int:
     """Send the step's message(s) and persist each outbound row (tagged
     mass_run_id + funnel_step, emit_live for the WORKER→SSE bridge). Returns the
@@ -411,12 +415,21 @@ async def _send_step(
                 if previews:
                     kwargs["previews"] = previews
 
-        if i > 0 and _STEP_GAP_S:
-            await asyncio.sleep(_jittered_gap())  # ~typing pause between bubbles
-
         # Last-mile OF-restricted word substitution — covers both the LLM step
-        # replies and any verbatim funnel copy (V1 filtered every send).
+        # replies and any verbatim funnel copy (V1 filtered every send). Done
+        # before the typing hold so the delay matches the text actually sent.
         text = apply_word_restriction(text)
+
+        # Subsequent bubbles get a human pause first, then EVERY bubble holds for
+        # the time it'd take to TYPE it — both waits show the live "...is typing"
+        # bubble to the fan when the indicator is enabled.
+        if i > 0 and _STEP_GAP_S:
+            await hold_with_typing(account_id, fan_id, _jittered_gap(),
+                                   typing_indicator=typing_indicator)
+        await hold_with_typing(account_id, fan_id,
+                               typing_delay_seconds(text, typing_wpm),
+                               typing_indicator=typing_indicator)
+
         result = await asyncio.to_thread(client.send_message, fan_id, text, **kwargs)
         msg_id = result.get("id") if isinstance(result, dict) else None
         if not msg_id:
@@ -452,6 +465,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     max_chats = int(payload.get("max_chats") or _DEFAULT_MAX_CHATS)
 
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
+    typing_wpm = await load_typing_wpm(account_id)            # per-bubble pacing
+    typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     persona = await _load_persona(account_id)
 
     runs = await _active_mass_runs(account_id, only_run)
@@ -552,7 +567,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
                 try:
                     n = await _send_step(client, account_id, fan_id, mass_run_id,
-                                         step, texts, is_ppv)
+                                         step, texts, is_ppv,
+                                         typing_wpm=typing_wpm,
+                                         typing_indicator=typing_indicator)
                 except Exception:
                     errors += 1
                     log.warning("reply_mass_funnel send failed account=%s fan=%s step=%s",

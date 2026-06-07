@@ -40,6 +40,9 @@ _NUM_KEYS = {
     "delay_minutes", "jitter_minutes", "gap_minutes", "min_hours_between_nudges",
     "max_per_tick", "max_online_scan", "online_recent_minutes",
     "welcome_grace_hours", "active_convo_hours", "max_no_reply",
+    # Spend tier (null/omitted = off; the loop skips None so it stays off).
+    "min_lifetime_spend_cents", "max_lifetime_spend_cents", "recent_spend_days",
+    "min_recent_spend_cents", "max_recent_spend_cents",
 }
 
 

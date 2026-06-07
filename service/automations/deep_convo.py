@@ -83,8 +83,11 @@ from db.engine import get_session
 from db.models import AccountAiConfig, Blacklist, Fan, FanProfile, Message
 from llm_client import LLMCapExceeded
 from ._common import (
-    apply_word_restriction, build_facts_note, build_structured_nickname, coerce_ids,
-    facts_from_fan, push_nick_and_notes, resolve_model,
+    STYLE_HUMANIZER, apply_word_restriction, build_facts_note,
+    build_structured_nickname, casualize_qtease, coerce_ids, facts_from_fan,
+    hold_with_typing, humanize_typos, load_style_flags, load_typing_indicator,
+    load_typing_wpm, load_typo_flags, push_nick_and_notes, resolve_model,
+    typing_delay_seconds,
 )
 
 log = logging.getLogger("of-relay.automation.deep_convo")
@@ -104,7 +107,7 @@ _REPLY_MAX_CHARS = 600            # trim a runaway generation before sending
 # generic 30-min W3 rest would freeze it. Use a short ~1-2 min cooldown AND
 # RELEASE the lease on success (see finally) — keeping the 900s lease would block
 # the fan's own next step (a fan reply 2 min after our Q) for the full 15 min.
-_REPLY_COOLDOWN_S = 90            # 1.5 min between our turns to the same fan
+_REPLY_COOLDOWN_S = 15            # short rest between our turns to the same fan
 # chatted_1 double-texts (reply then tease) — sleep a human-ish typing pause
 # between them so they don't post in the same instant (like reply_mass_funnel).
 # Jittered ±_STEP_GAP_JITTER; tests set _STEP_GAP_S = 0 to skip.
@@ -273,7 +276,8 @@ async def _gather_messages(account_id: str, fan_ids: set[int]) -> dict[int, _Can
     return out
 
 
-def _build_messages(persona: str, f: Fan, c: _Candidate) -> list[dict]:
+def _build_messages(persona: str, f: Fan, c: _Candidate,
+                    style_on: bool = False) -> list[dict]:
     """Compose the (system, user) pair for an in-between reply during the drill
     (the Q + Tease themselves are sent verbatim from the profile — not generated)."""
     facts = []
@@ -301,6 +305,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate) -> list[dict]:
         "start. Keep it short, 1 question max, max 2 verbs. Never sound like a bot — "
         "you are 100% human, girly, warm. Don't offer pics or videos. Do NOT use any "
         "emojis in this reply.\n\n"
+        f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
         "IMPORTANT: your reply is ONLY the chat message text. Never include JSON, "
         "code blocks, curly braces, or any metadata. Just text him back."
     )
@@ -355,12 +360,15 @@ async def _push_profile(client, account_id: str, fan_id: int, f: Fan) -> None:
                   account_id, fan_id, exc_info=True)
 
 
-async def _send(client, account_id: str, fan_id: int, text: str) -> bool:
-    """Send one message + persist it through the optimistic path. Returns True on
-    a 200 (whether or not OF echoed an id). Raises on a transport failure so the
-    caller can leave state un-advanced and retry next tick."""
-    text = _strip_emojis(text)  # deep_convo is emoji-free (covers Q, replies, tease)
-    text = apply_word_restriction(text)  # last-mile OF-restricted word substitution
+async def _send_one(client, account_id: str, fan_id: int, text: str,
+                    typing_wpm: float, typing_indicator: bool) -> None:
+    """Hold for the typing delay, send one bubble, persist via the optimistic
+    path. Raises on a transport failure (caller decides whether to swallow)."""
+    await hold_with_typing(
+        account_id, int(fan_id),
+        typing_delay_seconds(text, typing_wpm),
+        typing_indicator=typing_indicator,
+    )
     result = await asyncio.to_thread(client.send_message, fan_id, text)
     msg_id = result.get("id") if isinstance(result, dict) else None
     if msg_id:
@@ -380,6 +388,40 @@ async def _send(client, account_id: str, fan_id: int, text: str) -> bool:
         # row later. NEVER leave state such that the fan is re-messaged.
         log.warning("deep_convo send returned no id account=%s fan=%s — "
                     "advancing state on the 200 (no-id contract)", account_id, fan_id)
+
+
+async def _send(client, account_id: str, fan_id: int, text: str,
+                *, typing_wpm: float | None = None,
+                typing_indicator: bool | None = None,
+                typo: bool = False, protect=()) -> bool:
+    """Send one message + persist it through the optimistic path. Returns True on
+    a 200 (whether or not OF echoed an id). Raises on a transport failure so the
+    caller can leave state un-advanced and retry next tick.
+
+    typing_wpm / typing_indicator are loaded once per run by the caller and
+    threaded in; they fall back to a per-call load when omitted. When `typo` is
+    on, the message may pick up a realistic thumb-slip and an optional follow-up
+    "*fix" bubble — the FIRST bubble is the real message (its failure raises, as
+    before); the cosmetic "*fix" is best-effort and never fails the send."""
+    text = _strip_emojis(text)  # deep_convo is emoji-free (covers Q, replies, tease)
+    text = apply_word_restriction(text)  # last-mile OF-restricted word substitution
+    if typing_wpm is None:
+        typing_wpm = await load_typing_wpm(account_id)
+    if typing_indicator is None:
+        typing_indicator = await load_typing_indicator(account_id)
+
+    parts = [text]
+    if typo:
+        parts = humanize_typos([text], random.Random(f"{fan_id}:{text}"),
+                               protect=protect, max_bubbles=2) or [text]
+
+    main, *extra = parts
+    await _send_one(client, account_id, fan_id, main, typing_wpm, typing_indicator)
+    for fix in extra:  # the "*fix" bubble is cosmetic — never fail the send on it
+        try:
+            await _send_one(client, account_id, fan_id, fix, typing_wpm, typing_indicator)
+        except Exception:
+            log.debug("deep_convo *fix bubble send failed (cosmetic)", exc_info=True)
     return True
 
 
@@ -393,11 +435,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     max_sends = int(payload.get("max_sends") or _DEFAULT_MAX_SENDS)
     max_spend_cents = int(payload.get("max_spend_cents") or _MAX_SPEND_CENTS)
     force_ids = coerce_ids(payload.get("force_ids"))
+    # W7 fan-scope: drill ONLY the fan(s) who just messaged (no full sweep). Keeps
+    # all gates — it only limits the candidate set.
+    only_fan_ids = coerce_ids(payload.get("only_fan_ids"))
 
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
+    style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
+    typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
+    typing_wpm = await load_typing_wpm(account_id)            # per-bubble pacing
+    typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     persona = await _load_persona(account_id)
     blacklist = await _load_blacklist()
     profiles, skipped_no_qtease = await _load_profiles(account_id)  # both present
+    if only_fan_ids:
+        profiles = {fid: v for fid, v in profiles.items() if fid in only_fan_ids}
 
     now = datetime.utcnow()
     skipped_listed = 0          # blacklist / paused
@@ -481,6 +532,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         c = by_fan.get(fan_id) or _Candidate(fan_id)
         f = fans.get(fan_id) or Fan(account_id=str(account_id), fan_id=fan_id)
         q, tease = profiles[fan_id]
+        if style_on:  # casualize the proper-case scripted Q/Tease to match the voice
+            q, tease = casualize_qtease(q), casualize_qtease(tease)
+        typo_protect = [n for n in (f.real_name, f.generated_nickname,
+                                    f.of_display_name) if n]  # never garble names
 
         # Reply-gated states (incl. the not-yet-started Q) only fire when the fan
         # spoke last — the Q/replies always come AFTER his message, never before.
@@ -516,12 +571,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # Don't talk past him: if he asked something, answer it in one short
                 # bubble first, THEN send the scripted Q (human-ish typing pause between).
                 if _fan_asked(c):
-                    lead = await _generate_leadin(model, persona, f, c, account_id, fan_id)
+                    lead = await _generate_leadin(model, persona, f, c, account_id, fan_id,
+                                                  style_on=style_on)
                     if lead:
-                        await _send(client, account_id, fan_id, lead)
+                        await _send(client, account_id, fan_id, lead,
+                                    typing_wpm=typing_wpm, typing_indicator=typing_indicator,
+                            typo=typo_on, protect=typo_protect)
                         if _STEP_GAP_S:
-                            await asyncio.sleep(_jittered_gap())
-                await _send(client, account_id, fan_id, q)
+                            await hold_with_typing(account_id, fan_id, _jittered_gap(),
+                                                   typing_indicator=typing_indicator)
+                await _send(client, account_id, fan_id, q,
+                            typing_wpm=typing_wpm, typing_indicator=typing_indicator,
+                            typo=typo_on, protect=typo_protect)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now, deep_convo_state=_S_Q_SENT,
                                   deep_convo_q_text=q, deep_convo_tease_text=tease,
@@ -533,7 +594,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _push_profile(client, account_id, fan_id, f)
 
             elif state == _S_Q_SENT:
-                reply = await _generate(model, persona, f, c, account_id, fan_id)
+                reply = await _generate(model, persona, f, c, account_id, fan_id,
+                                       style_on=style_on)
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -543,7 +605,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 if dry_run:
                     sent += 1
                     continue
-                await _send(client, account_id, fan_id, reply)
+                await _send(client, account_id, fan_id, reply,
+                            typing_wpm=typing_wpm, typing_indicator=typing_indicator,
+                            typo=typo_on, protect=typo_protect)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now,
                                   deep_convo_state=_S_CHATTED_1, **reset)
@@ -551,7 +615,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 advanced += 1
 
             elif state == _S_CHATTED_1:
-                reply = await _generate(model, persona, f, c, account_id, fan_id)
+                reply = await _generate(model, persona, f, c, account_id, fan_id,
+                                       style_on=style_on)
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -563,15 +628,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     continue
                 # Send the reply, checkpoint at the transient chatted_2 (so a crash
                 # before the Tease recovers by sending ONLY the Tease), then Tease.
-                await _send(client, account_id, fan_id, reply)
+                await _send(client, account_id, fan_id, reply,
+                            typing_wpm=typing_wpm, typing_indicator=typing_indicator,
+                            typo=typo_on, protect=typo_protect)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now,
                                   deep_convo_state=_S_CHATTED_2, **reset)
                 advanced += 1
                 tease_text = f.deep_convo_tease_text or tease
-                if _STEP_GAP_S:  # typing pause before the second bubble
-                    await asyncio.sleep(_jittered_gap())
-                await _send(client, account_id, fan_id, tease_text)
+                if _STEP_GAP_S:  # typing pause before the second bubble (shows "...is typing")
+                    await hold_with_typing(account_id, fan_id, _jittered_gap(),
+                                           typing_indicator=typing_indicator)
+                await _send(client, account_id, fan_id, tease_text,
+                            typing_wpm=typing_wpm, typing_indicator=typing_indicator,
+                            typo=typo_on, protect=typo_protect)
                 await _save_state(account_id, fan_id, now, deep_convo_state=_S_DONE)
                 sent += 1
                 completed += 1
@@ -582,7 +652,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     sent += 1
                     continue
                 tease_text = f.deep_convo_tease_text or tease
-                await _send(client, account_id, fan_id, tease_text)
+                await _send(client, account_id, fan_id, tease_text,
+                            typing_wpm=typing_wpm, typing_indicator=typing_indicator,
+                            typo=typo_on, protect=typo_protect)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now, deep_convo_state=_S_DONE)
                 sent += 1
@@ -640,13 +712,14 @@ _CAP = object()
 
 
 async def _generate(model: str, persona: str, f: Fan, c: _Candidate,
-                    account_id: str, fan_id: int) -> str | object:
+                    account_id: str, fan_id: int,
+                    style_on: bool = False) -> str | object:
     """Generate ONE in-between reply. Returns the text, '' on a generation error,
     or the _CAP sentinel when the daily LLM cap is hit (caller stops the run)."""
     try:
         res = await llm_client.chat(
             model=model,
-            messages=_build_messages(persona, f, c),
+            messages=_build_messages(persona, f, c, style_on=style_on),
             purpose=_PURPOSE,
             account_id=account_id,
             fan_id=fan_id,
@@ -673,7 +746,8 @@ def _fan_asked(c: _Candidate) -> bool:
     return False
 
 
-def _leadin_messages(persona: str, f: Fan, c: _Candidate) -> list[dict]:
+def _leadin_messages(persona: str, f: Fan, c: _Candidate,
+                     style_on: bool = False) -> list[dict]:
     history = c.messages[-_HISTORY_TAIL:]
     convo = "\n".join(f"{'FAN' if d == 'in' else 'YOU'}: {b}" for d, b in history if b)
     system = (
@@ -682,20 +756,23 @@ def _leadin_messages(persona: str, f: Fan, c: _Candidate) -> list[dict]:
         "human sentence that DIRECTLY answers / acknowledges his LAST message. Do NOT "
         "ask a question yourself (you'll ask one separately next). If his message is "
         "explicit or asks for nudes/pics, do NOT go along with it — tease and slow it "
-        "down warmly instead. No emojis. Output ONLY the message text."
+        "down warmly instead. No emojis. Output ONLY the message text.\n\n"
+        f"{STYLE_HUMANIZER if style_on else ''}"
     )
     user = f"Recent conversation (oldest→newest):\n{convo}\n\nAnswer his last message in one short sentence."
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 async def _generate_leadin(model: str, persona: str, f: Fan, c: _Candidate,
-                           account_id: str, fan_id: int) -> str:
+                           account_id: str, fan_id: int,
+                           style_on: bool = False) -> str:
     """A short bubble that answers the fan's question BEFORE the scripted Q goes out,
     so the Q doesn't read like a bot talking past him. Best-effort — any failure
     (incl. the LLM cap) just skips the lead-in and we send the Q alone."""
     try:
         res = await llm_client.chat(
-            model=model, messages=_leadin_messages(persona, f, c), purpose=_PURPOSE,
+            model=model, messages=_leadin_messages(persona, f, c, style_on=style_on),
+            purpose=_PURPOSE,
             account_id=account_id, fan_id=fan_id, temperature=_REPLY_TEMPERATURE,
         )
     except Exception:

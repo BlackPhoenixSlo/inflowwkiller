@@ -381,6 +381,29 @@ export default function NudgeOnlineTab() {
             </Hint>
           </div>
 
+          {/* Spend targeting (optional) */}
+          <div>
+            <div className="grid grid-cols-2 gap-4">
+              <DollarField label="Min lifetime spend ($)" cents={num("min_lifetime_spend_cents", 0)}
+                onChange={(c) => set("min_lifetime_spend_cents", c)} />
+              <DollarField label="Max lifetime spend ($)" cents={num("max_lifetime_spend_cents", 0)}
+                onChange={(c) => set("max_lifetime_spend_cents", c)} />
+            </div>
+            <div className="grid grid-cols-3 gap-4 mt-3">
+              <NumField label="Recent window (days)" value={num("recent_spend_days", 30)}
+                onChange={(v) => set("recent_spend_days", v)} min={1} />
+              <DollarField label="Min recent spend ($)" cents={num("min_recent_spend_cents", 0)}
+                onChange={(c) => set("min_recent_spend_cents", c)} />
+              <DollarField label="Max recent spend ($)" cents={num("max_recent_spend_cents", 0)}
+                onChange={(c) => set("max_recent_spend_cents", c)} />
+            </div>
+            <Hint>
+              Only nudge fans in a spend tier (<b>0 = off</b>). <b>Lifetime</b> uses total spend;{" "}
+              <b>recent</b> sums the last <i>N days</i> of transactions. Set a <b>max</b> to target
+              low / keep-warm fans, a <b>min</b> to target spenders, or both for a band.
+            </Hint>
+          </div>
+
           {/* Quiet hours */}
           <div>
             <Field label="Quiet hours (creator-local) — start / end">
@@ -650,6 +673,24 @@ function NumField({
     <Field label={label}>
       <Input type="number" min={min} value={value}
         onChange={(e) => onChange(Number(e.target.value))} />
+    </Field>
+  );
+}
+
+/** Dollar input that stores CENTS; 0/empty saves `null` (= off), so a bound of
+ *  0 never accidentally means "skip every paying fan". */
+function DollarField({
+  label, cents, onChange,
+}: { label: string; cents: number; onChange: (cents: number | null) => void }) {
+  const dollars = cents > 0 ? cents / 100 : 0;
+  return (
+    <Field label={label}>
+      <Input type="number" min={0} step="0.01" placeholder="off"
+        value={dollars || ""}
+        onChange={(e) => {
+          const d = Number(e.target.value);
+          onChange(d > 0 ? Math.round(d * 100) : null);
+        }} />
     </Field>
   );
 }

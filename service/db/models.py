@@ -977,6 +977,19 @@ class AccountAiConfig(Base):
     # this. Kept separate from nudge_config_json to avoid the shallow-merge
     # collision in nudge_online._load_nudge_config.
     webhook_config_json: Mapped[str | None] = mapped_column(Text)
+    # Per-account config for the `autoreply` automation (keep-warm re-engagement
+    # of quiet, low-spend known fans). JSON: {enabled, silence_min_minutes,
+    # silence_max_minutes, max_nudges, min_gap_minutes, max_lifetime_spend_cents,
+    # recent_spend_days, max_recent_spend_cents, min_days_since_purchase,
+    # min_days_since_first_chat, last_n_messages, quiet_hours_json}. Absent/NULL =
+    # OFF. Separate column to avoid the nudge/webhook shallow-merge collision.
+    autoreply_config_json: Mapped[str | None] = mapped_column(Text)
+    # Per-automation opt-in for the "human texting style" package (short/casual
+    # girl voice + 3-bubble splitting + casualized lowercase Q/Tease). JSON
+    # {"of_ai_chat": bool, "autoreply": bool, "deep_convo": bool}. Absent/NULL or
+    # a missing key → OFF for that automation (CURRENT behavior, byte-for-byte).
+    # Own column to avoid the nudge/webhook shallow-merge collision.
+    style_config_json: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = _ts_now()
 
 
@@ -1159,6 +1172,31 @@ class NudgeState(Base):
         # Detector warm-up check + per-account state load.
         Index("ix_nudge_state_account", "account_id", "last_seen_online_at"),
     )
+
+
+class AutoreplyState(Base):
+    """Per-(account, fan) state for the `autoreply` automation — re-engage a quiet,
+    low-spend known fan when WE spoke last and they've gone silent for a few
+    minutes. Tracks the current silence "spell" so we never over-nudge:
+
+      • spell_inbound_at — the fan's last_message_received_at at the time the
+        current spell began. When the fan replies (their received_at advances
+        past this), the spell resets and nudges_sent goes back to 0.
+      • nudges_sent — autoreplies sent in the CURRENT spell; gated by the
+        configurable max_nudges (default 1) so we stop until they reply.
+      • last_nudge_at — enforces min_gap_minutes between nudges in a spell.
+
+    Like nudge_online, autoreply NEVER sets fans.automation_paused_until (it gates
+    on its own cap), so of_ai_chat/deep_convo are never frozen by it.
+    """
+    __tablename__ = "autoreply_state"
+
+    account_id: Mapped[str] = mapped_column(String, primary_key=True)
+    fan_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    spell_inbound_at: Mapped[datetime | None] = mapped_column(DateTime)
+    nudges_sent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_nudge_at: Mapped[datetime | None] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = _ts_now()
 
 
 # ── §4.7 Prompts (editable templates, versioned) ────────────────────
