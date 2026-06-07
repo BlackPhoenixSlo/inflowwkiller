@@ -187,7 +187,9 @@ class OFClient:
         direct WAN). Goes through the same curl_cffi session so we measure
         what real OF calls measure, not Python's default route."""
         try:
-            r = self.http.get("https://api.ipify.org", timeout=timeout_s)
+            r = self._proxy_retry(
+                lambda: self.http.get("https://api.ipify.org", timeout=timeout_s),
+                what="egress-ip")
             if r.ok:
                 return r.text.strip()
         except Exception:
@@ -199,7 +201,13 @@ class OFClient:
     def _ensure_x_hash(self) -> str:
         if self._x_hash:
             return self._x_hash
-        r = self.http.get(
+        # This warmup fires on the FIRST signed request of every fresh client
+        # (and _make_client builds a new client every automation tick), so it
+        # must get the same CONNECT-403 retry as real OF calls — otherwise a
+        # single datacenter proxy blip fails the whole tick/job before
+        # _http_call's _proxy_retry is ever reached (it runs inside
+        # _signed_headers, ahead of the wrapped request).
+        r = self._proxy_retry(lambda: self.http.get(
             f"{HASH_BASE}/?u={self.user_id}",
             headers={
                 "Accept": "application/json, text/plain, */*",
@@ -207,7 +215,7 @@ class OFClient:
                 "User-Agent": self.user_agent,
             },
             timeout=self.timeout_s,
-        )
+        ), what="x-hash")
         r.raise_for_status()
         self._x_hash = r.text.strip()
         return self._x_hash
@@ -2057,11 +2065,14 @@ class OFClient:
         put_url = signed["putUrl"]
 
         # Step 3: PUT bytes to S3 (presigned — no auth needed beyond URL).
-        put_r = self.http.put(
+        # Through _proxy_retry like every other egress call: a CONNECT-403 blip
+        # fails before any body is sent, and the PUT targets a fixed presigned
+        # key, so retrying the same upload is idempotent.
+        put_r = self._proxy_retry(lambda: self.http.put(
             put_url, data=data,
             headers={"Content-Type": ct},
             timeout=max(self.timeout_s, 60),
-        )
+        ), what="s3-upload")
         if not put_r.ok:
             raise OFAPIError(f"S3 PUT failed: {put_r.status_code} {put_r.text[:300]}", response=put_r)
         etag = put_r.headers.get("etag", "").strip('"') or md5_hex
