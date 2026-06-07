@@ -180,7 +180,7 @@ export default function BrainPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [followupRule?.id, followupRule?.is_enabled, followupRule?.every_seconds, JSON.stringify(followupRule?.payload)]);
   // Seed once the config arrives. A blank account (never saved a brain) gets the
-  // Lexi-derived defaults so it has a worked example to show, not an empty form;
+  // Ava-derived defaults so it has a worked example to show, not an empty form;
   // an account with its own brain keeps it. Images are never seeded from defaults.
   useEffect(() => {
     if (form === null && cfgQ.data) {
@@ -428,7 +428,7 @@ export default function BrainPanel() {
               <Input
                 value={form.location ?? ""}
                 onChange={(e) => set("location", e.target.value)}
-                placeholder="e.g. Vancouver Island"
+                placeholder="e.g. Los Angeles"
               />
             </label>
             <label className="block space-y-1">

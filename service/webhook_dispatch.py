@@ -24,7 +24,7 @@ Design notes:
     ({"enabled": bool}); absent/NULL → OFF. The global kill-switch is the env
     var W7_WEBHOOK_DISPATCH_DISABLED (set to 1/true to disable everywhere).
   • Memory: the live detector must NEVER run on jaka (its inbound is stranger/
-    promo spam). The default-OFF gate enforces that — enable Lexi first.
+    promo spam). The default-OFF gate enforces that — enable Ava first.
 """
 from __future__ import annotations
 

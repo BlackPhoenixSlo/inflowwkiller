@@ -109,7 +109,7 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
     return {
         "account_id": account_id,
         "config": _serialize(row),
-        # The Lexi-derived starter brain (no images). The editor seeds a blank
+        # The Ava-derived starter brain (no images). The editor seeds a blank
         # account from this and the "Reset to defaults" button refills from it —
         # so every model has a worked example to show, not an empty form.
         "defaults": BRAIN_DEFAULTS,
@@ -137,7 +137,7 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     location = _clean_text(cfg.get("location"), "location")
     model = _validate_model(cfg.get("model"), "model", allowed)
 
-    # utc_offset — whole hours (e.g. Vancouver −6); sane range, default 0.
+    # utc_offset — whole hours (e.g. Los Angeles −8); sane range, default 0.
     utc_raw = cfg.get("utc_offset", 0)
     if isinstance(utc_raw, bool) or not isinstance(utc_raw, (int, float)):
         raise HTTPException(422, "utc_offset must be a whole number of hours")

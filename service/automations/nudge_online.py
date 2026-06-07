@@ -607,7 +607,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     with_image = payload.get("with_image", cfg.get("with_image", True))
 
     # Test/live scope: pin to exactly ONE fan, bypassing the online scan. Used by
-    # the jaka<->Lexi live driver so a real run can never target anyone else.
+    # the jaka<->Ava live driver so a real run can never target anyone else.
     # `test_force` additionally skips the gates (welcomed/active-convo) for a clean
     # one-shot; the online-recency re-validate still runs (we seed last_seen now).
     test_fan = payload.get("test_fan")
