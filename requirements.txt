@@ -11,6 +11,8 @@ uvicorn[standard]==0.47.0
 curl_cffi==0.15.0
 pydantic==2.13.4
 python-multipart==0.0.29
+# HTTP client for the LLM provider calls (service/llm_client.py — DeepSeek/Grok).
+httpx==0.28.1
 websockets==16.0
 # DB layer (phase A) — SQLAlchemy 2.x async + SQLModel for typed rows + Alembic
 # for versioned migrations. aiosqlite is the async SQLite driver; swap to
