@@ -7,6 +7,10 @@ before-you-run-it** checklist.
 
 > TL;DR: edit the `EDIT BEFORE RUNNING` block at the top of
 > `scripts/deploy-vps.sh`, then `./scripts/deploy-vps.sh`.
+>
+> **New here?** [DEPLOY.md](DEPLOY.md) is a friendlier, illustrated walkthrough
+> of the same steps — and you can paste it straight into Claude Code to have the
+> deploy done with you. This file is the dense reference.
 
 ---
 
@@ -98,7 +102,7 @@ files logs everyone out.
   the `autoreply_state` table, and `style_config_json`. The new code reads them.
 - **`CHATTERLY_DB_URL` vs `DATABASE_URL`:** the app reads `DATABASE_URL`; alembic
   reads `CHATTERLY_DB_URL`. Always point **both** at the same DB.
-- **Sending DB/sessions separately** (your plan): leave `COPY_STATE=0` for the
+- **Sending DB/sessions separately:** leave `COPY_STATE=0` for the
   code deploy, then push state up afterwards:
   ```bash
   scp service/chatterly.db        root@<ip>:~/inflowwkiller/service/chatterly.db
@@ -138,32 +142,20 @@ ssh root@<ip> 'cd ~/inflowwkiller && docker compose --profile tunnel stop tunnel
 
 ---
 
-## 7. Recommended pre-production hardening (optional)
+## 7. Post-deploy account config (do this AFTER migrations)
 
-Open items from review, not blockers — fix on the laptop and re-push when ready:
+These are per-account runtime settings, not code — set them in the dashboard
+after the stack is up. If the server runs a separate DB, they don't travel with
+a code deploy.
 
-- `service/webhook_dispatch.py` / `service/event_transcoder.py`: the inbound
-  dispatch is spawned with bare `asyncio.create_task` (no strong ref) — can be
-  GC'd mid-await, intermittently dropping a real-time reply (falls back to the
-  30s poll). Retain the task in a module-level set + `add_done_callback`.
-- `app/components/automations/FunnelLaunchPanel.tsx`: launch mutation doesn't
-  invalidate the `["messages-queue"]` query, so a just-launched run is invisible
-  and could be re-clicked → double-blast. Invalidate on success.
-
----
-
-## 8. Post-deploy account config (do this AFTER migrations)
-
-These are per-account runtime settings, not code. If the server runs a separate
-DB from the laptop, set them there too — they don't travel with a code deploy.
-
-- **Lexi `silence_min = 30`** — set explicitly on the server. The new default is
-  30 min, but it only applies to accounts with no stored value; Lexi already has
-  a stored value, so set it on the server DB or she keeps the old one.
+- **Fan-messaging automations are live the moment you enable them.** Auto-reply,
+  welcome, follow-up, nudge, and funnel automations send to real fans as soon as
+  they're switched on. Confirm which account each one targets in **Automations →
+  per-feature settings** before enabling. Posting/unsend-only automations are
+  safe to leave on.
 - **`info_not_required` ships OFF everywhere** — the "Info not needed" autoreply
   mode is opt-in. Flip it per-account (Automations → Autoreply) when you want a
-  bot to reply before it has a complete profile.
-- **jaka stays safe** — keep only `auto_stories` + `unsend_messages` enabled on
-  jakabasej. NO fan-messaging automation (of_ai_chat / autoreply / welcome /
-  followup / nudge / funnel) — its inbound is creator-promo spam, so any send
-  there messages a stranger.
+  bot to reply before it has a complete fan profile.
+- **`silence_min` defaults to 30 min** for accounts with no stored value. An
+  account that already has a stored value keeps it — set it explicitly per
+  account if you want to change it.
