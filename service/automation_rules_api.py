@@ -76,6 +76,18 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "force_ids", "type": "ids", "hint": "[fan_id,…] target specific fans"},
         ],
     },
+    "autoreply": {
+        "label": "Auto Convo (reply when the team is slow)", "recurring": True, "surface": "rules",
+        "cadence_default_s": 180,
+        "summary": "Continue the chat with a known low-spend fan when nobody answered his message in time. Never-PPV, no info-gather. Gates (silence window, spend caps, info-complete) live in the Settings → Auto Convo tab.",
+        "example": "every 3m · limit 200 · max_sends 25",
+        "knobs": [
+            {"key": "limit", "type": "int", "min": 1, "default": 200, "hint": "candidate sweep ceiling per tick"},
+            {"key": "max_sends", "type": "int", "min": 1, "default": 25, "hint": "replies sent per tick"},
+            {"key": "model", "type": "str", "hint": "LLM override (else account default)"},
+            {"key": "dry_run", "type": "bool", "hint": "generate but don't send"},
+        ],
+    },
     "send_welcome": {
         "label": "Welcome new subscribers", "recurring": True, "surface": "brain",
         "summary": "Send a generated welcome to fans who haven't been welcomed.",

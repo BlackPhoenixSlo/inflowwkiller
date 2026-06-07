@@ -727,6 +727,11 @@ async def _start_event_pumps() -> None:
     # stays bounded. Retain window via PERFLOG_RETAIN_S (default 7d).
     asyncio.create_task(_perflog_evictor_loop(), name="perflog-evictor")
 
+    # Cap DB growth: NULL out messages.raw_json older than _RAW_JSON_RETAIN_S
+    # (default 60d). The payloads are a write-only migration buffer; left
+    # unbounded they grew the DB to ~1.9 GB. Daily ticks.
+    asyncio.create_task(_raw_json_evictor_loop(), name="raw-json-evictor")
+
     # Phase F: poll OF's /api2/v2/payouts/transactions ledger so per-model
     # stats include subs / tips / PPV unlocks / paid posts. 10-min ticks,
     # sequential per-account refresh, parallel backfill (sem=4). See
@@ -1882,6 +1887,47 @@ async def admin_perflog_recent(
                 for r in rows
             ],
         }
+
+
+# ── messages.raw_json retention ───────────────────────────────────────
+#
+# `raw_json` stores the full OF message payload per row (avg ~8 KB, mostly
+# the media[] array nobody reads back — it's only a migration safety-net).
+# Left unbounded it grew the DB to ~1.9 GB. We keep a recent window so a
+# future backfill still has fresh payloads to read, and NULL anything older.
+#
+# This is a NULL-out, not a row delete — message rows stay intact, only the
+# heavy column is cleared. auto_vacuum is off, so freed pages return to the
+# freelist and are reused by new inserts; the file plateaus rather than
+# growing. To actually shrink the file on disk, run VACUUM manually.
+_RAW_JSON_RETAIN_S = int(os.environ.get("RAW_JSON_RETAIN_S", str(60 * 24 * 60 * 60)))
+_RAW_JSON_EVICT_INTERVAL_S = int(os.environ.get("RAW_JSON_EVICT_INTERVAL_S", str(24 * 60 * 60)))
+
+
+async def _raw_json_evictor_loop() -> None:
+    """Periodic NULL-out of messages.raw_json older than _RAW_JSON_RETAIN_S.
+    Caps DB growth (the payloads are a write-only migration buffer). Runs
+    daily by default; tune via RAW_JSON_RETAIN_S / RAW_JSON_EVICT_INTERVAL_S."""
+    from db.engine import get_session
+    from db.models import Message
+    from sqlalchemy import update as sa_update
+    while True:
+        try:
+            await asyncio.sleep(_RAW_JSON_EVICT_INTERVAL_S)
+            cutoff = datetime.utcnow() - timedelta(seconds=_RAW_JSON_RETAIN_S)
+            async with get_session() as s:
+                res = await s.execute(
+                    sa_update(Message)
+                    .where(Message.created_at < cutoff, Message.raw_json.isnot(None))
+                    .values(raw_json=None)
+                )
+                await s.commit()
+                if (res.rowcount or 0) > 0:
+                    log.info("raw_json evictor cleared %d rows (retain=%ds)", res.rowcount, _RAW_JSON_RETAIN_S)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.warning("raw_json evictor cycle failed", exc_info=True)
 
 
 async def _perflog_evictor_loop() -> None:
