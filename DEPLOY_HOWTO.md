@@ -78,14 +78,26 @@ files logs everyone out.
 
 ## 4. Database, migrations, and "send state later"
 
-- **Schema:** the app builds its schema on boot via `create_all` (it does **not**
-  run `alembic upgrade` on deploy). A fresh `chatterly.db` therefore comes up
-  with the full current schema, automations tables included. The `alembic`
-  migrations in `service/db/migrations/` are for evolving an existing DB, not
-  first boot.
+- **Fresh DB:** the app builds its schema on boot via `create_all`. A brand-new
+  `chatterly.db` comes up with the full current schema (automations tables
+  included) — no migration step needed.
+- **Existing prod DB → YOU MUST RUN MIGRATIONS.** `create_all` only creates
+  *missing tables*; it does **not** add new *columns* to tables that already
+  exist. So when you ship an existing prod DB (the "send state later" path
+  below), run alembic against it or the new code will error on missing columns:
+  ```bash
+  ssh root@<ip>
+  cd ~/inflowwkiller
+  # alembic IGNORES DATABASE_URL — it reads CHATTERLY_DB_URL. Point it at the
+  # SAME sqlite file the relay uses, or it silently migrates the wrong DB.
+  docker compose exec -e CHATTERLY_DB_URL=sqlite:///./service/chatterly.db \
+    relay alembic upgrade head
+  docker compose restart relay
+  ```
+  This head brings: `webhook_config_json`, `autoreply_config_json` +
+  the `autoreply_state` table, and `style_config_json`. The new code reads them.
 - **`CHATTERLY_DB_URL` vs `DATABASE_URL`:** the app reads `DATABASE_URL`; alembic
-  reads `CHATTERLY_DB_URL`. If you ever run migrations manually, point **both**
-  at the same DB or alembic silently targets the wrong file.
+  reads `CHATTERLY_DB_URL`. Always point **both** at the same DB.
 - **Sending DB/sessions separately** (your plan): leave `COPY_STATE=0` for the
   code deploy, then push state up afterwards:
   ```bash
@@ -137,3 +149,21 @@ Open items from review, not blockers — fix on the laptop and re-push when read
 - `app/components/automations/FunnelLaunchPanel.tsx`: launch mutation doesn't
   invalidate the `["messages-queue"]` query, so a just-launched run is invisible
   and could be re-clicked → double-blast. Invalidate on success.
+
+---
+
+## 8. Post-deploy account config (do this AFTER migrations)
+
+These are per-account runtime settings, not code. If the server runs a separate
+DB from the laptop, set them there too — they don't travel with a code deploy.
+
+- **Lexi `silence_min = 30`** — set explicitly on the server. The new default is
+  30 min, but it only applies to accounts with no stored value; Lexi already has
+  a stored value, so set it on the server DB or she keeps the old one.
+- **`info_not_required` ships OFF everywhere** — the "Info not needed" autoreply
+  mode is opt-in. Flip it per-account (Automations → Autoreply) when you want a
+  bot to reply before it has a complete profile.
+- **jaka stays safe** — keep only `auto_stories` + `unsend_messages` enabled on
+  jakabasej. NO fan-messaging automation (of_ai_chat / autoreply / welcome /
+  followup / nudge / funnel) — its inbound is creator-promo spam, so any send
+  there messages a stranger.
