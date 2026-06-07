@@ -5476,6 +5476,30 @@ def _assert_proxy_owned_or_mine(label: str) -> dict[str, Any]:
     return p
 
 
+def _assert_proxy_assignable(label: str) -> dict[str, Any]:
+    """Visibility check for binding/unbinding an account to a proxy.
+
+    Distinct from `_assert_proxy_owned_or_mine`, which gates mutation of the
+    proxy *entity* (upsert/delete) and keeps shared defaults read-only.
+    Attaching YOUR OWN account to a shared-default proxy is the whole point
+    of shipping shared defaults, so it's allowed here — account ownership is
+    enforced separately by `assert_account_owned`, so a friend can only ever
+    bind/unbind an account they own. We still 404 another friend's private
+    proxy (they can't see it, so they can't bind to it by guessing a label).
+    Unauthed requests (cron, share-token bootstrap) bypass.
+    """
+    p = proxy_registry.get_by_label(label)
+    if p is None:
+        raise HTTPException(status_code=404, detail=f"no proxy with label {label!r}")
+    user = _get_request_user()
+    if user is None:
+        return p
+    pu = p.get("user_id")
+    if pu is not None and pu != user.id:
+        raise HTTPException(status_code=404, detail=f"no proxy with label {label!r}")
+    return p
+
+
 @app.post("/admin/proxies")
 def admin_proxies_upsert(body: _ProxyBody = Body(...)) -> dict[str, Any]:
     payload = body.model_dump()
@@ -5522,7 +5546,7 @@ def admin_proxies_assign(body: _AssignBody = Body(...)) -> dict[str, Any]:
 
     Whichever scheme is used, all pooled clients are dropped so the affected
     account picks up the new proxy on its next request."""
-    _assert_proxy_owned_or_mine(body.label)
+    _assert_proxy_assignable(body.label)
     if body.account_id is not None:
         assert_account_owned(body.account_id)
     try:
@@ -5550,7 +5574,7 @@ def admin_proxies_unbind(label: str, body: _UnbindBody = Body(...)) -> dict[str,
     (which now appends rather than replaces) — needed because multi-binding
     made the old `account_id: null` unbind gesture ambiguous (unbind WHICH
     account from the list?)."""
-    _assert_proxy_owned_or_mine(label)
+    _assert_proxy_assignable(label)
     assert_account_owned(body.account_id)
     try:
         entry = proxy_registry.unbind_account(label, body.account_id)
