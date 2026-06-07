@@ -55,6 +55,27 @@ class OFWebSocket:
         self._ws_url: str | None = None
         self._token: str | None = None
         self._stop = asyncio.Event()
+        # The currently-connected socket, set while events() holds an open
+        # connection and cleared on disconnect. Lets other tasks (e.g. the
+        # automation layer) push outbound frames — like the "...is typing"
+        # indicator — over the SAME authenticated, proxy-tunneled connection
+        # instead of opening a second WS. None when not connected.
+        self._live_ws = None
+
+    async def send_typing(self, fan_id: int) -> bool:
+        """Emit OF's typing indicator to `fan_id` over the live pump socket so
+        the fan sees the "...is typing" bubble. OF auto-clears the indicator
+        after a few seconds, so callers re-emit every ~2-3s for a longer hold.
+        Returns False (no-op) when the socket isn't currently connected."""
+        ws = self._live_ws
+        if ws is None:
+            return False
+        try:
+            await ws.send(json.dumps({"act": "typing", "typing_to": int(fan_id)}))
+            return True
+        except Exception:
+            log.debug("send_typing failed (fan=%s)", fan_id, exc_info=True)
+            return False
 
     @classmethod
     def from_latest_session(cls) -> "OFWebSocket":
@@ -107,6 +128,9 @@ class OFWebSocket:
                     proxy=proxy_url,
                 ) as ws:
                     await ws.send(json.dumps({"act": "connect", "token": self._token}))
+                    # Expose the open socket so send_typing()/other tasks can
+                    # push outbound frames on it. Cleared in finally below.
+                    self._live_ws = ws
                     # Background pinger for NAT keepalive
                     pinger = asyncio.create_task(_pinger(ws, self._stop))
                     stop_waiter = asyncio.create_task(self._stop.wait())
@@ -134,6 +158,7 @@ class OFWebSocket:
                                 continue
                             yield msg
                     finally:
+                        self._live_ws = None
                         pinger.cancel()
                         if not stop_waiter.done():
                             stop_waiter.cancel()
@@ -152,6 +177,36 @@ class OFWebSocket:
 
     def stop(self) -> None:
         self._stop.set()
+
+
+# ─── Live-pump registry ───────────────────────────────────────────────────
+# server.py runs one OFWebSocket pump per account in the same event loop as the
+# automation executor. It registers each live pump here so the automation layer
+# can reach the open socket (e.g. to emit the typing indicator) without opening
+# a second WS. Keyed by account_id (str).
+_LIVE_PUMPS: dict[str, "OFWebSocket"] = {}
+
+
+def register_pump(account_id: str, ws: "OFWebSocket") -> None:
+    _LIVE_PUMPS[str(account_id)] = ws
+
+
+def unregister_pump(account_id: str, ws: "OFWebSocket | None" = None) -> None:
+    """Remove the pump for an account. If `ws` is given, only remove it when it
+    is still the registered instance (avoids a restarted pump clobbering a newer
+    registration)."""
+    cur = _LIVE_PUMPS.get(str(account_id))
+    if ws is None or cur is ws:
+        _LIVE_PUMPS.pop(str(account_id), None)
+
+
+async def emit_typing(account_id: str, fan_id: int) -> bool:
+    """Fire the OF typing indicator from `account_id` to `fan_id` over that
+    account's live pump socket. No-op (False) if the pump isn't connected."""
+    ws = _LIVE_PUMPS.get(str(account_id))
+    if ws is None:
+        return False
+    return await ws.send_typing(fan_id)
 
 
 async def _pinger(ws, stop: asyncio.Event) -> None:

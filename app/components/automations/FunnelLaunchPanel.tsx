@@ -145,7 +145,14 @@ export function FunnelLaunchPanel({
     </div>
   );
 
-  const listItems = customLists.map((l) => ({ id: String(l.id), label: l.name }));
+  // OF sometimes tags the built-in "fans"/"following" lists with a type the
+  // filter above misses, so they leak through and collide with SYSTEM_AUDIENCES
+  // (duplicate React keys + duplicate chips). Drop any list whose id already
+  // names a system audience.
+  const systemIds = new Set(SYSTEM_AUDIENCES.map((a) => a.id));
+  const listItems = customLists
+    .map((l) => ({ id: String(l.id), label: l.name }))
+    .filter((it) => !systemIds.has(it.id));
 
   return (
     <Card className="p-4 space-y-4 border-accent/40">

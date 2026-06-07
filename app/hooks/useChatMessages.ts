@@ -100,6 +100,16 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
         throw err;
       }
     },
+    // Final safety net for React key uniqueness. The cache is written by
+    // several paths (initial fetch, load-older merge, optimistic send,
+    // reconcile, SSE append) AND OF itself sometimes returns the same
+    // message twice in one page (pinned rows, pagination-boundary overlap).
+    // Any of those can leave two rows with the same id, which makes
+    // MessageList emit duplicate `key={String(m.id)}` children. Dedup here,
+    // first-occurrence-wins, so the rendered list is always unique without
+    // every writer having to defend independently. structuralSharing keeps
+    // the reference stable when nothing actually changed.
+    select: dedupById,
     staleTime: STALE_MS,
     refetchInterval: enabled ? (sseConnected ? POLL_MS_REALTIME : POLL_MS_OFFLINE) : false,
     // Override the global `false`: with two windows showing the same
@@ -175,6 +185,23 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
   const reconcileLocal = useCallback(
     (tempId: number, serverMsg: OFMessage) => {
       qc.setQueryData<OFMessage[]>(queryKey, (prev = []) => {
+        const opt = prev.find((m) => m._tempId === tempId);
+        const serverId = String(serverMsg.id);
+        // SSE can echo the outbound message (real id) before this HTTP
+        // reconcile resolves. If that row already exists, stamping the
+        // same id onto the optimistic row would create two rows with the
+        // same React key. Instead, fold the optimistic media fallback
+        // onto the existing real row and drop the placeholder.
+        const existingReal = prev.find(
+          (m) => m._tempId !== tempId && String(m.id) === serverId,
+        );
+        if (existingReal) {
+          return prev
+            .filter((m) => m._tempId !== tempId)
+            .map((m) =>
+              m === existingReal && opt ? mergeMedia(opt, m) : m,
+            );
+        }
         return prev.map((m) => (m._tempId === tempId ? mergeMedia(m, serverMsg) : m));
       });
     },
@@ -216,6 +243,24 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
     failLocal,
     dropLocal,
   };
+}
+
+/** Drop rows that repeat an id, keeping the first occurrence so render
+ *  identity (and thus scroll position / mounted Bubble state) stays stable.
+ *  Returns the same array reference when there were no dups, so React Query's
+ *  structural sharing doesn't see a spurious change. Optimistic rows (id ≤ 0)
+ *  carry distinct negative ids per send, so they're never collapsed here. */
+function dedupById(list: OFMessage[]): OFMessage[] {
+  const seen = new Set<string>();
+  let hasDup = false;
+  const out: OFMessage[] = [];
+  for (const m of list) {
+    const k = String(m.id);
+    if (seen.has(k)) { hasDup = true; continue; }
+    seen.add(k);
+    out.push(m);
+  }
+  return hasDup ? out : list;
 }
 
 /** Merge optimistic media's `files` into a server response — OF's CDN

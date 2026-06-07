@@ -254,13 +254,28 @@ _CATALOG: dict[str, dict[str, Any]] = {
     "mass_nudge": {
         "label": "Mass Nudge (broadcast to everyone online)", "recurring": True, "surface": "ready_made",
         "summary": "On a schedule, broadcast ONE time-of-day message + image to all fans online now (no personalization). For high-traffic accounts. Config lives in the Settings → Mass Nudge tab.",
-        "example": "every 30m · with_image on · exclude_replied_hours 6 · unsend_after_hours 12",
+        "example": "every 5m · with_image on · exclude_replied_hours 12 · unsend_after_hours 12",
         "knobs": [
             {"key": "with_image", "type": "bool", "default": True, "hint": "attach the slot's image (one, rotated)"},
-            {"key": "exclude_replied_hours", "type": "int", "min": 0, "hint": "skip fans we DMed in the last N hours"},
+            {"key": "exclude_replied_hours", "type": "int", "min": 0, "default": 12, "hint": "cooldown: don't re-nudge (or blast) a fan nudged/DMed in the last N hours"},
+            {"key": "exclude_inbound_hours", "type": "int", "min": 0, "default": 12, "hint": "also skip fans who messaged US in the last N hours (active repliers)"},
+            {"key": "max_online", "type": "int", "min": 1, "default": 500, "hint": "cap the online-fan scan per run"},
             {"key": "unsend_after_hours", "type": "int", "min": 0, "hint": "auto-unsend the broadcast after N hours"},
             {"key": "slots", "type": "json", "hint": "day-bucket → slot → {text:[...], image:[...]}"},
-            {"key": "dry_run", "type": "bool", "hint": "compose + resolve, send nothing"},
+            {"key": "dry_run", "type": "bool", "hint": "resolve audience, send nothing"},
+        ],
+    },
+    "online_blast": {
+        "label": "Online Blast (scale broadcast to all online)", "recurring": True, "surface": "ready_made",
+        "summary": "ONE OnlyFans list-broadcast to EVERY fan online now — OF resolves the audience server-side, so it scales to 100k-fan accounts (tens of thousands online) in a single call. No per-fan cooldown; skips anyone you've chatted with recently in BOTH directions. Run hourly, not every few minutes.",
+        "example": "every 1h · with_image on · exclude_replied_hours 8 · exclude_inbound_hours 8 · unsend_after_hours 1",
+        "knobs": [
+            {"key": "with_image", "type": "bool", "default": True, "hint": "attach the slot's image (one, rotated)"},
+            {"key": "exclude_replied_hours", "type": "int", "min": 0, "default": 8, "hint": "skip fans we DMed in the last N hours (0 = off)"},
+            {"key": "exclude_inbound_hours", "type": "int", "min": 0, "default": 8, "hint": "skip fans who messaged US in the last N hours (0 = off)"},
+            {"key": "unsend_after_hours", "type": "int", "min": 0, "default": 1, "hint": "auto-unsend the broadcast after N hours (0 = keep)"},
+            {"key": "slots", "type": "json", "hint": "day-bucket → slot → {text:[...], image:[...]}"},
+            {"key": "dry_run", "type": "bool", "hint": "compose + resolve exclusions, send nothing"},
         ],
     },
     "mass_premade": {

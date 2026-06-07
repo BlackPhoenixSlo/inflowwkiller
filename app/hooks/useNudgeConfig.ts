@@ -48,6 +48,12 @@ export interface NudgeConfig {
   active_convo_hours?: number;
   max_no_reply?: number;
   require_welcomed?: boolean;
+  // Spend tier (cents; null/absent = off). Lifetime + a rolling N-day window.
+  min_lifetime_spend_cents?: number | null;
+  max_lifetime_spend_cents?: number | null;
+  recent_spend_days?: number;
+  min_recent_spend_cents?: number | null;
+  max_recent_spend_cents?: number | null;
   quiet_hours?: [number, number];
   slots?: NudgeSlots;
 }

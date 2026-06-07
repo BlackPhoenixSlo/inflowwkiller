@@ -41,7 +41,7 @@ from automation_registry import register
 from db.engine import get_session
 from db.models import (
     AccountAiConfig, Blacklist, Fan, FanLease, Message, NudgeState,
-    SkipList, WelcomeSent,
+    SkipList, Transaction, WelcomeSent,
 )
 from . import send_welcome  # reuse _slot_key / _resolve_welcome_name / _model_hour
 from ._common import substitute_placeholders
@@ -81,6 +81,14 @@ _DEFAULT_NUDGE_CONFIG: dict = {
     "welcome_grace_hours": 1,     # …and not within this many hours (welcome+nudge collision)
     "active_convo_hours": 6,      # recent outbound / unanswered inbound ⇒ mid-thread, skip
     "max_no_reply": 3,            # stop after this many nudges with no reply since
+    # Spend tier (optional; null = off). Lifetime reads Fan.lifetime_spend_cents;
+    # the rolling window sums Transaction.amount_cents over the last N days. Set a
+    # min to target spenders, a max to target low/keep-warm fans, or both.
+    "min_lifetime_spend_cents": None,
+    "max_lifetime_spend_cents": None,
+    "recent_spend_days": 30,      # the Y-day window for the recent-spend bounds
+    "min_recent_spend_cents": None,
+    "max_recent_spend_cents": None,
     "slots": {
         "default": {
             "morning_1": {"text": [
@@ -204,16 +212,57 @@ def _in_quiet_hours(cfg: dict) -> bool:
     return hour >= start or hour < end  # wraps past midnight
 
 
+def _spend_bound(v) -> int | None:
+    """Coerce a config spend bound to int cents, or None when unset/off."""
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _spend_gate_reason(
+    s, account_id: str, fan_id: int, fan, cfg: dict, now: datetime,
+) -> str | None:
+    """Optional spend tier: lifetime (Fan.lifetime_spend_cents) + a rolling Y-day
+    window (sum of Transaction.amount_cents over `recent_spend_days`), each with
+    min/max bounds. All bounds null → no filtering. Uses the caller's session so
+    it adds at most ONE extra query, and only when a recent bound is set."""
+    life = int(getattr(fan, "lifetime_spend_cents", 0) or 0) if fan is not None else 0
+    lo, hi = _spend_bound(cfg.get("min_lifetime_spend_cents")), _spend_bound(cfg.get("max_lifetime_spend_cents"))
+    if lo is not None and life < lo:
+        return "spend_below_min"
+    if hi is not None and life > hi:
+        return "spend_above_max"
+
+    rlo, rhi = _spend_bound(cfg.get("min_recent_spend_cents")), _spend_bound(cfg.get("max_recent_spend_cents"))
+    if rlo is not None or rhi is not None:
+        days = _spend_bound(cfg.get("recent_spend_days")) or 30
+        since = now - timedelta(days=int(days))
+        recent = int((await s.execute(
+            select(func.coalesce(func.sum(Transaction.amount_cents), 0)).where(
+                Transaction.account_id == str(account_id),
+                Transaction.fan_id == int(fan_id),
+                Transaction.occurred_at >= since))).scalar_one() or 0)
+        if rlo is not None and recent < rlo:
+            return "recent_spend_below_min"
+        if rhi is not None and recent > rhi:
+            return "recent_spend_above_max"
+    return None
+
+
 async def _gate_skip_reason(
     account_id: str, fan_id: int, cfg: dict, now: datetime,
     *, fan_obj: dict | None = None, at_fire: bool = False,
 ) -> str | None:
     """Return a skip-reason string, or None if the fan passes every gate.
 
-    1 is_bot · 2 blacklist/skiplist · 3 welcomed-grace · 4 active-convo (live
-    lease / recent outbound / unanswered inbound) · 5 re-engagement cap · 6
-    no-reply backoff · 7 muted (detect only — needs the online object) · 8 quiet
-    hours. The fan_lease (9) is acquired by the fire-job, not here."""
+    1 is_bot · 2 blacklist/skiplist · 2b spend tier (lifetime + recent window) ·
+    3 welcomed-grace · 4 active-convo (live lease / recent outbound / unanswered
+    inbound) · 5 re-engagement cap · 6 no-reply backoff · 7 muted (detect only —
+    needs the online object) · 8 quiet hours. The fan_lease (9) is acquired by the
+    fire-job, not here."""
     async with get_session() as s:
         fan = await s.get(Fan, (str(account_id), int(fan_id)))
         if fan is not None and fan.is_bot:
@@ -222,6 +271,10 @@ async def _gate_skip_reason(
             return "blacklist"
         if await s.get(SkipList, (str(account_id), int(fan_id))) is not None:
             return "skiplist"
+
+        spend_reason = await _spend_gate_reason(s, account_id, fan_id, fan, cfg, now)
+        if spend_reason:
+            return spend_reason
 
         if cfg.get("require_welcomed", True):
             ws = await s.get(WelcomeSent, (str(account_id), int(fan_id)))

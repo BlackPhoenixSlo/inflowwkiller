@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from auth import assert_account_owned
+from brain_defaults import BRAIN_DEFAULTS
 from db.engine import get_session
 from db.models import AccountAiConfig
 
@@ -108,6 +109,10 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
     return {
         "account_id": account_id,
         "config": _serialize(row),
+        # The Lexi-derived starter brain (no images). The editor seeds a blank
+        # account from this and the "Reset to defaults" button refills from it —
+        # so every model has a worked example to show, not an empty form.
+        "defaults": BRAIN_DEFAULTS,
         "slots": list(TIME_SLOTS),
         "model_options": _model_options(),
         "purposes": list(PURPOSES),

@@ -28,9 +28,22 @@ import { MassMessageComposer } from "@/components/compose/MassMessageComposer";
 import { PremadeForm } from "@/components/compose/PremadeComposer";
 import { relay } from "@/lib/relay";
 import { useEmployee } from "@/contexts/EmployeeContext";
+import {
+  useStyleConfig,
+  useSaveStyleConfig,
+  type StyleConfig,
+} from "@/hooks/useStyleConfig";
 
 type Unit = "seconds" | "minutes" | "hours";
 const UNIT_S: Record<Unit, number> = { seconds: 1, minutes: 60, hours: 3600 };
+
+/** The chat automations that support the per-account "human style" + "typos"
+ *  opt-ins (mirrors STYLE_AUTOMATIONS on the backend). The toggles read/write the
+ *  account's style_config_json, keyed by kind — the SAME source the Auto Convo
+ *  tab edits, so the two surfaces stay in sync. */
+const STYLE_KINDS = ["of_ai_chat", "autoreply", "deep_convo"] as const;
+const isStyleKind = (k: string): k is (typeof STYLE_KINDS)[number] =>
+  (STYLE_KINDS as readonly string[]).includes(k);
 
 /** Largest whole unit that divides `secs` cleanly, for a tidy default display. */
 function splitInterval(secs: number): { value: number; unit: Unit } {
@@ -110,6 +123,21 @@ export default function RuleEditor({
     editing?.quiet_hours ? String(editing.quiet_hours[1]) : "",
   );
   const [err, setErr] = useState<string | null>(null);
+
+  // Per-account "human style" + "typos" opt-ins (only for the chat kinds). Read
+  // from / written to style_config_json — the same store the Auto Convo tab uses.
+  const styleCfgQ = useStyleConfig(accountId);
+  const saveStyleM = useSaveStyleConfig(accountId);
+  const [humanStyle, setHumanStyle] = useState(false);
+  const [typos, setTypos] = useState(false);
+  useEffect(() => {
+    const c: StyleConfig = {
+      ...(styleCfgQ.data?.defaults ?? {}),
+      ...(styleCfgQ.data?.config ?? {}),
+    };
+    setHumanStyle(Boolean(c[kind as keyof StyleConfig]));
+    setTypos(Boolean(c[`typos_${kind}` as keyof StyleConfig]));
+  }, [styleCfgQ.data, kind]);
 
   const meta = useMemo(() => kinds.find((k) => k.kind === kind), [kinds, kind]);
   const knobs = meta?.knobs ?? [];
@@ -316,6 +344,20 @@ export default function RuleEditor({
           is_enabled: enabled,
         });
       }
+      // Persist the style/typos opt-ins (chat kinds only). The backend MERGES, so
+      // sending just this automation's two keys won't touch the others' flags.
+      if (isStyleKind(kind)) {
+        try {
+          await saveStyleM.mutateAsync({
+            [kind]: humanStyle,
+            [`typos_${kind}`]: typos,
+          } as StyleConfig);
+        } catch (e) {
+          // The rule already saved — surface the style failure but don't block.
+          setErr(`Rule saved, but style toggles failed: ${(e as Error)?.message}`);
+          return;
+        }
+      }
       onClose();
     } catch (e) {
       setErr((e as Error)?.message || "Save failed");
@@ -514,6 +556,38 @@ export default function RuleEditor({
         <div className="space-y-2">
           <span className="text-[11px] uppercase tracking-wide text-fg-dim">Run now</span>
           <OnboardRecentCard accountId={accountId} />
+        </div>
+      )}
+
+      {/* Texting style — chat kinds only. Account-wide for this automation; saved
+       *  together with the rule. Mirrors the Auto Convo tab's Style/Typos card. */}
+      {isStyleKind(kind) && (
+        <div className="rounded-lg border border-border bg-bg-elev-1 px-3 py-2.5 space-y-2">
+          <div className="text-[11px] uppercase tracking-wide text-fg-dim">
+            Texting style <span className="lowercase tracking-normal">(applies to this automation, account-wide)</span>
+          </div>
+          <div className="flex flex-wrap gap-x-6 gap-y-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={humanStyle}
+                onChange={(e) => setHumanStyle(e.target.checked)}
+                className="w-4 h-4 rounded accent-accent cursor-pointer"
+              />
+              <span className="text-sm text-fg">Human style</span>
+              <span className="text-[11px] text-fg-dim/70">girly, short lowercase bursts, no em-dash</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={typos}
+                onChange={(e) => setTypos(e.target.checked)}
+                className="w-4 h-4 rounded accent-accent cursor-pointer"
+              />
+              <span className="text-sm text-fg">Typos</span>
+              <span className="text-[11px] text-fg-dim/70">occasional thumb-slip (+ sometimes a “*fix”)</span>
+            </label>
+          </div>
         </div>
       )}
 

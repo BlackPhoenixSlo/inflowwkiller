@@ -42,10 +42,6 @@ const NudgeComposer = dynamic(
   () => import("@/components/compose/NudgeComposer").then((m) => m.NudgeComposer),
   { ssr: false },
 );
-const MassNudgeComposer = dynamic(
-  () => import("@/components/compose/MassNudgeComposer").then((m) => m.MassNudgeComposer),
-  { ssr: false },
-);
 
 interface NavLink {
   href: string;
@@ -85,10 +81,8 @@ export default function TopNav() {
   const [postOpen, setPostOpen] = useState(false);
   const [massOpen, setMassOpen] = useState(false);
   const [massOnlineOpen, setMassOnlineOpen] = useState(false);
-  const [autoPostsOpen, setAutoPostsOpen] = useState(false);
   const [premadeMassOpen, setPremadeMassOpen] = useState(false);
   const [nudgeOpen, setNudgeOpen] = useState(false);
-  const [massNudgeOpen, setMassNudgeOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const composeRef = useRef<HTMLDivElement | null>(null);
   const mobileNavRef = useRef<HTMLDivElement | null>(null);
@@ -215,17 +209,6 @@ export default function TopNav() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setComposeOpen(false); setAutoPostsOpen(true); }}
-                  className="w-full text-left px-3 py-2 text-sm hover:bg-bg-elev-1 flex items-center gap-2"
-                >
-                  <span>🗓️</span>
-                  <span>
-                    <div className="font-medium">Auto Posts</div>
-                    <div className="text-[10px] text-fg-dim">Post a list; each auto-deletes after N hrs</div>
-                  </span>
-                </button>
-                <button
-                  type="button"
                   onClick={() => { setComposeOpen(false); setPremadeMassOpen(true); }}
                   className="w-full text-left px-3 py-2 text-sm hover:bg-bg-elev-1 flex items-center gap-2"
                 >
@@ -244,17 +227,6 @@ export default function TopNav() {
                   <span>
                     <div className="font-medium">Nudge Online</div>
                     <div className="text-[10px] text-fg-dim">DM a fan when they come online — set up + roll out</div>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setComposeOpen(false); setMassNudgeOpen(true); }}
-                  className="w-full text-left px-3 py-2 text-sm hover:bg-bg-elev-1 flex items-center gap-2"
-                >
-                  <span>📢</span>
-                  <span>
-                    <div className="font-medium">Mass Nudge</div>
-                    <div className="text-[10px] text-fg-dim">Broadcast to everyone online by time of day</div>
                   </span>
                 </button>
               </div>
@@ -356,17 +328,11 @@ export default function TopNav() {
       {massOnlineOpen && (
         <MassMessageComposer open={massOnlineOpen} mode="online" onClose={() => setMassOnlineOpen(false)} />
       )}
-      {autoPostsOpen && (
-        <PremadeComposer open={autoPostsOpen} kind="auto_posts" onClose={() => setAutoPostsOpen(false)} />
-      )}
       {premadeMassOpen && (
         <PremadeComposer open={premadeMassOpen} kind="mass_premade" onClose={() => setPremadeMassOpen(false)} />
       )}
       {nudgeOpen && (
         <NudgeComposer open={nudgeOpen} onClose={() => setNudgeOpen(false)} />
-      )}
-      {massNudgeOpen && (
-        <MassNudgeComposer open={massNudgeOpen} onClose={() => setMassNudgeOpen(false)} />
       )}
     </header>
   );

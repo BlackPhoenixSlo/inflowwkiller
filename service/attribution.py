@@ -30,6 +30,26 @@ from db.models import Message
 
 log = logging.getLogger("of-relay.attribution")
 
+# Default stand-down after a human takes over a chat (the W7 hard-yield). 1 min;
+# per-account override via account_ai_config.webhook_config_json.manual_yield_minutes.
+_DEFAULT_MANUAL_YIELD_S = 60
+
+
+async def _manual_yield_seconds(account_id: str) -> int:
+    """Per-account manual-chatter stand-down in seconds (Instant reply settings).
+    Default 60s; 0 disables the yield. Bad/absent config → default."""
+    try:
+        from db.models import AccountAiConfig
+        async with get_session() as s:
+            cfg = await s.get(AccountAiConfig, str(account_id))
+        if cfg and cfg.webhook_config_json:
+            mins = (json.loads(cfg.webhook_config_json) or {}).get("manual_yield_minutes")
+            if mins is not None:
+                return max(0, int(float(mins) * 60))
+    except Exception:
+        log.debug("manual_yield_seconds read failed", exc_info=True)
+    return _DEFAULT_MANUAL_YIELD_S
+
 
 # Synthetic-id band for optimistic mass placeholders. Picked to sit in the
 # gap between two hard constraints:
@@ -191,8 +211,14 @@ async def write_outbound_attribution(
                 from employees import get_automation_employee_id
                 auto_id = await get_automation_employee_id()
                 if sent_by_employee_id != auto_id:
-                    from automation_executor import start_fan_cooldown
-                    await start_fan_cooldown(str(account_id), int(fan_id))
+                    # Stand-down duration is per-account (Instant reply settings,
+                    # webhook_config_json.manual_yield_minutes); default 1 min. 0
+                    # disables the manual yield for that account.
+                    secs = await _manual_yield_seconds(str(account_id))
+                    if secs > 0:
+                        from automation_executor import start_fan_cooldown
+                        await start_fan_cooldown(
+                            str(account_id), int(fan_id), cooldown_s=secs)
             except Exception:
                 log.debug("w7 hard-yield cooldown skipped", exc_info=True)
     except Exception:

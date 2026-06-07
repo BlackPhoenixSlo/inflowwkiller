@@ -53,6 +53,35 @@ const SLOT_LABEL: Record<string, string> = {
   night: "Night",
 };
 
+// Human label for each per-purpose model override (the raw keys come from the
+// API's PURPOSES). Unknown/future purposes fall back to their raw key.
+const PURPOSE_LABEL: Record<string, string> = {
+  gen_info: "Fan profiles",
+  of_ai_chat: "AI chat replies",
+  send_welcome: "Welcomes",
+  send_followup: "Follow-ups",
+  deep_convo: "Deep convo",
+  reply_mass_funnel: "Mass-funnel replies",
+};
+
+// A brain is "blank" (never filled in) when it has no voice at all — so we seed
+// the editor from the defaults instead of an empty form. time_images is ignored
+// here: images are per-account, never part of the default.
+function isBlankBrain(c: BrainConfig): boolean {
+  return (
+    !c.persona &&
+    !c.welcome_rules &&
+    !c.location &&
+    !c.model &&
+    Object.keys(c.time_activities || {}).length === 0
+  );
+}
+
+// The defaults, with this account's own images kept (defaults carry none).
+function defaultsWithImages(defaults: BrainConfig, current: BrainConfig): BrainConfig {
+  return { ...defaults, time_images: current.time_images ?? {} };
+}
+
 const textareaCls =
   "w-full rounded-lg bg-bg-elev-1 border border-border text-sm px-2 py-1.5 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40";
 const selectCls =
@@ -150,8 +179,14 @@ export default function BrainPanel() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [followupRule?.id, followupRule?.is_enabled, followupRule?.every_seconds, JSON.stringify(followupRule?.payload)]);
+  // Seed once the config arrives. A blank account (never saved a brain) gets the
+  // Lexi-derived defaults so it has a worked example to show, not an empty form;
+  // an account with its own brain keeps it. Images are never seeded from defaults.
   useEffect(() => {
-    if (form === null && cfgQ.data) setForm(cfgQ.data.config);
+    if (form === null && cfgQ.data) {
+      const { config, defaults } = cfgQ.data;
+      setForm(isBlankBrain(config) ? defaultsWithImages(defaults, config) : config);
+    }
   }, [cfgQ.data, form]);
 
   const slots = cfgQ.data?.slots ?? [];
@@ -185,6 +220,15 @@ export default function BrainPanel() {
       return { ...f, model_by_purpose: next };
     });
     setMsg(null);
+  }
+
+  // Refill every brain field from the defaults, KEEPING this account's images
+  // (defaults carry none). Doesn't persist — the operator reviews then Saves.
+  function resetToDefaults() {
+    const defaults = cfgQ.data?.defaults;
+    if (!defaults || !form) return;
+    setForm(defaultsWithImages(defaults, form));
+    setMsg("Reset to defaults — review and Save brain to apply.");
   }
 
   async function save() {
@@ -305,14 +349,25 @@ export default function BrainPanel() {
             follow-up and AI chat.
           </p>
         </div>
-        <Button
-          size="sm"
-          variant="primary"
-          onClick={save}
-          disabled={!form || saveM.isPending}
-        >
-          {saveM.isPending ? "Saving…" : "Save brain"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={resetToDefaults}
+            disabled={!form || !cfgQ.data?.defaults || saveM.isPending}
+            title="Refill every field from the default brain (keeps this account's images)"
+          >
+            Reset to defaults
+          </Button>
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={save}
+            disabled={!form || saveM.isPending}
+          >
+            {saveM.isPending ? "Saving…" : "Save brain"}
+          </Button>
+        </div>
       </header>
 
       {/* Account picker */}
@@ -400,36 +455,47 @@ export default function BrainPanel() {
           {/* Model + per-purpose overrides */}
           <div className="space-y-2 border-t border-border pt-3">
             <span className="text-[11px] uppercase tracking-wide text-fg-dim">Model</span>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <label className="block space-y-1">
-                <span className="text-[11px] text-fg-dim">Default (all purposes)</span>
-                <select
-                  value={form.model ?? ""}
-                  onChange={(e) => set("model", e.target.value || null)}
-                  className={selectCls}
-                >
-                  <option value="">— system default —</option>
-                  {modelOptions.map((m) => (
-                    <option key={m} value={m}>{m}</option>
+            <label className="block space-y-1 max-w-xs">
+              <span className="text-[11px] text-fg-dim">Default (all purposes)</span>
+              <select
+                value={form.model ?? ""}
+                onChange={(e) => set("model", e.target.value || null)}
+                className={selectCls}
+              >
+                <option value="">— system default —</option>
+                {modelOptions.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </label>
+
+            {/* Per-purpose overrides — optional; each job uses a different model
+                only if set, else it inherits the default above. */}
+            {purposes.length > 0 && (
+              <div className="space-y-1.5 pt-1">
+                <span className="text-[11px] text-fg-dim">
+                  Per-purpose overrides{" "}
+                  <span className="text-fg-dim/70">— optional, each job inherits the default unless set</span>
+                </span>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {purposes.map((p) => (
+                    <label key={p} className="block space-y-1">
+                      <span className="text-[11px] text-fg-dim">{PURPOSE_LABEL[p] ?? p}</span>
+                      <select
+                        value={form.model_by_purpose[p] ?? ""}
+                        onChange={(e) => setPurposeModel(p, e.target.value)}
+                        className={selectCls}
+                      >
+                        <option value="">inherit default</option>
+                        {modelOptions.map((m) => (
+                          <option key={m} value={m}>{m}</option>
+                        ))}
+                      </select>
+                    </label>
                   ))}
-                </select>
-              </label>
-              {purposes.map((p) => (
-                <label key={p} className="block space-y-1">
-                  <span className="text-[11px] text-fg-dim">{p}</span>
-                  <select
-                    value={form.model_by_purpose[p] ?? ""}
-                    onChange={(e) => setPurposeModel(p, e.target.value)}
-                    className={selectCls}
-                  >
-                    <option value="">inherit default</option>
-                    {modelOptions.map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
-                </label>
-              ))}
-            </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Time-of-day activities + images */}

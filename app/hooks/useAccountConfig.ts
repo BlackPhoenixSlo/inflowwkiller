@@ -27,6 +27,8 @@ export interface BrainConfig {
 export interface AccountConfigResp {
   account_id: string;
   config: BrainConfig;
+  defaults: BrainConfig;    // Lexi-derived starter brain (no images) — seeds blank
+                            // accounts and backs the "Reset to defaults" button
   slots: string[];          // the 6 time-of-day slot keys, ordered
   model_options: string[];  // LLM model ids the account may pick
   purposes: string[];       // per-purpose override targets

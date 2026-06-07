@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from datetime import datetime
 
@@ -34,6 +35,350 @@ log = logging.getLogger("of-relay.automation.common")
 # viable); a newer grok (e.g. grok-4-3) can be added to MODELS and chosen per
 # account later if needed. One source of truth for every sender (resolve_model).
 DEFAULT_MODEL = "deepseek-v4-flash"
+
+
+# ── "Human texting style" opt-in package (per-automation checkbox) ────
+# OFF by default: when a flag is absent/false the calling automation runs its
+# CURRENT prompt + 2-bubble cap byte-for-byte. When ON, the automation appends
+# STYLE_HUMANIZER to its system prompt, adds STYLE_3LINE to its style dice, and
+# raises its bubble cap to STYLE_MAX_BUBBLES. gated wholly on style_config_json
+# {"of_ai_chat":bool,"autoreply":bool,"deep_convo":bool}.
+STYLE_MAX_BUBBLES = 3
+STYLE_AUTOMATIONS = ("of_ai_chat", "autoreply", "deep_convo")
+
+# The "not-AI" block — the tells that make automated chat read like a person.
+STYLE_HUMANIZER = (
+    "TEXT LIKE A REAL PERSON, NOT AN AI:\n"
+    "- lowercase always. dont capitalize sentence starts or 'i'.\n"
+    "- NEVER an em-dash or semicolon. ever.\n"
+    "- NEVER repeat or quote his words back. dont echo his message, and dont "
+    "restate it with an adjective ('sounds gorgeous', 'thats a whole mood', "
+    "'dangerous in the best way') — biggest bot tell. react in your OWN words.\n"
+    "- vary length wildly: sometimes one word, sometimes a short line, sometimes "
+    "just dive straight into the thought with no reaction word at all.\n"
+    "- DONT open every text with a reaction sound, and NEVER reuse the same opener "
+    "two replies in a row (no 'oof' every time, no 'oof'->'oof'->'oof'). most "
+    "replies should just start with the actual thing you're saying.\n"
+    "- texting sounds are fine in MODERATION and ROTATED: lol, lmao, omg, ugh, hmm, "
+    "wait, stop, oof — pick a different one each time, dont lean on any single one.\n"
+    "- a tiny typo or missing apostrophe is fine (dont, im, ur, gonna).\n"
+    "- dont be relentlessly upbeat or agreeable. tease, be a lil bratty, push back sometimes.\n"
+    "- AT MOST ONE question, ever. never stack two questions in one reply.\n"
+    "- never explain yourself or over-clarify. 0-1 emoji, never the same emoji twice."
+)
+# A 3-line micro-text style (fed into split_for_bubbles' newline path → 3 bubbles).
+# Pairs with STYLE_MAX_BUBBLES=3: under a 2-cap the line-3 payload would truncate.
+STYLE_3LINE = (
+    "A couple of micro-texts on SEPARATE LINES (line breaks between): usually just "
+    "TWO short lines — a tiny comment then your line/question. only sometimes a "
+    "third short line. line 1 can be a quick reaction OR just start the thought (no "
+    "forced reaction word, and dont reuse last reply's opener). all super short."
+)
+
+
+async def load_style_flags(account_id: str) -> dict[str, bool]:
+    """Read account_ai_config.style_config_json → {automation: bool}. Absent/NULL
+    or any parse error → all-OFF (the safe default: current behavior unchanged)."""
+    off = {k: False for k in STYLE_AUTOMATIONS}
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    raw = getattr(cfg, "style_config_json", None) if cfg else None
+    if not raw:
+        return off
+    try:
+        stored = json.loads(raw) or {}
+    except Exception:
+        return off
+    return {k: bool(stored.get(k)) for k in STYLE_AUTOMATIONS}
+
+
+def typo_flag_key(automation: str) -> str:
+    """style_config_json key for the per-automation typo toggle (separate from the
+    humanizer flag so typos can be ticked on independently)."""
+    return f"typos_{automation}"
+
+
+STYLE_TYPO_KEYS = tuple(typo_flag_key(k) for k in STYLE_AUTOMATIONS)
+
+
+async def load_typo_flags(account_id: str) -> dict[str, bool]:
+    """Read account_ai_config.style_config_json → {automation: bool} for the
+    thumb-typo injector, keyed by STYLE_AUTOMATIONS (reads the 'typos_<automation>'
+    keys). Absent/NULL/parse-error → all-OFF (current behavior unchanged)."""
+    off = {k: False for k in STYLE_AUTOMATIONS}
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    raw = getattr(cfg, "style_config_json", None) if cfg else None
+    if not raw:
+        return off
+    try:
+        stored = json.loads(raw) or {}
+    except Exception:
+        return off
+    return {k: bool(stored.get(typo_flag_key(k))) for k in STYLE_AUTOMATIONS}
+
+
+# Casualize a scripted Q/Tease at SEND time (deep_convo) when the style flag is
+# on — lowercase + a few safe word-boundary swaps so the proper-case gen_info
+# line ("Bet you can handle more than just a sunrise run, jack.") blends with the
+# lowercase voice ("bet u can handle more than just a sunrise run, jack"). Purely
+# cosmetic + reversible: nothing stored in fan_profiles changes.
+_CASUAL_SWAPS = (
+    (re.compile(r"\byou're\b", re.I), "ur"),
+    (re.compile(r"\byour\b", re.I), "ur"),
+    (re.compile(r"\byou\b", re.I), "u"),
+)
+
+
+def casualize_qtease(text: str) -> str:
+    if not text:
+        return text
+    s = text.lower()
+    for rx, rep in _CASUAL_SWAPS:
+        s = rx.sub(rep, s)
+    return s.rstrip(".").strip()
+
+
+# ── "Hard" thumb-typo injector (opt-in, deterministic) ────────────────
+# Prompt-only typos are unreliable (the model ignores or over-clusters them, and
+# reasoning models "fix" them). This is the CODE-level injector: at most ONE
+# realistic phone slip across a reply, ~1 per 5 sentences, and SOMETIMES a
+# follow-up "*fix" bubble — the strongest not-a-bot tell. Pure + seeded so it's
+# reproducible and testable; OFF unless the caller opts in.
+#
+# Only readable, meaning-preserving slips (transpose / drop / double-collapse) —
+# never a wrong-word "autocorrect". PROTECTED tokens never mutate: anything with
+# a digit (prices/ages/times), @handle, link, $, emoji, or a name passed in
+# `protect`. Corrupting a price or the fan's name is worse than no typo at all.
+_TYPO_SENTENCE_RATE = 0.2        # ~1 typo per 5 sentences (capped at 1 / reply)
+# Of the typos that slip in, how many get a self-correct bubble — SEVERITY-WEIGHTED:
+# a subtle slip (one dropped letter mid-word) usually rides; an ugly, hard-to-read
+# garble gets fixed more often, the way a real person notices the bad ones.
+_TYPO_FIX_P_BASE = 0.25          # subtle slip → usually leave it
+_TYPO_FIX_P_UGLY = 0.55          # obviously-wrong slip → more likely to "*fix"
+_WORD_RE = re.compile(r"[A-Za-z]+")
+_VOWELS = frozenset("aeiou")
+_SENT_RE = re.compile(r"[.!?]+")
+_TYPO_EDGE_PUNCT = ".,!?;:\"'()*"  # stripped from a token's edges before the alpha check
+
+
+def _typo_eligible(word: str, protect: set[str]) -> bool:
+    """A word a real thumb would slip on: ≥4 letters, all-alpha, not a name."""
+    return len(word) >= 4 and word.isalpha() and word.lower() not in protect
+
+
+def _mutate_word(word: str, rng) -> str | None:
+    """One readable slip on a single word. None if no valid mutation found.
+    transpose: could→coudl · drop: really→realy · double-collapse: gonna→gona."""
+    lo = word.lower()
+    # double-collapse first when a double exists (most natural-looking)
+    doubles = [i for i in range(len(lo) - 1) if lo[i] == lo[i + 1]]
+    choice = rng.random()
+    if doubles and choice < 0.25:
+        i = rng.choice(doubles)
+        out = word[:i] + word[i + 1:]
+    elif choice < 0.65:                                  # adjacent transpose
+        # interior pairs only (don't flip the first letter — too jarring)
+        idxs = list(range(1, len(word) - 1))
+        if not idxs:
+            return None
+        i = rng.choice(idxs)
+        out = word[:i] + word[i + 1] + word[i] + word[i + 2:]
+    else:                                                # drop one interior letter
+        idxs = list(range(1, len(word) - 1))
+        if not idxs:
+            return None
+        i = rng.choice(idxs)
+        out = word[:i] + word[i + 1:]
+    if out == word or len(out) < 3:
+        return None
+    return out
+
+
+def _slip_is_ugly(orig: str, slipped: str) -> bool:
+    """Does the slip read obviously-wrong at a glance (→ likelier to get fixed)?
+    Two cheap eye-catches: the word START reordered (we read first letters first),
+    or a NEW 3+ consonant run the original didn't have ('really'→'rae lly' style)."""
+    o, s = orig.lower(), slipped.lower()
+    if o[:2] != s[:2]:
+        return True
+
+    def _max_cons_run(w: str) -> int:
+        run = best = 0
+        for ch in w:
+            run = run + 1 if (ch.isalpha() and ch not in _VOWELS) else 0
+            best = max(best, run)
+        return best
+
+    return _max_cons_run(s) >= 3 and _max_cons_run(s) > _max_cons_run(o)
+
+
+# The correction bubble varies its SHAPE so the literal "*word" isn't itself a bot
+# signature — weighted across the ways a real person fixes a typo. Seeded via rng.
+_TYPO_FIX_FORMS = (
+    ("star_pre", 44),    # *word
+    ("star_post", 20),   # word*
+    ("star_lol", 16),    # *word lol
+    ("omg_star", 10),    # omg *word  (names the word — never a bare "omg typo")
+    ("retype", 10),      # word       (just retype it, no marker)
+)
+
+
+def _correction_bubble(word: str, rng) -> str:
+    """One varied self-correct bubble for `word` (already lowercased on use). Every
+    form names the actual word being fixed — no generic 'omg typo' filler (it reads
+    like a bot and corrects nothing)."""
+    w = word.lower()
+    total = sum(wt for _, wt in _TYPO_FIX_FORMS)
+    pick = rng.random() * total
+    acc = 0
+    form = _TYPO_FIX_FORMS[0][0]
+    for name, wt in _TYPO_FIX_FORMS:
+        acc += wt
+        if pick < acc:
+            form = name
+            break
+    return {"star_pre": f"*{w}", "star_post": f"{w}*", "star_lol": f"*{w} lol",
+            "omg_star": f"omg *{w}", "retype": w}[form]
+
+
+def humanize_typos(parts: list[str], rng, *, protect=(),
+                   max_bubbles: int = STYLE_MAX_BUBBLES) -> list[str]:
+    """Inject at most one thumb-typo across `parts` (the bubble list), rate ~1 per
+    5 sentences, and sometimes append a '*fix' correction bubble. Pure: takes an
+    explicit `rng` (random.Random) and returns a NEW list — caller seeds it off
+    (fan_id, text) for reproducibility. Empty/typo-free input returns a copy."""
+    parts = [p for p in parts if p and p.strip()]
+    if not parts:
+        return parts
+    protect_set = {w.lower() for name in protect for w in _WORD_RE.findall(str(name))}
+
+    # sentences across the whole reply → P(one typo) = min(1, n * rate)
+    n_sent = sum(max(1, len(_SENT_RE.findall(p))) for p in parts)
+    if rng.random() >= min(1.0, n_sent * _TYPO_SENTENCE_RATE):
+        return list(parts)
+
+    # collect eligible words across all bubbles, pick one. Scan WHOLE
+    # whitespace-tokens (not bare alpha runs) so a word embedded in a handle /
+    # link / price ("@lexi_xo", "onlyfans.com/lexi", "$25") is never touched —
+    # the token's core must be purely alphabetic after stripping edge punctuation.
+    cands = []  # (bubble_idx, core_start, core_end, word)
+    for bi, p in enumerate(parts):
+        for m in re.finditer(r"\S+", p):
+            tok = m.group()
+            core = tok.strip(_TYPO_EDGE_PUNCT)
+            lead = len(tok) - len(tok.lstrip(_TYPO_EDGE_PUNCT))
+            if _typo_eligible(core, protect_set):
+                cands.append((bi, m.start() + lead, m.start() + lead + len(core), core))
+    if not cands:
+        return list(parts)
+
+    bi, start, end, word = rng.choice(cands)
+    slipped = _mutate_word(word, rng)
+    if slipped is None:
+        return list(parts)
+
+    out = list(parts)
+    out[bi] = out[bi][:start] + slipped + out[bi][end:]
+
+    # self-correct: a beat later, a "*fix" bubble (the strongest not-a-bot tell).
+    # Fires whenever there's ROOM under the bubble cap — a 1-bubble reply becomes 2,
+    # a 2-bubble reply becomes 3 — but NEVER a stray 4th: if the reply is already at
+    # max_bubbles, the "*word" would be a bubble too far (out of place), so we skip.
+    # Chance is severity-weighted (ugly garbles get fixed more) and the SHAPE varies
+    # so the literal "*word" isn't itself a tell.
+    fix_p = _TYPO_FIX_P_UGLY if _slip_is_ugly(word, slipped) else _TYPO_FIX_P_BASE
+    if len(out) < max_bubbles and rng.random() < fix_p:
+        out.append(_correction_bubble(word, rng))
+    return out
+
+
+# ── Human "typing speed" delay ───────────────────────────────────────
+# Each bubble is held back for the time a real person would take to TYPE it, so
+# replies don't pop instantly (and a 2-bubble reply has a believable gap). Speed
+# is words-per-minute, configured per-account in webhook_config_json.typing_wpm
+# (the "⚡ Instant reply" tab); default 60 wpm. Clamped so a long line can't hang.
+_DEFAULT_TYPING_WPM = 60.0
+_MAX_TYPING_DELAY_S = 60.0  # a single bubble never waits more than 1 min to "type"
+
+
+def typing_delay_seconds(text: str, wpm: float) -> float:
+    """How long it'd take to type `text` at `wpm` words/min (0 wpm → no delay)."""
+    if not wpm or wpm <= 0:
+        return 0.0
+    words = len((text or "").split())
+    return min(words / float(wpm) * 60.0, _MAX_TYPING_DELAY_S)
+
+
+async def load_typing_wpm(account_id: str) -> float:
+    """Per-account typing speed from webhook_config_json.typing_wpm (default 60).
+    Read regardless of whether webhook dispatch is enabled — it's a send-pacing
+    knob, not a dispatch gate. 0 disables the typing delay."""
+    if os.environ.get("CHATTERLY_TEST_MODE"):
+        return 0.0  # no real sleeps in the test harness
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    if cfg is not None and cfg.webhook_config_json:
+        try:
+            d = json.loads(cfg.webhook_config_json) or {}
+            if "typing_wpm" in d and d["typing_wpm"] is not None:
+                return max(0.0, float(d["typing_wpm"]))
+        except Exception:
+            log.warning("bad typing_wpm account=%s", account_id, exc_info=True)
+    return _DEFAULT_TYPING_WPM
+
+
+# ── "...is typing" indicator (ON by default, opt-out per account) ─────
+# When enabled, the typing-delay hold before each bubble ALSO emits OF's live
+# typing frame to the fan, so they actually see the "...is typing" bubble during
+# the wait (instead of the message just arriving late). Default ON for every
+# account; opt OUT per-account with webhook_config_json.typing_indicator=false.
+# Re-emit cadence matches OF's own (~2.5s) since the indicator auto-clears after
+# a few seconds. Always False under CHATTERLY_TEST_MODE (no real frames in tests).
+_TYPING_REEMIT_S = 2.5
+_DEFAULT_TYPING_INDICATOR = True
+
+
+async def load_typing_indicator(account_id: str) -> bool:
+    """Per-account toggle for the live typing indicator (webhook_config_json.
+    typing_indicator). Default ON; only an explicit `false` disables it.
+    Absent/NULL key → ON. Parse-error → default. Test-mode → False."""
+    if os.environ.get("CHATTERLY_TEST_MODE"):
+        return False
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    if cfg is not None and cfg.webhook_config_json:
+        try:
+            d = json.loads(cfg.webhook_config_json) or {}
+            if "typing_indicator" in d and d["typing_indicator"] is not None:
+                return bool(d["typing_indicator"])
+        except Exception:
+            log.warning("bad typing_indicator account=%s", account_id, exc_info=True)
+    return _DEFAULT_TYPING_INDICATOR
+
+
+async def hold_with_typing(account_id: str, fan_id: int, seconds: float,
+                           *, typing_indicator: bool = False) -> None:
+    """Wait `seconds` before sending a bubble. When `typing_indicator` is on,
+    emit OF's typing frame to `fan_id` every ~2.5s during the hold so the fan
+    sees the live "...is typing" bubble; otherwise just sleep. Always safe — a
+    missing live socket degrades to a plain sleep."""
+    if seconds <= 0:
+        return
+    if not typing_indicator:
+        await asyncio.sleep(seconds)
+        return
+    from of_ws import emit_typing  # local import: avoid a server↔automation cycle
+    remaining = float(seconds)
+    while remaining > 0:
+        try:
+            await emit_typing(account_id, int(fan_id))
+        except Exception:
+            log.debug("emit_typing failed account=%s fan=%s", account_id, fan_id,
+                      exc_info=True)
+        step = min(_TYPING_REEMIT_S, remaining)
+        await asyncio.sleep(step)
+        remaining -= step
 
 
 async def resolve_model(account_id: str, purpose: str, override: str | None = None) -> str:

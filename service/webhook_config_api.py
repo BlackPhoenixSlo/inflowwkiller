@@ -36,7 +36,8 @@ _MAX_DELAY_S = 600
 
 def _defaults() -> dict:
     """The built-in OFF state — what the UI shows before anything is saved."""
-    return {"enabled": False, "delay_seconds": 0, "jitter_seconds": 0}
+    return {"enabled": False, "delay_seconds": 0, "jitter_seconds": 0,
+            "manual_yield_minutes": 1, "typing_wpm": 60, "typing_indicator": True}
 
 
 def _validate_config(cfg: dict) -> dict:
@@ -53,6 +54,26 @@ def _validate_config(cfg: dict) -> dict:
             except (TypeError, ValueError):
                 raise HTTPException(422, f"{k} must be a number")
             out[k] = max(0, min(v, _MAX_DELAY_S))
+    # Manual-yield: minutes the bot stands down after a HUMAN sends in the chat.
+    # 0 disables the yield. Capped at 24h.
+    if "manual_yield_minutes" in cfg and cfg["manual_yield_minutes"] is not None:
+        try:
+            m = float(cfg["manual_yield_minutes"])
+        except (TypeError, ValueError):
+            raise HTTPException(422, "manual_yield_minutes must be a number")
+        out["manual_yield_minutes"] = max(0.0, min(m, 1440.0))
+    # Typing speed (words/min) — each reply bubble is held for the time it'd take
+    # to type it. 0 disables. Clamped to a sane human-ish ceiling.
+    if "typing_wpm" in cfg and cfg["typing_wpm"] is not None:
+        try:
+            w = float(cfg["typing_wpm"])
+        except (TypeError, ValueError):
+            raise HTTPException(422, "typing_wpm must be a number")
+        out["typing_wpm"] = max(0.0, min(w, 400.0))
+    # Live "...is typing" indicator: emit OF's typing frame to the fan during the
+    # typing_wpm hold so they see the bubble. Independent of typing_wpm pacing.
+    if "typing_indicator" in cfg and cfg["typing_indicator"] is not None:
+        out["typing_indicator"] = bool(cfg["typing_indicator"])
     return out
 
 

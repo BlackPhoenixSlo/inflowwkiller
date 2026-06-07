@@ -340,13 +340,14 @@ def _known_block(c: "_Candidate") -> str:
 
 class _Candidate:
     __slots__ = ("fan_id", "fan_msg_n", "total_msg_n", "spend_cents",
-                 "of_name", "of_username", "known", "messages")
+                 "source", "of_name", "of_username", "known", "messages")
 
     def __init__(self, fan_id: int):
         self.fan_id = fan_id
         self.fan_msg_n = 0
         self.total_msg_n = 0
         self.spend_cents = 0
+        self.source = ""    # "fan" = subscribedOn (real fan); else peer creator/unknown
         self.of_name = ""
         self.of_username = ""
         # Prior extracted facts from the fans row — fed back as ground truth so
@@ -402,6 +403,7 @@ async def _gather_candidates(
                     Fan.real_name, Fan.his_age, Fan.home_city, Fan.home_country,
                     Fan.hobbies, Fan.occupation, Fan.relationship_status,
                     Fan.fetishes, Fan.recent_events, Fan.generated_nickname,
+                    Fan.source,
                 ).where(
                     Fan.account_id == account_id,
                     Fan.fan_id.in_(list(counts)),
@@ -421,6 +423,7 @@ async def _gather_candidates(
                     "fetishes": r.fetishes or "",
                     "recent_events": r.recent_events or "[]",
                     "generated_nickname": r.generated_nickname or "",
+                    "source": r.source or "",
                 }
 
         # Lifetime spend from the transactions ledger (cleared, fan-attributed) is
@@ -446,12 +449,23 @@ async def _gather_candidates(
         info = prior.get(fan_id) or {}
         c.of_name = info.get("of_display_name") or ""
         c.of_username = info.get("of_username") or ""
+        c.source = info.get("source") or ""
         c.known = info
         forced = fan_id in force_ids
-        qualified = (
-            forced
-            or c.fan_msg_n >= _QUAL_MIN_FAN_MSGS
-            or c.spend_cents >= _QUAL_MIN_SPEND_CENTS
+        # Promo-spam guard (mirrors of_ai_chat): don't waste an LLM profile on
+        # peer creators who blast the inbox. `source == "creator_we_follow"` =
+        # WE subscribed to THEM (subscribedBy), i.e. a creator, never a fan of
+        # ours — real fans are NEVER this value in the live data. Gated on $0
+        # spend so a paying collab is still profiled. Re-evaluated each run.
+        is_spam = (
+            not forced
+            and c.spend_cents == 0
+            and c.source == "creator_we_follow"
+        )
+        qualified = forced or (
+            not is_spam
+            and (c.fan_msg_n >= _QUAL_MIN_FAN_MSGS
+                 or c.spend_cents >= _QUAL_MIN_SPEND_CENTS)
         )
         if qualified:
             qualifying.append(c)

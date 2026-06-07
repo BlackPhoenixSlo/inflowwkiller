@@ -41,9 +41,11 @@ import { PremadeForm } from "@/components/compose/PremadeComposer";
 import { MassFunnelsTab } from "@/components/automations/FunnelEditor";
 import NudgeOnlineTab from "@/components/settings/NudgeOnlineTab";
 import MassNudgeTab from "@/components/settings/MassNudgeTab";
+import OnlineBlastTab from "@/components/settings/OnlineBlastTab";
 import WebhookDispatchTab from "@/components/settings/WebhookDispatchTab";
+import AutoreplyTab from "@/components/settings/AutoreplyTab";
 
-type Tab = "auto_posts" | "mass_premade" | "mass_funnels" | "nudge_online" | "mass_nudge" | "instant_reply" | "unsend" | "onboard";
+type Tab = "auto_posts" | "mass_premade" | "mass_funnels" | "nudge_online" | "mass_nudge" | "online_blast" | "instant_reply" | "autoreply" | "unsend" | "onboard";
 /** The two tabs that map to an automation_rules kind (the others have their
  *  own self-contained surfaces). */
 type RuleKind = "auto_posts" | "mass_premade";
@@ -54,7 +56,9 @@ const TABS: Array<{ key: Tab; label: string }> = [
   { key: "mass_funnels", label: "🎯 Mass funnels" },
   { key: "nudge_online", label: "👋 Nudge Online" },
   { key: "mass_nudge", label: "📣 Mass Nudge" },
+  { key: "online_blast", label: "📡 Online Blast" },
   { key: "instant_reply", label: "⚡ Instant reply" },
+  { key: "autoreply", label: "💬 Auto Convo" },
   { key: "unsend", label: "🧹 Unsend my chats" },
   { key: "onboard", label: "🆕 Onboard old fans" },
 ];
@@ -259,7 +263,9 @@ export default function ReadyMadePanel() {
       {/* Nudge tabs are fully self-contained (own account selector + roll-out). */}
       {tab === "nudge_online" && <NudgeOnlineTab />}
       {tab === "mass_nudge" && <MassNudgeTab />}
+      {tab === "online_blast" && <OnlineBlastTab />}
       {tab === "instant_reply" && <WebhookDispatchTab accountId={accountId} />}
+      {tab === "autoreply" && <AutoreplyTab accountId={accountId} />}
       {tab === "unsend" && <UnsendCard accountId={accountId} />}
       {tab === "onboard" && <OnboardCard accountId={accountId} />}
 

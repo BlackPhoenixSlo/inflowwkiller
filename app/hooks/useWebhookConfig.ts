@@ -21,6 +21,15 @@ export interface WebhookConfig {
   enabled?: boolean;
   delay_seconds?: number;
   jitter_seconds?: number;
+  /** Minutes the bot stands down after a HUMAN sends in the chat (manual chatter
+   *  wins). 0 disables the yield. Default 1. */
+  manual_yield_minutes?: number;
+  /** Typing speed (words/min). Each reply bubble is held for the time it'd take
+   *  to type it, so replies don't pop instantly. 0 disables. Default 60. */
+  typing_wpm?: number;
+  /** Show the fan OF's live "...is typing" bubble during the typing_wpm hold.
+   *  ON by default for every account; set false to opt this account out. */
+  typing_indicator?: boolean;
 }
 
 interface WebhookConfigResponse {
