@@ -304,15 +304,25 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
                 "creator_we_follow" if from_user.get("subscribedBy") else
                 "unknown"
             ),
-        ).on_conflict_do_update(
+        )
+        # ON CONFLICT: never CLOBBER a populated name/avatar with the blanks OF sends
+        # on a plain message. OF chat-message payloads carry only `fromUser:{id}` (no
+        # username/name/avatar), so unconditionally writing `.get(...)` here used to
+        # null out names captured earlier by a toast/online event — the root cause of
+        # ~80% of fans showing no name. Only refresh these when OF actually gives them.
+        on_conflict = {
+            "last_message_received_at": created_at,
+            "updated_at": datetime.utcnow(),
+        }
+        if from_user.get("username"):
+            on_conflict["of_username"] = from_user["username"]
+        if from_user.get("name"):
+            on_conflict["of_display_name"] = from_user["name"]
+        if from_user.get("avatar"):
+            on_conflict["avatar_url"] = from_user["avatar"]
+        fan_stmt = fan_stmt.on_conflict_do_update(
             index_elements=["account_id", "fan_id"],
-            set_={
-                "of_username": from_user.get("username"),
-                "of_display_name": from_user.get("name"),
-                "avatar_url": from_user.get("avatar"),
-                "last_message_received_at": created_at,
-                "updated_at": datetime.utcnow(),
-            },
+            set_=on_conflict,
         )
         await s.execute(fan_stmt)
 

@@ -654,6 +654,57 @@ async def push_nick_and_notes(client, account_id: str, fan_id: int, *,
     return nick_ok, note_ok
 
 
+def name_token(s: str | None, *, last: bool = False) -> str:
+    """Pull a real-NAME token (Capitalized, letters only, len≥2) out of a string,
+    or '' if it doesn't look like a name (handles like 'xx_gamer_99' / 'u123' are
+    rejected — they aren't Capitalized real names). Slash-structured nicknames
+    ('John/Orange City,USA/Horny-Fan') keep the first slot ('John'); pass last=True
+    for AI/curated nicknames so 'Sexy Sofie' → 'Sofie' (the name, not the adjective).
+
+    This is the canonical parser (lifted from send_welcome._name_token so every
+    sender derives names identically — single source of truth)."""
+    if not s:
+        return ""
+    seg = str(s).split("/")[0].strip()       # 'John/City/Tag' → 'John'
+    if "," in seg:                            # 'Whistler,Canada/Whale' has no name slot
+        return ""                             # (a comma marks a City,Country location)
+    words = re.split(r"\s+", seg) if seg else []
+    if not words:
+        return ""
+    raw = words[-1] if last else words[0]
+    if not raw[:1].isupper():                 # real names are Capitalized; handles aren't
+        return ""
+    w = re.sub(r"[^A-Za-z]", "", raw)
+    return w if len(w) >= 2 else ""
+
+
+def resolve_fan_name(f) -> str:
+    """Single source of truth for 'what real first name do we greet this fan by'.
+
+    Why this exists: OF *message* payloads carry only `fromUser:{id}` — no name — so
+    `of_username`/`of_display_name` are empty for ~80% of fans, and the WS pump used
+    to clobber them to NULL on every message. The team-curated `custom_nickname`
+    ('John/City/Tag') is then the most reliable name signal we hold, but the senders
+    never consulted it and emitted a literal 'Babe'.
+
+    Precedence keeps each sender's prior behaviour for the populated cases
+    (real_name → generated_nickname → of_display_name, used verbatim) and only adds a
+    new tail that parses the curated custom_nickname. `of_username` is deliberately
+    excluded — handles like 'u123' / 'alexnielsen' aren't greetable names. Returns ''
+    when we truly have nothing; callers keep their own soft 'babe' fallback.
+
+    `f` may be a Fan ORM row or a dict of the same fields."""
+    def _g(attr: str) -> str:
+        if f is None:
+            return ""
+        if isinstance(f, dict):
+            return str(f.get(attr) or "").strip()
+        return str(getattr(f, attr, "") or "").strip()
+
+    chained = _g("real_name") or _g("generated_nickname") or _g("of_display_name")
+    return chained or name_token(_g("custom_nickname"), last=True)
+
+
 def substitute_placeholders(text: str, fan, *, name: str | None = None) -> str:
     """Fill `{name}`/`{city}`/`{age}`/`{hobby}`/`{pet}` in a template line from a
     Fan row (nudge_online tease/qa pools). Used so the variation arrays can carry

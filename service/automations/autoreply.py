@@ -54,7 +54,8 @@ from llm_client import LLMCapExceeded
 from ._common import (
     STYLE_3LINE, STYLE_HUMANIZER, STYLE_MAX_BUBBLES, apply_word_restriction,
     hold_with_typing, humanize_typos, load_style_flags, load_typing_indicator,
-    load_typing_wpm, load_typo_flags, resolve_model, typing_delay_seconds,
+    load_typing_wpm, load_typo_flags, resolve_fan_name, resolve_model,
+    typing_delay_seconds,
 )
 from .of_ai_chat import (_is_info_complete, _strip_html, split_for_bubbles,
                          _dedupe_lead_reaction)
@@ -139,7 +140,7 @@ _STYLE_VARIANTS = (
 def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
                     style: str, style_on: bool = False) -> list[dict]:
     facts = []
-    nm = (f.real_name or f.generated_nickname or f.of_display_name or "").strip()
+    nm = resolve_fan_name(f)
     if nm:
         facts.append(f"name: {nm.split('/')[0][:40]}")
     for label, val in (("age", f.his_age), ("city", f.home_city),
