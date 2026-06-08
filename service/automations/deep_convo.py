@@ -86,7 +86,8 @@ from ._common import (
     STYLE_HUMANIZER, apply_word_restriction, build_facts_note,
     build_structured_nickname, casualize_qtease, coerce_ids, facts_from_fan,
     hold_with_typing, humanize_typos, load_style_flags, load_typing_indicator,
-    load_typing_wpm, load_typo_flags, push_nick_and_notes, resolve_model,
+    load_typing_wpm, load_typo_flags, push_nick_and_notes,
+    quarantine_if_undeliverable, resolve_model,
     skip_unreachable_fan, typing_delay_seconds,
 )
 
@@ -386,8 +387,13 @@ async def _send_one(client, account_id: str, fan_id: int, text: str,
         # 200 but no id → unrecordable (message_id is the PK). deep_convo_state is
         # the durable guard, so the caller still advances it; scrape backfills the
         # row later. NEVER leave state such that the fan is re-messaged.
+        # But first probe WHY: a fan whose sub lapsed / account is gone no-id's on
+        # EVERY send — without this, deep_convo re-engages them every tick (the 513-
+        # call loop). quarantine_if_undeliverable rests/skips the undeliverable
+        # ones; a genuinely transient no-id just advances state as before.
         log.warning("deep_convo send returned no id account=%s fan=%s — "
                     "advancing state on the 200 (no-id contract)", account_id, fan_id)
+        await quarantine_if_undeliverable(client, account_id, fan_id)
 
 
 async def _send(client, account_id: str, fan_id: int, text: str,

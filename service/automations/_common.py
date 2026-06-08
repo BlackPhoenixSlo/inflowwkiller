@@ -21,7 +21,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import llm_client
 from db.engine import get_session
@@ -63,6 +63,90 @@ async def skip_unreachable_fan(account_id, fan_id, exc, *, log=log) -> bool:
     log.info("skip_listed unreachable fan account=%s fan=%s (%s)",
              account_id, fan_id, str(exc).splitlines()[0][:80])
     return True
+
+
+# How long to rest a fan whose subscription has lapsed before re-checking. They
+# can't be DM'd while expired, but they may re-subscribe — so retry in a WEEK
+# rather than skip-listing forever. (Deleted accounts ARE skip-listed.)
+_UNDELIVERABLE_RETRY = timedelta(days=7)
+
+
+async def quarantine_if_undeliverable(client, account_id, fan_id, *, log=log) -> str | None:
+    """A send to `fan_id` returned 200 WITHOUT a message id — OF silently dropped
+    it (see THE NO-ID SEND CONTRACT). A single no-id is usually transient, but a
+    fan where EVERY send is no-id is undeliverable: the sub lapsed, or the account
+    is gone. Retrying that fan every tick is what burns the LLM (it generates a
+    reply it can never deliver). So when we hit a no-id, probe OF to LEARN WHY and
+    quarantine the fan so we stop calling the model for them:
+
+      * account deleted / 'User not found'  → skip_list ('unreachable'). of_ai_chat
+        honours skip_list; we ALSO pause so deep_convo (pause-only gate) rests too.
+      * sub lapsed (`subscribedOn` falsy)    → record subscription_status='expired'
+        + pause 1 WEEK (re-checks then, in case they re-subscribe).
+      * still subscribed (a real transient)  → return None; the caller keeps its
+        normal short no-id pause and retries next tick.
+
+    Best-effort: if the probe itself fails we return None (the caller keeps the
+    short pause) — we NEVER exile a fan on a failed probe. Returns the reason
+    string when it quarantined, else None. `subscribedOn` is the same field the
+    executor trusts to classify a fan vs a creator (automation_executor)."""
+    now = datetime.utcnow()
+    try:
+        info = await asyncio.to_thread(client.get_user, fan_id)
+    except Exception as exc:
+        if is_unreachable_fan_error(exc):           # 'User not found' → deleted
+            await _skip_and_rest(account_id, fan_id, now)
+            log.info("quarantine fan account=%s fan=%s — deleted/not-found", account_id, fan_id)
+            return "deleted"
+        log.debug("undeliverable probe failed account=%s fan=%s — keeping short pause",
+                  account_id, fan_id, exc_info=True)
+        return None
+    if not (isinstance(info, dict) and info.get("subscribedOn")):
+        # Sub lapsed — can't DM. Record it and rest a week (re-checks then).
+        await _set_status_and_pause(account_id, fan_id, "expired",
+                                    now + _UNDELIVERABLE_RETRY)
+        log.info("quarantine fan account=%s fan=%s — sub lapsed, paused 7d", account_id, fan_id)
+        return "expired"
+    return None  # subscribedOn truthy → genuinely transient; caller keeps short pause
+
+
+async def _skip_and_rest(account_id, fan_id, now) -> None:
+    """Skip-list AND pause-a-week a fan that's gone for good. Both gates so every
+    sender (skip_list-aware OR pause-only) leaves the fan alone."""
+    async with get_session() as s:
+        await s.execute(
+            sqlite_insert(SkipList)
+            .values(account_id=str(account_id), fan_id=int(fan_id),
+                    reason="unreachable", added_at=now)
+            .on_conflict_do_nothing(index_elements=["account_id", "fan_id"])
+        )
+        await s.execute(
+            sqlite_insert(Fan)
+            .values(account_id=str(account_id), fan_id=int(fan_id),
+                    automation_paused_until=now + _UNDELIVERABLE_RETRY)
+            .on_conflict_do_update(
+                index_elements=["account_id", "fan_id"],
+                set_={"automation_paused_until": now + _UNDELIVERABLE_RETRY,
+                      "updated_at": now},
+            )
+        )
+
+
+async def _set_status_and_pause(account_id, fan_id, status, until) -> None:
+    """UPSERT subscription_status + automation_paused_until (candidates can come
+    from the messages table with no Fan row yet — UPDATE would no-op)."""
+    async with get_session() as s:
+        await s.execute(
+            sqlite_insert(Fan)
+            .values(account_id=str(account_id), fan_id=int(fan_id),
+                    subscription_status=status, automation_paused_until=until)
+            .on_conflict_do_update(
+                index_elements=["account_id", "fan_id"],
+                set_={"subscription_status": status, "automation_paused_until": until,
+                      "updated_at": datetime.utcnow()},
+            )
+        )
+
 
 # Default model for every account without an explicit brain `model`. DeepSeek is
 # the house default now — grok-4-1-fast-non-reasoning is retired (no longer

@@ -75,7 +75,8 @@ from ._common import (
     STYLE_3LINE, STYLE_HUMANIZER, STYLE_MAX_BUBBLES, apply_word_restriction,
     build_facts_note, build_structured_nickname, coerce_ids, facts_from_fan,
     hold_with_typing, humanize_typos, load_style_flags, load_typing_indicator,
-    load_typing_wpm, load_typo_flags, push_nick_and_notes, resolve_model,
+    load_typing_wpm, load_typo_flags, push_nick_and_notes,
+    quarantine_if_undeliverable, resolve_model,
     skip_unreachable_fan, typing_delay_seconds,
 )
 from . import gen_info  # profile_is_stale() — the refresh-if-stale hook below
@@ -92,11 +93,23 @@ _DEFAULT_MODEL = "grok-4-1-fast-non-reasoning"   # llm_client fallback (19 §4)
 _PURPOSE = "of_ai_chat"          # also the account_ai_config.model_by_purpose key
 _SPEND_GATE_CENTS = 100          # bought_amount > $1 → hand off to humans
 _MAX_FAN_MESSAGES = 10           # runaway-conversation cutoff (spec MAX_FAN_MESSAGES)
+_MAX_TURNS = 30                  # hard per-fan reply cap → hand off to deep_convo.
+                                 # _MAX_FAN_MESSAGES counts the FAN's messages; this
+                                 # counts OUR confirmed replies (turn_counter), so a
+                                 # fan who chats forever without revealing the bio
+                                 # facts still graduates instead of looping for ever.
 _INFO_COMPLETE_RATIO = 0.75      # ≥ 3 of 4 bio groups filled → enough signal
 _DEFAULT_LIMIT = 200             # candidate sweep ceiling
 _DEFAULT_MAX_REPLIES = 25        # per-run send cap (logged when it bites)
 _REPLY_TEMPERATURE = 0.85        # warm/varied, matches the legacy persona call
-_HISTORY_TAIL = 40               # last N messages handed to the model
+_HISTORY_TAIL = 20               # last N messages handed to the REPLY model. The
+                                 # durable info already rides in the facts block, so
+                                 # the reply doesn't need the full backlog — ~20
+                                 # recent turns is plenty of context and halves the
+                                 # (uncached) input vs the old 40.
+_EXTRACT_HISTORY_TAIL = 8        # the fact-extract call only needs to see what he
+                                 # JUST said to catch a newly-stated fact — a short
+                                 # tail keeps this second per-turn call cheap.
 _MSG_CLIP = 400                  # clip each message body
 _REPLY_MAX_CHARS = 600           # trim a runaway generation before sending
 # of_ai_chat is a LIVE chat — the generic 30-min W3 cooldown would make the bot
@@ -686,7 +699,7 @@ _EXTRACT_SYSTEM = (
 
 
 def _extract_messages(f: Fan, c: _Candidate,
-                      history_tail: int = _HISTORY_TAIL) -> list[dict]:
+                      history_tail: int = _EXTRACT_HISTORY_TAIL) -> list[dict]:
     current = {k: (getattr(f, k) or "") for k in _EXTRACT_FIELDS}
     current["likes_boobs"] = bool(f.likes_boobs)
     current["likes_ass"] = bool(f.likes_ass)
@@ -701,7 +714,7 @@ def _extract_messages(f: Fan, c: _Candidate,
 
 async def _extract_and_fill(account_id: str, fan_id: int, f: Fan,
                             c: _Candidate, model: str,
-                            history_tail: int = _HISTORY_TAIL) -> Fan:
+                            history_tail: int = _EXTRACT_HISTORY_TAIL) -> Fan:
     """Extract his stated facts and persist any NEW ones onto the Fan row (fill
     empty fields only — never overwrite/guess). Updates `f` in place so this tick's
     reply + question list see the fresh facts. Raises LLMCapExceeded (caller stops);
@@ -829,13 +842,34 @@ async def _mark_question_asked(account_id: str, fan_id: int, key: str,
         )
 
 
-async def _bump_turn_counter(account_id: str, fan_id: int, now: datetime) -> None:
+async def _bump_attempt(account_id: str, fan_id: int, now: datetime) -> None:
+    """Count one of_ai_chat turn — bumped when a reply is GENERATED, whether or
+    not it lands (so the _MAX_TURNS cap counts attempts, not just confirmed
+    sends; an undeliverable fan must still graduate). NOT last_message_sent_at —
+    that's only set on a real send (see _mark_reply_sent), else a never-delivered
+    reply would corrupt 'last sent'. UPSERT (not UPDATE): candidates come from the
+    messages table, so an eligible fan may have no Fan row yet on its first turn —
+    a plain UPDATE would no-op and lose the count."""
+    async with get_session() as s:
+        await s.execute(
+            sqlite_insert(Fan)
+            .values(account_id=str(account_id), fan_id=int(fan_id),
+                    turn_counter=1, updated_at=now)
+            .on_conflict_do_update(
+                index_elements=["account_id", "fan_id"],
+                set_={"turn_counter": Fan.turn_counter + 1, "updated_at": now},
+            )
+        )
+
+
+async def _mark_reply_sent(account_id: str, fan_id: int, now: datetime) -> None:
+    """Stamp last_message_sent_at on a CONFIRMED send. The turn itself was already
+    counted by _bump_attempt when the reply was generated."""
     async with get_session() as s:
         await s.execute(
             update(Fan)
             .where(Fan.account_id == str(account_id), Fan.fan_id == int(fan_id))
-            .values(turn_counter=Fan.turn_counter + 1,
-                    last_message_sent_at=now, updated_at=now)
+            .values(last_message_sent_at=now, updated_at=now)
         )
 
 
@@ -907,7 +941,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     dry_run = bool(payload.get("dry_run"))
     limit = int(payload.get("limit") or _DEFAULT_LIMIT)
     max_replies = int(payload.get("max_replies") or _DEFAULT_MAX_REPLIES)
-    history_tail = int(payload.get("history_tail") or _HISTORY_TAIL)
+    history_tail = int(payload.get("history_tail") or _HISTORY_TAIL)  # reply tail
     force_ids = coerce_ids(payload.get("force_ids"))
     # W7 fan-scope: react to ONLY the fan(s) who just messaged (no full-account
     # sweep). Unlike force_ids this does NOT bypass the gates — a scoped fan still
@@ -985,6 +1019,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _skip_and_collect(account_id, fan_id, "too_long")
                 newly_skiplisted += 1
                 continue
+            # Hard reply cap: after _MAX_TURNS confirmed replies, graduate to
+            # deep_convo regardless of info-completeness — a fan who never reveals
+            # the bio facts (dodges every question) otherwise stays here for ever.
+            if int(f.turn_counter or 0) >= _MAX_TURNS:
+                await _handoff_to_deep_convo(client, account_id, fan_id, f)
+                newly_skiplisted += 1
+                continue
             # Hand off to deep_convo once there's NOTHING LEFT TO ASK — every topic
             # is either filled (enough info) or has hit its ask cap (he dodged).
             # That's the "go to deep convo if enough info or dodged" rule: we don't
@@ -1030,7 +1071,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Inline fact fill (V1): save the facts he just stated BEFORE replying,
             # so age/job/location land this turn. Cap → stop the run cleanly.
             try:
-                f = await _extract_and_fill(account_id, fan_id, f, c, model, history_tail)
+                # Extract sees only the last few turns (a newly-stated fact is
+                # always recent) — its own short tail, NOT the reply's.
+                f = await _extract_and_fill(account_id, fan_id, f, c, model,
+                                            _EXTRACT_HISTORY_TAIL)
             except LLMCapExceeded:
                 cap_hit = True
                 log.warning("of_ai_chat LLM cap reached (extract) account=%s — stopping",
@@ -1079,6 +1123,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 continue
 
             raw = (res.content or "").strip()
+            # Count the turn the moment a reply is GENERATED — a "try" counts
+            # whether or not it lands. An undeliverable fan (no-id) or an echo-only
+            # drop never bumps via the confirmed-send path, so its turn_counter
+            # would stay 0 forever and the _MAX_TURNS cap could never fire. Bumping
+            # here makes the cap count attempts, so a fan we keep failing to send to
+            # still hits 30 and graduates to deep_convo instead of looping for ever.
+            if not dry_run:
+                await _bump_attempt(account_id, fan_id, now)
             # Up to `max_bubbles` bubbles (newline / em-dash / mid-emoji); em-dashes
             # are always cleaned out. Cap (2, or 3 with the style opt-in) so we
             # never spam.
@@ -1144,15 +1196,21 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 continue
             if first_no_id and not sent_ok:
                 # 200 but no id on the first bubble: can't persist (message_id is the
-                # PK), so pause briefly — else "fan spoke last" re-fires and we
-                # double-reply before scrape records the real send.
-                await _pause_fan(account_id, fan_id, now + _NOID_PAUSE)
+                # PK). Probe WHY first — an undeliverable fan (lapsed sub / deleted)
+                # would otherwise re-fire ('fan spoke last') every tick forever,
+                # burning a reply we can never deliver. quarantine_if_undeliverable
+                # rests/skips those; only a genuinely transient no-id falls through
+                # to the short pause (which also stops the immediate double-reply).
                 errors += 1
-                log.warning("of_ai_chat send returned no id account=%s fan=%s — paused %s",
-                            account_id, fan_id, _NOID_PAUSE)
+                reason = await quarantine_if_undeliverable(client, account_id, fan_id)
+                if reason is None:
+                    await _pause_fan(account_id, fan_id, now + _NOID_PAUSE)
+                    log.warning("of_ai_chat send returned no id account=%s fan=%s — paused %s",
+                                account_id, fan_id, _NOID_PAUSE)
                 continue
-            # At least one bubble landed → finalize the turn ONCE.
-            await _bump_turn_counter(account_id, fan_id, now)
+            # At least one bubble landed → stamp the send (the turn was already
+            # counted by _bump_attempt when the reply was generated).
+            await _mark_reply_sent(account_id, fan_id, now)
             # Info-gather (V1): mark the topic we nudged him on as asked so we never
             # re-ask it. gen_info fills the actual fact from his answer. (Empty on a
             # no-question style roll → nothing marked.) HARD RULE: mark the highest-
