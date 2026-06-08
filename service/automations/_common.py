@@ -25,10 +25,44 @@ from datetime import datetime
 
 import llm_client
 from db.engine import get_session
-from db.models import AccountAiConfig, Fan
+from db.models import AccountAiConfig, Fan, SkipList
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 log = logging.getLogger("of-relay.automation.common")
+
+
+# ── unreachable-fan skip-listing ────────────────────────────────────────────
+# OnlyFans permanently rejects sends to some fans — an expired/restricted sub
+# ("Cannot send message to this user") or a deleted account ("User not found").
+# Retrying every cycle is pointless and floods the logs (these are the bulk of
+# the relay's "errors"), so the first time a send hits one we skip-list the fan;
+# any sender that checks `skip_list` then leaves them alone.
+_UNREACHABLE_MARKERS = ("Cannot send message to this user", "User not found")
+
+
+def is_unreachable_fan_error(exc: BaseException) -> bool:
+    """True when an OF send failed PERMANENTLY for this fan (can't-message /
+    deleted), vs a transient error (proxy blip, rate limit, network)."""
+    s = str(exc)
+    return any(m in s for m in _UNREACHABLE_MARKERS)
+
+
+async def skip_unreachable_fan(account_id, fan_id, exc, *, log=log) -> bool:
+    """If `exc` is a permanent 'can't message this fan' error, add the fan to
+    skip_list (reason 'unreachable') so no sender retries it. Returns True if it
+    skip-listed; False for transient errors (caller keeps its normal handling)."""
+    if not is_unreachable_fan_error(exc):
+        return False
+    async with get_session() as s:
+        await s.execute(
+            sqlite_insert(SkipList)
+            .values(account_id=str(account_id), fan_id=int(fan_id),
+                    reason="unreachable", added_at=datetime.utcnow())
+            .on_conflict_do_nothing(index_elements=["account_id", "fan_id"])
+        )
+    log.info("skip_listed unreachable fan account=%s fan=%s (%s)",
+             account_id, fan_id, str(exc).splitlines()[0][:80])
+    return True
 
 # Default model for every account without an explicit brain `model`. DeepSeek is
 # the house default now — grok-4-1-fast-non-reasoning is retired (no longer

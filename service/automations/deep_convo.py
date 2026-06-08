@@ -87,7 +87,7 @@ from ._common import (
     build_structured_nickname, casualize_qtease, coerce_ids, facts_from_fan,
     hold_with_typing, humanize_typos, load_style_flags, load_typing_indicator,
     load_typing_wpm, load_typo_flags, push_nick_and_notes, resolve_model,
-    typing_delay_seconds,
+    skip_unreachable_fan, typing_delay_seconds,
 )
 
 log = logging.getLogger("of-relay.automation.deep_convo")
@@ -660,8 +660,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 sent += 1
                 completed += 1
 
-        except Exception:
+        except Exception as e:
             errors += 1
+            await skip_unreachable_fan(account_id, fan_id, e, log=log)
             log.warning("deep_convo step failed account=%s fan=%s state=%s",
                         account_id, fan_id, state, exc_info=True)
         finally:

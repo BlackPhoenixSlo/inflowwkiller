@@ -56,7 +56,7 @@ import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from automation_registry import register
-from ._common import apply_word_restriction, resolve_model
+from ._common import apply_word_restriction, resolve_model, skip_unreachable_fan
 from db.engine import get_session
 from db.models import (
     AccountAiConfig,
@@ -65,6 +65,7 @@ from db.models import (
     FanProfile,
     FollowupState,
     Message,
+    SkipList,
 )
 from llm_client import LLMCapExceeded
 
@@ -83,6 +84,11 @@ _DEFAULT_FAN_LIMIT = 200           # eligible-fan sweep ceiling per tick
 # _resolve_step_thresholds) — the Brain panel's "Follow-ups" delays write it.
 _STEP_THRESHOLDS_H = {1: 26, 2: 64, 3: 256}
 _MIN_GAP_H = 18
+# Hard cap: never follow up a fan who's been silent longer than this. A chat
+# cold for over a week is ghosted/dead — reminders just waste sends and draw
+# "Cannot send message to this user" rejections. (Caps the drip at ~1 week, so
+# the 256h step above effectively won't fire.)
+_MAX_SILENCE_H = 24 * 7
 
 # Cooldowns (hours) for the reply / restart branches (07 §Core algorithm).
 _REPLY_COOLDOWN_H = 26
@@ -332,6 +338,16 @@ async def _load_ai_config(account_id: str) -> dict:
 async def _load_blacklist() -> set[int]:
     async with get_session() as s:
         rows = (await s.execute(select(Blacklist.fan_id))).all()
+    return {int(r[0]) for r in rows}
+
+
+async def _load_skip_list(account_id: str) -> set[int]:
+    """Per-account skip_list — fans we've stopped auto-messaging (incl. ones OF
+    rejected as unreachable). send_followup must honor it like of_ai_chat does,
+    or it re-tries deleted/expired fans every cycle."""
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(SkipList.fan_id).where(SkipList.account_id == str(account_id)))).all()
     return {int(r[0]) for r in rows}
 
 
@@ -586,8 +602,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     # ── 2) Eligibility (no client) ───────────────────────────────────────
     blacklist = await _load_blacklist()
+    skip_ids = await _load_skip_list(account_id)
     eligible = [f for f in await _load_eligible_fans(account_id, limit)
-                if f["fan_id"] not in blacklist]
+                if f["fan_id"] not in blacklist and f["fan_id"] not in skip_ids]
     eligible_ids = [f["fan_id"] for f in eligible]
 
     # ── 3) DB reads that replace the DOM scrape ──────────────────────────
@@ -642,6 +659,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if e.silence_started_at is None:
             e.silence_started_at = last_model or now
         silence_hours = (now - e.silence_started_at).total_seconds() / 3600.0
+
+        # Cap: a fan silent longer than a week is cold — stop the drip entirely
+        # instead of nagging a ghosted/dead chat.
+        if silence_hours > _MAX_SILENCE_H:
+            e.phase = "completed"
+            await _save_entry(account_id, fid, e, now)
+            continue
 
         next_step = _pick_next_step(silence_hours, e.messages_sent, thresholds)
         if next_step is None:
@@ -716,8 +740,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 result = await asyncio.to_thread(
                     lambda: client.send_message(fid, text, media_files=media_files)
                 )
-            except Exception:
+            except Exception as e:
                 errors += 1
+                await skip_unreachable_fan(account_id, fid, e, log=log)
                 log.warning("send_followup send failed account=%s fan=%s",
                             account_id, fid, exc_info=True)
                 continue
