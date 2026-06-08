@@ -56,7 +56,10 @@ import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from automation_registry import register
-from ._common import apply_word_restriction, resolve_model, skip_unreachable_fan
+from ._common import (
+    apply_word_restriction, quarantine_if_undeliverable, resolve_model,
+    skip_unreachable_fan,
+)
 from db.engine import get_session
 from db.models import (
     AccountAiConfig,
@@ -353,7 +356,12 @@ async def _load_skip_list(account_id: str) -> set[int]:
 
 async def _load_eligible_fans(account_id: str, limit: int) -> list[dict]:
     """Fans with ≥$1 lifetime spend AND (total_likes NULL or ≥1). Ordered by
-    spend desc so a bounded sweep favors the most valuable fans."""
+    spend desc so a bounded sweep favors the most valuable fans.
+
+    NB: a quarantined / rested fan (`automation_paused_until` in the future) is NOT
+    filtered here — the per-fan `fan_on_cooldown` check in the run loop already
+    skips it before any LLM call, so the undeliverable-quarantine pause is honoured
+    there (same column the W3 cooldown uses)."""
     async with get_session() as s:
         rows = (await s.execute(
             select(Fan.fan_id, Fan.of_display_name, Fan.of_username)
@@ -742,7 +750,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 )
             except Exception as e:
                 errors += 1
-                await skip_unreachable_fan(account_id, fid, e, log=log)
+                # A known permanent marker → skip_list and done. Otherwise the send
+                # raised something we don't recognise — but a lapsed-sub fan raises
+                # on EVERY send, and followup only advances state on a returned
+                # send, so it re-fires the same nudge every tick forever (the
+                # paying-but-lapsed loop). Probe WHY and quarantine the undeliverable
+                # ones (1-week rest); a genuine transient just retries next tick.
+                if not await skip_unreachable_fan(account_id, fid, e, log=log):
+                    await quarantine_if_undeliverable(client, account_id, fid)
                 log.warning("send_followup send failed account=%s fan=%s",
                             account_id, fid, exc_info=True)
                 continue
