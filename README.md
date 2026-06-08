@@ -1,5 +1,7 @@
 # Fastt
 
+![Fastt preview](inflowkillerpreview.png)
+
 Self-hosted creator dashboard for OnlyFans. A FastAPI relay that holds a
 captured browser session, replays requests with proper TLS/headers via
 `curl_cffi`, signs each call the way the OF web client does, and serves a
