@@ -57,7 +57,7 @@ import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from automation_registry import register
-from ._common import apply_word_restriction, resolve_model
+from ._common import apply_word_restriction, name_token, resolve_model
 from db.engine import get_session
 from db.models import AccountAiConfig, Fan, FanProfile, WelcomeSent
 from llm_client import LLMCapExceeded
@@ -321,22 +321,10 @@ def _model_weekday(utc_offset) -> str:
     return (datetime.utcnow() + timedelta(hours=off)).strftime("%A")
 
 
-def _name_token(s: str | None, *, last: bool = False) -> str:
-    """Pull a real-NAME token (Capitalized, letters only, len≥2) out of a string,
-    or '' if it doesn't look like a name (handles like 'xx_gamer_99' / 'u123' are
-    rejected — they aren't Capitalized real names). For a stored nickname pass
-    last=True so 'Sexy Sofie' → 'Sofie' (the name, not the adjective)."""
-    if not s:
-        return ""
-    seg = str(s).split("/")[0].strip()       # 'Ava/Free' → 'Ava'
-    words = re.split(r"\s+", seg) if seg else []
-    if not words:
-        return ""
-    raw = words[-1] if last else words[0]
-    if not raw[:1].isupper():                 # real names are Capitalized; handles aren't
-        return ""
-    w = re.sub(r"[^A-Za-z]", "", raw)
-    return w if len(w) >= 2 else ""
+# Canonical name parser now lives in _common.name_token (shared by every sender so
+# they all derive greet-names identically); kept as a module-local alias so the
+# existing call sites below read unchanged.
+_name_token = name_token
 
 
 async def _resolve_welcome_name(account_id: str, fan_id: int, sub: dict) -> str:
@@ -378,7 +366,7 @@ def _local_welcome(name: str, cfg: dict) -> str:
         Hey S-S-S-Sexy Sofie ! !!
 
         By the way - just woke up and made myself a coffee ☕ my dogs are going crazy
-        wanting a walk lol (it's Friday morning in Los Angeles, California where I am from)
+        wanting a walk lol (it's Friday morning in Vancouver Island, Canada where I am from)
 
         Will reply when I am back :)
 

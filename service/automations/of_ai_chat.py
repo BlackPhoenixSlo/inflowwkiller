@@ -76,7 +76,7 @@ from ._common import (
     build_facts_note, build_structured_nickname, coerce_ids, facts_from_fan,
     hold_with_typing, humanize_typos, load_style_flags, load_typing_indicator,
     load_typing_wpm, load_typo_flags, push_nick_and_notes,
-    quarantine_if_undeliverable, resolve_model,
+    quarantine_if_undeliverable, resolve_fan_name, resolve_model,
     skip_unreachable_fan, typing_delay_seconds,
 )
 from . import gen_info  # profile_is_stale() — the refresh-if-stale hook below
@@ -562,7 +562,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     presented = [k for k, _ in questions]
 
     facts = []
-    name = (f.real_name or f.generated_nickname or f.of_display_name or "").strip()
+    name = resolve_fan_name(f)
     if name:
         facts.append(f"name/nickname: {name.split('/')[0][:40]}")
     for label, val in (("age", f.his_age), ("city", f.home_city),
