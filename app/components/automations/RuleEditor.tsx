@@ -130,6 +130,7 @@ export default function RuleEditor({
   const saveStyleM = useSaveStyleConfig(accountId);
   const [humanStyle, setHumanStyle] = useState(false);
   const [typos, setTypos] = useState(false);
+  const [nonnative, setNonnative] = useState(false);
   useEffect(() => {
     const c: StyleConfig = {
       ...(styleCfgQ.data?.defaults ?? {}),
@@ -137,6 +138,7 @@ export default function RuleEditor({
     };
     setHumanStyle(Boolean(c[kind as keyof StyleConfig]));
     setTypos(Boolean(c[`typos_${kind}` as keyof StyleConfig]));
+    setNonnative(Boolean(c[`nonnative_${kind}` as keyof StyleConfig]));
   }, [styleCfgQ.data, kind]);
 
   const meta = useMemo(() => kinds.find((k) => k.kind === kind), [kinds, kind]);
@@ -344,13 +346,14 @@ export default function RuleEditor({
           is_enabled: enabled,
         });
       }
-      // Persist the style/typos opt-ins (chat kinds only). The backend MERGES, so
-      // sending just this automation's two keys won't touch the others' flags.
+      // Persist the style/typos/non-native opt-ins (chat kinds only). The backend
+      // MERGES, so sending just this automation's keys won't touch the others'.
       if (isStyleKind(kind)) {
         try {
           await saveStyleM.mutateAsync({
             [kind]: humanStyle,
             [`typos_${kind}`]: typos,
+            [`nonnative_${kind}`]: nonnative,
           } as StyleConfig);
         } catch (e) {
           // The rule already saved — surface the style failure but don't block.
@@ -586,6 +589,16 @@ export default function RuleEditor({
               />
               <span className="text-sm text-fg">Typos</span>
               <span className="text-[11px] text-fg-dim/70">occasional thumb-slip (+ sometimes a “*fix”)</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={nonnative}
+                onChange={(e) => setNonnative(e.target.checked)}
+                className="w-4 h-4 rounded accent-accent cursor-pointer"
+              />
+              <span className="text-sm text-fg">Non-native</span>
+              <span className="text-[11px] text-fg-dim/70">consistent non-native misspellings + broken grammar</span>
             </label>
           </div>
         </div>

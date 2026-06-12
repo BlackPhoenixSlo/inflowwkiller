@@ -72,10 +72,12 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from ._common import (
-    STYLE_3LINE, STYLE_HUMANIZER, STYLE_MAX_BUBBLES, apply_word_restriction,
+    ONPLATFORM_GUARDRAIL, guard_offplatform,
+    STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
+    NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style, apply_word_restriction,
     build_facts_note, build_structured_nickname, coerce_ids, facts_from_fan,
-    hold_with_typing, humanize_typos, load_style_flags, load_typing_indicator,
-    load_typing_wpm, load_typo_flags, push_nick_and_notes,
+    hold_with_typing, humanize_typos, load_nonnative_flags, load_style_flags,
+    load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
     skip_unreachable_fan, typing_delay_seconds,
 )
@@ -141,11 +143,24 @@ _STYLE_VARIANTS = (
      "straight to your next question. e.g. \"cool, what do u do for work?\""),
 )
 
+# When we deliberately SKIP the question this turn (a "breather"), vary HOW it reads
+# so the no-question turns don't all look alike either — same anti-template logic as
+# _STYLE_VARIANTS. One is rolled per breather. (A breather that ANSWERS a question he
+# just asked is handled separately — see _build_messages.)
+_BREATHER_VARIANTS = (
+    "THIS MESSAGE: don't ask anything — just react to what he said in a few words "
+    "and let it breathe. (You'll ask next time.)",
+    "THIS MESSAGE: don't ask anything — tease him or be a lil bratty about what he "
+    "said, playful not mean. (You'll ask next time.)",
+    "THIS MESSAGE: don't ask anything — react, then add a small thought of your own "
+    "to keep it flowing. (You'll ask next time.)",
+)
+
 # Emoji (with optional variation selector) + the LLM em-dash "tell".
 _EMOJI = "[\U0001F300-\U0001FAFF\U00002600-\U000027BF❤]️?"
 _EMOJI_RE = re.compile(_EMOJI)
 _TRAIL_EMOJI_RE = re.compile(_EMOJI + r"\s*$")
-_DASH_RE = re.compile(r"\s*[—–]\s*|\s+-\s+")   # em/en dash or a spaced hyphen
+_DASH_RE = re.compile(r"\s*[—–]\s*|\s*--\s*|\s+-\s+")  # em/en dash, --, spaced hyphen
 _DASH_CLEAN_RE = re.compile(r"\s*[—–]\s*")     # any residual em/en dash → ", "
 
 
@@ -153,20 +168,6 @@ def _strip_dash(s: str) -> str:
     """An em/en dash never belongs in a casual text (it's a dead LLM tell). Any
     that survives a split is replaced with a comma so no bubble ever shows one."""
     return _DASH_CLEAN_RE.sub(", ", s).strip().rstrip(",").strip()
-
-
-def _casual_join(parts: list[str]) -> str:
-    """Glue split bubbles back into ONE casual line WITHOUT a comma after terminal
-    punctuation — ", ".join gives the bot-tell 'a double shift?, ur a beast'; this
-    gives 'a double shift? ur a beast'. Comma only between plain clauses."""
-    out = (parts[0] or "").strip()
-    for p in parts[1:]:
-        p = (p or "").strip()
-        if not p:
-            continue
-        sep = " " if out.rstrip().endswith(("?", "!", ".", "…")) else ", "
-        out = out.rstrip() + sep + p
-    return out
 
 
 # Real texters break a thought into separate sends: a leading reaction, then the
@@ -182,47 +183,175 @@ _LEAD_REACT_RE = re.compile(rf"^({_REACTIONS})\b[,!.]*\s+", re.I)
 # Matches the reaction word at the start whether or not anything follows — used to
 # fingerprint an opener (incl. a standalone "oof" bubble) for repeat-detection.
 _REACT_WORD_RE = re.compile(rf"^({_REACTIONS})\b", re.I)
-_SENT_SPLIT_RE = re.compile(r"(?<=[.?!])\s+")
+# Girl-style bubble breaks: a sentence boundary (the .?! is KEPT on the chunk), OR
+# a comma / dash-family marker where a real texter would hit send — the comma or
+# dash itself is CONSUMED so it never shows inside a bubble. Per the style spec
+# every comma is a bubble break ("no, i dont think so" → "no" / "i dont think so").
+_SENT_SPLIT_RE = re.compile(r"(?<=[.?!])\s+|\s*,\s*|\s*[—–]\s*|\s*--\s*|\s+-\s+")
 
 
-def _split_sentences(text: str, max_bubbles: int) -> list[str]:
-    """Break a single-line reply into texting bubbles: peel a leading reaction word,
-    then split the rest on sentence boundaries. Trailing '.' dropped (casual). Over
-    `max_bubbles` → the overflow merges into the last bubble (never drop the
-    question). Returns [] / [text] when there's nothing to split."""
-    rest = text.strip()
-    parts: list[str] = []
-    m = _LEAD_REACT_RE.match(rest)
-    if m:
-        lead = rest[:m.end()].strip().rstrip(",.!").strip()
-        if lead:
-            parts.append(lead)
-        rest = rest[m.end():].strip()
-    for chunk in _SENT_SPLIT_RE.split(rest):
-        chunk = chunk.strip()
-        if chunk.endswith("."):
-            chunk = chunk[:-1].strip()
-        if chunk:
-            parts.append(chunk)
-    parts = [p for p in parts if p]
-    if len(parts) > max_bubbles:                # keep everything: merge the tail
-        parts = parts[:max_bubbles - 1] + [" ".join(parts[max_bubbles - 1:])]
+# When a chunk is STILL long after the comma/sentence split, break it further at a
+# mid emoji (the emoji is KEPT on the left bubble) or before a WH question word that
+# has enough lead-in. Short chunks pass through untouched (don't over-split a tiny
+# reply). "if the text is long, split at ? or emoji or when/who/what …"
+_WH_RE = re.compile(r"\b(what|whats|where|when|who|why|which|how)\b", re.I)
+_LONG_CHUNK = 40           # only emoji/WH-split a chunk longer than this many chars
+_WH_MIN_LEAD_WORDS = 4     # …and only before a WH-word with ≥ this many words before it
+
+
+def _split_emoji_wh(seg: str) -> list[str]:
+    """Break a LONG segment further: after a mid emoji (emoji KEPT on the left), or
+    before a WH question word with ≥ _WH_MIN_LEAD_WORDS words of lead-in. Recurses on
+    the remainder. A short segment — or one with no such break — passes through."""
+    seg = seg.strip()
+    if not seg:
+        return []
+    if len(seg) <= _LONG_CHUNK:
+        return [seg]
+    for m in _EMOJI_RE.finditer(seg):           # emoji with content after → split after it
+        before, after = seg[:m.end()].strip(), seg[m.end():].strip()
+        if before and after:
+            return [before] + _split_emoji_wh(after)
+    for m in _WH_RE.finditer(seg):              # a WH-word that opens a fresh clause
+        if m.start() == 0:
+            continue
+        before, after = seg[:m.start()].strip().rstrip(","), seg[m.start():].strip()
+        if before and after and len(before.split()) >= _WH_MIN_LEAD_WORDS:
+            return [before] + _split_emoji_wh(after)
+    return [seg]
+
+
+def _split_units(text: str) -> list[str]:
+    """Break ONE line into texting bubbles: split on every comma + sentence boundary
+    + dash (comma/dash CONSUMED, .?! KEPT), then break any still-LONG chunk further
+    at a mid emoji or WH word. A trailing '.' is dropped (casual). NO cap here — the
+    caller caps and merges overflow so nothing is ever dropped."""
+    out: list[str] = []
+    for chunk in _SENT_SPLIT_RE.split(text.strip()):
+        for sub in _split_emoji_wh(chunk):
+            if sub.endswith("."):
+                sub = sub[:-1].strip()
+            if sub:
+                out.append(sub)
+    return out
+
+
+def _cap_merge(parts: list[str], max_bubbles: int) -> list[str]:
+    """Cap the bubble count at max_bubbles WITHOUT dropping content — any overflow
+    merges into the last bubble."""
+    if len(parts) > max_bubbles:
+        return parts[:max_bubbles - 1] + [" ".join(parts[max_bubbles - 1:])]
     return parts
 
 
-def _cap_one_question(parts: list[str]) -> list[str]:
-    """At most ONE question across the bubbles — two questions in a reply is a bot
-    tell ('whats ur job? u gonna spill?'). Keep the first question bubble; drop any
-    later question-only bubble."""
+_HAS_WORD_RE = re.compile(r"[A-Za-z0-9]")
+
+
+def _merge_orphans(parts: list[str]) -> list[str]:
+    """A bubble with NO letters/digits (a stranded emoji or bare punctuation, e.g. a
+    trailing '😏' the sentence split peeled off after a '?') isn't a real text — glue
+    it onto the END of the previous bubble so we never send a lone '😏' bubble."""
     out: list[str] = []
-    seen_q = False
     for p in parts:
-        q = p.rstrip().endswith("?")
-        if q and seen_q:
-            continue
-        out.append(p)
-        seen_q = seen_q or q
+        if out and not _HAS_WORD_RE.search(p):
+            out[-1] = (out[-1] + " " + p).strip()
+        else:
+            out.append(p)
     return out
+
+
+def _casual_join(parts: list[str]) -> str:
+    """Glue bubbles back into ONE casual line: a space after terminal punctuation
+    (so '...bbq? bold claim' not '...bbq?, bold claim'), a comma between plain
+    clauses (so a trailing vocative reads 'how old are you, jack')."""
+    out = (parts[0] or "").strip()
+    for p in parts[1:]:
+        p = (p or "").strip()
+        if not p:
+            continue
+        sep = " " if out.rstrip().endswith(("?", "!", ".", "…")) else ", "
+        out = out.rstrip() + sep + p
+    return out
+
+
+def _target_bubbles(words: int) -> int:
+    """How many bubbles a reply of `words` words SHOULD become — short stays on one
+    line, longer earns more, but it never explodes (13 words is 2-3 lines, NOT 5).
+    A real texter sends ~one short line per handful of words: 3 → 1, 5 → 2, 13 → 3."""
+    if words <= 4:
+        return 1
+    if words <= 9:
+        return 2
+    if words <= 15:
+        return 3
+    return 4
+
+
+def _group_to_target(units: list[str], target: int) -> list[str]:
+    """Merge the fine-grained `units` (every comma / clause break) down to `target`
+    bubbles by grouping CONTIGUOUS units into roughly equal runs — the extra units go
+    to the LAST groups, so a trailing vocative ('where are you from' + 'jack?') rejoins
+    instead of stranding. Joined casually (comma between clauses). Never drops content."""
+    n = len(units)
+    if target <= 1:
+        return [_casual_join(units)] if units else []
+    if target >= n:
+        return units
+    base, rem = divmod(n, target)
+    sizes = [base] * (target - rem) + [base + 1] * rem   # bigger groups at the end
+    out, i = [], 0
+    for s in sizes:
+        out.append(_casual_join(units[i:i + s]))
+        i += s
+    return out
+
+
+# Per-reply split STRATEGY — a randomiser so replies don't all chop the same way:
+#   length : bubble count tracks word count (the sweet spot; see _target_bubbles).
+#   clause : split at (nearly) every comma / clause — a rapid multi-text burst.
+#   terse  : one or two bubbles — a short, clipped reply.
+# Weighted toward `length`; `clause`/`terse` add variety. Seeded per reply (off the
+# text) so a given reply is stable, but different replies vary.
+_SPLIT_STRATEGIES = ("length", "clause", "terse")
+_SPLIT_WEIGHTS = (58, 22, 20)
+
+
+def _strategy_target(parts: list[str], max_bubbles: int, rng) -> int:
+    """Roll a split strategy and return the bubble-count target for it (clamped to
+    [1, min(max_bubbles, len(parts))] — never invents a break, never drops one)."""
+    n = max(1, len(parts))
+    strat = rng.choices(_SPLIT_STRATEGIES, weights=_SPLIT_WEIGHTS)[0]
+    if strat == "clause":                 # split at (nearly) every clause/comma
+        target = n
+    elif strat == "terse":                # a short, clipped reply
+        target = min(2, n)
+    else:                                 # length: count tracks word count (default)
+        target = _target_bubbles(sum(len(p.split()) for p in parts))
+    return max(1, min(target, max_bubbles, n))
+
+
+def _split_sentences(text: str, max_bubbles: int) -> list[str]:
+    """One line → bubbles (see _split_units), capped at max_bubbles (overflow merges
+    into the last; nothing dropped). The single-line entry point used in tests;
+    split_for_bubbles walks newline-separated lines through _split_units directly."""
+    return _cap_merge(_merge_orphans(_split_units(text)), max_bubbles)
+
+
+_QMARK_TAIL_RE = re.compile(r"\s*\?+\s*$")
+
+
+def _cap_one_question(parts: list[str]) -> list[str]:
+    """At most ONE question MARK across the bubbles — two '?' in a reply is a bot
+    tell ('whats ur job? u gonna spill?'). Keep the '?' on the LAST question bubble
+    (usually the real ask) and strip it from any earlier question bubble. NEVER drop
+    a bubble — that loses the message: 'oh yeah? ... how old r u?' keeps both bubbles,
+    only the last stays a question ('oh yeah' / '... how old r u?')."""
+    q_idx = [i for i, p in enumerate(parts) if p.rstrip().endswith("?")]
+    if len(q_idx) <= 1:
+        return parts
+    keep = q_idx[-1]
+    return [(_QMARK_TAIL_RE.sub("", p) if (i in q_idx and i != keep) else p)
+            for i, p in enumerate(parts)]
 
 
 def _react_token(s: str) -> str | None:
@@ -255,42 +384,34 @@ def _dedupe_lead_reaction(parts: list[str], recent_out: list[str]) -> list[str]:
     return [rest] if rest else parts
 
 
-def split_for_bubbles(text: str, max_bubbles: int = 2) -> list[str]:
-    """Make one generated reply read like real texting — up to `max_bubbles`
-    bubbles (default 2; the style opt-in raises it to 3), and NO em-dash ever
-    survives (every return path runs _strip_dash):
+def split_for_bubbles(text: str, max_bubbles: int = 2, rng=None) -> list[str]:
+    """Make one generated reply read like real texting, and NO em-dash ever survives
+    (every return path runs _strip_dash). Content is NEVER dropped:
 
-      • explicit two-line style (newline) → bubbles on the line breaks.
-      • style mode (max_bubbles ≥ 3) → split a single line on a leading reaction +
-        sentence boundaries ("oof, x. how old r u" → "oof"/"x"/"how old r u").
-      • em-dash ("got it jack — how old are ya") → two bubbles ("got it jack" /
-        "how old are ya").
-      • a MID-LINE emoji → break 2/3 of the time, emoji stays on bubble 1
-        ("haha noted jack 😈" / "so where ya from?") — but DROP it 1/2 of those.
-      • not broken + a TRAILING emoji → drop it 1/3 of the time.
+      • style mode (max_bubbles ≥ 3) → walk the model's OWN line breaks, then split
+        each line on commas + sentence boundaries + dash + (for a long chunk) emoji /
+        WH word. A per-reply STRATEGY randomiser (_strategy_target) then picks the
+        bubble count — length-based / split-every-clause / terse — so replies don't
+        all chop the same way. Pass `rng` (seeded off the reply) for a stable result.
+      • non-style (cap 2) → the model's two-line style, else a single dash / a
+        MID-LINE emoji break (2/3 of the time), else a trailing-emoji drop (1/3).
     """
+    _rng = rng if rng is not None else random
     text = text.strip()
-    if "\n" in text:                            # the "two tiny lines" style
+    if max_bubbles >= 3:                         # STYLE MODE
+        # Gather every candidate break (line breaks → commas/sentences/dash → long
+        # chunk at emoji/WH), de-mark extra '?', then group to the randomiser's
+        # target bubble count (nothing dropped — overflow merges into the last).
+        parts: list[str] = []
+        for line in text.split("\n"):
+            parts.extend(_split_units(line))
+        parts = _cap_one_question(_merge_orphans(parts))
+        parts = _group_to_target(parts, _strategy_target(parts, max_bubbles, _rng))
+        if parts:
+            return [_strip_dash(p) for p in parts]
+    if "\n" in text:                            # non-style: the model's two-line style
         parts = [p.strip() for p in text.split("\n") if p.strip()][:max_bubbles]
         return [_strip_dash(p) for p in parts] or [_strip_dash(text)]
-    if max_bubbles >= 3:                         # style mode: sentence-aware split
-        parts3 = _cap_one_question(_split_sentences(text, max_bubbles))
-        if len(parts3) >= 2:
-            # VARY the count so it's not always a 3-way split — mix 1/2/3 like a
-            # real person (sometimes one line, sometimes a couple, sometimes three).
-            if len(parts3) >= 3:
-                # 2 lines is the sweet spot; 3 is the rare case and 1 the breather —
-                # a 3-way split every time is a bot tell, but so is never splitting.
-                target = random.choices([len(parts3), 2, 1], weights=[20, 55, 25])[0]
-            else:
-                target = random.choices([2, 1], weights=[70, 30])[0]
-            if target >= len(parts3):
-                merged = parts3
-            elif target == 1:
-                merged = [_casual_join(parts3)]       # one casual line (no '?,' joins)
-            else:                                     # keep the question as its own bubble
-                merged = parts3[:target - 1] + [_casual_join(parts3[target - 1:])]
-            return [_strip_dash(p) for p in merged]
     dm = _DASH_RE.search(text)
     if dm:
         before, after = text[:dm.start()].strip(), text[dm.end():].strip()
@@ -541,10 +662,45 @@ def _primary_ask_target(presented: list[str]) -> str | None:
     return presented[0] if presented else None
 
 
+def _turn_asked(bubbles: list[str]) -> bool:
+    """A bot turn 'asked' if any of its bubbles ends with a question mark (a
+    trailing emoji/space is ignored: 'how old r u? 😏' still counts)."""
+    for b in bubbles:
+        if _TRAIL_EMOJI_RE.sub("", b or "").rstrip().endswith("?"):
+            return True
+    return False
+
+
+def _recent_ask_pattern(history: list[tuple[str, str]]) -> tuple[int, bool]:
+    """From the (direction, body) tail, group contiguous bot ('out') runs into turns
+    and return (trailing consecutive ASKING turns, last-bot-turn-was-a-breather).
+    Lets the dice smooth itself: never interrogate (3+ asks in a row) and never two
+    breathers back-to-back — both read robotic. Memoryless coin flips don't."""
+    turns: list[bool] = []          # one bool per bot turn: did it end on a question?
+    run: list[str] = []
+    for d, b in history:
+        if d == "out":
+            run.append(b)
+        elif run:
+            turns.append(_turn_asked(run))
+            run = []
+    if run:
+        turns.append(_turn_asked(run))
+    if not turns:
+        return 0, False
+    streak = 0
+    for asked_q in reversed(turns):
+        if not asked_q:
+            break
+        streak += 1
+    return streak, (not turns[-1])
+
+
 def _build_messages(persona: str, f: Fan, c: _Candidate,
                     asked: set[str],
                     history_tail: int = _HISTORY_TAIL,
-                    style_on: bool = False) -> tuple[list[dict], list[str]]:
+                    style_on: bool = False,
+                    nonnative_on: bool = False) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — a faithful port of V1
     prompts.create_chat_response: a short, GIRLY, 100%-human reply that flirts
     WHILE gathering the one piece of info we still need. The 'still need' block is
@@ -578,10 +734,38 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"{'FAN' if d == 'in' else 'YOU'}: {b}" for d, b in history if b
     )
 
-    # Gathering info is the PRIMARY job, so ASK most turns. Only ~1 in 7 is a
-    # react-only breather (keeps it human, not an interrogation). When info is
+    # Gathering info is the PRIMARY job, so ASK most turns, but DON'T interrogate.
+    # The ask/breather decision is a smoothed dice, not a memoryless coin: it reads
+    # the recent turn pattern and the fan's last message so the bot never asks 3
+    # turns straight, never volleys a question back right after HE asked one, and
+    # naturally drifts interview -> banter as the gap list empties. When info is
     # already complete there's nothing left to ask.
-    ask = bool(question_lines) and random.random() >= 0.14
+    fan_run: list[str] = []
+    for d, b in reversed(history):
+        if d == "in" and b:
+            fan_run.append(b)
+        elif fan_run:
+            break
+    fan_last_text = " ".join(reversed(fan_run))
+    fan_just_asked = "?" in fan_last_text                     # he asked us something
+    fan_low_effort = len(fan_last_text.split()) <= 3 and not fan_just_asked
+    ask_streak, last_breather = _recent_ask_pattern(history)
+    # #3 taper: as the remaining gaps empty out, lean harder toward breathers so the
+    # chat winds down from interview to banter instead of clinging to the last gap.
+    breather_p = 0.55 if len(presented) <= 2 else 0.33
+
+    ask = bool(question_lines)
+    if ask:
+        if ask_streak >= 3:
+            ask = False                       # #1 never 3 asks in a row (interrogation)
+        elif fan_just_asked:
+            ask = False                       # #2 answer him, don't volley a Q back
+        elif last_breather:
+            ask = True                        # #1 never two breathers back-to-back
+        elif fan_low_effort:
+            ask = random.random() >= 0.6      # #2 low-effort msg -> lean breather/tease
+        else:
+            ask = random.random() >= breather_p   # #3 base dice (tapered)
     if not ask:
         presented = []  # nothing asked → don't mark a topic
 
@@ -597,11 +781,15 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
             "is fine. If he dodged something earlier, DON'T re-ask it back-to-back; "
             "just move on to another one and you can poke it again later:\n" + question_lines
         )
-    else:
+    elif fan_just_asked:
+        # #2 he asked us something — answer it, don't ignore it to fire our own Q.
         need_block = (
-            "THIS MESSAGE: don't ask a question — just react or tease to what he said "
-            "and keep it flowing. (You'll ask next time.)"
+            "THIS MESSAGE: he just asked you something — answer it warmly and briefly "
+            "in your own words, and DON'T fire a question back this time. (You'll ask "
+            "next time.)"
         )
+    else:
+        need_block = random.choice(_BREATHER_VARIANTS)  # #4 vary the breather itself
 
     # HARD RULE: if we already asked his name twice and he dodged, NEVER ask a
     # third time — give him a playful nickname and use it. (`_questions_still_needed`
@@ -615,15 +803,19 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
 
     # Per-message style dice so replies don't all look identical (the bot tell:
     # the same "😏 + one short line + question" every time). Controls HOW it looks,
-    # not WHETHER it asks (that's `ask` above). The style opt-in adds a 3-line
-    # micro-text variant (pairs with the raised bubble cap at the send site).
-    # When the human-style opt-in is on, weight the 3-bubble micro-text variant
-    # ~3x so genuine 3-line posts actually show up (~30% vs ~12% at 1x).
-    style = random.choice(_STYLE_VARIANTS + ((STYLE_3LINE,) * 3 if style_on else ()))
+    # not WHETHER it asks (that's `ask` above). When the human-style opt-in is on,
+    # BALANCE a multi-line variant (STYLE_3LINE) against a one-line brevity variant
+    # (STYLE_BRIEF) — the source of bubble-count variation (the splitter just honors
+    # the reply's length), so replies mix one-liners with a couple of short texts.
+    style_extra = ((STYLE_3LINE,) * 2 + (STYLE_BRIEF,) * 2) if style_on else ()
+    style = random.choice(_STYLE_VARIANTS + style_extra)
 
     # When the "human texting style" opt-in is ON, append the humanizer block —
     # the not-AI tells (no echo-with-adjective, vary length, one question, etc.).
     humanizer = f"\n\n{STYLE_HUMANIZER}" if style_on else ""
+    # When the "non-native English" opt-in is ON, append the register block (the dict
+    # in the send path guarantees the signature misspellings; this sets the grammar).
+    nonnative = f"\n\n{NONNATIVE_REGISTER}" if nonnative_on else ""
 
     system = (
         f"{persona}\n"
@@ -646,8 +838,9 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "and don't offer anything — playfully tease and slow it down, then steer "
         "back to getting to know him. Warm and flirty, never cold or preachy.\n"
         "- GOOD: \"haha thanks 😏 what should i call u?\" / \"aww how old are ya\" / "
-        "\"a chef? bet u cook fire, fave dish?\""
-        f"{humanizer}\n\n"
+        "\"a chef? bet u cook fire, fave dish?\"\n\n"
+        f"{ONPLATFORM_GUARDRAIL}"
+        f"{humanizer}{nonnative}\n\n"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
     )
     user = (
@@ -953,6 +1146,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
+    nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     persona = await _load_persona(account_id)
     blacklist, skip_list = await _load_stop_lists(account_id)
@@ -1101,7 +1295,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 newly_skiplisted += 1
                 continue  # finally releases the lease (sent_ok stays False)
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
-                                              style_on=style_on)
+                                              style_on=style_on, nonnative_on=nonnative_on)
             try:
                 res = await llm_client.chat(
                     model=model,
@@ -1123,6 +1317,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 continue
 
             raw = (res.content or "").strip()
+            # Deterministic floor under ONPLATFORM_GUARDRAIL: if the model still
+            # leaked a number / off-platform handle / meetup arrangement, swap for
+            # a warm on-platform deflection before it can be sent.
+            raw, _leak = guard_offplatform(raw, random.Random(f"{fan_id}:{raw}"))
+            if _leak:
+                log.info("of_ai_chat off-platform leak guarded account=%s fan=%s reasons=%s",
+                         account_id, fan_id, _leak)
             # Count the turn the moment a reply is GENERATED — a "try" counts
             # whether or not it lands. An undeliverable fan (no-id) or an echo-only
             # drop never bumps via the confirmed-send path, so its turn_counter
@@ -1135,7 +1336,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # are always cleaned out. Cap (2, or 3 with the style opt-in) so we
             # never spam.
             parts = [apply_word_restriction(p)[:_REPLY_MAX_CHARS]
-                     for p in split_for_bubbles(raw, max_bubbles) if p.strip()][:max_bubbles]
+                     for p in split_for_bubbles(raw, max_bubbles,
+                                                rng=random.Random(f"split:{fan_id}:{raw}"))
+                     if p.strip()][:max_bubbles]
             # Drop any bubble that just parrots his last message (small-model echo
             # tell the humanizer can trigger). If the whole reply was an echo, skip.
             parts = [p for p in parts if not _looks_like_echo(p, c.last_body)]
@@ -1149,9 +1352,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 log.debug("of_ai_chat dropped echo-only reply account=%s fan=%s",
                           account_id, fan_id)
                 continue
+            name_protect = [n for n in (f.real_name, f.generated_nickname,
+                                        f.of_display_name) if n]
+            if nonnative_on:  # opt-in: deterministic non-native misspellings (always)
+                parts = [apply_nonnative_style(p, protect=name_protect) for p in parts]
             if typo_on:  # opt-in: a realistic thumb-slip (+ maybe a "*fix" bubble)
-                protect = [n for n in (f.real_name, f.generated_nickname,
-                                       f.of_display_name) if n]
+                # protect the words non-native already mangled so we don't double-corrupt
+                protect = name_protect + (list(NONNATIVE_OUTPUTS) if nonnative_on else [])
                 parts = humanize_typos(parts, random.Random(f"{fan_id}:{raw}"),
                                        protect=protect, max_bubbles=max_bubbles)[:max_bubbles]
 
@@ -1183,6 +1390,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         fan_id=int(fan_id),
                         message_id=int(msg_id),
                         sent_by_employee_id=None,  # → system Automation employee
+                        automation_kind=_PURPOSE,  # of_ai_chat
                         body=str(result.get("text") or part),
                         price_cents=0,
                         created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),

@@ -26,7 +26,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import AccountAiConfig
-from automations._common import STYLE_AUTOMATIONS, typo_flag_key
+from automations._common import STYLE_AUTOMATIONS, typo_flag_key, nonnative_flag_key
 
 log = logging.getLogger("of-relay.style_config_api")
 
@@ -35,20 +35,24 @@ router = APIRouter()
 
 def _defaults() -> dict[str, bool]:
     """All-OFF — every automation keeps its current behavior until ticked on.
-    Two independent toggle sets per automation: the humanizer (`<automation>`) and
-    the thumb-typo injector (`typos_<automation>`)."""
+    Three independent toggle sets per automation: the humanizer (`<automation>`), the
+    thumb-typo injector (`typos_<automation>`), and the non-native English layer
+    (`nonnative_<automation>`)."""
     out = {k: False for k in STYLE_AUTOMATIONS}
     out.update({typo_flag_key(k): False for k in STYLE_AUTOMATIONS})
+    out.update({nonnative_flag_key(k): False for k in STYLE_AUTOMATIONS})
     return out
 
 
 def _validate(cfg: dict) -> dict[str, bool]:
-    """Coerce to exactly the known boolean flags (humanizer + typo, per
+    """Coerce to exactly the known boolean flags (humanizer + typo + non-native, per
     automation); ignore anything else."""
     if not isinstance(cfg, dict):
         cfg = {}
     out = {k: bool(cfg.get(k)) for k in STYLE_AUTOMATIONS}
     out.update({typo_flag_key(k): bool(cfg.get(typo_flag_key(k)))
+                for k in STYLE_AUTOMATIONS})
+    out.update({nonnative_flag_key(k): bool(cfg.get(nonnative_flag_key(k)))
                 for k in STYLE_AUTOMATIONS})
     return out
 

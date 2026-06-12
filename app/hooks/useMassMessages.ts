@@ -44,6 +44,11 @@ export interface MassMessageRow {
   unsendSeconds?: number | null;
   template?: string | null;
   fetched_at?: string | null;
+  /** Which automation produced this broadcast (joined via mass_runs.queue_id).
+   *  null = a manual UI broadcast or a pre-0032 run. */
+  automationKind?: string | null;
+  /** Funnel/campaign name when the broadcast ran a funnel. */
+  funnelName?: string | null;
   __accountId?: string;
 }
 

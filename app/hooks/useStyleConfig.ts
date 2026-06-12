@@ -25,6 +25,10 @@ export interface StyleConfig {
   typos_of_ai_chat?: boolean;
   typos_autoreply?: boolean;
   typos_deep_convo?: boolean;
+  // independent non-native English layer toggle, per automation
+  nonnative_of_ai_chat?: boolean;
+  nonnative_autoreply?: boolean;
+  nonnative_deep_convo?: boolean;
 }
 
 interface StyleConfigResponse {

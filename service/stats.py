@@ -48,6 +48,7 @@ from db.models import (
 _attr_view = table(
     "per_employee_revenue_with_attribution",
     literal_column("sent_by_employee_id"),
+    literal_column("automation_kind"),
     literal_column("account_id"),
     literal_column("kind"),
     literal_column("amount_cents"),
@@ -322,6 +323,135 @@ async def grok_calls(
         "rows": out,
         "totals": {
             "calls": total_calls,
+            "cost_millicents": total_mc,
+            "cost_cents": round(total_mc / 100, 4),
+        },
+    }
+
+
+@router.get("/admin/stats/per-automation")
+async def per_automation(
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+    account_id: str | None = Query(None),
+) -> dict[str, Any]:
+    """Per-automation rollup — the "which automations earn and which cost"
+    panel. Answers all four at once, per automation:
+
+      • messages_sent  — outbound rows stamped with this automation (per-chat
+                         AND mass), from `messages.automation_kind`
+      • revenue_cents  — earnings attributed to this automation's messages,
+                         from `per_employee_revenue_with_attribution`
+      • llm_calls / tokens_in / tokens_out / cost — LLM spend, from
+                         `grok_calls.purpose`
+
+    The three scans key on the SAME automation token (e.g. `of_ai_chat`,
+    `welcome`, `send_mass_message`) — `messages.automation_kind` and
+    `grok_calls.purpose` share a vocabulary by design (see the senders). So a
+    mass broadcaster shows sends + revenue with $0 LLM spend, while `gen_info`
+    (an LLM-only profiler that sends nothing) shows spend with 0 sends. NULL
+    (human / relay sends) is excluded — that revenue lives in /per-employee.
+
+    LLM spend counts status='done' calls only (pending/error carry no real
+    cost). `cost_millicents` is the internal unit (cents×100); `cost_cents` is
+    the human dollars figure. Time filter is `created_at` / `occurred_at` /
+    `called_at` respectively."""
+    account_ids = clamp_account_filter(account_id)
+    start = _parse_date(from_, field="from")
+    end = _parse_date(to, field="to")
+
+    agg: dict[str, dict[str, Any]] = {}
+
+    def _bucket(kind: str) -> dict[str, Any]:
+        if kind not in agg:
+            agg[kind] = {
+                "automation": kind,
+                "messages_sent": 0,
+                "revenue_cents": 0,
+                "llm_calls": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "cost_millicents": 0,
+            }
+        return agg[kind]
+
+    async with get_session() as s:
+        # ── messages_sent by automation_kind ───────────────────────────
+        mq = (
+            select(
+                Message.automation_kind.label("kind"),
+                func.count().label("n"),
+            )
+            .where(Message.automation_kind.is_not(None))
+            .where(Message.direction == "out")
+        )
+        if account_ids is not None:
+            mq = mq.where(Message.account_id.in_(account_ids))
+        if start:
+            mq = mq.where(Message.created_at >= start)
+        if end:
+            mq = mq.where(Message.created_at <= end)
+        mq = mq.group_by(Message.automation_kind)
+        for r in (await s.execute(mq)).all():
+            _bucket(r.kind)["messages_sent"] = int(r.n or 0)
+
+        # ── revenue by automation_kind (from the attribution view) ─────
+        ak_col = _attr_view.c.automation_kind
+        amt_col = _attr_view.c.amount_cents
+        acct_col = _attr_view.c.account_id
+        occ_col = _attr_view.c.occurred_at
+        rq = (
+            select(ak_col.label("kind"), func.coalesce(func.sum(amt_col), 0).label("rev"))
+            .where(ak_col.is_not(None))
+        )
+        if account_ids is not None:
+            rq = rq.where(acct_col.in_(account_ids))
+        if start:
+            rq = rq.where(occ_col >= start)
+        if end:
+            rq = rq.where(occ_col <= end)
+        rq = rq.group_by(ak_col)
+        for r in (await s.execute(rq)).all():
+            _bucket(r.kind)["revenue_cents"] = int(r.rev or 0)
+
+        # ── LLM spend by purpose ───────────────────────────────────────
+        gq = (
+            select(
+                GrokCall.purpose.label("kind"),
+                func.count(GrokCall.id).label("calls"),
+                func.coalesce(func.sum(GrokCall.tokens_in), 0).label("tin"),
+                func.coalesce(func.sum(GrokCall.tokens_out), 0).label("tout"),
+                func.coalesce(func.sum(GrokCall.cost_cents), 0).label("mc"),
+            )
+            .where(GrokCall.status == "done")
+        )
+        if account_ids is not None:
+            gq = gq.where(GrokCall.account_id.in_(account_ids))
+        if start:
+            gq = gq.where(GrokCall.called_at >= start)
+        if end:
+            gq = gq.where(GrokCall.called_at <= end)
+        gq = gq.group_by(GrokCall.purpose)
+        for r in (await s.execute(gq)).all():
+            b = _bucket(r.kind)
+            b["llm_calls"] = int(r.calls or 0)
+            b["tokens_in"] = int(r.tin or 0)
+            b["tokens_out"] = int(r.tout or 0)
+            b["cost_millicents"] = int(r.mc or 0)
+
+    rows = [
+        {**b, "cost_cents": round(b["cost_millicents"] / 100, 4)}
+        for b in agg.values()
+    ]
+    # Highest earner first; ties broken by send volume.
+    rows.sort(key=lambda r: (r["revenue_cents"], r["messages_sent"]), reverse=True)
+    total_mc = sum(r["cost_millicents"] for r in rows)
+    return {
+        "rows": rows,
+        "totals": {
+            "messages_sent": sum(r["messages_sent"] for r in rows),
+            "revenue_cents": sum(r["revenue_cents"] for r in rows),
+            "llm_calls": sum(r["llm_calls"] for r in rows),
             "cost_millicents": total_mc,
             "cost_cents": round(total_mc / 100, 4),
         },

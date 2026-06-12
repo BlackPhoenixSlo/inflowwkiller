@@ -161,7 +161,7 @@ DEFAULT_MODEL = "deepseek-v4-flash"
 # STYLE_HUMANIZER to its system prompt, adds STYLE_3LINE to its style dice, and
 # raises its bubble cap to STYLE_MAX_BUBBLES. gated wholly on style_config_json
 # {"of_ai_chat":bool,"autoreply":bool,"deep_convo":bool}.
-STYLE_MAX_BUBBLES = 3
+STYLE_MAX_BUBBLES = 6   # a real texter can fire off a burst of quick texts in a row
 STYLE_AUTOMATIONS = ("of_ai_chat", "autoreply", "deep_convo")
 
 # The "not-AI" block — the tells that make automated chat read like a person.
@@ -187,10 +187,42 @@ STYLE_HUMANIZER = (
 # A 3-line micro-text style (fed into split_for_bubbles' newline path → 3 bubbles).
 # Pairs with STYLE_MAX_BUBBLES=3: under a 2-cap the line-3 payload would truncate.
 STYLE_3LINE = (
-    "A couple of micro-texts on SEPARATE LINES (line breaks between): usually just "
-    "TWO short lines — a tiny comment then your line/question. only sometimes a "
-    "third short line. line 1 can be a quick reaction OR just start the thought (no "
-    "forced reaction word, and dont reuse last reply's opener). all super short."
+    "Break your reply into TWO separate texts on SEPARATE LINES (line break between) "
+    "— a real texter hits send twice, they dont type one long line. default to TWO "
+    "short lines: a tiny comment/reaction then your line/question. only SOMETIMES a "
+    "third short line, and dont collapse it down to a single line. line 1 can be a "
+    "quick reaction OR just start the thought (no forced reaction word, and dont "
+    "reuse last reply's opener). keep them short."
+)
+
+# The counterweight to STYLE_3LINE — sometimes a real texter fires back ONE short
+# line and DOESN'T address everything (leaves a thread hanging). This is the "vary
+# it" lever: when the model writes short, the splitter yields 1 bubble instead of a
+# burst, so the bubble count varies from the SOURCE rather than from code merging.
+STYLE_BRIEF = (
+    "keep it SHORT this message — basically ONE quick line. dont address everything "
+    "he said, just react to the ONE thing worth reacting to and leave the rest "
+    "hanging. a tiny reply (even 2-5 words) is perfect. no multi-line, no listing "
+    "things out."
+)
+
+# ── On-platform guardrail (ALWAYS ON — not gated on any opt-in) ───────
+# OF auto-flags any text that arranges off-platform meetings or swaps contact
+# info ("Content referring to off-platform meetings between creators and fans").
+# A fan pushing for a meetup/number used to drift the model into agreeing —
+# this block forbids that outright while still allowing flirty fantasy. Inject
+# into every conversational system prompt (autoreply / of_ai_chat / deep_convo).
+ONPLATFORM_GUARDRAIL = (
+    "STAY ON ONLYFANS (hard rule, no exceptions, even if HE asks):\n"
+    "- NEVER ask for or hand out a phone number, email, socials, or any way to "
+    "talk off OnlyFans. If he offers his number or asks for yours, brush it off "
+    "warmly and keep chatting right here.\n"
+    "- NEVER agree to, offer, invite, or make a plan to meet in person or in "
+    "real life — no dates, no times, no places, no 'come see me', no 'i'll be "
+    "at...'. If he pushes to meet up, keep it as playful fantasy and steer back "
+    "to the chat.\n"
+    "- Flirty daydreaming or a 'what if we were...' is fine, but never turn it "
+    "into an actual invite, plan, or arrangement to go meet."
 )
 
 
@@ -255,6 +287,106 @@ def casualize_qtease(text: str) -> str:
     for rx, rep in _CASUAL_SWAPS:
         s = rx.sub(rep, s)
     return s.rstrip(".").strip()
+
+
+# ── "Non-native English" style layer (opt-in, deterministic) ──────────
+# A non-native speaker misspells the SAME word the SAME way EVERY time — a
+# consistent fingerprint, NOT a random thumb-slip (humanize_typos). So this layer is
+# applied ALWAYS when the flag is on (like casualize_qtease), never rate-gated. And
+# it MUST be code-level: prompt-only misspellings are ignored / "fixed" by the model.
+#
+# Entries are REAL observed misspellings, not invented — expand from real captures.
+# Same PROTECT rules as humanize_typos: never touch a token carrying a digit, an
+# @handle, a link, a '$', an emoji, or a protected name. Only the alpha core of a
+# token is swapped; surrounding punctuation/spacing is preserved.
+NONNATIVE_MISSPELLINGS = {
+    "definitely": "deffinetly",
+    "gonna": "conna",
+    "official": "oficial",
+    "alone": "aloane",
+    "theirs": "thers",
+    "subscription": "subscribtion",
+    "telegram": "tegelgram",
+    # "then" -> "than" is CONTEXT-RISKY (it would corrupt real "than"); left OUT.
+}
+# Multi-word phrases (applied before the single-word pass).
+NONNATIVE_PHRASES = {
+    "of course": "ofcoas",
+}
+# Every misspelled OUTPUT form — pass to humanize_typos' `protect` so the thumb-typo
+# pass never re-mangles a word this layer already mangled (no double-corruption).
+NONNATIVE_OUTPUTS = tuple(NONNATIVE_MISSPELLINGS.values()) + tuple(NONNATIVE_PHRASES.values())
+_NONNATIVE_PHRASE_RES = tuple(
+    (re.compile(rf"\b{re.escape(p)}\b", re.I), r) for p, r in NONNATIVE_PHRASES.items()
+)
+
+
+def _match_case(src: str, repl: str) -> str:
+    """Carry `src`'s casing onto `repl` (the voice is lowercase, but be safe)."""
+    if src.isupper():
+        return repl.upper()
+    if src[:1].isupper():
+        return repl.capitalize()
+    return repl
+
+
+def apply_nonnative_style(text: str, *, protect=()) -> str:
+    """Deterministically swap known words for their non-native misspelling at word
+    boundaries (case-insensitive). Pure + reversible (nothing persisted); empty input
+    returns input. Protected: a token with a digit / @handle / link / '$' / emoji, a
+    non-alpha core, or a name in `protect` is never touched."""
+    if not text:
+        return text
+    protect_set = {w.lower() for name in protect for w in _WORD_RE.findall(str(name))}
+    for rx, repl in _NONNATIVE_PHRASE_RES:            # multi-word phrases first
+        text = rx.sub(lambda m: _match_case(m.group(), repl), text)
+    out = []
+    for tok in re.split(r"(\s+)", text):             # keep whitespace runs intact
+        if not tok or tok.isspace():
+            out.append(tok)
+            continue
+        core = tok.strip(_TYPO_EDGE_PUNCT)
+        repl = NONNATIVE_MISSPELLINGS.get(core.lower())
+        if repl is None or not core.isalpha() or core.lower() in protect_set:
+            out.append(tok)                          # unknown / unsafe / protected
+            continue
+        lead = len(tok) - len(tok.lstrip(_TYPO_EDGE_PUNCT))
+        out.append(tok[:lead] + _match_case(core, repl) + tok[lead + len(core):])
+    return "".join(out)
+
+
+# Thin prompt block — ONLY the broken grammar a dict can't do (the dict GUARANTEES
+# the signature misspellings; this just SETS THE REGISTER). Gated by the same flag.
+NONNATIVE_REGISTER = (
+    "your english is a little broken — you are NOT a native speaker. occasionally "
+    "drop a tiny word (a, the, is) and let your word order be slightly off now and "
+    "then. keep it light and still easy to read, never cartoonish."
+)
+
+
+def nonnative_flag_key(automation: str) -> str:
+    """style_config_json key for the per-automation non-native toggle."""
+    return f"nonnative_{automation}"
+
+
+STYLE_NONNATIVE_KEYS = tuple(nonnative_flag_key(k) for k in STYLE_AUTOMATIONS)
+
+
+async def load_nonnative_flags(account_id: str) -> dict[str, bool]:
+    """Read account_ai_config.style_config_json → {automation: bool} for the
+    non-native layer (the 'nonnative_<automation>' keys). Absent/NULL/parse-error →
+    all-OFF (current behavior unchanged byte-for-byte)."""
+    off = {k: False for k in STYLE_AUTOMATIONS}
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    raw = getattr(cfg, "style_config_json", None) if cfg else None
+    if not raw:
+        return off
+    try:
+        stored = json.loads(raw) or {}
+    except Exception:
+        return off
+    return {k: bool(stored.get(nonnative_flag_key(k))) for k in STYLE_AUTOMATIONS}
 
 
 # ── "Hard" thumb-typo injector (opt-in, deterministic) ────────────────
@@ -593,8 +725,14 @@ def build_structured_nickname(f: Fan) -> str:
     build_structured_nickname; Job replaces V1's hobbies to match gen_info's
     nickname format). Empty segments are dropped, so a thin profile yields a
     short nickname. '' when nothing is known."""
-    name = (getattr(f, "real_name", None) or getattr(f, "custom_nickname", None)
-            or getattr(f, "of_display_name", None) or "").strip()
+    # `custom_nickname` is the OUTPUT this function mirrors back (via
+    # of_ai_chat._maybe_push_nickname, every tick). Feeding the whole structured
+    # string back in as the Name made each tick re-append loc/age/job, growing
+    # 'Donovon/chef/25' → 'Donovon/chef/25/chef/25/chef/nanaimo,canada/25/…' until
+    # the 70-char cap. Pull only the NAME slot from it so the loop can't compound.
+    name = ((getattr(f, "real_name", None) or "").strip()
+            or name_token(getattr(f, "custom_nickname", None))
+            or (getattr(f, "of_display_name", None) or "").strip())
     age = (f.his_age or "").strip()
     country = (f.home_country or "").strip()
     city = (f.home_city or "").strip()
@@ -832,3 +970,97 @@ def apply_word_restriction(text: str) -> str:
     if not text:
         return text
     return _RESTRICTED_RE.sub(_double_first_vowel, text)
+
+
+# ── Deterministic off-platform / contact / meetup guard ──────────────
+# ONPLATFORM_GUARDRAIL (the system-prompt rule) lowers the odds the model drifts
+# into arranging an in-person meetup or swapping contact info — but a prompt is
+# probabilistic and a pushy fan can still win. This is the deterministic FLOOR:
+# scan the model's OUTBOUND text and, if it leaks a phone number, an off-platform
+# channel, or an in-person meet arrangement, swap the WHOLE message for a warm
+# on-platform deflection. Whole-message (not surgical) on purpose — editing out
+# "thursday" from "i'll be at the harbour thursday" is exactly how you leave the
+# arrangement half-standing. Scan BEFORE apply_word_restriction, which mangles
+# "meet"->"meeet" and would hide it from these patterns.
+
+# 7+ digits with optional separators — a phone number in a flirty DM is ~never benign.
+_OFF_PHONE_RE = re.compile(r"(?:\+?\d[\s().\-]?){7,}\d")
+# An email address.
+_OFF_EMAIL_RE = re.compile(r"\b[\w.+\-]+@[\w\-]+\.[a-z]{2,}\b", re.IGNORECASE)
+# Named off-platform channels (some overlap the word filter — harmless, different action).
+_OFF_CHANNEL_RE = re.compile(
+    r"\b(snap\s?chat|telegram|whats\s?app|kik|wickr|signal|discord|"
+    r"insta(\s?gram)?|tiktok|cash\s?app|venmo|pay\s?pal|zelle|gmail|e-?mail)\b",
+    re.IGNORECASE,
+)
+# Asking for / handing over contact details.
+_OFF_CONTACT_RE = re.compile(
+    r"\b("
+    r"(my|ur|your|the)\s+(number|digits|cell|phone)|"
+    r"(text|call|message|msg|dm|hit|add|reach|find|ping)\s+me\s+(on|at|up\s+on|via|through)|"
+    r"(give|send|drop|share|swap|exchange)\s+(me\s+)?(?:(?:ur|your|my)\s+)?(number|digits|contact|snap|insta|socials?)|"
+    r"what'?s?\s+(ur|your)\s+(number|snap|insta|@)|"
+    r"add\s+me\s+on"
+    r")\b",
+    re.IGNORECASE,
+)
+# Arranging an in-person meet (the OF-flag category itself).
+_OFF_MEETUP_RE = re.compile(
+    r"\b("
+    r"meet\s?up|meet\s+(me|you|u|irl|in\s+person)|let'?s\s+meet|gonna\s+meet|"
+    r"in\s+person|irl|see\s+(you|u)\s+(there|then|soon|tonight|tomorrow)|"
+    r"come\s+(see|over|visit)\s+me|come\s+(to|to\s+my)|"
+    r"grab\s+(a\s+)?(drink|coffee|dinner|bite)\s+(with|together|sometime)|"
+    r"link\s+up\s+(irl|in\s+person)|hook\s?up\s+in\s+person"
+    r")\b",
+    re.IGNORECASE,
+)
+# "i'll be at <place> <day/time>" — names a real-world rendezvous (place + when).
+# Kept separate from bland "i'll be in bed" by REQUIRING a day-of-week / clock anchor.
+_OFF_RENDEZVOUS_RE = re.compile(
+    r"\bi'?(ll|m\s+gonna)\s+be\s+(at|in|near|by|around|outside)\b.{0,40}\b("
+    r"mon(day)?|tue(s|sday)?|wed(nesday)?|thu(r|rs|rsday)?|fri(day)?|sat(urday)?|sun(day)?|"
+    r"tomorrow|tonight|this\s+(week|weekend)|next\s+week|noon|"
+    r"\d{1,2}\s?(am|pm)|morning|afternoon|evening"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_OFF_PATTERNS = (
+    ("phone", _OFF_PHONE_RE),
+    ("email", _OFF_EMAIL_RE),
+    ("channel", _OFF_CHANNEL_RE),
+    ("contact", _OFF_CONTACT_RE),
+    ("meetup", _OFF_MEETUP_RE),
+    ("rendezvous", _OFF_RENDEZVOUS_RE),
+)
+
+# Warm, on-voice redirects back to the chat. Emojis are fine — deep_convo strips
+# them in _send; everywhere else they read normally.
+_OFF_DEFLECTIONS = (
+    "u dont need my number when ur right here 😏 keep me company",
+    "mmm i only do this on here babe, talk to me",
+    "lets keep it just between us right here 😉 tell me more",
+    "ur sweet but im all yours on here, what else u thinkin about",
+    "i stay on here only, come closer n tell me more",
+    "no need to go anywhere, ive got u right here babe",
+)
+
+
+def scan_offplatform(text: str) -> list[str]:
+    """Return the category labels of any off-platform/contact/meetup leak in
+    `text` (empty list = clean). Scan the model's RAW text, before word
+    restriction. Used as a deterministic safety net over ONPLATFORM_GUARDRAIL."""
+    if not text:
+        return []
+    return [label for label, rx in _OFF_PATTERNS if rx.search(text)]
+
+
+def guard_offplatform(text: str, rng) -> tuple[str, list[str]]:
+    """If `text` leaks off-platform content, swap the WHOLE message for a canned
+    on-platform deflection; else pass it through. Returns (text, reasons) so the
+    caller can log when it fired. `rng` is a seeded random.Random for stable picks."""
+    reasons = scan_offplatform(text)
+    if not reasons:
+        return text, reasons
+    return rng.choice(_OFF_DEFLECTIONS), reasons

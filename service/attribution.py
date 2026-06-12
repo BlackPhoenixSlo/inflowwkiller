@@ -90,9 +90,17 @@ async def write_outbound_attribution(
     created_at: datetime,
     mass_run_id: int | None = None,
     funnel_step: int | None = None,
+    automation_kind: str | None = None,
     emit_live: bool = False,
 ) -> None:
     """Write the outbound `messages` row.
+
+    `automation_kind`: which automation sent this row (`of_ai_chat`,
+    `send_welcome`, `deep_convo`, `followup`, `autoreply`, `send_mass_message`,
+    `reply_mass_funnel`, `nudge_online`, …). NULL for human / relay sends. This
+    is the per-automation breakdown of the otherwise-flat `sent_by_employee_id`
+    Automation sentinel — the Messages tab and the per-automation stats panel
+    read it.
 
     `funnel_step` (reply_mass_funnel / A11): the 1-indexed funnel step this row
     represents, so the chat history and audits can tell a funnel message apart
@@ -173,6 +181,7 @@ async def write_outbound_attribution(
                 sent_by_employee_id=sent_by_employee_id,
                 mass_run_id=mass_run_id,
                 funnel_step=funnel_step,
+                automation_kind=automation_kind,
                 raw_json=None,
                 created_at=created_at,
                 ingested_at=datetime.utcnow(),
@@ -237,6 +246,7 @@ async def write_mass_optimistic_rows(
     body: str,
     price_cents: int,
     created_at: datetime,
+    automation_kind: str | None = None,
     emit_live: bool = False,
 ) -> int:
     """Write one optimistic outbound `messages` row per *known* recipient at
@@ -298,6 +308,7 @@ async def write_mass_optimistic_rows(
             "sent_by_employee_id": sent_by_employee_id,
             "temp_id": f"mass:{int(mass_run_id)}:{fid}",
             "mass_run_id": int(mass_run_id),
+            "automation_kind": automation_kind,
             "raw_json": None,
             "created_at": created_at,
             "ingested_at": datetime.utcnow(),
@@ -330,6 +341,57 @@ async def write_mass_optimistic_rows(
             account_id, mass_run_id,
         )
     return len(rows)
+
+
+async def record_broadcast_mass_run(
+    *,
+    account_id: str,
+    queue_id: int | None,
+    automation_kind: str,
+    recipient_count: int = 0,
+) -> int | None:
+    """Insert a `mass_runs` row that exists purely to ATTRIBUTE a broadcast to
+    its automation in the Mass Messages tab.
+
+    Used by the list-audience broadcasters (`mass_nudge`, `online_blast`) that
+    fire OF's `send_mass_message` directly and write NO per-fan `messages` rows
+    (so they never clutter the Messages tab) — but should still show "sent by
+    online_blast" in the cache view. The Mass Messages tab joins
+    `mass_broadcast_cache.queue_id → mass_runs.queue_id`.
+
+    Stamped with the Automation sentinel employee + status='ok' (the OF send
+    already succeeded by the time we're called). Best-effort: never raises;
+    returns the new run id, or None if the write failed / no queue_id.
+    """
+    if queue_id is None:
+        return None
+    try:
+        from db.models import MassRun  # local import: avoids a models import cycle
+        employee_id: int | None = None
+        try:
+            from employees import get_automation_employee_id
+            employee_id = await get_automation_employee_id()
+        except Exception:
+            log.debug("automation employee lookup failed; broadcast run NULL", exc_info=True)
+        async with get_session() as s:
+            mr = MassRun(
+                account_id=str(account_id),
+                started_by_employee_id=employee_id,
+                automation_kind=automation_kind,
+                queue_id=int(queue_id),
+                recipient_count=int(recipient_count),
+                status="ok",
+                completed_at=datetime.utcnow(),
+            )
+            s.add(mr)
+            await s.flush()
+            return int(mr.id)
+    except Exception:
+        log.exception(
+            "broadcast mass_run record failed (account=%s queue=%s kind=%s)",
+            account_id, queue_id, automation_kind,
+        )
+        return None
 
 
 async def reconcile_mass_placeholder(

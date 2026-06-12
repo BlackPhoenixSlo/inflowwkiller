@@ -782,6 +782,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     fan_id=int(fid),
                     message_id=int(msg_id),
                     sent_by_employee_id=None,  # → system Automation employee
+                    automation_kind=_PURPOSE,  # followup
                     body=str(result.get("text") or text),
                     price_cents=0,
                     created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),

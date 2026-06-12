@@ -631,6 +631,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     fan_id=int(fan_id),
                     message_id=int(msg_id),
                     sent_by_employee_id=None,  # → system Automation employee
+                    automation_kind="welcome",  # matches grok_calls.purpose
                     body=str(result.get("text") or text),
                     price_cents=0,
                     created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),

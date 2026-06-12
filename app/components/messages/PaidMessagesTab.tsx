@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import CsvExportButton from "@/components/messages/CsvExportButton";
+import GroupMassButton from "@/components/messages/GroupMassButton";
 import MessagesFilters from "@/components/messages/MessagesFilters";
 import MessageRow from "@/components/messages/MessageRow";
 import { Button } from "@/components/ui/primitives";
@@ -87,7 +88,10 @@ export default function PaidMessagesTab({ from, to }: Props) {
           fanQuery={fanQuery}
           onFanQueryChange={setFanQuery}
         />
-        <CsvExportButton params={params} disabled={!from || !to} />
+        <div className="flex items-center gap-2">
+          <GroupMassButton accountId={accountId} />
+          <CsvExportButton params={params} disabled={!from || !to} />
+        </div>
       </div>
 
       {q.isError && (

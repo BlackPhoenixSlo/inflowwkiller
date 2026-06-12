@@ -69,6 +69,7 @@ from funnels_api import router as _funnels_router  # noqa: E402
 from nudge_config_api import router as _nudge_config_router  # noqa: E402
 from webhook_config_api import router as _webhook_config_router  # noqa: E402
 from autoreply_config_api import router as _autoreply_config_router  # noqa: E402
+from tip_reward_config_api import router as _tip_reward_config_router  # noqa: E402
 from style_config_api import router as _style_config_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
 from auth import (  # noqa: E402
@@ -168,6 +169,7 @@ app.include_router(_funnels_router)
 app.include_router(_nudge_config_router)
 app.include_router(_webhook_config_router)
 app.include_router(_autoreply_config_router)
+app.include_router(_tip_reward_config_router)
 app.include_router(_style_config_router)
 app.include_router(_account_config_router)
 app.include_router(_auth_router)

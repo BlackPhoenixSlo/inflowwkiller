@@ -18,6 +18,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import CsvExportButton from "@/components/messages/CsvExportButton";
+import GroupMassButton from "@/components/messages/GroupMassButton";
 import MessageRowGeneric from "@/components/messages/MessageRowGeneric";
 import MessagesFilters from "@/components/messages/MessagesFilters";
 import { Button } from "@/components/ui/primitives";
@@ -112,7 +113,10 @@ export default function AllMessagesTab({ from, to, fanId, onClearFanId }: Props)
           direction={direction}
           onDirectionChange={handleDirectionChange}
         />
-        <CsvExportButton params={params} disabled={!from || !to} />
+        <div className="flex items-center gap-2">
+          <GroupMassButton accountId={accountId} />
+          <CsvExportButton params={params} disabled={!from || !to} />
+        </div>
       </div>
 
       {fanId != null && (

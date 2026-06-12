@@ -441,6 +441,7 @@ async def _send_step(
             fan_id=int(fan_id),
             message_id=int(msg_id),
             sent_by_employee_id=None,  # → system Automation employee
+            automation_kind=_PURPOSE,  # reply_mass_funnel
             body=str(result.get("text") or text),
             price_cents=ax._to_cents(kwargs.get("price", 0)),
             created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),

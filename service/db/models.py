@@ -385,6 +385,12 @@ class Message(Base):
 
     mass_run_id: Mapped[int | None] = mapped_column(Integer)  # FK declared via table_args
     funnel_step: Mapped[int | None] = mapped_column(Integer)
+    # Which automation sent this outbound row (of_ai_chat, send_welcome,
+    # deep_convo, followup, autoreply, send_mass_message, reply_mass_funnel,
+    # nudge_online, mass_nudge, online_blast). NULL = human send or a legacy
+    # pre-0032 row. Distinct from sent_by_employee_id, which lumps every
+    # automation under the single system "Automation" sentinel employee.
+    automation_kind: Mapped[str | None] = mapped_column(String)
 
     raw_json: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)  # OF's createdAt
@@ -411,6 +417,17 @@ class Message(Base):
             "mass_run_id",
             sqlite_where=text("mass_run_id IS NOT NULL"),
             postgresql_where=text("mass_run_id IS NOT NULL"),
+        ),
+        # Backs the per-automation stats panel (count messages grouped by
+        # automation_kind, scoped per account + time). Partial — only
+        # automation sends carry a kind.
+        Index(
+            "ix_messages_automation_kind",
+            "account_id",
+            "automation_kind",
+            "created_at",
+            sqlite_where=text("automation_kind IS NOT NULL"),
+            postgresql_where=text("automation_kind IS NOT NULL"),
         ),
     )
 
@@ -731,6 +748,32 @@ class VaultSend(Base):
     )
 
 
+class TipRewardLog(Base):
+    """One row per tip the tip_reward automation has already acted on — the
+    idempotency guard (a webhook can fire the same tip twice) AND an audit trail.
+
+    PK is (account_id, tip_message_id): the OF message the tip rode in on uniquely
+    identifies the tip, so an INSERT-OR-IGNORE on it guarantees exactly one reward
+    per tip. `images_sent=0` is a valid, recorded outcome (e.g. the fan has already
+    received every image in the tier's folders) — it still blocks re-processing."""
+    __tablename__ = "tip_reward_log"
+
+    account_id: Mapped[str] = mapped_column(String, primary_key=True)
+    tip_message_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    fan_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tip_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # max(this tip, rolling-window tip sum) — the value the folder tier was picked on.
+    basis_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tier_name: Mapped[str | None] = mapped_column(String)
+    images_sent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reward_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        Index("ix_tip_reward_log_fan", "account_id", "fan_id", "created_at"),
+    )
+
+
 class Post(Base):
     """Draft / scheduled / posted / failed — the post timeline."""
     __tablename__ = "posts"
@@ -990,6 +1033,13 @@ class AccountAiConfig(Base):
     # a missing key → OFF for that automation (CURRENT behavior, byte-for-byte).
     # Own column to avoid the nudge/webhook shallow-merge collision.
     style_config_json: Mapped[str | None] = mapped_column(Text)
+    # tip_reward (P4): per-account config for the "send vault images when a fan
+    # tips" automation. JSON {enabled, dollars_per_image, min_images, max_images,
+    # caption, window_hours, tiers:[{name, min_basis_cents, folders:[name,...]}]}.
+    # Absent/NULL → tip_reward's built-in defaults (DISABLED — ships off, empty
+    # folders, until a creator fills folder names + ticks enabled). Own column to
+    # avoid the nudge/webhook shallow-merge collision.
+    tip_reward_config_json: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = _ts_now()
 
 
@@ -1026,9 +1076,28 @@ class MassRun(Base):
     )
     audience_filter: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     recipient_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # OF's broadcast queue id (result["id"]) — lets the Mass Messages tab join
+    # mass_broadcast_cache.queue_id → this row to surface which automation +
+    # funnel produced a cached broadcast. NULL for legacy pre-0032 runs.
+    queue_id: Mapped[int | None] = mapped_column(BigInteger)
+    # Which automation minted this broadcast (send_mass_message,
+    # reply_mass_funnel, mass_nudge, online_blast). NULL = manual broadcast
+    # from the UI or a legacy pre-0032 run.
+    automation_kind: Mapped[str | None] = mapped_column(String)
     started_at: Mapped[datetime] = _ts_now()
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
     status: Mapped[str] = mapped_column(String, nullable=False, default="running")
+
+    __table_args__ = (
+        # Mass Messages tab joins the cache to a run by (account_id, queue_id).
+        Index(
+            "ix_mass_runs_queue",
+            "account_id",
+            "queue_id",
+            sqlite_where=text("queue_id IS NOT NULL"),
+            postgresql_where=text("queue_id IS NOT NULL"),
+        ),
+    )
 
 
 class FunnelState(Base):

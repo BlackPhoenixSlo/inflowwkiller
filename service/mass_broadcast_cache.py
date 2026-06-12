@@ -113,7 +113,38 @@ async def list_for_account(account_id: str, *, since: datetime | None = None,
             stmt = stmt.where(MassBroadcastCache.sent_at >= since)
         stmt = stmt.order_by(MassBroadcastCache.sent_at.desc().nullslast()).limit(limit)
         rows = (await s.execute(stmt)).scalars().all()
-    return [_row_to_dict(r) for r in rows]
+
+        # Attribution: join mass_runs on (account_id, queue_id) so the Mass
+        # Messages tab can show WHICH automation (+ funnel) produced each cached
+        # broadcast. NULL automation = a manual UI broadcast or a pre-0032 run.
+        attribution: dict[int, dict[str, Any]] = {}
+        queue_ids = [r.queue_id for r in rows if r.queue_id is not None]
+        if queue_ids:
+            from db.models import MassMessageFunnel, MassRun  # local: avoid import cycle
+            run_rows = (await s.execute(
+                select(
+                    MassRun.queue_id,
+                    MassRun.automation_kind,
+                    MassMessageFunnel.name.label("funnel_name"),
+                )
+                .outerjoin(MassMessageFunnel, MassMessageFunnel.id == MassRun.funnel_id)
+                .where(MassRun.account_id == account_id)
+                .where(MassRun.queue_id.in_(queue_ids))
+            )).all()
+            for rr in run_rows:
+                attribution[int(rr.queue_id)] = {
+                    "automationKind": rr.automation_kind,
+                    "funnelName": rr.funnel_name,
+                }
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = _row_to_dict(r)
+        attr = attribution.get(r.queue_id) if r.queue_id is not None else None
+        d["automationKind"] = attr["automationKind"] if attr else None
+        d["funnelName"] = attr["funnelName"] if attr else None
+        out.append(d)
+    return out
 
 
 async def upsert_many(account_id: str, items: list[dict[str, Any]]) -> int:

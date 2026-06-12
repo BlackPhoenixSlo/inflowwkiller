@@ -115,12 +115,13 @@ export function Card({
 
 export function Badge({
   className, color, children, ...rest
-}: React.HTMLAttributes<HTMLSpanElement> & { color?: "ok" | "warn" | "err" | "muted" }) {
+}: React.HTMLAttributes<HTMLSpanElement> & { color?: "ok" | "warn" | "err" | "muted" | "info" }) {
   const colors = {
     ok:     "bg-ok/15 text-ok border-ok/30",
     warn:   "bg-warn/15 text-warn border-warn/30",
     err:    "bg-err/15 text-err border-err/30",
     muted:  "bg-bg-elev-1 text-fg-dim border-border",
+    info:   "bg-info/15 text-info border-info/30",
   } as const;
   return (
     <span

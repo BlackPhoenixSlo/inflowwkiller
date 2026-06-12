@@ -104,6 +104,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     queue_id = result.get("id") if isinstance(result, dict) else None
 
+    # Attribute this broadcast to online_blast in the Mass Messages tab (no
+    # per-fan messages rows are written, so this is the only attribution link).
+    # Audience is a list (online "fans"), so the recipient count isn't known
+    # here — leave it 0; the cache's sent_count carries the real number.
+    from attribution import record_broadcast_mass_run
+    await record_broadcast_mass_run(
+        account_id=account_id, queue_id=queue_id, automation_kind="online_blast",
+    )
+
     # Optional auto-unsend: enqueue the A12 unsend job for the broadcast.
     unsend_h = cfg.get("unsend_after_hours")
     unsend_job = None

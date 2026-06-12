@@ -83,8 +83,13 @@ class LLMModel:
     api_model: str = ""
     # Pricing is cents per 1k tokens; the cost path multiplies by 100 and counts
     # in MILLICENTS so sub-cent DeepSeek calls don't floor to 0 (model_pricing
-    # table later supersedes these seeds — 19 §3).
+    # table later supersedes these seeds — 19 §3). `input_per_1k_cents` is the
+    # CACHE-MISS rate; `input_cache_hit_per_1k_cents` is the (far cheaper) rate
+    # DeepSeek bills for `prompt_cache_hit_tokens`. With long stable system
+    # prompts most input tokens are cache hits, so ignoring this over-estimates
+    # cost by ~50× on the cached portion (real dashboard spend confirmed this).
     input_per_1k_cents: float = 0.0
+    input_cache_hit_per_1k_cents: float = 0.0
     output_per_1k_cents: float = 0.0
     thinking: bool = False            # DeepSeek v4-pro reasoning mode
 
@@ -100,9 +105,14 @@ PROVIDERS: dict[str, LLMProvider] = {
 }
 
 # Prices are cents per 1k tokens (small, real-as-of-2026-06 seeds — enough to
-# stop a runaway loop via the cap; model_pricing later overrides). DeepSeek V4:
-# ~$0.28/1M in, ~$1.10/1M out (chat) → 0.028 / 0.11 c per 1k; reasoner a touch
-# higher. Grok-4.1-fast: ~$0.20/1M in, ~$0.50/1M out → 0.02 / 0.05 c per 1k.
+# stop a runaway loop via the cap; model_pricing later overrides). DeepSeek
+# official pricing (per 1M tokens → cents per 1k = /10):
+#   v4-flash: $0.14 miss / $0.0028 hit in · $0.28 out → 0.014 / 0.00028 / 0.028
+#   v4-pro:   $0.435 miss / $0.003625 hit in · $0.87 out → 0.0435 / 0.0003625 / 0.087
+# Cache hits are ~50× cheaper than misses; with long stable system prompts the
+# bulk of input is cache hits, so the cost path now bills the hit portion at the
+# hit rate (verified against the DeepSeek dashboard, where blended spend is far
+# below the cache-miss rate). Grok-4.1-fast: ~$0.20/1M in, ~$0.50/1M out.
 #
 # api_model is the name DeepSeek actually wants: "deepseek-v4-flash" exists but
 # REASONS by default; our non-thinking flash must send "deepseek-chat" (thinking
@@ -114,11 +124,13 @@ MODELS: dict[str, LLMModel] = {
     ),
     "deepseek-v4-flash": LLMModel(  # non-thinking → deepseek-chat on the wire
         "deepseek-v4-flash", "deepseek", api_model="deepseek-chat",
-        input_per_1k_cents=0.028, output_per_1k_cents=0.11,
+        input_per_1k_cents=0.014, input_cache_hit_per_1k_cents=0.00028,
+        output_per_1k_cents=0.028,
     ),
     "deepseek-v4-pro": LLMModel(  # thinking-capable → deepseek-reasoner on the wire
         "deepseek-v4-pro", "deepseek", api_model="deepseek-reasoner",
-        input_per_1k_cents=0.055, output_per_1k_cents=0.22, thinking=True,
+        input_per_1k_cents=0.0435, input_cache_hit_per_1k_cents=0.0003625,
+        output_per_1k_cents=0.087, thinking=True,
     ),
 }
 
@@ -239,7 +251,8 @@ def _estimate_input_tokens(messages: list[dict]) -> int:
     return chars // _CHARS_PER_TOKEN + 1
 
 
-def _cost_millicents(model: str, tokens_in: int, tokens_out: int) -> int:
+def _cost_millicents(model: str, tokens_in: int, tokens_out: int,
+                     cache_hit_tokens: int = 0) -> int:
     """Cost in MILLICENTS (cents x100), the internal unit for the cap rollup.
 
     Counting in millicents is the whole point of this path: DeepSeek's per-call
@@ -247,12 +260,21 @@ def _cost_millicents(model: str, tokens_in: int, tokens_out: int) -> int:
     call to 0 and the daily cap never tripped. At x100 resolution a real
     automation call records a non-zero cost and the rollup accumulates toward the
     cap. The grok_calls / grok_daily_cost `cost_cents` INT columns now hold
-    millicents (no schema change — same column, finer unit)."""
+    millicents (no schema change — same column, finer unit).
+
+    `cache_hit_tokens` (DeepSeek `prompt_cache_hit_tokens`) is the slice of
+    `tokens_in` billed at the cheap cache-hit rate; the remainder is cache-miss.
+    Clamped to tokens_in so a malformed usage block can't go negative. Pass 0
+    (the default) for the pre-flight reservation — no cache info exists yet, and
+    assuming all-miss keeps the reserve conservative for the cap."""
     mdl = MODELS.get(model)
     if mdl is None:
         return 0
+    hit = max(0, min(cache_hit_tokens, tokens_in))
+    miss = tokens_in - hit
     cents = (
-        tokens_in / 1000.0 * mdl.input_per_1k_cents
+        miss / 1000.0 * mdl.input_per_1k_cents
+        + hit / 1000.0 * mdl.input_cache_hit_per_1k_cents
         + tokens_out / 1000.0 * mdl.output_per_1k_cents
     )
     return int(round(cents * _MILLICENTS_PER_CENT))
@@ -555,7 +577,8 @@ async def chat(
     tokens_out = usage.get("completion_tokens")
     cache_hit_tokens = usage.get("prompt_cache_hit_tokens")  # DeepSeek-specific
 
-    actual_mc = _cost_millicents(model, tokens_in or 0, tokens_out or 0)
+    actual_mc = _cost_millicents(model, tokens_in or 0, tokens_out or 0,
+                                 cache_hit_tokens or 0)
 
     parsed: Any | None = None
     if response_format and response_format.get("type") == "json_object":

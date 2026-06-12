@@ -25,6 +25,7 @@ import CoverageHeader from "@/components/stats/CoverageHeader";
 import DateRangePicker, { type RangePreset } from "@/components/stats/DateRangePicker";
 import IngestHealthBanner from "@/components/stats/IngestHealthBanner";
 import OrphanTipsCard from "@/components/stats/OrphanTipsCard";
+import PerAutomationTable from "@/components/stats/PerAutomationTable";
 import PerEmployeeTable from "@/components/stats/PerEmployeeTable";
 import PerModelKpiGrid from "@/components/stats/PerModelKpiGrid";
 import UnattributedDrawer from "@/components/stats/UnattributedDrawer";
@@ -161,6 +162,7 @@ export default function StatsPage() {
       {tab === "overview" ? (
         <>
           <PerEmployeeTable from={fromIso} to={toIso} />
+          <PerAutomationTable from={fromIso} to={toIso} />
           <PerModelKpiGrid from={fromIso} to={toIso} />
           <OrphanTipsCard from={fromIso} to={toIso} />
           <UnattributedDrawer />
