@@ -212,6 +212,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             account_id=str(account_id),
             funnel_id=funnel.id if funnel else None,
             started_by_employee_id=employee_id,
+            automation_kind="send_mass_message",
             audience_filter=audience_filter,
             recipient_count=len(recipients),
             status="running",
@@ -275,6 +276,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 price_cents=price_cents,
                 created_at=created_at,
                 mass_run_id=mass_run_id,
+                automation_kind="send_mass_message",
                 emit_live=True,  # WORKER→SSE bridge
             )
             await reconcile_mass_placeholder(
@@ -293,15 +295,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             body=text,
             price_cents=price_cents,
             created_at=created_at,
+            automation_kind="send_mass_message",
             emit_live=True,  # WORKER→SSE bridge
         )
 
-    # ── 5) Close the mass_runs row ───────────────────────────────────────
+    # ── 5) Close the mass_runs row (stamp OF's queue id so the Mass Messages
+    #        tab can join the cache → this run for automation attribution) ──
     async with get_session() as s:
         mr = await s.get(MassRun, mass_run_id)
         if mr is not None:
             mr.status = "ok"
             mr.completed_at = datetime.utcnow()
+            if queue_id is not None:
+                mr.queue_id = int(queue_id)
 
     log.info(
         "send_mass_message account=%s run=%s mass_run=%s recipients=%d echoed=%d optimistic=%d",

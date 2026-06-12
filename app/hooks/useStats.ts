@@ -499,6 +499,53 @@ export function usePerFanData(accountId: string | null, limit = 2000) {
   });
 }
 
+// ── /admin/stats/per-automation ──────────────────────────────────────
+
+export interface PerAutomationRow {
+  automation: string;
+  messages_sent: number;
+  revenue_cents: number;
+  llm_calls: number;
+  tokens_in: number;
+  tokens_out: number;
+  cost_millicents: number;
+  cost_cents: number;
+}
+
+export interface PerAutomationResp {
+  rows: PerAutomationRow[];
+  totals: {
+    messages_sent: number;
+    revenue_cents: number;
+    llm_calls: number;
+    cost_millicents: number;
+    cost_cents: number;
+  };
+}
+
+/** Per-automation rollup: which automation sent how many messages, earned
+ *  how much, and burned how much LLM spend. Optional account scope. */
+export function usePerAutomation(
+  from: string | null,
+  to: string | null,
+  accountId?: string | null,
+) {
+  return useQuery<PerAutomationResp>({
+    queryKey: ["stats", "per-automation", from, to, accountId ?? null],
+    queryFn: () => {
+      const qs = new URLSearchParams();
+      if (from) qs.set("from", from);
+      if (to) qs.set("to", to);
+      if (accountId) qs.set("account_id", accountId);
+      return relay.get<PerAutomationResp>(
+        `/admin/stats/per-automation?${qs.toString()}`,
+        BG_CTX,
+      );
+    },
+    ...CACHE,
+  });
+}
+
 // ── Manual refresh ───────────────────────────────────────────────────
 
 /** Invalidate every stats query — bound to the header refresh button so

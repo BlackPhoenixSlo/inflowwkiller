@@ -52,10 +52,12 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from ._common import (
-    STYLE_3LINE, STYLE_HUMANIZER, STYLE_MAX_BUBBLES, apply_word_restriction,
-    hold_with_typing, humanize_typos, load_style_flags, load_typing_indicator,
-    load_typing_wpm, load_typo_flags, resolve_fan_name, resolve_model,
-    typing_delay_seconds,
+    ONPLATFORM_GUARDRAIL, guard_offplatform,
+    STYLE_3LINE, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
+    NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style, apply_word_restriction,
+    hold_with_typing, humanize_typos, load_nonnative_flags, load_style_flags,
+    load_typing_indicator, load_typing_wpm, load_typo_flags, resolve_fan_name,
+    resolve_model, typing_delay_seconds,
 )
 from .of_ai_chat import (_is_info_complete, _strip_html, split_for_bubbles,
                          _dedupe_lead_reaction)
@@ -138,7 +140,8 @@ _STYLE_VARIANTS = (
 
 
 def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
-                    style: str, style_on: bool = False) -> list[dict]:
+                    style: str, style_on: bool = False,
+                    nonnative_on: bool = False) -> list[dict]:
     facts = []
     nm = resolve_fan_name(f)
     if nm:
@@ -170,7 +173,9 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         "- SHORT and human: lowercase, contractions, u/ur/ya, 0-1 emoji, vary your "
         "wording — never reuse a line or emoji you've already used here. No "
         "paragraphs, no narrating.\n\n"
+        f"{ONPLATFORM_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
+        f"{NONNATIVE_REGISTER + chr(10) + chr(10) if nonnative_on else ''}"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
     )
     user = (
@@ -331,6 +336,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
+    nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     style_pool = _STYLE_VARIANTS + ((STYLE_3LINE,) if style_on else ())
     dry_run = bool(payload.get("dry_run"))
@@ -397,7 +403,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
         history = await _history(account_id, fid, tail)
         style = random.choice(style_pool)
-        msgs = _build_messages(persona, f, history, style, style_on=style_on)
+        msgs = _build_messages(persona, f, history, style, style_on=style_on,
+                               nonnative_on=nonnative_on)
         try:
             res = await llm_client.chat(model=model, messages=msgs, purpose=_PURPOSE,
                                         account_id=account_id, fan_id=fid,
@@ -412,17 +419,28 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             continue
 
         raw = (res.content or "").strip()
+        # Deterministic floor under ONPLATFORM_GUARDRAIL: if the model still leaked
+        # a number / off-platform handle / meetup arrangement, swap for a deflection.
+        raw, _leak = guard_offplatform(raw, random.Random(f"{fid}:{raw}"))
+        if _leak:
+            log.info("autoreply off-platform leak guarded account=%s fan=%s reasons=%s",
+                     account_id, fid, _leak)
         parts = [apply_word_restriction(p)[:_REPLY_MAX_CHARS]
-                 for p in split_for_bubbles(raw, max_bubbles) if p.strip()][:max_bubbles]
+                 for p in split_for_bubbles(raw, max_bubbles,
+                                            rng=random.Random(f"split:{f.fan_id}:{raw}"))
+                 if p.strip()][:max_bubbles]
         # Don't open with the same reaction word we just used ('oof' every send).
         if style_on and parts:
             parts = _dedupe_lead_reaction(parts, [b for d, b in history if d == "out"])
         if not parts:
             errors += 1
             continue
+        name_protect = [n for n in (f.real_name, f.generated_nickname,
+                                    f.of_display_name) if n]
+        if nonnative_on:  # opt-in: deterministic non-native misspellings (always)
+            parts = [apply_nonnative_style(p, protect=name_protect) for p in parts]
         if typo_on:  # opt-in: a realistic thumb-slip (+ maybe a "*fix" bubble)
-            protect = [n for n in (f.real_name, f.generated_nickname,
-                                   f.of_display_name) if n]
+            protect = name_protect + (list(NONNATIVE_OUTPUTS) if nonnative_on else [])
             parts = humanize_typos(parts, random.Random(f"{f.fan_id}:{raw}"),
                                    protect=protect, max_bubbles=max_bubbles)[:max_bubbles]
         if dry_run:
@@ -453,7 +471,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if mid:
                 await write_outbound_attribution(
                     account_id=account_id, fan_id=fid, message_id=int(mid),
-                    sent_by_employee_id=None, body=str(result.get("text") or part),
+                    sent_by_employee_id=None, automation_kind=_PURPOSE,  # autoreply
+                    body=str(result.get("text") or part),
                     price_cents=0,
                     created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
                     emit_live=True,

@@ -289,6 +289,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     queue_id = result.get("id") if isinstance(result, dict) else None
 
+    # Attribute this broadcast to mass_nudge in the Mass Messages tab (no
+    # per-fan messages rows are written, so this is the only attribution link).
+    from attribution import record_broadcast_mass_run
+    await record_broadcast_mass_run(
+        account_id=account_id, queue_id=queue_id,
+        automation_kind="mass_nudge", recipient_count=len(recipients),
+    )
+
     # Optional auto-unsend: enqueue the A12 unsend job for the broadcast.
     unsend_h = cfg.get("unsend_after_hours")
     unsend_job = None

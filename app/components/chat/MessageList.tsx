@@ -623,6 +623,9 @@ function Bubble({
             side === "right"
               ? "bg-accent text-white rounded-br-md"
               : "bg-bg-elev-1 text-fg rounded-bl-md",
+            // Fan tip ("I sent you a $X.XX tip") — paint the bubble blue so
+            // incoming money stands out at a glance, on either side.
+            msg.isTip && "!bg-info/15 !text-info !border !border-info/40",
             failed && "ring-1 ring-err/60",
             pending && !scheduled && "opacity-70",
             // Local-wait scheduled bubble: dashed outline + faded fill so

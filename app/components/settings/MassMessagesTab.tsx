@@ -526,6 +526,14 @@ function AutoClassRow({
   );
 }
 
+// Friendly labels for the automation_kind tokens that produce broadcasts.
+const MASS_AUTOMATION_LABELS: Record<string, string> = {
+  send_mass_message: "Mass message",
+  reply_mass_funnel: "Funnel reply",
+  mass_nudge: "Mass nudge",
+  online_blast: "Online blast",
+};
+
 function MassMessageRowItem({
   m, accountLabel, busy, onCancel,
 }: {
@@ -567,6 +575,15 @@ function MassMessageRowItem({
             {when ? when.toLocaleString() : "no date"}
           </span>
           <span className="text-fg-dim">acct {accountLabel}</span>
+          {m.automationKind && (
+            <span
+              className="px-1.5 py-0.5 rounded bg-warn/15 text-warn"
+              title="Sent by an automation (joined via mass_runs)"
+            >
+              🤖 {MASS_AUTOMATION_LABELS[m.automationKind] ?? m.automationKind}
+              {m.funnelName ? ` · ${m.funnelName}` : ""}
+            </span>
+          )}
           <span className="text-fg-dim">📢 {sent} sent · {viewed} viewed</span>
           {(m.mediaCount ?? 0) > 0 && (
             <span className="text-fg-dim inline-flex items-center gap-1">

@@ -63,16 +63,21 @@ function StyleSection({ accountId }: { accountId: string | null }) {
         default; flip it on per automation. Turning it off restores the current
         behavior exactly. <strong>Realistic typos</strong> is an independent toggle:
         it slips in the occasional human thumb-typo (and sometimes a “*fix” bubble),
-        protecting names, prices and links.
+        protecting names, prices and links. <strong>Non-native</strong> makes her
+        text like a non-native speaker — consistent signature misspellings (deterministic,
+        always-on when ticked) plus slightly broken grammar; names, prices and links
+        are never touched.
       </p>
       <div className="space-y-2">
         <div className="flex items-center gap-3 text-[11px] text-fg-dim/70 pl-0">
           <span className="w-28">Automation</span>
           <span className="w-20 text-center">Human style</span>
           <span className="w-20 text-center">Typos</span>
+          <span className="w-20 text-center">Non-native</span>
         </div>
         {STYLE_AUTOMATIONS.map(({ key, label, hint }) => {
           const typoKey = `typos_${key}` as keyof StyleConfig;
+          const nonnativeKey = `nonnative_${key}` as keyof StyleConfig;
           return (
             <div key={key} className="flex items-center gap-3">
               <span className="w-28 text-sm" title={hint}>{label}</span>
@@ -83,6 +88,10 @@ function StyleSection({ accountId }: { accountId: string | null }) {
               <span className="w-20 flex justify-center">
                 <input type="checkbox" className="h-4 w-4 accent-[var(--accent)] cursor-pointer"
                   checked={!!form[typoKey]} onChange={(e) => set({ [typoKey]: e.target.checked })} />
+              </span>
+              <span className="w-20 flex justify-center">
+                <input type="checkbox" className="h-4 w-4 accent-[var(--accent)] cursor-pointer"
+                  checked={!!form[nonnativeKey]} onChange={(e) => set({ [nonnativeKey]: e.target.checked })} />
               </span>
               <span className="text-[11px] text-fg-dim/70 hidden sm:inline">{hint}</span>
             </div>

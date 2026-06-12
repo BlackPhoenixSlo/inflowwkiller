@@ -24,7 +24,7 @@ Design notes:
     ({"enabled": bool}); absent/NULL → OFF. The global kill-switch is the env
     var W7_WEBHOOK_DISPATCH_DISABLED (set to 1/true to disable everywhere).
   • Memory: the live detector must NEVER run on jaka (its inbound is stranger/
-    promo spam). The default-OFF gate enforces that — enable Ava first.
+    promo spam). The default-OFF gate enforces that — enable Lexi first.
 """
 from __future__ import annotations
 
@@ -330,3 +330,26 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> N
         log.warning(
             "w7_dispatch_failed account=%s fan=%s", account_id, fan_id, exc_info=True
         )
+
+
+async def on_inbound_tip(account_id: str, fan_id: int, message_id: int,
+                         tip_cents: int) -> None:
+    """A fan just tipped → if the tip_reward automation is enabled for this
+    account, enqueue ONE fan-scoped tip_reward job and wake the executor. Gated
+    SEPARATELY from the W7 reply dispatch above: a tip reward should fire even on
+    a terminal-stage fan that no chat automation would reply to. Never raises."""
+    try:
+        from automations.tip_reward import is_enabled  # lazy: avoid import cycle
+        if not await is_enabled(account_id):
+            return
+        await ax.enqueue_job(
+            account_id, "tip_reward",
+            payload={"fan_id": int(fan_id), "tip_message_id": int(message_id),
+                     "tip_cents": int(tip_cents)},
+        )
+        ax.wake_supervisor()
+        log.info("tip_reward_dispatch account=%s fan=%s msg=%s cents=%s",
+                 account_id, fan_id, message_id, tip_cents)
+    except Exception:
+        log.warning("tip_reward_dispatch_failed account=%s fan=%s",
+                    account_id, fan_id, exc_info=True)

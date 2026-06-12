@@ -395,6 +395,18 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     except Exception:
         log.debug("webhook_dispatch hook failed", exc_info=True)
 
+    # tip_reward: a fan tip rides on this inbound message (isTip + price>0). Kick
+    # the (gated, default-OFF) image-reward automation in real time. Separate hook
+    # from on_inbound_message so it fires even on a terminal-stage fan.
+    if bool(m.get("isTip")) and price_cents > 0:
+        try:
+            from webhook_dispatch import on_inbound_tip
+            asyncio.create_task(
+                on_inbound_tip(aid_s, int(fan_id), int(message_id), int(price_cents))
+            )
+        except Exception:
+            log.debug("tip_reward dispatch hook failed", exc_info=True)
+
 
 async def _transcode_ppv_unlock(
     account_id: str | None, event_type: str, payload: dict

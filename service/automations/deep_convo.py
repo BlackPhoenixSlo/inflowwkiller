@@ -83,10 +83,12 @@ from db.engine import get_session
 from db.models import AccountAiConfig, Blacklist, Fan, FanProfile, Message
 from llm_client import LLMCapExceeded
 from ._common import (
-    STYLE_HUMANIZER, apply_word_restriction, build_facts_note,
+    ONPLATFORM_GUARDRAIL, guard_offplatform,
+    STYLE_HUMANIZER, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style,
+    apply_word_restriction, build_facts_note,
     build_structured_nickname, casualize_qtease, coerce_ids, facts_from_fan,
-    hold_with_typing, humanize_typos, load_style_flags, load_typing_indicator,
-    load_typing_wpm, load_typo_flags, push_nick_and_notes,
+    hold_with_typing, humanize_typos, load_nonnative_flags, load_style_flags,
+    load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
     skip_unreachable_fan, typing_delay_seconds,
 )
@@ -154,6 +156,28 @@ _WS_RE = re.compile(r"[ \t]{2,}")
 def _strip_emojis(s: str) -> str:
     """Remove emojis (deep_convo is emoji-free) and tidy the spacing they leave."""
     return _WS_RE.sub(" ", _EMOJI_RE.sub("", s or "")).strip()
+
+
+# A dash the model emits is BOTH a bot tell and a missed bubble break — a real
+# texter hits send there. deep_convo sends single lines (no split_for_bubbles), so
+# without this an em-dash reply ("got it jack — how old r u") went out as ONE
+# bubble with the dash showing. Split on the dash family into separate sends; a
+# residual em/en dash with nothing to split on softens to a comma.
+_DC_DASH_RE = re.compile(r"\s*[—–]\s*|\s*--\s*|\s+-\s+")  # em/en dash, --, spaced hyphen
+_DC_DASH_CLEAN_RE = re.compile(r"\s*[—–]\s*")            # any residual em/en → ", "
+
+
+def _strip_dash(s: str) -> str:
+    return _DC_DASH_CLEAN_RE.sub(", ", s).strip().rstrip(",").strip()
+
+
+def _split_on_dash(text: str) -> list[str]:
+    """Split a deep_convo line on the dash family (em/en/--/spaced hyphen) into
+    separate bubbles, dash removed. No dash → the line with any stray em/en dash
+    softened to a comma. Commas are LEFT ALONE here (the scripted Q/Tease are
+    proper-case single lines that legitimately carry commas)."""
+    parts = [p.strip() for p in _DC_DASH_RE.split(text) if p.strip()]
+    return parts if len(parts) >= 2 else [_strip_dash(text)]
 
 
 # ── Text helpers (local copies — house pattern) ──────────────────────
@@ -278,7 +302,7 @@ async def _gather_messages(account_id: str, fan_ids: set[int]) -> dict[int, _Can
 
 
 def _build_messages(persona: str, f: Fan, c: _Candidate,
-                    style_on: bool = False) -> list[dict]:
+                    style_on: bool = False, nonnative_on: bool = False) -> list[dict]:
     """Compose the (system, user) pair for an in-between reply during the drill
     (the Q + Tease themselves are sent verbatim from the profile — not generated)."""
     facts = []
@@ -306,7 +330,9 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "start. Keep it short, 1 question max, max 2 verbs. Never sound like a bot — "
         "you are 100% human, girly, warm. Don't offer pics or videos. Do NOT use any "
         "emojis in this reply.\n\n"
+        f"{ONPLATFORM_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
+        f"{NONNATIVE_REGISTER + chr(10) + chr(10) if nonnative_on else ''}"
         "IMPORTANT: your reply is ONLY the chat message text. Never include JSON, "
         "code blocks, curly braces, or any metadata. Just text him back."
     )
@@ -378,6 +404,7 @@ async def _send_one(client, account_id: str, fan_id: int, text: str,
             fan_id=int(fan_id),
             message_id=int(msg_id),
             sent_by_employee_id=None,  # → system Automation employee
+            automation_kind=_PURPOSE,  # deep_convo
             body=str(result.get("text") or text),
             price_cents=0,
             created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
@@ -399,35 +426,52 @@ async def _send_one(client, account_id: str, fan_id: int, text: str,
 async def _send(client, account_id: str, fan_id: int, text: str,
                 *, typing_wpm: float | None = None,
                 typing_indicator: bool | None = None,
-                typo: bool = False, protect=()) -> bool:
+                typo: bool = False, nonnative: bool = False, protect=()) -> bool:
     """Send one message + persist it through the optimistic path. Returns True on
     a 200 (whether or not OF echoed an id). Raises on a transport failure so the
     caller can leave state un-advanced and retry next tick.
 
     typing_wpm / typing_indicator are loaded once per run by the caller and
-    threaded in; they fall back to a per-call load when omitted. When `typo` is
-    on, the message may pick up a realistic thumb-slip and an optional follow-up
-    "*fix" bubble — the FIRST bubble is the real message (its failure raises, as
-    before); the cosmetic "*fix" is best-effort and never fails the send."""
+    threaded in; they fall back to a per-call load when omitted. An LLM dash in the
+    text is split into separate bubbles (a real texter hits send there) so it never
+    goes out as one line with the dash showing. When `typo` is on, the message may
+    pick up a realistic thumb-slip and an optional follow-up "*fix" bubble. The
+    FIRST bubble is the real message (its failure raises, as before); every
+    follow-up bubble — a dash-split half or the cosmetic "*fix" — is best-effort and
+    never fails the send (re-raising would re-send the first bubble = a duplicate)."""
+    # Deterministic floor under ONPLATFORM_GUARDRAIL — every deep_convo bubble
+    # (lead-in, scripted Q, tease) funnels through here, so one guard covers them
+    # all. Scan BEFORE word restriction (which would hide "meet" as "meeet").
+    text, _leak = guard_offplatform(text, random.Random(f"{fan_id}:{text}"))
+    if _leak:
+        log.info("deep_convo off-platform leak guarded account=%s fan=%s reasons=%s",
+                 account_id, fan_id, _leak)
     text = _strip_emojis(text)  # deep_convo is emoji-free (covers Q, replies, tease)
+    if nonnative:  # opt-in: deterministic non-native misspellings (BEFORE word restrict)
+        text = apply_nonnative_style(text, protect=protect)
     text = apply_word_restriction(text)  # last-mile OF-restricted word substitution
     if typing_wpm is None:
         typing_wpm = await load_typing_wpm(account_id)
     if typing_indicator is None:
         typing_indicator = await load_typing_indicator(account_id)
 
-    parts = [text]
+    # An LLM em-dash/--/spaced-hyphen is both a bot tell and a missed bubble break —
+    # split it into separate sends (dash removed). Commas are left alone (the
+    # scripted Q/Tease are proper-case single lines that legitimately carry commas).
+    parts = _split_on_dash(text)
     if typo:
-        parts = humanize_typos([text], random.Random(f"{fan_id}:{text}"),
-                               protect=protect, max_bubbles=2) or [text]
+        # protect words non-native already mangled so the thumb-typo can't double-corrupt
+        typo_protect = list(protect) + (list(NONNATIVE_OUTPUTS) if nonnative else [])
+        parts = humanize_typos(parts, random.Random(f"{fan_id}:{text}"),
+                               protect=typo_protect, max_bubbles=len(parts) + 1) or parts
 
     main, *extra = parts
     await _send_one(client, account_id, fan_id, main, typing_wpm, typing_indicator)
-    for fix in extra:  # the "*fix" bubble is cosmetic — never fail the send on it
+    for follow in extra:  # dash-split halves + the cosmetic "*fix" — best-effort
         try:
-            await _send_one(client, account_id, fan_id, fix, typing_wpm, typing_indicator)
+            await _send_one(client, account_id, fan_id, follow, typing_wpm, typing_indicator)
         except Exception:
-            log.debug("deep_convo *fix bubble send failed (cosmetic)", exc_info=True)
+            log.debug("deep_convo follow-up bubble send failed (best-effort)", exc_info=True)
     return True
 
 
@@ -448,6 +492,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
     style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
+    nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
     typing_wpm = await load_typing_wpm(account_id)            # per-bubble pacing
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     persona = await _load_persona(account_id)
@@ -578,17 +623,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # bubble first, THEN send the scripted Q (human-ish typing pause between).
                 if _fan_asked(c):
                     lead = await _generate_leadin(model, persona, f, c, account_id, fan_id,
-                                                  style_on=style_on)
+                                                  style_on=style_on, nonnative_on=nonnative_on)
                     if lead:
                         await _send(client, account_id, fan_id, lead,
                                     typing_wpm=typing_wpm, typing_indicator=typing_indicator,
-                            typo=typo_on, protect=typo_protect)
+                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect)
                         if _STEP_GAP_S:
                             await hold_with_typing(account_id, fan_id, _jittered_gap(),
                                                    typing_indicator=typing_indicator)
                 await _send(client, account_id, fan_id, q,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
-                            typo=typo_on, protect=typo_protect)
+                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now, deep_convo_state=_S_Q_SENT,
                                   deep_convo_q_text=q, deep_convo_tease_text=tease,
@@ -601,7 +646,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
             elif state == _S_Q_SENT:
                 reply = await _generate(model, persona, f, c, account_id, fan_id,
-                                       style_on=style_on)
+                                       style_on=style_on, nonnative_on=nonnative_on)
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -613,7 +658,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     continue
                 await _send(client, account_id, fan_id, reply,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
-                            typo=typo_on, protect=typo_protect)
+                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now,
                                   deep_convo_state=_S_CHATTED_1, **reset)
@@ -622,7 +667,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
             elif state == _S_CHATTED_1:
                 reply = await _generate(model, persona, f, c, account_id, fan_id,
-                                       style_on=style_on)
+                                       style_on=style_on, nonnative_on=nonnative_on)
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -636,7 +681,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # before the Tease recovers by sending ONLY the Tease), then Tease.
                 await _send(client, account_id, fan_id, reply,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
-                            typo=typo_on, protect=typo_protect)
+                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now,
                                   deep_convo_state=_S_CHATTED_2, **reset)
@@ -647,7 +692,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                            typing_indicator=typing_indicator)
                 await _send(client, account_id, fan_id, tease_text,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
-                            typo=typo_on, protect=typo_protect)
+                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect)
                 await _save_state(account_id, fan_id, now, deep_convo_state=_S_DONE)
                 sent += 1
                 completed += 1
@@ -660,7 +705,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 tease_text = f.deep_convo_tease_text or tease
                 await _send(client, account_id, fan_id, tease_text,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
-                            typo=typo_on, protect=typo_protect)
+                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now, deep_convo_state=_S_DONE)
                 sent += 1
@@ -720,13 +765,14 @@ _CAP = object()
 
 async def _generate(model: str, persona: str, f: Fan, c: _Candidate,
                     account_id: str, fan_id: int,
-                    style_on: bool = False) -> str | object:
+                    style_on: bool = False, nonnative_on: bool = False) -> str | object:
     """Generate ONE in-between reply. Returns the text, '' on a generation error,
     or the _CAP sentinel when the daily LLM cap is hit (caller stops the run)."""
     try:
         res = await llm_client.chat(
             model=model,
-            messages=_build_messages(persona, f, c, style_on=style_on),
+            messages=_build_messages(persona, f, c, style_on=style_on,
+                                     nonnative_on=nonnative_on),
             purpose=_PURPOSE,
             account_id=account_id,
             fan_id=fan_id,
@@ -754,7 +800,7 @@ def _fan_asked(c: _Candidate) -> bool:
 
 
 def _leadin_messages(persona: str, f: Fan, c: _Candidate,
-                     style_on: bool = False) -> list[dict]:
+                     style_on: bool = False, nonnative_on: bool = False) -> list[dict]:
     history = c.messages[-_HISTORY_TAIL:]
     convo = "\n".join(f"{'FAN' if d == 'in' else 'YOU'}: {b}" for d, b in history if b)
     system = (
@@ -764,7 +810,9 @@ def _leadin_messages(persona: str, f: Fan, c: _Candidate,
         "ask a question yourself (you'll ask one separately next). If his message is "
         "explicit or asks for nudes/pics, do NOT go along with it — tease and slow it "
         "down warmly instead. No emojis. Output ONLY the message text.\n\n"
-        f"{STYLE_HUMANIZER if style_on else ''}"
+        f"{ONPLATFORM_GUARDRAIL}\n\n"
+        f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
+        f"{NONNATIVE_REGISTER if nonnative_on else ''}"
     )
     user = f"Recent conversation (oldest→newest):\n{convo}\n\nAnswer his last message in one short sentence."
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -772,13 +820,14 @@ def _leadin_messages(persona: str, f: Fan, c: _Candidate,
 
 async def _generate_leadin(model: str, persona: str, f: Fan, c: _Candidate,
                            account_id: str, fan_id: int,
-                           style_on: bool = False) -> str:
+                           style_on: bool = False, nonnative_on: bool = False) -> str:
     """A short bubble that answers the fan's question BEFORE the scripted Q goes out,
     so the Q doesn't read like a bot talking past him. Best-effort — any failure
     (incl. the LLM cap) just skips the lead-in and we send the Q alone."""
     try:
         res = await llm_client.chat(
-            model=model, messages=_leadin_messages(persona, f, c, style_on=style_on),
+            model=model, messages=_leadin_messages(persona, f, c, style_on=style_on,
+                                                    nonnative_on=nonnative_on),
             purpose=_PURPOSE,
             account_id=account_id, fan_id=fan_id, temperature=_REPLY_TEMPERATURE,
         )

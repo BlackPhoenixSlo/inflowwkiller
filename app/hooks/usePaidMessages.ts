@@ -3,7 +3,8 @@
 /**
  * usePaidMessages — infinite-scroll PPV list for /messages.
  *
- * Backend: GET /admin/paid-messages (keyset on message_id DESC). The hook
+ * Backend: GET /admin/paid-messages (keyset on (sent_at, message_id) DESC, so
+ * collapsed mass-broadcast rows interleave by send time). The hook
  * is paginated, so window-focus refetch is OFF — refetching the first
  * page after scrolling four pages deep would create duplicate-row seams.
  * The user can pull-to-refresh by remounting (date-range change) or hit
@@ -43,11 +44,36 @@ export interface PaidMessageRow {
   purchased_at: string | null;
   sent_by_employee_id: number | null;
   employee_name: string | null;
+  /** Which automation sent this (of_ai_chat, welcome, send_mass_message, …).
+   *  null = human send or a legacy pre-0032 row. */
+  automation_kind?: string | null;
+  /** True when this row is a COLLAPSED mass broadcast (one row standing in for
+   *  N per-fan sends). The fields below are only meaningful then. */
+  is_mass_summary?: boolean;
+  /** Recipients in the broadcast (authoritative — from mass_broadcast_cache's
+   *  sent_count, falling back to the run/placeholder count). */
+  recipient_count?: number;
+  /** Fans who opened the broadcast (mass_broadcast_cache.viewed_count). Mass
+   *  summary rows only. */
+  viewed_count?: number;
+  /** Funnel/campaign name when the broadcast ran a funnel. */
+  funnel_name?: string | null;
+  mass_run_id?: number | null;
 }
 
 export interface PaidMessagesPage {
   rows: PaidMessageRow[];
+  /** Tiebreaker half of the keyset cursor (message_id of the last row). */
   next_before_id: number | null;
+  /** Primary half of the keyset cursor (ISO send-time of the last row). */
+  next_before_sent_at: string | null;
+}
+
+/** Composite keyset cursor: page by (sent_at, message_id) DESC so mass-broadcast
+ *  summaries (synthetic 5e15 message_ids) interleave chronologically. */
+export interface PaidMessagesCursor {
+  sent_at: string | null;
+  id: number;
 }
 
 export type PaidStatus = "paid" | "unpaid" | "all";
@@ -72,7 +98,7 @@ export interface UsePaidMessagesParams {
 
 export function buildPaidMessagesQuery(
   params: UsePaidMessagesParams,
-  beforeId: number | null = null,
+  cursor: PaidMessagesCursor | null = null,
   extra?: { format?: "json" | "csv" },
 ): string {
   const qs = new URLSearchParams();
@@ -87,7 +113,12 @@ export function buildPaidMessagesQuery(
   if (params.fan_query && params.fan_query.length >= 2) qs.set("fan_query", params.fan_query);
   if (extra?.format && extra.format !== "json") qs.set("format", extra.format);
   if (extra?.format !== "csv") qs.set("limit", String(params.limit ?? 50));
-  if (extra?.format !== "csv" && beforeId != null) qs.set("before_id", String(beforeId));
+  if (extra?.format !== "csv" && cursor != null) {
+    // Composite (sent_at, message_id) cursor — both halves so the backend can
+    // resume the time-ordered keyset.
+    qs.set("before_id", String(cursor.id));
+    if (cursor.sent_at != null) qs.set("before_sent_at", cursor.sent_at);
+  }
   return qs.toString();
 }
 
@@ -112,12 +143,15 @@ export function usePaidMessages(params: UsePaidMessagesParams) {
       params.limit ?? 50,
     ],
     enabled,
-    initialPageParam: null as number | null,
+    initialPageParam: null as PaidMessagesCursor | null,
     queryFn: ({ pageParam }) =>
       relay.get<PaidMessagesPage>(
-        `/admin/paid-messages?${buildPaidMessagesQuery(params, pageParam as number | null)}`,
+        `/admin/paid-messages?${buildPaidMessagesQuery(params, pageParam as PaidMessagesCursor | null)}`,
       ),
-    getNextPageParam: (lastPage) => lastPage.next_before_id ?? undefined,
+    getNextPageParam: (lastPage): PaidMessagesCursor | undefined =>
+      lastPage.next_before_id != null
+        ? { sent_at: lastPage.next_before_sent_at, id: lastPage.next_before_id }
+        : undefined,
     staleTime: 30_000,
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,

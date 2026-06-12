@@ -39,7 +39,10 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.engine import get_session
-from db.models import Account, Chat, Employee, Fan, Message, MessageFlag, MessageMedia
+from db.models import (
+    Account, Chat, Employee, Fan, MassBroadcastCache, MassMessageFunnel,
+    MassRun, Message, MessageFlag, MessageMedia,
+)
 from stats import _parse_date
 from auth import assert_account_owned, assert_employee_filter_owned, clamp_account_filter
 
@@ -65,6 +68,7 @@ _CSV_HEADER = [
     "purchased_at_iso",
     "sent_by_employee_id",
     "employee_name",
+    "automation_kind",
 ]
 
 
@@ -105,6 +109,7 @@ def _row_to_dict(
         "temp_id": m.temp_id,
         "mass_run_id": m.mass_run_id,
         "funnel_step": m.funnel_step,
+        "automation_kind": m.automation_kind,
         "created_at": m.created_at.isoformat() if m.created_at else None,
         "ingested_at": m.ingested_at.isoformat() if m.ingested_at else None,
     }
@@ -469,6 +474,8 @@ def _build_messages_query(
                 Message.created_at,
                 Message.purchased_at,
                 Message.sent_by_employee_id,
+                Message.automation_kind,
+                Message.mass_run_id,
                 Fan.of_username,
                 Fan.of_display_name,
                 Employee.display_name.label("employee_name"),
@@ -495,6 +502,8 @@ def _build_messages_query(
                 Message.created_at,
                 Message.purchased_at,
                 Message.sent_by_employee_id,
+                Message.automation_kind,
+                Message.mass_run_id,
                 Fan.of_username,
                 Fan.of_display_name,
                 Fan.avatar_url,
@@ -603,6 +612,7 @@ async def _stream_csv(
                 row.purchased_at.isoformat() if row.purchased_at else "",
                 row.sent_by_employee_id or "",
                 row.employee_name or "",
+                row.automation_kind or "",
             ])
             counters["rows"] += 1
 
@@ -612,6 +622,136 @@ async def _stream_csv(
             buf.truncate(0)
 
     return gen(), counters
+
+
+async def _collapsed_mass_rows(
+    *,
+    s: AsyncSession,
+    start: datetime | None,
+    end: datetime | None,
+    account_ids: list[str] | None,
+    employee_id: int | None,
+    type_: str,
+    before: tuple[datetime, int] | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """One summary dict per mass broadcast (mass_run) that produced outbound
+    rows in the window — the collapse that replaces N per-fan rows with a
+    single "sent to N fans" row in the All-Messages tab.
+
+    Synthetic `message_id = mass_placeholder_message_id(run_id)` (5e15 + run_id)
+    is the row's stable, collision-free React key / sort tiebreaker — NOT the
+    sort key. Rows interleave with normal messages by send TIME (`created_at`),
+    so a 6d-old broadcast sits in its true chronological slot, not pinned to the
+    top. The caller paginates on a `(sent_at, message_id)` keyset; `before` is
+    that composite cursor (rows must sort strictly below it).
+
+    `recipient_count` (and `viewed_count`) come from `mass_broadcast_cache`
+    (OF's `/users/me/stats/messages/group` — "126 sent · 21 viewed"), joined by
+    `MassRun.queue_id`. That cache may lag a brand-new broadcast, so the count
+    falls back: `cache.sent_count` → `MassRun.recipient_count` →
+    COUNT(DISTINCT fan_id) placeholder. The placeholder is usually 1 for an
+    explicit-userIds send (one optimistic row persisted), so the cache is the
+    real fan-out.
+
+    Direction is always "out" (a broadcast). `status` is intentionally NOT
+    applied — paid/unpaid is per-recipient on a broadcast, not a property of
+    the summary. `type=free|paid` filters on the broadcast's own price.
+    """
+    from attribution import mass_placeholder_message_id
+
+    q = (
+        select(
+            Message.account_id.label("account_id"),
+            Message.mass_run_id.label("mass_run_id"),
+            func.count(func.distinct(Message.fan_id)).label("recipient_count"),
+            func.max(Message.body).label("body"),
+            func.max(Message.price_cents).label("price_cents"),
+            func.max(Message.media_count).label("media_count"),
+            func.max(Message.created_at).label("created_at"),
+            func.max(Message.sent_by_employee_id).label("sent_by_employee_id"),
+            func.max(Message.automation_kind).label("automation_kind"),
+            func.max(Employee.display_name).label("employee_name"),
+            func.max(MassMessageFunnel.name).label("funnel_name"),
+            func.max(MassRun.recipient_count).label("run_recipient_count"),
+            # Source of truth for "N sent · M viewed" — keyed on the run's OF
+            # queue_id (one cache row per run, so max() just unwraps it).
+            func.max(MassBroadcastCache.sent_count).label("cache_sent"),
+            func.max(MassBroadcastCache.viewed_count).label("cache_viewed"),
+        )
+        .select_from(Message)
+        .outerjoin(Employee, Employee.id == Message.sent_by_employee_id)
+        .outerjoin(MassRun, MassRun.id == Message.mass_run_id)
+        .outerjoin(MassMessageFunnel, MassMessageFunnel.id == MassRun.funnel_id)
+        .outerjoin(
+            MassBroadcastCache,
+            and_(
+                MassBroadcastCache.account_id == MassRun.account_id,
+                MassBroadcastCache.queue_id == MassRun.queue_id,
+            ),
+        )
+        .where(Message.mass_run_id.is_not(None))
+        .where(Message.direction == "out")
+        .group_by(Message.account_id, Message.mass_run_id)
+    )
+    if start is not None:
+        q = q.where(Message.created_at >= start)
+    if end is not None:
+        q = q.where(Message.created_at <= end)
+    if account_ids is not None:
+        q = q.where(Message.account_id.in_(account_ids))
+    if employee_id is not None:
+        q = q.where(Message.sent_by_employee_id == employee_id)
+    if type_ == "paid":
+        q = q.where(Message.price_cents > 0)
+    elif type_ == "free":
+        q = q.where(Message.price_cents == 0)
+
+    grouped = (await s.execute(q)).all()
+
+    out: list[dict[str, Any]] = []
+    for g in grouped:
+        synth_id = mass_placeholder_message_id(int(g.mass_run_id))
+        created_at = g.created_at
+        # Keyset on (created_at, synth_id): only runs strictly below the
+        # cursor belong on this page. Mirrors the normal-rows WHERE clause.
+        if before is not None and created_at is not None:
+            b_at, b_id = before
+            if not (created_at < b_at or (created_at == b_at and synth_id < b_id)):
+                continue
+        body = g.body or ""
+        out.append({
+            "account_id": g.account_id,
+            "fan_id": 0,  # no single fan — distinct (account, synth_id) keeps the React key unique
+            "message_id": synth_id,
+            "fan": {"username": None, "display_name": None, "avatar_url": None},
+            "body": body[:2000],
+            "body_truncated": len(body) > 2000,
+            "media_count": int(g.media_count or 0),
+            "price_cents": int(g.price_cents or 0),
+            "is_paid": False,
+            "direction": "out",
+            "is_tip": False,
+            "sent_at": created_at.isoformat() if created_at else None,
+            "purchased_at": None,
+            "sent_by_employee_id": g.sent_by_employee_id,
+            "employee_name": g.employee_name,
+            "automation_kind": g.automation_kind,
+            # Mass-summary extras — the row renderer switches on is_mass_summary.
+            "is_mass_summary": True,
+            "mass_run_id": int(g.mass_run_id),
+            # Cache is the truth; fall back when the stats poll hasn't run yet.
+            "recipient_count": int(
+                g.cache_sent or g.run_recipient_count or g.recipient_count or 0
+            ),
+            "viewed_count": int(g.cache_viewed or 0),
+            "funnel_name": g.funnel_name,
+        })
+    # Newest broadcast first by send TIME (synth_id tiebreaker); cap to the
+    # page size (caller merges with the non-mass page and re-cuts, so an
+    # over-fetch here is harmless).
+    out.sort(key=lambda r: (r["sent_at"] or "", r["message_id"]), reverse=True)
+    return out[:limit]
 
 
 @router.get("/admin/paid-messages")
@@ -626,11 +766,32 @@ async def list_paid_messages(
     direction: str = Query("out", pattern="^(out|in|any)$"),
     fan_id: int | None = Query(None, description="Exact filter on Message.fan_id"),
     fan_query: str | None = Query(None, description="Substring match on fan username/display name; ≥2 chars"),
+    collapse_mass: bool = Query(
+        True,
+        description="Collapse each mass broadcast's per-fan rows into one "
+        "'sent to N fans' summary row (JSON only). Auto-disabled when a single "
+        "fan or a fan_query is in scope.",
+    ),
     format: str = Query("json", pattern="^(json|csv)$"),
     limit: int = Query(50, ge=1, le=100),
-    before_id: int | None = Query(None, description="Keyset cursor: only rows with message_id < this"),
+    before_sent_at: str | None = Query(
+        None,
+        description="Keyset cursor (primary): ISO send-time of the last row on "
+        "the previous page. Paired with before_id as the tiebreaker.",
+    ),
+    before_id: int | None = Query(
+        None,
+        description="Keyset cursor (tiebreaker): message_id of the last row on "
+        "the previous page. With before_sent_at, paginates by (sent_at, "
+        "message_id) DESC; alone, falls back to legacy message_id-only paging.",
+    ),
 ) -> Any:
-    """Paginated message list — newest first.
+    """Paginated message list — newest first by send TIME.
+
+    Ordered/paginated on a `(sent_at, message_id)` DESC keyset (message_id
+    is the tiebreaker), so collapsed mass-broadcast summaries — which carry a
+    synthetic 5e15-band message_id — interleave with normal rows by their real
+    send time instead of pinning to page 1.
 
     Defaults preserve the original PPV-tab semantics: `type=paid`,
     `direction=out`. The All-Messages tab drops both filters by passing
@@ -679,7 +840,7 @@ async def list_paid_messages(
                     status=status, type_=type_, direction=direction,
                     fan_query=fan_query, fan_id=fan_id,
                     for_csv=True,
-                ).order_by(Message.message_id.desc())
+                ).order_by(Message.created_at.desc(), Message.message_id.desc())
                 stream, counters = await _stream_csv(
                     s=s2, q=q, account_nicknames=nick_map,
                 )
@@ -701,6 +862,27 @@ async def list_paid_messages(
             },
         )
 
+    # Collapse mass broadcasts into one summary row per run, EXCEPT when the
+    # view is already narrow (a single fan or a fan search) — there the raw
+    # per-fan rows are what the operator wants. Inbound has no mass rows.
+    do_collapse = collapse_mass and fan_id is None and not fan_query and direction != "in"
+
+    # Composite keyset cursor: (sent_at, message_id) DESC. before_sent_at is
+    # the previous page's last send time; before_id breaks ties within the
+    # same timestamp. before_dt is naive UTC to match the column convention
+    # (these isoformat strings always carry a "T", so no end-of-day shift).
+    before_dt: datetime | None = None
+    if before_sent_at:
+        try:
+            before_dt = datetime.fromisoformat(before_sent_at)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400, detail=f"invalid before_sent_at: {e}"
+            ) from e
+    before: tuple[datetime, int] | None = (
+        (before_dt, before_id) if before_dt is not None and before_id is not None else None
+    )
+
     async with get_session() as s:
         q = _build_messages_query(
             start=start, end=end,
@@ -709,11 +891,31 @@ async def list_paid_messages(
             fan_query=fan_query, fan_id=fan_id,
             for_csv=False,
         )
-        if before_id is not None:
+        if do_collapse:
+            # Per-fan mass rows are replaced by the summary rows below.
+            q = q.where(Message.mass_run_id.is_(None))
+        if before is not None:
+            b_at, b_id = before
+            q = q.where(
+                or_(
+                    Message.created_at < b_at,
+                    and_(Message.created_at == b_at, Message.message_id < b_id),
+                )
+            )
+        elif before_id is not None:
+            # Legacy single-key cursor (old client that omitted before_sent_at).
             q = q.where(Message.message_id < before_id)
-        q = q.order_by(Message.message_id.desc()).limit(limit)
+        q = q.order_by(Message.created_at.desc(), Message.message_id.desc()).limit(limit)
 
         rows = (await s.execute(q)).all()
+
+        mass_rows: list[dict[str, Any]] = []
+        if do_collapse:
+            mass_rows = await _collapsed_mass_rows(
+                s=s, start=start, end=end, account_ids=account_ids,
+                employee_id=employee_id, type_=type_,
+                before=before, limit=limit,
+            )
 
     # 200-char body truncation kept for paid-only (default) so PPV-tab
     # payloads stay small; expanded to 2000 once the All-Messages tab
@@ -743,10 +945,33 @@ async def list_paid_messages(
             "purchased_at": r.purchased_at.isoformat() if r.purchased_at else None,
             "sent_by_employee_id": r.sent_by_employee_id,
             "employee_name": r.employee_name,
+            "automation_kind": r.automation_kind,
+            "is_mass_summary": False,
         })
 
-    next_before = items[-1]["message_id"] if len(items) == limit else None
-    return {"rows": items, "next_before_id": next_before}
+    # Merge the two (sent_at, message_id)-keyset streams (both fetched with the
+    # same `< (before_sent_at, before_id)` cursor, both DESC) and re-cut to the
+    # page size. The smallest kept (sent_at, id) becomes the next cursor; the
+    # rows we drop here are all below it and reappear on the next page's fetch —
+    # no gaps, no dupes. sent_at is an ISO string (uniform naive-UTC isoformat),
+    # so a lexical compare is the same as a datetime compare.
+    if mass_rows:
+        items.extend(mass_rows)
+        items.sort(key=lambda r: (r["sent_at"] or "", r["message_id"]), reverse=True)
+        items = items[:limit]
+
+    if len(items) == limit:
+        last = items[-1]
+        next_before_id = last["message_id"]
+        next_before_sent_at = last["sent_at"]
+    else:
+        next_before_id = None
+        next_before_sent_at = None
+    return {
+        "rows": items,
+        "next_before_id": next_before_id,
+        "next_before_sent_at": next_before_sent_at,
+    }
 
 
 @router.get("/admin/messages/{account_id}/{fan_id}")
@@ -851,6 +1076,33 @@ async def mark_chat_read(account_id: str, fan_id: int) -> dict[str, Any]:
         # rowcount=0 just means we don't have a chats row yet (WS hasn't
         # transcoded one). Not an error — return 200 with updated=false.
         return {"account_id": account_id, "fan_id": fan_id, "updated": (result.rowcount or 0) > 0}
+
+
+@router.post("/admin/messages/detect-mass")
+async def detect_mass(
+    account_id: str | None = Query(
+        None, description="Scope to one account; omit for every account the principal owns"
+    ),
+    gap_seconds: int = Query(180, ge=10, le=3600, description="Max gap between consecutive sends in one burst"),
+    min_recipients: int = Query(5, ge=2, le=10000, description="Min distinct fans for a burst to count as mass"),
+    dry_run: bool = Query(False, description="Report what would be tagged without writing"),
+) -> dict[str, Any]:
+    """Retro-tag OF-native mass blasts the WS pump stored as per-fan rows.
+
+    Sessionizes untagged outbound rows (`mass_run_id IS NULL` AND
+    `automation_kind IS NULL`) into bursts and stamps a synthetic MassRun on
+    each, so the Messages list collapses them into one "MASS · sent to N" row.
+    Idempotent — only touches rows not already tied to a run. See
+    mass_detect.py for the burst rule."""
+    from mass_detect import detect_mass_bursts
+
+    account_ids = clamp_account_filter(account_id)
+    return await detect_mass_bursts(
+        account_ids=account_ids,
+        gap_seconds=gap_seconds,
+        min_recipients=min_recipients,
+        dry_run=dry_run,
+    )
 
 
 class MediaDimsBody(BaseModel):
