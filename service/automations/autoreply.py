@@ -57,7 +57,7 @@ from ._common import (
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style, apply_word_restriction,
     hold_with_typing, humanize_typos, load_nonnative_flags, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags, resolve_fan_name,
-    resolve_model, typing_delay_seconds,
+    resolve_model, skip_unreachable_fan, typing_delay_seconds,
 )
 from .of_ai_chat import (_is_info_complete, _strip_html, split_for_bubbles,
                          _dedupe_lead_reaction)
@@ -462,8 +462,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                    typing_indicator=typing_indicator)  # "typing"
             try:
                 result = await asyncio.to_thread(client.send_message, fid, part)
-            except Exception:
+            except Exception as e:
                 errors += 1
+                # Permanent (deleted/blocked) → quarantine, so the next tick's
+                # paused-gate drops the fan BEFORE the LLM call. Transients retry.
+                await skip_unreachable_fan(account_id, fid, e, log=log)
                 log.warning("autoreply send failed account=%s fan=%s", account_id, fid,
                             exc_info=True)
                 break
