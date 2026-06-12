@@ -57,7 +57,8 @@ import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from automation_registry import register
-from ._common import apply_word_restriction, name_token, resolve_model
+from ._common import (apply_word_restriction, name_token, resolve_model,
+                      skip_unreachable_fan)
 from db.engine import get_session
 from db.models import AccountAiConfig, Fan, FanProfile, WelcomeSent
 from llm_client import LLMCapExceeded
@@ -612,8 +613,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 result = await asyncio.to_thread(
                     lambda: client.send_message(fan_id, text, media_files=media_files)
                 )
-            except Exception:
+            except Exception as e:
                 errors += 1
+                # Permanent (deleted/blocked) → quarantine AND claim welcome_sent —
+                # that claim is THIS sender's own gate, so the new-sub sweep never
+                # regenerates a welcome for a fan we can't deliver to. Transient
+                # errors leave the claim unwritten and retry next tick.
+                if await skip_unreachable_fan(account_id, fan_id, e, log=log):
+                    await _mark_welcomed(account_id, fan_id, sub.get("username"))
                 log.warning("send_welcome send failed account=%s fan=%s",
                             account_id, fan_id, exc_info=True)
                 continue

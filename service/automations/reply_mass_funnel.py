@@ -90,7 +90,7 @@ from attribution import write_outbound_attribution
 from automation_registry import register
 from ._common import (
     apply_word_restriction, hold_with_typing, load_typing_indicator,
-    load_typing_wpm, resolve_model, typing_delay_seconds,
+    load_typing_wpm, resolve_model, skip_unreachable_fan, typing_delay_seconds,
 )
 from db.engine import get_session
 from db.models import AccountAiConfig, FunnelState, MassMessageFunnel, MassRun, Message
@@ -571,8 +571,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                          step, texts, is_ppv,
                                          typing_wpm=typing_wpm,
                                          typing_indicator=typing_indicator)
-                except Exception:
+                except Exception as e:
                     errors += 1
+                    # Permanent (deleted/blocked) → quarantine fleet-wide AND end
+                    # THIS funnel state — it stays due forever otherwise, regenerating
+                    # the step texts (an LLM call) every tick. Transients stay
+                    # pending and retry when next due.
+                    if await skip_unreachable_fan(account_id, fan_id, e, log=log):
+                        cs.status = "done"
+                        await _save_state(cs, now)
+                        completed += 1
                     log.warning("reply_mass_funnel send failed account=%s fan=%s step=%s",
                                 account_id, fan_id, c, exc_info=True)
                     continue

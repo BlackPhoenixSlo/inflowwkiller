@@ -48,18 +48,15 @@ def is_unreachable_fan_error(exc: BaseException) -> bool:
 
 
 async def skip_unreachable_fan(account_id, fan_id, exc, *, log=log) -> bool:
-    """If `exc` is a permanent 'can't message this fan' error, add the fan to
-    skip_list (reason 'unreachable') so no sender retries it. Returns True if it
-    skip-listed; False for transient errors (caller keeps its normal handling)."""
+    """If `exc` is a permanent 'can't message this fan' error, quarantine the fan
+    on BOTH gates senders honour — skip_list (reason 'unreachable') for the
+    skip_list-aware senders AND automation_paused_until for the pause-only ones —
+    so NOBODY burns another LLM call generating a reply we can never deliver.
+    Returns True if it quarantined; False for transient errors (caller keeps its
+    normal handling)."""
     if not is_unreachable_fan_error(exc):
         return False
-    async with get_session() as s:
-        await s.execute(
-            sqlite_insert(SkipList)
-            .values(account_id=str(account_id), fan_id=int(fan_id),
-                    reason="unreachable", added_at=datetime.utcnow())
-            .on_conflict_do_nothing(index_elements=["account_id", "fan_id"])
-        )
+    await _skip_and_rest(account_id, fan_id, datetime.utcnow())
     log.info("skip_listed unreachable fan account=%s fan=%s (%s)",
              account_id, fan_id, str(exc).splitlines()[0][:80])
     return True
@@ -79,8 +76,9 @@ async def quarantine_if_undeliverable(client, account_id, fan_id, *, log=log) ->
     reply it can never deliver). So when we hit a no-id, probe OF to LEARN WHY and
     quarantine the fan so we stop calling the model for them:
 
-      * account deleted / 'User not found'  → skip_list ('unreachable'). of_ai_chat
-        honours skip_list; we ALSO pause so deep_convo (pause-only gate) rests too.
+      * account deleted / 'User not found'  → skip_list ('unreachable') + a pause.
+        of_ai_chat/send_followup/deep_convo honour skip_list; the pause covers the
+        pause-only senders (autoreply).
       * sub lapsed (`subscribedOn` falsy)    → record subscription_status='expired'
         + pause 1 WEEK (re-checks then, in case they re-subscribe).
       * still subscribed (a real transient)  → return None; the caller keeps its
@@ -112,13 +110,20 @@ async def quarantine_if_undeliverable(client, account_id, fan_id, *, log=log) ->
 
 async def _skip_and_rest(account_id, fan_id, now) -> None:
     """Skip-list AND pause-a-week a fan that's gone for good. Both gates so every
-    sender (skip_list-aware OR pause-only) leaves the fan alone."""
+    sender (skip_list-aware OR pause-only) leaves the fan alone. An existing row
+    is UPGRADED to 'unreachable' — a fan can already carry 'info' (the deep_convo
+    handoff marker, which deep_convo deliberately lets through) or 'too_long';
+    keeping that reason would mask the terminal one and deep_convo would keep
+    selecting the fan."""
     async with get_session() as s:
         await s.execute(
             sqlite_insert(SkipList)
             .values(account_id=str(account_id), fan_id=int(fan_id),
                     reason="unreachable", added_at=now)
-            .on_conflict_do_nothing(index_elements=["account_id", "fan_id"])
+            .on_conflict_do_update(
+                index_elements=["account_id", "fan_id"],
+                set_={"reason": "unreachable", "added_at": now},
+            )
         )
         await s.execute(
             sqlite_insert(Fan)

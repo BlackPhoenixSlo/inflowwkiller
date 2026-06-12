@@ -80,7 +80,7 @@ import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
-from db.models import AccountAiConfig, Blacklist, Fan, FanProfile, Message
+from db.models import AccountAiConfig, Blacklist, Fan, FanProfile, Message, SkipList
 from llm_client import LLMCapExceeded
 from ._common import (
     ONPLATFORM_GUARDRAIL, guard_offplatform,
@@ -239,6 +239,20 @@ async def _load_persona(account_id: str) -> str:
 async def _load_blacklist() -> set[int]:
     async with get_session() as s:
         rows = (await s.execute(select(Blacklist.fan_id))).all()
+    return {int(r[0]) for r in rows}
+
+
+async def _load_stop_skips(account_id: str) -> set[int]:
+    """Skip-listed fans deep_convo must leave alone — every reason EXCEPT 'info'.
+    'info' is of_ai_chat's handoff marker (its whole population graduates to
+    deep_convo with that row), but 'unreachable' (deleted/blocked — the send 404s
+    and burns an LLM call every tick), 'too_long', 'spent' and 'old_fan_pre_ai'
+    all mean some sender decided the AI is done with this fan."""
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(SkipList.fan_id).where(SkipList.account_id == str(account_id),
+                                          SkipList.reason != "info")
+        )).all()
     return {int(r[0]) for r in rows}
 
 
@@ -497,6 +511,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     persona = await _load_persona(account_id)
     blacklist = await _load_blacklist()
+    stop_skips = await _load_stop_skips(account_id)  # skip_list, reason ≠ 'info'
     profiles, skipped_no_qtease = await _load_profiles(account_id)  # both present
     if only_fan_ids:
         profiles = {fid: v for fid, v in profiles.items() if fid in only_fan_ids}
@@ -521,7 +536,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     actionable: list[tuple[int, str]] = []  # (fan_id, normalized_state)
     for fan_id, (_q, _tease) in profiles.items():
         forced = fan_id in force_ids
-        if fan_id in blacklist:
+        if fan_id in blacklist or fan_id in stop_skips:
             skipped_listed += 1
             continue
         f = fans.get(fan_id)
