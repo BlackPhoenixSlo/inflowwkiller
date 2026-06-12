@@ -642,6 +642,16 @@ function ReadyMadeRuleEditor({
         >
           {summary ? "Re-compose" : "Compose…"}
         </Button>
+        {summary && (
+          <details className="pt-1">
+            <summary className="text-[11px] text-accent cursor-pointer select-none">
+              View JSON
+            </summary>
+            <pre className="mt-1 text-[11px] font-mono text-fg-dim bg-bg border border-border rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-words max-h-64 overflow-y-auto">
+              {JSON.stringify(composed, null, 2)}
+            </pre>
+          </details>
+        )}
       </div>
 
       {err && <div className="text-xs text-err whitespace-pre-wrap">{err}</div>}
