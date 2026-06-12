@@ -46,31 +46,43 @@ repo; they are created locally the first time you boot.
 
 ---
 
-## Deploy to your own VPS — one command
+## Deploy to your own VPS
 
 Put Fastt on a VPS (Hostinger, Hetzner, DigitalOcean…) behind a public URL.
-**No GitHub fork needed** — the script clones this public repo onto your server,
-installs Docker, writes your secrets, builds, and prints a `trycloudflare.com`
-URL. You change **one line** (your VPS IP) and fill in your secrets.
+**No GitHub fork needed** — it clones this public repo onto your server, installs
+Docker, builds, and prints a `trycloudflare.com` URL. A brand-new single account
+needs **no secrets and no proxies** to get running.
+
+### Option A — directly on the VPS (simplest: one paste, no laptop)
+
+Open your VPS's terminal (Hostinger's in-browser **Browser terminal** works) and
+paste:
 
 ```bash
-git clone https://github.com/BlackPhoenixSlo/inflowwkiller.git
-cd inflowwkiller
+bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/inflowwkiller/main/scripts/deploy-here.sh)
+```
 
-# Edit the EDIT-BEFORE-RUNNING block in scripts/deploy-vps.sh:
-#   • SSH_TARGET   → root@<your-vps-ip>      (the only required change)
-#   • DEEPSEEK_API_KEY                       (the AI that writes messages)
-#   • SESSION_SECRET / CHATTER_SESSION_SECRET → each `openssl rand -hex 32`
-# Everything else (repo URL, branch main) is pre-filled.
+It runs start to finish with no questions: session secrets are auto-generated, no
+proxy is needed for one account (it uses the server's own IP), and the DeepSeek
+AI key is optional — the dashboard boots without it (add it to `.env` later only
+when you want AI auto-messaging). Already have a key? Prefix it:
+`DEEPSEEK_API_KEY=sk-... bash <(curl …)`. Re-run the same line anytime to update.
 
+### Option B — from your laptop, over SSH
+
+Drives the deploy from your machine (useful for copying up an existing database).
+Requires `ssh root@<your-vps-ip>` to work with your key.
+
+```bash
+git clone https://github.com/BlackPhoenixSlo/inflowwkiller.git && cd inflowwkiller
+# set SSH_TARGET (your VPS IP) in scripts/deploy-vps.sh — the only required edit
 ./scripts/deploy-vps.sh
-# …or skip even editing the file and pass the host inline:
+# …or pass the host inline:
 ./scripts/deploy-vps.sh root@<your-vps-ip>
 ```
 
-Prereq: `ssh root@<your-vps-ip>` works with your key (no password). The server
-boots with no OnlyFans login — connect one after deploy with the bundled Chrome
-extension (Step 4 in the walkthrough).
+Either way the server boots with no OnlyFans login — connect one after deploy with
+the bundled Chrome extension (Step 4 in the walkthrough).
 
 - **[DEPLOY.md](DEPLOY.md)** — illustrated, click-by-click walkthrough. You can
   paste it straight into [Claude Code](https://claude.com/claude-code) and have
