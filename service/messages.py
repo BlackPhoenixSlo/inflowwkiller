@@ -1031,6 +1031,7 @@ async def list_message_attribution(
             select(
                 Message.message_id,
                 Message.sent_by_employee_id,
+                Message.automation_kind,
                 Employee.display_name,
                 Employee.color,
             )
@@ -1052,6 +1053,10 @@ async def list_message_attribution(
         by_msg_id[str(r.message_id)] = {
             "employee_id": r.sent_by_employee_id,
             "display_name": r.display_name,
+            # Which automation sent it ("of_ai_chat", "autoreply", …). When set,
+            # the bubble shows the specific automation name instead of the flat
+            # "Automation" sentinel that every bot send's display_name resolves to.
+            "automation_kind": r.automation_kind,
             "color": r.color,
         }
     return {"by_msg_id": by_msg_id}

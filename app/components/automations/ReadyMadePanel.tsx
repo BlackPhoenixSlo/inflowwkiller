@@ -20,7 +20,7 @@
  * The account picker is lifted into this panel (P1 / Nudge tabs reuse it).
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge, Button, Card, Input } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
@@ -516,6 +516,14 @@ function ReadyMadeRuleEditor({
   const busy = createM.isPending || updateM.isPending;
   const summary = summarize(composed);
 
+  // Scroll the editor into view on open — it mounts above a long saved-rule
+  // list, so clicking "Edit" far down otherwise leaves it off-screen. Remounts
+  // per rule (key), so this fires on every Edit.
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    headerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
+
   async function save() {
     setErr(null);
     if (everySeconds < 30) {
@@ -555,7 +563,7 @@ function ReadyMadeRuleEditor({
 
   return (
     <Card className="p-4 space-y-3 border-accent/40">
-      <div className="flex items-center justify-between gap-3">
+      <div ref={headerRef} className="flex items-center justify-between gap-3 scroll-mt-20">
         <h3 className="text-sm font-semibold text-fg">
           {isEdit ? `Edit · ${kind}` : `New ${kind === "auto_posts" ? "auto post" : "premade mass"}`}
         </h3>
@@ -652,6 +660,7 @@ function ReadyMadeRuleEditor({
         <ComposeModal
           kind={kind}
           accountId={accountId}
+          initialPayload={composed}
           onClose={() => setComposerOpen(false)}
           onComposePayload={(p) => {
             setComposed(p);
@@ -668,11 +677,13 @@ function ReadyMadeRuleEditor({
 function ComposeModal({
   kind,
   accountId,
+  initialPayload,
   onClose,
   onComposePayload,
 }: {
   kind: RuleKind;
   accountId: string;
+  initialPayload?: Record<string, unknown>;
   onClose: () => void;
   onComposePayload: (payload: Record<string, unknown>) => void;
 }) {
@@ -699,6 +710,7 @@ function ComposeModal({
           <PremadeForm
             kind={kind}
             forcedAccountId={accountId}
+            initialPayload={initialPayload}
             onComposePayload={onComposePayload}
           />
         </div>
