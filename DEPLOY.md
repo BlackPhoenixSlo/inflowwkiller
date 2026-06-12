@@ -38,8 +38,9 @@ flowchart LR
     url --> docker
 ```
 
-Your laptop only runs the script. The **server** pulls the code from your GitHub
-fork — so the first thing you do is push this repo to your own GitHub account.
+Your laptop only runs the script. The **server** pulls the code straight from the
+public GitHub repo — so for a normal deploy you don't fork or push anything. (You
+only need your own fork if you want to ship *modified* code; see Step 1.)
 
 ---
 
@@ -49,7 +50,7 @@ fork — so the first thing you do is push this repo to your own GitHub account.
 |---|---|---|
 | **A VPS** (Hostinger, Hetzner, DigitalOcean…) | Any Ubuntu/Debian box. Note its IP. | Yes |
 | **SSH access to it with your key** | `ssh root@<ip>` must work **without a password**. Hostinger lets you paste your public key when you create the box. | Yes |
-| **This repo on your own GitHub** | Fork/push it to e.g. `github.com/<you>/inflowwkiller`. The server clones from there. | Yes |
+| **A GitHub fork of this repo** | Only if you want to deploy *modified* code — the script clones the public upstream by default. | No |
 | **A DeepSeek API key** | <https://platform.deepseek.com> — this is the AI that writes messages. | Yes (for any AI send) |
 | **Docker on your laptop** | Not needed locally — the script installs it **on the server**. | No |
 | **An OnlyFans login** | Captured *after* deploy via the Chrome extension (see below). | At use time |
@@ -62,26 +63,29 @@ fork — so the first thing you do is push this repo to your own GitHub account.
 
 ## The deploy, step by step
 
-### Step 1 — push this repo to your GitHub
+### Step 1 — (optional) fork, only if you're changing the code
+
+For a stock deploy, **skip this** — the script clones the public repo for you.
+Fork only if you want to deploy your own modifications:
 
 ```bash
-# inside this repo folder
+# inside this repo folder, after making changes
 gh repo create <you>/inflowwkiller --private --source=. --push
-# or, if the repo already exists:
-git push origin public
+# then set REMOTE_REPO_URL to your fork in Step 2
 ```
 
 ### Step 2 — fill in the one settings block
 
 Open [scripts/deploy-vps.sh](scripts/deploy-vps.sh) and edit **only** the block
-marked `EDIT BEFORE RUNNING`. Every value maps to one thing:
+marked `EDIT BEFORE RUNNING`. For a stock deploy that's `SSH_TARGET` + your
+secrets; everything else is pre-filled:
 
 | Setting | Set it to | Notes |
 |---|---|---|
-| `SSH_TARGET` | `root@<your-vps-ip>` | The script refuses to run while it says `YOUR_VPS_IP`. |
+| `SSH_TARGET` | `root@<your-vps-ip>` | **The one line you must change.** The script refuses to run while it says `YOUR_VPS_IP`. |
 | `SSH_PORT` | `22` | Change only if your VPS uses a non-standard SSH port. |
-| `REMOTE_REPO_URL` | `https://github.com/<you>/inflowwkiller.git` | Refuses to run while it says `YOUR_GH_USER`. Use an SSH URL (`git@github.com:…`) + a deploy key if your repo is **private**. |
-| `BRANCH` | `public` | Must match the branch you pushed in Step 1. |
+| `REMOTE_REPO_URL` | pre-filled (public upstream) | Leave as-is. Repoint at your fork only for modified code; SSH URL + deploy key if the fork is **private**. |
+| `BRANCH` | `main` | Default upstream branch. |
 | `SESSION_SECRET` | output of `openssl rand -hex 32` | Cookie signing key. **Set once.** Leave empty on later redeploys to keep it. |
 | `CHATTER_SESSION_SECRET` | another `openssl rand -hex 32` | Same idea, for the chatter login. |
 | `DEEPSEEK_API_KEY` | your key | Needed before any AI message can send. |
@@ -192,8 +196,9 @@ account shows up in the inbox.
 ## Redeploy / roll back later
 
 ```bash
-# ship new code (idempotent — pulls, rebuilds, keeps your secrets + data)
-git push origin public && ./scripts/deploy-vps.sh
+# pull the latest upstream code + rebuild (idempotent — keeps your secrets + data)
+./scripts/deploy-vps.sh
+# (deploying your own fork? push it first, then run the script)
 
 # roll back to an earlier version
 ssh root@<ip> 'cd ~/inflowwkiller && git checkout <commit> && docker compose up -d --build'

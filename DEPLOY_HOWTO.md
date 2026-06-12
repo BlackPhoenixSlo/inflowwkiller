@@ -5,8 +5,9 @@ repo on the VPS, seeds the bind-mount targets, writes `.env`, and brings the
 stack up behind a Cloudflare quick-tunnel. This doc is the **what-to-change-
 before-you-run-it** checklist.
 
-> TL;DR: edit the `EDIT BEFORE RUNNING` block at the top of
-> `scripts/deploy-vps.sh`, then `./scripts/deploy-vps.sh`.
+> TL;DR: in `scripts/deploy-vps.sh`, set `SSH_TARGET` to your VPS and fill in the
+> secrets, then `./scripts/deploy-vps.sh`. The repo URL already defaults to the
+> public upstream — no fork required for a vanilla deploy.
 >
 > **New here?** [DEPLOY.md](DEPLOY.md) is a friendlier, illustrated walkthrough
 > of the same steps — and you can paste it straight into Claude Code to have the
@@ -18,10 +19,11 @@ before-you-run-it** checklist.
 
 - A VPS (Hostinger / Hetzner / DO …) reachable over SSH **with your public key**
   installed (`ssh root@<ip>` must work without a password).
-- This repo pushed to GitHub (e.g. `github.com/<you>/inflowwkiller`, branch
-  `public`). The deploy script clones from there — it does **not** rsync your
-  laptop.
 - A DeepSeek API key (house default LLM). Grok is optional.
+- **No GitHub fork needed.** The deploy script clones the public upstream
+  (`github.com/BlackPhoenixSlo/inflowwkiller`, branch `main`) directly onto the
+  VPS — it does **not** rsync your laptop. Fork and repoint `REMOTE_REPO_URL`
+  only if you want to deploy your own modified code.
 
 ---
 
@@ -31,11 +33,11 @@ Only the block between the two `EDIT BEFORE RUNNING` rules matters:
 
 | Variable | Set it to | Notes |
 |---|---|---|
-| `SSH_TARGET` | `root@<your-vps-ip>` | The Hostinger box. Placeholder `YOUR_VPS_IP` makes the script refuse to run. |
+| `SSH_TARGET` | `root@<your-vps-ip>` | **The one line you must change.** Placeholder `YOUR_VPS_IP` makes the script refuse to run. |
 | `SSH_PORT` | `22` (or custom) | |
-| `REMOTE_REPO_URL` | `https://github.com/<you>/inflowwkiller.git` | Placeholder `YOUR_GH_USER` makes it refuse to run. Use an HTTPS URL for a public repo; for a private repo use SSH (`git@github.com:...`) and make sure the VPS has a deploy key. |
+| `REMOTE_REPO_URL` | pre-filled (public upstream) | Leave as-is for a vanilla deploy. Repoint at your fork only to ship modified code; for a **private** fork use an SSH URL (`git@github.com:...`) + a VPS deploy key. |
 | `REMOTE_DIR` | `inflowwkiller` | Clones to `~/inflowwkiller` on the VPS. |
-| `BRANCH` | `public` | Must match the branch you pushed. |
+| `BRANCH` | `main` | Default upstream branch. Change only if your fork uses another. |
 | `SESSION_SECRET` | `openssl rand -hex 32` | **Set once.** Cookie signing key. Leave empty on later redeploys to keep the existing value. |
 | `CHATTER_SESSION_SECRET` | `openssl rand -hex 32` | Same, for chatter cookies. |
 | `DEEPSEEK_API_KEY` | your key | Required before any AI send. |
@@ -53,8 +55,8 @@ keys you set on a previous run.
 
 ```bash
 ./scripts/deploy-vps.sh
-# or override the target inline:
-./scripts/deploy-vps.sh root@1.2.3.4 --branch public --no-state
+# or override the target inline (skips even editing SSH_TARGET):
+./scripts/deploy-vps.sh root@1.2.3.4 --no-state
 ```
 
 Flags: `--port N`, `--branch B`, `--state` / `--no-state` (override `COPY_STATE`).
