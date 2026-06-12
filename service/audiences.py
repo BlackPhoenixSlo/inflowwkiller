@@ -7,12 +7,16 @@ DB-first: no OF call needed — we already have every message in `messages`.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
+from typing import Iterable
 
 from sqlalchemy import func, select
 
 from db.engine import get_session
-from db.models import Blacklist, Fan, Message
+from db.models import Blacklist, Fan, Message, NudgeState
+
+log = logging.getLogger("of-relay.audiences")
 
 
 async def recent_chat_fan_ids(
@@ -69,6 +73,70 @@ async def recent_chat_fan_ids(
         return [i for i in ids if i not in drop]
 
 
+def resolve_window_hours(value, default: float) -> float:
+    """The shared None→default / 0→off convention for contact-guard windows
+    (pioneered by mass_nudge): key absent/None → `default` hours; an explicit
+    0 (or negative) → 0.0 = guard off; unparseable → `default`."""
+    if value is None:
+        return float(default)
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+async def contact_guard_excludes(
+    account_id: str,
+    *,
+    outbound_hours: float | None = None,
+    inbound_hours: float | None = None,
+    extra_ids: Iterable[int] | None = None,
+) -> set[int]:
+    """Fan ids a PROACTIVE touch must skip — the cross-automation contact guard.
+
+    Unions every "we already touched them / they're already engaged" ledger:
+      • `messages` outbound within `outbound_hours` — 1:1 sends AND explicit-id
+        mass sends (those write optimistic rows the moment they fire),
+      • `NudgeState.last_nudged_at` within `outbound_hours` — mass_nudge /
+        nudge_online stamp NudgeState INSTEAD of messages (deliberate: per-fan
+        rows for every nudge would reshuffle inbox previews constantly),
+      • `messages` inbound within `inbound_hours` — active repliers,
+      • any `extra_ids` (explicit excludes, exclude-list members, …).
+
+    Bots/blacklisted are NOT filtered out here — this builds an EXCLUDE set,
+    not an audience; dropping a blacklisted fan from the excludes would let a
+    broadcast reach them. (`recent_chat_fan_ids`' defaults are for includes.)
+    A window that is None/0 is off. Returns a plain set[int].
+
+    NOT covered (known gap): list/online broadcasts (`userLists` sends) write
+    no per-fan rows until the WS/scrape reconciler backfills them — their
+    recipients are invisible here for a few hours. Cadence is their guard.
+    """
+    out: set[int] = {int(x) for x in (extra_ids or [])}
+    if outbound_hours and outbound_hours > 0:
+        out |= set(await recent_chat_fan_ids(
+            account_id, hours=float(outbound_hours), direction="out",
+            exclude_bots=False, exclude_blacklisted=False,
+        ))
+        # Nudge ledger: naive-UTC cutoff to match the stored stamps.
+        cutoff = datetime.utcnow() - timedelta(hours=float(outbound_hours))
+        async with get_session() as s:
+            nudged = (await s.execute(
+                select(NudgeState.fan_id).where(
+                    NudgeState.account_id == str(account_id),
+                    NudgeState.last_nudged_at.is_not(None),
+                    NudgeState.last_nudged_at >= cutoff,
+                )
+            )).scalars().all()
+        out |= {int(n) for n in nudged}
+    if inbound_hours and inbound_hours > 0:
+        out |= set(await recent_chat_fan_ids(
+            account_id, hours=float(inbound_hours), direction="in",
+            exclude_bots=False, exclude_blacklisted=False,
+        ))
+    return out
+
+
 async def resolve_mass_audience(
     account_id: str,
     *,
@@ -91,12 +159,16 @@ async def resolve_mass_audience(
         a message with recently (newest first, from the local `messages` table),
       • `unread_limit` — fans with unread messages (the OF "Unread" inbox tab;
         needs an OF `client` — one is built lazily off-thread if not given).
-    ADD to the exclude set:
-      • `exclude_replied_hours` — fans we sent an OUTBOUND message to recently,
+    ADD to the exclude set (via `contact_guard_excludes` — any outbound TOUCH,
+    so nudges stamped only in NudgeState count too, and bots/blacklisted are
+    kept in the excludes):
+      • `exclude_replied_hours` — fans we sent an OUTBOUND message to (or
+        nudged) recently,
       • `exclude_inbound_hours` — fans who messaged us INBOUND recently.
 
-    Bots + blacklisted fans are dropped by `recent_chat_fan_ids`. Returns
-    `{"included_users": [...], "excluded_users": [...]}` (deduped, order kept).
+    Bots + blacklisted fans are dropped from the INCLUDE side by
+    `recent_chat_fan_ids`. Returns `{"included_users": [...],
+    "excluded_users": [...]}` (deduped, order kept).
     """
     included = list(included_users or [])
     excluded = list(excluded_users or [])
@@ -118,14 +190,13 @@ async def resolve_mass_audience(
         )
         included = list(dict.fromkeys([*included, *unread_ids]))
 
-    if exclude_replied_hours:
-        excluded += await recent_chat_fan_ids(
-            account_id, hours=exclude_replied_hours, direction="out",
+    if exclude_replied_hours or exclude_inbound_hours:
+        guard = await contact_guard_excludes(
+            account_id,
+            outbound_hours=exclude_replied_hours,
+            inbound_hours=exclude_inbound_hours,
         )
-    if exclude_inbound_hours:
-        excluded += await recent_chat_fan_ids(
-            account_id, hours=exclude_inbound_hours, direction="in",
-        )
+        excluded += sorted(guard)
     excluded = list(dict.fromkeys(excluded))
 
     return {"included_users": included, "excluded_users": excluded}

@@ -55,6 +55,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
+from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
 from ._common import (
     apply_word_restriction, quarantine_if_undeliverable, resolve_fan_name,
@@ -92,6 +93,11 @@ _MIN_GAP_H = 18
 # "Cannot send message to this user" rejections. (Caps the drip at ~1 week, so
 # the 256h step above effectively won't fire.)
 _MAX_SILENCE_H = 24 * 7
+# Cross-automation contact guard window: skip a due step when ANY sender
+# touched the fan this recently. Nudges stamp only NudgeState (no messages
+# row), so the messages-table reads above can't see them — the shared
+# `contact_guard_excludes` can. absent → 12h, explicit 0 = off.
+_GUARD_DEFAULT_H = 12
 
 # Cooldowns (hours) for the reply / restart branches (07 §Core algorithm).
 _REPLY_COOLDOWN_H = 26
@@ -628,10 +634,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     msg_times = await _load_last_message_times(account_id, eligible_ids)
     bios = await _load_bios(account_id, eligible_ids)
 
+    # Cross-automation contact guard (one account-wide set per run): a fan a
+    # blast/nudge/chatter touched inside the window must not also get a drip
+    # step this tick. Outbound-only — inbound replies already flip the phase.
+    guard_h = resolve_window_hours(payload.get("exclude_replied_hours"), _GUARD_DEFAULT_H)
+    guard_ids: set[int] = set()
+    if guard_h > 0:
+        guard_ids = await contact_guard_excludes(
+            account_id, outbound_hours=guard_h)
+
     sent = 0
     advanced = 0
     skipped_locked = 0
     skipped_cooldown = 0
+    skipped_guard = 0
     skipped_unread = 0
     errors = 0
     cap_hit = False
@@ -696,6 +712,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             await _save_entry(account_id, fid, e, now)
             continue
 
+        # A blast/nudge/manual send touched this fan inside the guard window —
+        # piling a drip step on top reads as spam. The step stays "due" and
+        # fires on a later tick once the window clears.
+        if fid in guard_ids:
+            skipped_guard += 1
+            continue
         # Another automation messaged this fan recently → rest it (W3 cooldown).
         if await ax.fan_on_cooldown(account_id, fid):
             skipped_cooldown += 1
@@ -816,6 +838,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_unread": skipped_unread,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
+        "skipped_guard": skipped_guard,
         "image_attached": image_attached,
         "errors": errors,
         "cap_hit": cap_hit,
