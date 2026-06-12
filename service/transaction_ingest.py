@@ -365,6 +365,7 @@ async def _write_one(account_id: str, raw: dict) -> tuple[int, int]:
 
     refund_flip_pending: tuple[int, int] | None = None  # (fan_id, prev_amount)
     lifetime_delta_pending: tuple[int, int] | None = None  # (fan_id, delta_cents)
+    broadcast_reason: str | None = None  # set when the row is news, not a re-poll
 
     async with get_session() as s:
         # Step 1: existing row by provider_id (re-poll, status flip).
@@ -393,6 +394,11 @@ async def _write_one(account_id: str, raw: dict) -> tuple[int, int]:
                     "ingest_tx_status_flip provider=%s old=%s new=%s",
                     parsed["provider_id"], prev_status, parsed["status"],
                 )
+                # loading→cleared makes the row appear in ppv-history (it
+                # filters status='cleared'); chargebacks remove it. Either
+                # way the drawer needs to hear about it. Plain re-polls
+                # (no flip) stay silent — they happen every 5-min tick.
+                broadcast_reason = "status_flip"
             if (
                 parsed["status"] in _REFUND_STATUSES
                 and prev_status not in _REFUND_STATUSES
@@ -443,6 +449,7 @@ async def _write_one(account_id: str, raw: dict) -> tuple[int, int]:
                         parsed["fan_id"],
                         parsed["amount_cents"] - prev_ws_amount,
                     )
+                broadcast_reason = "ledger_promote"
                 after_session_kind = "patched"
             else:
                 after_session_kind = "inserted"
@@ -486,6 +493,7 @@ async def _write_one(account_id: str, raw: dict) -> tuple[int, int]:
                 await _bump_lifetime(
                     s, account_id, parsed["fan_id"], parsed["amount_cents"]
                 )
+            broadcast_reason = "insert"
 
     # Apply the chargeback delta after the row UPDATE committed. BEGIN
     # IMMEDIATE inside _apply_refund_delta serializes against any other
@@ -503,6 +511,33 @@ async def _write_one(account_id: str, raw: dict) -> tuple[int, int]:
     if lifetime_delta_pending is not None:
         fan_id, delta = lifetime_delta_pending
         await _apply_lifetime_delta(account_id, fan_id, delta)
+
+    # Announce news (insert / promote / status flip) to SSE subscribers AFTER
+    # the commit, so the browser's refetch can't race the write. The frontend
+    # (useInboxRealtime) drops the fan drawer's revenue caches on this event —
+    # without it the chart/Sales panel sits on 5-30 min staleTimes after a
+    # sale. Recency-gated so a 90-day cold backfill doesn't fire hundreds of
+    # invalidations for ancient rows nobody is looking at.
+    if (
+        broadcast_reason is not None
+        and parsed["fan_id"]
+        and parsed["occurred_at"] is not None
+        and parsed["occurred_at"] >= datetime.utcnow() - timedelta(hours=48)
+    ):
+        try:
+            from events import broadcast as _sse_broadcast
+            await _sse_broadcast({
+                "transaction_recorded": {
+                    "fan_id": int(parsed["fan_id"]),
+                    "kind": kind,
+                    "amount_cents": parsed["amount_cents"],
+                    "status": parsed["status"],
+                    "reason": broadcast_reason,
+                },
+                "__account_id": str(account_id),
+            })
+        except Exception:
+            log.debug("transaction_recorded broadcast failed", exc_info=True)
 
     if prev is not None:
         return (0, 1)

@@ -453,6 +453,23 @@ async def _transcode_ppv_unlock(
     relay_cache.invalidate("init", aid_s)
     relay_cache.invalidate("notifications_count", aid_s)
 
+    # Tell the browser a sale landed — same event the ledger ingest emits, so
+    # the fan drawer's revenue caches refresh on the spot instead of waiting
+    # for the 5-min payouts tick.
+    try:
+        from events import broadcast as _sse_broadcast
+        await _sse_broadcast({
+            "transaction_recorded": {
+                "fan_id": int(fan_id),
+                "kind": "ppv",
+                "amount_cents": amount_cents,
+                "reason": "ws_unlock",
+            },
+            "__account_id": aid_s,
+        })
+    except Exception:
+        log.debug("transaction_recorded broadcast failed", exc_info=True)
+
 
 async def _record_inbound_payment(
     s,

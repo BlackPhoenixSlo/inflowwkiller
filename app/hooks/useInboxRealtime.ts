@@ -5,8 +5,13 @@
  * TanStack Query keys so the inbox updates without polling.
  *
  * Events we care about (matching service/event_transcoder.py):
- *   • api2_chat_message  — a new message in some chat
- *   • chat_messages      — a chat preview update (OF push)
+ *   • api2_chat_message       — a new message in some chat
+ *   • chat_messages           — a chat preview update (OF push)
+ *   • transaction_recorded    — a revenue row landed in our ledger (PPV
+ *     unlock / tip / sub), emitted post-commit by transaction_ingest.py
+ *     and event_transcoder.py. Drops the fan drawer's revenue caches
+ *     (chart, Sales list, spend stats) so a sale shows up without
+ *     waiting out their staleTimes.
  *
  * Strategy:
  *   • For chat message events, append the message to that chat's cache
@@ -18,7 +23,7 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -84,6 +89,26 @@ export function resolveChatTarget(e: ChatMessageEvent): ChatTarget | null {
   return { accountId, fanId, isOutbound, msg, fromId };
 }
 
+/**
+ * Drop every cache that renders money for this fan. Prefix-matched, so the
+ * trailing key parts (limit / purchased flag) are covered too. Active queries
+ * (drawer open — including pinned/popout, which never remount and therefore
+ * never hit staleTime on their own) refetch immediately; inactive ones just
+ * go stale and refetch on next mount.
+ */
+function invalidateFanRevenue(qc: QueryClient, accountId: string, fanId: number) {
+  // Local ledger — the chart ("PPV purchases by fan") + Sales row spine.
+  void qc.invalidateQueries({ queryKey: ["fan-ppv-history", accountId, fanId] });
+  // OF gallery enrichment — thumbnails/text for Sales + the Unsold list.
+  void qc.invalidateQueries({ queryKey: ["fan-chat-media", accountId, fanId] });
+  // Live OF profile — lifetime spend / tips / messages stats grid.
+  void qc.invalidateQueries({ queryKey: ["of-user", accountId, fanId] });
+  // Our local fan mirror — lifetime_spend_cents fallback.
+  void qc.invalidateQueries({ queryKey: ["fan", accountId, fanId] });
+  // Per-account payouts walk — "Last purchase" stat (24h staleTime otherwise).
+  void qc.invalidateQueries({ queryKey: ["last-purchases", accountId] });
+}
+
 export function useInboxRealtime() {
   const qc = useQueryClient();
 
@@ -123,6 +148,13 @@ export function useInboxRealtime() {
         mediaCount: msg.mediaCount ?? 0,
         price: msg.price ?? 0,
       };
+
+      // A tip rides on a normal inbound message (isTip + price>0) — refresh
+      // the revenue surfaces right away. The ledger ingest reconciles exact
+      // amounts a few minutes later via `transaction_recorded`.
+      if (!isOutbound && msg.isTip && (msg.price ?? 0) > 0) {
+        invalidateFanRevenue(qc, accountId, fanId);
+      }
 
       // Append to messages cache (de-dup by id).
       qc.setQueryData<OFMessage[]>(["messages", accountId, fanId], (prev = []) => {
@@ -188,6 +220,19 @@ export function useInboxRealtime() {
       });
     });
 
+    // A revenue row landed in the local transactions ledger (PPV unlock seen
+    // by the payouts ingest, tip promote, status flip). Emitted post-commit
+    // server-side, so refetching here always reads the new row.
+    const offTx = eventBus.on("transaction_recorded", (env: EventEnvelope) => {
+      const accountId = env.__account_id ?? null;
+      const tx = env.transaction_recorded as { fan_id?: number } | undefined;
+      const fanId = Number(tx?.fan_id ?? NaN);
+      if (!accountId || !Number.isFinite(fanId)) return;
+      const allowed = allowedRef.current;
+      if (allowed.size > 0 && !allowed.has(accountId)) return;
+      invalidateFanRevenue(qc, accountId, fanId);
+    });
+
     // Note: we used to invalidate ["chats"] on every "chat_messages" event,
     // but with useInfiniteQuery that refetches *every* loaded page — after a
     // few "load more" clicks that becomes 40+ pages per OF preview event.
@@ -195,6 +240,6 @@ export function useInboxRealtime() {
     // (preview, unread flag), and the 60s refetchInterval on useChatList
     // covers anything that slipped through.
 
-    return () => { offMsg(); };
+    return () => { offMsg(); offTx(); };
   }, [qc]);
 }

@@ -111,6 +111,15 @@ export function FanDrawer({
       queryKey: ["fan-chat-media", accountId, fanId],
       exact: false,
     });
+    // The ledger spine behind the chart + Sales rows. Previously missing
+    // here, which made the ↻ button look broken after a fresh sale: the
+    // gallery refetched but the chart/Sales list (and "Last purchase")
+    // kept rendering the stale ledger read.
+    void qc.invalidateQueries({
+      queryKey: ["fan-ppv-history", accountId, fanId],
+      exact: false,
+    });
+    void qc.invalidateQueries({ queryKey: ["last-purchases", accountId] });
     // A manual refresh should also re-pull the authoritative fan profile —
     // the live OF read (nickname/notice/spend) and our local mirror — so a
     // nickname/note changed out-of-band (automation, another device) shows up

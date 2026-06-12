@@ -7,9 +7,12 @@
  * our local `messages` table (the WS pump keeps it within seconds of
  * OF), so this is one cheap index scan — no OF round-trip.
  *
- * 5 min staleTime: purchases are rare enough that the drawer doesn't
- * need to re-fetch on every focus, but fresh enough that opening the
- * drawer after a new unlock shows it.
+ * Freshness: the primary push path is the `transaction_recorded` SSE
+ * event (useInboxRealtime invalidates this key the moment the ledger
+ * ingest commits a new row). The 60s staleTime + focus refetch are the
+ * safety net for pinned/popout drawers that never remount and tabs
+ * whose SSE pipe dropped — the read is one local index scan, so
+ * re-fetching cheap and often is fine.
  */
 
 import { useQuery } from "@tanstack/react-query";
@@ -70,7 +73,7 @@ export function useFanPpvHistory(
     // (Load-more button). Without this the list flashes empty for the
     // duration of the OF round-trip.
     placeholderData: (prev) => prev,
-    staleTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: false,
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: true,
   });
 }
