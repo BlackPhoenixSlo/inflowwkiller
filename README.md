@@ -46,12 +46,38 @@ repo; they are created locally the first time you boot.
 
 ---
 
-## Deploying to a server
+## Deploy to your own VPS — one command
 
-To put Fastt on a VPS (Hostinger etc.) behind a public URL, see
-**[DEPLOY.md](DEPLOY.md)** — an illustrated, one-command walkthrough you can also
-paste straight into Claude Code to have the deploy done with you.
-[DEPLOY_HOWTO.md](DEPLOY_HOWTO.md) is the dense reference for the same flow.
+Put Fastt on a VPS (Hostinger, Hetzner, DigitalOcean…) behind a public URL.
+**No GitHub fork needed** — the script clones this public repo onto your server,
+installs Docker, writes your secrets, builds, and prints a `trycloudflare.com`
+URL. You change **one line** (your VPS IP) and fill in your secrets.
+
+```bash
+git clone https://github.com/BlackPhoenixSlo/inflowwkiller.git
+cd inflowwkiller
+
+# Edit the EDIT-BEFORE-RUNNING block in scripts/deploy-vps.sh:
+#   • SSH_TARGET   → root@<your-vps-ip>      (the only required change)
+#   • DEEPSEEK_API_KEY                       (the AI that writes messages)
+#   • SESSION_SECRET / CHATTER_SESSION_SECRET → each `openssl rand -hex 32`
+# Everything else (repo URL, branch main) is pre-filled.
+
+./scripts/deploy-vps.sh
+# …or skip even editing the file and pass the host inline:
+./scripts/deploy-vps.sh root@<your-vps-ip>
+```
+
+Prereq: `ssh root@<your-vps-ip>` works with your key (no password). The server
+boots with no OnlyFans login — connect one after deploy with the bundled Chrome
+extension (Step 4 in the walkthrough).
+
+- **[DEPLOY.md](DEPLOY.md)** — illustrated, click-by-click walkthrough. You can
+  paste it straight into [Claude Code](https://claude.com/claude-code) and have
+  the deploy done with you.
+- **[DEPLOY_HOWTO.md](DEPLOY_HOWTO.md)** — the dense reference (secrets, migrations,
+  running alongside another stack, rollback).
+- **[CLAUDE.md](CLAUDE.md)** — orientation for an AI agent working in this repo.
 
 ---
 
@@ -60,8 +86,8 @@ paste straight into Claude Code to have the deploy done with you.
 Requires Docker 20+ with the `compose` plugin.
 
 ```bash
-git clone https://github.com/<your-fork>/fastt.git
-cd fastt
+git clone https://github.com/BlackPhoenixSlo/inflowwkiller.git
+cd inflowwkiller
 
 # First boot needs an empty proxy registry so the bind-mount has something
 # to attach to. (You will fill it from the UI.)

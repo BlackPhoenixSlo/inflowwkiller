@@ -2,8 +2,11 @@
 #
 # deploy-vps.sh — deploy inflowwkiller to a Hostinger (or any Ubuntu/Debian) VPS.
 #
-# Read DEPLOY_HOWTO.md FIRST. The block marked "EDIT BEFORE RUNNING" below is
-# the only thing you normally need to touch. Everything after it is mechanical.
+# Read DEPLOY_HOWTO.md FIRST. For a vanilla deploy you change ONE line below —
+# SSH_TARGET (your VPS IP) — and fill in your secrets (DeepSeek key + two
+# `openssl rand -hex 32` values). The repo URL already points at the public
+# upstream, so no GitHub fork is needed. Everything after the edit block is
+# mechanical.
 #
 # What it does, in order:
 #   1. Verify SSH to the host.
@@ -17,7 +20,7 @@
 # Usage:
 #   ./scripts/deploy-vps.sh                 # uses the config block below
 #   ./scripts/deploy-vps.sh root@1.2.3.4    # override the SSH target
-#   ./scripts/deploy-vps.sh root@1.2.3.4 --branch public --no-state
+#   ./scripts/deploy-vps.sh root@1.2.3.4 --branch main --no-state
 
 set -euo pipefail
 
@@ -25,14 +28,17 @@ set -euo pipefail
 # ║  EDIT BEFORE RUNNING                                                       ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
-# --- Where to deploy --------------------------------------------------------
-SSH_TARGET="root@YOUR_VPS_IP"          # Hostinger VPS, e.g. root@72.x.x.x
+# --- Where to deploy  (★ THE ONE LINE YOU MUST CHANGE ★) --------------------
+SSH_TARGET="root@YOUR_VPS_IP"          # your VPS, e.g. root@203.0.113.7
 SSH_PORT=22
 
 # --- What to deploy ---------------------------------------------------------
-REMOTE_REPO_URL="https://github.com/YOUR_GH_USER/inflowwkiller.git"
+# Defaults to the PUBLIC upstream, so a vanilla deploy needs no GitHub fork —
+# the VPS clones this repo directly. Point these at your own fork ONLY if you
+# want to deploy customized code.
+REMOTE_REPO_URL="https://github.com/BlackPhoenixSlo/inflowwkiller.git"
 REMOTE_DIR="inflowwkiller"             # clones into ~/inflowwkiller on the VPS
-BRANCH="public"
+BRANCH="main"
 
 # --- Secrets written into the VPS .env (NEVER commit these) -----------------
 # Leave a value EMPTY to keep whatever is already in the VPS .env (so a
@@ -74,8 +80,7 @@ SCP=(scp -P "$SSH_PORT" -o StrictHostKeyChecking=accept-new)
 say() { printf '\n\033[36m▸ %s\033[0m\n' "$*"; }
 die() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
-[[ "$SSH_TARGET" == *YOUR_VPS_IP* ]]      && die "edit SSH_TARGET — still the placeholder"
-[[ "$REMOTE_REPO_URL" == *YOUR_GH_USER* ]] && die "edit REMOTE_REPO_URL — still the placeholder"
+[[ "$SSH_TARGET" == *YOUR_VPS_IP* ]] && die "edit SSH_TARGET (or pass root@<ip> as the first arg) — still the placeholder"
 
 # ---------- 1. SSH reachability ----------
 say "checking SSH to $SSH_TARGET:$SSH_PORT"
