@@ -21,13 +21,19 @@ Config lives in the automation_rules payload (steps_json):
 
   payload = {
     "with_image": true,                 # attach the slot's image (one, rotated)
-    "exclude_replied_hours": 12,         # cooldown: skip fans nudged/DMed in last N hrs
-    "exclude_inbound_hours": 12,         # skip fans who MESSAGED US in last N hrs (repliers)
+    "exclude_replied_hours": 12,         # cooldown: skip fans nudged/DMed in last N hrs (absent → 12, 0 = off)
+    "exclude_inbound_hours": 12,         # skip fans who MESSAGED US in last N hrs (absent → 12, 0 = off)
+    "excluded_users": [123, ...],        # explicit fan ids to never nudge (optional)
     "max_online": 500,                   # cap the online scan per run
     "unsend_after_hours": 8,             # auto-unsend the broadcast after N hours
     "dry_run": false,                    # resolve audience, send nothing, no bump
     "slots": { "default": { "evening": { "text": [...], "image": [...] } }, ... }
   }
+
+Audience dedup is `audiences.contact_guard_excludes` — the shared cross-
+automation guard (messages-out ∪ NudgeState ∪ messages-in), so a fan DMed by
+ai_chat, blasted with explicit ids, or nudged by nudge_online inside the window
+is skipped here too.
 
 Cadence is the rule's `every_seconds` (e.g. 300 = every 5 min). The executor's
 one-job-per-(account,kind) guard + run_once lock prevent overlap. Line rotation
@@ -43,7 +49,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax
-from audiences import recent_chat_fan_ids
+from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
 from db.engine import get_session
 from db.models import AccountAiConfig, NudgeState
@@ -72,25 +78,6 @@ async def _resolve_online_ids(client, max_online: int) -> list[int]:
             seen.add(fid)
             out.append(fid)
     return out
-
-
-async def _recently_nudged_ids(
-    account_id: str, fan_ids: list[int], window_hours: float, now: datetime,
-) -> set[int]:
-    """Subset of `fan_ids` whose NudgeState.last_nudged_at is within the window."""
-    if not fan_ids or window_hours <= 0:
-        return set()
-    cutoff = now - timedelta(hours=float(window_hours))
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(NudgeState.fan_id).where(
-                NudgeState.account_id == str(account_id),
-                NudgeState.fan_id.in_([int(x) for x in fan_ids]),
-                NudgeState.last_nudged_at.is_not(None),
-                NudgeState.last_nudged_at >= cutoff,
-            )
-        )).scalars().all()
-    return {int(r) for r in rows}
 
 
 async def _bump_nudged(
@@ -230,15 +217,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             media = [int(imgs[idx % len(imgs)])]
 
     now = datetime.utcnow()
-    # Cooldown window (hrs): absent → default 12; explicit 0 → off (re-blast).
-    excl_h = cfg.get("exclude_replied_hours")
-    if excl_h is None:
-        window = float(_DEFAULT_COOLDOWN_HOURS)
-    else:
-        try:
-            window = max(0.0, float(excl_h))
-        except (TypeError, ValueError):
-            window = float(_DEFAULT_COOLDOWN_HOURS)
+    # Guard windows (hrs): absent → default 12; explicit 0 → off (re-blast).
+    window = resolve_window_hours(
+        cfg.get("exclude_replied_hours"), _DEFAULT_COOLDOWN_HOURS)
+    in_window = resolve_window_hours(
+        cfg.get("exclude_inbound_hours"), _DEFAULT_COOLDOWN_HOURS)
     max_online = int(cfg.get("max_online") or _DEFAULT_MAX_ONLINE)
 
     client = await asyncio.to_thread(ax._make_client, account_id)
@@ -249,17 +232,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         return {"sent": 0, "skipped": "none_online", "slot": slot,
                 "online": 0, "excluded": 0}
 
-    # 2) Drop fans inside the cooldown window: nudged recently (NudgeState,
-    #    shared with nudge_online) OR DMed recently through any path.
-    excl: set[int] = await _recently_nudged_ids(account_id, online, window, now)
-    excl |= set(await recent_chat_fan_ids(
-        account_id, hours=window, direction="out"))
-    # Also skip fans who MESSAGED US recently (inbound, from the WS/webhook
-    # pump) — they're already engaged, don't blast an active replier.
-    in_h = cfg.get("exclude_inbound_hours")
-    if isinstance(in_h, (int, float)) and in_h > 0:
-        excl |= set(await recent_chat_fan_ids(
-            account_id, hours=float(in_h), direction="in"))
+    # 2) Drop fans inside the guard window — the shared cross-automation set:
+    #    nudged (NudgeState, shared with nudge_online), DMed through ANY path
+    #    (messages-out: 1:1 senders, chatters, explicit-id blasts), or actively
+    #    messaging us (messages-in), plus any explicit excluded_users.
+    extra = [int(x) for x in (cfg.get("excluded_users") or [])
+             if str(x).lstrip("-").isdigit()]
+    excl = await contact_guard_excludes(
+        account_id, outbound_hours=window, inbound_hours=in_window,
+        extra_ids=extra,
+    )
     recipients = [fid for fid in online if fid not in excl]
 
     if cfg.get("dry_run"):

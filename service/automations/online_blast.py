@@ -10,16 +10,22 @@ The SCALE sibling of mass_nudge. The two are deliberately different tools:
     resolves + fans out server-side in a SINGLE call, so it scales to 100k-fan
     accounts with tens of thousands online. The price: NO per-fan memory.
 
-Dedup is OF-native exclusion of recent conversations, BOTH directions — fans we
-DMed (`direction="out"`) OR who messaged us (`direction="in"`, written by the
-WS/webhook pump) inside the window are passed in `excludedUsers`, so active
-threads aren't blasted. With no per-fan state, the CADENCE is the de-facto
-cooldown: run this hourly (or on a few-hour interval), not every few minutes.
+Dedup is OF-native exclusion via `excludedUsers`: the shared cross-automation
+contact guard (`audiences.contact_guard_excludes` — fans we DMed or nudged
+inside the window ∪ fans who messaged us, NudgeState included so mass_nudge /
+nudge_online recipients are skipped too) plus any explicit `excluded_users`
+ids. Custom OF lists go server-side via `excluded_user_lists`
+(`excludeUserLists` on the wire, same as the Mass composer). The blast itself
+still leaves NO per-fan rows until the reconciler backfills them, so the
+CADENCE is the de-facto cooldown for blast→blast: run hourly+, not every few
+minutes.
 
 Config (steps_json):
   with_image            true   # attach the slot image (one, rotated)
-  exclude_replied_hours 8      # skip fans we DMed in last N hrs (0 = off)
-  exclude_inbound_hours 8      # skip fans who messaged US in last N hrs (0 = off)
+  exclude_replied_hours 8      # skip fans we DMed/nudged in last N hrs (absent → 8, 0 = off)
+  exclude_inbound_hours 8      # skip fans who messaged US in last N hrs (absent → 8, 0 = off)
+  excluded_users        [...]  # explicit fan ids to never blast (optional)
+  excluded_user_lists   [...]  # OF custom-list ids excluded server-side (optional)
   unsend_after_hours    1      # auto-unsend the broadcast after N hrs (0 = keep)
   dry_run               false  # compose + resolve exclusions, send nothing
   slots                 {...}  # day-bucket → slot → {text:[...], image:[...]}
@@ -34,29 +40,31 @@ import logging
 from datetime import datetime, timedelta
 
 import automation_executor as ax
-from audiences import recent_chat_fan_ids
+from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
 from . import mass_nudge   # reuse slot composition + the default pools
 from . import send_welcome  # _model_hour / _model_weekday / _slot_key
 
 log = logging.getLogger("of-relay.automation.online_blast")
 
+_DEFAULT_WINDOW_H = 8  # default guard window — matches the kind catalog + tab
+
 # Identical slot composition to mass_nudge — reuse its preview for the Settings UI.
 preview_compose = mass_nudge.preview_compose
 
 
 async def _excluded_ids(account_id: str, cfg: dict) -> list[int]:
-    """Fan ids to exclude: recent OUTBOUND (we DMed) ∪ recent INBOUND (they
-    messaged us), each within its own window. Empty when both windows are off."""
-    excl: set[int] = set()
-    out_h = cfg.get("exclude_replied_hours")
-    if isinstance(out_h, (int, float)) and out_h > 0:
-        excl |= set(await recent_chat_fan_ids(
-            account_id, hours=float(out_h), direction="out"))
-    in_h = cfg.get("exclude_inbound_hours")
-    if isinstance(in_h, (int, float)) and in_h > 0:
-        excl |= set(await recent_chat_fan_ids(
-            account_id, hours=float(in_h), direction="in"))
+    """Fan ids to exclude (→ OF `excludedUsers`): the shared cross-automation
+    contact guard — recent OUTBOUND/nudges ∪ recent INBOUND, each window
+    absent → 8h default, explicit 0 = off — plus explicit `excluded_users`."""
+    out_h = resolve_window_hours(
+        cfg.get("exclude_replied_hours"), _DEFAULT_WINDOW_H)
+    in_h = resolve_window_hours(
+        cfg.get("exclude_inbound_hours"), _DEFAULT_WINDOW_H)
+    extra = [int(x) for x in (cfg.get("excluded_users") or [])
+             if str(x).lstrip("-").isdigit()]
+    excl = await contact_guard_excludes(
+        account_id, outbound_hours=out_h, inbound_hours=in_h, extra_ids=extra)
     return sorted(excl)
 
 
@@ -84,10 +92,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             media = [int(imgs[idx % len(imgs)])]
 
     excluded = await _excluded_ids(account_id, cfg)
+    # OF custom-list ids excluded server-side (the composer's "Custom lists —
+    # exclude"); system names like 'fans' are NOT accepted here by OF.
+    excluded_lists = [x for x in (cfg.get("excluded_user_lists") or []) if x]
+    if len(excluded) > 5000:
+        # Unverified OF limit on the excludedUsers array — watch this in prod
+        # before widening the guard windows on big accounts.
+        log.warning("online_blast exclude set is large account=%s ids=%d",
+                    account_id, len(excluded))
 
     if cfg.get("dry_run"):
         return {"dry_run": True, "slot": slot, "variation_idx": idx, "text": text,
-                "image_attached": bool(media), "excluded": len(excluded)}
+                "image_attached": bool(media), "excluded": len(excluded),
+                "excluded_lists": len(excluded_lists)}
 
     client = await asyncio.to_thread(ax._make_client, account_id)
     try:
@@ -97,6 +114,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             online_only=True,
             media_files=media,
             excluded_users=excluded or None,
+            excluded_user_lists=excluded_lists or None,
         ))
     except Exception as e:
         log.warning("online_blast send failed account=%s", account_id, exc_info=True)
@@ -130,5 +148,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "text_preview": text[:80],
         "image_attached": bool(media),
         "excluded": len(excluded),
+        "excluded_lists": len(excluded_lists),
         "unsend_job": unsend_job,
     }
