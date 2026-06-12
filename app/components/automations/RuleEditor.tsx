@@ -13,7 +13,7 @@
  * the mutation, mirroring the server's `_validate_payload_for_kind`.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
@@ -167,6 +167,15 @@ export default function RuleEditor({
     () => (editing?.payload as Record<string, unknown>) ?? {},
   );
   const [composerOpen, setComposerOpen] = useState(false);
+
+  // Scroll the editor into view when it opens — it mounts at the top of a long
+  // rules list, so clicking "Edit" on a row far down otherwise leaves it
+  // off-screen (the user had to scroll up to find it). Remounts per rule (key),
+  // so this fires on every Edit.
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    headerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
 
   // Create mode: switching kind swaps the knob set, so reset the payload state.
   useEffect(() => {
@@ -369,7 +378,7 @@ export default function RuleEditor({
 
   return (
     <Card className="p-4 space-y-3 border-accent/40">
-      <div className="flex items-center justify-between gap-3">
+      <div ref={headerRef} className="flex items-center justify-between gap-3 scroll-mt-20">
         <h3 className="text-sm font-semibold text-fg">
           {isEdit ? `Edit rule · ${editing?.kind}` : "New automation rule"}
         </h3>
@@ -626,6 +635,7 @@ export default function RuleEditor({
           open
           onClose={() => setComposerOpen(false)}
           forcedAccountId={accountId}
+          initialPayload={composed}
           onComposePayload={(p) => {
             setComposed(p);
             setComposerOpen(false);
@@ -637,6 +647,7 @@ export default function RuleEditor({
         <PremadeComposerModal
           kind={kind as "auto_posts" | "mass_premade"}
           accountId={accountId}
+          initialPayload={composed}
           onClose={() => setComposerOpen(false)}
           onComposePayload={(p) => {
             setComposed(p);
@@ -704,11 +715,13 @@ function summarizePayload(
 function PremadeComposerModal({
   kind,
   accountId,
+  initialPayload,
   onClose,
   onComposePayload,
 }: {
   kind: "auto_posts" | "mass_premade";
   accountId: string;
+  initialPayload?: Record<string, unknown>;
   onClose: () => void;
   onComposePayload: (payload: Record<string, unknown>) => void;
 }) {
@@ -735,6 +748,7 @@ function PremadeComposerModal({
           <PremadeForm
             kind={kind}
             forcedAccountId={accountId}
+            initialPayload={initialPayload}
             onComposePayload={onComposePayload}
           />
         </div>

@@ -22,13 +22,83 @@ import logging
 from datetime import datetime
 from typing import Iterable
 
+import re
+
 from sqlalchemy import delete
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
-from db.models import Message
+from db.models import Chat, Message
 
 log = logging.getLogger("of-relay.attribution")
+
+
+def _preview_text(body: str | None) -> str:
+    """Inbox-list preview: HTML-stripped, clipped to 120 chars. Mirrors the
+    WS transcoder's preview (event_transcoder._strip_html + [:120]) so an
+    outbound send and an inbound message read identically in the chat list."""
+    if not body:
+        return ""
+    return re.sub(r"<[^>]+>", "", body).strip()[:120]
+
+
+async def _advance_chat_preview(
+    *,
+    account_id: str,
+    fan_id: int,
+    message_id: int,
+    body: str,
+    created_at: datetime,
+) -> None:
+    """Advance the inbox `chats` preview for an OUTBOUND send.
+
+    The OF-WS pump skips outbound chat events, so without this the inbox seed
+    (`/admin/chats/recent`, read straight from `chats`) keeps showing the fan's
+    last INBOUND text after an automation / mass send already replied — the
+    preview lags until a scrape or the next inbound event overwrites it.
+
+    Forward-only by time: the `WHERE` guard only advances the preview when this
+    send is at-or-after the row's current `last_message_at`, so an out-of-order
+    or backfilled write can't clobber a newer preview the transcoder set. Never
+    touches `unread_count` — outbound sends don't change the unread badge.
+
+    Runs in its OWN session and swallows every error: the `chats` FK to
+    `accounts` (or any other hiccup) must never roll back the already-written
+    `messages` row or block the live SSE emit. Best-effort, like the rest of
+    this module.
+    """
+    preview = _preview_text(body)
+    stmt = (
+        sqlite_insert(Chat)
+        .values(
+            account_id=str(account_id),
+            fan_id=int(fan_id),
+            last_message_id=int(message_id),
+            last_message_at=created_at,
+            last_message_preview=preview,
+            unread_count=0,
+        )
+        .on_conflict_do_update(
+            index_elements=["account_id", "fan_id"],
+            set_={
+                "last_message_id": int(message_id),
+                "last_message_at": created_at,
+                "last_message_preview": preview,
+            },
+            where=(
+                (Chat.last_message_at.is_(None))
+                | (Chat.last_message_at <= created_at)
+            ),
+        )
+    )
+    try:
+        async with get_session() as s:
+            await s.execute(stmt)
+    except Exception:
+        log.debug(
+            "chat preview advance skipped (account=%s fan=%s msg=%s)",
+            account_id, fan_id, message_id, exc_info=True,
+        )
 
 # Default stand-down after a human takes over a chat (the W7 hard-yield). 1 min;
 # per-account override via account_ai_config.webhook_config_json.manual_yield_minutes.
@@ -189,6 +259,15 @@ async def write_outbound_attribution(
                 index_elements=["account_id", "fan_id", "message_id"],
             )
             res = await s.execute(stmt)
+        # Advance the inbox preview — only on a real insert, so a duplicate
+        # re-run can't re-bump the chat. Keeps the local `/admin/chats/recent`
+        # seed in step with the just-sent text instead of lagging on the fan's
+        # last inbound message. Own session/try-except (never breaks the write).
+        if (res.rowcount or 0) > 0:
+            await _advance_chat_preview(
+                account_id=str(account_id), fan_id=int(fan_id),
+                message_id=int(message_id), body=body, created_at=created_at,
+            )
         log.info(
             "attribution: account=%s fan=%s msg=%s emp=%s mass_run=%s",
             account_id, fan_id, message_id, sent_by_employee_id, mass_run_id,
@@ -323,6 +402,14 @@ async def write_mass_optimistic_rows(
                 index_elements=["account_id", "fan_id", "message_id"],
             )
             await s.execute(stmt)
+        # Advance each recipient's inbox preview to the broadcast text so the
+        # local seed shows the just-sent mass message instead of the fan's last
+        # inbound. Time-guarded forward-only inside _advance_chat_preview.
+        for r in rows:
+            await _advance_chat_preview(
+                account_id=str(account_id), fan_id=int(r["fan_id"]),
+                message_id=int(r["message_id"]), body=body, created_at=created_at,
+            )
         log.info(
             "mass optimistic: account=%s run=%s rows=%d emp=%s",
             account_id, mass_run_id, len(rows), sent_by_employee_id,

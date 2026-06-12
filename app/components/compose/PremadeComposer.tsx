@@ -115,6 +115,59 @@ function blankRow(): Row {
   };
 }
 
+/** Number/anything → the string an input expects ("" when unset), the inverse
+ *  of posNum/nonNegInt below — used to re-seed a row from a saved payload. */
+function numStr(v: unknown): string {
+  return v === undefined || v === null ? "" : String(v);
+}
+
+/** Reverse of `rowToItem` — turn one saved payload entry back into an editable
+ *  Row so "Re-compose" opens pre-filled instead of blank. Media re-seeds as
+ *  id-only stubs (no thumbnail until re-picked, but the ids round-trip exactly). */
+function itemToRow(it: Record<string, unknown>): Row {
+  const r = blankRow();
+  if (typeof it.text === "string") r.texts = [it.text];
+  else if (Array.isArray(it.texts) && it.texts.length) {
+    r.texts = (it.texts as unknown[]).map(String);
+  }
+  if (Array.isArray(it.media_files)) {
+    r.media = (it.media_files as unknown[])
+      .filter((id): id is number => typeof id === "number")
+      .map((id) => ({ id, type: "photo" }) as VaultMedia);
+  }
+  r.folderId = it.media_folder_id != null ? String(it.media_folder_id) : "";
+  r.mediaCount = numStr(it.media_count);
+  r.delayMinutes = numStr(it.delay_minutes);
+  // auto_posts
+  r.hoursToLive = numStr(it.hours_to_live);
+  // mass_premade — online_only is only persisted when true, so absence = off.
+  r.onlineOnly = Boolean(it.online_only);
+  r.unsendAfterHours = numStr(it.unsend_after_hours);
+  r.resendAfterHours = numStr(it.resend_after_hours);
+  r.resendCount = numStr(it.resend_count);
+  r.includes = Array.isArray(it.user_lists) ? (it.user_lists as unknown[]).map(String) : [];
+  r.excludes = Array.isArray(it.excluded_user_lists)
+    ? (it.excluded_user_lists as unknown[]).map(String)
+    : [];
+  r.excludeRepliedHours = numStr(it.exclude_replied_hours);
+  r.excludeInboundHours = numStr(it.exclude_inbound_hours);
+  r.unreadLimit = numStr(it.unread_limit);
+  r.recentChatHours = numStr(it.recent_chat_hours);
+  r.recentChatLimit = numStr(it.recent_chat_limit);
+  return r;
+}
+
+/** Seed the repeating rows from a saved `{posts|messages:[…]}` payload (the
+ *  inverse of buildComposePayload). Empty/missing → one blank row. */
+function payloadToRows(
+  payload: Record<string, unknown> | undefined,
+  posts: boolean,
+): Row[] {
+  const arr = posts ? payload?.posts : payload?.messages;
+  if (!Array.isArray(arr) || arr.length === 0) return [blankRow()];
+  return arr.map((it) => itemToRow((it ?? {}) as Record<string, unknown>));
+}
+
 /** A blank/zero/garbage string → undefined; a positive number → the number.
  *  Keeps unset knobs out of the payload so the automation treats them as
  *  "not applied" (e.g. no hours_to_live = keep the post forever). */
@@ -181,6 +234,7 @@ export function PremadeForm({
   onDone,
   forcedAccountId,
   onComposePayload,
+  initialPayload,
 }: {
   kind: Kind;
   /** Optional — called after a successful enqueue (the modal uses it to close). */
@@ -189,17 +243,24 @@ export function PremadeForm({
   forcedAccountId?: string;
   /** Return-payload mode: receive the built payload instead of enqueuing. */
   onComposePayload?: (payload: Record<string, unknown>) => void;
+  /** Re-compose mode: seed the rows + repost cycle from a previously saved
+   *  `{posts|messages:[…]}` payload so editing an existing rule isn't blank. */
+  initialPayload?: Record<string, unknown>;
 }) {
   const posts = kind === "auto_posts";
   const composeMode = !!onComposePayload;
   const { current: currentEmployee } = useEmployee();
   const [accountId, setAccountId] = useState<string | null>(forcedAccountId ?? null);
-  const [rows, setRows] = useState<Row[]>([blankRow()]);
+  const [rows, setRows] = useState<Row[]>(() => payloadToRows(initialPayload, posts));
   const [dryRun, setDryRun] = useState(false);
   // Auto Posts repost CYCLE (list-level, not per-row): re-post the whole list
   // after it finishes. Baked into the auto_posts payload, not the rule cadence.
-  const [postsResendAfterHours, setPostsResendAfterHours] = useState("");
-  const [postsResendCount, setPostsResendCount] = useState("");
+  const [postsResendAfterHours, setPostsResendAfterHours] = useState(() =>
+    posts ? numStr(initialPayload?.resend_after_hours) : "",
+  );
+  const [postsResendCount, setPostsResendCount] = useState(() =>
+    posts ? numStr(initialPayload?.resend_count) : "",
+  );
   const [pickerFor, setPickerFor] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);

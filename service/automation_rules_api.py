@@ -73,7 +73,8 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "history_tail", "type": "int", "min": 1, "default": 40, "hint": "Recent messages the AI reads"},
             {"key": "model", "type": "str", "hint": "LLM override (else account default)"},
             {"key": "dry_run", "type": "bool", "hint": "generate but don't send"},
-            {"key": "force_ids", "type": "ids", "hint": "[fan_id,…] target specific fans"},
+            {"key": "force_ids", "type": "ids", "hint": "[fan_id,…] target specific fans (bypasses gates)"},
+            {"key": "only_fan_ids", "type": "ids", "hint": "[fan_id,…] scope the sweep to these fans (gates still apply)"},
         ],
     },
     "autoreply": {
@@ -86,6 +87,7 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "max_sends", "type": "int", "min": 1, "default": 25, "hint": "replies sent per tick"},
             {"key": "model", "type": "str", "hint": "LLM override (else account default)"},
             {"key": "dry_run", "type": "bool", "hint": "generate but don't send"},
+            {"key": "only_fan_ids", "type": "ids", "hint": "[fan_id,…] scope the sweep to these fans (gates still apply)"},
         ],
     },
     "send_welcome": {
@@ -95,6 +97,7 @@ _CATALOG: dict[str, dict[str, Any]] = {
         "knobs": [
             {"key": "limit", "type": "int", "min": 1, "default": 30, "hint": "fans scanned per tick"},
             {"key": "max_welcomes", "type": "int", "min": 1, "default": 25, "hint": "cap sends per tick"},
+            {"key": "with_image", "type": "bool", "default": True, "hint": "attach the time-of-day welcome image"},
             {"key": "model", "type": "str", "hint": "LLM override"},
             {"key": "dry_run", "type": "bool", "hint": "generate but don't send"},
         ],
@@ -107,6 +110,7 @@ _CATALOG: dict[str, dict[str, Any]] = {
         "knobs": [
             {"key": "limit", "type": "int", "min": 1, "hint": "fans scanned per tick"},
             {"key": "with_image", "type": "bool", "default": True, "hint": "attach an image"},
+            {"key": "step_hours", "type": "json", "hint": "[h1,h2,…] override per-step silence thresholds (hours)"},
             {"key": "model", "type": "str", "hint": "LLM override"},
             {"key": "dry_run", "type": "bool", "hint": "generate but don't send"},
         ],
@@ -123,7 +127,8 @@ _CATALOG: dict[str, dict[str, Any]] = {
              "hint": "skip fans above this lifetime spend in cents (default 20000 = $200)"},
             {"key": "model", "type": "str", "hint": "LLM override"},
             {"key": "dry_run", "type": "bool", "hint": "advance/send nothing"},
-            {"key": "force_ids", "type": "ids", "hint": "[fan_id,…] manual targets"},
+            {"key": "force_ids", "type": "ids", "hint": "[fan_id,…] manual targets (bypasses gates)"},
+            {"key": "only_fan_ids", "type": "ids", "hint": "[fan_id,…] scope the drill to these fans (gates still apply)"},
         ],
     },
     "gen_info": {
@@ -135,6 +140,7 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "limit", "type": "int", "min": 1, "default": 200, "hint": "fans per tick"},
             {"key": "model", "type": "str", "hint": "LLM override"},
             {"key": "force_ids", "type": "ids", "hint": "[fan_id,…] re-profile specific fans"},
+            {"key": "refill_ids", "type": "ids", "hint": "[fan_id,…] refresh just these (still gated by staleness)"},
         ],
     },
     "apply_profiles": {
@@ -168,6 +174,7 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "limit", "type": "int", "min": 1, "default": 5000, "hint": "profiled fans exported"},
             {"key": "sheet_tab", "type": "str", "hint": "override target tab"},
             {"key": "spreadsheet_id", "type": "str", "hint": "Google Sheet link (or id)"},
+            {"key": "create_tab", "type": "bool", "default": True, "hint": "create the tab if it doesn't exist"},
         ],
     },
     "process_old_fans": {
@@ -184,6 +191,8 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "flag_only", "type": "bool", "hint": "--no-scrape: only flip flags"},
             {"key": "reprocess", "type": "bool", "hint": "re-run already-onboarded fans"},
             {"key": "push_to_of", "type": "bool", "hint": "also write nicknames + notes onto OnlyFans"},
+            {"key": "limit", "type": "int", "min": 1, "hint": "cap batch size (forwarded to gen_info + apply_profiles)"},
+            {"key": "model", "type": "str", "hint": "LLM override forwarded to gen_info"},
         ],
     },
     "send_mass_message": {
@@ -207,6 +216,7 @@ _CATALOG: dict[str, dict[str, Any]] = {
         "example": "one-shot · mass_run_id 123 · dry_run off",
         "knobs": [
             {"key": "mass_run_id", "type": "int", "min": 1, "hint": "the mass run to follow up"},
+            {"key": "max_chats", "type": "int", "min": 1, "default": 40, "hint": "max fans advanced per tick"},
             {"key": "model", "type": "str", "hint": "LLM override"},
             {"key": "dry_run", "type": "bool", "hint": "generate but don't send"},
         ],

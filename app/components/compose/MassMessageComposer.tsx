@@ -87,6 +87,7 @@ export function MassMessageComposer({
   mode = "standard",
   forcedAccountId,
   onComposePayload,
+  initialPayload,
 }: {
   open: boolean;
   onClose: () => void;
@@ -101,6 +102,10 @@ export function MassMessageComposer({
    *  send_mass_message payload back so the RuleEditor can store it on a rule.
    *  The default (no callback) send path is untouched. */
   onComposePayload?: (payload: Record<string, unknown>) => void;
+  /** Re-compose mode: seed the form from a previously saved send_mass_message
+   *  payload so editing an existing rule isn't blank. Media re-seeds id-only
+   *  (no thumbnail until re-picked, but ids round-trip). */
+  initialPayload?: Record<string, unknown>;
 }) {
   const online = mode === "online";
   const composeMode = !!onComposePayload;
@@ -113,29 +118,59 @@ export function MassMessageComposer({
   // employee (id=2). See memory: project_x_employee_id_pipeline.md — relay's
   // X-Employee-Id header is opt-in per call, no global injector.
   const { current: currentEmployee } = useEmployee();
+  // Re-compose seed: a previously saved send_mass_message payload (string keys
+  // match buildBody's output), or {} on a fresh compose. Read once at mount.
+  const seedRef = useRef<Record<string, unknown>>(initialPayload ?? {});
+  const seed = seedRef.current;
+  const seedStr = (v: unknown): string =>
+    v === undefined || v === null ? "" : String(v);
   const [allModels, setAllModels] = useState(false);
   const [accountId, setAccountId] = useState<string | null>(forcedAccountId ?? null);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(() =>
+    typeof seed.text === "string" ? seed.text : "",
+  );
   // Vault-picked media for single-account broadcasts. All-models mode is
-  // text-only for now (upload-from-computer is paused).
-  const [attached, setAttached] = useState<VaultMedia[]>([]);
-  const [price, setPrice] = useState<string>("");
+  // text-only for now (upload-from-computer is paused). On re-compose the saved
+  // payload only carries ids → re-seed id-only stubs (thumbnail fills on re-pick).
+  const [attached, setAttached] = useState<VaultMedia[]>(() =>
+    Array.isArray(seed.media_files)
+      ? (seed.media_files as unknown[])
+          .filter((id): id is number => typeof id === "number" && id > 0)
+          .map((id) => ({ id, type: "photo" }) as VaultMedia)
+      : [],
+  );
+  const [price, setPrice] = useState<string>(() =>
+    typeof seed.price === "number" && seed.price > 0 ? String(seed.price) : "",
+  );
   // Leading N tiles are FREE previews; rest are PPV-locked. Reordering a
   // tile across the divider is the primary way to change preview vs paid.
   // Local for now — wire-payload plumbing lives in ask #8 (Work Unit O).
-  const [previewCount, setPreviewCount] = useState<number>(0);
-  const [lockedText, setLockedText] = useState(false);
+  const [previewCount, setPreviewCount] = useState<number>(() =>
+    Array.isArray(seed.previews) ? seed.previews.length : 0,
+  );
+  const [lockedText, setLockedText] = useState(Boolean(seed.locked_text));
   // Default audience: blast fans + following. The "online" exclude was
   // dropped (ask 2026-05-23) — the system "online" preset is point-in-time
-  // and not useful for scheduled or large broadcasts.
-  const [includes, setIncludes] = useState<Set<string>>(() => new Set(["fans", "following"]));
-  const [excludes, setExcludes] = useState<Set<string>>(() => new Set());
+  // and not useful for scheduled or large broadcasts. On re-compose, restore the
+  // saved lists; otherwise the fans+following default.
+  const [includes, setIncludes] = useState<Set<string>>(() =>
+    Array.isArray(seed.user_lists)
+      ? new Set((seed.user_lists as unknown[]).map(String))
+      : new Set(["fans", "following"]),
+  );
+  const [excludes, setExcludes] = useState<Set<string>>(() =>
+    Array.isArray(seed.excluded_user_lists)
+      ? new Set((seed.excluded_user_lists as unknown[]).map(String))
+      : new Set(),
+  );
   const [schedule, setSchedule] = useState<string>("");
   // Optional funnel: when set, the send_mass_message automation walks this
   // funnel's reply/PPV steps per replying fan after the opener lands. Resolved
   // server-side by funnel_id (send_mass_message._resolve_funnel) — only the
   // opener (this message) is sent now. Inert on the live OF-queue path.
-  const [funnelId, setFunnelId] = useState<number | null>(null);
+  const [funnelId, setFunnelId] = useState<number | null>(() =>
+    typeof seed.funnel_id === "number" ? seed.funnel_id : null,
+  );
   const funnelsQ = useFunnels();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -151,13 +186,15 @@ export function MassMessageComposer({
   // ── Online / live-targeting (mode === "online") ──────────────────────
   // These map 1:1 to the new /messages/queue body fields the relay resolves
   // server-side. Kept as strings so the inputs can be blank (= "not applied").
-  const [onlineOnly, setOnlineOnly] = useState(true);
-  const [unreadLimit, setUnreadLimit] = useState("");        // → unread_limit
-  const [recentChatHours, setRecentChatHours] = useState(""); // → recent_chat_hours
-  const [recentChatLimit, setRecentChatLimit] = useState(""); // → recent_chat_limit
-  const [excludeRepliedHours, setExcludeRepliedHours] = useState(""); // → exclude_replied_hours
-  const [excludeInboundHours, setExcludeInboundHours] = useState(""); // → exclude_inbound_hours
-  const [unsendAfterHours, setUnsendAfterHours] = useState(""); // → unsend_after_hours
+  const [onlineOnly, setOnlineOnly] = useState(
+    seed.online_only !== undefined ? Boolean(seed.online_only) : true,
+  );
+  const [unreadLimit, setUnreadLimit] = useState(seedStr(seed.unread_limit));        // → unread_limit
+  const [recentChatHours, setRecentChatHours] = useState(seedStr(seed.recent_chat_hours)); // → recent_chat_hours
+  const [recentChatLimit, setRecentChatLimit] = useState(seedStr(seed.recent_chat_limit)); // → recent_chat_limit
+  const [excludeRepliedHours, setExcludeRepliedHours] = useState(seedStr(seed.exclude_replied_hours)); // → exclude_replied_hours
+  const [excludeInboundHours, setExcludeInboundHours] = useState(seedStr(seed.exclude_inbound_hours)); // → exclude_inbound_hours
+  const [unsendAfterHours, setUnsendAfterHours] = useState(seedStr(seed.unsend_after_hours)); // → unsend_after_hours
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const listsQ = useQuery<FanList[]>({
@@ -247,9 +284,16 @@ export function MassMessageComposer({
     }
   }
 
+  // Skip the mount run of the two audience-reset effects below — on a re-compose
+  // the initializers already seeded includes/excludes from the saved payload, and
+  // these resets would clobber it. They still fire on genuine later changes.
+  const acctResetMounted = useRef(false);
+  const allModelsResetMounted = useRef(false);
+
   // When the account changes, re-seed audience to system defaults — the prior
   // set was scoped to a different model's custom lists.
   useEffect(() => {
+    if (!acctResetMounted.current) { acctResetMounted.current = true; return; }
     setIncludes(new Set(["fans", "following"]));
     setExcludes(new Set());
   }, [accountId]);
@@ -258,6 +302,7 @@ export function MassMessageComposer({
   // price/lock state (broadcasts force free per ask #4). Audience falls back
   // to system defaults which are identical across every account.
   useEffect(() => {
+    if (!allModelsResetMounted.current) { allModelsResetMounted.current = true; return; }
     if (allModels) {
       setAccountId(null);
       setAttached([]);

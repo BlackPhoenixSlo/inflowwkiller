@@ -26,6 +26,8 @@ import { blurImageClass, useBlurMode } from "@/hooks/useBlurMode";
 import { useCompactMedia } from "@/hooks/useCompactMedia";
 import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { MediaTile, pickEagerMediaIds } from "@/components/chat/MediaTile";
+import { automationLabel } from "@/components/messages/MessageRowGeneric";
+import type { AttributionEntry } from "@/hooks/useChatAttribution";
 
 
 export interface MessageListProps {
@@ -70,7 +72,7 @@ export interface MessageListProps {
    *  Null entries OR `display_name: null` mean "no label" (deleted
    *  employee or pre-DB-branch row) — the meta row guards on truthy
    *  display_name only. */
-  attribution?: Record<string, { employee_id: number | null; display_name: string | null; color: string | null }> | null;
+  attribution?: Record<string, AttributionEntry> | null;
   /** Display name of the currently-picked employee. Used as the
    *  optimistic fallback for outbound bubbles that don't have a real
    *  message_id yet (tempId < 0) — the chatter sees their own name
@@ -399,7 +401,13 @@ export function MessageList(props: MessageListProps) {
         let employeeLabel: string | null = null;
         if (isOutgoing || isOptimisticOutgoing) {
           const entry = attribution?.[String(m.id)];
-          if (entry?.display_name) {
+          // An automation send resolves display_name to the flat "Automation"
+          // sentinel — prefer the specific automation name ("AI Chat",
+          // "Auto-reply", …) so the bubble says which one actually sent it.
+          const autoName = automationLabel(entry?.automation_kind);
+          if (autoName) {
+            employeeLabel = autoName;
+          } else if (entry?.display_name) {
             employeeLabel = entry.display_name;
           } else if (isOptimisticOutgoing && currentEmployeeName) {
             employeeLabel = currentEmployeeName;
