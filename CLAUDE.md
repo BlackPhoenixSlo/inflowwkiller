@@ -24,22 +24,23 @@ Next.js UI (app/) --fetch /api/relay/...--> FastAPI relay (service/server.py)
 
 ## Deploying to a VPS (the common ask)
 
-**`scripts/deploy-vps.sh` does the whole thing** — installs Docker on the VPS,
-clones this repo there, writes `.env`, builds, and prints a public
-`trycloudflare.com` URL. For a stock deploy the user edits **one line**
-(`SSH_TARGET` → `root@<their-vps-ip>`) and fills in secrets (`DEEPSEEK_API_KEY`
-plus two `openssl rand -hex 32` session secrets). The repo URL and branch
-(`main`) are pre-filled — **no GitHub fork is needed** unless they're deploying
-modified code.
+Two entry points, both clone this public repo and bring up the Docker stack
+behind a Cloudflare quick-tunnel (no fork needed unless deploying modified code):
 
-```bash
-./scripts/deploy-vps.sh                 # uses the edited config block
-./scripts/deploy-vps.sh root@<ip>       # or pass the host inline
-```
+- **On the VPS itself** (simplest — Hostinger browser terminal, no laptop/SSH):
+  `scripts/deploy-here.sh`. Runs non-interactively — session secrets are
+  auto-generated, no proxy is needed for a single account, and the DeepSeek key
+  is optional (the dashboard boots without it). One-liner:
+  `bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/inflowwkiller/main/scripts/deploy-here.sh)`
+- **From a laptop over SSH:** `scripts/deploy-vps.sh` — the user edits one line
+  (`SSH_TARGET` → `root@<ip>`); repo URL + branch `main` are pre-filled. Use this
+  path when copying up an existing database.
 
-Read **DEPLOY_HOWTO.md** (dense reference) and **DEPLOY.md** (illustrated
-walkthrough) before running a deploy. Redeploy = run the same script again
-(idempotent: pulls, rebuilds, preserves `.env` + data).
+A **fresh single account needs no secrets and no proxies** to get running.
+DeepSeek is only required to switch on AI auto-messaging; proxies only matter
+once multiple OF accounts share one server. Read **DEPLOY.md** (illustrated) and
+**DEPLOY_HOWTO.md** (dense reference) before deploying. Redeploy = re-run the same
+script (idempotent: pulls, rebuilds, preserves `.env` + data).
 
 ## Rules you must not break
 
