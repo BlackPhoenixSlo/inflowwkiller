@@ -65,9 +65,6 @@ from llm_client import LLMCapExceeded
 
 log = logging.getLogger("of-relay.automation.send_welcome")
 
-# Default LLM model when account_ai_config.model is NULL (llm_client comment:
-# NULL → grok-4-1-fast-non-reasoning, preserving current behavior).
-_DEFAULT_MODEL = "grok-4-1-fast-non-reasoning"
 _DEFAULT_NOTIF_LIMIT = 30      # how many subscribe-notifications to pull per tick
 _DEFAULT_MAX_WELCOMES = 25     # batch cap per run (logged when it bites)
 _WELCOME_TEMPERATURE = 0.85    # matches the spec's Grok call

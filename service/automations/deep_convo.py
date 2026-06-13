@@ -97,7 +97,6 @@ from ._common import (
 log = logging.getLogger("of-relay.automation.deep_convo")
 
 # ── Knobs (ported from 06_deep_convo.md) ─────────────────────────────
-_DEFAULT_MODEL = "grok-4-1-fast-non-reasoning"   # llm_client fallback (19 §4)
 _PURPOSE = "deep_convo"           # also the account_ai_config.model_by_purpose key
 _INFO_COMPLETE_RATIO = 0.75       # ≥ 3 of 4 bio groups filled → profile complete
 _MAX_SPEND_CENTS = 200_00         # skip fans whose lifetime spend exceeds $200
