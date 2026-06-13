@@ -24,8 +24,13 @@ Next.js UI (app/) --fetch /api/relay/...--> FastAPI relay (service/server.py)
 
 ## Deploying to a VPS (the common ask)
 
-Two entry points, both clone this public repo and bring up the Docker stack
-behind a Cloudflare quick-tunnel (no fork needed unless deploying modified code):
+Two entry points, both clone this public repo and bring up the Docker stack (no
+fork needed unless deploying modified code). By **default** the dashboard is
+exposed as plain http on the server's own IP (`http://<ip>:3000`) — zero config.
+A prefix switches how it's exposed: `DOMAIN=you.duckdns.org` (or your own domain)
+routes through the box's Traefik with a real Let's Encrypt cert (needs the
+Hostinger **n8n plan**, which ships Traefik); `TUNNEL=1` gives a throwaway
+trycloudflare URL with no DNS/Traefik; `PORT=` picks a different host port.
 
 - **On the VPS itself** (simplest — Hostinger browser terminal, no laptop/SSH):
   `scripts/deploy-here.sh`. Runs non-interactively — session secrets are
@@ -38,9 +43,10 @@ behind a Cloudflare quick-tunnel (no fork needed unless deploying modified code)
 
 A **fresh single account needs no secrets and no proxies** to get running.
 DeepSeek is only required to switch on AI auto-messaging; proxies only matter
-once multiple OF accounts share one server. Read **DEPLOY.md** (illustrated) and
-**DEPLOY_HOWTO.md** (dense reference) before deploying. Redeploy = re-run the same
-script (idempotent: pulls, rebuilds, preserves `.env` + data).
+once multiple OF accounts share one server. Full exposure options live in
+**deploy/README.md**; read **DEPLOY.md** (illustrated) and **DEPLOY_HOWTO.md**
+(dense reference) before deploying. Redeploy = re-run the same script (idempotent:
+pulls, rebuilds, preserves `.env` + data).
 
 ## Rules you must not break
 
@@ -68,8 +74,9 @@ script (idempotent: pulls, rebuilds, preserves `.env` + data).
 
 ## Gotchas
 
-- The `trycloudflare.com` URL **rotates on every restart** — fetch the current
-  one from the tunnel logs (the deploy script prints the command).
+- With `TUNNEL=1`, the `trycloudflare.com` URL **rotates on every restart** — fetch
+  the current one from the tunnel logs (the deploy script prints the command). The
+  default IP URL and `DOMAIN=` (Traefik) URLs are stable.
 - **Adding a relay route needs a matching rewrite** in `app/next.config.ts`, or
   Next 404s before the request reaches the relay.
 - In containers the relay runs **without `--reload`** — restart it

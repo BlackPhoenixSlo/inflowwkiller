@@ -8,8 +8,16 @@
 > this document is written so a human can follow it alone too.
 
 One command does the whole deploy: it installs Docker on your server, pulls the
-code, writes your secrets, brings the stack up, and hands you back a public URL.
+code, writes your secrets, brings the stack up, and hands you back a URL.
 You edit one block of settings, run one script, then sign in.
+
+> **Exposure options (read first).** By default the one-paste deploy now serves
+> the dashboard as plain http on your server's IP (`http://<ip>:3000`) — simplest,
+> no domain. For a real **https** URL prefix the command with
+> `DOMAIN=you.duckdns.org` (free DuckDNS — needs the Hostinger **n8n plan**'s
+> Traefik) or `TUNNEL=1` (throwaway URL, no Traefik). The `trycloudflare` steps
+> shown below are the `TUNNEL=1` path. All options at a glance:
+> **[deploy/README.md](deploy/README.md)**.
 
 ---
 

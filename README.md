@@ -48,47 +48,83 @@ repo; they are created locally the first time you boot.
 
 ## Deploy to your own VPS
 
-Put Fastt on a VPS (Hostinger, Hetzner, DigitalOcean…) behind a public URL.
-**No GitHub fork needed** — it clones this public repo onto your server, installs
-Docker, builds, and prints a `trycloudflare.com` URL. A brand-new single account
-needs **no secrets and no proxies** to get running.
+Put Fastt on a VPS behind a public URL. **No GitHub fork needed** — it clones this
+public repo onto your server, installs Docker, builds, and starts the dashboard. A
+brand-new single account needs **no secrets and no proxies**. Re-run the same line
+anytime to update or to switch how it's exposed — it's idempotent.
 
-### Option A — directly on the VPS (simplest: one paste, no laptop)
+> **Recommended host: Hostinger's _n8n_ VPS plan.** It ships with Traefik +
+> Let's Encrypt already installed, which the free-https options (2 & 3) reuse. Any
+> plain VPS (Hetzner, DigitalOcean…) works too — the default IP option needs
+> nothing special, and `TUNNEL=1` gives https with no Traefik at all.
 
 Open your VPS's terminal (Hostinger's in-browser **Browser terminal** works) and
-paste:
+paste **one** of these. Same command — a prefix just picks how it's exposed:
+
+### 1. Just works — plain http on your server's IP  ★ start here
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/inflowwkiller/main/scripts/deploy-here.sh)
 ```
 
-It runs start to finish with no questions: session secrets are auto-generated, no
-proxy is needed for one account (it uses the server's own IP), and the DeepSeek
-AI key is optional — the dashboard boots without it (add it to `.env` later only
-when you want AI auto-messaging). Already have a key? Prefix it:
-`DEEPSEEK_API_KEY=sk-... bash <(curl …)`. Re-run the same line anytime to update.
+Zero config → `http://<your-ip>:3000`. Stable, instant, no domain. Session secrets
+are auto-generated; no proxy is needed for one account. ⚠️ No TLS — the login token
+travels in clear text, so move to option 2/3 for real use. If the page won't open,
+allow the port: `ufw allow 3000/tcp`.
 
-### Option B — from your laptop, over SSH
+### 2. Free https with DuckDNS  ★ recommended
+
+Make a free subdomain at [duckdns.org](https://www.duckdns.org), point it at your
+server's IP, then:
+
+```bash
+DOMAIN=yourname.duckdns.org bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/inflowwkiller/main/scripts/deploy-here.sh)
+```
+
+Real Let's Encrypt cert, permanent URL, **$0**. _Needs Traefik on the box — i.e.
+the n8n plan._
+
+### 3. Your own domain
+
+Add a DNS **A-record** for the host → your server's IP, then:
+
+```bash
+DOMAIN=app.yourdomain.com bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/inflowwkiller/main/scripts/deploy-here.sh)
+```
+
+### Bonus — throwaway https, no DNS, no Traefik
+
+```bash
+TUNNEL=1 bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/inflowwkiller/main/scripts/deploy-here.sh)
+```
+
+Random `trycloudflare.com` URL that changes on every restart. Works on **any** VPS.
+
+> **Didn't get the n8n plan / no Traefik?** You're not stuck: option **1** (IP)
+> always works, and **`TUNNEL=1`** gives https with no domain and no Traefik. You
+> only need the n8n plan (or to install Traefik/Caddy yourself) for the _stable_
+> https in options 2–3.
+
+Other prefixes: `DEEPSEEK_API_KEY=sk-…` (bake in an AI key — optional, dashboard
+runs without it), `PORT=8080` (different host port for option 1), `REPO_URL=` /
+`BRANCH=` (deploy a fork), `DIR=` (install path).
+
+### From your laptop, over SSH (alternative)
 
 Drives the deploy from your machine (useful for copying up an existing database).
-Requires `ssh root@<your-vps-ip>` to work with your key.
+Requires `ssh root@<your-vps-ip>` with your key.
 
 ```bash
 git clone https://github.com/BlackPhoenixSlo/inflowwkiller.git && cd inflowwkiller
-# set SSH_TARGET (your VPS IP) in scripts/deploy-vps.sh — the only required edit
-./scripts/deploy-vps.sh
-# …or pass the host inline:
 ./scripts/deploy-vps.sh root@<your-vps-ip>
 ```
 
-Either way the server boots with no OnlyFans login — connect one after deploy with
-the bundled Chrome extension (Step 4 in the walkthrough).
+The server boots with no OnlyFans login — connect one after deploy with the bundled
+Chrome extension (Step 4 in the walkthrough).
 
-- **[DEPLOY.md](DEPLOY.md)** — illustrated, click-by-click walkthrough. You can
-  paste it straight into [Claude Code](https://claude.com/claude-code) and have
-  the deploy done with you.
-- **[DEPLOY_HOWTO.md](DEPLOY_HOWTO.md)** — the dense reference (secrets, migrations,
-  running alongside another stack, rollback).
+- **[deploy/README.md](deploy/README.md)** — all exposure options at a glance.
+- **[DEPLOY.md](DEPLOY.md)** — illustrated, click-by-click walkthrough.
+- **[DEPLOY_HOWTO.md](DEPLOY_HOWTO.md)** — dense reference (secrets, migrations, rollback).
 - **[CLAUDE.md](CLAUDE.md)** — orientation for an AI agent working in this repo.
 
 ---
