@@ -13,6 +13,12 @@ before-you-run-it** checklist.
 > of the same steps — and you can paste it straight into Claude Code to have the
 > deploy done with you. This file is the dense reference.
 
+> **Exposure (updated).** The on-VPS one-paste path (`deploy-here.sh`) now defaults
+> to plain http on the server IP (`http://<ip>:3000`); `deploy-vps.sh` still brings
+> up the Cloudflare tunnel described below. For a **stable https** URL use
+> `DOMAIN=you.duckdns.org` (free DuckDNS + the Hostinger **n8n plan**'s Traefik).
+> Full option matrix: **[deploy/README.md](deploy/README.md)**.
+
 ---
 
 ## 0. Prerequisites
