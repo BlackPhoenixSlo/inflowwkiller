@@ -262,35 +262,39 @@ async def _sweep_mass_targets(
     ]
 
 
-async def _refresh_mass_cache(account_id: str) -> int:
+async def _refresh_mass_cache(account_id: str, client) -> bool:
     """Write-through OF's broadcast history into `mass_broadcast_cache` so the mass
     sweep that follows reads a current list (see `_MASS_REFRESH_*`). Mirrors the
     UI's /admin/mass-messages/refresh, but PAGINATES `hasMore` so an account that
     blasts faster than one page won't leave its older broadcasts un-swept.
 
-    Best-effort by design: a client without `mass_message_history` (test fakes) or
-    an OF error never fails the run — we just sweep whatever is already cached. The
-    upsert also refreshes `is_canceled`/`can_unsend`, so a broadcast unsent out of
-    band drops out of the next sweep instead of erroring on a re-cancel. Returns the
-    rows upserted (0 when the refresh is skipped)."""
+    Best-effort by design: a client without `mass_message_history` (test fakes)
+    skips cleanly. Returns True on success OR a clean skip; False only when the OF
+    pull actually errored — so the caller can flag that the run swept a STALE cache
+    instead of reporting a misleading 'nothing to do'. `upsert_many` keeps
+    `is_canceled` monotonic, so a broadcast unsent out of band drops out of the
+    next sweep instead of erroring on a re-cancel."""
     import mass_broadcast_cache as cache  # local: matches server.py; avoids import cycle
-    client = await asyncio.to_thread(ax._make_client, account_id)
     fetch = getattr(client, "mass_message_history", None)
     if not callable(fetch):
-        return 0  # client can't pull history → sweep the cached rows as-is
+        return True  # client can't pull history → sweep the cached rows as-is
     end = datetime.utcnow()
     start = end - timedelta(days=_MASS_REFRESH_LOOKBACK_DAYS)
     fmt = "%Y-%m-%d %H:%M:%S"
     written = 0
+    offset = 0  # advance by ROWS RETURNED, not page index — OF may cap a page
+    #             below the requested limit, and striding by the limit would skip
+    #             the un-returned rows of a short page.
     try:
-        for page in range(_MASS_REFRESH_MAX_PAGES):
+        for _ in range(_MASS_REFRESH_MAX_PAGES):
             resp = await asyncio.to_thread(
                 fetch, start_date=start.strftime(fmt), end_date=end.strftime(fmt),
-                limit=_MASS_REFRESH_PAGE, offset=page * _MASS_REFRESH_PAGE,
+                limit=_MASS_REFRESH_PAGE, offset=offset,
             )
             items = (resp.get("items") if isinstance(resp, dict) else None) or []
             if items:
                 written += await cache.upsert_many(str(account_id), items)
+                offset += len(items)
             # Stop at the last page (no more / empty); only keep paging while OF
             # says there's more AND this page actually returned rows.
             if not (isinstance(resp, dict) and resp.get("hasMore") and items):
@@ -304,9 +308,10 @@ async def _refresh_mass_cache(account_id: str) -> int:
                 account_id, _MASS_REFRESH_MAX_PAGES, written,
             )
     except Exception:
-        log.warning("mass_cache_refresh_failed account=%s — sweeping cached rows",
-                    account_id, exc_info=True)
-    return written
+        log.error("mass_cache_refresh_failed account=%s — sweeping STALE cache",
+                  account_id, exc_info=True)
+        return False
+    return True
 
 
 async def _flip_chat_unsent(account_id: str, fan_id: int, message_id: int) -> int:
@@ -358,7 +363,9 @@ async def _flip_cache_canceled(account_id: str, queue_id: int) -> int:
                 MassBroadcastCache.queue_id == int(queue_id),
                 MassBroadcastCache.is_canceled.is_(False),
             )
-            .values(is_canceled=True)
+            # Match the canonical post-cancel shape (mass_broadcast_cache.mark_canceled):
+            # a canceled broadcast is no longer unsendable.
+            .values(is_canceled=True, can_unsend=False, unsend_seconds=0)
         )
     return res.rowcount or 0
 
@@ -419,6 +426,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     target is logged and skipped — it never fails the whole run."""
     payload = payload or {}
     targets = _norm_targets(payload.get("targets"))
+    client = None              # built once, lazily, and reused by refresh + unsend
+    mass_refresh_failed = False
     if not targets:
         policy = payload.get("policy") or {}
         # The per-chat sweep and the MASS free-text sweep are independent. A rule
@@ -441,8 +450,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if wants_mass:
             # A real run pulls fresh broadcast history into the cache first; dry_run
             # is a no-OF-write preview, so it reads the cache as the UI last warmed it.
+            # (We refresh on EVERY real run rather than gating on the cache's 24h TTL:
+            # the hourly sweep acts on broadcasts only a few hours old, so the UI TTL
+            # is far too stale to keep them swept on time.)
             if not payload.get("dry_run"):
-                await _refresh_mass_cache(account_id)
+                client = await asyncio.to_thread(ax._make_client, account_id)
+                mass_refresh_failed = not await _refresh_mass_cache(account_id, client)
             targets += await _sweep_mass_targets(
                 account_id, text_hours=m_text, media_hours=m_media, price_hours=m_price)
 
@@ -458,9 +471,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         }
 
     if not targets:
-        return {"targets": 0, "unsent": 0, "failed": 0, "rows_flipped": 0}
+        return {"targets": 0, "unsent": 0, "failed": 0, "rows_flipped": 0,
+                "mass_refresh_failed": mass_refresh_failed}
 
-    client = await asyncio.to_thread(ax._make_client, account_id)
+    # Reuse the client the mass refresh already built; only construct one here when
+    # this run had no mass refresh (per-chat / post / story / explicit targets).
+    if client is None:
+        client = await asyncio.to_thread(ax._make_client, account_id)
 
     unsent = 0
     failed = 0
@@ -502,4 +519,5 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "unsent": unsent,
         "failed": failed,
         "rows_flipped": rows_flipped,
+        "mass_refresh_failed": mass_refresh_failed,
     }
