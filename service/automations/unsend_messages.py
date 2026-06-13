@@ -30,7 +30,9 @@ Targeting — the payload drives what gets unsent:
     #   text : media_count==0, text_hours..24h  → per-chat unsend (default)
     #   media: media_count>0,  media_hours..24h → per-chat unsend (opt-in)
     #   mass_text_hours: free + image-less BROADCASTS older than N hours →
-    #     mass-queue unsend (opt-in; reads mass_broadcast_cache, no 24h window).
+    #     mass-queue unsend (opt-in; no 24h window). A real run first pulls
+    #     broadcast history from OF into mass_broadcast_cache (paginated) so the
+    #     sweep sees blasts the UI never opened the tab to cache.
     #     `"mass_text": true` (no hours) uses the 8h default.
     "dry_run": True,                              # preview only — no OF call
   }
@@ -77,6 +79,18 @@ _DEFAULT_TEXT_HOURS = 9
 _DEFAULT_MASS_TEXT_HOURS = 8
 # Safety ceiling so a misconfigured sweep can't unsend an entire account.
 _MAX_SWEEP = 200
+
+# Mass sweep reads `mass_broadcast_cache`, which is otherwise only refreshed when a
+# human opens the Mass-messages tab — so on an account whose blasts come from
+# automations the cache is empty/stale and the hourly sweep finds nothing. Before
+# the mass sweep we pull broadcast history from OF and write it through. Mass sends
+# have no unsend window, so the sweep can act on anything in this lookback; 30 days
+# covers any realistic backlog while bounding the OF roundtrip. OF returns
+# broadcasts newest-first with `hasMore`, so we PAGINATE — a single page can't
+# cover a high-volume account's older blasts — up to a page cap.
+_MASS_REFRESH_LOOKBACK_DAYS = 30
+_MASS_REFRESH_PAGE = 100
+_MASS_REFRESH_MAX_PAGES = 50  # 50 × 100 = 5000 broadcasts — far past any real hourly volume
 
 
 def _norm_targets(raw: object) -> list[dict]:
@@ -248,6 +262,53 @@ async def _sweep_mass_targets(
     ]
 
 
+async def _refresh_mass_cache(account_id: str) -> int:
+    """Write-through OF's broadcast history into `mass_broadcast_cache` so the mass
+    sweep that follows reads a current list (see `_MASS_REFRESH_*`). Mirrors the
+    UI's /admin/mass-messages/refresh, but PAGINATES `hasMore` so an account that
+    blasts faster than one page won't leave its older broadcasts un-swept.
+
+    Best-effort by design: a client without `mass_message_history` (test fakes) or
+    an OF error never fails the run — we just sweep whatever is already cached. The
+    upsert also refreshes `is_canceled`/`can_unsend`, so a broadcast unsent out of
+    band drops out of the next sweep instead of erroring on a re-cancel. Returns the
+    rows upserted (0 when the refresh is skipped)."""
+    import mass_broadcast_cache as cache  # local: matches server.py; avoids import cycle
+    client = await asyncio.to_thread(ax._make_client, account_id)
+    fetch = getattr(client, "mass_message_history", None)
+    if not callable(fetch):
+        return 0  # client can't pull history → sweep the cached rows as-is
+    end = datetime.utcnow()
+    start = end - timedelta(days=_MASS_REFRESH_LOOKBACK_DAYS)
+    fmt = "%Y-%m-%d %H:%M:%S"
+    written = 0
+    try:
+        for page in range(_MASS_REFRESH_MAX_PAGES):
+            resp = await asyncio.to_thread(
+                fetch, start_date=start.strftime(fmt), end_date=end.strftime(fmt),
+                limit=_MASS_REFRESH_PAGE, offset=page * _MASS_REFRESH_PAGE,
+            )
+            items = (resp.get("items") if isinstance(resp, dict) else None) or []
+            if items:
+                written += await cache.upsert_many(str(account_id), items)
+            # Stop at the last page (no more / empty); only keep paging while OF
+            # says there's more AND this page actually returned rows.
+            if not (isinstance(resp, dict) and resp.get("hasMore") and items):
+                break
+        else:
+            # Loop ran the full page cap without OF saying "no more" — flag the
+            # truncation rather than silently leaving the oldest blasts un-swept.
+            log.warning(
+                "mass_cache_refresh_truncated account=%s hit %d-page cap (%d rows) — "
+                "older broadcasts may not be swept this run",
+                account_id, _MASS_REFRESH_MAX_PAGES, written,
+            )
+    except Exception:
+        log.warning("mass_cache_refresh_failed account=%s — sweeping cached rows",
+                    account_id, exc_info=True)
+    return written
+
+
 async def _flip_chat_unsent(account_id: str, fan_id: int, message_id: int) -> int:
     """Mark one per-chat message unsent in our DB. Returns rows flipped (0 if we
     don't hold the row — OF still unsent it; we just have nothing to mirror)."""
@@ -378,6 +439,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if wants_per_chat:
             targets += await _sweep_targets(account_id, policy)
         if wants_mass:
+            # A real run pulls fresh broadcast history into the cache first; dry_run
+            # is a no-OF-write preview, so it reads the cache as the UI last warmed it.
+            if not payload.get("dry_run"):
+                await _refresh_mass_cache(account_id)
             targets += await _sweep_mass_targets(
                 account_id, text_hours=m_text, media_hours=m_media, price_hours=m_price)
 
