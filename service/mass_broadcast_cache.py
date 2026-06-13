@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select, update as sa_update
+from sqlalchemy import and_ as sa_and, func, not_ as sa_not, or_ as sa_or, select, update as sa_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
@@ -41,10 +41,13 @@ def _parse_of_date(s: str | None) -> datetime | None:
     if not s:
         return None
     try:
-        # Python ≥3.11 handles +HH:MM directly.
+        # Python ≥3.11 handles +HH:MM directly. Normalize to UTC-naive — both
+        # readers assume UTC (`_row_to_dict` re-stamps `+00:00`; the unsend sweep
+        # compares against `datetime.utcnow()`), so `astimezone(tz=None)` (host-LOCAL)
+        # would skew `sent_at` by the server's offset on any non-UTC box.
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is not None:
-            dt = dt.astimezone(tz=None).replace(tzinfo=None)
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
         return dt
     except (ValueError, TypeError):
         return None
@@ -192,9 +195,21 @@ async def upsert_many(account_id: str, items: list[dict[str, Any]]) -> int:
                 "fetched_at": now,
             }
             stmt = sqlite_insert(MassBroadcastCache).values(**values)
+            # A cancel is terminal — a broadcast never un-cancels. Keep
+            # `is_canceled` monotonic (existing OR incoming) and force
+            # `can_unsend` off once canceled, so a lagging OF feed that still
+            # reports `isCanceled:false` for a broadcast we already unsent can't
+            # resurrect the cache row and make the unsend sweep re-cancel it.
+            excl = stmt.excluded
+            set_ = {k: v for k, v in values.items() if k not in ("account_id", "queue_id")}
+            set_["is_canceled"] = sa_or(MassBroadcastCache.is_canceled, excl.is_canceled)
+            set_["can_unsend"] = sa_and(
+                excl.can_unsend,
+                sa_not(sa_or(MassBroadcastCache.is_canceled, excl.is_canceled)),
+            )
             stmt = stmt.on_conflict_do_update(
                 index_elements=["account_id", "queue_id"],
-                set_={k: v for k, v in values.items() if k not in ("account_id", "queue_id")},
+                set_=set_,
             )
             await s.execute(stmt)
             written += 1
