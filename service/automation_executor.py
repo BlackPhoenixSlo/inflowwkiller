@@ -17,10 +17,11 @@ It MIRRORS the two existing supervisors — it does not invent a new pattern:
     the network never blocks the event loop; sleep-at-end so the cadence holds).
 
 Two concurrency invariants the DA caught (MASTER_PLAN §5.6), both real bugs:
-  1. **Per-account lock** — the daily soft-cap check+spend is serialized per
-     account, else parallel LLM workers each read "under cap" and overspend.
-     `account_spend_lock()` exposes the lock; `reserve_daily_spend()` is the
-     seam P4's llm_client fills in. scrape_chats does not spend, so it skips it.
+  1. **Atomic per-account spend cap** — the daily soft-cap check+spend must be
+     atomic, else parallel LLM workers each read "under cap" and overspend. This
+     now lives in `llm_client._reserve` (a single INSERT … ON CONFLICT DO UPDATE
+     that bumps the rollup only while it stays under the cap) — no Python lock is
+     needed. scrape_chats does not spend, so it skips it.
   2. **Per-(account, fan) lease** — A05/A06/A07/A11 can all message the SAME fan
      in overlapping ticks. `acquire_fan_lease()` writes a short-TTL row in
      `fan_lease` (PK (account_id, fan_id)); a live lease blocks every other
@@ -166,10 +167,11 @@ _SCRAPE_OLDEST_CAP = 100       # convo-start messages, grabbed ONCE on the first
 _SCRAPE_CHAT_LIMIT = 100       # how many sidebar chats one all-chats sweep covers (paginated 10/page)
 _PAGE_SLEEP_S = 0.3            # inter-page / inter-chat politeness gap (matches of_client)
 
-# Per-account lock: serializes the soft-cap check+spend so two LLM workers can't
-# both pass the cap. defaultdict(asyncio.Lock) is the proven pattern from
-# transaction_ingest.py:_tick_locks — Lock construction needs no running loop.
-_account_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+# (The per-account *spend* lock that used to live here is gone: llm_client._reserve
+# now does the soft-cap check+spend atomically in one INSERT … ON CONFLICT, so no
+# Python-side lock is needed. The per-(account, kind) run lock below stays. Both the
+# run-lock and write-gate dicts are keyed by a stable, small (account[, kind]) set —
+# accounts don't churn — so they don't grow unbounded.)
 
 # Per-(account, kind) lock: stops a slow run from stacking with the next tick.
 # Same idea as tx-ingest's per-account tick lock, scoped to the automation kind
@@ -227,33 +229,14 @@ def _strip_html(s: str | None) -> str:
     return re.sub(r"<[^>]+>", "", s).strip()
 
 
-# ── Concurrency primitive 1: per-account spend lock ──────────────────
-
-def account_spend_lock(account_id: str) -> asyncio.Lock:
-    """The per-account lock that serializes the daily soft-cap check+spend
-    (MASTER_PLAN §5.6). P4's LLM automations MUST hold this across
-    `read-today's-spend → compare-to-cap → record-the-call`, otherwise two
-    workers each observe "under cap" and overspend. Exposed as a primitive so
-    every LLM automation shares the SAME lock object per account."""
-    return _account_locks[account_id]
+# ── Per-account spend cap ────────────────────────────────────────────
+# The daily soft-cap check+spend is enforced atomically in llm_client._reserve
+# (one INSERT … ON CONFLICT DO UPDATE that increments the per-(day, account,
+# provider) rollup only while it stays under the cap). There is no Python-side
+# spend lock here any more — the DB write IS the serialization point.
 
 
-async def reserve_daily_spend(account_id: str, est_cents: int) -> bool:
-    """Seam for P4 (llm_client / 05_grok_extraction §7). Acquires the
-    per-account lock so the check+spend is atomic, then returns whether the
-    estimated spend is allowed under the account's daily soft-cap.
-
-    Left permissive (always allows) until the LLM-cost tables land in P4 —
-    scrape_chats never calls it. The CONTRACT that matters now is that the lock
-    is the single serialization point; the accounting body is filled in later.
-    """
-    async with account_spend_lock(account_id):
-        # TODO(P4/T-LLMCLIENT): sum today's grok_calls cost for this account,
-        # compare against account_ai_config soft-cap, deny when exceeded.
-        return True
-
-
-# ── Concurrency primitive 2: per-(account, fan) send lease ───────────
+# ── Concurrency primitive: per-(account, fan) send lease ─────────────
 
 async def acquire_fan_lease(
     account_id: str,
@@ -610,16 +593,21 @@ async def _due_job_pairs() -> list[tuple[str, str]]:
 
 
 def _due_clock_slot(
-    now: datetime, times: list, tz_offset_minutes: int, last_started: datetime | None
+    now: datetime, times: list, tz_offset_minutes: int, last_job_at: datetime | None
 ) -> str | None:
     """Clock-time ("cron") trigger: given `times` like ["09:00","20:30"] expressed
     in the user's local zone (`tz_offset_minutes` = minutes to add to UTC for
     local), return the most-recent slot that is DUE — i.e. its target instant
-    today has passed AND we haven't already run since then — else None.
+    today has passed AND THIS RULE hasn't already enqueued a job since then — else
+    None.
 
-    `now`/`last_started` are UTC (datetime.utcnow). For each "HH:MM" we build
-    today's local target, convert to UTC (target_utc = local - offset), and
-    treat it as due when now ≥ target_utc and last_started < target_utc."""
+    `now`/`last_job_at` are UTC (datetime.utcnow). `last_job_at` is the rule's OWN
+    last job-enqueue time (NOT the last run of the kind): anchoring on the kind's
+    last *run* let a one-shot / manual run of the same kind mark today's slot
+    "done" and starve the scheduled rule — the same footgun the interval path
+    avoids. For each "HH:MM" we build today's local target, convert to UTC
+    (target_utc = local - offset), and treat it as due when now ≥ target_utc and
+    last_job_at < target_utc."""
     best: tuple[datetime, str] | None = None
     off = timedelta(minutes=int(tz_offset_minutes or 0))
     for raw in times:
@@ -636,8 +624,8 @@ def _due_clock_slot(
         target_utc = local_today - off
         if now < target_utc:
             continue  # slot hasn't arrived yet today
-        if last_started is not None and last_started >= target_utc:
-            continue  # already ran for this slot
+        if last_job_at is not None and last_job_at >= target_utc:
+            continue  # this rule already enqueued a job for this slot
         if best is None or target_utc > best[0]:
             best = (target_utc, raw)
     return None if best is None else best[1]
@@ -725,27 +713,17 @@ async def _materialize_due_rules() -> int:
             if pending is not None:
                 continue
 
-            last_started = (
-                await s.execute(
-                    select(AutomationRun.started_at)
-                    .where(
-                        AutomationRun.account_id == rule.account_id,
-                        AutomationRun.kind == rule.kind,
-                    )
-                    .order_by(AutomationRun.started_at.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-
-            # Cadence anchor for the interval trigger: the last time THIS rule
-            # enqueued a job (rule_id == rule.id), NOT the last run of the kind.
-            # `unsend_messages` (and other kinds) double as one-shot actions —
-            # auto_stories' delete-later cleanup, the "Unsend this" button, test
-            # drivers — all of which write AutomationRun rows for the same
-            # (account, kind). Anchoring the "is it due?" check on `last_started`
-            # let those one-shots reset the rule's clock every few minutes, so a
-            # rule whose interval (e.g. 1h) is longer than the one-shot cadence
-            # NEVER became due. Anchoring on the rule's own jobs decouples it.
+            # Cadence anchor for BOTH the interval and clock triggers: the last
+            # time THIS rule enqueued a job (rule_id == rule.id), NOT the last run
+            # of the kind. `unsend_messages` (and other kinds) double as one-shot
+            # actions — auto_stories' delete-later cleanup, the "Unsend this"
+            # button, test drivers — all of which write AutomationRun rows for the
+            # same (account, kind). Anchoring the "is it due?" check on the kind's
+            # last *run* let those one-shots reset the rule's clock every few
+            # minutes: an interval rule whose period (e.g. 1h) outlasts the
+            # one-shot cadence NEVER became due, and a clock rule's daily slot got
+            # marked "already ran" by an unrelated same-kind run. Anchoring on the
+            # rule's own jobs decouples both.
             last_rule_job_at = (
                 await s.execute(
                     select(func.max(ScheduledJob.created_at))
@@ -780,14 +758,14 @@ async def _materialize_due_rules() -> int:
                     continue
             else:  # has_clock — fire once per configured "HH:MM" slot per day
                 tz_off = trigger.get("tz_offset_minutes") or 0
-                slot = _due_clock_slot(now, daily_at, tz_off, last_started)
+                slot = _due_clock_slot(now, daily_at, tz_off, last_rule_job_at)
                 if slot is None:
                     continue
 
             # ── quiet hours (opt-in; default off) ────────────────────────
             # A due rule inside its creator-local quiet band does NOT enqueue this
             # tick — it'll materialize on the first tick after the band ends (it's
-            # still "due" then, last_started is unchanged). Unset/[] = fires 24/7.
+            # still "due" then — no job was enqueued). Unset/[] = fires 24/7.
             if rule.quiet_hours_json:
                 acct = rule.account_id
                 if acct not in offsets:

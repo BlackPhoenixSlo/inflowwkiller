@@ -92,7 +92,6 @@ _NOID_PAUSE = timedelta(hours=1)
 log = logging.getLogger("of-relay.automation.of_ai_chat")
 
 # ── Knobs (ported from 05_of_ai_chat.md) ─────────────────────────────
-_DEFAULT_MODEL = "grok-4-1-fast-non-reasoning"   # llm_client fallback (19 §4)
 _PURPOSE = "of_ai_chat"          # also the account_ai_config.model_by_purpose key
 _SPEND_GATE_CENTS = 100          # bought_amount > $1 → hand off to humans
 _MAX_FAN_MESSAGES = 10           # runaway-conversation cutoff (spec MAX_FAN_MESSAGES)
@@ -562,15 +561,23 @@ class _Candidate:
         self.messages: list[tuple[str, str]] = []  # (direction, body) oldest→newest
 
 
-async def _gather(account_id: str) -> dict[int, _Candidate]:
+async def _gather(account_id: str,
+                  fan_ids: set[int] | None = None) -> dict[int, _Candidate]:
     """One pass over the account's messages → per-fan inbound count, last
-    message, and trimmed history."""
+    message, and trimmed history.
+
+    When `fan_ids` is given (W7 fan-scoped dispatch — react to just the fan who
+    messaged), the scan is restricted to those fans IN SQL, so reacting to one
+    inbound DM never reads the whole account's message history. None/empty → the
+    full-account sweep (the periodic run)."""
     out: dict[int, _Candidate] = {}
+    where = [Message.account_id == str(account_id), Message.is_unsent.is_(False)]
+    if fan_ids:
+        where.append(Message.fan_id.in_(fan_ids))
     async with get_session() as s:
         rows = (await s.execute(
             select(Message.fan_id, Message.direction, Message.body)
-            .where(Message.account_id == str(account_id),
-                   Message.is_unsent.is_(False))
+            .where(*where)
             .order_by(Message.fan_id, Message.created_at, Message.message_id)
         )).all()
     for fan_id, direction, body in rows:
@@ -1173,9 +1180,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     persona = await _load_persona(account_id)
     blacklist, skip_list = await _load_stop_lists(account_id)
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)  # W7 cross-tick ownership
-    by_fan = await _gather(account_id)
-    if only_fan_ids:
-        by_fan = {fid: c for fid, c in by_fan.items() if fid in only_fan_ids}
+    by_fan = await _gather(account_id, only_fan_ids or None)
 
     # of_client only — no DOM. Built via the executor seam tests override.
     client = await asyncio.to_thread(ax._make_client, account_id)

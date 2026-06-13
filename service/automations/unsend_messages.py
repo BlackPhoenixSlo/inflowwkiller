@@ -160,7 +160,12 @@ async def _sweep_targets(account_id: str, policy: dict) -> list[dict]:
         operator sets `policy.media_hours` (revives V1's media auto-unsend).
 
     Scoped to the achievable per-chat path on purpose (see module docstring):
-    media beyond the 24h window / mass messages need an explicit `queue_id`."""
+    media beyond the 24h window / mass messages need an explicit `queue_id`.
+
+    MASS-broadcast rows (`mass_run_id` set) are excluded here: their per-recipient
+    bubbles carry synthetic optimistic ids (the 5e15-band placeholders) that 400 on
+    the per-chat endpoint, and a real mass blast must be unsent via the forever-window
+    queue endpoint (the `_sweep_mass_targets` path), not one recipient at a time."""
     text_hours = _pos_hours(policy.get("text_hours"), _DEFAULT_TEXT_HOURS)
     media_hours = _pos_hours(policy.get("media_hours"), None)  # None ⇒ skip media
     now = datetime.utcnow()
@@ -187,6 +192,7 @@ async def _sweep_targets(account_id: str, policy: dict) -> list[dict]:
                     Message.account_id == str(account_id),
                     Message.direction == "out",
                     Message.is_unsent.is_(False),
+                    Message.mass_run_id.is_(None),  # mass blasts → _sweep_mass_targets
                     Message.created_at >= window_floor,
                     or_(text_clause, media_clause),
                 )

@@ -162,18 +162,25 @@ class _Cand:
         self.last_human_out_at: datetime | None = None
 
 
-async def _gather(account_id: str) -> dict[int, _Cand]:
+async def _gather(account_id: str,
+                  fan_ids: set[int] | None = None) -> dict[int, _Cand]:
     """One pass over the account's messages → per-fan history PLUS the two
     timestamps the gates need: when the fan last spoke (SLA age) and when a
     HUMAN last sent (manual outbound = automation_kind IS NULL and not part of
-    a mass run — automations always tag automation_kind)."""
+    a mass run — automations always tag automation_kind).
+
+    When `fan_ids` is given (W7 fan-scoped dispatch), the scan is restricted to
+    those fans IN SQL so reacting to one inbound DM never reads the whole
+    account's message history. None/empty → the full-account sweep."""
     out: dict[int, _Cand] = {}
+    where = [Message.account_id == str(account_id), Message.is_unsent.is_(False)]
+    if fan_ids:
+        where.append(Message.fan_id.in_(fan_ids))
     async with get_session() as s:
         rows = (await s.execute(
             select(Message.fan_id, Message.direction, Message.body,
                    Message.created_at, Message.automation_kind, Message.mass_run_id)
-            .where(Message.account_id == str(account_id),
-                   Message.is_unsent.is_(False))
+            .where(*where)
             .order_by(Message.fan_id, Message.created_at, Message.message_id)
         )).all()
     for fan_id, direction, body, created_at, automation_kind, mass_run_id in rows:
@@ -967,9 +974,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     blacklist, skip_reasons = await _load_stop_lists(account_id)
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)
-    by_fan = await _gather(account_id)
-    if only_fan_ids:
-        by_fan = {fid: c for fid, c in by_fan.items() if fid in only_fan_ids}
+    by_fan = await _gather(account_id, only_fan_ids or None)
 
     client = await asyncio.to_thread(ax._make_client, account_id)
 
