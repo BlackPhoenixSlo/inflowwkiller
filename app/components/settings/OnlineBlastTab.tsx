@@ -183,13 +183,13 @@ export default function OnlineBlastTab() {
 
   async function runNow() {
     if (!rule) return;
-    setMsg(null);
+    setErr(null); setMsg(null);
     if (!confirm("Blast ONE broadcast to every fan online now?")) return;
     try {
       await runM.mutateAsync(rule.id);
       setMsg("✓ Broadcasting to all online fans now — appears in stats within ~30s.");
     } catch (e) {
-      setMsg(`Run failed: ${(e as Error)?.message || "unknown"}`);
+      setErr(`Run failed: ${(e as Error)?.message || "unknown"}`);
     }
   }
 

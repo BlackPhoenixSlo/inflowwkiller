@@ -33,37 +33,7 @@ import PaidMessagesTab from "@/components/messages/PaidMessagesTab";
 import TipsTab from "@/components/messages/TipsTab";
 import TopTippersCard from "@/components/messages/TopTippersCard";
 import { cn } from "@/lib/utils";
-
-function daysAgoISO(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
-}
-function todayISO(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
-}
-
-// Convert bare YYYY-MM-DD (picker output) → full UTC-instant ISO so the
-// backend's `_parse_date` resolves the day boundary in the user's local
-// zone. See app/app/stats/page.tsx for the same helper + rationale.
-function toLocalIso(date: string | null, end: boolean): string | null {
-  if (!date) return null;
-  if (date.includes("T")) return date;
-  const parts = date.split("-").map(Number);
-  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return date;
-  const [y, m, d] = parts;
-  const local = end
-    ? new Date(y, m - 1, d, 23, 59, 59, 999)
-    : new Date(y, m - 1, d, 0, 0, 0, 0);
-  return local.toISOString();
-}
+import { daysAgoISO, todayISO, toLocalIso } from "@/lib/dateRange";
 
 type Tab = "ppv" | "tips" | "all";
 

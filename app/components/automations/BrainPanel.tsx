@@ -108,8 +108,13 @@ export default function BrainPanel() {
   const rulesQ = useAutomationRules(accountId);
   const welcomeRule =
     rulesQ.data?.find((r) => r.kind === "send_welcome") ?? null;
-  const createRule = useCreateRule(accountId);
-  const updateRule = useUpdateRule(accountId);
+  // Separate mutation instances per section so each Save button's pending
+  // state reflects only its own write — saving welcome must not show the
+  // follow-up button as "Saving…" (and vice-versa).
+  const createWelcomeRule = useCreateRule(accountId);
+  const updateWelcomeRule = useUpdateRule(accountId);
+  const createFollowupRule = useCreateRule(accountId);
+  const updateFollowupRule = useUpdateRule(accountId);
   const previewM = useAutomationPreview();
 
   const [welcomeEnabled, setWelcomeEnabled] = useState(false);
@@ -180,7 +185,7 @@ export default function BrainPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [followupRule?.id, followupRule?.is_enabled, followupRule?.every_seconds, JSON.stringify(followupRule?.payload)]);
   // Seed once the config arrives. A blank account (never saved a brain) gets the
-  // Ava-derived defaults so it has a worked example to show, not an empty form;
+  // Lexi-derived defaults so it has a worked example to show, not an empty form;
   // an account with its own brain keeps it. Images are never seeded from defaults.
   useEffect(() => {
     if (form === null && cfgQ.data) {
@@ -252,13 +257,13 @@ export default function BrainPanel() {
     const every_seconds = Math.max(60, Math.round(welcomeMinutes * 60));
     try {
       if (welcomeRule) {
-        await updateRule.mutateAsync({
+        await updateWelcomeRule.mutateAsync({
           id: welcomeRule.id,
           every_seconds,
           is_enabled: welcomeEnabled,
         });
       } else {
-        await createRule.mutateAsync({
+        await createWelcomeRule.mutateAsync({
           account_id: accountId,
           kind: "send_welcome",
           name: "Welcome new subscribers",
@@ -287,7 +292,7 @@ export default function BrainPanel() {
     }
   }
 
-  const welcomeSaving = createRule.isPending || updateRule.isPending;
+  const welcomeSaving = createWelcomeRule.isPending || updateWelcomeRule.isPending;
 
   // Find-or-create the account's send_followup rule, writing the 3 step-delay
   // hours onto its payload.step_hours (merged over any existing payload knobs).
@@ -298,14 +303,14 @@ export default function BrainPanel() {
     const every_seconds = Math.max(60, Math.round(followupMinutes * 60));
     try {
       if (followupRule) {
-        await updateRule.mutateAsync({
+        await updateFollowupRule.mutateAsync({
           id: followupRule.id,
           every_seconds,
           is_enabled: followupEnabled,
           payload: { ...followupRule.payload, step_hours, with_image: followupWithImage },
         });
       } else {
-        await createRule.mutateAsync({
+        await createFollowupRule.mutateAsync({
           account_id: accountId,
           kind: "send_followup",
           name: "Follow up quiet fans",
@@ -335,7 +340,7 @@ export default function BrainPanel() {
     }
   }
 
-  const followupSaving = createRule.isPending || updateRule.isPending;
+  const followupSaving = createFollowupRule.isPending || updateFollowupRule.isPending;
   const STEP_LABELS = ["1st nudge after", "2nd nudge after", "3rd nudge after"];
 
   return (
@@ -428,7 +433,7 @@ export default function BrainPanel() {
               <Input
                 value={form.location ?? ""}
                 onChange={(e) => set("location", e.target.value)}
-                placeholder="e.g. Los Angeles"
+                placeholder="e.g. Vancouver Island"
               />
             </label>
             <label className="block space-y-1">

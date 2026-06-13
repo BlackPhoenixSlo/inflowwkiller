@@ -105,21 +105,30 @@ export function GifPickerStrip({
     return () => ctrl.abort();
   }, [debouncedSearch, accountId]);
 
+  // Route loadMore through the same abortRef the main fetch effect uses, so a
+  // query change (which aborts abortRef.current) also cancels an in-flight
+  // loadMore. Otherwise the stale page resolves and appends the OLD query's
+  // results onto the NEW query's first page.
   async function loadMore() {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     const ctx = { accountId };
     setLoading(true);
     try {
       const offset = items.length;
       const resp: GiphyResponse = debouncedSearch
-        ? await gifSearch(debouncedSearch, PAGE_SIZE, offset, ctx)
-        : await gifTrending(PAGE_SIZE, offset, ctx);
+        ? await gifSearch(debouncedSearch, PAGE_SIZE, offset, ctx, ctrl.signal)
+        : await gifTrending(PAGE_SIZE, offset, ctx, ctrl.signal);
+      if (ctrl.signal.aborted) return;
       setItems((prev) => [...prev, ...(resp.data || [])]);
       const total = resp.pagination?.total_count ?? 0;
       setHasMore((resp.data?.length ?? 0) >= PAGE_SIZE && offset + PAGE_SIZE < total);
     } catch (e) {
+      if (ctrl.signal.aborted) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (!ctrl.signal.aborted) setLoading(false);
     }
   }
 

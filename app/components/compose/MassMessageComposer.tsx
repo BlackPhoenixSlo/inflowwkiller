@@ -263,19 +263,15 @@ export function MassMessageComposer({
     });
   }
 
-  /** System-audience chips are tri-state: off → include → exclude → off.
-   *  Lets the user say "All fans BUT NOT Following" with one click each
-   *  instead of needing two parallel chip strips. */
+  /** System-audience chips toggle include-only: off → include → off.
+   *  Excluding a system audience is intentionally NOT offered: OF silently
+   *  ignores system audience names in `excludedLists` (see file header), so an
+   *  exclude state would be a no-op that misleads the user into a silent
+   *  over-send. Custom-list exclude (which OF honours) lives in its own column. */
   function cycleSystem(id: string) {
     if (includes.has(id)) {
-      // include → exclude
+      // include → off
       setIncludes((prev) => {
-        const next = new Set(prev); next.delete(id); return next;
-      });
-      setExcludes((prev) => new Set(prev).add(id));
-    } else if (excludes.has(id)) {
-      // exclude → off
-      setExcludes((prev) => {
         const next = new Set(prev); next.delete(id); return next;
       });
     } else {
@@ -829,9 +825,9 @@ export function MassMessageComposer({
             <div className="space-y-1.5">
               <div className="flex flex-wrap gap-1.5">
                 {SYSTEM_AUDIENCES.map((b) => {
-                  const state = includes.has(b.id)
-                    ? "in"
-                    : excludes.has(b.id) ? "ex" : "off";
+                  // Include-only: OF ignores system audiences in `excludedLists`,
+                  // so there is no "exclude" state to offer (see cycleSystem).
+                  const state = includes.has(b.id) ? "in" : "off";
                   return (
                     <SysChip
                       key={b.id}
@@ -843,8 +839,7 @@ export function MassMessageComposer({
                 })}
               </div>
               <div className="text-[10px] text-fg-dim">
-                Default: fans + following both included (click to change).
-                Cycle: off → +include → −exclude → off.
+                Default: fans + following both included (click to toggle).
               </div>
             </div>
             {!allModels && (
@@ -1102,30 +1097,26 @@ function NumField({
   );
 }
 
-/** Tri-state chip for system audiences: off / include (+) / exclude (−). */
+/** Toggle chip for system audiences: off / include (+). Exclude is not offered
+ *  because OF ignores system audience names in `excludedLists`. */
 function SysChip({
   state, onClick, label,
 }: {
-  state: "off" | "in" | "ex";
+  state: "off" | "in";
   onClick: () => void;
   label: string;
 }) {
   const stateStyles = {
     off: "bg-transparent text-fg-dim border-border hover:border-border-light",
     in:  "bg-accent/15 text-accent border-accent/30",
-    ex:  "bg-err/15 text-err border-err/30 line-through",
   };
-  const prefix = state === "in" ? "+ " : state === "ex" ? "− " : "";
-  const hint = state === "off"
-    ? "OF built-in"
-    : state === "in"
-      ? "included"
-      : "excluded";
+  const prefix = state === "in" ? "+ " : "";
+  const hint = state === "off" ? "OF built-in" : "included";
   return (
     <button
       type="button"
       onClick={onClick}
-      title="Click to cycle: off → include → exclude → off"
+      title="Click to toggle: off → include → off"
       className={
         "px-2 py-1 rounded-full border text-[11px] flex items-center gap-1.5 transition-colors " +
         stateStyles[state]

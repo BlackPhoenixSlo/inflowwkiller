@@ -555,6 +555,18 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
   const [cfg, setCfg] = useState<AiChatterConfig>({});
   useEffect(() => { setCfg(eff); }, [eff]);
 
+  // Persist only operator-touched keys: anything that still equals the server
+  // default is dropped so the stored config stays a SPARSE override and future
+  // default changes keep flowing through (see _load_config merge on the server).
+  const sparseCfg = useMemo<AiChatterConfig>(() => {
+    const d = (cfgQ.data?.defaults ?? {}) as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(cfg)) {
+      if (v !== d[k]) out[k] = v;
+    }
+    return out as AiChatterConfig;
+  }, [cfg, cfgQ.data]);
+
   // Texting-style opt-ins (girl voice / typos / non-native) — same
   // style_config_json store the Auto Convo tab + rule editor use.
   const styleQ = useStyleConfig(accountId);
@@ -680,7 +692,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
         </div>
         <div className="flex items-center gap-2">
           <Button size="sm" disabled={saveCfgM.isPending}
-            onClick={() => saveCfgM.mutate(cfg)}>
+            onClick={() => saveCfgM.mutate(sparseCfg)}>
             <Save size={14} className="mr-1" /> Save config
           </Button>
           {saveCfgM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}

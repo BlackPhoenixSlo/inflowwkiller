@@ -142,6 +142,12 @@ export default function PasteCurlCard() {
               `Session captured (account ${data.account_id}), but proxy attach failed:\n` +
               `${(err as Error).message}\n\nAttach manually under Setup → Proxies.`,
           });
+          // The account was created before the proxy step, so refresh the
+          // accounts/proxies/drift/health caches even on the proxy-failure path.
+          qc.invalidateQueries({ queryKey: ["accounts"] });
+          qc.invalidateQueries({ queryKey: ["proxies"] });
+          qc.invalidateQueries({ queryKey: ["drift"] });
+          qc.invalidateQueries({ queryKey: ["health-all"] });
           return;
         }
       }

@@ -227,7 +227,7 @@ export function Composer({
       if (effectivePreviewCount > 0) {
         args.previews = attached
           .slice(0, effectivePreviewCount)
-          .filter((m) => !m._claim && Number.isFinite(m.id) && m.id > 0)
+          .filter(canBeFreePreview)
           .map((m) => m.id);
       }
     }
@@ -389,11 +389,12 @@ export function Composer({
     // model (leading N tiles = free).
     setText(t.text);
     setAttached(templateMediaToVault(t));
-    if (t.price > 0) {
-      setPrice(String(t.price));
-      setLockText(t.lockedText);
-      setPriceOpen(true);
-    }
+    // Reset price wholesale — a free template (price 0) must clear any
+    // price the user already typed, or a "free" template would silently
+    // go out as a stale PPV (numericPrice > 0 is the sole paid signal).
+    setPrice(t.price > 0 ? String(t.price) : "");
+    setLockText(t.price > 0 ? t.lockedText : false);
+    setPriceOpen(t.price > 0);
     // Always lock previewCount to the template's count — 0 is a valid
     // "everything PPV-locked" state that must overwrite any prior value.
     previewCountTouchedRef.current = true;
@@ -411,12 +412,14 @@ export function Composer({
         return [...prev, ...additions];
       });
     }
+    // GIF state is part of the snapshot too: seed the template's GIF when
+    // it carries one, otherwise CLEAR any previously-picked GIF so a stale
+    // pick doesn't ride along on a non-GIF template's send.
     if (t.gifId) {
-      // GIF-only templates: seed the picked-GIF state so the GIF rides
-      // along on send. Replaces any previously-picked GIFs so the
-      // template's payload is what gets sent on Enter.
       const url = t.gifUrl ?? "";
       setPickedGifs([{ id: t.gifId, thumbUrl: url, fullUrl: url, title: t.title }]);
+    } else {
+      setPickedGifs([]);
     }
     setTimeout(() => textareaRef.current?.focus(), 0);
   }
@@ -600,7 +603,12 @@ export function Composer({
                 m.files?.preview?.url ||
                 null;
               const thumb = proxyImage(rawThumb, accountId);
-              const isFreeTile = idx < effectivePreviewCount;
+              // A tile only renders FREE if it's within the preview range
+              // AND would actually survive the `previews` filter on send. A
+              // still-uploading `_claim` tile is sent as media but cannot be
+              // referenced by id in `previews`, so OF locks it — showing FREE
+              // there would lie about what the fan sees. Render it as PPV.
+              const isFreeTile = idx < effectivePreviewCount && canBeFreePreview(m);
               const isDragging = reorder.draggingIndex === idx;
               const isDragOver = reorder.dragOverIndex === idx && !isDragging;
               const priceLabel = numericPrice != null && numericPrice > 0
@@ -992,6 +1000,16 @@ function describeSchedule(value: string): string {
   return `Queued for ${d.toLocaleString()}`;
 }
 
+
+/** Whether an attached tile can ride in the numeric `previews` array (the
+ *  free-teaser split). A freshly-uploaded item still transcoding carries a
+ *  `_claim` instead of a real vault id, so it CAN be sent as media but
+ *  CANNOT be referenced by id in `previews` — OF would lock it. Keeping the
+ *  send-time filter and the FREE-badge render in one predicate stops the UI
+ *  from promising a free teaser the wire layer silently drops. */
+function canBeFreePreview(m: VaultMedia): boolean {
+  return !m._claim && Number.isFinite(m.id) && m.id > 0;
+}
 
 /** Accept "5", "5.00", "5,50". Returns null on garbage so submit stays
  *  free of guard-clauses on every read. */

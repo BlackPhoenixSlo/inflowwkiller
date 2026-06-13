@@ -37,19 +37,15 @@ export default function EmployeePickerGate({ children }: { children: React.React
   const { chatter } = useChatter();
   const qc = useQueryClient();
 
-  // Chatter principal mode: the chatter IS the employee — the audit
-  // pipeline auto-resolves a per-owner Employee mirror on every
-  // mutating request. Skip the picker entirely so a chatter doesn't see
-  // the owner's roster (they're 403'd from /admin/employees anyway) and
-  // doesn't have to make a meaningless self-pick. User cookie wins when
-  // both are present — only short-circuit if no User is signed in.
-  if (chatter && !user) return <>{children}</>;
-
   // Fetch the roster. Refetched on window-focus is off globally; we
   // explicitly invalidate after create/disable mutations below.
   const query = useQuery<EmployeesResponse>({
     queryKey: ["employees", "all"],
     queryFn: () => relay.get<EmployeesResponse>("/admin/employees?include_disabled=true"),
+    // Chatter-principal mode (chatter && !user) short-circuits below without
+    // ever needing the roster, and chatters are 403'd from /admin/employees —
+    // so skip the fetch entirely unless a User is signed in.
+    enabled: !!user,
     // The picker is the very first thing rendered; we want a fast spinner,
     // not a 5-min stale guarantee. Override the global default here.
     staleTime: 0,
@@ -85,6 +81,20 @@ export default function EmployeePickerGate({ children }: { children: React.React
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [current, roster, pick]);
+
+  // Chatter principal mode: the chatter IS the employee — the audit
+  // pipeline auto-resolves a per-owner Employee mirror on every
+  // mutating request. Skip the picker entirely so a chatter doesn't see
+  // the owner's roster (they're 403'd from /admin/employees anyway) and
+  // doesn't have to make a meaningless self-pick. User cookie wins when
+  // both are present — only short-circuit if no User is signed in.
+  //
+  // This short-circuit MUST stay below all hook calls (useQuery + the two
+  // useEffects above): returning early before them would change the hook
+  // count between renders when `chatter`/`user` flip in-place, throwing
+  // "Rendered fewer/more hooks than the previous render" and unmounting
+  // the whole app (this gate wraps the entire tree).
+  if (chatter && !user) return <>{children}</>;
 
   // SSR / hydration: render nothing until we've checked localStorage.
   // Avoids a flicker of the picker on a page where you're already logged in.

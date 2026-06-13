@@ -155,17 +155,24 @@ export default function MassMessagesTab() {
     );
     if (!ok) return;
     setBulkRunning(actionKey);
+    let failed = 0;
     try {
       for (let i = 0; i < targets.length; i += BULK_CHUNK) {
         const chunk = targets.slice(i, i + BULK_CHUNK);
-        await Promise.allSettled(
+        const results = await Promise.allSettled(
           chunk.map((r) =>
             cancelM.mutateAsync({ id: r.id, accountId: r.__accountId! }),
           ),
         );
+        failed += results.filter((res) => res.status === "rejected").length;
       }
     } finally {
       setBulkRunning(null);
+    }
+    if (failed > 0) {
+      window.alert(
+        `${failed} of ${targets.length} unsend${targets.length === 1 ? "" : "s"} failed. Those broadcasts may still be live — refresh and retry.`,
+      );
     }
   }
 

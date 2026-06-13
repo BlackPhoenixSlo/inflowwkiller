@@ -60,9 +60,6 @@ export function PostComposer({ open, onClose }: { open: boolean; onClose: () => 
   const [text, setText] = useState("");
   const [attached, setAttached] = useState<VaultMedia[]>([]);
   const [price, setPrice] = useState<string>("");
-  // Leading N tiles ride along unlocked when price > 0 (matches OF's
-  // "first tile is the free teaser" convention on PPV posts).
-  const [previewCount, setPreviewCount] = useState<number>(0);
   const [schedule, setSchedule] = useState<string>("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -170,7 +167,6 @@ export function PostComposer({ open, onClose }: { open: boolean; onClose: () => 
     setText("");
     setAttached([]);
     setPrice("");
-    setPreviewCount(0);
     setSchedule("");
     setError(null);
     setProgress(null);
@@ -189,14 +185,13 @@ export function PostComposer({ open, onClose }: { open: boolean; onClose: () => 
   }
 
   function onPickTemplate(t: PickedTemplate) {
-    // Snapshot semantics — replace attachments and preview-count
-    // wholesale so the saved FREE-first ordering survives the pick.
+    // Snapshot semantics — replace attachments wholesale so the saved
+    // ordering survives the pick.
     setText(t.text);
     setAttached(templateMediaToVault(t));
     if (t.price > 0) {
       setPrice(String(t.price));
     }
-    setPreviewCount(t.previews.length);
     if (t.taggedUsers.length > 0) {
       setTaggedCreators((prev) => {
         const have = new Set(prev.map((c) => c.id));
@@ -209,18 +204,14 @@ export function PostComposer({ open, onClose }: { open: boolean; onClose: () => 
     setTimeout(() => textareaRef.current?.focus(), 0);
   }
 
-  // All-models broadcasts force free + no tags (per-model tag lists
-  // differ on OF — sending a tag that's only valid on one creator's
-  // friend-list 400s on the rest).
+  // All-models broadcasts force no tags (per-model tag lists differ on
+  // OF — sending a tag that's only valid on one creator's friend-list
+  // 400s on the rest).
   useEffect(() => {
     if (allModels) {
       setTaggedCreators([]);
-      setPreviewCount(0);
     }
   }, [allModels]);
-
-  // No auto-seed: 0 previews is a valid choice on paid posts. Use the ±
-  // stepper to opt into a leading free teaser when desired.
 
   if (!open) return null;
 
@@ -339,8 +330,6 @@ export function PostComposer({ open, onClose }: { open: boolean; onClose: () => 
               onChange={setAttached}
               onOpenVaultPicker={() => setPickerOpen(true)}
               price={price ? Number(price) || 0 : 0}
-              previewCount={previewCount}
-              onPreviewCountChange={setPreviewCount}
             />
           )}
 

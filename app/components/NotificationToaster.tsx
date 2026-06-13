@@ -298,7 +298,7 @@ function NotificationDeltaPoller() {
             customNickname: prev?.customNickname ?? null,
           }));
         }
-        const text = renderText(rawText, t.replacePairs as Record<string, string> | undefined);
+        const text = renderText(rawText, repl ?? (t.replacePairs as Record<string, string> | undefined));
         const createdMs = typeof t.createdAt === "string"
           ? Date.parse(t.createdAt) || Date.now()
           : Date.now();
@@ -318,7 +318,7 @@ function NotificationDeltaPoller() {
             avatar: user.avatar,
           },
           text: rawText,
-          replacePairs: t.replacePairs as Record<string, string> | undefined,
+          replacePairs: repl ?? (t.replacePairs as Record<string, string> | undefined),
           createdAt: new Date(createdMs).toISOString(),
         });
         dispatchNotifArrived();

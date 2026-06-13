@@ -109,6 +109,13 @@ export function MessageList(props: MessageListProps) {
   // (which pushes content down) can keep the user's eye anchored on the
   // same message instead of jumping back to the bottom.
   const preMergeScrollRef = useRef<{ height: number; top: number } | null>(null);
+  // Set true immediately before every programmatic `scrollTop = scrollHeight`
+  // write (the 60Hz pin poll + the media-load RAF repin). The `scroll` event
+  // those writes emit is indistinguishable from a user scroll, so the scroll
+  // release handler consumes this flag to ignore our own writes — letting
+  // genuine user scrolls (scrollbar-thumb drag, gutter click, momentum fling)
+  // release the auto-pin even though they emit no wheel/touchmove/keydown.
+  const programmaticScrollRef = useRef(false);
 
   // Capture scroll position BEFORE the next render commit.
   useLayoutEffect(() => {
@@ -182,7 +189,10 @@ export function MessageList(props: MessageListProps) {
       if (rafId != null) return;
       rafId = requestAnimationFrame(() => {
         rafId = null;
-        if (firstLoadPendingRef.current) c.scrollTop = c.scrollHeight;
+        if (firstLoadPendingRef.current) {
+          programmaticScrollRef.current = true;
+          c.scrollTop = c.scrollHeight;
+        }
       });
     };
     // Image/video load events don't bubble — use capture-phase listener.
@@ -198,11 +208,15 @@ export function MessageList(props: MessageListProps) {
         window.clearInterval(pollId);
         return;
       }
+      programmaticScrollRef.current = true;
       c.scrollTop = c.scrollHeight;
     }, 16);
-    // `scroll` events fire for programmatic scrollTop writes too, so we
-    // can't use them to detect intent — `wheel` / `touchmove` / `keydown`
-    // are user-only signals.
+    // `wheel` / `touchmove` / `keydown` are user-only signals that release
+    // the auto-pin immediately. They don't cover scrollbar-thumb drag,
+    // scrollbar-gutter clicks or momentum/inertial flings the browser
+    // dispatches only as `scroll` — those are handled by the guarded scroll
+    // path in onScroll below (which distinguishes our own pin writes from a
+    // real user scroll via programmaticScrollRef).
     const release = (e: Event) => {
       if (!e.isTrusted) return;
       firstLoadPendingRef.current = false;
@@ -215,9 +229,23 @@ export function MessageList(props: MessageListProps) {
     // bottom so we can surface the jump button when the user scrolls up.
     // Toggling via state is fine — the button only re-renders, not the
     // bubble list.
+    //
+    // Also doubles as a release signal for scroll-only gestures (scrollbar
+    // drag/gutter, momentum). Our own pin writes emit `scroll` too, but they
+    // set programmaticScrollRef just before the write — so we consume that
+    // flag and ignore them. A scroll that wasn't ours AND lands the user more
+    // than AT_BOTTOM_PX from the bottom is genuine intent → release the pin.
     const onScroll = () => {
       const distance = c.scrollHeight - c.scrollTop - c.clientHeight;
       setShowJumpLatest(distance > AT_BOTTOM_PX * 4);
+      if (programmaticScrollRef.current) {
+        programmaticScrollRef.current = false;
+        return;
+      }
+      if (firstLoadPendingRef.current && distance > AT_BOTTOM_PX) {
+        firstLoadPendingRef.current = false;
+        setAutoPinActive(false);
+      }
     };
     c.addEventListener("scroll", onScroll, { passive: true });
     return () => {

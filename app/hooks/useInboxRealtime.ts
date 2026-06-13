@@ -169,11 +169,27 @@ export function useInboxRealtime() {
       // Strategy: pluck the row from whatever page it's on, update it,
       // prepend to page 0. useChatList's flatten step dedupes by
       // (accountId, fanId) so any stale copy on a later page is ignored.
+      // `findAll({ queryKey: ["chats"] })` prefix-matches EVERY chats cache,
+      // but the full key is
+      //   ["chats", scope.kind, accountKey, filter, listId, query, limit].
+      // We must not inject a brand-new row into a filtered / folder / search
+      // view this fan may not belong to (pinned/priority/<folder>/<search>):
+      // the flatten step only de-dupes, it never re-applies the filter, so a
+      // bogus row would stay until that view's next refetch. So only patch a
+      // cache that ALREADY contains this fan's row (bump-to-top, always valid),
+      // and only synthesize a NEW row in the unfiltered key
+      // (filter==null && listId==null && query==null).
       type Page = { rows: OFChatItem[]; hasMore: boolean };
       type Infinite = { pages: Page[]; pageParams: unknown[] };
       qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
         const data = q.state.data as Infinite | undefined;
         if (!data?.pages?.length) return;
+
+        const filterKey = q.queryKey[3] ?? null;
+        const listIdKey = q.queryKey[4] ?? null;
+        const queryKeyText = q.queryKey[5] ?? null;
+        const isUnfiltered =
+          filterKey === null && listIdKey === null && queryKeyText === null;
 
         let existing: OFChatItem | null = null;
         const stripped: Page[] = data.pages.map((p) => ({
@@ -185,6 +201,12 @@ export function useInboxRealtime() {
             return false;
           }),
         }));
+
+        // Filtered/folder/search cache that doesn't already hold this fan:
+        // skip it. We can't know whether the fan satisfies the filter, so
+        // leave it to that view's next refetch rather than inject a row it
+        // may not match.
+        if (!existing && !isUnfiltered) return;
 
         const base: OFChatItem = existing ?? ({
           __accountId: accountId,

@@ -192,10 +192,20 @@ export function FanDrawer({
   const [nickname, setNickname] = useState("");
   const [notes, setNotes] = useState("");
   const [tagsInput, setTagsInput] = useState("");
+  // Media lightbox lives at the drawer level (not inside PpvSalesSection)
+  // so the drawer's Esc handler can tell when a higher overlay is open and
+  // yield to it — Esc should collapse one layer at a time, not nuke both.
+  const [lightbox, setLightbox] = useState<LightboxMedia | null>(null);
   // The values we last pushed into the form mirrors. A field is "dirty" (being
   // edited) when its current value no longer equals what we applied — in that
   // case a fresh OF value must NOT overwrite it.
   const appliedRef = useRef({ nick: "", notes: "", tags: "" });
+  // The OF write-through (custom name / private note) is fire-and-forget and
+  // hits a different backend than the local PATCH. When it rejects the local
+  // mirror still updates, so without this the panel shows a value OF never
+  // accepted and silently reverts on the next ~30s of-user refetch. Surface
+  // the failure so the operator knows the OF sync didn't stick.
+  const [ofWriteError, setOfWriteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!fan) return;
@@ -212,13 +222,15 @@ export function FanDrawer({
   }, [fan, effectiveNickname, effectiveNotes]);
 
   // Esc closes the OVERLAY drawer only; in pinned mode it's a real
-  // sibling column, so Esc shouldn't kill it.
+  // sibling column, so Esc shouldn't kill it. While the media lightbox is
+  // open it owns Esc (collapse one layer at a time) — the drawer registers
+  // no listener, so a single Esc only closes the lightbox, not the drawer.
   useEffect(() => {
-    if (!open || pinned) return;
+    if (!open || pinned || lightbox) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose, pinned]);
+  }, [open, onClose, pinned, lightbox]);
 
   if (!open) return null;
 
@@ -316,10 +328,14 @@ export function FanDrawer({
                   onBlur={() => {
                     const next = nickname.trim();
                     if (next === effectiveNickname.trim()) return;
+                    setOfWriteError(null);
                     update.mutate({ custom_nickname: next || null });
-                    void writeOFCustomName(accountId, fanId, next).catch((err) =>
-                      console.warn("[fan-drawer] OF custom-name write failed", err),
-                    );
+                    void writeOFCustomName(accountId, fanId, next).catch((err) => {
+                      console.warn("[fan-drawer] OF custom-name write failed", err);
+                      setOfWriteError(
+                        "Saved locally, but OnlyFans rejected the nickname change — it may revert on the next sync.",
+                      );
+                    });
                   }}
                   placeholder={chat.withUser.name ?? fan.of_display_name ?? ""}
                   className="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-sm focus:outline-none focus:border-accent"
@@ -332,10 +348,14 @@ export function FanDrawer({
                   onChange={(e) => setNotes(e.target.value)}
                   onBlur={() => {
                     if (notes === effectiveNotes) return;
+                    setOfWriteError(null);
                     update.mutate({ notes: notes || null });
-                    void writeOFNotice(accountId, fanId, notes).catch((err) =>
-                      console.warn("[fan-drawer] OF notice write failed", err),
-                    );
+                    void writeOFNotice(accountId, fanId, notes).catch((err) => {
+                      console.warn("[fan-drawer] OF notice write failed", err);
+                      setOfWriteError(
+                        "Saved locally, but OnlyFans rejected the note change — it may revert on the next sync.",
+                      );
+                    });
                   }}
                   rows={6}
                   placeholder="loves bondage, German, paid $500 last week…"
@@ -443,6 +463,7 @@ export function FanDrawer({
                   }
                 }}
                 onRefresh={refreshChatMedia}
+                onOpenMedia={setLightbox}
                 serverFetching={
                   ppvHistoryQ.isFetching || chatMediaQ.isFetchingNextPage
                 }
@@ -460,9 +481,15 @@ export function FanDrawer({
                   {(update.error as Error).message || "save failed"}
                 </div>
               )}
+              {ofWriteError && (
+                <div className="text-err text-xs">{ofWriteError}</div>
+              )}
             </>
           )}
         </div>
+        {lightbox && (
+          <MediaLightbox media={lightbox} onClose={() => setLightbox(null)} />
+        )}
       </aside>
   );
 
@@ -578,7 +605,7 @@ function PpvSalesSection({
   items, loading,
   chatMedia, chatMediaLoading, chatMediaFetching, chatMediaUpdatedAt,
   accountId,
-  salesLimit, onLoadMore, onRefresh, serverFetching,
+  salesLimit, onLoadMore, onRefresh, onOpenMedia, serverFetching,
 }: {
   items: PpvHistoryItem[];
   loading: boolean;
@@ -599,6 +626,9 @@ function PpvSalesSection({
   /** Invalidates the chat-media cache and refetches both purchased +
    *  unsold filter modes. Wired to the ↻ button next to "Sales". */
   onRefresh: () => void;
+  /** Opens a media tile in the drawer-level lightbox. Lifted to the
+   *  drawer so its Esc handler can yield to the open lightbox. */
+  onOpenMedia: (m: LightboxMedia) => void;
   /** True while either upstream is mid-refetch — used to disable the
    *  Load-more button so a fast double-click doesn't queue two bumps. */
   serverFetching: boolean;
@@ -611,7 +641,6 @@ function PpvSalesSection({
 
   const [showAll, setShowAll] = useState(false);
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set());
-  const [lightbox, setLightbox] = useState<LightboxMedia | null>(null);
 
   // Delay the "loading media…" text by 300ms so cached data — which resolves
   // almost instantly — renders its timestamp directly instead of flashing the
@@ -680,7 +709,7 @@ function PpvSalesSection({
               accountId={accountId}
               expanded={expandedKeys.has(row.key)}
               onToggle={() => toggleExpanded(row.key)}
-              onOpenMedia={(m) => setLightbox(m)}
+              onOpenMedia={onOpenMedia}
             />
           ))}
           {/* Show-more lives at the BOTTOM — newest-first feed pattern,
@@ -722,9 +751,6 @@ function PpvSalesSection({
             </button>
           )}
         </div>
-      )}
-      {lightbox && (
-        <MediaLightbox media={lightbox} onClose={() => setLightbox(null)} />
       )}
     </div>
   );

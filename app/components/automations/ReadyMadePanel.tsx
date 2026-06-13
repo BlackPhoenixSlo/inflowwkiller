@@ -54,7 +54,7 @@ type RuleKind = "auto_posts" | "mass_premade";
 
 const TABS: Array<{ key: Tab; label: string }> = [
   { key: "auto_posts", label: "🗓️ Auto Posts" },
-  { key: "mass_premade", label: "♻️ Premade Mass" },
+  { key: "mass_premade", label: "♻️ Mass Premade" },
   { key: "mass_funnels", label: "🎯 Mass funnels" },
   { key: "nudge_online", label: "👋 Nudge Online" },
   { key: "mass_nudge", label: "📣 Mass Nudge" },
