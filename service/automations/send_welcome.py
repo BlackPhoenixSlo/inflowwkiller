@@ -57,8 +57,8 @@ import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from automation_registry import register
-from ._common import (apply_word_restriction, name_token, resolve_model,
-                      skip_unreachable_fan)
+from ._common import (apply_word_restriction, load_strip_emojis, name_token,
+                      resolve_model, skip_unreachable_fan, strip_emojis)
 from db.engine import get_session
 from db.models import AccountAiConfig, Fan, FanProfile, WelcomeSent
 from llm_client import LLMCapExceeded
@@ -479,6 +479,7 @@ async def preview_compose(
     and free. The image is the account's configured per-slot vault id for the
     current hour (`time_images`), or None — no vault network call here."""
     cfg = await _load_ai_config(account_id)
+    strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     hour = _model_hour(cfg.get("utc_offset"))
 
     if fan_id is not None:
@@ -497,6 +498,8 @@ async def preview_compose(
         text = await _generate_welcome(account_id, int(fan_id or 0), sub, cfg, model)
 
     text = apply_word_restriction(text)
+    if strip_emoji_on:
+        text = strip_emojis(text)
     return {"text": text, "image": _slot_image_id(cfg, hour),
             "name": name, "slot": _slot_key(hour)}
 
@@ -512,6 +515,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     max_welcomes = int(payload.get("max_welcomes") or _DEFAULT_MAX_WELCOMES)
 
     cfg = await _load_ai_config(account_id)
+    strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     model = await resolve_model(account_id, "welcome", payload.get("model"))
 
     client = await asyncio.to_thread(ax._make_client, account_id)
@@ -603,6 +607,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # apply_word_restriction on EVERY welcome). Covers both the local
             # template and the LLM riff.
             text = apply_word_restriction(text)
+            if strip_emoji_on:
+                text = strip_emojis(text)
 
             if dry_run:
                 sent += 1  # would-send; do NOT mark welcome_sent on a dry run

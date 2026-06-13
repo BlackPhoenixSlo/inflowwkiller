@@ -22,6 +22,8 @@ export interface StyleConfig {
   autoreply?: boolean;
   deep_convo?: boolean;
   ai_chatter?: boolean;
+  // account-wide (not per-automation): strip every emoji at send time
+  strip_emojis?: boolean;
   // independent thumb-typo injector toggle, per automation
   typos_of_ai_chat?: boolean;
   typos_autoreply?: boolean;

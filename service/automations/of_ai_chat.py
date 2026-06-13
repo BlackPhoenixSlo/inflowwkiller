@@ -72,14 +72,15 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from ._common import (
-    ONPLATFORM_GUARDRAIL, guard_offplatform,
+    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, guard_offplatform,
     STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style, apply_word_restriction,
     build_facts_note, build_structured_nickname, coerce_ids, facts_from_fan,
-    hold_with_typing, humanize_typos, load_nonnative_flags, load_style_flags,
+    hold_with_typing, humanize_typos, load_nonnative_flags, load_strip_emojis,
+    load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
-    skip_unreachable_fan, typing_delay_seconds,
+    skip_unreachable_fan, strip_emojis, typing_delay_seconds,
 )
 from . import gen_info  # profile_is_stale() — the refresh-if-stale hook below
 
@@ -839,7 +840,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "back to getting to know him. Warm and flirty, never cold or preachy.\n"
         "- GOOD: \"haha thanks 😏 what should i call u?\" / \"aww how old are ya\" / "
         "\"a chef? bet u cook fire, fave dish?\"\n\n"
-        f"{ONPLATFORM_GUARDRAIL}"
+        f"{ONPLATFORM_GUARDRAIL}\n\n"
+        f"{LIVE_PROOF_GUARDRAIL}"
         f"{humanizer}{nonnative}\n\n"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
     )
@@ -1085,6 +1087,9 @@ async def _maybe_refresh_profile(account_id: str, fan_id: int, fan_msg_n: int,
                 .where(FanProfile.account_id == str(account_id),
                        FanProfile.fan_id == int(fan_id))
             )).first()
+            # Spend-tier the cadence (same session): paying fans refresh faster.
+            fresh_after, volume_cap = await gen_info.fan_cadence_knobs(
+                s, account_id, fan_id, now)
         prev_count = int(row[0]) if row else None
         last_gen_at = row[1] if row else None
         # Refill openers too when a whole Q/Tease class has been consumed (all null)
@@ -1095,7 +1100,8 @@ async def _maybe_refresh_profile(account_id: str, fan_id: int, fan_msg_n: int,
             tease_empty = not any((v or "").strip() for v in (row[5], row[6], row[7]))
             lines_empty = q_empty or tease_empty
         if not gen_info.profile_is_stale(prev_count, last_gen_at, fan_msg_n, now,
-                                         lines_empty=lines_empty):
+                                         lines_empty=lines_empty,
+                                         fresh_after=fresh_after, volume_cap=volume_cap):
             return False
         await ax.enqueue_job(account_id, "gen_info",
                              payload={"force_ids": [int(fan_id)]})
@@ -1162,6 +1168,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
+    strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     persona = await _load_persona(account_id)
     blacklist, skip_list = await _load_stop_lists(account_id)
@@ -1347,6 +1354,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # still hits 30 and graduates to deep_convo instead of looping for ever.
             if not dry_run:
                 await _bump_attempt(account_id, fan_id, now)
+            # Account-wide emoji strip (opt-in): remove emojis BEFORE the split so
+            # the emoji-aware bubble logic simply never fires. The `if p.strip()`
+            # filter below still drops any bubble left empty by the strip.
+            if strip_emoji_on:
+                raw = strip_emojis(raw)
             # Up to `max_bubbles` bubbles (newline / em-dash / mid-emoji); em-dashes
             # are always cleaned out. Cap (2, or 3 with the style opt-in) so we
             # never spam.

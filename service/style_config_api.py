@@ -41,6 +41,8 @@ def _defaults() -> dict[str, bool]:
     out = {k: False for k in STYLE_AUTOMATIONS}
     out.update({typo_flag_key(k): False for k in STYLE_AUTOMATIONS})
     out.update({nonnative_flag_key(k): False for k in STYLE_AUTOMATIONS})
+    # Account-wide (not per-automation): strip every emoji at the send chokepoint.
+    out["strip_emojis"] = False
     return out
 
 
@@ -54,6 +56,7 @@ def _validate(cfg: dict) -> dict[str, bool]:
                 for k in STYLE_AUTOMATIONS})
     out.update({nonnative_flag_key(k): bool(cfg.get(nonnative_flag_key(k)))
                 for k in STYLE_AUTOMATIONS})
+    out["strip_emojis"] = bool(cfg.get("strip_emojis"))  # account-wide emoji strip
     return out
 
 

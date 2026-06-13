@@ -22,10 +22,15 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Bot, FolderOpen, Play, Plus, Save, Trash2, X } from "lucide-react";
+import { BookOpen, Bot, ChevronDown, FolderOpen, Image as ImageIcon, Play, Plus, Save, Trash2, X } from "lucide-react";
 
 import { Badge, Button, Card, Textarea } from "@/components/ui/primitives";
 import { VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
+import { VaultPicker } from "@/components/chat/VaultPicker";
+import { MediaPreviewModal } from "@/components/settings/MediaPreviewModal";
+import { MediaCacheProvider, useMediaCache } from "@/hooks/useMediaCache";
+import { proxyImage, type VaultMedia } from "@/lib/relay";
+import { cn } from "@/lib/utils";
 import { useSaveStyleConfig, useStyleConfig } from "@/hooks/useStyleConfig";
 import {
   useAiChatterConfig, useAiChatterSessions, useCancelOffer, useCatalogScripts,
@@ -41,13 +46,78 @@ const TD = "px-2 py-1 align-top";
 
 const dollars = (cents: number) => Math.round((cents || 0) / 100);
 
+function thumbUrl(m: VaultMedia | undefined, accountId: string | null): string | null {
+  const raw = m?.files?.thumb?.url || m?.files?.squarePreview?.url || m?.files?.preview?.url || null;
+  return raw ? proxyImage(raw, accountId) : null;
+}
+
+/** One vault-id square. Resolves to a thumbnail once the shared cache has the
+ *  media (picked-from-vault or paged in); until then it's a compact id chip.
+ *  `selectable` turns it into a preview toggle (PREVIEW cell). */
+function MediaThumb({ id, accountId, size = 36, dim, selected, onClick }: {
+  id: number;
+  accountId: string | null;
+  size?: number;
+  /** Render at reduced opacity (preview toggle, unselected). */
+  dim?: boolean;
+  /** Accent ring (preview toggle, selected). */
+  selected?: boolean;
+  onClick?: (m: VaultMedia | undefined) => void;
+}) {
+  const cache = useMediaCache();
+  const media = cache.get(id);
+  const url = thumbUrl(media, accountId);
+  const isVideo = media?.type === "video";
+  const style = { width: size, height: size };
+  const ring = selected ? "ring-2 ring-accent border-accent" : "border-border";
+  if (!url) {
+    return (
+      <button type="button" style={style} title={`vault ${id}`}
+        onClick={() => onClick?.(media)}
+        className={cn("grid place-items-center rounded border bg-bg-elev-1 text-[8px] text-fg-dim overflow-hidden",
+          ring, dim && "opacity-40")}>
+        {String(id).slice(-4)}
+      </button>
+    );
+  }
+  return (
+    <button type="button" style={style} title={`vault ${id}${isVideo ? " · video" : ""}`}
+      onClick={() => onClick?.(media)}
+      className={cn("relative rounded overflow-hidden border hover:border-accent",
+        ring, dim && "opacity-40")}>
+      <img src={url} alt="" className="w-full h-full object-cover" />
+      {isVideo && (
+        <span className="absolute inset-0 grid place-items-center bg-black/25 text-white text-[10px]">▶</span>
+      )}
+    </button>
+  );
+}
+
 /* ── per-item editable row ─────────────────────────────────────────── */
 
-function ItemRow({ it, onChange, onRemove }: {
+function ItemRow({ it, accountId, onChange, onRemove, onPickMedia, onPreview }: {
   it: CatalogItemT;
+  accountId: string | null;
   onChange: (patch: Partial<CatalogItemT>) => void;
   onRemove: () => void;
+  onPickMedia: () => void;
+  onPreview: (m: VaultMedia) => void;
 }) {
+  const { request } = useMediaCache();
+  useEffect(() => {
+    if (it.media_ids.length) request(it.media_ids);
+  }, [it.media_ids, request]);
+
+  // Setting media also prunes any preview that is no longer in the set, so
+  // preview_media_ids stays a valid subset by construction.
+  const setMedia = (ids: number[]) =>
+    onChange({ media_ids: ids, preview_media_ids: it.preview_media_ids.filter((p) => ids.includes(p)) });
+  const togglePreview = (id: number) =>
+    onChange({ preview_media_ids: it.preview_media_ids.includes(id)
+      ? it.preview_media_ids.filter((p) => p !== id)
+      : [...it.preview_media_ids, id] });
+  const allUnlocked = it.media_ids.length > 0
+    && it.media_ids.every((id) => it.preview_media_ids.includes(id));
   return (
     <tr className="border-t border-border/60">
       <td className={TD}>
@@ -70,26 +140,52 @@ function ItemRow({ it, onChange, onRemove }: {
           onChange={(e) => onChange({ description_for_ai: e.target.value })} />
       </td>
       <td className={TD}>
-        <input className={`${INPUT} w-28`}
-          value={it.media_ids.join(",")}
-          placeholder="vault ids"
-          onChange={(e) => onChange({
-            media_ids: e.target.value.split(",").map((x) => parseInt(x.trim(), 10))
-              .filter((n) => Number.isFinite(n)),
-          })} />
-        {it.media_ids.length === 0 && (
-          <div className="text-[10px] text-amber-400 mt-0.5">no media → not offerable</div>
-        )}
+        <div className="space-y-1">
+          {it.media_ids.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {it.media_ids.map((id) => (
+                <MediaThumb key={id} id={id} accountId={accountId}
+                  onClick={(m) => m && onPreview(m)} />
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-1">
+            <input className={`${INPUT} w-28`}
+              value={it.media_ids.join(",")}
+              placeholder="vault ids"
+              onChange={(e) => setMedia(
+                e.target.value.split(",").map((x) => parseInt(x.trim(), 10))
+                  .filter((n) => Number.isFinite(n)),
+              )} />
+            <button type="button" onClick={onPickMedia} title="Pick from vault"
+              className="text-fg-dim hover:text-accent p-1 rounded border border-border hover:border-accent">
+              <ImageIcon size={14} />
+            </button>
+          </div>
+          {it.media_ids.length === 0 && (
+            <div className="text-[10px] text-amber-400">no media → not offerable</div>
+          )}
+        </div>
       </td>
       <td className={TD}>
-        <input className={`${INPUT} w-24`}
-          value={it.preview_media_ids.join(",")}
-          placeholder="free frames"
-          title="Media ids (subset of media) sent UNLOCKED as the free teaser on a PPV send"
-          onChange={(e) => onChange({
-            preview_media_ids: e.target.value.split(",").map((x) => parseInt(x.trim(), 10))
-              .filter((n) => Number.isFinite(n)),
-          })} />
+        {it.media_ids.length === 0 ? (
+          <span className="text-[10px] text-fg-dim">pick media first</span>
+        ) : (
+          <div className="space-y-1"
+            title="Tap a media to send it UNLOCKED as the free teaser on a PPV (subset of media)">
+            <div className="flex flex-wrap gap-1">
+              {it.media_ids.map((id) => (
+                <MediaThumb key={id} id={id} accountId={accountId} size={28}
+                  selected={it.preview_media_ids.includes(id)}
+                  dim={!it.preview_media_ids.includes(id)}
+                  onClick={() => togglePreview(id)} />
+              ))}
+            </div>
+            {allUnlocked && (
+              <div className="text-[10px] text-amber-400">all media unlocked → fan pays for nothing</div>
+            )}
+          </div>
+        )}
       </td>
       <td className={TD}>
         <input type="number" className={`${INPUT} w-16`} min={0}
@@ -118,31 +214,61 @@ function ItemRow({ it, onChange, onRemove }: {
   );
 }
 
-function ItemsTable({ items, setItems }: {
+function ItemsTable({ items, setItems, accountId }: {
   items: CatalogItemT[];
   setItems: (items: CatalogItemT[]) => void;
+  accountId: string | null;
 }) {
+  const { prime } = useMediaCache();
+  // Which row is picking media (single shared VaultPicker) + the lightbox.
+  const [pickRow, setPickRow] = useState<number | null>(null);
+  const [preview, setPreview] = useState<VaultMedia | null>(null);
+
   const patch = (i: number, p: Partial<CatalogItemT>) =>
     setItems(items.map((x, j) => (j === i ? { ...x, ...p } : x)));
   return (
-    <table className="w-full text-sm">
-      <thead>
-        <tr>
-          <th className={TH}>kind</th><th className={TH}>label</th>
-          <th className={TH}>what the fan sees</th><th className={TH}>media</th>
-          <th className={TH}>previews</th>
-          <th className={TH}>tip $</th><th className={TH}>ppv $</th>
-          <th className={TH}>free</th><th className={TH}>sold</th><th className={TH} />
-        </tr>
-      </thead>
-      <tbody>
-        {items.map((it, i) => (
-          <ItemRow key={it.id ?? `new-${i}`} it={it}
-            onChange={(p) => patch(i, p)}
-            onRemove={() => setItems(items.filter((_, j) => j !== i))} />
-        ))}
-      </tbody>
-    </table>
+    <>
+      <table className="w-full text-sm">
+        <thead>
+          <tr>
+            <th className={TH}>kind</th><th className={TH}>label</th>
+            <th className={TH}>what the fan sees</th><th className={TH}>media</th>
+            <th className={TH}>previews</th>
+            <th className={TH}>tip $</th><th className={TH}>ppv $</th>
+            <th className={TH}>free</th><th className={TH}>sold</th><th className={TH} />
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((it, i) => (
+            <ItemRow key={it.id ?? `new-${i}`} it={it} accountId={accountId}
+              onChange={(p) => patch(i, p)}
+              onRemove={() => setItems(items.filter((_, j) => j !== i))}
+              onPickMedia={() => setPickRow(i)}
+              onPreview={(m) => setPreview(m)} />
+          ))}
+        </tbody>
+      </table>
+
+      <VaultPicker open={pickRow !== null} onClose={() => setPickRow(null)}
+        accountId={accountId}
+        initialSelectedIds={pickRow !== null ? items[pickRow]?.media_ids ?? [] : []}
+        onConfirm={(picked) => {
+          if (pickRow !== null) {
+            const ids = picked.map((m) => m.id);
+            prime(picked);
+            patch(pickRow, {
+              media_ids: ids,
+              preview_media_ids: (items[pickRow]?.preview_media_ids ?? []).filter((p) => ids.includes(p)),
+            });
+          }
+          setPickRow(null);
+        }} />
+
+      {preview && (
+        <MediaPreviewModal media={preview} accountId={accountId}
+          onClose={() => setPreview(null)} />
+      )}
+    </>
   );
 }
 
@@ -221,7 +347,7 @@ function ScriptCard({ accountId, sc }: { accountId: string; sc: CatalogScriptT }
         </div>
       )}
 
-      <ItemsTable items={items} setItems={setItems} />
+      <ItemsTable items={items} setItems={setItems} accountId={accountId} />
 
       <div className="flex items-center gap-2 flex-wrap">
         <Button size="sm" variant="ghost"
@@ -251,6 +377,159 @@ function ScriptCard({ accountId, sc }: { accountId: string; sc: CatalogScriptT }
           setPickerOpen(false);
           if (names[0]) importM.mutate({ scriptId: sc.id, folder: names[0] });
         }} />
+    </Card>
+  );
+}
+
+/* ── how-to guide (read-only, for the whole team) ──────────────────── */
+
+function GuideCard() {
+  const [open, setOpen] = useState(false);
+  const H = "text-sm font-medium text-fg";
+  const P = "text-sm text-fg-dim leading-relaxed";
+  const LI = "text-sm text-fg-dim leading-relaxed";
+  const B = ({ children }: { children: React.ReactNode }) =>
+    <span className="text-fg font-medium">{children}</span>;
+  return (
+    <Card className="p-4">
+      <button type="button" onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 w-full text-left">
+        <BookOpen size={16} className="text-accent" />
+        <h3 className="text-sm font-medium flex-1">How the AI Seller works — read me</h3>
+        <ChevronDown size={16}
+          className={cn("text-fg-dim transition-transform", open && "rotate-180")} />
+      </button>
+
+      {open && (
+        <div className="mt-4 space-y-5 border-t border-border pt-4">
+          <div className="space-y-1.5">
+            <p className={P}>
+              The AI Seller chats <B>as the model</B> and sells your already-filmed
+              content. It may <B>only ever claim what you type in “What the fan sees”</B> —
+              it never invents content, lengths, prices, or customs. Everything below is
+              just data you give it; the bot does the talking.
+            </p>
+          </div>
+
+          {/* columns */}
+          <div className="space-y-1.5">
+            <h4 className={H}>The columns on every row</h4>
+            <ul className="list-disc pl-5 space-y-1">
+              <li className={LI}><B>Kind</B> — video / image / image set. Just a label for how the
+                AI describes the piece. <B>It does not change the send</B> — “image set” of 5 photos
+                = one message with 5 attachments, the fan pays once to unlock all. Nothing is stitched
+                or merged.</li>
+              <li className={LI}><B>Label</B> — your internal name (e.g. “ASS TEASE”). The fan never sees it.</li>
+              <li className={LI}><B>What the fan sees</B> — the pitch contract. Present tense, only what’s
+                truly in the media. This is also the <B>matching key</B>: when a fan asks for something,
+                the AI picks the piece whose description fits best — so write sharp, distinct descriptions.</li>
+              <li className={LI}><B>Media</B> — the vault content delivered. Click the <ImageIcon size={12} className="inline -mt-0.5" /> button
+                to <B>pick from the vault</B> (or paste vault ids). Thumbnails show what you attached —
+                click one to preview it full-screen. <span className="text-amber-400">No media = not offerable.</span></li>
+              <li className={LI}><B>Previews</B> — tap the thumbnails to mark which media go out <B>unlocked</B>
+                as the free teaser on a PPV (see below).</li>
+              <li className={LI}><B>Tip $ / PPV $</B> — the two ways to sell it (see below).</li>
+              <li className={LI}><B>Free</B> — the whole piece goes out free (no paywall), a treat the bot
+                sends when the fan is sweet.</li>
+              <li className={LI}><B>Sold</B> — delivered / offered counts.</li>
+            </ul>
+          </div>
+
+          {/* tip vs ppv */}
+          <div className="space-y-1.5">
+            <h4 className={H}>Tip $ vs PPV $ — two ways to sell the same piece</h4>
+            <ul className="list-disc pl-5 space-y-1">
+              <li className={LI}><B>PPV $</B> — a locked paid message. The media is paywalled in the DM; the
+                fan pays exactly that to unlock. The standard “pay to view”.</li>
+              <li className={LI}><B>Tip $</B> — tip-to-unlock. The bot says “tip me $X and I’ll send it 😏”;
+                once the fan tips that amount, it delivers. Softer, flirtier.</li>
+            </ul>
+            <p className={P}>
+              The <B>Offer mode</B> dropdown up top (tip / PPV / both) decides which rail is used. Set both
+              prices for “tip or pay”, or leave one at 0 to use only the other. A piece with <B>no price
+              and not Free</B> can’t be offered.
+            </p>
+          </div>
+
+          {/* previews */}
+          <div className="space-y-1.5">
+            <h4 className={H}>Previews (free frames) — the free peek on a PPV</h4>
+            <p className={P}>
+              A preview is a media item sent <B>unlocked</B> next to a locked PPV — the free taste. It must
+              be one of the row’s own media (that’s why you tap to toggle them).
+            </p>
+            <ul className="list-disc pl-5 space-y-1">
+              <li className={LI}><B>Set of several</B> → mark 1 as the preview: the fan sees that one free,
+                pays to unlock the rest. ✅</li>
+              <li className={LI}><B>One image, with a teaser copy</B> → attach the real photo + a blurred/cropped
+                teaser copy as two media, mark the teaser copy as the preview. ✅</li>
+              <li className={LI}><span className="text-amber-400">One image, marked as its own preview</span> → the
+                whole thing goes out free and there’s nothing left locked. The row warns “all media unlocked →
+                fan pays for nothing.” For a single image with no teaser copy, leave previews empty. ❌</li>
+            </ul>
+          </div>
+
+          {/* scripts vs singles */}
+          <div className="space-y-1.5">
+            <h4 className={H}>Scripts vs Singles — how the bot chooses what to offer</h4>
+            <ul className="list-disc pl-5 space-y-1">
+              <li className={LI}><B>Singles</B> = a flat pool. Every unseen single is available at once, and the AI
+                picks the <B>best-fitting one by its description</B>. This is what lets a fan “ask for the red set”
+                and get it. Flexible, no fixed order.</li>
+              <li className={LI}><B>Scripts</B> = an <B>ordered ladder</B>. The bot offers the items in position order
+                (#1 → #2 → #3) and <B>ignores what the fan asks</B>; each unlock advances to the next. One script runs
+                per fan at a time. Use it for a planned escalation, not for “pick one of these”.</li>
+            </ul>
+            <p className={P}>
+              Already-sent pieces drop out automatically — the bot never re-offers the same media to the same fan.
+            </p>
+          </div>
+
+          {/* color branch recipe */}
+          <div className="space-y-1.5">
+            <h4 className={H}>Recipe: “I have 3 colors — pick one, then I sell more of that color”</h4>
+            <p className={P}>
+              A <B>single script can’t branch</B> on the fan’s choice (it just walks in order). To get
+              “pick a color → reveal it → upsell that color”, build it like this:
+            </p>
+            <ul className="list-disc pl-5 space-y-1">
+              <li className={LI}>The “which color do you want?” tease = a <B>Free single</B> (or just let the
+                persona say it). <B>Don’t</B> make it a script step — that would lock in a color too early.</li>
+              <li className={LI}>One <B>script per color</B> (Red / Black / White). Each script’s <B>first item</B>
+                is the free dressing reveal of that color; the rest are the paid variations, in sell order.</li>
+            </ul>
+            <p className={P}>
+              At the start, all three reveals are on offer; the fan says “red”, the AI picks the red reveal by its
+              description and sends it — which <B>pins the fan to the Red script</B>, so from then on it sells the red
+              variations in order and the other colors stay hidden. Works only if each color’s description is clearly
+              distinct (“red lace” vs “black mesh” vs “white sheer”), and it’s the AI matching your words, not a hard
+              rule — so write the descriptions carefully.
+            </p>
+          </div>
+
+          {/* import vs pick */}
+          <div className="space-y-1.5">
+            <h4 className={H}>Import folder vs Pick from vault</h4>
+            <ul className="list-disc pl-5 space-y-1">
+              <li className={LI}><B>Import folder</B> (on a script) — bulk-creates one row per file in a vault folder,
+                in folder order, with the media auto-attached. It leaves the <B>description blank and prices $0</B>,
+                so you still fill those in. Matches the folder by exact name.</li>
+              <li className={LI}><B>Pick from vault</B> (the <ImageIcon size={12} className="inline -mt-0.5" /> button on a
+                row) — attach the exact media you want to a single row. Use this to fix or build one item precisely.</li>
+            </ul>
+          </div>
+
+          {/* simulate */}
+          <div className="space-y-1.5">
+            <h4 className={H}>Always test in Simulate first</h4>
+            <p className={P}>
+              The <B>Simulate</B> box runs the real prompt + AI against a fake fan line and shows the exact bubbles
+              and the offer it would make — <B>nothing is sent</B>. Catch a bad script or a missing price here, never
+              on a paying fan.
+            </p>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }
@@ -303,6 +582,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
   const openOffers = (sessionsQ.data?.offers ?? []).filter((o) => o.status === "open");
 
   return (
+    <MediaCacheProvider accountId={accountId}>
     <div className="space-y-4">
       {/* ── config ── */}
       <Card className="p-4 space-y-3">
@@ -428,7 +708,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
       {/* ── singles ── */}
       <Card className="p-4 space-y-3">
         <h3 className="text-sm font-medium">Singles (standalone pieces — bed dance, photo sets…)</h3>
-        <ItemsTable items={singles} setItems={setSingles} />
+        <ItemsTable items={singles} setItems={setSingles} accountId={accountId} />
         <div className="flex items-center gap-2">
           <Button size="sm" variant="ghost"
             onClick={() => setSingles([...singles, { ...NEW_ITEM }])}>
@@ -531,6 +811,10 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           </div>
         </div>
       </Card>
+
+      {/* ── how-to guide ── */}
+      <GuideCard />
     </div>
+    </MediaCacheProvider>
   );
 }

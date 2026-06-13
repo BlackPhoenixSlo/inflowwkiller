@@ -89,8 +89,10 @@ import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from automation_registry import register
 from ._common import (
-    apply_word_restriction, hold_with_typing, load_typing_indicator,
-    load_typing_wpm, resolve_model, skip_unreachable_fan, typing_delay_seconds,
+    LIVE_PROOF_GUARDRAIL, apply_word_restriction, hold_with_typing,
+    load_strip_emojis, load_typing_indicator,
+    load_typing_wpm, resolve_model, skip_unreachable_fan, strip_emojis,
+    typing_delay_seconds,
 )
 from db.engine import get_session
 from db.models import AccountAiConfig, FunnelState, MassMessageFunnel, MassRun, Message
@@ -451,7 +453,8 @@ async def _step_texts(
         f"Funnel goal for this message: {prompt}\n\n"
         "Write ONE short reply (1-3 sentences, casual texting tone) as the "
         "creator. Output ONLY the message text — no quotes, no name prefix, no "
-        "preamble."
+        "preamble.\n\n"
+        f"{LIVE_PROOF_GUARDRAIL}"
     )
     user = (
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
@@ -476,6 +479,7 @@ async def _send_step(
     client, account_id: str, fan_id: int, mass_run_id: int, step: dict,
     texts: list[str], is_ppv: bool,
     *, typing_wpm: float = 0.0, typing_indicator: bool = False,
+    strip_emoji_on: bool = False,
 ) -> int:
     """Send the step's message(s) and persist each outbound row (tagged
     mass_run_id + funnel_step, emit_live for the WORKER→SSE bridge). Returns the
@@ -515,6 +519,8 @@ async def _send_step(
         # replies and any verbatim funnel copy (V1 filtered every send). Done
         # before the typing hold so the delay matches the text actually sent.
         text = apply_word_restriction(text)
+        if strip_emoji_on:  # account-wide emoji strip (opt-in)
+            text = strip_emojis(text)
 
         # Subsequent bubbles get a human pause first, then EVERY bubble holds for
         # the time it'd take to TYPE it — both waits show the live "...is typing"
@@ -564,6 +570,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
     typing_wpm = await load_typing_wpm(account_id)            # per-bubble pacing
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
+    strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     persona = await _load_persona(account_id)
 
     runs = await _active_mass_runs(account_id, only_run)
@@ -678,7 +685,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     n = await _send_step(client, account_id, fan_id, mass_run_id,
                                          step, texts, is_ppv,
                                          typing_wpm=typing_wpm,
-                                         typing_indicator=typing_indicator)
+                                         typing_indicator=typing_indicator,
+                                         strip_emoji_on=strip_emoji_on)
                 except Exception as e:
                     errors += 1
                     # Permanent (deleted/blocked) → quarantine fleet-wide AND end
