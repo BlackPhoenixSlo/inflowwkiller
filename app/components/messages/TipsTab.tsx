@@ -78,12 +78,12 @@ export default function TipsTab({ from, to, presetFanQuery }: Props) {
         onAccountChange={setAccountId}
         employeeId={employeeId}
         onEmployeeChange={setEmployeeId}
-        // Status is a PPV concept (paid/unpaid). Tips don't have it — we
-        // hard-code "all" to satisfy the prop and let MessagesFilters
-        // render the toggle; it just won't change anything meaningful
-        // for tips since the backend ignores the param on this endpoint.
+        // Status is a PPV concept (paid/unpaid). Tips don't have it, so we
+        // hide the toggle entirely (showStatus={false}) and pass the
+        // still-required status props as inert no-ops.
         status="all"
         onStatusChange={() => {}}
+        showStatus={false}
         fanQuery={fanQuery}
         onFanQueryChange={setFanQuery}
       />

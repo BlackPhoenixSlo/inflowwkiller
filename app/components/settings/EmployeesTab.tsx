@@ -13,23 +13,18 @@
  * flips active state.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import { Button, Card } from "@/components/ui/primitives";
 import { relay, type Employee } from "@/lib/relay";
+import { useRoster } from "@/hooks/useRoster";
 import { cn } from "@/lib/utils";
-
-interface EmployeesResp { employees: Employee[]; }
 
 export default function EmployeesTab() {
   const qc = useQueryClient();
 
-  const q = useQuery<EmployeesResp>({
-    queryKey: ["employees", "all"],
-    queryFn: () => relay.get<EmployeesResp>("/admin/employees?include_disabled=true"),
-    staleTime: 10_000,
-  });
+  const { query: q, rows } = useRoster();
 
   const createM = useMutation({
     mutationFn: (body: { display_name: string; color: string }) =>
@@ -41,19 +36,25 @@ export default function EmployeesTab() {
     mutationFn: (args: { id: number; patch: Partial<Pick<Employee, "display_name" | "color" | "is_active">> }) =>
       relay.patch<Employee>(`/admin/employees/${args.id}`, args.patch),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["employees"] }),
+    // Re-sync from the server so optimistic-looking row state (recolor /
+    // toggle) snaps back to the last saved value on failure. Rename rolls
+    // its own local input back in Row.onBlur (the prior value lives there).
+    onError: () => qc.invalidateQueries({ queryKey: ["employees"] }),
   });
 
   const disableM = useMutation({
     mutationFn: (id: number) => relay.delete<unknown>(`/admin/employees/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["employees"] }),
+    onError: () => qc.invalidateQueries({ queryKey: ["employees"] }),
   });
 
-  // Hide chatter-mirror Employee rows (auto-created per linked chatter
-  // login). They aren't owner-managed roster — renaming / disabling them
-  // here would fight the chatter auth flow. Chatter management lives on
-  // the Chatters tab; chatter mirrors stay in roster context so
+  const saveError = (patchM.error || disableM.error) as Error | null;
+
+  // `rows` from useRoster() hides chatter-mirror Employee rows (auto-created
+  // per linked chatter login). They aren't owner-managed roster — renaming /
+  // disabling them here would fight the chatter auth flow. Chatter management
+  // lives on the Chatters tab; chatter mirrors stay in roster context so
   // attribution / audit / orphan-tip flows can still reference them.
-  const rows = (q.data?.employees ?? []).filter((e) => !e.chatter_id);
 
   return (
     <div className="space-y-4">
@@ -69,6 +70,11 @@ export default function EmployeesTab() {
         {q.error && (
           <div className="text-err text-sm">
             {(q.error as Error).message || "failed"}
+          </div>
+        )}
+        {saveError && (
+          <div className="text-err text-xs mb-2" role="alert">
+            {saveError.message || "save failed"}
           </div>
         )}
 
@@ -88,7 +94,7 @@ export default function EmployeesTab() {
                 <Row
                   key={e.id}
                   e={e}
-                  onRename={(name) => patchM.mutate({ id: e.id, patch: { display_name: name } })}
+                  onRename={(name) => patchM.mutateAsync({ id: e.id, patch: { display_name: name } })}
                   onRecolor={(color) => patchM.mutate({ id: e.id, patch: { color } })}
                   onToggle={() => {
                     if (e.is_active) disableM.mutate(e.id);
@@ -114,7 +120,7 @@ function Row({
   e, onRename, onRecolor, onToggle,
 }: {
   e: Employee;
-  onRename: (name: string) => void;
+  onRename: (name: string) => Promise<unknown>;
   onRecolor: (color: string) => void;
   onToggle: () => void;
 }) {
@@ -151,8 +157,14 @@ function Row({
               setName(lastSavedRef.current);
               return;
             }
+            const prev = lastSavedRef.current;
             lastSavedRef.current = trimmed;
-            onRename(trimmed);
+            // On failure roll the input + ref back to the prior name; the
+            // parent surfaces the error inline (patchM.onError).
+            onRename(trimmed).catch(() => {
+              lastSavedRef.current = prev;
+              setName(prev);
+            });
           }}
           className={cn(
             "bg-transparent border-0 px-1 py-0.5 text-sm rounded focus:outline-none focus:bg-bg-elev-1",

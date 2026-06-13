@@ -116,7 +116,9 @@ export function predictNext(history: HistoryEntry[], now: Date = new Date()): Pr
   // at" gap before falling back to +1 day. Lets a single 6h-out pick
   // suggest a 6h cadence going forward.
   if (times.length === 1) {
-    const inferred = last.getTime() - history[0].savedAt;
+    // |scheduled - saved| — the magnitude of the gap is the cadence; a
+    // past-dated pick (negative raw delta) still implies that spacing.
+    const inferred = Math.abs(last.getTime() - history[0].savedAt);
     if (inferred >= MIN_DELTA_MS && inferred <= MAX_DELTA_MS) {
       let next = new Date(last.getTime() + inferred);
       while (next.getTime() <= now.getTime()) next = new Date(next.getTime() + inferred);

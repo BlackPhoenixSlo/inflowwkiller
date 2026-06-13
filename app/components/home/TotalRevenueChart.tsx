@@ -67,11 +67,14 @@ function fillDays(rows: RevenueRow[], days: number): { day: string; cents: numbe
 export default function TotalRevenueChart() {
   const [range, setRange] = useState<RangeKey>("30d");
   const cfg = RANGES.find((r) => r.key === range)!;
-  const from = useMemo(() => daysAgoIso(cfg.days - 1), [cfg.days]);
-  const to = useMemo(() => endOfTodayIso(), []);
+  // Day-stamp so the window recomputes (and the query refetches) across midnight
+  // instead of freezing `to` at mount.
+  const dayStamp = new Date().toDateString();
+  const from = useMemo(() => daysAgoIso(cfg.days - 1), [cfg.days, dayStamp]);
+  const to = useMemo(() => endOfTodayIso(), [dayStamp]);
 
   const q = useQuery<RevenueResp>({
-    queryKey: ["stats", "revenue-total", range],
+    queryKey: ["stats", "revenue-total", range, from, to],
     queryFn: () => {
       const qs = new URLSearchParams({ group_by: "day", from, to });
       return relay.get<RevenueResp>(`/admin/stats/revenue?${qs.toString()}`, BG_CTX);
@@ -164,7 +167,7 @@ function RevenueBars({ series, peak, loading }: BarsProps) {
                 x={x}
                 y={y}
                 width={barW}
-                height={Math.max(h, isZero ? 1 : 1)}
+                height={Math.max(h, 1)}
                 rx={1}
                 className={isZero ? "fill-border" : "fill-accent"}
               >

@@ -166,7 +166,10 @@ function ModelCard({ m, activeUnavail }: { m: PerModelRow; activeUnavail: boolea
   // backend's `display_name` (accounts.nickname) and then the bare ID.
   const profile = useAccountProfile(m.account_id);
   const p = profile.data;
-  const paid = isPaidPage(m, p);
+  // Hold the paid/free badge indeterminate until the OF profile query has
+  // settled — otherwise the revenue-window fallback in isPaidPage paints a
+  // guess that can flip once the real subscribePrice/isFree lands in.
+  const paid = profile.isPending ? null : isPaidPage(m, p);
   const avatarSrc = proxyImage(
     p?.avatarThumbs?.c144 || p?.avatarThumbs?.c50 || p?.avatar || null,
     m.account_id,
@@ -182,9 +185,11 @@ function ModelCard({ m, activeUnavail }: { m: PerModelRow; activeUnavail: boolea
           <div className="text-sm font-medium text-fg truncate flex items-center gap-2">
             <span className="truncate">{headline}</span>
             <Badge
-              color={paid ? "ok" : "muted"}
+              color={paid == null ? "muted" : paid ? "ok" : "muted"}
               title={
-                p && typeof p.subscribePrice === "number"
+                paid == null
+                  ? "Loading OF profile to determine paid/free…"
+                  : p && typeof p.subscribePrice === "number"
                   ? (paid
                       ? `OF subscription price = $${p.subscribePrice.toFixed(2)} (paid page)`
                       : "OF profile reports subscription price = $0 (free page)")
@@ -193,7 +198,7 @@ function ModelCard({ m, activeUnavail }: { m: PerModelRow; activeUnavail: boolea
                       : "No subscription revenue in window — likely free")
               }
             >
-              {paid ? "paid" : "free"}
+              {paid == null ? "…" : paid ? "paid" : "free"}
             </Badge>
           </div>
           <div className="text-[10px] text-muted font-mono truncate">

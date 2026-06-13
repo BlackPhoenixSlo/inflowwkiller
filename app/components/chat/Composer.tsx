@@ -214,6 +214,12 @@ export function Composer({
     toastTimerRef.current = setTimeout(() => setSendToast(null), 6000);
   }
 
+  // Clear any pending toast/migration-banner timer on unmount so it can't
+  // fire setSendToast after the composer is gone (chat switches remount it).
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
+
   async function submit(opts?: { delayMinutes?: number }) {
     const body = text.trim();
     if (!body && !hasAttachments && !hasGifs) return;
@@ -241,7 +247,7 @@ export function Composer({
     const firstGif = pickedGifs[0];
     const trailingGifs = pickedGifs.slice(1);
     if (firstGif) args.giphyId = firstGif.id;
-    // Quick-send delay (1/3/5/15) takes priority over the explicit
+    // Quick-send delay (1/3/5/7/10/15) takes priority over the explicit
     // scheduler row — they're alternate UIs for the same idea.
     if (opts?.delayMinutes && opts.delayMinutes > 0) {
       args.scheduledAt = new Date(Date.now() + opts.delayMinutes * 60_000).toISOString();
@@ -256,12 +262,14 @@ export function Composer({
     // Decide which kind of "queued" toast to show. setSendToast also
     // happens for immediate sends so it's a quiet "sent" confirmation —
     // but only when scheduled, where the textarea clears with no bubble
-    // to indicate progress (local-wait shows no optimistic until fire).
+    // to indicate progress (the scheduled ghost bubble shows it instead).
+    // BOTH branches are server-side now: ≤15 min goes on our executor queue,
+    // longer on OF's — either way it survives reload + every chatter sees it.
     if (args.scheduledAt) {
       const fireAt = new Date(args.scheduledAt).getTime();
       const minsFromNow = Math.max(1, Math.round((fireAt - Date.now()) / 60_000));
-      if (fireAt - Date.now() < 10 * 60 * 1000) {
-        showToast(`⏱ Sending in ${minsFromNow} min · stored locally (reload cancels it)`);
+      if (fireAt - Date.now() <= 15 * 60 * 1000) {
+        showToast(`⏱ Scheduled · sending in ${minsFromNow} min (saved — survives reload)`);
       } else {
         showToast(`⏱ Queued on OF for ${new Date(args.scheduledAt).toLocaleString()}`);
       }
@@ -928,9 +936,9 @@ export function Composer({
               {quickMenuOpen && (
                 <div className="absolute right-0 bottom-full mb-1 w-44 bg-panel border border-border rounded-md shadow-lg z-20 overflow-hidden">
                   <div className="px-2 py-1.5 text-[10px] text-fg-dim border-b border-border">
-                    Send in (local wait)
+                    Schedule send
                   </div>
-                  {[1, 3, 5, 15].map((m) => (
+                  {[1, 3, 5, 7, 10, 15].map((m) => (
                     <button
                       key={m}
                       type="button"
@@ -987,15 +995,15 @@ function toLocalInput(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** Describe the schedule in plain English. Short delays (< 10 min) get
- *  "Sending in N min (local wait)" so the user knows the tab needs to
- *  stay open; longer ones use OF's queue and survive close. */
+/** Describe the schedule in plain English. Both ranges are server-side now and
+ *  survive reload; short delays (≤ 15 min) ride our executor queue, longer ones
+ *  OF's native queue. */
 function describeSchedule(value: string): string {
   const d = new Date(value);
   const deltaMs = d.getTime() - Date.now();
-  if (deltaMs < 10 * 60 * 1000) {
+  if (deltaMs <= 15 * 60 * 1000) {
     const mins = Math.max(1, Math.round(deltaMs / 60_000));
-    return `Sending in ${mins} min (local wait — keep tab open)`;
+    return `Sending in ${mins} min (scheduled)`;
   }
   return `Queued for ${d.toLocaleString()}`;
 }

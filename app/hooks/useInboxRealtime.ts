@@ -27,6 +27,7 @@ import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { useActiveAccounts } from "@/hooks/useAccounts";
+import { scheduledSendsKey } from "@/hooks/useServerScheduledSends";
 import type { OFChatItem, OFMessage } from "@/lib/relay";
 
 interface ChatMessagePayload {
@@ -138,6 +139,12 @@ export function useInboxRealtime() {
       // yet (empty set) by letting events through until we know the roster.
       const allowed = allowedRef.current;
       if (allowed.size > 0 && !allowed.has(accountId)) return;
+
+      // A scheduled send firing arrives as an outbound message. Drop its ghost
+      // bubble the instant the real one lands (instead of waiting for the poll).
+      if (isOutbound) {
+        void qc.invalidateQueries({ queryKey: scheduledSendsKey(accountId, fanId) });
+      }
 
       const candidate: OFMessage = {
         id: msg.id,

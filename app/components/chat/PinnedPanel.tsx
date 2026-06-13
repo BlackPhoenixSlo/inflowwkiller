@@ -326,18 +326,21 @@ function stripPreview(html: string, max: number): string {
   return plain.slice(0, max - 1) + "…";
 }
 
+// Absolute time, like the main thread bubbles (MessageList.fmtTime). Relative
+// labels ("5m ago") were computed once at render and went stale while the
+// panel stayed open; an absolute stamp needs no re-render to stay correct.
+// Same-day pins show the time; older pins also show a short date so a pin
+// from last week isn't an undated bare time.
 function fmtTime(iso?: string): string {
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
-  const ms = Date.now() - d.getTime();
-  const sec = Math.floor(ms / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  if (day < 7) return `${day}d ago`;
-  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) return time;
+  return `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
 }

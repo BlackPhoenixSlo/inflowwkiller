@@ -72,10 +72,27 @@ export function FunnelLaunchPanel({
     [listsQ.data],
   );
 
-  function toggle(set: Set<string>, setter: (s: Set<string>) => void, id: string) {
+  // Toggle `id` in `set`. When adding it, drop it from the opposite set so an
+  // audience can't be both included and excluded (a contradictory queue body).
+  function toggle(
+    set: Set<string>,
+    setter: (s: Set<string>) => void,
+    other: Set<string>,
+    otherSetter: (s: Set<string>) => void,
+    id: string,
+  ) {
+    setDone(null);
     const next = new Set(set);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+      if (other.has(id)) {
+        const otherNext = new Set(other);
+        otherNext.delete(id);
+        otherSetter(otherNext);
+      }
+    }
     setter(next);
   }
 
@@ -117,11 +134,13 @@ export function FunnelLaunchPanel({
   }
 
   const ChipRow = ({
-    items, set, setter,
+    items, set, setter, other, otherSetter,
   }: {
     items: Array<{ id: string; label: string }>;
     set: Set<string>;
     setter: (s: Set<string>) => void;
+    other: Set<string>;
+    otherSetter: (s: Set<string>) => void;
   }) => (
     <div className="flex flex-wrap gap-1.5">
       {items.map((it) => {
@@ -130,7 +149,7 @@ export function FunnelLaunchPanel({
           <button
             key={it.id}
             type="button"
-            onClick={() => toggle(set, setter, it.id)}
+            onClick={() => toggle(set, setter, other, otherSetter, it.id)}
             className={
               "px-2.5 py-1 rounded-full text-xs border transition-colors " +
               (on
@@ -180,14 +199,16 @@ export function FunnelLaunchPanel({
       {/* Include */}
       <div className="space-y-1.5">
         <div className="text-xs text-fg-dim">Send to (include)</div>
-        <ChipRow items={SYSTEM_AUDIENCES} set={includes} setter={setIncludes} />
-        {listItems.length > 0 && <ChipRow items={listItems} set={includes} setter={setIncludes} />}
+        <ChipRow items={SYSTEM_AUDIENCES} set={includes} setter={setIncludes} other={excludes} otherSetter={setExcludes} />
+        {listItems.length > 0 && (
+          <ChipRow items={listItems} set={includes} setter={setIncludes} other={excludes} otherSetter={setExcludes} />
+        )}
       </div>
 
       {/* Exclude */}
       <div className="space-y-1.5">
         <div className="text-xs text-fg-dim">Exclude</div>
-        <ChipRow items={[...SYSTEM_AUDIENCES, ...listItems]} set={excludes} setter={setExcludes} />
+        <ChipRow items={[...SYSTEM_AUDIENCES, ...listItems]} set={excludes} setter={setExcludes} other={includes} otherSetter={setIncludes} />
       </div>
 
       {/* Online + skip-recent */}
@@ -197,7 +218,7 @@ export function FunnelLaunchPanel({
             type="checkbox"
             className="h-4 w-4 accent-[var(--accent)]"
             checked={onlineOnly}
-            onChange={(e) => setOnlineOnly(e.target.checked)}
+            onChange={(e) => { setDone(null); setOnlineOnly(e.target.checked); }}
           />
           <span className="text-xs">Online only</span>
         </label>
@@ -209,7 +230,7 @@ export function FunnelLaunchPanel({
             className="w-28"
             placeholder="e.g. 2"
             value={skipMessagedHours}
-            onChange={(e) => setSkipMessagedHours(e.target.value)}
+            onChange={(e) => { setDone(null); setSkipMessagedHours(e.target.value); }}
           />
         </label>
       </div>

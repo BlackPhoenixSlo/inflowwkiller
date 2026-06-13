@@ -19,7 +19,8 @@ import Link from "next/link";
 import { ArrowDownLeft, ArrowUpRight, Eye, Megaphone, Paperclip, Users } from "lucide-react";
 
 import { Badge } from "@/components/ui/primitives";
-import { proxyImage } from "@/lib/relay";
+import FanAvatar from "@/components/messages/FanAvatar";
+import { fmtCents, stripHtml } from "@/lib/messageFormat";
 import { cn, fmtRelTime } from "@/lib/utils";
 
 import type { PaidMessageRow } from "@/hooks/usePaidMessages";
@@ -48,14 +49,6 @@ export function automationLabel(kind?: string | null): string | null {
   return AUTOMATION_LABELS[kind] ?? kind;
 }
 
-function fmtPrice(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
-
-function stripHtml(s: string): string {
-  return s.replace(/<\/?p[^>]*>/gi, "").replace(/<br\s*\/?>/gi, " ").trim();
-}
-
 export default function MessageRowGeneric({ row }: Props) {
   if (row.is_mass_summary) return <MassSummaryRow row={row} />;
 
@@ -78,7 +71,7 @@ export default function MessageRowGeneric({ row }: Props) {
           isInbound && "border-l-2 border-l-accent/40",
         )}
       >
-        <Avatar
+        <FanAvatar
           url={row.fan.avatar_url}
           accountId={row.account_id}
           alt={row.fan.username ?? "fan"}
@@ -97,7 +90,7 @@ export default function MessageRowGeneric({ row }: Props) {
             )}
             {isPriced && (
               <span className="ml-auto text-sm font-semibold text-fg">
-                {fmtPrice(row.price_cents)}
+                {fmtCents(row.price_cents)}
               </span>
             )}
             <span className={cn("text-xs text-fg-dim", !isPriced && "ml-auto")}>
@@ -180,7 +173,7 @@ function MassSummaryRow({ row }: Props) {
           )}
           {isPriced && (
             <span className="ml-auto text-sm font-semibold text-fg">
-              {fmtPrice(row.price_cents)}
+              {fmtCents(row.price_cents)}
             </span>
           )}
           <span className={cn("text-xs text-fg-dim", !isPriced && "ml-auto")}>
@@ -236,33 +229,5 @@ function DirectionChip({ direction }: { direction: "in" | "out" | "system" }) {
     <Badge color="warn" className="!px-1.5">
       <span>system</span>
     </Badge>
-  );
-}
-
-function Avatar({
-  url,
-  accountId,
-  alt,
-}: {
-  url: string | null;
-  accountId: string;
-  alt: string;
-}) {
-  const src = url ? proxyImage(url, accountId) : "";
-  return (
-    <div
-      className={cn(
-        "w-10 h-10 rounded-full bg-bg-elev-1 border border-border overflow-hidden flex-shrink-0",
-      )}
-    >
-      {src ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={src} alt={alt} className="w-full h-full object-cover" />
-      ) : (
-        <div className="w-full h-full grid place-items-center text-fg-dim text-xs">
-          {alt[0]?.toUpperCase() ?? "?"}
-        </div>
-      )}
-    </div>
   );
 }

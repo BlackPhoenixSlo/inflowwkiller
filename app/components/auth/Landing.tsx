@@ -115,11 +115,6 @@ export default function Landing() {
           </div>
         </section>
 
-        <section className="text-center text-sm text-fg-dim">
-          I host this for my friends. If you&apos;d rather run it yourself, the code is on
-          GitHub.
-        </section>
-
         <form
           onSubmit={onSubmit}
           className="grid gap-3 max-w-sm w-full mx-auto rounded-2xl border border-fg/10 p-5"
@@ -189,6 +184,24 @@ export default function Landing() {
             </p>
           )}
         </form>
+
+        <section className="space-y-3 text-sm">
+          <p className="text-fg-dim text-center">
+            I host this for my friends.{" "}
+            <a
+              href="https://github.com/BlackPhoenixSlo/inflowwkiller"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-2 hover:text-fg"
+            >
+              The code is on GitHub
+            </a>{" "}
+            — deploy it yourself on Hostinger in one paste:
+          </p>
+          <div className="bg-bg rounded-lg border border-fg/10 px-4 py-3 font-mono text-xs text-fg-dim overflow-x-auto whitespace-nowrap">
+            bash &lt;(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/inflowwkiller/main/scripts/deploy-here.sh)
+          </div>
+        </section>
       </div>
     </main>
   );

@@ -102,6 +102,8 @@ export function NotificationBell() {
   const [osTestMsg, setOsTestMsg] = useState<string | null>(null);
   const [badge, setBadge] = useState(0);
   const ref = useRef<HTMLDivElement | null>(null);
+  const openRef = useRef(open);
+  openRef.current = open;
   const { settings, setToast, setBubble, update } = useNotificationSettings();
 
   const targetAccountIds = useMemo<string[]>(
@@ -109,9 +111,13 @@ export function NotificationBell() {
     [accountId, activeAccounts],
   );
 
-  // Badge counter — bump on every arrival, reset on every cleared event.
+  // Badge counter — bump on every arrival (unless the panel is open and the
+  // user is already looking at it), reset on every cleared event.
   useEffect(() => {
-    const onArrived = () => setBadge((n) => Math.min(999, n + 1));
+    const onArrived = () => {
+      if (openRef.current) return;
+      setBadge((n) => Math.min(999, n + 1));
+    };
     const onCleared = () => setBadge(0);
     window.addEventListener(NOTIF_ARRIVED_EVENT, onArrived);
     window.addEventListener(NOTIF_CLEARED_EVENT, onCleared);
@@ -172,6 +178,11 @@ export function NotificationBell() {
     };
   }, [open]);
 
+  // Stable signature of the fetched data — the query array itself is a fresh
+  // reference every render, so the memo below keys off the per-query update
+  // timestamps (which change only when the underlying data does) instead.
+  const dataSig = listQueries.map((q) => q.dataUpdatedAt).join(",");
+
   const merged = useMemo<MergedItem[]>(() => {
     const acc: MergedItem[] = [];
     const seenIds = new Set<string>();
@@ -209,7 +220,7 @@ export function NotificationBell() {
     acc.sort((a, b) => b.ts - a.ts);
     return acc.slice(0, 50);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listQueries, targetAccountIds, filter.id, historyTick]);
+  }, [dataSig, targetAccountIds, filter.id, historyTick]);
 
   const anyLoading = open && listQueries.some((q) => q.isLoading);
   const firstError = listQueries.find((q) => q.error)?.error as Error | undefined;

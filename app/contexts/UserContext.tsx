@@ -196,6 +196,46 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
+  // Re-validate /auth/me when the tab regains focus / becomes visible so a
+  // stale impersonation overlay (e.g. another tab stopped impersonating, or
+  // the cookie expired) self-corrects without a full reload. This never
+  // touches `loading` (so it can't reflash the picker) and never re-fetches
+  // on its own result, so there's no refetch loop — it only fires on real
+  // user focus/visibility events. The initial load stays owned by the mount
+  // effect above.
+  useEffect(() => {
+    let inFlight = false;
+    const revalidate = async () => {
+      if (inFlight) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      inFlight = true;
+      try {
+        const r = await fetch("/auth/me", {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        });
+        if (!r.ok) { setUser(null); return; }
+        const body = (await r.json()) as AuthedUserDTO | null;
+        setUser(body && body.user_id ? body : null);
+      } catch {
+        /* transient network hiccup — keep the current user, retry next focus */
+      } finally {
+        inFlight = false;
+      }
+    };
+    const onVisibility = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        void revalidate();
+      }
+    };
+    window.addEventListener("focus", revalidate);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", revalidate);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
   const login = useCallback(async (username: string, password: string) => {
     const dto = await postJSON<AuthedUserDTO>("/auth/login", { username, password });
     // Wipe any cache from the previous identity BEFORE flipping the user

@@ -812,6 +812,21 @@ class OFClient:
             params["type"] = type
         return self.get_json(f"{API_BASE}/vault/media", params=params)
 
+    def vault_media_by_id(self, media_id: int) -> dict:
+        """GET /api2/v2/vault/media/{id} — a single vault item by its id.
+
+        OF exposes a real by-id read here (verified live): the response is one
+        media dict with the SAME shape as an item inside `vault_media()['list']`
+        — `files.thumb/squarePreview/preview` for thumbnails, `type`, `duration`,
+        `videoSources`, etc. There is NO batch form (`?ids[]=` is silently
+        ignored and returns the default page), so callers resolve one id per
+        call. A deleted/unknown id raises OFAPIError 404 'Media Not Found'.
+
+        Used to resolve already-saved per-slot brain images (`time_images`,
+        which store bare media ids) back to thumbnails — the picker only ever
+        returned full media for freshly-picked items, never the saved ids."""
+        return self.get_json(f"{API_BASE}/vault/media/{int(media_id)}")
+
     def vault_lists(self, *, view: str = "main", limit: int = 10, offset: int = 0) -> dict:
         """GET /api2/v2/vault/lists — vault folders / lists.
         The mandatory `view` value is **`main`** (captured from OF's web app

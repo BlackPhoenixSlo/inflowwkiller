@@ -16,6 +16,8 @@
  * right session.
  */
 
+import { useMemo } from "react";
+
 import { useMutation, useQueries, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { relay, type VaultFiles } from "@/lib/relay";
@@ -96,13 +98,23 @@ export function useMassMessages(accountIds: string[], opts: MassMessagesOptions 
     })),
   });
 
-  const rows = queries
-    .flatMap((q) => q.data ?? [])
-    .sort((a, b) => {
-      const ta = a.date ? new Date(a.date).getTime() : 0;
-      const tb = b.date ? new Date(b.date).getTime() : 0;
-      return tb - ta;
-    });
+  // Memoize the flatten+sort on the array of per-account `q.data` references so
+  // it only re-allocates when an underlying query's data actually changes, not
+  // on every parent render (useQueries hands back fresh query objects each
+  // render, so depending on `queries` directly would recompute every time).
+  const data = queries.map((q) => q.data);
+  const rows = useMemo(
+    () =>
+      data
+        .flatMap((d) => d ?? [])
+        .sort((a, b) => {
+          const ta = a.date ? new Date(a.date).getTime() : 0;
+          const tb = b.date ? new Date(b.date).getTime() : 0;
+          return tb - ta;
+        }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    data,
+  );
 
   const isLoading = queries.some((q) => q.isLoading);
   const isFetching = queries.some((q) => q.isFetching);

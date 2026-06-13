@@ -205,13 +205,13 @@ export default function MassNudgeTab() {
 
   async function runNow() {
     if (!rule) return;
-    setMsg(null);
+    setErr(null); setMsg(null);
     if (!confirm("Send one Mass Nudge broadcast to everyone online now?")) return;
     try {
       await runM.mutateAsync(rule.id);
       setMsg("✓ Broadcasting to online fans now — appears in stats within ~30s.");
     } catch (e) {
-      setMsg(`Run failed: ${(e as Error)?.message || "unknown"}`);
+      setErr(`Run failed: ${(e as Error)?.message || "unknown"}`);
     }
   }
 

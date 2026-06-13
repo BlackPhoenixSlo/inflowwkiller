@@ -1032,21 +1032,6 @@ const dateInputStyle: React.CSSProperties = {
 
 /* ───────── primitives ───────── */
 
-function Pill({ children, accent }: { children: React.ReactNode; accent?: boolean }) {
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px]"
-      style={{
-        border: `1px solid ${accent ? "#bfdbfe" : "#e5e7eb"}`,
-        background: "#fff",
-        color: accent ? "#2563eb" : "#374151",
-      }}
-    >
-      {children}
-    </span>
-  );
-}
-
 function IconCircle({ color, children }: { color: string; children: React.ReactNode }) {
   return (
     <div

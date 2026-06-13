@@ -27,9 +27,14 @@ import { useTogglePinMessage } from "@/hooks/useTogglePinMessage";
 import { useUnsendMessage } from "@/hooks/useUnsendMessage";
 import { useFan } from "@/hooks/useFan";
 import { readFanDrawerDefault, useFanDrawerDefault } from "@/hooks/useFanDrawerDefault";
-import { usePendingScheduled, pendingToPseudoMessage } from "@/hooks/usePendingScheduled";
+import {
+  useServerScheduledSends,
+  scheduledToPseudoMessage,
+  useCancelServerScheduled,
+} from "@/hooks/useServerScheduledSends";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { proxyImage, relay, type OFChatItem, type OFMessage, type OFUserMini } from "@/lib/relay";
+import { stripHtmlPreview } from "@/lib/htmlPreview";
 
 import { MessageList } from "./MessageList";
 import { Composer, type ComposerApi } from "./Composer";
@@ -471,24 +476,26 @@ export function ChatSurface({
     setTimeout(() => setHighlightId((cur) => (cur === id ? null : cur)), 3000);
   }
 
-  // Pending local-wait sends live in a separate cache; merge them into
+  // Server-scheduled sends live in a separate query; merge them into
   // the message stream as pseudo-bubbles so the operator sees what's
   // about to go out (and can cancel) without leaving the chat. Memoize
   // so the MessageList's "did the array change" effect doesn't fire
   // every render — the auto-scroll-to-bottom depends on a stable ref.
-  const pendingQ = usePendingScheduled(accountId, fanId);
+  const scheduledQ = useServerScheduledSends(accountId, fanId);
+  const cancelScheduled = useCancelServerScheduled();
   // The message stream always reads the real ["messages", ...] cache: DB
   // history is hydrated into it on open (seed-hydration effect above), the
   // OF fetch reconciles into it, and the realtime patcher + send-flow keep
   // it live. The seed is never read directly here — reading a different
   // array reference is what made the old seed-then-discard swap flash
-  // mid-session.
+  // mid-session. Server-scheduled sends (future-dated) are appended as
+  // pseudo-rows so they sort to the bottom as "about to go out" ghosts.
   const mergedMessages: OFMessage[] = useMemo(() => {
     const real = handle.data ?? [];
-    const pending = pendingQ.data ?? [];
-    if (pending.length === 0) return real;
-    return [...real, ...(pending.map(pendingToPseudoMessage) as unknown as OFMessage[])];
-  }, [handle.data, pendingQ.data]);
+    const scheduled = scheduledQ.data ?? [];
+    if (scheduled.length === 0) return real;
+    return [...real, ...scheduled.map((s) => scheduledToPseudoMessage(s, ownerUserId))];
+  }, [handle.data, scheduledQ.data, ownerUserId]);
 
   // Pinned slice sourced from the loaded messages cache — no extra OF
   // fetch. Only pinned items inside the currently-loaded backlog show;
@@ -693,7 +700,11 @@ export function ChatSurface({
         loadingOlder={handle.isLoadingOlder}
         onLoadOlder={() => handle.loadOlder()}
         onRetry={sender.retry}
-        onCancelScheduled={sender.cancelPendingScheduled}
+        onCancelScheduled={(jobId) => {
+          if (accountId && fanId != null) {
+            cancelScheduled.mutate({ jobId, accountId, fanId });
+          }
+        }}
         onToggleLike={(msg) => liker.toggle(msg)}
         onQuoteReply={onQuoteReply}
         onTogglePin={(msg) => pinner.toggle(msg)}
@@ -875,23 +886,4 @@ function GroupChatButton({ accountId, fanId }: { accountId: string; fanId: numbe
         : "👥 group"}
     </button>
   );
-}
-
-/** Plain-text preview from OF's HTML body — used for both quote previews
- *  and search match snippets. Cheap and intentionally lossy: anything
- *  beyond `max` is truncated with an ellipsis. */
-function stripHtmlPreview(s: string, max: number): string {
-  const plain = s
-    .replace(/<br\s*\/?>/gi, " ")
-    .replace(/<\/p\s*>/gi, " ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-  return plain.length > max ? plain.slice(0, max - 1) + "…" : plain;
 }

@@ -41,7 +41,14 @@ function rangeParams(): string {
   const today = new Date();
   const oneYear = new Date();
   oneYear.setFullYear(today.getFullYear() + 1);
-  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  // Format in local time so the date boundary agrees with the time_zone hint
+  // below — toISOString() would format in UTC and drift a day near midnight.
+  const fmt = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
   return `limit=50&publish_date=${fmt(today)}&publish_date_end=${fmt(oneYear)}&time_zone=${encodeURIComponent(TZ)}`;
 }
 
@@ -56,7 +63,12 @@ export function useScheduledMessages(accountIds: string[]) {
         );
         const list = resp.list ?? [];
         return list
-          .filter((it) => it.type === "chat" && it.entity)
+          .filter(
+            (it) =>
+              it.type === "chat" &&
+              it.entity &&
+              Number.isFinite(Number((it.entity as Record<string, unknown>).id)),
+          )
           .map((it) => {
             const e = it.entity as Record<string, unknown>;
             return {

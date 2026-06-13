@@ -11,13 +11,13 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Card, Button } from "@/components/ui/primitives";
 import { relay, type AuditAction, type Employee } from "@/lib/relay";
+import { useRoster } from "@/hooks/useRoster";
 
 interface AuditResp { actions: AuditAction[]; limit: number; offset: number }
-interface EmployeesResp { employees: Employee[]; }
 
 const PAGE = 50;
 
@@ -26,12 +26,12 @@ export default function AuditTab() {
   const [filterEmployee, setFilterEmployee] = useState<number | null>(null);
   const [filterAccount, setFilterAccount] = useState<string>("");
 
-  const rosterQ = useQuery<EmployeesResp>({
-    queryKey: ["employees", "all"],
-    queryFn: () => relay.get<EmployeesResp>("/admin/employees?include_disabled=true"),
-    staleTime: 30_000,
-  });
-  const byId = new Map((rosterQ.data?.employees ?? []).map((e) => [e.id, e]));
+  // Keep chatter mirrors so audit rows attributed to one still resolve a name.
+  const { rows: roster } = useRoster({ includeChatterMirrors: true });
+  const byId = useMemo(
+    () => new Map<number, Employee>(roster.map((e) => [e.id, e])),
+    [roster],
+  );
 
   const qs = new URLSearchParams();
   qs.set("limit", String(PAGE));
@@ -63,7 +63,7 @@ export default function AuditTab() {
               className="bg-bg border border-border rounded-md px-2 py-1 text-xs focus:outline-none"
             >
               <option value="">All employees</option>
-              {(rosterQ.data?.employees ?? []).map((e) => (
+              {roster.map((e) => (
                 <option key={e.id} value={e.id}>{e.display_name}</option>
               ))}
             </select>

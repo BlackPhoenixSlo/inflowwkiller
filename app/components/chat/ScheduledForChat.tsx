@@ -15,6 +15,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useCancelScheduled, useScheduledMessages } from "@/hooks/useScheduledMessages";
+import { stripOFHtml } from "@/lib/ofHtml";
 import { proxyImage } from "@/lib/relay";
 
 export function ScheduledForChat({
@@ -99,7 +100,7 @@ export function ScheduledForChat({
                       />
                     )}
                     <div className="flex-1 min-w-0 line-clamp-3 break-words">
-                      {stripHtml(m.text || "")}
+                      {stripOFHtml(m.text || "")}
                     </div>
                   </div>
                   <div className="flex justify-end">
@@ -126,18 +127,4 @@ export function ScheduledForChat({
       )}
     </div>
   );
-}
-
-function stripHtml(s: string): string {
-  return s
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;/g, "'")
-    .trim();
 }

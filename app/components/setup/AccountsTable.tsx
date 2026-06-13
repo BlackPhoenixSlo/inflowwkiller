@@ -145,7 +145,8 @@ function Row({
 
   const commitRename = () => {
     setEditing(false);
-    if (draft.trim() && draft.trim() !== account.nickname) {
+    const orig = account.nickname || account.id;
+    if (draft.trim() && draft.trim() !== orig) {
       onRename(draft.trim());
     }
   };

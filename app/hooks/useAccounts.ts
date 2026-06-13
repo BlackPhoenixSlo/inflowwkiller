@@ -76,18 +76,19 @@ export function useAccounts() {
   // Synthesize an AccountsResp envelope so consumers see the same shape
   // either way. active_account_id is owner-only — no equivalent in
   // chatter mode (the picker selection lives in ScopeContext anyway).
+  // Memoize the envelope on chatterAccounts alone so its reference stays
+  // stable across renders (useQuery hands back a fresh object every render,
+  // so depending on chatterQ would recompute this every time).
+  const chatterData: AccountsResp = useMemo(
+    () => ({ accounts: chatterAccounts, active_account_id: null }),
+    [chatterAccounts],
+  );
   return useMemo(() => {
     if (isChatterOnly) {
-      return {
-        ...chatterQ,
-        data: {
-          accounts: chatterAccounts,
-          active_account_id: null,
-        } as AccountsResp,
-      };
+      return { ...chatterQ, data: chatterData };
     }
     return ownerQ;
-  }, [isChatterOnly, chatterQ, chatterAccounts, ownerQ]);
+  }, [isChatterOnly, chatterQ.status, chatterData, ownerQ]);
 }
 
 /** Accounts that currently have a captured session — the only ones the

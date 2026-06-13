@@ -14,7 +14,7 @@
  * only their ids in send-payload form.
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Library } from "lucide-react";
 
@@ -624,6 +624,13 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
 
   // Infinite scroll sentinel.
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // `loadMore` is recreated on every useVaultMedia render, so we read the
+  // latest via a ref inside the observer callback. Depending on it directly
+  // (or on the whole `vault` object) would tear down and rebuild the
+  // IntersectionObserver on every render; the ref lets us create it once
+  // per open while still invoking the freshest loadMore.
+  const loadMoreRef = useRef(vault.loadMore);
+  loadMoreRef.current = vault.loadMore;
   useEffect(() => {
     if (!open) return;
     const el = sentinelRef.current;
@@ -631,7 +638,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
     const io = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting) && vault.hasMore && !vault.isFetchingNextPage) {
-          vault.loadMore();
+          loadMoreRef.current();
         }
       },
       // 800px ≈ 1.5 viewport heights at typical picker sizing — gives a
@@ -641,7 +648,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [open, vault]);
+  }, [open, vault.hasMore, vault.isFetchingNextPage]);
 
   function toggle(m: VaultMedia) {
     setSelectedIds((prev) => {
@@ -661,8 +668,8 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
   // double-clicked tile regardless of how the click sequence left
   // selectedIds (the two onClicks of a dblclick toggle the tile twice,
   // so the net selection state depends on parity).
-  const confirmWith = useMemo(
-    () => (extra?: VaultMedia) => {
+  const confirmWith = useCallback(
+    (extra?: VaultMedia) => {
       const picked: VaultMedia[] = [];
       const seenInList = new Map(vault.items.map((m) => [m.id, m]));
       const ids = new Set(selectedIds);
@@ -680,7 +687,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
     },
     [vault.items, selectedIds, selectedMeta, onConfirm, onClose],
   );
-  const confirm = useMemo(() => () => confirmWith(), [confirmWith]);
+  const confirm = useCallback(() => confirmWith(), [confirmWith]);
 
   // Local sort applied AFTER the server paginated list lands. OF doesn't
   // expose sort=asc on the vault endpoint, so reversing here is the only

@@ -899,13 +899,21 @@ export function EmojiPickerButton({
   } | null>(null);
 
   // Re-load recents whenever the picker opens so we pick up clicks from
-  // other components (quick-row) that also write to the store.
+  // other components (quick-row) that also write to the store. While open,
+  // also subscribe to the recents pulse (same-tab) + native storage event
+  // (cross-tab) so the recents tab stays live as picks land elsewhere.
   useEffect(() => {
-    if (open) {
-      setRecents(loadRecents());
-      setSearch("");
-      setTimeout(() => searchInputRef.current?.focus(), 50);
-    }
+    if (!open) return;
+    setRecents(loadRecents());
+    setSearch("");
+    setTimeout(() => searchInputRef.current?.focus(), 50);
+    const refresh = () => setRecents(loadRecents());
+    window.addEventListener(RECENTS_EVENT, refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener(RECENTS_EVENT, refresh);
+      window.removeEventListener("storage", refresh);
+    };
   }, [open]);
 
   useEffect(() => {

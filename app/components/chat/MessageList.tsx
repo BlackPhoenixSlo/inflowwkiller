@@ -44,9 +44,9 @@ export interface MessageListProps {
   loadingOlder: boolean;
   onLoadOlder: () => void;
   onRetry: (tempId: number) => void;
-  /** Cancel a local-wait scheduled send. Bubbles only render the cancel
-   *  button when this is provided. */
-  onCancelScheduled?: (tempId: number) => void;
+  /** Cancel a scheduled send by its server job id. Bubbles only render the
+   *  cancel button when this is provided (and the row has a `_scheduleJobId`). */
+  onCancelScheduled?: (jobId: number) => void;
   /** Double-click toggle for likes on incoming messages. Optional so
    *  read-only contexts (history search, etc.) can render the same list. */
   onToggleLike?: (msg: OFMessage) => void;
@@ -293,6 +293,18 @@ export function MessageList(props: MessageListProps) {
     [messages, ownerUserId],
   );
 
+  // id → message lookup for resolving `replyToMessageId` in O(1). Built once
+  // per messages change instead of an O(n) `all.find` inside the render
+  // flatMap (which was O(n²) across the whole list).
+  const byId = useMemo(() => {
+    const m = new Map<number, OFMessage>();
+    for (const msg of messages) {
+      const id = Number(msg.id);
+      if (Number.isFinite(id)) m.set(id, msg);
+    }
+    return m;
+  }, [messages]);
+
   // Empty / loading / error placeholders share the SAME flex sizing as
   // the populated branch below — without `flex-1 min-h-0` the column
   // collapses to the placeholder's natural height and the Composer
@@ -403,7 +415,7 @@ export function MessageList(props: MessageListProps) {
         // `replyToMessage` is already populated keeps the common path cheap.
         let replyTo = m.replyToMessage ?? null;
         if (!replyTo && m.replyToMessageId) {
-          const found = all.find((x) => Number(x.id) === m.replyToMessageId);
+          const found = byId.get(m.replyToMessageId);
           if (found) {
             replyTo = {
               id: Number(found.id),
@@ -760,7 +772,7 @@ function Bubble({
         >
           <div className="flex items-center gap-1.5 flex-wrap">
           {scheduled
-            ? <ScheduledStatus fireAt={msg._fireAt ?? msg.createdAt} />
+            ? <ScheduledStatus fireAt={msg._fireAt ?? msg.createdAt} mediaCount={msg.mediaCount ?? 0} />
             : <span>{fmtTime(msg.createdAt)}</span>}
           {/* Delivered / seen receipts on outgoing real-server messages.
            *  We can only assert "delivered" once OF has assigned a real
@@ -775,12 +787,12 @@ function Bubble({
             </span>
           )}
           {pending && !scheduled && <span className="text-warn">sending…</span>}
-          {scheduled && onCancelScheduled && msg._tempId != null && (
+          {scheduled && onCancelScheduled && msg._scheduleJobId != null && (
             <button
               type="button"
-              onClick={() => msg._tempId != null && onCancelScheduled(msg._tempId)}
+              onClick={() => msg._scheduleJobId != null && onCancelScheduled(msg._scheduleJobId)}
               className="text-err hover:underline"
-              title="Cancel the pending send. Local-wait only — tab close cancels it too."
+              title="Cancel this scheduled send (for everyone on the account)."
             >
               cancel
             </button>
@@ -889,7 +901,11 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
           // (price=0) gets a badge only if the fan has bought it from us
           // at some earlier point.
           const fanEntry = m.id != null ? fanVaultQ.data?.by_media[String(m.id)] : undefined;
-          const wasBought = fanEntry?.was_purchased === true;
+          // Only assert BOUGHT once the per-fan vault query has actually
+          // resolved — otherwise a free (price=0) tile paints with no badge
+          // and then flashes one in when the async lookup lands. `isSuccess`
+          // distinguishes "not loaded" from "confirmed not bought".
+          const wasBought = fanVaultQ.isSuccess && fanEntry?.was_purchased === true;
           const inPreviews = m.id != null && previewIds.includes(m.id);
           const showBadge = isOutgoing && (wasBought || isPPV);
           const badge = (
@@ -1331,18 +1347,19 @@ function DateSeparator({ label }: { label: string }) {
 /** Live countdown that re-renders every 20s. Short enough to feel
  *  responsive ("Sending in 1 min" → fires shortly after); long enough
  *  to not be wasteful across many pending bubbles in one chat. */
-function ScheduledStatus({ fireAt }: { fireAt: string }) {
+function ScheduledStatus({ fireAt, mediaCount = 0 }: { fireAt: string; mediaCount?: number }) {
   const [, tick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => tick((n) => n + 1), 20_000);
     return () => clearInterval(id);
   }, []);
+  const clip = mediaCount > 0 ? ` · 📎 ${mediaCount}` : "";
   const ms = new Date(fireAt).getTime() - Date.now();
-  if (ms <= 0) return <span className="text-accent">⏱ sending now…</span>;
+  if (ms <= 0) return <span className="text-accent">⏱ sending now…{clip}</span>;
   const mins = Math.max(1, Math.round(ms / 60_000));
   return (
     <span className="text-accent">
-      ⏱ sending in {mins} min · local
+      ⏱ scheduled · {fmtTime(fireAt)} (in {mins} min){clip}
     </span>
   );
 }

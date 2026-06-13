@@ -156,7 +156,15 @@ export default function ReadyMadePanel() {
     if (!accountId && accounts.length > 0) setAccountId(accounts[0].id);
   }, [accounts, accountId]);
 
-  const rulesQ = useAutomationRules(accountId);
+  // Only the two ready-made rule kinds drive the saved-rule list below; the
+  // funnels / nudge tabs render their own self-contained surfaces.
+  const ruleKind: RuleKind | null =
+    tab === "auto_posts" || tab === "mass_premade" ? tab : null;
+
+  // Gate the polling rules query on a rule-backed tab — passing null when off-tab
+  // makes useAutomationRules' `enabled: !!accountId` short-circuit, so its 30s
+  // poll stops while the funnels / nudge tabs are showing.
+  const rulesQ = useAutomationRules(ruleKind ? accountId : null);
   const runsQ = useAutomationRuns(200);
   const updateM = useUpdateRule(accountId);
   const deleteM = useDeleteRule(accountId);
@@ -166,10 +174,6 @@ export default function ReadyMadePanel() {
   const [adding, setAdding] = useState(false);
   const [rowErr, setRowErr] = useState<{ id: number; msg: string } | null>(null);
 
-  // Only the two ready-made rule kinds drive the saved-rule list below; the
-  // funnels / nudge tabs render their own self-contained surfaces.
-  const ruleKind: RuleKind | null =
-    tab === "auto_posts" || tab === "mass_premade" ? tab : null;
   const rules = useMemo(
     () => (ruleKind ? (rulesQ.data ?? []).filter((r) => r.kind === ruleKind) : []),
     [rulesQ.data, ruleKind],
@@ -439,13 +443,17 @@ function PreviousRuns({
   accountId: string;
   runs: AutomationRunRow[];
 }) {
-  const mine = useMemo(
-    () =>
-      runs
-        .filter((r) => r.kind === kind && (r.account_id == null || r.account_id === accountId))
-        .slice(0, 4),
-    [runs, kind, accountId],
-  );
+  const mine = useMemo(() => {
+    // Run rows carry no rule_id, only (kind, account_id) — so we can't pin a run
+    // to ONE rule. Account-scoped rows of this kind clearly belong here; the
+    // global (account_id == null) rows are ambiguous (any account, any same-kind
+    // rule), so only fall back to them when this account has no scoped runs of
+    // the kind. That stops a global run from being claimed under every account.
+    const ofKind = runs.filter((r) => r.kind === kind);
+    const scoped = ofKind.filter((r) => r.account_id === accountId);
+    const pool = scoped.length > 0 ? scoped : ofKind.filter((r) => r.account_id == null);
+    return pool.slice(0, 4);
+  }, [runs, kind, accountId]);
   if (mine.length === 0) {
     return <div className="ml-7 text-[11px] text-fg-dim/70 italic">No previous runs.</div>;
   }

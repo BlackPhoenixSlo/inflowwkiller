@@ -11,6 +11,7 @@
  */
 
 import { Card } from "@/components/ui/primitives";
+import { fmtCents } from "@/lib/messageFormat";
 import { fmtRelTime } from "@/lib/utils";
 import {
   useTopTippers,
@@ -23,13 +24,6 @@ interface Props extends UseTopTippersParams {
   onSelectFan?: (username: string) => void;
   /** Free-form label shown under the title (e.g. "last 30 days"). */
   windowLabel?: string;
-}
-
-function fmtPrice(cents: number): string {
-  if (cents >= 100_000) {
-    return `$${(cents / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-  }
-  return `$${(cents / 100).toFixed(2)}`;
 }
 
 export default function TopTippersCard({
@@ -87,7 +81,7 @@ export default function TopTippersCard({
                     @{username || `fan-${r.fan_id}`}
                   </span>
                   <span className="tabular-nums font-medium text-fg">
-                    {fmtPrice(r.total_cents)}
+                    {fmtCents(r.total_cents)}
                   </span>
                   <span className="text-fg-dim whitespace-nowrap">
                     ({r.tip_count} tip{r.tip_count === 1 ? "" : "s"} ·{" "}

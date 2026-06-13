@@ -224,10 +224,10 @@ export default function AutoreplyTab({ accountId }: { accountId: string | null }
           <div className="text-xs font-medium text-fg mb-2">Only low spenders</div>
           <div className="flex flex-wrap gap-4">
             <NumField label="Lifetime spend under ($)"
-              value={dollars(form.max_lifetime_spend_cents) || 20} min={0} max={100000} step={1}
+              value={form.max_lifetime_spend_cents != null ? dollars(form.max_lifetime_spend_cents) : 20} min={0} max={100000} step={0.01}
               onChange={(n) => set({ max_lifetime_spend_cents: cents(n) })} suffix="$" />
             <NumField label="Recent spend under ($)"
-              value={dollars(form.max_recent_spend_cents) || 5} min={0} max={100000} step={1}
+              value={form.max_recent_spend_cents != null ? dollars(form.max_recent_spend_cents) : 5} min={0} max={100000} step={0.01}
               onChange={(n) => set({ max_recent_spend_cents: cents(n) })} suffix="$" />
             <NumField label="…in the last (days)"
               value={form.recent_spend_days ?? 30} min={1} max={365}
