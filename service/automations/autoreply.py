@@ -52,12 +52,13 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from ._common import (
-    ONPLATFORM_GUARDRAIL, guard_offplatform,
+    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, guard_offplatform,
     STYLE_3LINE, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style, apply_word_restriction,
-    hold_with_typing, humanize_typos, load_nonnative_flags, load_style_flags,
+    hold_with_typing, humanize_typos, load_nonnative_flags, load_strip_emojis,
+    load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags, resolve_fan_name,
-    resolve_model, skip_unreachable_fan, typing_delay_seconds,
+    resolve_model, skip_unreachable_fan, strip_emojis, typing_delay_seconds,
 )
 from .of_ai_chat import (_is_info_complete, _strip_html, split_for_bubbles,
                          _dedupe_lead_reaction)
@@ -174,6 +175,7 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         "wording — never reuse a line or emoji you've already used here. No "
         "paragraphs, no narrating.\n\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
+        f"{LIVE_PROOF_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
         f"{NONNATIVE_REGISTER + chr(10) + chr(10) if nonnative_on else ''}"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
@@ -337,6 +339,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
+    strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     style_pool = _STYLE_VARIANTS + ((STYLE_3LINE,) if style_on else ())
     dry_run = bool(payload.get("dry_run"))
@@ -425,6 +428,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if _leak:
             log.info("autoreply off-platform leak guarded account=%s fan=%s reasons=%s",
                      account_id, fid, _leak)
+        # Account-wide emoji strip (opt-in) — before the split, like of_ai_chat.
+        if strip_emoji_on:
+            raw = strip_emojis(raw)
         parts = [apply_word_restriction(p)[:_REPLY_MAX_CHARS]
                  for p in split_for_bubbles(raw, max_bubbles,
                                             rng=random.Random(f"split:{f.fan_id}:{raw}"))

@@ -83,12 +83,13 @@ from db.engine import get_session
 from db.models import AccountAiConfig, Blacklist, Fan, FanProfile, Message, SkipList
 from llm_client import LLMCapExceeded
 from ._common import (
-    ONPLATFORM_GUARDRAIL, guard_offplatform,
+    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, guard_offplatform,
     STYLE_HUMANIZER, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style,
     apply_word_restriction, build_facts_note,
     build_structured_nickname, casualize_qtease, coerce_ids, facts_from_fan,
     hold_with_typing, humanize_typos, load_nonnative_flags, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
+    strip_emojis,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
     skip_unreachable_fan, typing_delay_seconds,
 )
@@ -142,20 +143,10 @@ _REPLY_GATED_STATES = _WAITING_STATES | {"not_started"}
 _HTML_OPEN = "<"
 _TAG_RE = re.compile(r"<[^>]+>")
 
-# deep_convo is emoji-FREE (user mandate). The model ignores a "no emojis" prompt,
-# so we strip them in code at the send chokepoint. Targets the emoji unicode blocks
-# (and the variation-selector / ZWJ joiners) — NOT general punctuation, so an
-# em-dash "—" or apostrophe survives. Collapse any double space left behind.
-_EMOJI_RE = re.compile(
-    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002190-\U000021FF"
-    "\U00002B00-\U00002BFF\U0000FE00-\U0000FE0F\U0001F1E6-\U0001F1FF‍♀♂]+"
-)
-_WS_RE = re.compile(r"[ \t]{2,}")
-
-
-def _strip_emojis(s: str) -> str:
-    """Remove emojis (deep_convo is emoji-free) and tidy the spacing they leave."""
-    return _WS_RE.sub(" ", _EMOJI_RE.sub("", s or "")).strip()
+# deep_convo is emoji-FREE (user mandate, ALWAYS — independent of the account-wide
+# strip_emojis toggle). The model ignores a "no emojis" prompt, so we strip them in
+# code at the send chokepoint via the shared _common.strip_emojis.
+_strip_emojis = strip_emojis
 
 
 # A dash the model emits is BOTH a bot tell and a missed bubble break — a real
@@ -345,6 +336,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "you are 100% human, girly, warm. Don't offer pics or videos. Do NOT use any "
         "emojis in this reply.\n\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
+        f"{LIVE_PROOF_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
         f"{NONNATIVE_REGISTER + chr(10) + chr(10) if nonnative_on else ''}"
         "IMPORTANT: your reply is ONLY the chat message text. Never include JSON, "
@@ -843,6 +835,7 @@ def _leadin_messages(persona: str, f: Fan, c: _Candidate,
         "explicit or asks for nudes/pics, do NOT go along with it — tease and slow it "
         "down warmly instead. No emojis. Output ONLY the message text.\n\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
+        f"{LIVE_PROOF_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
         f"{NONNATIVE_REGISTER if nonnative_on else ''}"
     )

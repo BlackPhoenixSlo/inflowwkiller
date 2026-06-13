@@ -58,8 +58,9 @@ from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
 from ._common import (
-    apply_word_restriction, quarantine_if_undeliverable, resolve_fan_name,
-    resolve_model, skip_unreachable_fan,
+    LIVE_PROOF_GUARDRAIL, apply_word_restriction, load_strip_emojis,
+    quarantine_if_undeliverable, resolve_fan_name,
+    resolve_model, skip_unreachable_fan, strip_emojis,
 )
 from db.engine import get_session
 from db.models import (
@@ -230,6 +231,7 @@ def _compose_system(cfg: dict, tod: str, activity: str, clock: str,
         "never sound desperate or needy. Output only the message text — no "
         "surrounding quotes, no preamble."
     )
+    parts.append(LIVE_PROOF_GUARDRAIL)
     return "\n\n".join(parts)
 
 
@@ -536,6 +538,7 @@ async def preview_compose(
     silence is that step's threshold. Fan name/bio come from the DB when `fan_id`
     is given (overridable with `test_name`), else a generic 'babe' stand-in."""
     cfg = await _load_ai_config(account_id)
+    strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     hour = _model_hour(cfg.get("utc_offset"))
     tod, activity = _time_activity(hour, cfg.get("time_activities") or {})
     clock = _model_clock(cfg.get("utc_offset"))
@@ -578,6 +581,8 @@ async def preview_compose(
         temperature=_TEMPERATURE,
     )
     text = apply_word_restriction((getattr(res, "content", "") or "").strip())
+    if strip_emoji_on:
+        text = strip_emojis(text)
     return {"text": text, "image": _slot_image_id(cfg, hour),
             "name": name, "slot": _slot_key(hour), "step": step}
 
@@ -592,6 +597,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     limit = int(payload.get("limit") or _DEFAULT_FAN_LIMIT)
 
     cfg = await _load_ai_config(account_id)
+    strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
     thresholds = _resolve_step_thresholds(payload)
     hour = _model_hour(cfg.get("utc_offset"))
@@ -755,6 +761,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 continue
 
             text = apply_word_restriction((getattr(res, "content", "") or "").strip())
+            if strip_emoji_on:
+                text = strip_emojis(text)
             if not text:
                 errors += 1
                 continue

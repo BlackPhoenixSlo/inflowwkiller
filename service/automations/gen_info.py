@@ -71,12 +71,21 @@ _DEFAULT_MODEL = "grok-4-1-fast-non-reasoning"   # llm_client fallback (19 §4)
 _PURPOSE = "gen_info"
 _QUAL_MIN_FAN_MSGS = 1           # profile ANY fan who has written ≥1 message …
 _QUAL_MIN_SPEND_CENTS = 1        # …or spent anything (spend no longer gates; all in)
-# Re-run cadence: regenerate when the fan's message count crosses the next
-# FIBONACCI milestone since the last generation (1,2,3,5,8,13,21,… ) — dense early
-# while we're still learning the fan, sparse later — OR when the profile is older
-# than _MAX_PROFILE_AGE (so a long-quiet fan still refreshes eventually). Replaces
-# the old flat 1.22× growth factor.
-_MAX_PROFILE_AGE = timedelta(days=14)
+# Re-run cadence (spend-tiered). HARD GATE first: never (re)compile a profile until
+# the fan has sent >= _MIN_NEW_MSGS new inbound messages since the last generation
+# (or >= that many total when never profiled) — no fresh chat ⇒ nothing new to mine
+# ⇒ no LLM call. Once that gate is met, regenerate on EITHER a time window OR a
+# new-message volume cap, both set by the fan's spend tier (_tier_knobs): paying fans
+# stay freshest, cold $0 fans back off. Replaces the old Fibonacci milestone ladder.
+_MIN_NEW_MSGS = 8                          # the gate: < this many new msgs ⇒ never recompile
+_NEW_SUB_WINDOW = timedelta(days=7)        # subbed within this ⇒ "new sub" (middle tier)
+_RECENT_SPEND_WINDOW = timedelta(days=7)   # cleared spend within this ⇒ "paying" tier
+_PAYING_LIFETIME_FLOOR_CENTS = 50000       # >= $500 lifetime ⇒ always paying (whale floor)
+# (fresh_after, volume_cap) per tier — fresh_after = time-based refresh window,
+# volume_cap = refresh after this many NEW inbound messages.
+_CADENCE_PAYING = (timedelta(days=2), 55)  # spent in last 7d OR >= $500 lifetime
+_CADENCE_MIDDLE = (timedelta(days=2), 89)  # new sub <7d OR lapsed payer (any lifetime spend)
+_CADENCE_COLD = (timedelta(days=7), 89)    # $0 lifetime and not a new sub
 _MAX_CONCURRENCY = 4             # background fan-out cap (≤4 — never block proxy/LLM)
 _DEFAULT_FAN_LIMIT = 200         # sweep ceiling when no force_ids
 _MSG_HEAD = 250                  # trim: keep first 250 …
@@ -273,42 +282,83 @@ def _spend_tier(cents: int) -> str:
     return "Free"
 
 
-def _fib_milestone_crossed(prev: int, now: int) -> bool:
-    """True if the inbound-message count crossed a FIBONACCI milestone (1, 2, 3, 5,
-    8, 13, 21, …) between `prev` (count at last generation) and `now` (current). The
-    gaps widen as the fan matures, so a fresh fan regenerates on nearly every new
-    message while a long-running one backs off to occasional refreshes."""
-    if now <= prev:
-        return False
-    a, b = 1, 2
-    while a <= now:
-        if a > prev:
-            return True
-        a, b = b, a + b
-    return False
+def _tier_knobs(lifetime_cents: int, recent_cents: int,
+                subscribed_at: "datetime | None", now: datetime) -> tuple:
+    """(fresh_after, volume_cap) for a fan, by spend tier — spend the profiling
+    budget where the money is. PAYING (spent in the last _RECENT_SPEND_WINDOW, or a
+    >= $500 lifetime whale) gets the freshest cadence; MIDDLE (a new sub, or a lapsed
+    payer with any lifetime spend) the default; COLD ($0 and not new) the laziest.
+    First match wins."""
+    if recent_cents > 0 or lifetime_cents >= _PAYING_LIFETIME_FLOOR_CENTS:
+        return _CADENCE_PAYING
+    new_sub = subscribed_at is not None and (now - subscribed_at) < _NEW_SUB_WINDOW
+    if new_sub or lifetime_cents > 0:
+        return _CADENCE_MIDDLE
+    return _CADENCE_COLD
 
 
 def profile_is_stale(prev_count: int | None, last_gen_at: datetime | None,
                      now_count: int, now: datetime,
-                     lines_empty: bool = False) -> bool:
-    """Should this fan's profile be regenerated? True when never generated, when the
-    message count crossed a Fibonacci milestone since last gen, or when the profile
-    is older than _MAX_PROFILE_AGE. Shared with of_ai_chat's refresh-if-stale hook.
+                     lines_empty: bool = False, *,
+                     fresh_after: timedelta = _CADENCE_MIDDLE[0],
+                     volume_cap: int = _CADENCE_MIDDLE[1]) -> bool:
+    """Should this fan's profile be regenerated? Shared with of_ai_chat's
+    refresh-if-stale hook. `fresh_after`/`volume_cap` come from _tier_knobs (the
+    caller classifies the fan's spend tier); they default to the MIDDLE tier.
 
-    `lines_empty` is a RELAXED gate beside the Fibonacci/age ones: when a whole Q- or
-    Tease-class has been consumed (all three slots null) AND there's been any new
-    inbound message since the last gen (`now_count > prev_count`), refill the openers
-    now instead of waiting for the next milestone. The new-message guard keeps the
-    cost down — an empty class with no new chat is NOT stale (nothing new to mine)."""
-    if prev_count is None:
+    HARD GATE: returns False unless >= _MIN_NEW_MSGS new inbound messages have arrived
+    since the last generation (or >= that many total when never profiled) — no fresh
+    chat ⇒ nothing to re-mine ⇒ no LLM call. Past the gate, regenerate when never
+    profiled, when `volume_cap` new messages have piled up, or when the profile is
+    older than `fresh_after`.
+
+    `lines_empty` is the one EXEMPTION from the gate: when a whole Q- or Tease-class
+    has been consumed (all three slots null) AND there's any new inbound message,
+    refill the openers now — of_ai_chat needs openers to talk, so that functional
+    refill isn't held to the >= _MIN_NEW_MSGS freshness gate."""
+    nc = int(now_count)
+    prev = int(prev_count) if prev_count is not None else 0
+    new_msgs = nc - prev
+    if lines_empty and new_msgs > 0:
         return True
-    if lines_empty and int(now_count) > (int(prev_count) if prev_count is not None else 0):
+    if new_msgs < _MIN_NEW_MSGS:           # the gate — too little new chat to bother
+        return False
+    if prev_count is None:                 # never profiled, now past the gate
         return True
-    if _fib_milestone_crossed(int(prev_count), int(now_count)):
+    if new_msgs >= volume_cap:             # volume: every `volume_cap` new messages
         return True
-    if last_gen_at is not None and (now - last_gen_at) >= _MAX_PROFILE_AGE:
+    if last_gen_at is not None and (now - last_gen_at) >= fresh_after:  # time
         return True
     return False
+
+
+async def fan_cadence_knobs(s, account_id: str, fan_id: int, now: datetime,
+                            *, lifetime_spend_cents: int | None = None) -> tuple:
+    """(fresh_after, volume_cap) for one fan, classified from the DB on an open
+    session `s` — the per-fan analogue of the batch tier computation the sweep does
+    inline. Reads lifetime spend + subscribed_at off the fans row and sums CLEARED
+    spend in the last _RECENT_SPEND_WINDOW. Used by of_ai_chat's refresh hook."""
+    fan_id = int(fan_id)
+    if lifetime_spend_cents is None:
+        frow = (await s.execute(
+            select(Fan.lifetime_spend_cents, Fan.subscribed_at)
+            .where(Fan.account_id == str(account_id), Fan.fan_id == fan_id)
+        )).first()
+        lifetime_spend_cents = int(frow[0] or 0) if frow else 0
+        subscribed_at = frow[1] if frow else None
+    else:
+        subscribed_at = (await s.execute(
+            select(Fan.subscribed_at)
+            .where(Fan.account_id == str(account_id), Fan.fan_id == fan_id)
+        )).scalar()
+    recent = (await s.execute(
+        select(func.coalesce(func.sum(Transaction.amount_cents), 0))
+        .where(Transaction.account_id == str(account_id),
+               Transaction.fan_id == fan_id,
+               Transaction.status == "cleared",
+               Transaction.occurred_at >= now - _RECENT_SPEND_WINDOW)
+    )).scalar() or 0
+    return _tier_knobs(int(lifetime_spend_cents), int(recent), subscribed_at, now)
 
 
 def _known_block(c: "_Candidate") -> str:
@@ -345,6 +395,7 @@ def _known_block(c: "_Candidate") -> str:
 
 class _Candidate:
     __slots__ = ("fan_id", "fan_msg_n", "total_msg_n", "spend_cents",
+                 "recent_spend_cents", "subscribed_at",
                  "source", "of_name", "of_username", "known", "messages")
 
     def __init__(self, fan_id: int):
@@ -352,6 +403,8 @@ class _Candidate:
         self.fan_msg_n = 0
         self.total_msg_n = 0
         self.spend_cents = 0
+        self.recent_spend_cents = 0          # cleared spend in the last _RECENT_SPEND_WINDOW
+        self.subscribed_at = None            # fans.subscribed_at — for the new-sub tier
         self.source = ""    # "fan" = subscribedOn (real fan); else peer creator/unknown
         self.of_name = ""
         self.of_username = ""
@@ -362,14 +415,14 @@ class _Candidate:
 
 
 async def _gather_candidates(
-    account_id: str, force_ids: set[int], limit: int
+    account_id: str, force_ids: set[int], limit: int, now: datetime
 ) -> list[_Candidate]:
     """One pass over the account's messages → per-fan counts + trimmed history.
 
     Spend is summed from PURCHASED outbound PPV/tips (legacy `sender==Model and
-    is_paid`). Fan-message count is inbound messages. The fan's display name is
-    lifted from the fans row. Returns candidates that pass the qualification gate
-    (or are forced)."""
+    is_paid`). Fan-message count is inbound messages. The fan's display name +
+    subscribed_at + recent cleared spend are lifted for the cadence tiering. Returns
+    candidates that pass the qualification gate (or are forced)."""
     counts: dict[int, _Candidate] = {}
     async with get_session() as s:
         rows = (
@@ -401,6 +454,7 @@ async def _gather_candidates(
         # Lift display name + username + prior extracted facts (ground truth, W2h)
         # for the fans we care about — ONE DB read, no OF call (proxy-safe).
         prior: dict[int, dict] = {}
+        subdates: dict[int, "datetime | None"] = {}   # fan_id → subscribed_at (tiering)
         if counts:
             frows = (await s.execute(
                 select(
@@ -408,13 +462,14 @@ async def _gather_candidates(
                     Fan.real_name, Fan.his_age, Fan.home_city, Fan.home_country,
                     Fan.hobbies, Fan.occupation, Fan.relationship_status,
                     Fan.fetishes, Fan.recent_events, Fan.generated_nickname,
-                    Fan.custom_nickname, Fan.source,
+                    Fan.custom_nickname, Fan.source, Fan.subscribed_at,
                 ).where(
                     Fan.account_id == account_id,
                     Fan.fan_id.in_(list(counts)),
                 )
             )).all()
             for r in frows:
+                subdates[int(r.fan_id)] = r.subscribed_at
                 prior[int(r.fan_id)] = {
                     "of_display_name": r.of_display_name or "",
                     "of_username": r.of_username or "",
@@ -450,12 +505,29 @@ async def _gather_candidates(
                 if c is not None:
                     c.spend_cents = max(c.spend_cents, int(total or 0))
 
+        # Recent cleared spend (last _RECENT_SPEND_WINDOW) → the "paying" cadence tier.
+        if counts:
+            txrecent = (await s.execute(
+                select(Transaction.fan_id, func.sum(Transaction.amount_cents))
+                .where(Transaction.account_id == account_id)
+                .where(Transaction.status == "cleared")
+                .where(Transaction.fan_id.is_not(None))
+                .where(Transaction.fan_id.in_(list(counts)))
+                .where(Transaction.occurred_at >= now - _RECENT_SPEND_WINDOW)
+                .group_by(Transaction.fan_id)
+            )).all()
+            for fid, total in txrecent:
+                c = counts.get(int(fid))
+                if c is not None:
+                    c.recent_spend_cents = int(total or 0)
+
     qualifying: list[_Candidate] = []
     for fan_id, c in counts.items():
         info = prior.get(fan_id) or {}
         c.of_name = info.get("of_display_name") or ""
         c.of_username = info.get("of_username") or ""
         c.source = info.get("source") or ""
+        c.subscribed_at = subdates.get(fan_id)
         c.known = info
         forced = fan_id in force_ids
         # Promo-spam guard (mirrors of_ai_chat): don't waste an LLM profile on
@@ -775,19 +847,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     limit = int(payload.get("limit") or _DEFAULT_FAN_LIMIT)
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
 
-    candidates = await _gather_candidates(account_id, force_ids, limit)
+    now = datetime.utcnow()
+    candidates = await _gather_candidates(account_id, force_ids, limit, now)
     # Refill path: narrow to just the requested ids; they still go through the gated
     # stale check below (NOT forced) so an empty-lines refill with no new messages
     # no-ops instead of burning an LLM call.
     if refill_ids:
         candidates = [c for c in candidates if c.fan_id in refill_ids]
 
-    now = datetime.utcnow()
     # Prevention: paying fans with thin local history get a deep-scrape enqueued and
     # are deferred from this pass (profiled next pass on the real transcript).
     deferred = await _enqueue_thin_fan_scrapes(account_id, candidates, force_ids, now)
-    # Re-run gate (skipped for forced ids): regenerate when the message count crossed
-    # a Fibonacci milestone since last gen, or the profile aged past _MAX_PROFILE_AGE.
+    # Re-run gate (skipped for forced ids): needs >= _MIN_NEW_MSGS new inbound msgs,
+    # then regenerates on the fan's spend-tiered time window or new-message volume cap.
     prior = await _existing_profiles(account_id, [c.fan_id for c in candidates])
     todo: list[_Candidate] = []
     skipped_fresh = 0
@@ -801,8 +873,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         prev_count = stored[0] if stored else None
         last_gen_at = stored[1] if stored else None
         lines_empty = stored[2] if stored else False
+        fresh_after, volume_cap = _tier_knobs(
+            c.spend_cents, c.recent_spend_cents, c.subscribed_at, now)
         if profile_is_stale(prev_count, last_gen_at, c.fan_msg_n, now,
-                            lines_empty=lines_empty):
+                            lines_empty=lines_empty,
+                            fresh_after=fresh_after, volume_cap=volume_cap):
             todo.append(c)
         else:
             skipped_fresh += 1

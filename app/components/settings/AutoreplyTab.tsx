@@ -68,6 +68,19 @@ function StyleSection({ accountId }: { accountId: string | null }) {
         always-on when ticked) plus slightly broken grammar; names, prices and links
         are never touched.
       </p>
+      <label className="flex items-start gap-2.5 cursor-pointer rounded-lg border border-border bg-bg-elev-1 px-3 py-2.5">
+        <input type="checkbox" className="h-4 w-4 mt-0.5 accent-[var(--accent)] cursor-pointer"
+          checked={!!form.strip_emojis}
+          onChange={(e) => set({ strip_emojis: e.target.checked })} />
+        <span className="space-y-0.5">
+          <span className="block text-sm">Strip all emojis</span>
+          <span className="block text-[11px] text-fg-dim/70">
+            Removes every emoji at send time — emoji placement is a dead LLM tell.
+            Applies to all automated sends (chat, auto convo, follow-ups, welcome,
+            mass funnels). Off by default.
+          </span>
+        </span>
+      </label>
       <div className="space-y-2">
         <div className="flex items-center gap-3 text-[11px] text-fg-dim/70 pl-0">
           <span className="w-28">Automation</span>
