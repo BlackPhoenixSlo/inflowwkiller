@@ -1650,13 +1650,23 @@ class OFClient:
         """POST /api2/v2/messages/queue — schedule a MASS message (broadcast).
         Set `user_ids` to specific fans OR `user_lists` for built-in/custom lists
         (e.g. ['fans']). `excluded_user_lists` removes whole lists from the
-        target set — desktop-app uses `excludeUserLists` to suppress, e.g.,
-        a "VIPs" list from a generic blast. Returns queue entry with
-        `total = count of recipients`.
+        target set — the wire field is `excludedLists` (VERIFIED LIVE
+        2026-06-12: a 1-fan list broadcast with the fan in an excludedLists
+        list resolved to total=0; the old `excludeUserLists` name was
+        silently ignored and the fan got the message).
+
+        ⚠️ OF has NO per-user exclusion field on this endpoint —
+        `excludedUsers` does not exist and was silently dropped for months.
+        `excluded_users` here is honored CLIENT-SIDE only: those ids are
+        subtracted from `user_ids` before the call. It cannot remove fans
+        from a `user_lists`/online audience — sync such ids into an OF
+        custom list and pass it via `excluded_user_lists` instead
+        (see audiences.ensure_exclude_list).
 
         `giphy_id`: forwarded as top-level `giphyId` — matches the chat send
         wire shape. OF web includes GIFs on mass-message broadcasts; we
         mirror the field name and let OF accept/reject."""
+        excl_ids = {int(u) for u in (excluded_users or [])}
         body: dict = {
             "text": text,
             "lockedText": locked_text,
@@ -1664,10 +1674,9 @@ class OFClient:
             "price": price,
             "previews": previews or [],
             "scheduledDate": scheduled_date,
-            "userIds": user_ids or [],
+            "userIds": [int(u) for u in (user_ids or []) if int(u) not in excl_ids],
             "userLists": user_lists or [],
-            "excludedUsers": excluded_users or [],
-            "excludeUserLists": excluded_user_lists or [],
+            "excludedLists": excluded_user_lists or [],
         }
         merged_filters = dict(filters) if filters else {}
         if online_only:
@@ -1708,7 +1717,16 @@ class OFClient:
         Targeting (combine as needed):
           - `user_lists`: built-in names ('fans', 'recent') or custom list ids
           - `included_users`: explicit fan ids
-          - `excluded_users`: exclusions
+          - `excluded_users`: CLIENT-SIDE only — subtracted from
+            `included_users` before the call. OF has NO per-user exclusion
+            field on this endpoint (`excludedUsers` doesn't exist; VERIFIED
+            LIVE 2026-06-12 — it was silently dropped and excluded fans got
+            the blast). To exclude ids from a list/online audience, sync them
+            into an OF custom list and pass `excluded_user_lists`
+            (see audiences.ensure_exclude_list).
+          - `excluded_user_lists`: custom list ids excluded server-side — the
+            wire field is `excludedLists` (VERIFIED LIVE 2026-06-12; the old
+            `excludeUserLists` name was silently ignored).
           - `online_only=True` (or `filters={'online': 1}`): native
             online-fan targeting — OF resolves the audience to fans currently
             online at send time. VERIFIED LIVE: OF web's "online" broadcast
@@ -1719,6 +1737,7 @@ class OFClient:
         merged_filters = dict(filters) if filters else {}
         if online_only:
             merged_filters["online"] = 1
+        excl_ids = {int(u) for u in (excluded_users or [])}
         body: dict = {
             "text": text,
             "lockedText": locked_text,
@@ -1726,9 +1745,8 @@ class OFClient:
             "price": price,
             "previews": previews or [],
             "userLists": user_lists or [],
-            "userIds": included_users or [],
-            "excludedUsers": excluded_users or [],
-            "excludeUserLists": excluded_user_lists or [],
+            "userIds": [int(u) for u in (included_users or []) if int(u) not in excl_ids],
+            "excludedLists": excluded_user_lists or [],
         }
         if merged_filters:
             body["filters"] = merged_filters

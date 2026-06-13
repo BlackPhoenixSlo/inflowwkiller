@@ -165,6 +165,27 @@ async def _classify_kind(account_id: str, fan_id: int) -> str | None:
     if await _fan_mid_funnel(account_id, fan_id):
         return "reply_mass_funnel"
 
+    # PPVscriptAI: when ai_chatter is enabled it owns every fan under its spend
+    # gate (it replaces of_ai_chat/deep_convo for them — one bot voice per fan);
+    # a fan at/over the gate is a whale → human territory, no automation reply.
+    # Lazy import to avoid a module cycle (ai_chatter imports of_ai_chat).
+    try:
+        from automations.ai_chatter import gate_for as _ai_gate_for
+        ai_gate = await _ai_gate_for(account_id)
+    except Exception:
+        ai_gate = None
+    if ai_gate is not None:
+        async with get_session() as s:
+            spend = (
+                await s.execute(
+                    select(Fan.lifetime_spend_cents).where(
+                        Fan.account_id == str(account_id),
+                        Fan.fan_id == int(fan_id),
+                    )
+                )
+            ).scalar_one_or_none()
+        return "ai_chatter" if int(spend or 0) < ai_gate else None
+
     # One read for both markers: the fan's deep_convo_state + its skip_list row.
     async with get_session() as s:
         dstate = (
@@ -269,6 +290,19 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> N
             return
 
         delay = _response_delay(cfg)
+        # ai_chatter "backup" mode: the bot is the FALLBACK chatter — its reply
+        # waits out the human SLA. We enqueue now with the SLA folded into the
+        # delay; at fire time the run's "fan spoke last" gate re-checks, so a
+        # human answering inside the window simply makes the job a no-op.
+        if kind == "ai_chatter":
+            try:
+                from automations.ai_chatter import _load_config as _ai_cfg
+                acfg = await _ai_cfg(account_id)
+                if str(acfg.get("mode") or "backup") == "backup":
+                    delay += max(0, int(acfg.get("sla_minutes") or 0)) * 60
+            except Exception:
+                log.debug("ai_chatter sla read failed account=%s", account_id,
+                          exc_info=True)
         now = datetime.utcnow()
 
         # A fan a human is handling, or one the bot just replied to, is on a
@@ -339,6 +373,23 @@ async def on_inbound_tip(account_id: str, fan_id: int, message_id: int,
     SEPARATELY from the W7 reply dispatch above: a tip reward should fire even on
     a terminal-stage fan that no chat automation would reply to. Never raises."""
     try:
+        # PPVscriptAI: a fan with an OPEN tip-capable ai_chatter offer is paying
+        # toward THAT — the offer claims the tip (the run's unlock watcher
+        # accumulates + delivers) and the generic tip_reward stands down, so the
+        # fan never gets reward media on top of the unlocked piece.
+        try:
+            from automations.ai_chatter import has_open_tip_offer
+            if await has_open_tip_offer(account_id, fan_id):
+                await ax.enqueue_job(account_id, "ai_chatter",
+                                     payload={"only_fan_ids": [int(fan_id)]})
+                ax.wake_supervisor()
+                log.info("ai_chatter_tip_claim account=%s fan=%s msg=%s cents=%s",
+                         account_id, fan_id, message_id, tip_cents)
+                return
+        except Exception:
+            log.warning("ai_chatter_tip_claim_failed account=%s fan=%s — falling "
+                        "back to tip_reward", account_id, fan_id, exc_info=True)
+
         from automations.tip_reward import is_enabled  # lazy: avoid import cycle
         if not await is_enabled(account_id):
             return

@@ -17,6 +17,7 @@ import DriftBanner from "@/components/setup/DriftBanner";
 import AccountsTable from "@/components/setup/AccountsTable";
 import ProxiesTable from "@/components/setup/ProxiesTable";
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
+import KeysCard from "@/components/setup/KeysCard";
 
 export default function SetupPage() {
   return (
@@ -24,7 +25,7 @@ export default function SetupPage() {
       <header>
         <h1 className="text-2xl font-semibold mb-1">Setup</h1>
         <p className="text-sm text-fg-dim">
-          Capture sessions, manage proxies, monitor drift. Everything that
+          Capture sessions, manage proxies, keys, monitor drift. Everything that
           keeps the relay talking to OnlyFans.
         </p>
       </header>
@@ -36,6 +37,8 @@ export default function SetupPage() {
       <AccountsTable />
 
       <ProxiesTable />
+
+      <KeysCard />
     </div>
   );
 }

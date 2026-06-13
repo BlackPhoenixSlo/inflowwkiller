@@ -1040,6 +1040,15 @@ class AccountAiConfig(Base):
     # folders, until a creator fills folder names + ticks enabled). Own column to
     # avoid the nudge/webhook shallow-merge collision.
     tip_reward_config_json: Mapped[str | None] = mapped_column(Text)
+    # ai_chatter (PPVscriptAI): per-account config for the freestyle selling
+    # chatter that REPLACES of_ai_chat for fans under the spend gate. JSON
+    # {enabled, mode: "backup"|"always", sla_minutes, max_lifetime_spend_cents,
+    # offer_mode: "tip"|"ppv"|"both", max_offers_per_fan_per_day,
+    # min_fan_msgs_between_offers, max_fans_per_tick, stall_ttl_hours,
+    # resume_after_manual_hours}. Absent/NULL → ai_chatter's built-in defaults
+    # (DISABLED — ships off until a creator enables it). Own column to avoid
+    # the nudge/webhook shallow-merge collision.
+    ai_chatter_config_json: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = _ts_now()
 
 
@@ -1114,6 +1123,131 @@ class FunnelState(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     last_error: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = _ts_now()
+
+
+class CatalogScript(Base):
+    """An ordered 'sexting sequence' — a themed series of catalog items that
+    ai_chatter sells one piece at a time (escalation order = item position).
+    Singles (one-off clips / photo sets) are catalog_items with script_id NULL.
+    `theme` is shown to the LLM (setting/outfit/arc), never to fans."""
+    __tablename__ = "catalog_scripts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    theme: Mapped[str | None] = mapped_column(Text)
+    # draft → not offered; enabled → ai_chatter may sell it; disabled → retired.
+    status: Mapped[str] = mapped_column(String, nullable=False, default="draft")
+    created_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        Index("ix_catalog_scripts_account", "account_id", "name", unique=True),
+    )
+
+
+class CatalogItem(Base):
+    """One sellable unit: a video, an image, or an image set (N media sold as one
+    bundle). Belongs to a script (script_id + position = escalation order) or
+    stands alone (script_id NULL = a single, e.g. a bed-dance clip).
+
+    `description_for_ai` is the contract: what the fan actually SEES, 1-2
+    sentences, present tense. The LLM may only tease/claim what's written here —
+    it is the sole source for pitches and for answering "what will we do?"."""
+    __tablename__ = "catalog_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    script_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("catalog_scripts.id", ondelete="CASCADE")
+    )
+    position: Mapped[int | None] = mapped_column(Integer)  # order within script
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="video")
+    label: Mapped[str | None] = mapped_column(String)      # e.g. "BOOB TEASE"
+    description_for_ai: Mapped[str | None] = mapped_column(Text)
+    media_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # Free teaser frames attached unlocked on a PPV send (OF `previews`).
+    preview_media_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    duration_sec: Mapped[int | None] = mapped_column(Integer)
+    # Unlock terms. 0 disables that mode for this item; is_free_teaser items are
+    # sent free to build momentum (initiation pics, item 1).
+    price_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tip_unlock_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_free_teaser: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    tags: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        Index("ix_catalog_items_script", "account_id", "script_id", "position"),
+    )
+
+
+class CatalogProgress(Base):
+    """Per-(account, fan, script) position pin. NOT a chat state machine —
+    ai_chatter freestyles the conversation; this row only constrains WHAT it may
+    offer next (escalation order) and enforces once-per-fan-per-script. `position`
+    is the index of the NEXT item to offer. status: active|stalled|abandoned|done.
+    A stalled row past the TTL goes abandoned and the fan returns to the normal
+    pool (and becomes a 'we never finished 😏' followup hook)."""
+    __tablename__ = "catalog_progress"
+
+    account_id: Mapped[str] = mapped_column(String, primary_key=True)
+    fan_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    script_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("catalog_scripts.id", ondelete="CASCADE"), primary_key=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    started_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = _ts_now()
+
+
+class ContentOffer(Base):
+    """One concrete offer ai_chatter made ('unlock this for $N / tip $M and i'll
+    send it'). The OPEN offer is the unlock watcher's anchor: inbound tips since
+    `offered_at` accumulate into `tips_accum_cents` toward `tip_unlock_cents`;
+    the ledger ingest flipping messages.is_paid on `offer_message_id` resolves a
+    PPV. Doubles as the offer rate-limit source and the per-item conversion log.
+
+    status: open → unlocked (paid, tip mode awaiting delivery) → delivered;
+    PPV resolves straight to delivered (media was inside the locked message).
+    expired = stall TTL; cancelled = superseded/killed by a human."""
+    __tablename__ = "content_offers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    fan_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    item_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("catalog_items.id", ondelete="CASCADE"), nullable=False
+    )
+    script_id: Mapped[int | None] = mapped_column(Integer)
+    mode: Mapped[str] = mapped_column(String, nullable=False, default="tip")
+    # Terms snapshot at offer time (catalog rows can be edited later).
+    price_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tip_unlock_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    offer_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="open")
+    resolved_by: Mapped[str | None] = mapped_column(String)  # tip|ppv_ledger|ppv_fastpath|manual
+    tips_accum_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    delivery_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    offered_at: Mapped[datetime] = _ts_now()
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        # The watcher's hot path: the open offer for (account, fan).
+        Index("ix_content_offers_open", "account_id", "fan_id", "status"),
+        # Conversion stats per item ("which content actually sells").
+        Index("ix_content_offers_item", "account_id", "item_id", "offered_at"),
+    )
 
 
 class AutomationRule(Base):

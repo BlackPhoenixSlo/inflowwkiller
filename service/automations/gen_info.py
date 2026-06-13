@@ -57,7 +57,12 @@ from db.engine import get_session
 from db.models import AccountAiConfig, Fan, FanProfile, Message, ScrapeHistory, Transaction
 import llm_client
 from llm_client import LLMCapExceeded, LLMError
-from ._common import coerce_ids, resolve_model
+from ._common import (
+    build_structured_nickname,
+    coerce_ids,
+    push_nick_and_notes,
+    resolve_model,
+)
 
 log = logging.getLogger("of-relay.automation.gen_info")
 
@@ -403,7 +408,7 @@ async def _gather_candidates(
                     Fan.real_name, Fan.his_age, Fan.home_city, Fan.home_country,
                     Fan.hobbies, Fan.occupation, Fan.relationship_status,
                     Fan.fetishes, Fan.recent_events, Fan.generated_nickname,
-                    Fan.source,
+                    Fan.custom_nickname, Fan.source,
                 ).where(
                     Fan.account_id == account_id,
                     Fan.fan_id.in_(list(counts)),
@@ -423,6 +428,7 @@ async def _gather_candidates(
                     "fetishes": r.fetishes or "",
                     "recent_events": r.recent_events or "[]",
                     "generated_nickname": r.generated_nickname or "",
+                    "custom_nickname": r.custom_nickname or "",
                     "source": r.source or "",
                 }
 
@@ -515,10 +521,13 @@ def _build_user_prompt(c: _Candidate) -> str:
 # ── Persistence ──────────────────────────────────────────────────────
 
 async def _persist(
-    account_id: str, c: _Candidate, data: dict, call_id: int | None, now: datetime
+    account_id: str, c: _Candidate, data: dict, call_id: int | None, now: datetime,
+    *, client=None
 ) -> None:
     """Upsert fan_profiles + write extracted facts onto the fans row, in ONE
-    fresh session (never shared across gather branches)."""
+    fresh session (never shared across gather branches). When `client` is given,
+    also (re)assert the structured OF nickname so the chat-header name stays in
+    sync — see _sync_of_nickname."""
     nickname = _guard_name(_clean_nickname(data.get("nickname")), c)
     if not nickname:                       # AI gave nothing usable → keep the old one
         nickname = _guard_name(_clean_nickname(c.known.get("generated_nickname")), c)
@@ -616,6 +625,51 @@ async def _persist(
                 index_elements=["account_id", "fan_id"], set_=fact_update
             )
         )
+
+    if client is not None:
+        await _sync_of_nickname(client, account_id, c, fact_update)
+
+
+async def _sync_of_nickname(
+    client, account_id: str, c: "_Candidate", fact_update: dict[str, Any]
+) -> None:
+    """Re-assert the structured OF nickname (Name/City,Country/Age/Job) after a
+    profile regen, using the SAME canonical builder the senders use so OF gets the
+    identical format. This is the periodic self-heal: of_ai_chat pushes the name
+    each gather tick, but once a fan is handed off to deep_convo the name is only
+    asserted once — any later enrichment (or an external edit on onlyfans.com that
+    clears it back to the bare profile name) would otherwise never reach OF. We
+    re-push on every regen of a STRUCTURED nickname (≥2 segments) so drift is
+    corrected; bare-name-only profiles are skipped (OF already falls back to the
+    profile name). Best-effort — never breaks the gen_info run.
+
+    `fact_update` carries the freshly-written column values; we overlay them on
+    `c.known` so the nickname reflects facts found THIS run."""
+    def _val(col: str) -> str:
+        v = fact_update.get(col)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        return str(c.known.get(col) or "").strip()
+
+    ftmp = Fan(
+        account_id=str(account_id), fan_id=int(c.fan_id),
+        real_name=_val("real_name"),
+        his_age=_val("his_age"),
+        home_country=_val("home_country"),
+        home_city=_val("home_city"),
+        occupation=_val("occupation"),
+        custom_nickname=str(c.known.get("custom_nickname") or "").strip(),
+        of_display_name=str(c.known.get("of_display_name") or "").strip(),
+    )
+    nick = build_structured_nickname(ftmp)
+    # Only push a genuinely STRUCTURED name (has at least one fact beyond the name).
+    if not nick or "/" not in nick:
+        return
+    try:
+        await push_nick_and_notes(client, account_id, int(c.fan_id), nick=nick)
+    except Exception:
+        log.debug("gen_info of-nickname push failed account=%s fan=%s",
+                  account_id, c.fan_id, exc_info=True)
 
 
 # ── Re-run gate ──────────────────────────────────────────────────────
@@ -757,6 +811,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     capped = 0
     failed = 0
 
+    # OF client for the self-healing nickname re-push (best-effort). gen_info is
+    # otherwise OF-free; build it once and only when there's work, so a sweep that
+    # regenerates nothing never touches OF.
+    of_client = None
+    if todo:
+        try:
+            import automation_executor as ax  # lazy: avoid an import cycle at load
+            of_client = await asyncio.to_thread(ax._make_client, account_id)
+        except Exception:
+            log.debug("gen_info of-client init failed account=%s", account_id,
+                      exc_info=True)
+
     async def _one(c: _Candidate) -> None:
         nonlocal generated, capped, failed
         async with sem:
@@ -790,7 +856,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             account_id, c.fan_id, result.call_id)
                 return
             try:
-                await _persist(account_id, c, data, result.call_id, now)
+                await _persist(account_id, c, data, result.call_id, now,
+                               client=of_client)
                 generated += 1
             except Exception:
                 failed += 1

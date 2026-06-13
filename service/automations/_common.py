@@ -165,9 +165,9 @@ DEFAULT_MODEL = "deepseek-v4-flash"
 # CURRENT prompt + 2-bubble cap byte-for-byte. When ON, the automation appends
 # STYLE_HUMANIZER to its system prompt, adds STYLE_3LINE to its style dice, and
 # raises its bubble cap to STYLE_MAX_BUBBLES. gated wholly on style_config_json
-# {"of_ai_chat":bool,"autoreply":bool,"deep_convo":bool}.
+# {"of_ai_chat":bool,"autoreply":bool,"deep_convo":bool,"ai_chatter":bool}.
 STYLE_MAX_BUBBLES = 6   # a real texter can fire off a burst of quick texts in a row
-STYLE_AUTOMATIONS = ("of_ai_chat", "autoreply", "deep_convo")
+STYLE_AUTOMATIONS = ("of_ai_chat", "autoreply", "deep_convo", "ai_chatter")
 
 # The "not-AI" block — the tells that make automated chat read like a person.
 STYLE_HUMANIZER = (
@@ -230,6 +230,42 @@ ONPLATFORM_GUARDRAIL = (
     "into an actual invite, plan, or arrangement to go meet."
 )
 
+# ── Live-proof guardrail (ALWAYS ON — not gated on any opt-in) ─────────
+# Fans constantly push for FaceTime / a live call / an on-demand selfie / "prove
+# you're real" / "show it now". Left unaddressed the model fumbles with weak coy
+# half-deflections ("hm okay") that read badly. This block makes the reply BLUNT
+# and DIRECT — a flat "I don't do that" with NO apology and NO fumbling — while
+# staying flirty and redirecting back to the chat. Inject into every
+# conversational system prompt alongside ONPLATFORM_GUARDRAIL.
+LIVE_PROOF_GUARDRAIL = (
+    "LIVE PROOF / FACETIME (hard rule): if he asks to FaceTime, video/live call, "
+    "verify you're real, 'prove it', 'show it now', or send a live/on-demand "
+    "selfie, be BLUNT and DIRECT — clearly say you don't do facetime / live calls "
+    "/ on-demand proof. NO apology, NO 'hm okay', NO coy fumbling, and never half-"
+    "agree or play along. Stay flirty and in character, then redirect straight "
+    "back to chatting or teasing. Keep it to one short flat refusal + one pivot "
+    "line, e.g. \"i don't do facetime babe, but stay n talk to me\" or \"no live "
+    "calls hun, you get me right here\"."
+)
+
+# Emoji (with optional variation selector / ZWJ / regional-indicator) stripper —
+# the model ignores a "no emojis" prompt and its emoji PLACEMENT is itself a dead
+# LLM tell, so when the account opts in we remove emojis IN CODE at the send
+# chokepoint. Targets the emoji unicode blocks only — NOT general punctuation, so
+# an em-dash "—" or apostrophe survives. Collapses any double space left behind.
+# (Promoted from deep_convo, which has always been emoji-free.)
+_EMOJI_STRIP_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002190-\U000021FF"
+    "\U00002B00-\U00002BFF\U0000FE00-\U0000FE0F\U0001F1E6-\U0001F1FF‍♀♂]+"
+)
+_EMOJI_WS_RE = re.compile(r"[ \t]{2,}")
+
+
+def strip_emojis(s: str) -> str:
+    """Remove emojis and tidy the spacing they leave behind. Keeps em-dashes and
+    apostrophes (only the emoji unicode blocks are targeted)."""
+    return _EMOJI_WS_RE.sub(" ", _EMOJI_STRIP_RE.sub("", s or "")).strip()
+
 
 async def load_style_flags(account_id: str) -> dict[str, bool]:
     """Read account_ai_config.style_config_json → {automation: bool}. Absent/NULL
@@ -245,6 +281,22 @@ async def load_style_flags(account_id: str) -> dict[str, bool]:
     except Exception:
         return off
     return {k: bool(stored.get(k)) for k in STYLE_AUTOMATIONS}
+
+
+async def load_strip_emojis(account_id: str) -> bool:
+    """Read account_ai_config.style_config_json → the account-wide 'strip_emojis'
+    bool. Absent/NULL/parse-error → False (the safe default: emojis kept, current
+    behavior unchanged). When True, senders strip emojis at the send chokepoint."""
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    raw = getattr(cfg, "style_config_json", None) if cfg else None
+    if not raw:
+        return False
+    try:
+        stored = json.loads(raw) or {}
+    except Exception:
+        return False
+    return bool(stored.get("strip_emojis"))
 
 
 def typo_flag_key(automation: str) -> str:

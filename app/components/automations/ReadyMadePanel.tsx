@@ -45,8 +45,9 @@ import OnlineBlastTab from "@/components/settings/OnlineBlastTab";
 import WebhookDispatchTab from "@/components/settings/WebhookDispatchTab";
 import AutoreplyTab from "@/components/settings/AutoreplyTab";
 import TipRewardTab from "@/components/settings/TipRewardTab";
+import ScriptsTab from "@/components/settings/ScriptsTab";
 
-type Tab = "auto_posts" | "mass_premade" | "mass_funnels" | "nudge_online" | "mass_nudge" | "online_blast" | "instant_reply" | "autoreply" | "tip_reward" | "unsend" | "onboard";
+type Tab = "auto_posts" | "mass_premade" | "mass_funnels" | "nudge_online" | "mass_nudge" | "online_blast" | "instant_reply" | "autoreply" | "ai_seller" | "tip_reward" | "unsend" | "onboard";
 /** The two tabs that map to an automation_rules kind (the others have their
  *  own self-contained surfaces). */
 type RuleKind = "auto_posts" | "mass_premade";
@@ -60,6 +61,7 @@ const TABS: Array<{ key: Tab; label: string }> = [
   { key: "online_blast", label: "📡 Online Blast" },
   { key: "instant_reply", label: "⚡ Instant reply" },
   { key: "autoreply", label: "💬 Auto Convo" },
+  { key: "ai_seller", label: "🤖 AI Seller" },
   { key: "tip_reward", label: "🎁 Tip Reward" },
   { key: "unsend", label: "🧹 Unsend my chats" },
   { key: "onboard", label: "🆕 Onboard old fans" },
@@ -268,6 +270,7 @@ export default function ReadyMadePanel() {
       {tab === "online_blast" && <OnlineBlastTab />}
       {tab === "instant_reply" && <WebhookDispatchTab accountId={accountId} />}
       {tab === "autoreply" && <AutoreplyTab accountId={accountId} />}
+      {tab === "ai_seller" && <ScriptsTab accountId={accountId} />}
       {tab === "tip_reward" && <TipRewardTab accountId={accountId} />}
       {tab === "unsend" && <UnsendCard accountId={accountId} />}
       {tab === "onboard" && <OnboardCard accountId={accountId} />}

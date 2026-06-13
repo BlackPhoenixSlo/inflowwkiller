@@ -907,13 +907,15 @@ def _extract_messages(f: Fan, c: _Candidate,
 
 async def _extract_and_fill(account_id: str, fan_id: int, f: Fan,
                             c: _Candidate, model: str,
-                            history_tail: int = _EXTRACT_HISTORY_TAIL) -> Fan:
+                            history_tail: int = _EXTRACT_HISTORY_TAIL,
+                            purpose: str = _PURPOSE) -> Fan:
     """Extract his stated facts and persist any NEW ones onto the Fan row (fill
     empty fields only — never overwrite/guess). Updates `f` in place so this tick's
     reply + question list see the fresh facts. Raises LLMCapExceeded (caller stops);
-    any other failure is swallowed and leaves `f` unchanged."""
+    any other failure is swallowed and leaves `f` unchanged. `purpose` tags the
+    grok_calls audit row — ai_chatter passes its own so cost audits stay honest."""
     res = await llm_client.chat(
-        model=model, messages=_extract_messages(f, c, history_tail), purpose=_PURPOSE,
+        model=model, messages=_extract_messages(f, c, history_tail), purpose=purpose,
         account_id=account_id, fan_id=fan_id, temperature=0.2,
         response_format={"type": "json_object"},
     )
@@ -1140,6 +1142,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # sweep). Unlike force_ids this does NOT bypass the gates — a scoped fan still
     # gets the spend/too_long/info checks; it only limits the candidate set.
     only_fan_ids = coerce_ids(payload.get("only_fan_ids"))
+
+    # PPVscriptAI hand-over: when ai_chatter is enabled for this account it
+    # REPLACES of_ai_chat — its population (every fan under its spend gate,
+    # default $1000) is a superset of ours (the $1 gather pool), so running both
+    # would be a second bot voice on the same fans. force_ids still targets
+    # manually. Lazy import: ai_chatter imports our helpers (module cycle).
+    if not force_ids:
+        try:
+            from .ai_chatter import is_enabled as _ai_chatter_enabled
+            if await _ai_chatter_enabled(account_id):
+                return {"status": "skipped", "reason": "ai_chatter_owns_account"}
+        except Exception:
+            log.debug("of_ai_chat ai_chatter gate check failed", exc_info=True)
 
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
     typing_wpm = await load_typing_wpm(account_id)  # per-bubble "typing" pacing
