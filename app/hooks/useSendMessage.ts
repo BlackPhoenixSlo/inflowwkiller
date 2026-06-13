@@ -28,7 +28,7 @@ import { relay, RelayError, type OFChatItem, type OFMedia, type OFMessage, type 
 import { useEmployee } from "@/contexts/EmployeeContext";
 
 import { useChatMessages } from "./useChatMessages";
-import { clearPendingScheduled, trackPendingScheduled } from "./usePendingScheduled";
+import { scheduledSendsKey } from "./useServerScheduledSends";
 
 export interface UseSendMessageOpts {
   accountId: string | null;
@@ -164,8 +164,8 @@ export function useSendMessage(opts: UseSendMessageOpts) {
     [failLocal, reconcileLocal, qc, employeeId],
   );
 
-  // Immediate-send path, extracted so both the no-schedule case and the
-  // local-wait short-delay timer can call it without recursion gymnastics.
+  // Immediate-send path, extracted so the no-schedule case (and retry) can
+  // call it without recursion gymnastics.
   const sendNow = useCallback(
     async (input: SendOpts, capturedAccountId: string, capturedFanId: number) => {
       const attached = input.attached ?? [];
@@ -223,41 +223,43 @@ export function useSendMessage(opts: UseSendMessageOpts) {
         return;
       }
 
-      // Scheduled path. Two branches:
-      //   • Short delay (< 10 min from now): OF's queue lags or rejects
-      //     too-near times, so we wait in-page via setTimeout and then
-      //     call the normal send path. Caveat: refreshing/closing the
-      //     tab loses the pending send. We accept that for short delays.
-      //   • Long delay: hand off to OF's queue endpoint so it survives
-      //     tab close, can be edited from OF web, etc.
+      // Scheduled path. Two branches, BOTH server-side (survive reload + are
+      // shared across every chatter on the account):
+      //   • Short delay (≤ 15 min from now): hand to OUR executor — enqueue a
+      //     `scheduled_jobs` row (kind="scheduled_send") that the supervisor
+      //     fires at run_at. We fire it ourselves (not OF's queue) because OF's
+      //     queue lags/rejects too-near times; this also lets us attribute the
+      //     eventual bubble to the chatter who scheduled it.
+      //   • Long delay: hand off to OF's native queue so it survives even if our
+      //     VPS is down, can be edited from OF web, etc.
       if (input.scheduledAt) {
         const fireAt = new Date(input.scheduledAt).getTime();
         const delay = fireAt - Date.now();
-        if (delay > 0 && delay < 10 * 60 * 1000) {
-          const capturedAccountId = accountId;
-          const capturedFanId = fanId;
-          const tempId = nextTempIdRef.current--;
-          const handle = setTimeout(() => {
-            clearPendingScheduled(qc, capturedAccountId, capturedFanId, tempId);
-            void sendNow(
-              { text: input.text, price: input.price, lockedText: input.lockedText, attached: input.attached, previews: input.previews, taggedUsers: input.taggedUsers, giphyId: input.giphyId },
-              capturedAccountId,
-              capturedFanId,
+        if (delay > 0 && delay <= 15 * 60 * 1000) {
+          const attached = input.attached ?? [];
+          try {
+            await relay.post(
+              `/api/of/v2/scheduled-sends`,
+              {
+                fan_id: fanId,
+                run_at: input.scheduledAt,
+                text: input.text,
+                price: input.price ?? 0,
+                locked_text: input.lockedText ?? false,
+                media_files: attached.map((m) => m._claim ?? m.id),
+                previews:
+                  input.previews && (input.price ?? 0) > 0 ? input.previews : [],
+                tagged_users: input.taggedUsers ?? [],
+                giphy_id: input.giphyId,
+              },
+              { accountId, employeeId },
             );
-          }, delay);
-          // Park the entry in the per-chat cache so the MessageList can
-          // render a "Sending in N min" bubble. Cancel works by clearing
-          // the timer + removing this entry.
-          trackPendingScheduled(qc, capturedAccountId, capturedFanId, {
-            tempId,
-            text: input.text,
-            fireAt: new Date(fireAt).toISOString(),
-            attached: input.attached ?? [],
-            price: input.price,
-            lockedText: input.lockedText,
-            fromUserId,
-            fromUserName,
-          }, handle);
+            // Surface the ghost bubble immediately (and for any other chatter
+            // on next poll). Server is the source of truth from here on.
+            qc.invalidateQueries({ queryKey: scheduledSendsKey(accountId, fanId) });
+          } catch (err) {
+            console.warn("[schedule] near-term enqueue failed", err);
+          }
           return;
         }
         const attached = input.attached ?? [];
@@ -329,17 +331,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
     [dropLocal],
   );
 
-  /** Cancel a local-wait pending-scheduled send: clear the timer +
-   *  remove the bubble. No-op if the send already fired. */
-  const cancelPendingScheduled = useCallback(
-    (tempId: number) => {
-      if (!accountId || fanId == null) return;
-      clearPendingScheduled(qc, accountId, fanId, tempId);
-    },
-    [qc, accountId, fanId],
-  );
-
-  return { send, retry, cancelOptimistic, cancelPendingScheduled, inflight };
+  return { send, retry, cancelOptimistic, inflight };
 }
 
 /** Record vault sends in the local DB so the picker shows "sent / paid"
@@ -386,7 +378,14 @@ function recordVaultSends(
  *    • Yellow "read · awaiting your reply" dot → gone (lastFromFan now us).
  *    • Row jumps to the top of the inbox instantly.
  *  Walks all chats queries because Unified Inbox vs per-model produces
- *  different query keys, but the row to patch is the same. */
+ *  different query keys, but the row to patch is the same. The full key is
+ *    ["chats", scope.kind, accountKey, filter, listId, query, limit].
+ *  We only lift-to-top in the UNFILTERED key (filter==null && listId==null
+ *  && query==null) — reordering a filtered/folder/search view would shuffle
+ *  rows the user didn't touch, and the lastMessage edit alone can't change
+ *  whether a row still satisfies that filter. For filtered caches we only
+ *  patch a row ALREADY present (update in place, no reorder), and never
+ *  prepend a fresh one. */
 function patchChatListAfterSend(
   qc: ReturnType<typeof useQueryClient>,
   accountId: string,
@@ -396,12 +395,55 @@ function patchChatListAfterSend(
   type Page = { rows: OFChatItem[]; hasMore: boolean };
   type Infinite = { pages: Page[]; pageParams: unknown[] };
   const nowIso = new Date().toISOString();
+  const patchRow = (target: OFChatItem): OFChatItem => ({
+    ...target,
+    hasUnread: false,
+    unreadMessagesCount: 0,
+    lastMessage: {
+      ...(target.lastMessage ?? { id: 0 }),
+      id: target.lastMessage?.id ?? 0,
+      text: msg.text,
+      fromUser: { id: msg.fromUserId, name: msg.fromUserName },
+      createdAt: nowIso,
+      mediaCount: msg.mediaCount,
+      isFree: msg.price === 0,
+    },
+  });
   qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
     const data = q.state.data as Infinite | undefined;
     if (!data?.pages || data.pages.length === 0) return;
-    // Hunt for the row + lift it out. We rebuild pages without it, then
-    // prepend the patched version to page 0. Pages further down lose at
-    // most one row each — fine, the next refetch reconciles totals.
+    const filterKey = q.queryKey[3] ?? null;
+    const listIdKey = q.queryKey[4] ?? null;
+    const queryKeyText = q.queryKey[5] ?? null;
+    const isUnfiltered =
+      filterKey === null && listIdKey === null && queryKeyText === null;
+
+    if (!isUnfiltered) {
+      // Filtered/folder/search view: patch the row in place if it's already
+      // here, otherwise leave it untouched. No reorder, no fresh prepend.
+      let found = false;
+      const patched: Page[] = data.pages.map((p) => ({
+        ...p,
+        rows: p.rows.map((c) => {
+          if (
+            !found &&
+            (c.__accountId ?? "") === accountId &&
+            c.withUser.id === fanId
+          ) {
+            found = true;
+            return patchRow(c);
+          }
+          return c;
+        }),
+      }));
+      if (!found) return;
+      qc.setQueryData(q.queryKey, { ...data, pages: patched });
+      return;
+    }
+
+    // Unfiltered key: hunt for the row + lift it out. We rebuild pages
+    // without it, then prepend the patched version to page 0. Pages further
+    // down lose at most one row each — fine, the next refetch reconciles.
     let target: OFChatItem | null = null;
     const stripped: Page[] = data.pages.map((p) => {
       const kept: OFChatItem[] = [];
@@ -419,20 +461,7 @@ function patchChatListAfterSend(
       return { ...p, rows: kept };
     });
     if (!target) return;
-    const updated: OFChatItem = {
-      ...(target as OFChatItem),
-      hasUnread: false,
-      unreadMessagesCount: 0,
-      lastMessage: {
-        ...((target as OFChatItem).lastMessage ?? { id: 0 }),
-        id: (target as OFChatItem).lastMessage?.id ?? 0,
-        text: msg.text,
-        fromUser: { id: msg.fromUserId, name: msg.fromUserName },
-        createdAt: nowIso,
-        mediaCount: msg.mediaCount,
-        isFree: msg.price === 0,
-      },
-    };
+    const updated = patchRow(target as OFChatItem);
     const reordered: Page[] = stripped.map((p, i) =>
       i === 0 ? { ...p, rows: [updated, ...p.rows] } : p,
     );

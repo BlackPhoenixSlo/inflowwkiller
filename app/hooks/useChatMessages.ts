@@ -92,7 +92,16 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
         perfDelivered(opId, "chat.messages", {
           count: list.length, hasMore: !!resp.hasMore, phase: "initial",
         });
-        return list;
+        // The background refetchInterval re-runs this queryFn and React Query
+        // overwrites the whole cache with the return value. A bare `return list`
+        // would replace the merged cache with just the newest page — wiping any
+        // load-older pages the user scrolled up to fetch (and any in-flight
+        // optimistic rows). Merge the fresh top page into what's already cached
+        // instead: fresh wins for overlapping ids, older loaded pages stay in
+        // front, optimistic/just-arrived rows stay at the tail. On the first
+        // fetch the cache is empty, so this returns `list` unchanged.
+        const prev = qc.getQueryData<OFMessage[]>(queryKey) || [];
+        return mergeTopPage(prev, list);
       } catch (err) {
         perfError(opId, "chat.messages", {
           message: (err as Error)?.message, aborted: signal?.aborted, phase: "initial",
@@ -261,6 +270,34 @@ function dedupById(list: OFMessage[]): OFMessage[] {
     out.push(m);
   }
   return hasDup ? out : list;
+}
+
+/** Merge a freshly-fetched top page (newest `PAGE_SIZE`, oldest→newest) into
+ *  the existing cache without discarding load-older pages or in-flight
+ *  optimistic rows. `fresh` wins for any overlapping id. Rows already cached
+ *  that aren't in `fresh` are kept: positive ids older than the page go in
+ *  front (the scrolled-up history), everything else (optimistic id ≤ 0 rows,
+ *  or a row that arrived newer than the page in the poll's race window) goes
+ *  at the tail. Returns `fresh` unchanged when there's nothing extra to keep,
+ *  so structural sharing still sees a stable reference for the common case. */
+function mergeTopPage(prev: OFMessage[], fresh: OFMessage[]): OFMessage[] {
+  if (prev.length === 0) return fresh;
+  const freshIds = new Set(fresh.map((m) => String(m.id)));
+  let minFreshId = Infinity;
+  for (const m of fresh) {
+    const id = Number(m.id);
+    if (id > 0 && id < minFreshId) minFreshId = id;
+  }
+  const older: OFMessage[] = [];
+  const tail: OFMessage[] = [];
+  for (const m of prev) {
+    if (freshIds.has(String(m.id))) continue;
+    const id = Number(m.id);
+    if (id > 0 && id < minFreshId) older.push(m);
+    else tail.push(m);
+  }
+  if (older.length === 0 && tail.length === 0) return fresh;
+  return [...older, ...fresh, ...tail];
 }
 
 /** Merge optimistic media's `files` into a server response — OF's CDN

@@ -238,7 +238,7 @@ export default function PerEmployeeTable({ from, to }: Props) {
               );
             })}
           </tbody>
-          {visible.length > 1 && (
+          {visible.length >= 1 && (
             <tfoot>
               <tr className="border-t border-border bg-bg-elev-1/30">
                 <td className="px-4 py-2.5 text-[11px] uppercase tracking-wide text-fg-dim">
@@ -254,7 +254,9 @@ export default function PerEmployeeTable({ from, to }: Props) {
                   {fmtCentsBlankZero(visible.reduce((s, r) => s + (r.employee_id == null ? 0 : r.revenue_by_kind.ppv), 0))}
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums font-medium">
-                  {fmtCentsBlankZero(visible.reduce((s, r) => s + (r.employee_id == null ? 0 : r.revenue_by_kind.tip), 0))}
+                  {/* Orphan rows have empty revenue_by_kind but carry tip revenue in
+                      revenue_cents — fold that in so PPV-Rev + Tip-Rev = Total. */}
+                  {fmtCentsBlankZero(visible.reduce((s, r) => s + (r.employee_id == null ? r.revenue_cents : r.revenue_by_kind.tip), 0))}
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums font-semibold">
                   {fmtCentsBlankZero(visible.reduce((s, r) => s + r.revenue_cents, 0))}

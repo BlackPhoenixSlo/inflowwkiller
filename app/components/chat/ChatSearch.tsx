@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { relay, type OFMessage } from "@/lib/relay";
+import { stripHtmlPreview } from "@/lib/htmlPreview";
 
 export interface ChatSearchProps {
   accountId: string;
@@ -282,22 +283,6 @@ export function ChatSearch(props: ChatSearchProps) {
       )}
     </div>
   );
-}
-
-function stripHtmlPreview(s: string, max: number): string {
-  const plain = s
-    .replace(/<br\s*\/?>/gi, " ")
-    .replace(/<\/p\s*>/gi, " ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-  return plain.length > max ? plain.slice(0, max - 1) + "…" : plain;
 }
 
 function highlightMatch(text: string, needle: string) {

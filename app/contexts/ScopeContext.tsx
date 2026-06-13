@@ -13,7 +13,7 @@
  * doesn't reload data, it just changes the filter the views apply.
  */
 
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { eventBus, type Scope as EventScope } from "@/lib/events";
 
 const LS_KEY = "chatterly:scope";
@@ -47,6 +47,7 @@ function parse(raw: string | null): Scope {
 
 export function ScopeProvider({ children }: { children: React.ReactNode }) {
   const [scope, setScopeState] = useState<Scope>({ kind: "all" });
+  const [hydrated, setHydrated] = useState(false);
 
   // Hydrate from localStorage. Same pattern as EmployeeContext —
   // browser-only so we do it in an effect, not lazy state.
@@ -54,26 +55,31 @@ export function ScopeProvider({ children }: { children: React.ReactNode }) {
     try {
       const raw = window.localStorage.getItem(LS_KEY);
       setScopeState(parse(raw));
-    } catch { /* ignore */ }
+    } catch { /* ignore */ } finally {
+      setHydrated(true);
+    }
   }, []);
 
   // Push every scope change down to the SSE bus so events get filtered
   // server-side. This is fire-and-forget; the bus tears down + reopens.
+  // Gated on `hydrated` so we only push the localStorage-resolved scope,
+  // never the initial "all" placeholder before the read lands.
   useEffect(() => {
+    if (!hydrated) return;
     eventBus.setScope(serialize(scope) as EventScope);
-  }, [scope]);
+  }, [scope, hydrated]);
 
-  const setScope = (s: Scope) => {
+  const setScope = useCallback((s: Scope) => {
     setScopeState(s);
     try { window.localStorage.setItem(LS_KEY, serialize(s)); } catch {}
-  };
+  }, []);
 
   const value = useMemo<ScopeContextValue>(() => ({
     scope,
     setScope,
     accountId: scope.kind === "model" ? scope.accountId : null,
     eventScope: serialize(scope) as EventScope,
-  }), [scope]);
+  }), [scope, setScope]);
 
   return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;
 }

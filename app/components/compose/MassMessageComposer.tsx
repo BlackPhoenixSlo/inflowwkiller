@@ -496,7 +496,22 @@ export function MassMessageComposer({
       return primary;
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["messages-queue"] });
+      // Refresh the queued-send + broadcast lists for the account(s) we just
+      // sent from. The old ["messages-queue"] key matched no live query;
+      // scheduled sends live under ["scheduled", accountId] (useScheduledMessages)
+      // and immediate broadcasts under ["mass-messages", accountId, …]
+      // (useMassMessages). All-models mode fans out to broadcastAccounts.
+      const sentFrom = new Set(
+        allModels ? broadcastAccounts.map((a) => a.id) : accountId ? [accountId] : [],
+      );
+      qc.invalidateQueries({
+        predicate: (q) => {
+          const key = q.queryKey;
+          if (!Array.isArray(key) || key.length < 2) return false;
+          if (key[0] !== "scheduled" && key[0] !== "mass-messages") return false;
+          return sentFrom.has(String(key[1]));
+        },
+      });
       reset();
       onClose();
     },

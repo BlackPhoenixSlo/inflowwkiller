@@ -10,7 +10,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
 import { Button, Card } from "@/components/ui/primitives";
-import { relay, type Employee } from "@/lib/relay";
+import { relay } from "@/lib/relay";
+import { useRoster } from "@/hooks/useRoster";
 import { useUser } from "@/contexts/UserContext";
 
 interface AdminUserRow {
@@ -45,8 +46,6 @@ interface EmployeeTransferResp {
   display_name: string;
   user_id: string;
 }
-
-interface EmployeesResp { employees: Employee[]; }
 
 export default function TransferTab() {
   const { user: me } = useUser();
@@ -229,26 +228,17 @@ function EmployeeTransferCard({ me, usersQ, users, destOptions }: CardProps) {
   const [employeeId, setEmployeeId] = useState("");
   const [ok, setOk] = useState<string | null>(null);
 
-  // Mirrors EmployeesTab's query — same key so they share cache. The
+  // Shared roster query (same cache as EmployeesTab / AuditTab). The
   // signed-in user only ever sees their own roster (employees.py filters
   // by user_id), so we can render the response as-is.
-  const myEmployeesQ = useQuery<EmployeesResp>({
-    queryKey: ["employees", "all"],
-    queryFn: () =>
-      relay.get<EmployeesResp>("/admin/employees?include_disabled=true"),
-    staleTime: 10_000,
-  });
-
-  // Chatter-mirror Employee rows (chatter_id != null) are auto-created
-  // for chatter logins under THIS owner. Transferring one to another
-  // friend would orphan the mirror — the destination user isn't in the
-  // chatter's `chatter_users` set, so the chatter's next sign-in
-  // wouldn't resolve to it. Hide them from the picker; the backend
-  // also rejects with 400 as defense-in-depth.
-  const myEmployees: Employee[] = (Array.isArray(myEmployeesQ.data?.employees)
-    ? myEmployeesQ.data!.employees
-    : []
-  ).filter((e) => !e.chatter_id);
+  //
+  // `rows` excludes chatter-mirror Employee rows (chatter_id != null),
+  // auto-created for chatter logins under THIS owner. Transferring one to
+  // another friend would orphan the mirror — the destination user isn't in
+  // the chatter's `chatter_users` set, so the chatter's next sign-in
+  // wouldn't resolve to it. Hide them from the picker; the backend also
+  // rejects with 400 as defense-in-depth.
+  const { query: myEmployeesQ, rows: myEmployees } = useRoster();
 
   const transferM = useMutation({
     mutationFn: () =>

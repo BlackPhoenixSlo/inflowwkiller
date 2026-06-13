@@ -91,11 +91,19 @@ function ScheduledRow({
 }) {
   const when = m.scheduledDate ? new Date(m.scheduledDate) : null;
   const overdue = !!when && when.getTime() < Date.now();
-  const recipientCount =
-    (m.userIds?.length ?? 0) +
-    (m.userLists?.length ? 1 : 0) +
-    (m.groups?.length ? 1 : 0);
-  const isMass = (m.userLists?.length ?? 0) > 0 || (m.groups?.length ?? 0) > 0;
+  const listCount = m.userLists?.length ?? 0;
+  const groupCount = m.groups?.length ?? 0;
+  const directCount = m.userIds?.length ?? 0;
+  const isMass = listCount > 0 || groupCount > 0;
+  // Mass audiences fan out to whole lists/groups, so a flat "N targets" is
+  // misleading — name what the blast actually points at instead.
+  const massLabel = [
+    listCount > 0 && `${listCount} list${listCount === 1 ? "" : "s"}`,
+    groupCount > 0 && `${groupCount} group${groupCount === 1 ? "" : "s"}`,
+    directCount > 0 && `${directCount} fan${directCount === 1 ? "" : "s"}`,
+  ]
+    .filter(Boolean)
+    .join(" + ") || "?";
 
   return (
     <div className={cn(
@@ -113,9 +121,9 @@ function ScheduledRow({
           </span>
           <span className="text-fg-dim">acct {accountLabel}</span>
           {isMass ? (
-            <span className="text-fg-dim">📢 mass ({recipientCount || "?"} target{recipientCount === 1 ? "" : "s"})</span>
+            <span className="text-fg-dim">📢 mass ({massLabel})</span>
           ) : (
-            <span className="text-fg-dim">→ {m.userIds?.length ?? 0} fan{(m.userIds?.length ?? 0) === 1 ? "" : "s"}</span>
+            <span className="text-fg-dim">→ {directCount} fan{directCount === 1 ? "" : "s"}</span>
           )}
           {(m.mediaCount ?? 0) > 0 && (
             <span className="text-fg-dim inline-flex items-center gap-1">

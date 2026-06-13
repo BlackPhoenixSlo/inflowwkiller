@@ -779,6 +779,14 @@ async def _start_event_pumps() -> None:
     # unbounded they grew the DB to ~1.9 GB. Daily ticks.
     asyncio.create_task(_raw_json_evictor_loop(), name="raw-json-evictor")
 
+    # Hard SIZE ceiling on the two raw-OF-payload columns (event_inbox +
+    # messages.raw_json) so the SQLite file stays well under ~2 GB even when
+    # VOLUME, not age, is the problem. Drives off logical SUM(LENGTH(...)),
+    # evicts oldest-first down to PAYLOAD_BUDGET_BYTES (never breaching the
+    # EVENT_INBOX_RETAIN_FLOOR_S floor), then returns freed pages to the OS.
+    # Touches no fan rows. Hourly ticks. See _payload_size_cap_loop.
+    asyncio.create_task(_payload_size_cap_loop(), name="payload-size-cap")
+
     # Phase F: poll OF's /api2/v2/payouts/transactions ledger so per-model
     # stats include subs / tips / PPV unlocks / paid posts. 10-min ticks,
     # sequential per-account refresh, parallel backfill (sem=4). See
@@ -1998,6 +2006,258 @@ async def _perflog_evictor_loop() -> None:
             return
         except Exception:
             log.warning("perflog evictor cycle failed", exc_info=True)
+
+
+# ── raw-OF-payload SIZE cap (event_inbox + messages.raw_json) ─────────
+#
+# Two columns hoard raw OnlyFans payloads we receive but read back only for
+# a short window:
+#   • event_inbox.payload_json — the raw WS/SSE event firehose. Every event
+#     is already transcoded into permanent tables (DMs → messages, subs →
+#     fans, tips → transactions); the envelope is re-read ONLY for SSE
+#     Last-Event-ID reconnect replay (minutes–hours) and provider_event_id
+#     idempotency. It was NEVER pruned → the real leak.
+#   • messages.raw_json — the full OF message JSON (mostly the media[] array
+#     nobody reads back). The real message lives in its own columns. The
+#     time-based _raw_json_evictor_loop (60d) already trims it; this size
+#     cap is the hard ceiling on top, for when volume — not age — is the
+#     problem.
+#
+# The time-based evictors above bound the trailing window; THIS bounds the
+# absolute footprint so the SQLite file stays well under ~2 GB.
+#
+# Two facts shape the design:
+#   1. auto_vacuum is OFF on the prod DB, so DELETE / NULL only moves pages
+#      to the freelist — the FILE plateaus at its high-water mark, it does
+#      not shrink. So a "if file > 2 GB, delete" cap would never shrink
+#      anything. We therefore drive the cap off LOGICAL content bytes
+#      (SUM(LENGTH(...))), and reclaim disk separately via incremental_vacuum
+#      once the DB has been converted to auto_vacuum=INCREMENTAL (a one-time
+#      full VACUUM — gated behind PAYLOAD_VACUUM_ON_START so it only runs on
+#      a deliberately-scheduled off-peak restart).
+#   2. We must lose ZERO fan data. The cap NEVER deletes messages/fans/
+#      transactions ROWS — it deletes spent event_inbox envelopes and NULLs
+#      the duplicate raw_json column, and NEVER touches anything newer than
+#      the retention floor (the last EVENT_INBOX_RETAIN_FLOOR_S stays intact
+#      for debugging + SSE replay).
+#
+# Default budget 1.5 GB of payload bytes keeps total DB < 2 GB (the rest —
+# message columns, fans, txns, indexes — is ~0.4 GB and grows slowly).
+_PAYLOAD_BUDGET_BYTES = int(os.environ.get("PAYLOAD_BUDGET_BYTES", str(1_500_000_000)))
+_PAYLOAD_RETAIN_FLOOR_S = int(os.environ.get("EVENT_INBOX_RETAIN_FLOOR_S", str(2 * 24 * 60 * 60)))
+_PAYLOAD_CAP_INTERVAL_S = int(os.environ.get("PAYLOAD_CAP_INTERVAL_S", str(60 * 60)))
+_PAYLOAD_EVICT_BATCH = int(os.environ.get("PAYLOAD_EVICT_BATCH", "2000"))
+# One-time conversion of an existing auto_vacuum=NONE DB to INCREMENTAL +
+# the heavy full VACUUM that makes it take effect. Off by default; flip on
+# for a single off-peak restart (via a deploy), then unset. After conversion,
+# incremental_vacuum each tick returns freed pages to the OS for free.
+_PAYLOAD_VACUUM_ON_START = os.environ.get("PAYLOAD_VACUUM_ON_START", "0") == "1"
+# Pages reclaimed per tick once auto_vacuum=INCREMENTAL. Bounded so each tick
+# holds the write lock only briefly (default ~80 MB at 4 KiB pages).
+_PAYLOAD_INCR_VACUUM_PAGES = int(os.environ.get("PAYLOAD_INCR_VACUUM_PAGES", "20000"))
+
+# VACUUM / incremental_vacuum are whole-DB write locks; never let two run at
+# once, and never overlap a full VACUUM with an eviction pass.
+_payload_vacuum_lock = asyncio.Lock()
+
+
+def _floor_cutoff_str(floor_s: int) -> str:
+    """Retention-floor cutoff as the fixed-width string SQLAlchemy stores
+    DateTime in ('YYYY-MM-DD HH:MM:SS.ffffff'), so a raw `received_at < ?`
+    comparison sorts chronologically. Rows newer than this are never touched."""
+    return (datetime.utcnow() - timedelta(seconds=floor_s)).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+async def _payload_bytes(conn) -> tuple[int, int]:
+    """(event_inbox.payload_json bytes, messages.raw_json bytes) via SUM(LENGTH).
+    This is the LOGICAL content size the cap is driven off — not file size."""
+    ev = (await conn.exec_driver_sql(
+        "SELECT COALESCE(SUM(LENGTH(payload_json)), 0) FROM event_inbox"
+    )).scalar() or 0
+    rj = (await conn.exec_driver_sql(
+        "SELECT COALESCE(SUM(LENGTH(raw_json)), 0) FROM messages"
+    )).scalar() or 0
+    return int(ev), int(rj)
+
+
+async def evict_payloads_once(
+    *,
+    budget_bytes: int | None = None,
+    floor_s: int | None = None,
+    batch: int | None = None,
+) -> dict[str, int]:
+    """Size-driven eviction of raw OF payloads. SQLite only (no-op elsewhere —
+    Postgres autovacuums and has no rowid).
+
+    Frees logical payload bytes until
+        SUM(LENGTH(event_inbox.payload_json)) + SUM(LENGTH(messages.raw_json))
+    is under `budget_bytes`, deleting the OLDEST event_inbox rows first (the
+    real leak, lowest value — a spent envelope), then NULLing the OLDEST
+    messages.raw_json — but NEVER touching any row whose timestamp is within
+    `floor_s` of now. Eviction happens in autocommit batches so the write
+    lock is released between batches and the WS pump keeps flowing.
+
+    Touches ONLY the two raw envelope columns; messages / fans / transactions
+    ROWS are left fully intact. Idempotent: a no-op once under budget, and a
+    no-op once everything older than the floor is gone (it will not breach the
+    floor to reach budget — it logs that it's floor-bound instead).
+
+    Returns a summary dict (also used by the test to assert before/after)."""
+    from db.engine import engine, _is_sqlite
+    budget = _PAYLOAD_BUDGET_BYTES if budget_bytes is None else budget_bytes
+    floor = _PAYLOAD_RETAIN_FLOOR_S if floor_s is None else floor_s
+    bsize = _PAYLOAD_EVICT_BATCH if batch is None else batch
+    if not _is_sqlite:
+        return {"skipped": 1}
+
+    cutoff = _floor_cutoff_str(floor)
+    deleted_events = nulled_messages = freed = 0
+
+    async with engine.connect() as conn:
+        await conn.execution_options(isolation_level="AUTOCOMMIT")
+        ev0, rj0 = await _payload_bytes(conn)
+        before = ev0 + rj0
+        over = before - budget
+
+        if over > 0:
+            # 1) event_inbox — delete oldest spent envelopes older than floor.
+            while freed < over:
+                row = (await conn.exec_driver_sql(
+                    "SELECT COALESCE(SUM(LENGTH(payload_json)), 0), COUNT(*) FROM "
+                    "(SELECT payload_json FROM event_inbox "
+                    " WHERE received_at < ? ORDER BY rowid ASC LIMIT ?)",
+                    (cutoff, bsize),
+                )).first()
+                nbytes, cnt = int(row[0] or 0), int(row[1] or 0)
+                if cnt == 0:
+                    break  # nothing left older than the floor
+                await conn.exec_driver_sql(
+                    "DELETE FROM event_inbox WHERE rowid IN "
+                    "(SELECT rowid FROM event_inbox WHERE received_at < ? "
+                    " ORDER BY rowid ASC LIMIT ?)",
+                    (cutoff, bsize),
+                )
+                deleted_events += cnt
+                freed += nbytes
+                await asyncio.sleep(0)  # yield between batches
+
+            # 2) messages.raw_json — NULL oldest duplicates older than floor.
+            while freed < over:
+                row = (await conn.exec_driver_sql(
+                    "SELECT COALESCE(SUM(LENGTH(raw_json)), 0), COUNT(*) FROM "
+                    "(SELECT raw_json FROM messages "
+                    " WHERE raw_json IS NOT NULL AND created_at < ? "
+                    " ORDER BY rowid ASC LIMIT ?)",
+                    (cutoff, bsize),
+                )).first()
+                nbytes, cnt = int(row[0] or 0), int(row[1] or 0)
+                if cnt == 0:
+                    break
+                await conn.exec_driver_sql(
+                    "UPDATE messages SET raw_json = NULL WHERE rowid IN "
+                    "(SELECT rowid FROM messages WHERE raw_json IS NOT NULL "
+                    " AND created_at < ? ORDER BY rowid ASC LIMIT ?)",
+                    (cutoff, bsize),
+                )
+                nulled_messages += cnt
+                freed += nbytes
+                await asyncio.sleep(0)
+
+        ev1, rj1 = await _payload_bytes(conn)
+
+    after = ev1 + rj1
+    summary = {
+        "before_bytes": before,
+        "after_bytes": after,
+        "budget_bytes": budget,
+        "freed_bytes": freed,
+        "deleted_events": deleted_events,
+        "nulled_messages": nulled_messages,
+        "event_bytes_after": ev1,
+        "raw_json_bytes_after": rj1,
+        "floor_bound": int(after > budget),  # 1 = floor stopped us short of budget
+    }
+    return summary
+
+
+async def _maybe_convert_to_incremental_autovacuum() -> None:
+    """One-time: convert an existing auto_vacuum=NONE DB to INCREMENTAL so the
+    freelist can be returned to the OS. The conversion itself requires a full
+    VACUUM (rewrites the whole file — a heavy, whole-DB write lock), so it is
+    gated behind PAYLOAD_VACUUM_ON_START and runs at most once per boot. No-op
+    if already INCREMENTAL or not SQLite."""
+    from db.engine import engine, _is_sqlite
+    if not _is_sqlite or not _PAYLOAD_VACUUM_ON_START:
+        return
+    async with _payload_vacuum_lock:
+        try:
+            async with engine.connect() as conn:
+                await conn.execution_options(isolation_level="AUTOCOMMIT")
+                mode = (await conn.exec_driver_sql("PRAGMA auto_vacuum")).scalar()
+                if int(mode or 0) == 2:
+                    log.info("payload-cap: auto_vacuum already INCREMENTAL")
+                    return
+                log.warning("payload-cap: converting auto_vacuum→INCREMENTAL via full VACUUM "
+                            "(heavy, whole-DB lock) — this runs once")
+                await conn.exec_driver_sql("PRAGMA auto_vacuum=INCREMENTAL")
+                await conn.exec_driver_sql("VACUUM")
+                mode2 = (await conn.exec_driver_sql("PRAGMA auto_vacuum")).scalar()
+                log.warning("payload-cap: auto_vacuum now=%s (2=INCREMENTAL)", mode2)
+        except Exception:
+            log.warning("payload-cap: auto_vacuum conversion failed", exc_info=True)
+
+
+async def _reclaim_freelist() -> None:
+    """Return up to _PAYLOAD_INCR_VACUUM_PAGES freelist pages to the OS. Cheap
+    and bounded (unlike full VACUUM); only does anything once the DB is in
+    auto_vacuum=INCREMENTAL mode — otherwise it is a silent no-op. Guarded by
+    the vacuum lock so it never overlaps the one-time full VACUUM."""
+    from db.engine import engine, _is_sqlite
+    if not _is_sqlite:
+        return
+    async with _payload_vacuum_lock:
+        try:
+            async with engine.connect() as conn:
+                await conn.execution_options(isolation_level="AUTOCOMMIT")
+                if int((await conn.exec_driver_sql("PRAGMA auto_vacuum")).scalar() or 0) != 2:
+                    return  # NONE/FULL mode: incremental_vacuum is a no-op
+                free0 = int((await conn.exec_driver_sql("PRAGMA freelist_count")).scalar() or 0)
+                if free0 <= 0:
+                    return
+                await conn.exec_driver_sql(f"PRAGMA incremental_vacuum({_PAYLOAD_INCR_VACUUM_PAGES})")
+                free1 = int((await conn.exec_driver_sql("PRAGMA freelist_count")).scalar() or 0)
+                if free0 != free1:
+                    log.info("payload-cap: reclaimed %d freelist pages (%d→%d)",
+                             free0 - free1, free0, free1)
+        except Exception:
+            log.warning("payload-cap: incremental_vacuum failed", exc_info=True)
+
+
+async def _payload_size_cap_loop() -> None:
+    """Periodic size cap on the raw OF payload columns. Each tick: evict down
+    to PAYLOAD_BUDGET_BYTES (honoring the retention floor), then return freed
+    pages to the OS. Hourly by default; tune via PAYLOAD_* env vars."""
+    await _maybe_convert_to_incremental_autovacuum()
+    while True:
+        try:
+            await asyncio.sleep(_PAYLOAD_CAP_INTERVAL_S)
+            summary = await evict_payloads_once()
+            if summary.get("freed_bytes"):
+                log.info(
+                    "payload-cap: %d→%d MB (budget %d MB) — deleted %d events, "
+                    "nulled %d raw_json%s",
+                    summary["before_bytes"] // 1_000_000,
+                    summary["after_bytes"] // 1_000_000,
+                    summary["budget_bytes"] // 1_000_000,
+                    summary["deleted_events"],
+                    summary["nulled_messages"],
+                    " (floor-bound)" if summary.get("floor_bound") else "",
+                )
+            await _reclaim_freelist()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.warning("payload-cap cycle failed", exc_info=True)
 
 
 # ── /admin/chats/recent — instant-load seed for the inbox ──────────
@@ -3880,6 +4140,32 @@ async def of_vault_media(
     return result
 
 
+@app.get("/api/of/v2/vault/media/{media_id}")
+async def of_vault_media_by_id(media_id: int) -> dict[str, Any]:
+    """One vault item by id — resolves a bare media id back to a media object
+    (with `files.thumb` etc. for thumbnails). Powers the Brain panel's saved
+    per-slot images (`time_images` stores only ids), which the paginated list
+    can't surface unless the item happens to land on a loaded page.
+
+    Owner-gated: the only caller is the owner-only Brain editor, and gating to
+    the account owner keeps this from becoming a folder-restriction bypass for
+    restricted chatters (the list route soft-denies per folder; a by-id read
+    can't be folder-scoped, so we require ownership instead). Cached server-side
+    via vault_cache like the list route, so repeat loads are instant and shared.
+    """
+    aid = _resolve_account_id(_request_ctx.get())
+    assert_account_owned(aid)
+    key = f"media-by-id:{media_id}"
+    cached = await vault_cache.get(aid, key)
+    if cached is not None:
+        return cached
+    result = await asyncio.to_thread(
+        _proxy, lambda: _get_client().vault_media_by_id(media_id),
+    )
+    await vault_cache.put(aid, key, result)
+    return result
+
+
 # ── Fan lists ──────────────────────────────────────────────────
 
 @app.get("/api/of/v2/lists")
@@ -4237,6 +4523,21 @@ class _ScheduleMessageBody(BaseModel):
     media_files: list[int | dict] = Field(default_factory=list)
     previews: list[int] = Field(default_factory=list)
     tagged_users: list[int] = Field(default_factory=list)
+
+class _ScheduledSendBody(BaseModel):
+    """Near-term (≤15 min) deferred 1:1 send, fired by OUR executor (the
+    `scheduled_send` automation), not OF's queue. Survives reload + is shared
+    cross-chatter because it's a DB row, not an in-browser timer."""
+    fan_id: int = Field(..., description="Fan's OF user id (the chat peer).")
+    run_at: str = Field(..., description="ISO 8601 fire time, e.g. 2026-06-13T15:38:00Z")
+    text: str = ""
+    price: float = Field(0, ge=0)
+    locked_text: bool = False
+    media_files: list[int | dict] = Field(default_factory=list)
+    previews: list[int] = Field(default_factory=list)
+    tagged_users: list[int] = Field(default_factory=list)
+    giphy_id: str | None = None
+
 
 class _CreatePostBody(BaseModel):
     text: str
@@ -4708,6 +5009,131 @@ def of_schedule_message(chat_id: int, body: _ScheduleMessageBody = Body(...)):
         previews=body.previews,
         tagged_users=body.tagged_users,
     ))
+
+
+# ── Near-term scheduled sends (executor-fired, survive reload, cross-chatter) ──
+#
+# These replace the old in-browser local-wait timer. A row in `scheduled_jobs`
+# (kind="scheduled_send") is enqueued here; the executor's `scheduled_send`
+# automation fires it at `run_at`. Distinct from the OF-queue path above
+# (`/messages/scheduled`), which is for longer delays and lives on OF's servers.
+
+def _run_at_naive_utc(iso: str) -> datetime:
+    """Parse an ISO fire-time to a NAIVE-UTC datetime — the form the rest of the
+    schema uses (everything compares against `datetime.utcnow()`).
+
+    NB: we parse with `fromisoformat`, NOT event_transcoder._parse_iso — the
+    latter *strips* the offset (treats the wall-clock as-is) rather than
+    converting it, so a `+02:00` time would fire 2h late. The UI only sends `Z`
+    strings, but normalizing correctly costs nothing and is robust to other
+    callers."""
+    from datetime import timezone
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail=f"invalid run_at: {iso!r}")
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+@app.post("/api/of/v2/scheduled-sends")
+async def create_scheduled_send(request: Request, body: _ScheduledSendBody = Body(...)):
+    """Enqueue a near-term deferred 1:1 send. Resolves the scheduling chatter's
+    employee id so the eventual bubble is attributed to them, then inserts a
+    `scheduled_jobs` row the executor will fire at `run_at`."""
+    account_id = _resolve_account_id(request)
+    from employees import resolve_outbound_employee_id
+    from automation_executor import enqueue_job
+
+    employee_id = await resolve_outbound_employee_id(request, account_id)
+    run_at = _run_at_naive_utc(body.run_at)
+    payload = {
+        "fan_id": body.fan_id,
+        "text": body.text,
+        "price": body.price,
+        "locked_text": body.locked_text,
+        "media_files": body.media_files,
+        "previews": body.previews,
+        "tagged_users": body.tagged_users,
+        "giphy_id": body.giphy_id,
+        "sent_by_employee_id": employee_id,
+    }
+    job_id = await enqueue_job(
+        account_id, "scheduled_send",
+        payload=payload, run_at=run_at, created_by_employee_id=employee_id,
+    )
+    return {"job_id": job_id, "fan_id": body.fan_id, "run_at": run_at.isoformat() + "Z"}
+
+
+@app.get("/api/of/v2/scheduled-sends")
+async def list_scheduled_sends(request: Request, fan_id: int | None = None):
+    """List this account's pending/running near-term scheduled sends — optionally
+    scoped to one fan. The chat thread renders these as ghost bubbles; any
+    chatter on the account sees the same rows."""
+    from db.engine import get_session
+    from db.models import ScheduledJob
+    from sqlalchemy import select
+
+    account_id = _resolve_account_id(request)
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(ScheduledJob)
+            .where(
+                ScheduledJob.account_id == account_id,
+                ScheduledJob.kind == "scheduled_send",
+                ScheduledJob.status.in_(("pending", "running")),
+            )
+            .order_by(ScheduledJob.run_at)
+        )).scalars().all()
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        try:
+            p = json.loads(r.payload_json or "{}")
+        except Exception:
+            p = {}
+        if fan_id is not None and int(p.get("fan_id") or 0) != int(fan_id):
+            continue
+        out.append({
+            "job_id": r.id,
+            "fan_id": p.get("fan_id"),
+            "run_at": (r.run_at.isoformat() + "Z") if r.run_at else None,
+            "status": r.status,
+            "text": p.get("text") or "",
+            "price": p.get("price") or 0,
+            "locked_text": bool(p.get("locked_text")),
+            "media_count": len(p.get("media_files") or []),
+            "giphy_id": p.get("giphy_id"),
+        })
+    return {"list": out}
+
+
+@app.delete("/api/of/v2/scheduled-sends/{job_id}")
+async def cancel_scheduled_send(request: Request, job_id: int):
+    """Cancel a near-term scheduled send before it fires. Atomic: only a still
+    `pending` job is cancellable — once the executor has CLAIMED it (`running`)
+    it's already going out, so we report it as too-late rather than lying."""
+    from db.engine import get_session
+    from db.models import ScheduledJob
+    from sqlalchemy import update
+
+    account_id = _resolve_account_id(request)
+    async with get_session() as s:
+        res = await s.execute(
+            update(ScheduledJob)
+            .where(
+                ScheduledJob.id == job_id,
+                ScheduledJob.account_id == account_id,
+                ScheduledJob.kind == "scheduled_send",
+                ScheduledJob.status == "pending",
+            )
+            .values(status="cancelled")
+        )
+    cancelled = bool(res.rowcount)
+    if not cancelled:
+        return {"cancelled": False, "reason": "not_pending"}
+    return {"cancelled": True, "job_id": job_id}
 
 
 class _MassScheduleBody(BaseModel):

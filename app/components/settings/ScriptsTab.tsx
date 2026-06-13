@@ -21,7 +21,7 @@
  *     human chatters can take over cleanly.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, Bot, ChevronDown, FolderOpen, Image as ImageIcon, Play, Plus, Save, Trash2, X } from "lucide-react";
 
 import { Badge, Button, Card, Textarea } from "@/components/ui/primitives";
@@ -295,8 +295,30 @@ function ScriptCard({ accountId, sc }: { accountId: string; sc: CatalogScriptT }
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
 
-  useEffect(() => { setItems(sc.items); }, [sc.items]);
-  useEffect(() => { setName(sc.name); setTheme(sc.theme ?? ""); setStatus(sc.status); }, [sc]);
+  // Metadata ("Save script") and items ("Save items") save independently, but
+  // either save refetches the whole script — so re-sync each section from the
+  // server ONLY when that section's own server value actually changed. Without
+  // this, an items-only save's refetch would clobber unsaved metadata edits
+  // (and vice-versa) by resetting the sibling fields on every `sc` identity.
+  const lastMeta = useRef({ name: sc.name, theme: sc.theme ?? "", status: sc.status });
+  // sc.items is a fresh array on every refetch, so key off its content: only
+  // re-sync items when the server's item payload actually changed, otherwise a
+  // metadata-only save would discard unsaved item edits.
+  const itemsKey = JSON.stringify(sc.items);
+  const lastItemsKey = useRef(itemsKey);
+  useEffect(() => {
+    if (itemsKey !== lastItemsKey.current) {
+      setItems(sc.items);
+      lastItemsKey.current = itemsKey;
+    }
+  }, [itemsKey, sc.items]);
+  useEffect(() => {
+    const next = { name: sc.name, theme: sc.theme ?? "", status: sc.status };
+    if (next.name !== lastMeta.current.name) setName(next.name);
+    if (next.theme !== lastMeta.current.theme) setTheme(next.theme);
+    if (next.status !== lastMeta.current.status) setStatus(next.status);
+    lastMeta.current = next;
+  }, [sc.name, sc.theme, sc.status]);
 
   const missingDesc = items.filter((i) => !(i.description_for_ai ?? "").trim()).length;
   const missingMedia = items.filter((i) => i.media_ids.length === 0).length;

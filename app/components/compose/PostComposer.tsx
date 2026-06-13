@@ -70,11 +70,14 @@ export function PostComposer({ open, onClose }: { open: boolean; onClose: () => 
 
   // All-models mode is text-only for now (upload-from-computer is paused
   // pending a producer-pipeline fix). Drop vault attachments when entering
-  // it — vault ids don't roundtrip across accounts.
+  // it — vault ids don't roundtrip across accounts. Also force no tags:
+  // per-model tag lists differ on OF, so a tag that's only valid on one
+  // creator's friend-list 400s on the rest.
   useEffect(() => {
     if (allModels) {
       setAccountId(null);
       setAttached([]);
+      setTaggedCreators([]);
     }
   }, [allModels]);
 
@@ -203,15 +206,6 @@ export function PostComposer({ open, onClose }: { open: boolean; onClose: () => 
     }
     setTimeout(() => textareaRef.current?.focus(), 0);
   }
-
-  // All-models broadcasts force no tags (per-model tag lists differ on
-  // OF — sending a tag that's only valid on one creator's friend-list
-  // 400s on the rest).
-  useEffect(() => {
-    if (allModels) {
-      setTaggedCreators([]);
-    }
-  }, [allModels]);
 
   if (!open) return null;
 

@@ -78,11 +78,24 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
   if (cfgQ.isLoading) return <div className="text-sm text-fg-dim">Loading…</div>;
 
-  const setTier = (i: number, patch: Partial<TierForm>) =>
+  // Any user edit makes the "Saved ✓"/error feedback stale — clear it so the
+  // indicator only ever reflects the currently-persisted state.
+  const markDirty = () => {
+    if (saveM.isSuccess || saveM.isError) saveM.reset();
+  };
+
+  const setTier = (i: number, patch: Partial<TierForm>) => {
+    markDirty();
     setTiers((ts) => ts.map((t, j) => (j === i ? { ...t, ...patch } : t)));
-  const addTier = () =>
+  };
+  const addTier = () => {
+    markDirty();
     setTiers((ts) => [...ts, { name: "", minDollars: 0, folders: [] }]);
-  const removeTier = (i: number) => setTiers((ts) => ts.filter((_, j) => j !== i));
+  };
+  const removeTier = (i: number) => {
+    markDirty();
+    setTiers((ts) => ts.filter((_, j) => j !== i));
+  };
 
   function buildConfig(): TipRewardConfig {
     return {
@@ -125,7 +138,10 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
           type="checkbox"
           className="h-4 w-4 accent-[var(--accent)]"
           checked={enabled}
-          onChange={(e) => setEnabled(e.target.checked)}
+          onChange={(e) => {
+            markDirty();
+            setEnabled(e.target.checked);
+          }}
         />
         <span className="text-sm">{enabled ? "Enabled" : "Disabled"}</span>
       </label>
@@ -142,17 +158,17 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
             <NumField
               label="$ per image" hint="1 image for every this many dollars"
               value={dollarsPerImage} min={1} max={10000} suffix="$"
-              onChange={setDollarsPerImage}
+              onChange={(n) => { markDirty(); setDollarsPerImage(n); }}
             />
             <NumField
               label="Minimum" hint="floor for any tip (even under $/image)"
               value={minImages} min={0} max={50}
-              onChange={setMinImages}
+              onChange={(n) => { markDirty(); setMinImages(n); }}
             />
             <NumField
               label="Maximum (cap)" hint="a whale tip never sends more than this"
               value={maxImages} min={1} max={50}
-              onChange={setMaxImages}
+              onChange={(n) => { markDirty(); setMaxImages(n); }}
             />
           </div>
         </div>
@@ -165,7 +181,10 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
             className={`${INPUT} w-full`}
             placeholder="omg thank you babe 🥰 here's something just for you…"
             value={caption}
-            onChange={(e) => setCaption(e.target.value)}
+            onChange={(e) => {
+              markDirty();
+              setCaption(e.target.value);
+            }}
           />
           <div className="text-[11px] text-fg-dim/70">
             Sent as the message text with the images. Leave blank for images only.

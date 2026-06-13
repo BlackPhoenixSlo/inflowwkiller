@@ -24,6 +24,7 @@ import { useOFUser } from "@/hooks/useOFUser";
 import { useFanActivity } from "@/hooks/useLastPurchases";
 import { useFanPpvHistory, type PpvHistoryItem } from "@/hooks/useFanPpvHistory";
 import { useFanChatMedia, type FanChatMediaItem } from "@/hooks/useFanChatMedia";
+import { stripOFHtml } from "@/lib/ofHtml";
 import { proxyImage, proxyScrubFrame, relay, type OFChatItem, type VaultMedia } from "@/lib/relay";
 import { cn, fmtRelTime, interpretSubStatus } from "@/lib/utils";
 import { type PickedTemplate } from "./TemplatePicker";
@@ -1207,7 +1208,13 @@ function VideoScrubThumb({
             alt=""
             aria-hidden={idx !== scrubFrameIdx}
             decoding="async"
-            onLoad={idx === 0 ? () => setFirstFrameReady(true) : undefined}
+            // Clear the shimmer on the first frame that paints — keying off
+            // ANY frame (not just frame 0) means a single failed frame-0
+            // fetch can't pin the shimmer forever. The setter is idempotent.
+            onLoad={() => setFirstFrameReady(true)}
+            // Belt-and-suspenders: if frame 0 itself errors, drop the shimmer
+            // so we fall back to the static thumb instead of hanging on it.
+            onError={idx === 0 ? () => setFirstFrameReady(true) : undefined}
             style={{
               opacity: idx === scrubFrameIdx && firstFrameReady ? 1 : 0,
             }}
@@ -1302,24 +1309,6 @@ function formatAccounting(row: PpvSaleRowData): string | null {
   if (row.feeCents != null) parts.push(`fee ${fmtUsd(row.feeCents)}`);
   if (row.vatCents != null && row.vatCents !== 0) parts.push(`VAT ${fmtUsd(row.vatCents)}`);
   return parts.length ? parts.join(" · ") : null;
-}
-
-/** Strip OF's HTML wrappers: `<br>` → \n, `</p><p>` → \n, then drop
- *  remaining tags. OF markdown-rendered bodies arrive wrapped in `<p>`. */
-function stripOFHtml(html: string | null | undefined): string {
-  if (!html) return "";
-  return html
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>\s*<p[^>]*>/gi, "\n\n")
-    .replace(/<\/?p[^>]*>/gi, "")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .trim();
 }
 
 function pickThumbs(media: FanChatMediaItem["media"]): PpvSaleThumb[] {

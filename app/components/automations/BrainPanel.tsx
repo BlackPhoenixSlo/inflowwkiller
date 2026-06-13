@@ -30,6 +30,7 @@ import {
   type AutomationPreviewResult,
 } from "@/hooks/useAutomations";
 import { VaultPicker } from "@/components/chat/VaultPicker";
+import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
 
 // The welcome automation's default cadence: poll OF's new-subscriber feed every
@@ -197,6 +198,20 @@ export default function BrainPanel() {
   const slots = cfgQ.data?.slots ?? [];
   const modelOptions = cfgQ.data?.model_options ?? [];
   const purposes = cfgQ.data?.purposes ?? [];
+
+  // Resolve the SAVED slot image ids (and the two preview image ids) back to
+  // VaultMedia so the slots/preview render real thumbnails on load — mediaCache
+  // only ever holds images the operator just picked this session. The lookup
+  // prefers the just-picked cache (instant, no fetch) and falls back to the
+  // by-id resolution for everything that came from the stored config.
+  const idsToResolve = [
+    ...(form ? Object.values(form.time_images) : []),
+    ...(preview?.image ? [preview.image] : []),
+    ...(followupPreview?.image ? [followupPreview.image] : []),
+  ].filter((n): n is number => typeof n === "number" && n > 0);
+  const resolvedById = useVaultMediaByIds(accountId, idsToResolve);
+  const lookupMedia = (id: number): VaultMedia | undefined =>
+    mediaCache[id] ?? resolvedById[id];
 
   function set<K extends keyof BrainConfig>(key: K, val: BrainConfig[K]) {
     setForm((f) => (f ? { ...f, [key]: val } : f));
@@ -528,7 +543,7 @@ export default function BrainPanel() {
                     />
                     <SlotImage
                       id={imgId}
-                      media={imgId ? mediaCache[imgId] : undefined}
+                      media={imgId ? lookupMedia(imgId) : undefined}
                       accountId={accountId}
                       onPick={() => setPickerSlot(slot)}
                       onClear={() => setImage(slot, undefined)}
@@ -610,7 +625,7 @@ export default function BrainPanel() {
                 {preview.image ? (
                   <PreviewThumb
                     id={preview.image}
-                    media={mediaCache[preview.image]}
+                    media={lookupMedia(preview.image)}
                     accountId={accountId}
                   />
                 ) : null}
@@ -735,7 +750,7 @@ export default function BrainPanel() {
                 {followupPreview.image ? (
                   <PreviewThumb
                     id={followupPreview.image}
-                    media={mediaCache[followupPreview.image]}
+                    media={lookupMedia(followupPreview.image)}
                     accountId={accountId}
                   />
                 ) : null}

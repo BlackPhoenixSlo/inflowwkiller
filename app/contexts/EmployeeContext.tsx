@@ -52,7 +52,7 @@ export function EmployeeProvider({ children }: { children: React.ReactNode }) {
     try {
       const raw = window.localStorage.getItem(LS_KEY);
       const n = raw ? parseInt(raw, 10) : null;
-      if (n && !Number.isNaN(n)) setPickedId(n);
+      if (n !== null && Number.isFinite(n)) setPickedId(n);
     } catch {
       /* private mode / safari quota — fall back to fresh picker */
     } finally {
@@ -61,7 +61,7 @@ export function EmployeeProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const current = useMemo(() => {
-    if (!pickedId) return null;
+    if (pickedId == null) return null;
     return roster.find((e) => e.id === pickedId && e.is_active) ?? null;
   }, [pickedId, roster]);
 

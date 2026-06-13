@@ -124,12 +124,15 @@ export default function AutoStoriesTab() {
   async function runNow() {
     if (!rule) return;
     setRunMsg(null);
-    const n = Math.max(1, Math.round(form.perRun));
+    // Run now fires the SAVED rule, so report its count/folder — not the
+    // (possibly dirty, unsaved) form.
+    const saved = ruleToForm(rule);
+    const n = Math.max(1, Math.round(saved.perRun));
     try {
       await runM.mutateAsync(rule.id);
       setRunMsg(
         `✓ Posting ${n} ${n === 1 ? "story" : "stories"} from “${
-          folders.find((f) => f.id === form.folderId)?.name ?? "folder"
+          folders.find((f) => f.id === saved.folderId)?.name ?? "folder"
         }” now — it’ll appear on the account within ~30s.`,
       );
     } catch (e) {

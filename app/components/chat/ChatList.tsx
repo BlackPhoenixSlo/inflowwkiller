@@ -467,16 +467,42 @@ export function ChatList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileVersion, rowSig]);
 
+  // Per-success optimistic patch: clear the unread badge on this fan's row
+  // across every cached ["chats"] view so the UI only shows "read" for chats
+  // that actually got marked. Mirrors useInboxRealtime's cache-shape walk
+  // (InfiniteData { pages: [{ rows, hasMore }] }); skips caches that don't
+  // hold the row. The trailing invalidate reconciles against OF either way.
+  const markRowRead = useCallback((accountId: string, fanId: number) => {
+    type Page = { rows: OFChatItem[]; hasMore: boolean };
+    type Infinite = { pages: Page[]; pageParams: unknown[] };
+    qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((cq) => {
+      const data = cq.state.data as Infinite | undefined;
+      if (!data?.pages?.length) return;
+      let touched = false;
+      const newPages: Page[] = data.pages.map((p) => ({
+        ...p,
+        rows: p.rows.map((c) => {
+          if ((c.__accountId ?? "") !== accountId || c.withUser.id !== fanId) return c;
+          if (!c.hasUnread && (c.unreadMessagesCount ?? 0) === 0) return c;
+          touched = true;
+          return { ...c, hasUnread: false, unreadMessagesCount: 0 };
+        }),
+      }));
+      if (touched) qc.setQueryData(cq.queryKey, { ...data, pages: newPages });
+    });
+  }, [qc]);
+
   async function markAllRead() {
     if (markingAll) return;
     const targets = allRows.filter((c) => c.hasUnread);
     if (targets.length === 0) return;
     if (!confirm(`Mark ${targets.length} chat${targets.length === 1 ? "" : "s"} as read?`)) return;
     setMarkingAll(true);
+    let failed = 0;
     try {
       // Sequential POSTs — OF rate-limits aggressively when hammered in
-      // parallel. Failures don't roll back; the next inbox refetch picks
-      // up whatever stuck.
+      // parallel. Each success optimistically clears that row's badge; the
+      // trailing refetch reconciles whatever stuck.
       for (const c of targets) {
         const accountId = c.__accountId;
         if (!accountId) continue;
@@ -486,13 +512,18 @@ export function ChatList({
             undefined,
             { accountId },
           );
+          markRowRead(accountId, c.withUser.id);
         } catch (err) {
+          failed += 1;
           console.warn("[mark-all-read] failed for", c.withUser.id, err);
         }
       }
       qc.invalidateQueries({ queryKey: ["chats"] });
     } finally {
       setMarkingAll(false);
+    }
+    if (failed > 0) {
+      alert(`Marked ${targets.length - failed} of ${targets.length}; ${failed} failed.`);
     }
   }
 

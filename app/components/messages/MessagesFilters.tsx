@@ -33,6 +33,9 @@ interface Props {
   onEmployeeChange: (id: number | null) => void;
   status: PaidStatus;
   onStatusChange: (s: PaidStatus) => void;
+  /** Defaults to true so the Status toggle keeps rendering for PPV tabs;
+   *  pass false (e.g. from TipsTab) to hide it where it does nothing. */
+  showStatus?: boolean;
   fanQuery: string;
   onFanQueryChange: (q: string) => void;
   /** When omitted, the Type segmented control isn't rendered (PPV tab
@@ -51,6 +54,7 @@ export default function MessagesFilters({
   onEmployeeChange,
   status,
   onStatusChange,
+  showStatus = true,
   fanQuery,
   onFanQueryChange,
   type,
@@ -64,7 +68,9 @@ export default function MessagesFilters({
   // silently ignored. Side-effect resets (e.g. clear employeeId when
   // direction flips to "in") happen in the parent — this component
   // stays a pure controlled input.
-  const showStatus = type !== "free";
+  // `showStatus` (prop, default true) lets a surface with no status
+  // concept (tips) drop the toggle entirely.
+  const renderStatus = showStatus && type !== "free";
   const employeeDisabled = direction === "in";
   const accounts = useActiveAccounts();
   const empQ = useQuery<EmployeesResp>({
@@ -146,7 +152,7 @@ export default function MessagesFilters({
         </Field>
       )}
 
-      {showStatus && (
+      {renderStatus && (
         <Field label="Status">
           <div className="flex items-center gap-1">
             <StatusBtn active={status === "all"} onClick={() => onStatusChange("all")}>All</StatusBtn>

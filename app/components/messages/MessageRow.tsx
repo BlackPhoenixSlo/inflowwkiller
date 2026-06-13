@@ -17,17 +17,14 @@ import Link from "next/link";
 import { Paperclip } from "lucide-react";
 
 import { Badge } from "@/components/ui/primitives";
-import { proxyImage } from "@/lib/relay";
-import { cn, fmtRelTime } from "@/lib/utils";
+import FanAvatar from "@/components/messages/FanAvatar";
+import { fmtCents, stripHtml } from "@/lib/messageFormat";
+import { fmtRelTime } from "@/lib/utils";
 
 import type { PaidMessageRow } from "@/hooks/usePaidMessages";
 
 interface Props {
   row: PaidMessageRow;
-}
-
-function fmtPrice(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
 }
 
 /** "PAID 18m later" — purchased_at minus sent_at, no future/in prefix. */
@@ -47,12 +44,6 @@ function fmtUnlockDelta(sentIso: string | null, purchasedIso: string | null): st
   return `${day}d later`;
 }
 
-function stripHtml(s: string): string {
-  // OF bodies are wrapped in <p>…</p>; trim the most common wrapper for
-  // a denser preview. Anything more elaborate isn't worth a parser pass.
-  return s.replace(/<\/?p[^>]*>/gi, "").replace(/<br\s*\/?>/gi, " ").trim();
-}
-
 export default function MessageRow({ row }: Props) {
   const previewBody = stripHtml(row.body);
   const isPaid = row.is_paid;
@@ -64,7 +55,7 @@ export default function MessageRow({ row }: Props) {
       className="block group"
     >
       <div className="flex gap-3 p-3 border border-border rounded-xl bg-panel hover:border-border-light transition-colors">
-        <Avatar
+        <FanAvatar
           url={row.fan.avatar_url}
           accountId={row.account_id}
           alt={row.fan.username ?? "fan"}
@@ -81,7 +72,7 @@ export default function MessageRow({ row }: Props) {
               </span>
             )}
             <span className="ml-auto text-sm font-semibold text-fg">
-              {fmtPrice(row.price_cents)}
+              {fmtCents(row.price_cents)}
             </span>
             <span className="text-xs text-fg-dim">
               sent {fmtRelTime(row.sent_at)}
@@ -129,33 +120,5 @@ export default function MessageRow({ row }: Props) {
         </div>
       </div>
     </Link>
-  );
-}
-
-function Avatar({
-  url,
-  accountId,
-  alt,
-}: {
-  url: string | null;
-  accountId: string;
-  alt: string;
-}) {
-  const src = url ? proxyImage(url, accountId) : "";
-  return (
-    <div
-      className={cn(
-        "w-10 h-10 rounded-full bg-bg-elev-1 border border-border overflow-hidden flex-shrink-0",
-      )}
-    >
-      {src ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={src} alt={alt} className="w-full h-full object-cover" />
-      ) : (
-        <div className="w-full h-full grid place-items-center text-fg-dim text-xs">
-          {alt[0]?.toUpperCase() ?? "?"}
-        </div>
-      )}
-    </div>
   );
 }

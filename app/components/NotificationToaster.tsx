@@ -34,8 +34,23 @@ import {
 } from "@/lib/notifSettings";
 
 // One entry per accountId. Lives outside the component so HMR /
-// StrictMode double-mounts don't lose seen-id state.
+// StrictMode double-mounts don't lose seen-id state. Each set is
+// bounded to the last MAX_SEEN_IDS arrivals so it can't grow
+// unbounded for the life of the tab — older ids can't recur as
+// dupes anyway (OF only re-pushes recent locale variants).
+const MAX_SEEN_IDS = 500;
 const seenIdsByAccount = new Map<string, Set<string>>();
+
+// Insertion-ordered Set: record an id as seen, evicting the oldest
+// once we exceed the cap.
+function markSeen(seen: Set<string>, id: string): void {
+  seen.add(id);
+  while (seen.size > MAX_SEEN_IDS) {
+    const oldest = seen.values().next().value;
+    if (oldest === undefined) break;
+    seen.delete(oldest);
+  }
+}
 
 interface NotificationUser {
   id?: number;
@@ -231,7 +246,7 @@ function NotificationDeltaPoller() {
         // same id so we only count each arrival once.
         const seen = seenIdsByAccount.get(aid) ?? new Set<string>();
         if (seen.has(id)) continue;
-        seen.add(id);
+        markSeen(seen, id);
         seenIdsByAccount.set(aid, seen);
 
         const typeKey = mapOfTypeToKey(typeof t.type === "string" ? t.type : null);

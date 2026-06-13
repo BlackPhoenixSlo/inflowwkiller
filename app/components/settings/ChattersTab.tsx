@@ -22,7 +22,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button, Card } from "@/components/ui/primitives";
 import { relay, RelayError, type VaultListsResp } from "@/lib/relay";
@@ -375,13 +375,15 @@ function AccessEditor({ chatterId, onClose }: { chatterId: string; onClose: () =
       await relay.put(`/admin/chatters/${chatterId}/account-access`, {
         account_ids: limitModels ? [...selectedAccounts] : [],
       });
-      // Folder grants only for accounts the chatter can see. An account with
-      // limit OFF sends [] (clears any prior restriction).
-      for (const aid of visibleAccountIds) {
-        const entry = folderState[aid];
+      // Folder grants for every owner account, not just the visible ones — an
+      // account de-selected from "Limit models" must have its prior folder
+      // restriction cleared too (sends []), or stale grants resurrect.
+      const visible = new Set(visibleAccountIds);
+      for (const a of ownerAccounts) {
+        const entry = folderState[a.id];
         await relay.put(`/admin/chatters/${chatterId}/folder-access`, {
-          account_id: aid,
-          folders: entry?.limit ? entry.grants : [],
+          account_id: a.id,
+          folders: visible.has(a.id) && entry?.limit ? entry.grants : [],
         });
       }
     },
@@ -401,9 +403,11 @@ function AccessEditor({ chatterId, onClose }: { chatterId: string; onClose: () =
   );
   const cannotSave = accountSelectionInvalid || folderSelectionInvalid;
 
-  function setFolderEntry(aid: string, next: FolderEntry) {
+  // Editing any selection invalidates a prior "Saved." confirmation.
+  const setFolderEntry = useCallback((aid: string, next: FolderEntry) => {
+    setSavedAt(null);
     setFolderState((prev) => ({ ...prev, [aid]: next }));
-  }
+  }, []);
 
   if (accessQ.isLoading) {
     return <div className="text-fg-dim text-xs">Loading access…</div>;
@@ -424,7 +428,7 @@ function AccessEditor({ chatterId, onClose }: { chatterId: string; onClose: () =
           <input
             type="checkbox"
             checked={limitModels}
-            onChange={(e) => setLimitModels(e.target.checked)}
+            onChange={(e) => { setSavedAt(null); setLimitModels(e.target.checked); }}
           />
           <span>Limit which models this chatter sees</span>
         </label>
@@ -442,14 +446,15 @@ function AccessEditor({ chatterId, onClose }: { chatterId: string; onClose: () =
                 <input
                   type="checkbox"
                   checked={selectedAccounts.has(a.id)}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    setSavedAt(null);
                     setSelectedAccounts((prev) => {
                       const next = new Set(prev);
                       if (e.target.checked) next.add(a.id);
                       else next.delete(a.id);
                       return next;
-                    })
-                  }
+                    });
+                  }}
                 />
                 <span
                   className="inline-block w-2.5 h-2.5 rounded-full"
@@ -481,7 +486,7 @@ function AccessEditor({ chatterId, onClose }: { chatterId: string; onClose: () =
               accountId={aid}
               accountLabel={a?.nickname || aid}
               entry={folderState[aid] ?? { limit: false, grants: [] }}
-              onChange={(next) => setFolderEntry(aid, next)}
+              onChange={setFolderEntry}
             />
           );
         })}
@@ -504,7 +509,7 @@ function FolderLimit({
   accountId: string;
   accountLabel: string;
   entry: FolderEntry;
-  onChange: (next: FolderEntry) => void;
+  onChange: (aid: string, next: FolderEntry) => void;
 }) {
   // Lazy: only fetch the model's folders when the limit is turned on.
   const listsQ = useQuery<VaultListsResp>({
@@ -538,18 +543,18 @@ function FolderLimit({
       }
       return g;
     });
-    if (changed) onChange({ limit: entry.limit, grants: next });
-  }, [folders, entry, onChange]);
+    if (changed) onChange(accountId, { limit: entry.limit, grants: next });
+  }, [folders, entry.limit, entry.grants, accountId, onChange]);
 
   function toggleLimit(on: boolean) {
-    onChange({ limit: on, grants: on ? entry.grants : [] });
+    onChange(accountId, { limit: on, grants: on ? entry.grants : [] });
   }
 
   function toggleFolder(id: number, name: string, on: boolean) {
     const next = on
       ? [...entry.grants.filter((g) => g.folder_id !== id), { folder_id: id, folder_name: name }]
       : entry.grants.filter((g) => g.folder_id !== id);
-    onChange({ limit: entry.limit, grants: next });
+    onChange(accountId, { limit: entry.limit, grants: next });
   }
 
   return (

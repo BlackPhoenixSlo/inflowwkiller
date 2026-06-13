@@ -416,11 +416,13 @@ export interface OFMessage {
   _failed?: boolean;
   _failedReason?: string;    // human-readable upstream reason (OF error)
   _tempId?: number;
-  /** Set on pseudo-rows synthesized from a local-wait scheduled send.
-   *  `_fireAt` is the ISO timestamp the timer will deliver at. The
-   *  MessageList renders these distinctly + offers a cancel button. */
+  /** Set on pseudo-rows synthesized from a scheduled send (the executor-fired
+   *  `scheduled_jobs` queue). `_fireAt` is the ISO timestamp it delivers at;
+   *  `_scheduleJobId` is the server job id used to cancel it. The MessageList
+   *  renders these distinctly + offers a cancel button. */
   _isFutureScheduled?: boolean;
   _fireAt?: string;
+  _scheduleJobId?: number;
 }
 
 export interface OFChatItem {

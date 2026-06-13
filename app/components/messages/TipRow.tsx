@@ -20,23 +20,14 @@
 import Link from "next/link";
 
 import { Badge } from "@/components/ui/primitives";
-import { proxyImage } from "@/lib/relay";
-import { cn, fmtRelTime } from "@/lib/utils";
+import FanAvatar from "@/components/messages/FanAvatar";
+import { fmtCents, stripHtml } from "@/lib/messageFormat";
+import { fmtRelTime } from "@/lib/utils";
 
 import type { TipsListRow } from "@/hooks/useTipsList";
 
 interface Props {
   row: TipsListRow;
-}
-
-function fmtPrice(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
-
-function stripHtml(s: string): string {
-  // OF bodies often arrive wrapped in <p>…</p>; trim the common cases for
-  // a denser preview. A full parser pass isn't worth it for 200-char notes.
-  return s.replace(/<\/?p[^>]*>/gi, "").replace(/<br\s*\/?>/gi, " ").trim();
 }
 
 export default function TipRow({ row }: Props) {
@@ -51,7 +42,7 @@ export default function TipRow({ row }: Props) {
 
   const inner = (
     <div className="flex gap-3 p-3 border border-border rounded-xl bg-panel hover:border-border-light transition-colors">
-      <Avatar
+      <FanAvatar
         url={row.fan.avatar_url}
         accountId={row.account_id}
         alt={row.fan.username ?? "fan"}
@@ -72,7 +63,7 @@ export default function TipRow({ row }: Props) {
             <span>TIP</span>
           </Badge>
           <span className="ml-auto text-sm font-semibold text-fg">
-            {fmtPrice(row.amount_cents)}
+            {fmtCents(row.amount_cents)}
           </span>
           <span className="text-xs text-fg-dim">
             {fmtRelTime(row.occurred_at)}
@@ -112,32 +103,4 @@ export default function TipRow({ row }: Props) {
     );
   }
   return <div className="block">{inner}</div>;
-}
-
-function Avatar({
-  url,
-  accountId,
-  alt,
-}: {
-  url: string | null;
-  accountId: string;
-  alt: string;
-}) {
-  const src = url ? proxyImage(url, accountId) : "";
-  return (
-    <div
-      className={cn(
-        "w-10 h-10 rounded-full bg-bg-elev-1 border border-border overflow-hidden flex-shrink-0",
-      )}
-    >
-      {src ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={src} alt={alt} className="w-full h-full object-cover" />
-      ) : (
-        <div className="w-full h-full grid place-items-center text-fg-dim text-xs">
-          {alt[0]?.toUpperCase() ?? "?"}
-        </div>
-      )}
-    </div>
-  );
 }

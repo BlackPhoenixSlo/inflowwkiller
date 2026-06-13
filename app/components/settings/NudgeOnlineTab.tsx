@@ -164,6 +164,14 @@ export default function NudgeOnlineTab() {
     return { ...form, slots };
   }
 
+  // Bulk "Roll out to models" applies the in-memory config to OTHER accounts, so
+  // require the active account's edits to be saved (and valid) first — otherwise
+  // we'd push unsaved/partial changes the operator hasn't committed here.
+  const dirty = useMemo(() => {
+    if (!cfgQ.data) return false;
+    return JSON.stringify(buildConfig()) !== JSON.stringify(eff);
+  }, [form, slots, eff, cfgQ.data]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function save() {
     setErr(null); setMsg(null);
     if (!accountId) return;
@@ -205,6 +213,7 @@ export default function NudgeOnlineTab() {
 
   async function applyToModels() {
     setBulkMsg(null);
+    if (dirty) { setBulkMsg("Save your changes first, then roll out."); return; }
     const ids = [...selected];
     if (ids.length === 0) { setBulkMsg("Pick at least one model."); return; }
     try {
@@ -587,11 +596,14 @@ export default function NudgeOnlineTab() {
             ))}
           </div>
           <div className="flex items-center gap-2">
-            <Button onClick={applyToModels} disabled={bulkM.isPending || selected.size === 0}>
+            <Button onClick={applyToModels} disabled={bulkM.isPending || selected.size === 0 || dirty}
+              title={dirty ? "Save your changes first" : undefined}>
               <Rocket className="size-4" />
               {bulkM.isPending ? "Applying…" : `Apply + enable on ${selected.size} model${selected.size === 1 ? "" : "s"}`}
             </Button>
-            <span className="text-xs text-muted">enables the 60s rule live on each</span>
+            <span className="text-xs text-muted">
+              {dirty ? "save your changes first to roll out" : "enables the 60s rule live on each"}
+            </span>
           </div>
           {bulkMsg && <div className="text-sm text-accent border-t border-border pt-3">{bulkMsg}</div>}
         </Card>
