@@ -3226,9 +3226,30 @@ class SendMessageBody(BaseModel):
 
 
 # Mass-message route MUST come before /chats/{chat_id}/messages below, otherwise
-# FastAPI matches `chat_id="messages"` and 422s on int validation. See bottom of
-# the file for the body model `_MassMessageBody` — referenced lazily here, which
-# is fine since Python resolves it at request time, not at decoration time.
+# FastAPI matches `chat_id="messages"` and 422s on int validation.
+#
+# `_MassMessageBody` MUST be defined here, ABOVE the route that annotates it.
+# With `from __future__ import annotations` the body annotation is a string, so
+# FastAPI/Pydantic build a deferred TypeAdapter from a ForwardRef at decoration
+# time — if the class is defined later in the file nothing ever resolves it, and
+# `/openapi.json` blows up with "is not fully defined" (PydanticUserError).
+class _MassMessageBody(BaseModel):
+    text: str
+    user_lists: list[int] = Field(default_factory=list)
+    included_users: list[int] = Field(default_factory=list)
+    excluded_users: list[int] = Field(default_factory=list)
+    price: float = Field(0, ge=0)
+    locked_text: bool = False
+    # Mirror SendMessageBody: int = vault id, dict = fresh-upload claim
+    # (the same payload shape /upload returns in `send_with`).
+    media_files: list[int | dict] = Field(default_factory=list)
+    # Plumbed end-to-end in Work Unit O (Phase 6). Accepted here so a
+    # forward-compat client can already send it without 422; the value is
+    # currently ignored downstream because `of_client.send_mass_message`
+    # doesn't yet thread it to OF.
+    previews: list[int] = Field(default_factory=list)
+    scheduled_date: str | None = None
+
 
 async def _open_mass_run(
     request: Request,
@@ -4216,23 +4237,6 @@ class _ScheduleMessageBody(BaseModel):
     media_files: list[int | dict] = Field(default_factory=list)
     previews: list[int] = Field(default_factory=list)
     tagged_users: list[int] = Field(default_factory=list)
-
-class _MassMessageBody(BaseModel):
-    text: str
-    user_lists: list[int] = Field(default_factory=list)
-    included_users: list[int] = Field(default_factory=list)
-    excluded_users: list[int] = Field(default_factory=list)
-    price: float = Field(0, ge=0)
-    locked_text: bool = False
-    # Mirror SendMessageBody: int = vault id, dict = fresh-upload claim
-    # (the same payload shape /upload returns in `send_with`).
-    media_files: list[int | dict] = Field(default_factory=list)
-    # Plumbed end-to-end in Work Unit O (Phase 6). Accepted here so a
-    # forward-compat client can already send it without 422; the value is
-    # currently ignored downstream because `of_client.send_mass_message`
-    # doesn't yet thread it to OF.
-    previews: list[int] = Field(default_factory=list)
-    scheduled_date: str | None = None
 
 class _CreatePostBody(BaseModel):
     text: str
