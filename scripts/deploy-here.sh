@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
 # deploy-here.sh — run THIS ON the VPS itself (e.g. Hostinger's browser terminal).
-# No laptop, no SSH. It installs Docker, clones/updates the repo, brings the stack
-# up behind a Cloudflare quick-tunnel, and prints the public URL.
+# No laptop, no SSH. It installs Docker, clones/updates the repo, brings the
+# stack up, and prints how to reach it. By default that's plain http on this
+# server's own IP — zero hassle, no domain, no DNS. Pass DOMAIN= to get a real
+# https url instead (see the modes below).
 #
 # Zero secrets, zero proxies needed for a brand-new account:
 #   • session secrets are generated automatically on first run,
@@ -15,17 +17,18 @@
 # questions asked):
 #   bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/inflowwkiller/main/scripts/deploy-here.sh)
 #
-# Already have a DeepSeek key? Pass it inline and it's baked in:
-#   DEEPSEEK_API_KEY=sk-... bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/inflowwkiller/main/scripts/deploy-here.sh)
+# Modes (same one-liner, just prefix an env var). Re-run anytime to switch — it's
+# idempotent and keeps your .env, database, and sessions:
 #
-# Want a STABLE https URL instead of the random tunnel one? If this box already
-# runs Traefik (every Hostinger *n8n* template does) and you point a DNS A-record
-# at it, pass the host and it's routed straight through Traefik with a real
-# Let's Encrypt cert — faster, permanent, no Cloudflare hop:
-#   DOMAIN=app.yourdomain.com bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/inflowwkiller/main/scripts/deploy-here.sh)
+#   (default)                      → plain http on this server's IP   http://<ip>:3000
+#   PORT=8080  ...                 → same, on a different host port
+#   DOMAIN=you.duckdns.org ...     → real https via Traefik (free DuckDNS subdomain)
+#   DOMAIN=app.yourdomain.com ...  → real https via Traefik (your own domain)
+#   TUNNEL=1  ...                  → throwaway https url, no DNS (random, changes on restart)
+#   DEEPSEEK_API_KEY=sk-... ...    → bake in an AI key (optional; dashboard works without)
 #
-# Re-run anytime to pull the latest code + rebuild (idempotent — keeps your
-# .env, database, and sessions). Deploy your own fork by setting REPO_URL=.
+# A DOMAIN needs Traefik already on the box — every Hostinger *n8n* template
+# ships it. Deploy your own fork by setting REPO_URL=.
 
 set -euo pipefail
 
@@ -144,46 +147,85 @@ DONE
   exit 0
 fi
 
-# ---------- 5b. fallback: Cloudflare quick tunnel ----------
-# No DOMAIN → expose via a stateless Cloudflare tunnel. Disable the app's
-# Traefik router so a host Traefik doesn't try (and fail) to serve the dead
-# placeholder host from the base compose.
-say "no DOMAIN given → Cloudflare quick tunnel.  (Stable, faster URL instead:  DOMAIN=app.yourdomain.com bash <(curl ...))"
-cat > docker-compose.override.yml <<'YAML'
+# ---------- 5b. opt-in: Cloudflare quick tunnel (TUNNEL=1) ----------
+# Throwaway https url, no DNS — handy for a quick demo. Disable the app's
+# Traefik router so a host Traefik doesn't also try to serve the placeholder
+# host from the base compose.
+if [ "${TUNNEL:-}" = "1" ]; then
+  say "TUNNEL=1 → Cloudflare quick tunnel (random https url, changes on every restart)"
+  cat > docker-compose.override.yml <<'YAML'
 services:
   app:
     labels:
       traefik.enable: "false"
 YAML
-say "docker compose --profile tunnel up -d --build (first build takes a few minutes)"
-docker compose --profile tunnel up -d --build
-docker compose ps
+  say "docker compose --profile tunnel up -d --build (first build takes a few minutes)"
+  docker compose --profile tunnel up -d --build
+  docker compose ps
+  say "waiting for the Cloudflare tunnel URL"
+  URL=""
+  for _ in $(seq 1 30); do
+    URL=$(docker logs chatterly-tunnel 2>&1 | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1 || true)
+    [ -n "$URL" ] && break; printf '.'; sleep 4
+  done; echo
+  [ -z "$URL" ] && { echo "⚠ tunnel URL not seen yet. Check: docker logs -f chatterly-tunnel | grep trycloudflare"; exit 0; }
+  cat <<DONE
 
-# ---------- 6. public URL ----------
-say "waiting for the Cloudflare tunnel URL"
-URL=""
-for _ in $(seq 1 30); do
-  URL=$(docker logs chatterly-tunnel 2>&1 | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1 || true)
-  [ -n "$URL" ] && break; printf '.'; sleep 4
-done; echo
+────────────────────────────────────────────────────────────
+✓ Fastt is live (Cloudflare tunnel).
 
-if [ -z "$URL" ]; then
-  echo "⚠ tunnel URL not seen yet. Check: docker logs -f chatterly-tunnel | grep trycloudflare"
+  URL:  ${URL}   ← random, changes every restart
+  dir:  ${DIR}   branch: ${BRANCH}
+
+Current URL anytime: docker logs chatterly-tunnel | grep trycloudflare | tail -1
+Want a STABLE url?    DOMAIN=you.duckdns.org bash $DIR/scripts/deploy-here.sh
+────────────────────────────────────────────────────────────
+DONE
   exit 0
 fi
+
+# ---------- 5c. default: plain http on this server's IP (zero hassle) ----------
+# The simplest path that just works: publish the dashboard on a host port and
+# print http://<this-server-ip>:<port>. No DNS, no domain, stable, instant.
+# Trade-off: NO TLS — the login/session token travels in clear text, so treat
+# this as quick-start and upgrade to https (footer) once it's working.
+PORT="${PORT:-3000}"
+IP=$(curl -fsS https://api.ipify.org 2>/dev/null || curl -fsS https://ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')
+IP="${IP:-<this-server-ip>}"
+say "exposing the dashboard on http://$IP:$PORT (plain http — see footer to add https)"
+# Disable the placeholder Traefik router and publish the port. (compose merges
+# this with the base 127.0.0.1 bind, adding a public one.)
+cat > docker-compose.override.yml <<YAML
+services:
+  app:
+    ports:
+      - "0.0.0.0:$PORT:3001"
+    labels:
+      traefik.enable: "false"
+YAML
+say "docker compose up -d --build (first build takes a few minutes)"
+docker compose up -d --build
+docker compose ps
 cat <<DONE
 
 ────────────────────────────────────────────────────────────
 ✓ Fastt is live on this server.
 
-  URL:  ${URL}
-  dir:  ${DIR}   branch: ${BRANCH}
+  URL:  http://$IP:$PORT
+  dir:  $DIR   branch: $BRANCH
+
+  ⚠ plain http (no encryption). If the page won't open, allow the port in your
+    firewall:   ufw allow $PORT/tcp    (or your VPS provider's firewall panel)
 
 Connect an OnlyFans account: open the URL, then capture your session with the
 Chrome extension in loginExtension/ (see DEPLOY.md, Step 4).
 
-Re-run to update:   bash $DIR/scripts/deploy-here.sh
-Current URL anytime: docker logs chatterly-tunnel | grep trycloudflare | tail -1
-For a permanent URL:  DOMAIN=app.yourdomain.com bash $DIR/scripts/deploy-here.sh
+── upgrade to a secure, permanent https url (free or cheap) ─────────────────
+  1) Free DuckDNS subdomain (recommended): create one at https://www.duckdns.org,
+     point it at $IP, then re-run:
+        DOMAIN=yourname.duckdns.org bash $DIR/scripts/deploy-here.sh
+  2) Your own domain: add a DNS A-record → $IP, then re-run:
+        DOMAIN=app.yourdomain.com bash $DIR/scripts/deploy-here.sh
+  (both route through the box's Traefik — every Hostinger n8n template has it.)
 ────────────────────────────────────────────────────────────
 DONE
