@@ -134,7 +134,7 @@ export default function PerAutomationTable({ from, to }: Props) {
                 <td className="px-4 py-2.5 text-right tabular-nums text-fg-dim">
                   {r.llm_calls > 0 ? `${fmtTokens(r.tokens_in)} / ${fmtTokens(r.tokens_out)}` : "—"}
                 </td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{fmtCentsBlankZero(r.cost_cents * 100)}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums">{fmtCentsBlankZero(r.cost_cents)}</td>
               </tr>
             ))}
           </tbody>
@@ -146,7 +146,7 @@ export default function PerAutomationTable({ from, to }: Props) {
                 <td className="px-4 py-2.5 text-right tabular-nums">{fmtCentsBlankZero(totals.revenue_cents)}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums">{totals.llm_calls.toLocaleString()}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums text-fg-dim">—</td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{fmtCentsBlankZero(totals.cost_cents * 100)}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums">{fmtCentsBlankZero(totals.cost_cents)}</td>
               </tr>
             </tfoot>
           )}

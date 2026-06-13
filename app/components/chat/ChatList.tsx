@@ -78,7 +78,7 @@ export function ChatList({
 }: {
   selected: ChatListSelection | null;
   onSelect: (sel: ChatListSelection) => void;
-  /** When true (default) ChatList writes "(N) Inbox · Fastt" into document.title
+  /** When true (default) ChatList writes "(N) Fastt" into document.title
    *  based on the All-set attention count. Pages that want a different
    *  tab-title format (e.g. /group) opt out and set their own. */
   setTabTitle?: boolean;
@@ -232,6 +232,18 @@ export function ChatList({
     listId: serverListId,
     query: query || null,
   });
+
+  // useChatList returns a fresh object literal (with a fresh `loadMore`
+  // arrow) every render, so depending on the whole `q` in effects would
+  // tear down + rebuild the IntersectionObserver and re-run the owe-reply /
+  // autofill loaders on every re-render (SSE patches, spend/activity
+  // arrivals, sort recomputes). Keep a ref to the latest `q` and expose a
+  // STABLE loadMore that reads through it, so those effects can depend on
+  // the specific primitives they use (q.hasMore / q.isFetchingMore) plus a
+  // stable callback instead of the unstable object.
+  const qRef = useRef(q);
+  qRef.current = q;
+  const loadMore = useCallback(() => qRef.current.loadMore(), []);
 
   const accountById = useMemo(() => {
     const m = new Map<string, { color?: string | null; nickname?: string | null }>();
@@ -535,8 +547,8 @@ export function ChatList({
     if (!oweReplyActive) return;
     if (oweReplyExhausted) return;
     if (q.isFetchingMore) return;
-    q.loadMore();
-  }, [oweReplyActive, oweReplyExhausted, oweReplyMatches, oweReplyScanned, q]);
+    loadMore();
+  }, [oweReplyActive, oweReplyExhausted, oweReplyMatches, oweReplyScanned, q.isFetchingMore, loadMore]);
 
   // Auto-load more pages only after the user has actually scrolled the
   // panel. Without this gate, an empty/short panel keeps the sentinel in
@@ -576,7 +588,7 @@ export function ChatList({
     const io = new IntersectionObserver(
       (entries) => {
         if (!entries.some((e) => e.isIntersecting)) return;
-        if (!q.hasMore || q.isFetchingMore) return;
+        if (!qRef.current.hasMore || qRef.current.isFetchingMore) return;
         if (capped) return;
         // Owe-reply has its own bounded walk and intentionally pre-scans
         // without waiting for user scroll. Search also bypasses the gate
@@ -584,7 +596,7 @@ export function ChatList({
         // mode requires an explicit scroll signal before chaining pages.
         if (oweReplyExhausted) return;
         if (!oweReplyActive && !query && !userScrolled) return;
-        q.loadMore();
+        loadMore();
       },
       // rootMargin: 0 means "only fire when the sentinel is actually in
       // the viewport," not 200px before. Combined with the userScrolled
@@ -593,7 +605,7 @@ export function ChatList({
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [q, capped, oweReplyExhausted, oweReplyActive, userScrolled, query]);
+  }, [loadMore, capped, oweReplyExhausted, oweReplyActive, userScrolled, query]);
 
   // Reset the auto-fill burst counter when the query context changes so a
   // fresh list (new scope, filter, folder, or search) gets a fresh budget.
@@ -624,10 +636,10 @@ export function ChatList({
       if (scroller.scrollHeight > scroller.clientHeight + 80) return;
       if (autofillBurstRef.current >= 10) return;
       autofillBurstRef.current += 1;
-      q.loadMore();
+      loadMore();
     });
     return () => cancelAnimationFrame(id);
-  }, [rows.length, q.hasMore, q.isFetchingMore, q.isSuccess, isFromSeed, capped, oweReplyExhausted, q]);
+  }, [rows.length, q.hasMore, q.isFetchingMore, q.isSuccess, isFromSeed, capped, oweReplyExhausted, loadMore]);
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-panel border-r border-border">

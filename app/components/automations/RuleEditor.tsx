@@ -93,6 +93,11 @@ export default function RuleEditor({
   const isEdit = editing !== null;
   const createM = useCreateRule(accountId);
   const updateM = useUpdateRule(accountId);
+  // After a successful create we capture the new rule so a retry (e.g. the style
+  // save failing) PATCHES it instead of creating a second identical rule —
+  // automation_rules has no unique (account, kind) constraint, so a re-create
+  // would silently spawn a duplicate (possibly-enabled) automation.
+  const [createdRule, setCreatedRule] = useState<AutomationRule | null>(null);
 
   // Only "rules"-surface kinds are creatable from this editor; everything else
   // (ready-made sends, brain, settings, internal) lives on its own surface.
@@ -131,10 +136,18 @@ export default function RuleEditor({
   const [humanStyle, setHumanStyle] = useState(false);
   const [typos, setTypos] = useState(false);
   const [nonnative, setNonnative] = useState(false);
+  // Seed the three booleans ONCE per kind, the first time the query has data —
+  // not on every data-reference change. A background refetch (the 5s-stale
+  // remount, or another surface saving + invalidating) must NOT clobber the
+  // operator's in-progress toggles mid-edit. We re-seed only when `kind` flips.
+  const seededStyleKindRef = useRef<string | null>(null);
   useEffect(() => {
+    if (!styleCfgQ.data) return;
+    if (seededStyleKindRef.current === kind) return;
+    seededStyleKindRef.current = kind;
     const c: StyleConfig = {
-      ...(styleCfgQ.data?.defaults ?? {}),
-      ...(styleCfgQ.data?.config ?? {}),
+      ...(styleCfgQ.data.defaults ?? {}),
+      ...(styleCfgQ.data.config ?? {}),
     };
     setHumanStyle(Boolean(c[kind as keyof StyleConfig]));
     setTypos(Boolean(c[`typos_${kind}` as keyof StyleConfig]));
@@ -335,17 +348,22 @@ export default function RuleEditor({
     }
 
     try {
-      if (isEdit && editing) {
+      // The rule we'd PATCH on save: the prop being edited, or a rule WE already
+      // created on a prior (partially-failed) save attempt. Only a genuinely-new
+      // rule with no created-id falls through to createM, so a retry never
+      // duplicates the automation.
+      const editTarget = editing ?? createdRule;
+      if (editTarget) {
         await updateM.mutateAsync({
-          id: editing.id,
-          name: name.trim() || editing.kind,
+          id: editTarget.id,
+          name: name.trim() || editTarget.kind,
           every_seconds: everySeconds,
           payload,
           quiet_hours: quiet ?? [0, 0], // [0,0] clears server-side
           is_enabled: enabled,
         });
       } else {
-        await createM.mutateAsync({
+        const created = await createM.mutateAsync({
           account_id: accountId,
           kind,
           name: name.trim() || undefined,
@@ -354,6 +372,9 @@ export default function RuleEditor({
           quiet_hours: quiet ?? undefined,
           is_enabled: enabled,
         });
+        // Switch into edit mode for the rest of this flow (and any retry) BEFORE
+        // the style save below, so a style-save failure won't re-create the rule.
+        setCreatedRule(created);
       }
       // Persist the style/typos/non-native opt-ins (chat kinds only). The backend
       // MERGES, so sending just this automation's keys won't touch the others'.

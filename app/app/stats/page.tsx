@@ -33,40 +33,8 @@ import UserDataTab from "@/components/stats/UserDataTab";
 import { Button } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { fmtTimeOnly } from "@/lib/format";
+import { daysAgoISO, todayISO, toLocalIso } from "@/lib/dateRange";
 import { useIngestHealth, useStatsRefresh } from "@/hooks/useStats";
-
-function daysAgoISO(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
-}
-function todayISO(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
-}
-
-// Convert a bare YYYY-MM-DD (picker output) into a full UTC-instant ISO
-// string with millisecond precision. `end=true` picks 23:59:59.999 local.
-// Backend `_parse_date` (stats.py) converts the tzinfo back to UTC; this
-// keeps a Pacific user's "today" boundary aligned with their wall clock.
-// Anything that already has a time component is passed through.
-function toLocalIso(date: string | null, end: boolean): string | null {
-  if (!date) return null;
-  if (date.includes("T")) return date;
-  const parts = date.split("-").map(Number);
-  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return date;
-  const [y, m, d] = parts;
-  const local = end
-    ? new Date(y, m - 1, d, 23, 59, 59, 999)
-    : new Date(y, m - 1, d, 0, 0, 0, 0);
-  return local.toISOString();
-}
 
 export default function StatsPage() {
   const [tab, setTab] = useState<"overview" | "user-data">("overview");
