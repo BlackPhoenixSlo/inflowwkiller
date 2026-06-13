@@ -212,7 +212,17 @@ def _api_key(env_name: str) -> str:
     the host shell doesn't export it. load_dotenv(override=False) then refuses
     to backfill the already-set (empty) var, so the real value sitting in the
     COPYed service/.env would be ignored. Reading the file here recovers it —
-    the Phase-F clean-build footgun, defused."""
+    the Phase-F clean-build footgun, defused.
+
+    A value pasted into the Setup → Keys UI (secrets.json) wins over both, so a
+    self-hoster can add a key without touching env/.env or restarting."""
+    try:
+        from secrets_store import stored as _stored
+        s = _stored(env_name)
+        if s:
+            return s
+    except Exception:  # never let the key store crash a provider call
+        pass
     val = (os.environ.get(env_name) or "").strip()
     if val:
         return val

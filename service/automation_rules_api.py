@@ -77,6 +77,21 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "only_fan_ids", "type": "ids", "hint": "[fan_id,…] scope the sweep to these fans (gates still apply)"},
         ],
     },
+    "ai_chatter": {
+        "label": "AI Seller (chatter + catalog selling)", "recurring": True, "surface": "rules",
+        "cadence_default_s": 60,
+        "summary": "Freestyle chatter+seller for fans under the spend gate — replaces AI chat replies when enabled. Pitches catalog pieces (tip/PPV) and delivers unlocks. Gates, pricing and the catalog live in Automations → 🤖 AI Seller.",
+        "example": "every 60s · backup SLA from the tab config",
+        "knobs": [
+            {"key": "max_replies", "type": "int", "min": 1, "hint": "replies per tick (else the tab's max_fans_per_tick)"},
+            {"key": "mode", "type": "str", "enum": ["backup", "always"], "hint": "override the tab's trigger mode"},
+            {"key": "sla_minutes", "type": "int", "min": 0, "hint": "override the backup SLA"},
+            {"key": "model", "type": "str", "hint": "LLM override (else account default)"},
+            {"key": "dry_run", "type": "bool", "hint": "generate but don't send"},
+            {"key": "force_ids", "type": "ids", "hint": "[fan_id,…] bypass gates (manual targeting)"},
+            {"key": "only_fan_ids", "type": "ids", "hint": "[fan_id,…] scope the sweep (gates still apply)"},
+        ],
+    },
     "autoreply": {
         "label": "Auto Convo (reply when the team is slow)", "recurring": True, "surface": "rules",
         "cadence_default_s": 180,

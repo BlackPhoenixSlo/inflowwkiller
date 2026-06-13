@@ -170,11 +170,17 @@ async def _load_persona(account_id: str) -> str:
 
 # ── Funnel + broadcast lookup (own session each) ─────────────────────
 
-async def _active_mass_runs(account_id: str, only_id: int | None) -> list[tuple[int, int]]:
-    """The account's completed funnel broadcasts → [(mass_run_id, funnel_id)].
+async def _active_mass_runs(
+    account_id: str, only_id: int | None,
+) -> list[tuple[int, int, int | None, datetime | None, dict]]:
+    """The account's completed funnel broadcasts →
+    [(mass_run_id, funnel_id, queue_id, started_at, audience_filter)].
     A run is a funnel anchor when status='ok' and funnel_id is set."""
     async with get_session() as s:
-        q = select(MassRun.id, MassRun.funnel_id).where(
+        q = select(
+            MassRun.id, MassRun.funnel_id, MassRun.queue_id,
+            MassRun.started_at, MassRun.audience_filter,
+        ).where(
             MassRun.account_id == str(account_id),
             MassRun.status == "ok",
             MassRun.funnel_id.is_not(None),
@@ -182,7 +188,18 @@ async def _active_mass_runs(account_id: str, only_id: int | None) -> list[tuple[
         if only_id is not None:
             q = q.where(MassRun.id == only_id)
         rows = (await s.execute(q.order_by(MassRun.id))).all()
-    return [(int(r[0]), int(r[1])) for r in rows]
+    out: list[tuple[int, int, int | None, datetime | None, dict]] = []
+    for r in rows:
+        try:
+            audience = json.loads(r[4]) if r[4] else {}
+        except Exception:
+            audience = {}
+        out.append((
+            int(r[0]), int(r[1]),
+            int(r[2]) if r[2] is not None else None,
+            r[3], audience if isinstance(audience, dict) else {},
+        ))
+    return out
 
 
 async def _load_funnel_steps(funnel_id: int) -> list[dict]:
@@ -245,6 +262,85 @@ async def _recipient_fans(account_id: str, mass_run_id: int) -> list[int]:
             ).distinct()
         )).all()
     return [int(r[0]) for r in rows]
+
+
+def _norm_body(s: str | None) -> str:
+    """Normalize a message body for opener matching: drop HTML tags,
+    collapse whitespace, casefold."""
+    return re.sub(r"\s+", " ", _strip_html(s)).casefold()
+
+
+# Adoption window around started_at for scrape-backfilled opener rows. OF
+# delivers a queued broadcast over time on big audiences; 12h covers that
+# without colliding with a same-text resend a day later (mass_premade Way 1).
+_ADOPT_WINDOW_H = 12
+_ADOPT_SLACK_MIN = 10
+
+
+async def _opener_texts(account_id: str, funnel_id: int, queue_id: int | None) -> set[str]:
+    """The broadcast's possible body texts, normalized: the funnel's
+    opening_message plus the cached OF queue text (covers a composer text
+    override on the opener)."""
+    out: set[str] = set()
+    async with get_session() as s:
+        fn = await s.get(MassMessageFunnel, int(funnel_id))
+        if fn is not None and fn.opening_message:
+            out.add(_norm_body(fn.opening_message))
+        if queue_id is not None:
+            from db.models import MassBroadcastCache
+            row = (await s.execute(
+                select(MassBroadcastCache.body_text, MassBroadcastCache.raw_text).where(
+                    MassBroadcastCache.account_id == str(account_id),
+                    MassBroadcastCache.queue_id == int(queue_id),
+                )
+            )).first()
+            if row is not None:
+                for t in row:
+                    if t:
+                        out.add(_norm_body(t))
+    out.discard("")
+    return out
+
+
+async def _adopt_list_recipients(
+    account_id: str, mass_run_id: int,
+    started_at: datetime | None, openers: set[str],
+    excluded: set[int],
+) -> int:
+    """List-audience broadcasts (`user_lists`) get NO per-fan rows at send
+    time — OF doesn't echo recipients and the WS pump skips outbound, so the
+    opener only lands in each fan's chat when scrape_history backfills it,
+    UNTAGGED. Adopt those rows: any untagged outbound near started_at whose
+    normalized body equals the opener gets mass_run_id stamped, which makes
+    the fan visible to _recipient_fans and scopes _last_funnel_out_at to the
+    run. Idempotent — tagged rows leave the candidate set. Returns rows
+    adopted (eventual-consistent: fans appear as scrape catches up)."""
+    if not openers or started_at is None:
+        return 0
+    lo = started_at - timedelta(minutes=_ADOPT_SLACK_MIN)
+    hi = started_at + timedelta(hours=_ADOPT_WINDOW_H)
+    adopted = 0
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.fan_id, Message.message_id, Message.body).where(
+                Message.account_id == str(account_id),
+                Message.direction == "out",
+                Message.mass_run_id.is_(None),
+                Message.created_at >= lo,
+                Message.created_at <= hi,
+            )
+        )).all()
+        for fan_id, msg_id, body in rows:
+            if int(fan_id) in excluded or _norm_body(body) not in openers:
+                continue
+            m = await s.get(Message, (str(account_id), int(fan_id), int(msg_id)))
+            if m is not None:
+                m.mass_run_id = int(mass_run_id)
+                adopted += 1
+    if adopted:
+        log.info("reply_mass_funnel adopted %d list-audience opener rows run=%s",
+                 adopted, mass_run_id)
+    return adopted
 
 
 async def _tracked_fans(mass_run_id: int) -> set[int]:
@@ -487,12 +583,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     errors = 0
     cap_hit = False
 
-    for mass_run_id, funnel_id in runs:
+    for mass_run_id, funnel_id, queue_id, started_at, audience in runs:
         steps = await _load_funnel_steps(funnel_id)
         if not steps:
             log.info("reply_mass_funnel run=%s funnel=%s has no steps — skipping",
                      mass_run_id, funnel_id)
             continue
+
+        # ── 0) List-audience sends wrote no per-fan rows — adopt the
+        #      scrape-backfilled opener rows so those fans are discoverable.
+        if audience.get("user_lists") or audience.get("list_ids"):
+            try:
+                openers = await _opener_texts(account_id, funnel_id, queue_id)
+                excluded = {int(x) for x in (audience.get("excluded_users") or [])}
+                await _adopt_list_recipients(
+                    account_id, mass_run_id, started_at, openers, excluded)
+            except Exception:
+                log.warning("reply_mass_funnel adopt failed run=%s", mass_run_id,
+                            exc_info=True)
 
         # ── 1) Discovery: new repliers → fresh step-0 state ──────────
         tracked = await _tracked_fans(mass_run_id)

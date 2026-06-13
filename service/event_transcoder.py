@@ -241,6 +241,15 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     # Build the fields we need.
     created_at = _parse_iso(m.get("createdAt")) or datetime.utcnow()
     price_cents = _to_cents(m.get("price"))
+    # A tip's $ value rides in top-level `tipAmount` (DOLLARS), NOT `price` — OF
+    # sends a tip as a chat_message with isTip=true and price=0 (the note the fan
+    # attached is in `tipText`). Read tipAmount for the real amount; fall back to
+    # price_cents for any isTip event that somehow lacks tipAmount. Keep this
+    # SEPARATE from price_cents so PPV/paid-unlock logic below is untouched.
+    is_tip = bool(m.get("isTip"))
+    tip_cents = _to_cents(m.get("tipAmount")) if is_tip else 0
+    if is_tip and tip_cents == 0:
+        tip_cents = price_cents
     media_ids = _media_ids(m.get("media"))
     is_paid = m.get("isOpened") if price_cents > 0 else None  # NULL for free messages
     sender_name = (from_user.get("name") or from_user.get("username") or "")[:255]
@@ -267,7 +276,7 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
             media_count=int(m.get("mediaCount") or 0),
             price_cents=price_cents,
             is_paid=is_paid,
-            is_tip=bool(m.get("isTip")),
+            is_tip=is_tip,
             purchased_at=_parse_iso(m.get("openedAt")) if is_paid else None,
             is_unsent=False,
             raw_json=raw,
@@ -277,7 +286,7 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
             set_={
                 "body": body,
                 "is_paid": is_paid,
-                "is_tip": bool(m.get("isTip")),
+                "is_tip": is_tip,
                 "media_count": int(m.get("mediaCount") or 0),
                 "raw_json": raw,
             },
@@ -352,25 +361,27 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
         await s.execute(chat_stmt)
 
         # ── transaction (tip path) ───────────────────────────────
-        # A tip rides on a normal chat_message with isTip=true + price>0.
+        # A tip rides on a chat_message with isTip=true; its $ value is in
+        # `tipAmount` (dollars), captured above as tip_cents — `price` is 0 here.
         # OF also sends a 'tipReceived' / 'paidMessage' event for PPV
         # unlocks (different shape) — we'll wire those when we see one
         # in the unknown-event log.
-        if bool(m.get("isTip")) and price_cents > 0 and direction == "in":
+        if is_tip and tip_cents > 0 and direction == "in":
             await _record_inbound_payment(
                 s,
                 account_id=str(account_id),
                 fan_id=int(fan_id),
                 message_id=int(message_id),
                 kind="tip",
-                amount_cents=price_cents,
+                amount_cents=tip_cents,
                 occurred_at=created_at,
                 raw=raw,
             )
 
     log.info(
-        "chat_message persisted: account=%s fan=%s msg=%s direction=%s price=%s",
+        "chat_message persisted: account=%s fan=%s msg=%s direction=%s price=%s tip=%s",
         account_id, fan_id, message_id, direction, price_cents,
+        tip_cents if is_tip else 0,
     )
 
     # Cache invalidation — must run AFTER the `async with get_session()`
@@ -395,14 +406,15 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     except Exception:
         log.debug("webhook_dispatch hook failed", exc_info=True)
 
-    # tip_reward: a fan tip rides on this inbound message (isTip + price>0). Kick
-    # the (gated, default-OFF) image-reward automation in real time. Separate hook
-    # from on_inbound_message so it fires even on a terminal-stage fan.
-    if bool(m.get("isTip")) and price_cents > 0:
+    # tip_reward: a fan tip rides on this inbound message (isTip; $ in tipAmount,
+    # captured as tip_cents — price is 0 for a tip). Kick the (gated) image-reward
+    # automation in real time. Separate hook from on_inbound_message so it fires
+    # even on a terminal-stage fan.
+    if is_tip and tip_cents > 0:
         try:
             from webhook_dispatch import on_inbound_tip
             asyncio.create_task(
-                on_inbound_tip(aid_s, int(fan_id), int(message_id), int(price_cents))
+                on_inbound_tip(aid_s, int(fan_id), int(message_id), int(tip_cents))
             )
         except Exception:
             log.debug("tip_reward dispatch hook failed", exc_info=True)

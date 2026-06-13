@@ -10,15 +10,17 @@ The SCALE sibling of mass_nudge. The two are deliberately different tools:
     resolves + fans out server-side in a SINGLE call, so it scales to 100k-fan
     accounts with tens of thousands online. The price: NO per-fan memory.
 
-Dedup is OF-native exclusion via `excludedUsers`: the shared cross-automation
-contact guard (`audiences.contact_guard_excludes` — fans we DMed or nudged
-inside the window ∪ fans who messaged us, NudgeState included so mass_nudge /
-nudge_online recipients are skipped too) plus any explicit `excluded_users`
-ids. Custom OF lists go server-side via `excluded_user_lists`
-(`excludeUserLists` on the wire, same as the Mass composer). The blast itself
-still leaves NO per-fan rows until the reconciler backfills them, so the
-CADENCE is the de-facto cooldown for blast→blast: run hourly+, not every few
-minutes.
+Dedup is the shared cross-automation contact guard
+(`audiences.contact_guard_excludes` — fans we DMed or nudged inside the window
+∪ fans who messaged us, NudgeState included so mass_nudge / nudge_online
+recipients are skipped too) plus any explicit `excluded_users` ids. OF has NO
+per-user exclusion field on broadcasts (`excludedUsers` is silently dropped —
+verified live 2026-06-12), so the guard set is mirrored into the per-account
+Auto_Exclude OF list and excluded server-side via `excludedLists` — together
+with any explicit `excluded_user_lists`. To give blast→blast a real cooldown
+(OF leaves no per-fan rows for a list send), the online snapshot is stamped
+into NudgeState after the send (`stamp_recipients`, default on), so the next
+blast / nudge sees these fans. CADENCE is still the backstop: run hourly+.
 
 Config (steps_json):
   with_image            true   # attach the slot image (one, rotated)
@@ -26,6 +28,8 @@ Config (steps_json):
   exclude_inbound_hours 8      # skip fans who messaged US in last N hrs (absent → 8, 0 = off)
   excluded_users        [...]  # explicit fan ids to never blast (optional)
   excluded_user_lists   [...]  # OF custom-list ids excluded server-side (optional)
+  stamp_recipients      true   # stamp the online snapshot into NudgeState (cross-automation guard)
+  max_stamp             5000   # cap the online re-fetch used for stamping
   unsend_after_hours    1      # auto-unsend the broadcast after N hrs (0 = keep)
   dry_run               false  # compose + resolve exclusions, send nothing
   slots                 {...}  # day-bucket → slot → {text:[...], image:[...]}
@@ -54,7 +58,8 @@ preview_compose = mass_nudge.preview_compose
 
 
 async def _excluded_ids(account_id: str, cfg: dict) -> list[int]:
-    """Fan ids to exclude (→ OF `excludedUsers`): the shared cross-automation
+    """Fan ids to exclude (mirrored into the Auto_Exclude OF list — OF has no
+    per-user exclusion field on broadcasts): the shared cross-automation
     contact guard — recent OUTBOUND/nudges ∪ recent INBOUND, each window
     absent → 8h default, explicit 0 = off — plus explicit `excluded_users`."""
     out_h = resolve_window_hours(
@@ -96,8 +101,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # exclude"); system names like 'fans' are NOT accepted here by OF.
     excluded_lists = [x for x in (cfg.get("excluded_user_lists") or []) if x]
     if len(excluded) > 5000:
-        # Unverified OF limit on the excludedUsers array — watch this in prod
-        # before widening the guard windows on big accounts.
+        # That's 5000+ list add/remove calls per tick on the Auto_Exclude sync —
+        # watch this in prod before widening the guard windows on big accounts.
         log.warning("online_blast exclude set is large account=%s ids=%d",
                     account_id, len(excluded))
 
@@ -106,21 +111,61 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 "image_attached": bool(media), "excluded": len(excluded),
                 "excluded_lists": len(excluded_lists)}
 
+    from audiences import broadcast_lock, ensure_exclude_list, stamp_broadcast_touch
     client = await asyncio.to_thread(ax._make_client, account_id)
-    try:
-        result = await asyncio.to_thread(lambda: client.send_mass_message(
-            text,
-            user_lists=["fans"],
-            online_only=True,
-            media_files=media,
-            excluded_users=excluded or None,
-            excluded_user_lists=excluded_lists or None,
-        ))
-    except Exception as e:
-        log.warning("online_blast send failed account=%s", account_id, exc_info=True)
-        return {"sent": 0, "skipped": "error", "error": repr(e)[:200], "slot": slot}
+
+    # Serialize sync+send per account, and mirror the guard set into the
+    # Auto_Exclude OF list (OF ignores per-user `excludedUsers` on broadcasts —
+    # verified live 2026-06-12). Fail CLOSED: blasting without the guard is the
+    # over-send bug itself.
+    async with broadcast_lock(account_id):
+        if excluded:
+            try:
+                auto_lid = await ensure_exclude_list(
+                    account_id, excluded, client=client)
+            except Exception:
+                log.warning("online_blast: Auto_Exclude sync failed — skipping "
+                            "blast account=%s", account_id, exc_info=True)
+                return {"sent": 0, "skipped": "exclude_list_sync_failed",
+                        "slot": slot, "excluded": len(excluded)}
+            if auto_lid is not None and auto_lid not in excluded_lists:
+                excluded_lists = [*excluded_lists, auto_lid]
+
+        try:
+            result = await asyncio.to_thread(lambda: client.send_mass_message(
+                text,
+                user_lists=["fans"],
+                online_only=True,
+                media_files=media,
+                excluded_user_lists=excluded_lists or None,
+            ))
+        except Exception as e:
+            log.warning("online_blast send failed account=%s", account_id, exc_info=True)
+            return {"sent": 0, "skipped": "error", "error": repr(e)[:200], "slot": slot}
 
     queue_id = result.get("id") if isinstance(result, dict) else None
+
+    # Feed the cross-automation contact guard: stamp the online fans we just
+    # blasted into NudgeState (the SAME ledger mass_nudge/nudge_online use) so
+    # the next proactive touch skips them. OF resolves "online" server-side and
+    # echoes no ids, so we re-fetch the online snapshot (capped) to know whom we
+    # hit. Default-on; set stamp_recipients=False (or max_stamp) on a 100k-scale
+    # account where the per-fan stamp defeats the point of a list-broadcast.
+    stamped = 0
+    if cfg.get("stamp_recipients", True):
+        cap = int(cfg.get("max_stamp") or 5000)
+        try:
+            online_now = await mass_nudge._resolve_online_ids(client, cap)
+            excl_set = set(excluded)
+            stamped = await stamp_broadcast_touch(
+                account_id, [f for f in online_now if f not in excl_set])
+            if len(online_now) >= cap:
+                log.info("online_blast stamp capped account=%s cap=%d — tail "
+                         "not guard-stamped", account_id, cap)
+        except Exception:
+            # Stamping is best-effort — never fail a delivered blast over it.
+            log.warning("online_blast guard-stamp failed account=%s",
+                        account_id, exc_info=True)
 
     # Attribute this broadcast to online_blast in the Mass Messages tab (no
     # per-fan messages rows are written, so this is the only attribution link).
@@ -149,5 +194,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "image_attached": bool(media),
         "excluded": len(excluded),
         "excluded_lists": len(excluded_lists),
+        "guard_stamped": stamped,
         "unsend_job": unsend_job,
     }

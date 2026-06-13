@@ -520,8 +520,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_listed = 0          # blacklist / paused
     skipped_not_complete = 0    # profile < 75% complete
     skipped_high_spend = 0      # lifetime spend > $200
+    skipped_ai_chatter = 0      # fan owned by ai_chatter (under its spend gate)
     skipped_done = 0
     backed_off = 0              # waiting on a fan reply this tick
+
+    # When ai_chatter is enabled it OWNS every fan under its spend gate (one bot
+    # voice per fan) — deep_convo's scripted drill must not interleave them.
+    # Lazy import: ai_chatter imports of_ai_chat helpers, avoid a module cycle.
+    try:
+        from .ai_chatter import gate_for as _ai_chatter_gate
+        ai_gate = await _ai_chatter_gate(account_id)
+    except Exception:
+        ai_gate = None
 
     # Fan rows carry the bio facts (info-complete gate + prompt) and the
     # deep_convo_* state. Only fans that HAVE a profile-Q+Tease can be candidates.
@@ -553,6 +563,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # paying regular, so skip the engagement drill (force_ids bypasses).
         if not forced and f is not None and int(f.lifetime_spend_cents or 0) > max_spend_cents:
             skipped_high_spend += 1
+            continue
+
+        # ai_chatter owns fans under its gate — yield them (force_ids bypasses).
+        if (not forced and ai_gate is not None
+                and int((f.lifetime_spend_cents if f else 0) or 0) < ai_gate):
+            skipped_ai_chatter += 1
             continue
 
         state = (f.deep_convo_state if f else None)
@@ -763,6 +779,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_no_qtease": skipped_no_qtease,
         "skipped_not_complete": skipped_not_complete,
         "skipped_high_spend": skipped_high_spend,
+        "skipped_ai_chatter": skipped_ai_chatter,
         "skipped_done": skipped_done,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,

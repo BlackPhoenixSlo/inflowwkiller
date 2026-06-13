@@ -103,11 +103,12 @@ _JOB_RETRY_BACKOFF_S = 60      # requeue delay after a failed attempt
 # tries first. Unknown kinds sort last (after the ranked senders).
 _KIND_PRIORITY: dict[str, int] = {
     "send_welcome": 1,
-    "of_ai_chat": 2,
-    "deep_convo": 3,
-    "send_followup": 4,
-    "reply_mass_funnel": 5,
-    "send_mass_message": 6,
+    "ai_chatter": 2,      # the chatter+seller — outranks the gather loop it replaces
+    "of_ai_chat": 3,
+    "deep_convo": 4,
+    "send_followup": 5,
+    "reply_mass_funnel": 6,
+    "send_mass_message": 7,
 }
 _DEFAULT_PRIORITY = 50
 

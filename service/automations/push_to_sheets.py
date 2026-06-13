@@ -104,8 +104,15 @@ class PushToSheetsAuthError(PushToSheetsError):
 # ── Config resolution (payload → process-env → service/.env → default) ─────
 
 def _env(name: str) -> str:
-    """Process env wins; fall back to service/.env (same recovery llm_client
-    uses for keys that docker-compose injects as an empty string)."""
+    """Setup → Keys store wins, then process env, then service/.env (same
+    recovery llm_client uses for keys docker-compose injects as empty)."""
+    try:
+        from secrets_store import stored as _stored
+        s = _stored(name)
+        if s:
+            return s
+    except Exception:  # never let the key store crash the export
+        pass
     val = (os.environ.get(name) or "").strip()
     if val:
         return val

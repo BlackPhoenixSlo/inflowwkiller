@@ -137,28 +137,37 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         excluded = _int_list(payload.get("excluded_users"))
         excluded += await _members_of_lists(s, _int_list(payload.get("exclude_list_ids")))
 
-    # ── 1b) DB/OF-sourced audience (Mass Online parity) ──────────────────
+    # ── 1b) DB/OF-sourced audience + DEFAULT-ON contact guard ────────────
     # recent-chat / unread ADD fans; exclude-replied / exclude-inbound DROP
     # fans — the SAME resolution the relay's /messages/queue handler runs, so a
     # mass_premade broadcast targets the identical audience as the Mass Online
-    # composer. No-op unless one of these knobs is set. Runs OUTSIDE the session
-    # above (it opens its own sessions / off-thread OF calls).
-    if (payload.get("recent_chat_hours") or payload.get("unread_limit")
-            or payload.get("exclude_replied_hours")
-            or payload.get("exclude_inbound_hours")):
-        from audiences import resolve_mass_audience
-        resolved = await resolve_mass_audience(
-            account_id,
-            included_users=included,
-            excluded_users=excluded,
-            recent_chat_hours=payload.get("recent_chat_hours"),
-            recent_chat_limit=payload.get("recent_chat_limit"),
-            exclude_replied_hours=payload.get("exclude_replied_hours"),
-            exclude_inbound_hours=payload.get("exclude_inbound_hours"),
-            unread_limit=payload.get("unread_limit"),
-        )
-        included = resolved["included_users"]
-        excluded = resolved["excluded_users"]
+    # composer. The two exclude windows are DEFAULT-ON (absent → 6h outbound /
+    # 2h inbound; explicit 0 = off) so a rule or a manual blast that forgets to
+    # set them still won't re-touch a fan we just messaged — the over-send bug
+    # this whole change fixes. Runs OUTSIDE the session above (own sessions /
+    # off-thread OF calls).
+    from audiences import (
+        BROADCAST_DEFAULT_INBOUND_H,
+        BROADCAST_DEFAULT_OUTBOUND_H,
+        resolve_mass_audience,
+        resolve_window_hours,
+    )
+    out_h = resolve_window_hours(
+        payload.get("exclude_replied_hours"), BROADCAST_DEFAULT_OUTBOUND_H)
+    in_h = resolve_window_hours(
+        payload.get("exclude_inbound_hours"), BROADCAST_DEFAULT_INBOUND_H)
+    resolved = await resolve_mass_audience(
+        account_id,
+        included_users=included,
+        excluded_users=excluded,
+        recent_chat_hours=payload.get("recent_chat_hours"),
+        recent_chat_limit=payload.get("recent_chat_limit"),
+        exclude_replied_hours=out_h or None,   # explicit 0 → None → guard off
+        exclude_inbound_hours=in_h or None,
+        unread_limit=payload.get("unread_limit"),
+    )
+    included = resolved["included_users"]
+    excluded = resolved["excluded_users"]
 
     # Dedup while preserving order; drop excluded from the known set.
     excl_set = set(excluded)
@@ -200,47 +209,73 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     except Exception:
         log.debug("automation employee lookup failed; mass run attribution NULL", exc_info=True)
 
-    # ── 2) Mint the mass_runs row up front (the broadcast anchor) ────────
-    audience_filter = json.dumps({
-        "user_lists": list(user_lists),
-        "included_users": recipients,
-        "excluded_users": sorted(excl_set),
-        "list_ids": list_ids,
-    })
-    async with get_session() as s:
-        mr = MassRun(
-            account_id=str(account_id),
-            funnel_id=funnel.id if funnel else None,
-            started_by_employee_id=employee_id,
-            automation_kind="send_mass_message",
-            audience_filter=audience_filter,
-            recipient_count=len(recipients),
-            status="running",
-        )
-        s.add(mr)
-        await s.flush()
-        mass_run_id = int(mr.id)
-
-    # ── 3) Fire the OF broadcast (off-thread so the loop never blocks) ───
+    # OF cannot exclude individual ids from a list/online audience — the
+    # `excludedUsers` body field doesn't exist (verified live 2026-06-12; it was
+    # silently dropped and excluded fans got the blast). Mirror the computed
+    # excludes into the per-account Auto_Exclude OF list, which OF honors via
+    # `excludedLists`. The whole sync+mint+send runs under a per-account lock so
+    # two concurrent broadcasts can't rewrite that list under each other. Build
+    # the client first — the sync needs it.
+    from audiences import broadcast_lock, ensure_exclude_list
     client = await asyncio.to_thread(ax._make_client, account_id)
-    # Proactively SPACE this broadcast ≥ the gap after the account's previous OF
-    # write (resends/drips/parallel sends never crowd OF's 10s window), with the
-    # async retry as a backstop. The wait is asyncio.sleep — loop/threads stay free.
-    result = await ax.of_write_paced(
-        account_id,
-        lambda: client.send_mass_message(
-            text=text,
-            user_lists=list(user_lists),
-            included_users=recipients,
-            excluded_users=sorted(excl_set),
-            excluded_user_lists=list(excluded_user_lists),
-            price=price,
-            media_files=media_files,
-            previews=previews,
-            filters=filters,
-            online_only=online_only,
+    is_list_audience = bool(user_lists or online_only or filters)
+
+    async with broadcast_lock(account_id):
+        if excl_set and is_list_audience:
+            try:
+                auto_lid = await ensure_exclude_list(
+                    account_id, excl_set, client=client)
+            except Exception:
+                # Fail CLOSED — a broadcast without its guard is the over-send
+                # bug itself. Nothing minted yet, so no dangling 'running' row.
+                log.warning("send_mass_message: Auto_Exclude sync failed — "
+                            "skipping broadcast account=%s", account_id,
+                            exc_info=True)
+                return {"status": "error", "reason": "exclude_list_sync_failed"}
+            if auto_lid is not None and auto_lid not in excluded_user_lists:
+                excluded_user_lists = [*excluded_user_lists, auto_lid]
+
+        # ── 2) Mint the mass_runs row up front (the broadcast anchor) ────
+        audience_filter = json.dumps({
+            "user_lists": list(user_lists),
+            "included_users": recipients,
+            "excluded_users": sorted(excl_set),
+            "list_ids": list_ids,
+        })
+        async with get_session() as s:
+            mr = MassRun(
+                account_id=str(account_id),
+                funnel_id=funnel.id if funnel else None,
+                started_by_employee_id=employee_id,
+                automation_kind="send_mass_message",
+                audience_filter=audience_filter,
+                recipient_count=len(recipients),
+                status="running",
+            )
+            s.add(mr)
+            await s.flush()
+            mass_run_id = int(mr.id)
+
+        # ── 3) Fire the OF broadcast (off-thread so the loop never blocks) ─
+        # Proactively SPACE this broadcast ≥ the gap after the account's
+        # previous OF write (resends/drips/parallel sends never crowd OF's 10s
+        # window), with the async retry as a backstop. The wait is
+        # asyncio.sleep — loop/threads stay free.
+        result = await ax.of_write_paced(
+            account_id,
+            lambda: client.send_mass_message(
+                text=text,
+                user_lists=list(user_lists),
+                included_users=recipients,
+                excluded_users=sorted(excl_set),
+                excluded_user_lists=list(excluded_user_lists),
+                price=price,
+                media_files=media_files,
+                previews=previews,
+                filters=filters,
+                online_only=online_only,
+            )
         )
-    )
     # OF's queue id — needed by callers that schedule a forever-window unsend
     # (mass_premade, the relay auto-unsend timer). NOT persisted on mass_runs.
     queue_id = result.get("id") if isinstance(result, dict) else None
@@ -309,6 +344,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if queue_id is not None:
                 mr.queue_id = int(queue_id)
 
+    # NOTE: a pure list/online broadcast leaves NO per-fan rows here (OF echoes
+    # no ids), so its silent (non-replying) recipients aren't individually
+    # recorded — the next blast re-touches them at its CADENCE (the intended
+    # mass-blast behaviour). Fans with recent ACTIVITY are still guarded: their
+    # inbound replies + our 1:1/auto-reply outbound write `messages` rows that
+    # the Auto_Exclude guard reads. The local `fans` table is interaction-
+    # derived (not an OF-list mirror) so it can't resolve a list audience to
+    # stamp; online_blast, which has a real online snapshot, stamps NudgeState
+    # itself. Off-platform exact recipients arrive via the scrape reconciler.
     log.info(
         "send_mass_message account=%s run=%s mass_run=%s recipients=%d echoed=%d optimistic=%d",
         account_id, run_id, mass_run_id, len(recipients), len(echoed_fans), optimistic,

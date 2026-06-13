@@ -21,14 +21,17 @@ export interface StyleConfig {
   of_ai_chat?: boolean;
   autoreply?: boolean;
   deep_convo?: boolean;
+  ai_chatter?: boolean;
   // independent thumb-typo injector toggle, per automation
   typos_of_ai_chat?: boolean;
   typos_autoreply?: boolean;
   typos_deep_convo?: boolean;
+  typos_ai_chatter?: boolean;
   // independent non-native English layer toggle, per automation
   nonnative_of_ai_chat?: boolean;
   nonnative_autoreply?: boolean;
   nonnative_deep_convo?: boolean;
+  nonnative_ai_chatter?: boolean;
 }
 
 interface StyleConfigResponse {

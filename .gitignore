@@ -19,6 +19,7 @@ service/token.json
 *.sqlite
 service/sessions/
 service/proxies.json
+service/secrets.json
 service/storyboard_cache/
 
 # ---- build / deps ----

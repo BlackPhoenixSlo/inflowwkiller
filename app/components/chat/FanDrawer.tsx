@@ -27,6 +27,48 @@ import { useFanChatMedia, type FanChatMediaItem } from "@/hooks/useFanChatMedia"
 import { proxyImage, proxyScrubFrame, relay, type OFChatItem, type VaultMedia } from "@/lib/relay";
 import { cn, fmtRelTime, interpretSubStatus } from "@/lib/utils";
 import { type PickedTemplate } from "./TemplatePicker";
+import { useAiChatterSessions, useCancelOffer } from "@/hooks/useCatalog";
+
+/** 🎬 chip: this fan is mid-script / has an open AI-seller offer. The contract
+ *  between the bot and human chatters — see it, and kill the offer to take
+ *  over cleanly. Renders nothing when the fan isn't in any AI-seller flow. */
+function AiSellerChip({ accountId, fanId }: { accountId: string; fanId: number }) {
+  const sessionsQ = useAiChatterSessions(accountId);
+  const cancelM = useCancelOffer(accountId);
+  const pin = (sessionsQ.data?.progress ?? []).find(
+    (p) => p.fan_id === fanId && p.status !== "done",
+  );
+  const offer = (sessionsQ.data?.offers ?? []).find(
+    (o) => o.fan_id === fanId && o.status === "open",
+  );
+  if (!pin && !offer) return null;
+  return (
+    <div className="mt-1 inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-400">
+      <span>🎬</span>
+      {pin && <span>{pin.script} · item {pin.position} · {pin.status}</span>}
+      {offer && (
+        <span>
+          {pin ? "· " : ""}waiting on{" "}
+          {offer.tip_unlock_cents > 0
+            ? `$${Math.round(offer.tip_unlock_cents / 100)} tip`
+            : `$${Math.round(offer.price_cents / 100)} unlock`}
+          {offer.tips_accum_cents > 0 &&
+            ` (${Math.round(offer.tips_accum_cents / 100)} in)`}
+        </span>
+      )}
+      {offer && (
+        <button
+          type="button"
+          title="Cancel the AI offer and take over"
+          className="text-amber-400/70 hover:text-red-400"
+          onClick={() => cancelM.mutate(offer.id)}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function FanDrawer({
   open, onClose, accountId, fanId, chat,
@@ -227,6 +269,7 @@ export function FanDrawer({
             <div className="text-[10px] text-fg-dim mt-0.5">
               acct {accountId} · id {fanId}
             </div>
+            <AiSellerChip accountId={accountId} fanId={fanId} />
           </div>
           {!alwaysOn && (
             <button

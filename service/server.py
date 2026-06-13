@@ -39,6 +39,7 @@ sys.path.insert(0, str(HERE))
 import accounts as account_registry  # noqa: E402
 import proxies as proxy_registry  # noqa: E402
 import live_rev  # noqa: E402
+import secrets_store  # noqa: E402  # UI-writable key store (Setup → Keys)
 from of_client import OFClient, OFAPIError  # noqa: E402
 from curl_cffi import requests as curl_requests  # noqa: E402  # proxy/network error types
 
@@ -70,6 +71,7 @@ from nudge_config_api import router as _nudge_config_router  # noqa: E402
 from webhook_config_api import router as _webhook_config_router  # noqa: E402
 from autoreply_config_api import router as _autoreply_config_router  # noqa: E402
 from tip_reward_config_api import router as _tip_reward_config_router  # noqa: E402
+from scripts_api import router as _scripts_router  # noqa: E402
 from style_config_api import router as _style_config_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
 from auth import (  # noqa: E402
@@ -170,6 +172,7 @@ app.include_router(_nudge_config_router)
 app.include_router(_webhook_config_router)
 app.include_router(_autoreply_config_router)
 app.include_router(_tip_reward_config_router)
+app.include_router(_scripts_router)
 app.include_router(_style_config_router)
 app.include_router(_account_config_router)
 app.include_router(_auth_router)
@@ -260,6 +263,19 @@ SHARE_TOKEN = os.environ.get("SHARE_TOKEN", "").strip()
 _SHARE_COOKIE = "share_token"
 
 
+def _effective_share_token() -> str:
+    """The live access token: a value set via Setup → Keys (secrets.json) wins,
+    else the env/module default. Read per-request so the UI can set/clear the
+    gate without a relay restart."""
+    try:
+        s = secrets_store.stored("SHARE_TOKEN")
+        if s:
+            return s
+    except Exception:  # never let the gate crash on a bad store
+        pass
+    return SHARE_TOKEN
+
+
 # Stash the current Request so deep helpers (_get_client) can pick up the
 # X-Account-Id header without us having to add `request: Request` to every
 # one of the ~60 endpoint signatures. Set by the middleware below.
@@ -280,7 +296,8 @@ async def _account_context(request: Request, call_next):
 
 @app.middleware("http")
 async def _share_token_gate(request: Request, call_next):
-    if not SHARE_TOKEN:
+    share_token = _effective_share_token()
+    if not share_token:
         return await call_next(request)
     if request.url.path == "/health" or request.url.path == "/livez":
         return await call_next(request)
@@ -290,7 +307,7 @@ async def _share_token_gate(request: Request, call_next):
     # arrives without any cookie at all.
     if request.url.path.startswith("/auth/") or request.url.path.startswith("/chatter/"):
         return await call_next(request)
-    if request.cookies.get(_SHARE_COOKIE) == SHARE_TOKEN:
+    if request.cookies.get(_SHARE_COOKIE) == share_token:
         return await call_next(request)
     # Anyone carrying a friend-auth OR chatter session cookie has already
     # cleared username+password — the legacy share-token gate is
@@ -298,16 +315,44 @@ async def _share_token_gate(request: Request, call_next):
     # DB row downstream.)
     if request.cookies.get(_AUTH_COOKIE_NAME) or request.cookies.get(_CHATTER_COOKIE_NAME):
         return await call_next(request)
-    if request.query_params.get("t") == SHARE_TOKEN:
+    if request.query_params.get("t") == share_token:
         resp = await call_next(request)
         # Persist the token so subsequent fetch() calls (which won't carry ?t=)
         # still authenticate. 7-day TTL is plenty for an ad-hoc share session.
         resp.set_cookie(
-            _SHARE_COOKIE, SHARE_TOKEN,
+            _SHARE_COOKIE, share_token,
             max_age=7 * 24 * 3600, httponly=True, samesite="lax",
         )
         return resp
     return Response("unauthorized — link missing or expired", status_code=401)
+
+
+# ── Setup → Keys: UI-writable secret/key store ─────────────────────
+# Lets a self-hoster paste their DeepSeek key, Google Sheets token, access
+# password, etc. instead of editing the VPS .env. Values land in
+# service/secrets.json and every consumer checks the store before the env, so
+# they take effect on the next call with no restart. GET never returns raw
+# secrets — only a masked status. Both sit under /admin/* (already gated).
+@app.get("/admin/secrets")
+def admin_secrets_status() -> dict[str, Any]:
+    """Masked status of every UI-settable key (set?/source/hint — never the
+    raw value)."""
+    return {"keys": secrets_store.status()}
+
+
+@app.put("/admin/secrets")
+async def admin_secrets_set(request: Request) -> dict[str, Any]:
+    """Set or clear keys. Body is a flat JSON object {KEY: value, …}; an empty
+    string or null clears that key. Unknown keys are ignored. Returns the new
+    masked status."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="expected a JSON object of key→value")
+    secrets_store.set_many({str(k): v for k, v in body.items()})
+    return {"keys": secrets_store.status()}
 
 
 # ── /tmp/of-api.log — dedicated single-file access log ─────────────
@@ -3191,6 +3236,7 @@ async def _open_mass_run(
     user_lists: list,
     included_users: list[int],
     excluded_users: list[int],
+    funnel_id: int | None = None,
 ) -> tuple[str, int | None, int | None]:
     """Resolve account + X-Employee-Id and mint a `mass_runs` row so every
     per-fan outbound row downstream can reference it. Returns
@@ -3218,6 +3264,7 @@ async def _open_mass_run(
         async with get_session() as s:
             run = MassRun(
                 account_id=str(account_id),
+                funnel_id=int(funnel_id) if funnel_id is not None else None,
                 started_by_employee_id=employee_id,
                 audience_filter=audience_filter,
                 recipient_count=len(included_users),
@@ -3334,6 +3381,23 @@ async def _close_mass_run(
             price_cents=price_cents,
             created_at=created_at,
         )
+
+    # ── 3) Close the run. reply_mass_funnel only anchors on status='ok'
+    #      runs, and the Mass Messages tab joins the broadcast cache on
+    #      queue_id — mirror send_mass_message's close step.
+    queue_id = result.get("id") if isinstance(result, dict) else None
+    try:
+        from db.engine import get_session
+        from db.models import MassRun
+        async with get_session() as s:
+            mr = await s.get(MassRun, mass_run_id)
+            if mr is not None:
+                mr.status = "ok"
+                mr.completed_at = datetime.utcnow()
+                if queue_id is not None:
+                    mr.queue_id = int(queue_id)
+    except Exception:
+        log.exception("mass run close failed (account=%s run=%s)", account_id, mass_run_id)
 
 
 @app.post("/api/of/v2/chats/messages")
@@ -4714,6 +4778,13 @@ class _MassScheduleBody(BaseModel):
     unsend_after_hours: float | None = Field(
         None, gt=0, le=8760, description="Auto-unsend the broadcast N hours after it sends",
     )
+    # Funnel anchor — stamps the minted `mass_runs` row with this
+    # `mass_message_funnels.id` so the reply_mass_funnel automation discovers
+    # repliers and walks the funnel's reply/PPV steps. Send-now only (a
+    # scheduled run is closed by OF later, so it never reaches 'ok' here).
+    funnel_id: int | None = Field(
+        None, gt=0, description="mass_message_funnels.id to walk repliers through",
+    )
 
 
 @app.post("/api/of/v2/messages/queue")
@@ -4749,11 +4820,40 @@ async def of_send_or_schedule_mass(
         )
         body.user_ids = resolved["included_users"]
         body.excluded_users = resolved["excluded_users"]
+    # Excluded ids must leave `user_ids` HERE too — of_client subtracts them
+    # from the wire `userIds` (OF has no per-user exclude field), so if we left
+    # them in `body.user_ids` the mass_runs recipient_count + the optimistic
+    # `messages` rows _close_mass_run writes would be PHANTOM (rows for fans OF
+    # never messaged), and those outbound rows would then poison the contact
+    # guard. Mirror the of_client subtraction so our record matches the send.
+    if body.excluded_users and body.user_ids:
+        _excl = {int(x) for x in body.excluded_users}
+        body.user_ids = [u for u in body.user_ids if int(u) not in _excl]
+    # OF cannot exclude individual ids from a list/online audience — the
+    # `excludedUsers` body field doesn't exist (verified live 2026-06-12: it was
+    # silently dropped and excluded fans got the blast). Mirror the ids into the
+    # per-account Auto_Exclude OF list, which OF honors via `excludedLists`.
+    # Explicit `user_ids` need no list — they're already stripped just above.
+    # Done under the shared per-account broadcast lock so a concurrent
+    # automation send can't rewrite the list mid-sync. Errors bubble up (500) —
+    # a broadcast without its guard is the bug itself. (Known minor gap: the
+    # lock is released before the send below, so a manual composer blast firing
+    # in the same instant as an automation tick on the SAME account can race on
+    # Auto_Exclude membership; automation<->automation sends hold it through.)
+    if body.excluded_users and (body.user_lists or body.online_only or body.filters):
+        from audiences import broadcast_lock, ensure_exclude_list
+        _aid2 = _resolve_account_id(request)
+        async with broadcast_lock(_aid2):
+            auto_lid = await ensure_exclude_list(
+                _aid2, body.excluded_users, client=_get_client())
+        if auto_lid is not None and auto_lid not in (body.excluded_user_lists or []):
+            body.excluded_user_lists = [*(body.excluded_user_lists or []), auto_lid]
     account_id, employee_id, mass_run_id = await _open_mass_run(
         request,
         user_lists=body.user_lists,
         included_users=body.user_ids,
         excluded_users=body.excluded_users,
+        funnel_id=body.funnel_id,
     )
     client = _get_client()
     if body.scheduled_date:
