@@ -274,27 +274,43 @@ function dedupById(list: OFMessage[]): OFMessage[] {
 
 /** Merge a freshly-fetched top page (newest `PAGE_SIZE`, oldest→newest) into
  *  the existing cache without discarding load-older pages or in-flight
- *  optimistic rows. `fresh` wins for any overlapping id. Rows already cached
- *  that aren't in `fresh` are kept: positive ids older than the page go in
- *  front (the scrolled-up history), everything else (optimistic id ≤ 0 rows,
- *  or a row that arrived newer than the page in the poll's race window) goes
- *  at the tail. Returns `fresh` unchanged when there's nothing extra to keep,
- *  so structural sharing still sees a stable reference for the common case. */
-function mergeTopPage(prev: OFMessage[], fresh: OFMessage[]): OFMessage[] {
+ *  optimistic rows. `fresh` wins for any overlapping id. A cached row not in
+ *  `fresh` is classified by where its id falls relative to the page's id span:
+ *
+ *    • id < minFreshId       → scrolled-up history below the page → KEEP (front)
+ *    • minFreshId..maxFreshId → INSIDE the page's span but OF didn't return it.
+ *                               OF serves a contiguous newest slice, so a gap
+ *                               means the message was deleted / unsent upstream
+ *                               → DROP (else it lingers as an orphan pinned to
+ *                               the bottom forever — e.g. a PPV you unsent on OF
+ *                               that the local cache never let go of).
+ *    • id > maxFreshId or ≤0  → newer than the page (poll race window) or an
+ *                               in-flight optimistic row → KEEP (tail)
+ *
+ *  Returns `fresh` unchanged when there's nothing extra to keep, so structural
+ *  sharing still sees a stable reference for the common case. When `fresh` is
+ *  empty (no positive ids) minFreshId stays Infinity, so every cached row falls
+ *  into the < minFreshId branch and nothing is dropped — an empty/failed fetch
+ *  never nukes the cache. */
+export function mergeTopPage(prev: OFMessage[], fresh: OFMessage[]): OFMessage[] {
   if (prev.length === 0) return fresh;
   const freshIds = new Set(fresh.map((m) => String(m.id)));
   let minFreshId = Infinity;
+  let maxFreshId = -Infinity;
   for (const m of fresh) {
     const id = Number(m.id);
-    if (id > 0 && id < minFreshId) minFreshId = id;
+    if (!Number.isFinite(id) || id <= 0) continue;
+    if (id < minFreshId) minFreshId = id;
+    if (id > maxFreshId) maxFreshId = id;
   }
   const older: OFMessage[] = [];
   const tail: OFMessage[] = [];
   for (const m of prev) {
     if (freshIds.has(String(m.id))) continue;
     const id = Number(m.id);
-    if (id > 0 && id < minFreshId) older.push(m);
-    else tail.push(m);
+    if (id > 0 && id < minFreshId) { older.push(m); continue; }
+    if (id > 0 && id <= maxFreshId) continue;  // deleted/unsent on OF → drop
+    tail.push(m);  // newer-than-page race row, or optimistic (id ≤ 0)
   }
   if (older.length === 0 && tail.length === 0) return fresh;
   return [...older, ...fresh, ...tail];
