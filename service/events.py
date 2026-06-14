@@ -249,7 +249,17 @@ async def publish_db_message(
             of_uid: object = int(account_id)
         except (TypeError, ValueError):
             of_uid = account_id
-        created = created_at.isoformat() if hasattr(created_at, "isoformat") else (created_at or None)
+        # Naive datetimes are UTC wall-clock in this codebase (datetime.utcnow /
+        # _parse_iso strips tzinfo) — tag them 'Z' so SSE consumers don't render
+        # them in the VIEWER's local zone (this is what made live worker bubbles
+        # show the wrong time + sort out of order). An aware datetime already
+        # carries its offset; a plain string is passed through untouched.
+        if hasattr(created_at, "isoformat"):
+            created = created_at.isoformat()
+            if getattr(created_at, "tzinfo", None) is None:
+                created += "Z"
+        else:
+            created = created_at or None
         event = {
             "api2_chat_message": {
                 "id": int(message_id),
