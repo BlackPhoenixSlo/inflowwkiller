@@ -60,7 +60,9 @@ import { registerImageSW } from "@/lib/registerImageSW";
 // v3.3: force-evict stale persisted fan identity (of-user/chats/fan) after a
 // batch of out-of-band nickname/note rewrites (gen_info backfill) left drawers
 // showing pre-regen "<name>/Whale" + old notes across reloads.
-const CACHE_BUSTER = "v3.3";
+// v3.4: evict persisted caches that may hold a poisoned, principal-agnostic
+// ["accounts"] full-registry list (see useAccounts.ts — fixed to key by user).
+const CACHE_BUSTER = "v3.4";
 // Snapshot-level cap — if the user is inactive for this long, the whole
 // localStorage cache gets dropped. Bumped to 30d so a 2-week vacation
 // doesn't nuke everything; the per-query sliding window below handles
