@@ -5839,22 +5839,29 @@ def wipe_fresh_browser_buckets() -> dict[str, Any]:
 # ── Multi-account admin ───────────────────────────────────────
 
 @app.get("/admin/accounts")
-def admin_accounts_list() -> dict[str, Any]:
+def admin_accounts_list(response: Response) -> dict[str, Any]:
     """List every account the signed-in user owns + the currently-active one
     (clamped to the user's set). The UI populates its switcher from this.
 
-    Unauthed (no session cookie) callers still see the full list — same as
-    before — so internal/dev curl flows keep working. Authed callers only
-    see accounts in their `user_accounts` set."""
-    all_accounts = account_registry.list_accounts()
+    Account lists are PER-PRINCIPAL and must never be cached — a response
+    fetched in one auth state must not be replayed in another — hence
+    `no-store`. An UNauthenticated caller gets an EMPTY list, never the full
+    multi-tenant registry: that fallback used to leak every owner's models,
+    get cached by the client, and then 403 on save ("account X is not one of
+    yours"). Sign in to get the real, `user_accounts`-scoped list."""
+    response.headers["Cache-Control"] = "no-store"
     user = _get_request_user()
-    if user is not None:
-        all_accounts = [a for a in all_accounts if a.get("id") in user.account_ids]
-        active = account_registry.get_active_account_id()
-        if active not in user.account_ids:
-            active = all_accounts[0]["id"] if all_accounts else None
-    else:
-        active = account_registry.get_active_account_id()
+    if user is None:
+        # Anonymous caller — expose nothing. Authentication yields the
+        # real, scoped list; leaking the registry here poisoned client
+        # caches across owners.
+        return {"accounts": [], "active_account_id": None}
+    all_accounts = [
+        a for a in account_registry.list_accounts() if a.get("id") in user.account_ids
+    ]
+    active = account_registry.get_active_account_id()
+    if active not in user.account_ids:
+        active = all_accounts[0]["id"] if all_accounts else None
     return {
         "accounts": all_accounts,
         "active_account_id": active,
