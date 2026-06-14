@@ -110,6 +110,50 @@ function invalidateFanRevenue(qc: QueryClient, accountId: string, fanId: number)
   void qc.invalidateQueries({ queryKey: ["last-purchases", accountId] });
 }
 
+/** Normalize a message timestamp to a UTC ISO string (…Z).
+ *
+ *  The relay emits live (`emit_live`) outbound rows — welcome / AI reply / mass
+ *  / funnel — with the DB's tz-NAIVE wall clock (`"2026-06-14 09:36:17"`, already
+ *  UTC but zone-less). `new Date()` parses that as the VIEWER's local time, which
+ *  both skews the bubble's displayed time and corrupts the sort key. REST
+ *  `/messages` rows already carry a zone, so the two paths disagreed: live
+ *  funnel/mass bubbles rendered at the wrong time AND (see insertByCreatedAt)
+ *  stuck out of order. Tag a zone-less value as UTC; pass through one already
+ *  zoned. */
+export function toUtcIso(raw: string | undefined): string {
+  if (!raw) return new Date().toISOString();
+  const s = raw.trim();
+  const hasZone = /[zZ]$/.test(s) || /[+-]\d{2}:?\d{2}$/.test(s);
+  const candidate = hasZone
+    ? s
+    : `${s.replace(" ", "T").replace(/(\.\d{3})\d+$/, "$1")}Z`;
+  const d = new Date(candidate);
+  return Number.isNaN(d.getTime()) ? s : d.toISOString();
+}
+
+/** Insert `row` into a thread cache kept in created_at order, instead of
+ *  blind-appending. The bug: a live message can enter the cache AFTER newer
+ *  rows are already present (a re-run funnel, an out-of-order SSE replay), and a
+ *  plain `[...prev, row]` then pins it to the BOTTOM as if it were newest. We
+ *  scan from the tail — the overwhelmingly common case is a genuinely new
+ *  message that belongs at the end, so that path stays O(1) — and splice the row
+ *  in just after the last one that isn't strictly newer (`<=` keeps ties in
+ *  arrival order). Timestamps are normalized for the compare so a zoned REST row
+ *  and a zone-less live row sort consistently. */
+export function insertByCreatedAt(list: OFMessage[], row: OFMessage): OFMessage[] {
+  const t = Date.parse(toUtcIso(row.createdAt));
+  if (Number.isNaN(t)) return [...list, row];
+  let i = list.length;
+  while (i > 0) {
+    const prevT = Date.parse(toUtcIso(list[i - 1].createdAt));
+    if (Number.isNaN(prevT) || prevT <= t) break;
+    i--;
+  }
+  return i >= list.length
+    ? [...list, row]
+    : [...list.slice(0, i), row, ...list.slice(i)];
+}
+
 export function useInboxRealtime() {
   const qc = useQueryClient();
 
@@ -150,7 +194,7 @@ export function useInboxRealtime() {
         id: msg.id,
         text: msg.text ?? "",
         fromUser: { id: fromId, name: fromUser.name ?? fromUser.username ?? "" },
-        createdAt: msg.createdAt ?? new Date().toISOString(),
+        createdAt: toUtcIso(msg.createdAt),
         media: msg.media ?? [],
         mediaCount: msg.mediaCount ?? 0,
         price: msg.price ?? 0,
@@ -163,11 +207,14 @@ export function useInboxRealtime() {
         invalidateFanRevenue(qc, accountId, fanId);
       }
 
-      // Append to messages cache (de-dup by id).
+      // Insert into the messages cache in created_at order (de-dup by id).
+      // Blind-appending pinned live funnel/mass bubbles to the bottom when they
+      // landed after newer rows were already cached; insertByCreatedAt drops
+      // each row where its timestamp belongs.
       qc.setQueryData<OFMessage[]>(["messages", accountId, fanId], (prev = []) => {
         const incoming = String(candidate.id);
         if (prev.some((m) => String(m.id) === incoming)) return prev;
-        return [...prev, candidate];
+        return insertByCreatedAt(prev, candidate);
       });
 
       // Move the matching row to the top of page 0 — matches legacy /ui
