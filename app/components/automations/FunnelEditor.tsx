@@ -33,6 +33,18 @@ import {
   type FunnelStep,
   type PpvStep,
 } from "@/hooks/useFunnels";
+import {
+  useAutomationRules,
+  useCreateRule,
+  useUpdateRule,
+} from "@/hooks/useAutomations";
+
+/** The poller that actually advances funnels past the opener is a per-account
+ *  recurring `reply_mass_funnel` automation rule. The opener (send_mass_message)
+ *  is funnel-linked, but no reply/PPV step moves while this rule is missing or
+ *  disabled — so the tab surfaces & toggles it. Default cadence: every 2 min. */
+const WALKER_KIND = "reply_mass_funnel";
+const WALKER_EVERY_S = 120;
 
 // ── Local draft model (easy to edit; converted to/from wire FunnelStep) ──
 
@@ -628,6 +640,40 @@ export function MassFunnelsTab({ accountId }: { accountId: string | null }) {
 
   const funnels = listQ.data ?? [];
 
+  // ── Reply-walker (per-account reply_mass_funnel rule) ──────────────────
+  const rulesQ = useAutomationRules(accountId);
+  const walker = useMemo(
+    () => (rulesQ.data ?? []).find((r) => r.kind === WALKER_KIND) ?? null,
+    [rulesQ.data],
+  );
+  const walkerOn = !!walker?.is_enabled;
+  const createRuleM = useCreateRule(accountId);
+  const updateRuleM = useUpdateRule(accountId);
+  const walkerBusy = createRuleM.isPending || updateRuleM.isPending;
+  const [walkerErr, setWalkerErr] = useState<string | null>(null);
+
+  /** Flip the per-account reply-walker on/off (create the rule on first enable). */
+  async function setWalker(enabled: boolean) {
+    if (!accountId) return;
+    setWalkerErr(null);
+    try {
+      if (walker) {
+        await updateRuleM.mutateAsync({ id: walker.id, is_enabled: enabled });
+      } else if (enabled) {
+        await createRuleM.mutateAsync({
+          account_id: accountId,
+          kind: WALKER_KIND,
+          name: "Reply-walking",
+          every_seconds: WALKER_EVERY_S,
+          payload: {},
+          is_enabled: true,
+        });
+      }
+    } catch (e) {
+      setWalkerErr((e as Error)?.message || "Failed to update reply-walking");
+    }
+  }
+
   function close() {
     setEditing(null);
     setAdding(false);
@@ -659,6 +705,44 @@ export function MassFunnelsTab({ accountId }: { accountId: string | null }) {
           + New funnel
         </Button>
       </div>
+
+      {/* Reply-walker status + toggle. Without this enabled, funnels send the
+          opener but never advance — so make that visible right where they live. */}
+      {accountId && (
+        <div
+          className={cn(
+            "rounded-md border px-3 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5",
+            walkerOn ? "border-ok/30 bg-ok/5" : "border-warn/30 bg-warn/10",
+          )}
+        >
+          <span className="flex items-center gap-2 shrink-0">
+            <span className={cn("h-2 w-2 rounded-full", walkerOn ? "bg-ok" : "bg-warn")} />
+            <span className="text-sm font-medium text-fg">
+              Reply-walking:{" "}
+              {walkerOn
+                ? `ON · every ${Math.round((walker?.every_seconds ?? WALKER_EVERY_S) / 60)} min`
+                : "OFF"}
+            </span>
+          </span>
+          <span className="text-[11px] text-fg-dim flex-1 min-w-[12rem]">
+            {walkerOn
+              ? "Fans who reply to a funnel get walked through its reply / PPV steps."
+              : "Funnels send the opener but won't advance past it until this is on."}
+          </span>
+          <span className="shrink-0">
+            {walkerOn ? (
+              <Button size="sm" variant="ghost" onClick={() => setWalker(false)} disabled={walkerBusy}>
+                {walkerBusy ? "…" : "Disable"}
+              </Button>
+            ) : (
+              <Button size="sm" variant="primary" onClick={() => setWalker(true)} disabled={walkerBusy}>
+                {walkerBusy ? "Enabling…" : "Enable (every 2 min)"}
+              </Button>
+            )}
+          </span>
+          {walkerErr && <div className="w-full text-[11px] text-err">{walkerErr}</div>}
+        </div>
+      )}
 
       {(adding || editing != null) && (
         <FunnelEditor
@@ -721,11 +805,29 @@ export function MassFunnelsTab({ accountId }: { accountId: string | null }) {
                   </div>
                 </div>
                 {launching === f.id && (
-                  <FunnelLaunchPanel
-                    funnel={f}
-                    accountId={accountId}
-                    onClose={() => setLaunching(null)}
-                  />
+                  <>
+                    {!walkerOn && (
+                      <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 flex flex-wrap items-center gap-2">
+                        <span className="flex-1 min-w-[12rem] text-[11px] text-warn">
+                          ⚠ Reply-walking is off — this funnel will send the opener
+                          but won't advance through its reply / PPV steps.
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          onClick={() => setWalker(true)}
+                          disabled={walkerBusy}
+                        >
+                          {walkerBusy ? "Enabling…" : "Enable reply-walking"}
+                        </Button>
+                      </div>
+                    )}
+                    <FunnelLaunchPanel
+                      funnel={f}
+                      accountId={accountId}
+                      onClose={() => setLaunching(null)}
+                    />
+                  </>
                 )}
                 {rowErr?.id === f.id && (
                   <div className="text-[11px] text-err">{rowErr.msg}</div>

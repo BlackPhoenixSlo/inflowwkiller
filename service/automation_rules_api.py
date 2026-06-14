@@ -227,11 +227,20 @@ _CATALOG: dict[str, dict[str, Any]] = {
         ],
     },
     "reply_mass_funnel": {
-        "label": "Mass-funnel replies", "recurring": False, "surface": "ready_made",
-        "summary": "Reply to fans who responded to a mass send (funnel step).",
-        "example": "one-shot · mass_run_id 123 · dry_run off",
+        # The reply-WALKER. Funnels send the opener (send_mass_message), but the
+        # reply/PPV steps only advance while an ENABLED rule of this kind polls for
+        # fans who replied. With a blank `mass_run_id` it walks EVERY active funnel
+        # broadcast — so ONE recurring rule per account makes all funnels work. The
+        # Mass-funnels tab surfaces/toggles this rule; it's also creatable here.
+        "label": "Walk mass-funnel replies", "recurring": True, "surface": "rules",
+        "cadence_default_s": 120, "group": "advanced",
+        "summary": "Poll fans who replied to a funnel broadcast and advance them "
+                   "through the funnel's reply / PPV steps. Funnels need this enabled "
+                   "to move past the opener. Leave mass_run_id blank to walk every "
+                   "active funnel broadcast.",
+        "example": "every 2m · all active funnels · max_chats 40",
         "knobs": [
-            {"key": "mass_run_id", "type": "int", "min": 1, "hint": "the mass run to follow up"},
+            {"key": "mass_run_id", "type": "int", "min": 1, "hint": "limit to ONE mass run (blank = all active funnel broadcasts)"},
             {"key": "max_chats", "type": "int", "min": 1, "default": 40, "hint": "max fans advanced per tick"},
             {"key": "model", "type": "str", "hint": "LLM override"},
             {"key": "dry_run", "type": "bool", "hint": "generate but don't send"},
