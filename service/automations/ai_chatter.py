@@ -103,6 +103,12 @@ _GRADUATION_SKIPS = frozenset({"spent", "too_long", "info"})
 _DEFAULTS: dict = {
     "enabled": False,
     "mode": "backup",                    # "backup" | "always"
+    "intent_only": False,                # closer mode: only engage a fan whose
+                                         # latest message shows buying intent
+                                         # (_CONTENT_ASK_RE) or who has an open
+                                         # offer. Pure chit-chat is left to the
+                                         # team / Auto Convo. Zero LLM cost for
+                                         # the fans it skips.
     "sla_minutes": 10,                   # backup: how slow is "slow"
     "max_lifetime_spend_cents": 100_000, # the whale gate ($1000)
     "offer_mode": "both",                # M3: "tip" | "ppv" | "both"
@@ -981,6 +987,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # ── M3 offer layer: resolve unlocks FIRST (a fan doesn't have to speak to
     # buy), then load the catalog + the open-offer map the prompts read.
     cfg_offer_mode = str(cfg.get("offer_mode") or "both")
+    intent_only = bool(cfg.get("intent_only"))
     scripts, catalog_items = await _load_catalog(account_id)
     offer_stats = await _resolve_open_offers(account_id, client, cfg,
                                              dry_run=dry_run,
@@ -1054,6 +1061,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     unbacked_stripped = 0    # price-talk bubbles dropped (no offer behind them)
     skipped_locked = 0
     skipped_cooldown = 0
+    skipped_no_intent = 0   # intent_only: fan is just chatting, no buying signal
     errors = 0
     cap_hit = False
 
@@ -1063,6 +1071,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                      account_id, max_replies)
             break
         fan_id = c.fan_id
+        # Closer mode: stay silent unless the fan's latest message shows buying
+        # intent, or he already has an open offer we're walking. Checked BEFORE
+        # the cooldown/lease/LLM work so skipped fans cost nothing. Pure chatter
+        # is left to the team / Auto Convo.
+        if intent_only and open_by_fan.get(fan_id) is None \
+                and not _CONTENT_ASK_RE.search(c.last_body or ""):
+            skipped_no_intent += 1
+            continue
         if await ax.fan_on_cooldown(account_id, fan_id):
             skipped_cooldown += 1
             continue
@@ -1339,6 +1355,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_manual": skipped_manual,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
+        "skipped_no_intent": skipped_no_intent,
         "errors": errors,
         "cap_hit": cap_hit,
         "dry_run": dry_run,

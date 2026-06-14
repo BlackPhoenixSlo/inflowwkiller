@@ -63,9 +63,12 @@ _MAX_EVERY_S = 30 * 24 * 60 * 60
 # (so their payload falls back to the raw-JSON escape hatch).
 _CATALOG: dict[str, dict[str, Any]] = {
     "of_ai_chat": {
-        "label": "AI chat replies", "recurring": True, "surface": "rules",
+        "label": "Get to know fans (AI info-gather)", "recurring": True, "surface": "rules",
         "cadence_default_s": 60,
-        "summary": "Reply to fans who spoke last with an AI-generated message.",
+        "summary": "Opens and continues conversations to learn about a fan and "
+                   "build his profile (one gentle question at a time; feeds "
+                   "Generate fan profiles). The warm-up / info-gather chatter — "
+                   "NOT the seller (that's AI Seller).",
         "example": "every 60s · limit 200 · max_replies 25 · history_tail 40",
         "knobs": [
             {"key": "limit", "type": "int", "min": 1, "hint": "Chats scanned per tick"},

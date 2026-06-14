@@ -26,7 +26,7 @@ interface Props {
 
 // Friendly labels for the automation_kind tokens (= grok_calls.purpose).
 const LABELS: Record<string, string> = {
-  of_ai_chat: "AI Chat",
+  of_ai_chat: "Info-gather",
   welcome: "Welcome",
   deep_convo: "Deep Convo",
   followup: "Follow-up",

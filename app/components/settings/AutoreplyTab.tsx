@@ -30,7 +30,7 @@ import {
 
 /** The "human texting style" opt-in — one checkbox per automation. */
 const STYLE_AUTOMATIONS: { key: keyof StyleConfig; label: string; hint: string }[] = [
-  { key: "of_ai_chat", label: "AI Chat", hint: "the get-to-know-you reply loop" },
+  { key: "of_ai_chat", label: "Info-gather", hint: "the get-to-know-you reply loop" },
   { key: "autoreply", label: "Auto Convo", hint: "the keep-warm re-engagement above" },
   { key: "deep_convo", label: "Deep Convo", hint: "the deepening drill (also casualizes the Q & tease)" },
 ];

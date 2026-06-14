@@ -630,6 +630,33 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
             Enabled
           </label>
         </div>
+        <div className="rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-2 text-sm">
+          <div className="text-fg-dim text-xs">Engagement</div>
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input type="radio" name="ai-seller-engagement" className="mt-0.5"
+              checked={!cfg.intent_only}
+              onChange={() => set({ intent_only: false })} />
+            <span>
+              <span className="font-medium">Full chatter</span>
+              <span className="block text-fg-dim text-xs">
+                Reply to everyone, and pitch a PPV when a fan shows buying intent.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input type="radio" name="ai-seller-engagement" className="mt-0.5"
+              checked={!!cfg.intent_only}
+              onChange={() => set({ intent_only: true })} />
+            <span>
+              <span className="font-medium">Closer only</span>
+              <span className="block text-fg-dim text-xs">
+                Stay silent unless the fan shows buying intent (or already has an
+                open offer). Pure chit-chat goes to Auto Convo + your team.
+                Skipped fans cost no AI calls.
+              </span>
+            </span>
+          </label>
+        </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <label className="space-y-1">
             <div className="text-fg-dim text-xs">Mode</div>

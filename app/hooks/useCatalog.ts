@@ -42,6 +42,9 @@ export interface ScriptsResponse {
 export interface AiChatterConfig {
   enabled?: boolean;
   mode?: "backup" | "always";
+  /** Closer mode: only reply to a fan who shows buying intent (or has an open
+   *  offer); leave pure chit-chat to the team / Auto Convo. */
+  intent_only?: boolean;
   sla_minutes?: number;
   max_lifetime_spend_cents?: number;
   offer_mode?: "tip" | "ppv" | "both";
