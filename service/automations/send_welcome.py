@@ -65,7 +65,7 @@ from llm_client import LLMCapExceeded
 
 log = logging.getLogger("of-relay.automation.send_welcome")
 
-_DEFAULT_NOTIF_LIMIT = 30      # how many subscribe-notifications to pull per tick
+_DEFAULT_NOTIF_LIMIT = 50      # how many subscribe-notifications to pull per tick
 _DEFAULT_MAX_WELCOMES = 25     # batch cap per run (logged when it bites)
 _WELCOME_TEMPERATURE = 0.85    # matches the spec's Grok call
 
@@ -534,12 +534,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         nm = payload.get("test_name") or ""
         subs = [{"id": int(test_fan), "username": nm or None, "name": nm or None}]
     else:
-        # OF now 400s on ANY `type=` filter on /users/notifications (verified
-        # live 2026-06: type=subscribes/all/subscriptions all 400; untyped works).
-        # Fetch the whole feed and filter to subscribe events client-side in
-        # _extract_new_subscribers.
+        # Scope the fetch to the subscribe feed. `type=subscribed` (past tense,
+        # the value the OF web UI's /my/notifications/subscribed tab uses) is the
+        # ONLY working filter — `subscribes`/`subscriptions` 400 (verified live
+        # 2026-06). The untyped feed is unusable: a content-moderation event
+        # (`deactivated_media`) flood can bury every subscribe past offset 1000+,
+        # silently starving welcomes (this happened to Lexi 2026-06-10 → 4 days of
+        # missed welcomes). _extract_new_subscribers still filters client-side as a
+        # belt-and-braces guard.
         resp = await asyncio.to_thread(
-            client.notifications, limit=limit, offset=0,
+            client.notifications, limit=limit, offset=0, type="subscribed",
         )
         subs = _extract_new_subscribers(resp)
 
