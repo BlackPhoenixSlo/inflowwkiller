@@ -78,6 +78,8 @@ def _validate_cfg(cfg: dict) -> dict:
     out: dict[str, Any] = {}
     if "enabled" in cfg:
         out["enabled"] = bool(cfg["enabled"])
+    if "intent_only" in cfg:
+        out["intent_only"] = bool(cfg["intent_only"])
     if "mode" in cfg and cfg["mode"] is not None:
         if cfg["mode"] not in _MODES:
             raise HTTPException(422, f"mode must be one of {_MODES}")

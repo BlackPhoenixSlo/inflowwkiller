@@ -58,7 +58,7 @@ const SLOT_LABEL: Record<string, string> = {
 // API's PURPOSES). Unknown/future purposes fall back to their raw key.
 const PURPOSE_LABEL: Record<string, string> = {
   gen_info: "Fan profiles",
-  of_ai_chat: "AI chat replies",
+  of_ai_chat: "Get to know fans (info-gather)",
   send_welcome: "Welcomes",
   send_followup: "Follow-ups",
   deep_convo: "Deep convo",
