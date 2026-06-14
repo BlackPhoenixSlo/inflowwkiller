@@ -557,8 +557,12 @@ class OFClient:
                       type: str | None = None) -> dict:
         """GET /api2/v2/users/notifications — alerts feed.
         Note: prefix is /users/notifications, NOT /notifications (my earlier
-        guess was wrong; captured via XHR audit). `type` filters: 'all', 'tips',
-        'subscribes', 'comments', 'mentions'."""
+        guess was wrong; captured via XHR audit). Working `type` filters use the
+        PAST-TENSE singular: 'subscribed', 'tipped', 'commented', 'mentioned'
+        (verified live 2026-06). Plural/gerund forms like 'subscribes'/
+        'subscriptions' 400. Untyped returns ALL types and can be flooded by
+        moderation events (`deactivated_media`) — always pass `type` when you
+        want a specific feed."""
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if type: params["type"] = type
         return self.get_json(f"{API_BASE}/users/notifications", params=params)
