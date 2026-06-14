@@ -1101,8 +1101,14 @@ async def get_chatter_access(chatter_id: str) -> AccessResp:
     folder_access: dict[str, list[int]] = {}
     for aid, fid in fa_rows:
         folder_access.setdefault(aid, []).append(fid)
+    # Scope the account allowlist to accounts this owner STILL owns. A model
+    # transfer (or a revoked grant) can leave orphaned chatter_account_access
+    # rows for an account the owner no longer holds; surfacing one seeds the
+    # editor's "Limit models" set, and "Save access" then re-sends that now-
+    # foreign id → 403 "account X is not one of yours". Mirrors the
+    # folder_access scoping above.
     return AccessResp(
-        account_ids=[r[0] for r in acct_rows],
+        account_ids=[r[0] for r in acct_rows if r[0] in actor.account_ids],
         folder_access=folder_access,
     )
 
