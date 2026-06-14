@@ -37,11 +37,22 @@ export function useAccounts() {
   const isChatterOnly = !user && !!chatter;
 
   const ownerQ = useQuery<AccountsResp>({
-    queryKey: ["accounts"],
+    // Scope the cache entry to the signed-in principal. /admin/accounts
+    // returns the FULL multi-tenant registry when called UNauthenticated
+    // (the dev-curl fallback). Under a principal-agnostic key, a list
+    // fetched in an unauthed window (app boot before /auth/me resolves, a
+    // brief session expiry) would persist for `staleTime` and bleed into
+    // the next owner's session — surfacing another owner's models in this
+    // owner's picker, then 403'ing on any write ("account X is not one of
+    // yours"). Keying by user_id isolates it per principal.
+    queryKey: ["accounts", user?.user_id ?? "anon"],
     queryFn: () => relay.get<AccountsResp>("/admin/accounts"),
     staleTime: 3 * 24 * 60 * 60_000,
     refetchOnWindowFocus: false,
-    enabled: !isChatterOnly,
+    // Never fetch the owner list until the principal is known — an
+    // /admin/accounts call fired while `user` is still null hits the
+    // unauthed full-list path and is exactly what poisons the cache above.
+    enabled: !isChatterOnly && !!user,
   });
 
   const chatterQ = useQuery<ChatterFlatAccountDTO[]>({
