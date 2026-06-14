@@ -41,7 +41,13 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from db.engine import get_session
-from db.models import User, UserAccount
+from db.models import (
+    ChatterAccountAccess,
+    ChatterFolderAccess,
+    ChatterUser,
+    User,
+    UserAccount,
+)
 
 
 # ── Constants ─────────────────────────────────────────────────────────
@@ -883,6 +889,21 @@ async def admin_transfer_user_account(body: TransferAccountBody = Body(...)) -> 
                 user_id=body.to_user_id, account_id=body.account_id,
             ))
             await s.flush()
+            # The account is leaving this owner — drop the chatter visibility
+            # grants they set for it. Left behind, these orphan: the access
+            # editor re-surfaces a now-foreign account_id and "Save access"
+            # 403s ("account X is not one of yours"). The destination owner
+            # configures chatter access from scratch.
+            await s.execute(delete(ChatterAccountAccess).where(
+                ChatterAccountAccess.user_id == me.id,
+                ChatterAccountAccess.account_id == body.account_id,
+            ))
+            await s.execute(delete(ChatterFolderAccess).where(
+                ChatterFolderAccess.account_id == body.account_id,
+                ChatterFolderAccess.chatter_id.in_(
+                    select(ChatterUser.chatter_id).where(ChatterUser.user_id == me.id)
+                ),
+            ))
         except IntegrityError:
             await s.rollback()
     return {
