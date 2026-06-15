@@ -30,6 +30,16 @@ It mirrors the scrape_chats reference in automation_executor.py:
     re-polls, sees the fan already welcomed, and skips: a sub yields EXACTLY one
     welcome. `welcome_sent` is written only AFTER a confirmed 200 send, so a send
     failure never marks a fan welcomed-without-a-welcome.
+  • NOT-NEW gate: the `type=subscribed` feed includes RENEWALS / re-subs and
+    `welcome_sent` has no row for fans pre-dating this automation, so an
+    ESTABLISHED fan (even a whale mid-funnel) is skipped rather than re-welcomed
+    as if brand new. A genuinely new sub may still carry a little history first
+    (a mass blast → 1-2 outbound; their own opening DMs → a handful inbound), so
+    the gate only trips once a fan EXCEEDS the tolerance: >`new_max_outbound`
+    (default 2) outbound OR >`new_max_inbound` (default 8) inbound. Plus the
+    cross-automation contact guard (`contact_guard_excludes`) so a fan another
+    automation just touched isn't double-messaged. Both run on the notification
+    path only — `test_fan` forces a send past them.
   • per-(account, fan) send-lease so A05/A06/A07/A11 can't double-message the
     same fan in an overlapping cycle; run_once's per-(account, kind) lock stops
     a slow tick stacking on the next.
@@ -50,17 +60,18 @@ import logging
 import re
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
+from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
 from ._common import (apply_word_restriction, load_strip_emojis, name_token,
                       resolve_model, skip_unreachable_fan, strip_emojis)
 from db.engine import get_session
-from db.models import AccountAiConfig, Fan, FanProfile, WelcomeSent
+from db.models import AccountAiConfig, Fan, FanProfile, Message, WelcomeSent
 from llm_client import LLMCapExceeded
 
 log = logging.getLogger("of-relay.automation.send_welcome")
@@ -68,6 +79,7 @@ log = logging.getLogger("of-relay.automation.send_welcome")
 _DEFAULT_NOTIF_LIMIT = 50      # how many subscribe-notifications to pull per tick
 _DEFAULT_MAX_WELCOMES = 25     # batch cap per run (logged when it bites)
 _WELCOME_TEMPERATURE = 0.85    # matches the spec's Grok call
+_GUARD_DEFAULT_H = 12.0        # cross-automation contact-guard window (payload override)
 
 # First-letter → alliterative adjective for the real-name stutter trick (V1
 # _fan_name_hint / generate_welcome_local). e.g. S → "Sexy Sofie".
@@ -295,6 +307,48 @@ async def _load_welcomed(account_id: str) -> set[int]:
     return {int(r[0]) for r in rows}
 
 
+async def _established_fan_ids(
+    account_id: str, fan_ids: list[int], *, max_outbound: int, max_inbound: int
+) -> set[int]:
+    """Subset of `fan_ids` that look like an EXISTING relationship (so they must
+    NOT be welcomed as if brand new), not a genuinely fresh subscriber.
+
+    Why this gate exists: the OF subscribe-notifications feed (`type=subscribed`)
+    carries RENEWALS and re-subscribes, not just first-time subs, and the
+    `welcome_sent` ledger has no row for fans who pre-date this automation. So
+    `welcome_sent`-only dedup re-welcomes established fans (even a long-tenure
+    whale mid-funnel) the moment their sub renews / they reappear in the feed.
+
+    A genuinely new sub can still carry a LITTLE history before the welcome tick,
+    so we DON'T treat any message as disqualifying:
+      • a mass blast may land first → a couple OUTBOUND rows (incl. the optimistic
+        placeholders mass sends write), and
+      • the fan may fire off a few opening messages → several INBOUND rows.
+    We treat a fan as established only once they EXCEED a tolerance: more than
+    `max_outbound` outbound OR more than `max_inbound` inbound messages. One
+    grouped scan over the (≤`limit`) notification fans per tick."""
+    if not fan_ids:
+        return set()
+    ids = [int(f) for f in fan_ids]
+    out_c: dict[int, int] = {}
+    in_c: dict[int, int] = {}
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.fan_id, Message.direction, func.count())
+            .where(Message.account_id == str(account_id), Message.fan_id.in_(ids))
+            .group_by(Message.fan_id, Message.direction)
+        )).all()
+    for fid, direction, cnt in rows:
+        if direction == "out":
+            out_c[int(fid)] = int(cnt)
+        elif direction == "in":
+            in_c[int(fid)] = int(cnt)
+    return {
+        fid for fid in ids
+        if out_c.get(fid, 0) > max_outbound or in_c.get(fid, 0) > max_inbound
+    }
+
+
 async def _mark_welcomed(account_id: str, fan_id: int, username: str | None) -> None:
     """Idempotent welcome_sent claim — written only after a confirmed send."""
     async with get_session() as s:
@@ -327,10 +381,18 @@ _name_token = name_token
 
 async def _resolve_welcome_name(account_id: str, fan_id: int, sub: dict) -> str:
     """Best real first name to greet by, generated from whatever we have — the guy's
-    real name, the OF display name, or a stored nickname (W4: "generate the nickname
-    from info we have"). Returns '' when all we have is a random handle / number, so
-    the caller falls back to the LLM riff. Brand-new subs usually have no Fan row →
-    we just use the notification's display name."""
+    real name, a team-curated/AI nickname, or the OF display name (W4: "generate the
+    nickname from info we have"). Returns '' when all we have is a random handle /
+    number, so the caller falls back to the LLM riff. Brand-new subs usually have no
+    Fan row → we fall through to the notification's display name.
+
+    Precedence (CURATED beats the RAW OF name): the team relabels fans via
+    `custom_nickname` ('Garrett/City/Tag') — that's what the whole UI shows — but a
+    fan's raw OF account name may be something else entirely (e.g. 'Kyle'). The OF
+    notification's `name` is that raw account name, so it sits DEAD LAST; otherwise
+    a fan curated as 'Garrett' gets welcomed as 'Kyle'. Mirrors `_common.resolve_fan_name`
+    (real_name → curated nick → OF display) with the live notif name as a final
+    fallback for brand-new subs we have nothing else for."""
     real_name = gen_nick = cust_nick = disp = prof = None
     async with get_session() as s:
         prof = (await s.execute(select(FanProfile.nickname).where(
@@ -343,11 +405,11 @@ async def _resolve_welcome_name(account_id: str, fan_id: int, sub: dict) -> str:
         real_name, gen_nick, cust_nick, disp = fan
     for tok in (
         _name_token(real_name),            # the guy's confirmed real name (gen_info)
-        _name_token(sub.get("name")),      # OF display name from the subscribe notif
+        _name_token(cust_nick, last=True), # team-curated 'Garrett/City/Tag' → 'Garrett'
+        _name_token(gen_nick, last=True),  # AI-generated nickname — keep the name slot
+        _name_token(prof, last=True),      # gen_info profile nickname
         _name_token(disp),                 # stored OF display name
-        _name_token(prof, last=True),      # AI nickname — drop the adjective, keep name
-        _name_token(gen_nick, last=True),
-        _name_token(cust_nick, last=True),
+        _name_token(sub.get("name")),      # RAW OF notif display name — last resort
     ):
         if tok:
             return tok
@@ -550,6 +612,40 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Dedup against welcome_sent (survives restarts → exactly one welcome).
     welcomed = await _load_welcomed(account_id)
     new_subs = [s for s in subs if s["id"] not in welcomed]
+
+    # Auto-discovery hygiene — NOTIFICATION path only (`test_fan` is an explicit
+    # force, so the live drivers / UI "send test" bypass these). Two filters:
+    #   • NOT-NEW: the `type=subscribed` feed includes renewals / re-subs, and
+    #     `welcome_sent` has no row for fans who pre-date this automation — so
+    #     welcoming a fan we ALREADY have a real conversation with would re-welcome
+    #     an established fan (e.g. a $999 whale mid-funnel). A genuinely new sub may
+    #     still have a LITTLE history first (a mass blast → 1-2 outbound; their own
+    #     opening DMs → a handful inbound), so we only skip once a fan EXCEEDS the
+    #     tolerances (default >2 outbound or >8 inbound; payload-overridable).
+    #   • CONTACT GUARD: a fan another automation touched inside the window
+    #     shouldn't ALSO get a welcome this tick (defense-in-depth — an actually-
+    #     new sub has no prior outbound, so this never blocks a real first welcome).
+    max_out = int(payload.get("new_max_outbound", 2))
+    max_in = int(payload.get("new_max_inbound", 8))
+    skipped_existing = 0
+    skipped_guard = 0
+    if not test_fan and new_subs:
+        known = await _established_fan_ids(
+            account_id, [s["id"] for s in new_subs],
+            max_outbound=max_out, max_inbound=max_in)
+        if known:
+            new_subs = [s for s in new_subs if s["id"] not in known]
+            skipped_existing = len(known)
+            log.info("send_welcome skipped %d established fan(s) account=%s",
+                     skipped_existing, account_id)
+        guard_h = resolve_window_hours(payload.get("guard_hours"), _GUARD_DEFAULT_H)
+        if new_subs and guard_h > 0:
+            guard_ids = await contact_guard_excludes(account_id, outbound_hours=guard_h)
+            if guard_ids:
+                before = len(new_subs)
+                new_subs = [s for s in new_subs if s["id"] not in guard_ids]
+                skipped_guard = before - len(new_subs)
+
     new_total = len(new_subs)
 
     batch_capped = new_total > max_welcomes
@@ -673,6 +769,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "image_attached": image_attached,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
+        "skipped_existing": skipped_existing,
+        "skipped_guard": skipped_guard,
         "errors": errors,
         "cap_hit": cap_hit,
         "batch_capped": batch_capped,

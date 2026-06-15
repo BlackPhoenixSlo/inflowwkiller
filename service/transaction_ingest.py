@@ -516,13 +516,24 @@ async def _write_one(account_id: str, raw: dict) -> tuple[int, int]:
     # the commit, so the browser's refetch can't race the write. The frontend
     # (useInboxRealtime) drops the fan drawer's revenue caches on this event —
     # without it the chart/Sales panel sits on 5-30 min staleTimes after a
-    # sale. Recency-gated so a 90-day cold backfill doesn't fire hundreds of
-    # invalidations for ancient rows nobody is looking at.
+    # sale.
+    #
+    # The 48h recency cap applies to INSERTS only: a 90-day cold backfill
+    # inserts hundreds of ancient rows and we don't want a drawer invalidation
+    # per row nobody is looking at. But status flips (a held PPV settling
+    # pending→cleared days after purchase) and ledger promotes only happen on
+    # rows we've already seen inside the 7-day refresh window — naturally
+    # bounded, AND they're exactly the update the drawer is waiting on. Gating
+    # those on `occurred_at >= now-48h` silently dropped every settle-flip for
+    # PPVs older than 2 days, so the drawer never heard about them.
+    is_recent_insert = (
+        parsed["occurred_at"] is not None
+        and parsed["occurred_at"] >= datetime.utcnow() - timedelta(hours=48)
+    )
     if (
         broadcast_reason is not None
         and parsed["fan_id"]
-        and parsed["occurred_at"] is not None
-        and parsed["occurred_at"] >= datetime.utcnow() - timedelta(hours=48)
+        and (broadcast_reason != "insert" or is_recent_insert)
     ):
         try:
             from events import broadcast as _sse_broadcast

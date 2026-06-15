@@ -33,6 +33,16 @@ from db.engine import get_session
 from db.models import Account, Employee, Fan, FanProfile, Message, Transaction
 from auth import assert_account_owned
 
+# Statuses that mean "this money is gone / never landed" — chargebacks,
+# refunds, hard failures. Everything else (cleared AND still-pending payout
+# holds) counts as revenue the fan actually paid. Mirrors
+# transaction_ingest._NON_REVENUE_STATUSES, kept local so the router doesn't
+# import the ingest module. The drawer reads gross-paid, NOT settled-only:
+# OF holds new PPV payments pending for ~7 days, so a settled-only filter
+# leaves a fresh purchase invisible in the chart for days (see
+# transaction_ingest._link_ppv_message / payoutPendingDays).
+_NON_REVENUE_STATUSES = ("chargedback", "refunded", "failed")
+
 
 async def _ensure_account_row(s: AsyncSession, account_id: str) -> None:
     """Insert a minimal accounts row if missing. The FS-based account
@@ -463,12 +473,14 @@ async def fan_ppv_history(
     payouts ingest, so it has historical purchases too — without it,
     long-tenure fans look empty in the chart.
 
-    Filter: `kind='ppv_message'`, `amount_cents > 0`, `status='cleared'`
-    (the project-wide convention for "revenue actually settled"). Tips
-    are kind='tip' and so are excluded by the filter. Ordered newest
-    first via the (account_id, fan_id, occurred_at) partial index, then
-    reversed so the response is chronological (oldest → newest) — the
-    chart reads left to right."""
+    Filter: `kind='ppv_message'`, `amount_cents > 0`, and status NOT IN
+    the non-revenue set (chargeback/refund/failed). We show gross-paid,
+    NOT settled-only: OF holds new PPV payments in a ~7-day pending payout
+    window, so a `status='cleared'`-only filter would hide a just-bought
+    PPV from the chart for days. Tips are kind='tip' and so are excluded
+    by the filter. Ordered newest first via the (account_id, fan_id,
+    occurred_at) partial index, then reversed so the response is
+    chronological (oldest → newest) — the chart reads left to right."""
     assert_account_owned(account_id)
     async with get_session() as s:
         # Outer-join on messages so we get sent_by_employee_id + the
@@ -503,7 +515,7 @@ async def fan_ppv_history(
                 Transaction.fan_id == fan_id,
                 Transaction.kind == "ppv_message",
                 Transaction.amount_cents > 0,
-                Transaction.status == "cleared",
+                Transaction.status.notin_(_NON_REVENUE_STATUSES),
             )
             .order_by(Transaction.occurred_at.desc())
             .limit(limit)
@@ -534,8 +546,9 @@ async def fan_ppv_history(
     # but it's frequently missing on long-tenure / banned / hidden
     # accounts — fall back to our ledger so the grid never shows "—" for
     # a fan who clearly has activity. Sum over ALL transactions (not just
-    # the limited PPV list above); excludes refunds (`amount > 0`) and
-    # still-pending rows (`status = 'cleared'`).
+    # the limited PPV list above); counts gross-paid (`amount > 0`,
+    # status NOT chargeback/refund/failed) so pending payouts are included
+    # — consistent with the chart above.
     async with get_session() as s2:
         breakdown_rows = (await s2.execute(
             select(Transaction.kind, func.sum(Transaction.amount_cents))
@@ -543,7 +556,7 @@ async def fan_ppv_history(
                 Transaction.account_id == account_id,
                 Transaction.fan_id == fan_id,
                 Transaction.amount_cents > 0,
-                Transaction.status == "cleared",
+                Transaction.status.notin_(_NON_REVENUE_STATUSES),
             )
             .group_by(Transaction.kind)
         )).all()
