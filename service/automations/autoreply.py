@@ -55,10 +55,11 @@ from ._common import (
     LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, guard_offplatform,
     STYLE_3LINE, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style, apply_word_restriction,
-    hold_with_typing, humanize_typos, load_nonnative_flags, load_strip_emojis,
-    load_style_flags,
-    load_typing_indicator, load_typing_wpm, load_typo_flags, resolve_fan_name,
-    resolve_model, skip_unreachable_fan, strip_emojis, typing_delay_seconds,
+    build_tip_ask_block, hold_with_typing, humanize_typos, is_content_ask,
+    load_nonnative_flags, load_strip_emojis, load_style_flags, load_tip_ask_config,
+    load_typing_indicator, load_typing_wpm, load_typo_flags, load_hard_skip_ids,
+    resolve_fan_name, resolve_model, should_skip_muted_creator,
+    skip_unreachable_fan, strip_emojis, typing_delay_seconds,
 )
 from .of_ai_chat import (_is_info_complete, _strip_html, split_for_bubbles,
                          _dedupe_lead_reaction)
@@ -142,7 +143,9 @@ _STYLE_VARIANTS = (
 
 def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
                     style: str, style_on: bool = False,
-                    nonnative_on: bool = False) -> list[dict]:
+                    nonnative_on: bool = False,
+                    content_ask: bool = False,
+                    tip_ask_block: str = "") -> list[dict]:
     facts = []
     nm = resolve_fan_name(f)
     if nm:
@@ -156,24 +159,45 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
     facts_block = "\n".join(f"- {x}" for x in facts) if facts else "- (not much on file)"
     convo = "\n".join(f"{'FAN' if d == 'in' else 'YOU'}: {b}" for d, b in history if b)
 
+    # He asked to SEE content right now: this is the one case Auto Convo answers
+    # with a SALES line instead of pure keep-warm banter — a natural "tip me $X"
+    # ask (the tip_reward automation delivers once he tips), NEVER the bare word
+    # "tip" (the bug this fixes). Otherwise the usual never-sell rules apply.
+    selling = content_ask and bool(tip_ask_block)
+    directive = tip_ask_block if selling else f"THIS MESSAGE — {style}"
+    if selling:
+        hard_rules = (
+            "HARD RULES:\n"
+            "- You already KNOW him — do NOT re-ask his name, age, location, job or "
+            "hobbies. Use what you know to make it personal.\n"
+            "- Don't apologize for being slow or mention the delay — just reply "
+            "naturally, warm and easy, never needy.\n"
+            "- SHORT and human: lowercase, contractions, u/ur/ya, 0-1 emoji, vary "
+            "your wording. No paragraphs, no narrating.\n"
+        )
+    else:
+        hard_rules = (
+            "HARD RULES:\n"
+            "- NEVER offer, mention, or hint at PPV, paid content, pics, or videos. "
+            "This is purely keeping the conversation going.\n"
+            "- You already KNOW him — do NOT re-ask his name, age, location, job or "
+            "hobbies. Use what you know to make it personal.\n"
+            "- Don't apologize for being slow or mention the delay — just reply "
+            "naturally, warm and easy, never needy.\n"
+            "- Match the vibe of the recent messages: if it was getting sexual, keep "
+            "it flirty/suggestive; if it was casual, stay casual.\n"
+            "- SHORT and human: lowercase, contractions, u/ur/ya, 0-1 emoji, vary "
+            "your wording — never reuse a line or emoji you've already used here. No "
+            "paragraphs, no narrating.\n"
+        )
+
     system = (
         f"{persona}\n"
         "A fan you've already been chatting with MESSAGED YOU and is waiting for a "
         "reply — keep the conversation going naturally. Reply to his last message "
         "like you just got back to your phone. You are 100% human, never a bot.\n\n"
-        f"THIS MESSAGE — {style}\n\n"
-        "HARD RULES:\n"
-        "- NEVER offer, mention, or hint at PPV, paid content, pics, or videos. "
-        "This is purely keeping the conversation going.\n"
-        "- You already KNOW him — do NOT re-ask his name, age, location, job or "
-        "hobbies. Use what you know to make it personal.\n"
-        "- Don't apologize for being slow or mention the delay — just reply "
-        "naturally, warm and easy, never needy.\n"
-        "- Match the vibe of the recent messages: if it was getting sexual, keep it "
-        "flirty/suggestive; if it was casual, stay casual.\n"
-        "- SHORT and human: lowercase, contractions, u/ur/ya, 0-1 emoji, vary your "
-        "wording — never reuse a line or emoji you've already used here. No "
-        "paragraphs, no narrating.\n\n"
+        f"{directive}\n\n"
+        f"{hard_rules}\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
         f"{LIVE_PROOF_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
@@ -361,19 +385,42 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         cands = [(f, t) for (f, t) in cands if int(f.fan_id) in only_set]
     cands = cands[:limit]
 
+    # autoreply gates on automation_paused_until, not skip_list — so load the
+    # HARD skips (muted_creator / manual "restrict this fan") explicitly and skip
+    # them here too, so a restricted fan is silenced on EVERY automation.
+    hard_skip = await load_hard_skip_ids(account_id)
+
     # Spend-window + last-purchase gates (one transactions query for the set).
     win_start = now - timedelta(days=int(cfg["recent_spend_days"]))
     purchase_cut = now - timedelta(days=int(cfg["min_days_since_purchase"]))
     spend = await _spend_and_last_purchase(account_id, [int(f.fan_id) for (f, _) in cands], win_start)
 
     persona = await _load_persona(account_id)
+    # Content-ask tip-ask: when a fan asks to SEE content, Auto Convo answers with a
+    # natural "tip me $X" line instead of pure keep-warm banter (tip_reward delivers
+    # once he tips), NEVER the bare word "tip". Account-level → build once.
+    tip_amount, tip_template = await load_tip_ask_config(account_id)
+    tip_ask_block = build_tip_ask_block(tip_amount, tip_template)
+    # Double-pitch guard: when ai_chatter (the closer) owns this account, IT handles
+    # selling — Auto Convo stays purely keep-warm even on a content-ask.
+    ai_chatter_owns = False
+    try:
+        from .ai_chatter import is_enabled as _ai_chatter_enabled
+        ai_chatter_owns = await _ai_chatter_enabled(account_id)
+    except Exception:
+        log.debug("autoreply ai_chatter gate check failed", exc_info=True)
     client = None
     sent = skipped_spend = skipped_cap = skipped_raced = errors = 0
+    skipped_restricted = 0   # muted creator / manual "restrict from automations"
 
     for f, inbound_at in cands:
         if sent >= max_sends:
             break
         fid = int(f.fan_id)
+        # Durably restricted (muted peer-creator, or hand-restricted) → never reply.
+        if fid in hard_skip or should_skip_muted_creator(f):
+            skipped_restricted += 1
+            continue
         recent_spend, last_purchase = spend.get(fid, (0, None))
         # recent spend gate
         if recent_spend >= int(cfg["max_recent_spend_cents"]):
@@ -406,8 +453,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
         history = await _history(account_id, fid, tail)
         style = random.choice(style_pool)
+        # He spoke last (the trigger) → his ask is the latest inbound. Tip-ask only
+        # when the closer doesn't own the account (double-pitch guard above).
+        last_in = next((b for d, b in reversed(history) if d == "in"), "")
+        content_ask = (not ai_chatter_owns) and is_content_ask(last_in)
         msgs = _build_messages(persona, f, history, style, style_on=style_on,
-                               nonnative_on=nonnative_on)
+                               nonnative_on=nonnative_on,
+                               content_ask=content_ask, tip_ask_block=tip_ask_block)
         try:
             res = await llm_client.chat(model=model, messages=msgs, purpose=_PURPOSE,
                                         account_id=account_id, fan_id=fid,
@@ -494,8 +546,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     return {"enabled": True, "candidates": len(cands), "sent": sent,
             "skipped_spend": skipped_spend, "skipped_cap": skipped_cap,
-            "skipped_raced": skipped_raced, "errors": errors, "dry_run": dry_run,
-            "model": model}
+            "skipped_raced": skipped_raced, "skipped_restricted": skipped_restricted,
+            "errors": errors, "dry_run": dry_run, "model": model}
 
 
 async def _load_persona(account_id: str) -> str:

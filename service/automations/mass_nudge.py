@@ -51,6 +51,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import automation_executor as ax
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
+from ._common import load_hard_skip_ids
 from db.engine import get_session
 from db.models import AccountAiConfig, NudgeState
 from . import send_welcome  # _model_hour / _model_weekday / _slot_key
@@ -242,6 +243,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         account_id, outbound_hours=window, inbound_hours=in_window,
         extra_ids=extra,
     )
+    # Durably restricted fans (muted peer-creator / hand-restricted) never get a
+    # broadcast either — fold them into the exclusion set.
+    excl |= await load_hard_skip_ids(account_id)
     recipients = [fid for fid in online if fid not in excl]
 
     if cfg.get("dry_run"):

@@ -40,15 +40,20 @@ export interface ReplyStep {
   generate?: boolean;
 }
 
-/** A paid PPV step: send sales copy + locked media at a price. */
+/** A paid PPV step: send sales copy + locked media at a price.
+ *
+ *  NOTE: the MEDIA is no longer carried on the step — vault ids are per-account
+ *  (an id from model A doesn't exist in model B's vault), so each model maps its
+ *  own media via the per-account binding (useFunnelMedia / FunnelAccountMedia).
+ *  `media_files`/`previews` remain in the type ONLY to read legacy funnels; the
+ *  editor no longer writes them. */
 export interface PpvStep {
   step: number;
   type: "paid_ppv";
   price?: number;
-  /** RAW vault ids (int / digit-string) — reply_mass_funnel does int(m). */
+  /** @deprecated legacy in-step media — media is per-account now (see useFunnelMedia). */
   media_files?: Array<number | string>;
-  /** Subset of `media_files` shown FREE as the teaser (the leading N picked).
-   *  reply_mass_funnel passes these to OF as `previews`. */
+  /** @deprecated legacy in-step previews — see useFunnelMedia. */
   previews?: Array<number | string>;
   messages?: string[];
   prompt?: string;
@@ -143,5 +148,66 @@ export function useDeleteFunnel() {
   return useMutation<unknown, Error, number>({
     mutationFn: (id) => relay.delete(`/admin/funnels/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY] }),
+  });
+}
+
+// ── Per-account media (funnel_account_media) ──────────────────────────
+//
+// A funnel's TEXT is global; its MEDIA is PER-ACCOUNT (OF vault ids don't carry
+// between models). Each model maps its own opener + PPV-step vault media here,
+// keyed by funnel step NUMBER. CRUD rides /admin/funnels/{id}/media/{account_id}
+// (funnels_api.py) — owner-gated AND account-scoped (assert_account_owned).
+
+const MEDIA_KEY = "funnel-media";
+
+export interface FunnelStepMedia {
+  media_files: number[];
+  /** Subset of media_files shown FREE as the teaser (sent to OF as `previews`). */
+  previews: number[];
+}
+
+export interface FunnelAccountMedia {
+  funnel_id: number;
+  account_id: string;
+  /** The opener's vault media for this model. */
+  opening_media_ids: number[];
+  /** step number (string) → that step's per-account media. */
+  steps_media: Record<string, FunnelStepMedia>;
+}
+
+export interface FunnelMediaSave {
+  opening_media_ids?: number[];
+  steps_media?: Record<string, FunnelStepMedia>;
+}
+
+/** One model's media binding for a funnel (empty defaults when none saved). */
+export function useFunnelMedia(funnelId: number | null, accountId: string | null) {
+  return useQuery<FunnelAccountMedia>({
+    queryKey: [MEDIA_KEY, funnelId, accountId],
+    enabled: funnelId != null && !!accountId,
+    queryFn: () =>
+      relay.get<FunnelAccountMedia>(
+        `/admin/funnels/${funnelId}/media/${accountId}`,
+        BG_CTX,
+      ),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useSaveFunnelMedia() {
+  const qc = useQueryClient();
+  return useMutation<
+    FunnelAccountMedia,
+    Error,
+    { funnelId: number; accountId: string } & FunnelMediaSave
+  >({
+    mutationFn: ({ funnelId, accountId, ...body }) =>
+      relay.put<FunnelAccountMedia>(
+        `/admin/funnels/${funnelId}/media/${accountId}`,
+        body,
+      ),
+    onSuccess: (_d, { funnelId, accountId }) =>
+      qc.invalidateQueries({ queryKey: [MEDIA_KEY, funnelId, accountId] }),
   });
 }

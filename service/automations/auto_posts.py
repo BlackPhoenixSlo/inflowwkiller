@@ -27,7 +27,12 @@ Payload shape::
 
     {
       "posts": [
-        {"text": "...", "media_files": [123], "price": 0,
+        {"text": "...", "media_files": [123],
+         "price": 0,               # DOLLARS — >0 makes a PAID/PPV post (OF
+                                   #   requires media on a priced post); 0/absent
+                                   #   = free. Passed to create_post as-is (OF's
+                                   #   /posts `price` is dollars) and stored as
+                                   #   price_cents via _to_cents (19.99 → 1999).
          "hours_to_live": 6,       # null/absent = keep forever (P2 "keep")
          "delay_minutes": 0},       # stagger THIS post after the previous one
         {"text": "...", "media_files": [456], "hours_to_live": 12}
@@ -97,6 +102,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             {
                 "text": (pick_text(p))[:80] if isinstance(p, dict) else "",
                 "text_variants": (len(p.get("texts")) if isinstance(p, dict) and isinstance(p.get("texts"), list) else 1),
+                "price": (p.get("price") or 0) if isinstance(p, dict) else 0,
                 "media_pool": len(_int_list(p.get("media_files"))) if isinstance(p, dict) else 0,
                 "media_folder_id": (p.get("media_folder_id") if isinstance(p, dict) else None),
                 "media_count": (p.get("media_count") or 1) if isinstance(p, dict) else 1,

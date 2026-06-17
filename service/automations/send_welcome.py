@@ -68,8 +68,9 @@ import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
-from ._common import (apply_word_restriction, load_strip_emojis, name_token,
-                      resolve_model, skip_unreachable_fan, strip_emojis)
+from ._common import (apply_word_restriction, load_hard_skip_ids,
+                      load_strip_emojis, name_token, resolve_model,
+                      skip_unreachable_fan, strip_emojis)
 from db.engine import get_session
 from db.models import AccountAiConfig, Fan, FanProfile, Message, WelcomeSent
 from llm_client import LLMCapExceeded
@@ -629,6 +630,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     max_in = int(payload.get("new_max_inbound", 8))
     skipped_existing = 0
     skipped_guard = 0
+    skipped_restricted = 0   # muted peer-creator / hand-restricted "no automations"
     if not test_fan and new_subs:
         known = await _established_fan_ids(
             account_id, [s["id"] for s in new_subs],
@@ -645,6 +647,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 before = len(new_subs)
                 new_subs = [s for s in new_subs if s["id"] not in guard_ids]
                 skipped_guard = before - len(new_subs)
+        # Durably restricted (muted peer-creator / hand-restricted) never get welcomed.
+        if new_subs:
+            hard_skip = await load_hard_skip_ids(account_id)
+            if hard_skip:
+                before = len(new_subs)
+                new_subs = [s for s in new_subs if s["id"] not in hard_skip]
+                skipped_restricted = before - len(new_subs)
 
     new_total = len(new_subs)
 
@@ -771,6 +780,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_cooldown": skipped_cooldown,
         "skipped_existing": skipped_existing,
         "skipped_guard": skipped_guard,
+        "skipped_restricted": skipped_restricted,
         "errors": errors,
         "cap_hit": cap_hit,
         "batch_capped": batch_capped,

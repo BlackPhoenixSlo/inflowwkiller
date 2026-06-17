@@ -75,12 +75,13 @@ from ._common import (
     LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, guard_offplatform,
     STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style, apply_word_restriction,
-    build_facts_note, build_structured_nickname, coerce_ids, facts_from_fan,
-    hold_with_typing, humanize_typos, load_nonnative_flags, load_strip_emojis,
-    load_style_flags,
+    build_facts_note, build_structured_nickname, build_tip_ask_block, coerce_ids,
+    facts_from_fan, hold_with_typing, humanize_typos, is_content_ask,
+    load_nonnative_flags, load_strip_emojis, load_style_flags, load_tip_ask_config,
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
-    skip_unreachable_fan, strip_emojis, typing_delay_seconds,
+    should_skip_muted_creator, skip_unreachable_fan, strip_emojis,
+    typing_delay_seconds,
 )
 from . import gen_info  # profile_is_stale() — the refresh-if-stale hook below
 
@@ -708,7 +709,9 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
                     asked: set[str],
                     history_tail: int = _HISTORY_TAIL,
                     style_on: bool = False,
-                    nonnative_on: bool = False) -> tuple[list[dict], list[str]]:
+                    nonnative_on: bool = False,
+                    content_ask: bool = False,
+                    tip_ask_block: str = "") -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — a faithful port of V1
     prompts.create_chat_response: a short, GIRLY, 100%-human reply that flirts
     WHILE gathering the one piece of info we still need. The 'still need' block is
@@ -762,7 +765,13 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # chat winds down from interview to banter instead of clinging to the last gap.
     breather_p = 0.55 if len(presented) <= 2 else 0.33
 
-    ask = bool(question_lines)
+    # He's asking to SEE content RIGHT NOW (CONTENT_ASK_RE) and we have a tip-ask
+    # to make: the gather goal yields — this message asks him to tip (in voice),
+    # not another interview question. (of_ai_chat itself never sells PPV; the
+    # content is delivered by tip_reward once he tips.)
+    selling = content_ask and bool(tip_ask_block)
+
+    ask = bool(question_lines) and not selling
     if ask:
         if ask_streak >= 3:
             ask = False                       # #1 never 3 asks in a row (interrogation)
@@ -777,7 +786,9 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     if not ask:
         presented = []  # nothing asked → don't mark a topic
 
-    if not question_lines:
+    if selling:
+        need_block = tip_ask_block            # tip-ask overrides the gather this turn
+    elif not question_lines:
         need_block = "You know enough about him now — just chat and flirt naturally."
     elif ask:
         # The list is already ordered (fresh topics first, dodged ones poked
@@ -817,6 +828,10 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # the reply's length), so replies mix one-liners with a couple of short texts.
     style_extra = ((STYLE_3LINE,) * 2 + (STYLE_BRIEF,) * 2) if style_on else ()
     style = random.choice(_STYLE_VARIANTS + style_extra)
+    # When selling, force a single teasing line — a multi-line/breather variant
+    # would fight the "ONE short line" tip-ask block.
+    if selling:
+        style = "one short flirty line, teasing not needy, 0-1 emoji."
 
     # When the "human texting style" opt-in is ON, append the humanizer block —
     # the not-AI tells (no echo-with-adjective, vary length, one question, etc.).
@@ -825,13 +840,20 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # in the send path guarantees the signature misspellings; this sets the grammar).
     nonnative = f"\n\n{NONNATIVE_REGISTER}" if nonnative_on else ""
 
+    # When selling (he asked for content), DROP the two clauses that forbid
+    # offering — they'd contradict the tip-ask block. of_ai_chat still never names
+    # a piece or attaches media; it only asks for the tip.
+    offer_clause = "" if selling else "don't offer pics or videos yet; "
+    nudes_rule = "" if selling else (
+        "- If he gets explicit early or asks for nudes/pics: don't go along with it "
+        "and don't offer anything — playfully tease and slow it down, then steer "
+        "back to getting to know him. Warm and flirty, never cold or preachy.\n")
     system = (
         f"{persona}\n"
         "You're texting a fan to get to know him while flirting. You are 100% human "
         "— never sound like a bot or an assistant. Use only what you've learned "
-        "about him; don't share your own info unless he asks; don't offer pics or "
-        "videos yet. He may send several texts in a row — read them all, reply to "
-        "the latest.\n\n"
+        f"about him; don't share your own info unless he asks; {offer_clause}he may "
+        "send several texts in a row — read them all, reply to the latest.\n\n"
         f"{need_block}{dodge_note}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         "HOW YOU TEXT (a real 22yo girl, not an assistant):\n"
@@ -842,9 +864,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "- At most ONE question, never one he already answered (if his answer was "
         "vague, ask a quick follow-up instead of re-asking). Don't narrate, no "
         "paragraphs.\n"
-        "- If he gets explicit early or asks for nudes/pics: don't go along with it "
-        "and don't offer anything — playfully tease and slow it down, then steer "
-        "back to getting to know him. Warm and flirty, never cold or preachy.\n"
+        f"{nudes_rule}"
         "- GOOD: \"haha thanks 😏 what should i call u?\" / \"aww how old are ya\" / "
         "\"a chef? bet u cook fire, fave dish?\"\n\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
@@ -1177,6 +1197,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
+    # Content-ask tip-ask: when a fan asks to SEE content, swap the gather question
+    # for a natural "tip me $X" ask (the tip_reward automation delivers once he
+    # tips). Account-level, so build the directive once. No double-pitch risk: when
+    # ai_chatter (the closer) owns this account, run() already short-circuited
+    # above, and mid-funnel fans are excluded from the candidate set below.
+    tip_ask_amount, tip_ask_template = await load_tip_ask_config(account_id)
+    tip_ask_block = build_tip_ask_block(tip_ask_amount, tip_ask_template)
     persona = await _load_persona(account_id)
     blacklist, skip_list = await _load_stop_lists(account_id)
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)  # W7 cross-tick ownership
@@ -1197,6 +1224,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_listed = 0      # blacklist / skip_list / paused
     skipped_not_turn = 0    # we (or nobody) spoke last
     skipped_spam = 0        # promo-spam: $0 spend + creator_we_follow (peer creator)
+    skipped_muted_creator = 0  # muted creator we follow — HARD skip (durable)
     newly_skiplisted = 0    # spent / too_long / info this tick
 
     for fan_id, c in by_fan.items():
@@ -1216,6 +1244,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         f = fans.get(fan_id)
         if f is not None and f.automation_paused_until and f.automation_paused_until > now:
             skipped_listed += 1
+            continue
+        # Muted creator we follow — a HARD skip even when forced (the scrape also
+        # writes a durable skip_list('muted_creator'); this catches the window
+        # before that lands). Mutual-promo spam we never want to message.
+        if should_skip_muted_creator(f):
+            skipped_muted_creator += 1
             continue
 
         if not forced and f is not None:
@@ -1321,8 +1355,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _handoff_to_deep_convo(client, account_id, fan_id, f)
                 newly_skiplisted += 1
                 continue  # finally releases the lease (sent_ok stays False)
-            msgs, presented = _build_messages(persona, f, c, asked, history_tail,
-                                              style_on=style_on, nonnative_on=nonnative_on)
+            msgs, presented = _build_messages(
+                persona, f, c, asked, history_tail,
+                style_on=style_on, nonnative_on=nonnative_on,
+                content_ask=is_content_ask(c.last_body), tip_ask_block=tip_ask_block)
             try:
                 res = await llm_client.chat(
                     model=model,
@@ -1498,6 +1534,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_listed": skipped_listed,
         "skipped_not_turn": skipped_not_turn,
         "skipped_spam": skipped_spam,
+        "skipped_muted_creator": skipped_muted_creator,
         "newly_skiplisted": newly_skiplisted,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,

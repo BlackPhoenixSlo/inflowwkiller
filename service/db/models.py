@@ -319,6 +319,11 @@ class Fan(Base):
     subscription_expires_at: Mapped[datetime | None] = mapped_column(DateTime)
     subscription_status: Mapped[str | None] = mapped_column(String)
     is_followed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # OF chat-level "Mute notifications" (isMutedNotifications on the /chats item —
+    # the creator silenced this chat). Persisted from the scrape; when a muted fan
+    # is also a creator we follow (subscribedBy) the automations skip-list them so
+    # nobody wastes an LLM call on mutual-promo spam. See _common.should_skip_muted_creator.
+    is_muted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=False)
     joined_date: Mapped[str | None] = mapped_column(String)
 
     # ── deep_convo state machine (4-step engagement drill) ───
@@ -1065,6 +1070,40 @@ class MassMessageFunnel(Base):
     opening_vault_folder: Mapped[str | None] = mapped_column(String)
     opening_media_indices: Mapped[str | None] = mapped_column(Text)
     steps_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = _ts_now()
+
+
+class FunnelAccountMedia(Base):
+    """Per-(funnel, account) MEDIA binding for a shared funnel.
+
+    A funnel's TEXT (opener + step copy/prompts/price) is GLOBAL — one
+    definition shared across all of an owner's models (MassMessageFunnel). The
+    MEDIA is NOT: an OnlyFans vault id is per-account, so an id picked on model A
+    doesn't exist in model B's vault. Each model maps its OWN vault media to the
+    shared funnel here, and reply_mass_funnel / send_mass_message resolve it by
+    (funnel_id, account_id) at SEND time.
+
+    `opening_media_ids` — JSON int array: the opener's vault media for this model.
+    `steps_media_json`  — JSON object keyed by the step NUMBER (string), each
+                          value `{"media_files": [int...], "previews": [int...]}`
+                          — the vault media (and free-preview subset) this model
+                          attaches to that funnel step. e.g.
+                          `{"4": {"media_files": [123], "previews": [123]}}`.
+                          Keyed by step number (not array index) so it survives a
+                          step list that doesn't start at / isn't dense from 1.
+    """
+    __tablename__ = "funnel_account_media"
+
+    funnel_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("mass_message_funnels.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id"), primary_key=True,
+    )
+    opening_media_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    steps_media_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = _ts_now()
     updated_at: Mapped[datetime] = _ts_now()
 

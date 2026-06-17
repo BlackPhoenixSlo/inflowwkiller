@@ -68,13 +68,13 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from ._common import (
-    NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, ONPLATFORM_GUARDRAIL,
+    CONTENT_ASK_RE, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, ONPLATFORM_GUARDRAIL,
     STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
     apply_nonnative_style, apply_word_restriction, coerce_ids, guard_offplatform,
     hold_with_typing, humanize_typos, load_nonnative_flags, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
-    skip_unreachable_fan, typing_delay_seconds,
+    should_skip_muted_creator, skip_unreachable_fan, typing_delay_seconds,
 )
 # Deliberate sibling reuse — keeps the texting voice byte-compatible with
 # of_ai_chat instead of forking 500 lines of tuned style machinery.
@@ -264,14 +264,11 @@ _FASTPATH_READ_LIMIT = 20
 # Deterministic content-ask detector: when the fan is explicitly asking for
 # content AND the manifest is live, the info-gather goal must yield to the
 # pitch — otherwise the model keeps interviewing ("what got u into trail
-# running?") while he's begging to buy. Code-side, not model judgment.
-_CONTENT_ASK_RE = re.compile(
-    r"(what else|what'?s next|whats next|show me|send (me |it |smth |something )"
-    r"|got (any|anything)|anything (spicy|hot|else|for (me|us))|gimme|"
-    r"i want (more|it|some)|more (pics|vids|photos|videos|content)|next one|"
-    r"what (else )?(do|did) (u|you) (have|got|film)|unlock|spoil (u|you)|"
-    r"in the mood|what (u|you) got)",
-    re.IGNORECASE)
+# running?") while he's begging to buy. Code-side, not model judgment. Hoisted
+# into _common (CONTENT_ASK_RE) so of_ai_chat/autoreply share the same detector
+# for their tip-ask branch; kept under the old name here (and re-exported to
+# scripts_api) for back-compat.
+_CONTENT_ASK_RE = CONTENT_ASK_RE
 
 
 def _item_media(item: CatalogItem) -> list[int]:
@@ -1005,6 +1002,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_listed = 0      # blacklist / non-graduation skip_list / paused
     skipped_not_turn = 0    # we (or nobody) spoke last
     skipped_spam = 0        # promo-spam: $0 + creator_we_follow
+    skipped_muted_creator = 0  # muted creator we follow — HARD skip (durable)
     skipped_whale = 0       # at/over the spend gate → human territory
     skipped_sla_fresh = 0   # backup mode: inbound younger than the SLA
     skipped_manual = 0      # a human chatted too recently (cautious resume)
@@ -1027,6 +1025,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         f = fans.get(fan_id)
         if f is not None and f.automation_paused_until and f.automation_paused_until > now:
             skipped_listed += 1
+            continue
+        # Muted creator we follow — HARD skip even when forced (mirrors of_ai_chat;
+        # the scrape also writes a durable skip_list('muted_creator')).
+        if should_skip_muted_creator(f):
+            skipped_muted_creator += 1
             continue
         if not forced:
             if f is not None:
@@ -1350,6 +1353,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_listed": skipped_listed,
         "skipped_not_turn": skipped_not_turn,
         "skipped_spam": skipped_spam,
+        "skipped_muted_creator": skipped_muted_creator,
         "skipped_whale": skipped_whale,
         "skipped_sla_fresh": skipped_sla_fresh,
         "skipped_manual": skipped_manual,

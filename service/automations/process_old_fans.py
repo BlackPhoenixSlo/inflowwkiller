@@ -76,7 +76,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from automation_registry import register
 from db.engine import get_session
 from db.models import Fan, SkipList
-from ._common import coerce_ids
+from ._common import HARD_SKIP_REASONS, coerce_ids
 from .apply_profiles import run as apply_profiles_run
 from .gen_info import run as gen_info_run
 
@@ -84,6 +84,11 @@ log = logging.getLogger("of-relay.automation.process_old_fans")
 
 # ── Knobs (ported from 08_process_old_fans.md) ───────────────────────
 _SKIP_REASON = "old_fan_pre_ai"
+# Skip_list reasons that mean "this fan is already settled — don't re-onboard
+# them as a fresh old-fan". Our own marker PLUS the durable HARD restricts
+# (muted_creator / manual_restrict): those are deliberate "no automations"
+# states, not a bare membership row to override.
+_ONBOARDED_REASONS = frozenset({_SKIP_REASON}) | HARD_SKIP_REASONS
 
 
 # ── Username resolution (DB-first replacement for the sidebar scrape) ─
@@ -144,7 +149,7 @@ async def _already_onboarded(account_id: str, ids: set[int]) -> set[int]:
             select(SkipList.fan_id).where(
                 SkipList.account_id == str(account_id),
                 SkipList.fan_id.in_(list(ids)),
-                SkipList.reason == _SKIP_REASON,
+                SkipList.reason.in_(tuple(_ONBOARDED_REASONS)),
             )
         )).all()
     return {int(r[0]) for r in rows}

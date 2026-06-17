@@ -46,6 +46,7 @@ from datetime import datetime, timedelta
 import automation_executor as ax
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
+from ._common import load_hard_skip_ids
 from . import mass_nudge   # reuse slot composition + the default pools
 from . import send_welcome  # _model_hour / _model_weekday / _slot_key
 
@@ -70,6 +71,9 @@ async def _excluded_ids(account_id: str, cfg: dict) -> list[int]:
              if str(x).lstrip("-").isdigit()]
     excl = await contact_guard_excludes(
         account_id, outbound_hours=out_h, inbound_hours=in_h, extra_ids=extra)
+    # Durably restricted fans (muted peer-creator / hand-restricted) — mirrored into
+    # the Auto_Exclude OF list with the rest so the broadcast skips them too.
+    excl |= await load_hard_skip_ids(account_id)
     return sorted(excl)
 
 

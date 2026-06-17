@@ -24,6 +24,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { relay, type VaultMedia } from "@/lib/relay";
+import { sanitizePriceInput } from "@/components/chat/Composer";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
@@ -74,6 +75,10 @@ interface Row {
   delayMinutes: string;
   // auto_posts
   hoursToLive: string;
+  // PPV price in DOLLARS ("" / "0" = free; >0 = paywalled). Applies to BOTH
+  // kinds — auto_posts (→ create_post) and mass_premade (→ send_mass_message);
+  // a PPV post/message needs ≥1 image. Sent as `price`, stored as price_cents.
+  price: string;
   // mass_premade
   onlineOnly: boolean;
   unsendAfterHours: string;
@@ -100,6 +105,7 @@ function blankRow(): Row {
     mediaCount: "",
     delayMinutes: "",
     hoursToLive: "",
+    price: "",
     onlineOnly: true,
     unsendAfterHours: "",
     resendAfterHours: "",
@@ -140,6 +146,7 @@ function itemToRow(it: Record<string, unknown>): Row {
   r.delayMinutes = numStr(it.delay_minutes);
   // auto_posts
   r.hoursToLive = numStr(it.hours_to_live);
+  r.price = numStr(it.price);
   // mass_premade — online_only is only persisted when true, so absence = off.
   r.onlineOnly = Boolean(it.online_only);
   r.unsendAfterHours = numStr(it.unsend_after_hours);
@@ -404,6 +411,12 @@ export function PremadeForm({
     }
     const delay = posNum(r.delayMinutes);
     if (delay) item.delay_minutes = delay;
+    // PPV price (dollars) — BOTH kinds support it (auto_posts→create_post,
+    // mass_premade→send_mass_message both read `price`). Only emit when >0 so a
+    // free post/message drops the knob entirely (matches the backend's
+    // `price or 0` default).
+    const price = Number(r.price);
+    if (Number.isFinite(price) && price > 0) item.price = price;
     if (posts) {
       const htl = posNum(r.hoursToLive);
       if (htl) item.hours_to_live = htl;
@@ -725,6 +738,28 @@ export function PremadeForm({
                   )}
                 </div>
               )}
+
+              {/* PPV price — a priced post/broadcast is paywalled; OF needs at
+               *  least one image attached. Blank/0 = free. Both kinds support it
+               *  (auto_posts→create_post, mass_premade→send_mass_message). */}
+              <div className="flex items-center gap-2">
+                <label className="text-[11px] text-fg-dim shrink-0">Price (USD)</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={r.price}
+                  onChange={(e) => patchRow(i, { price: sanitizePriceInput(e.target.value) })}
+                  placeholder="0 (free)"
+                  className="w-24 bg-bg border border-border rounded-md px-2 py-1.5 text-xs text-fg focus:outline-none focus:border-accent"
+                />
+                {Number(r.price) > 0 ? (
+                  <span className="text-warn text-[11px]">
+                    🔒 PPV ${Number(r.price).toFixed(2)} · needs an image
+                  </span>
+                ) : (
+                  <span className="text-fg-dim text-[11px]">{posts ? "free post" : "free message"}</span>
+                )}
+              </div>
 
               <div className="grid grid-cols-2 gap-2">
                 {posts ? (

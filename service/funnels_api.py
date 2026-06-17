@@ -45,13 +45,17 @@ import json
 import logging
 from typing import Any
 
+from datetime import datetime
+
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
+from auth import assert_account_owned
 from db.engine import get_session
-from db.models import MassMessageFunnel, MassRun
+from db.models import FunnelAccountMedia, MassMessageFunnel, MassRun
 
 log = logging.getLogger("of-relay.funnels_api")
 
@@ -129,28 +133,12 @@ def _validate_step(idx: int, step: Any) -> dict:
             price = _whole_int(f"step[{idx}].price", step["price"])
             if price < 0:
                 raise HTTPException(422, f"step[{idx}].price must be >= 0")
-        media = step.get("media_files")
-        if media is not None:
-            if not isinstance(media, list):
-                raise HTTPException(422, f"step[{idx}].media_files must be a list of vault ids")
-            for m in media:
-                # VERIFIED FACT: reply_mass_funnel does int(m) for isdigit → each
-                # id must be a raw int or a digit string.
-                if isinstance(m, bool) or not (
-                    isinstance(m, int) or (isinstance(m, str) and m.isdigit())
-                ):
-                    raise HTTPException(
-                        422, f"step[{idx}].media_files must be raw vault ids (int/digit-string)")
-        previews = step.get("previews")
-        if previews is not None:
-            if not isinstance(previews, list):
-                raise HTTPException(422, f"step[{idx}].previews must be a list of vault ids")
-            for m in previews:
-                if isinstance(m, bool) or not (
-                    isinstance(m, int) or (isinstance(m, str) and m.isdigit())
-                ):
-                    raise HTTPException(
-                        422, f"step[{idx}].previews must be raw vault ids (int/digit-string)")
+        # MEDIA is NO LONGER a funnel-step field. Vault ids are per-account, so a
+        # funnel (shared across all of an owner's models) can't carry them — each
+        # model maps its own via funnel_account_media (the /media routes below).
+        # Any `media_files`/`previews` still posted here pass through untouched
+        # (back-compat for legacy funnels), but they're not validated and the UI
+        # no longer sends them.
         if "locked_text" in step and not isinstance(step["locked_text"], bool):
             raise HTTPException(422, f"step[{idx}].locked_text must be true or false")
     else:
@@ -360,3 +348,128 @@ async def delete_funnel(funnel_id: int) -> dict[str, Any]:
         await s.delete(fn)
     log.info("funnel_deleted id=%s", funnel_id)
     return {"deleted": funnel_id}
+
+
+# ── Per-account media (funnel_account_media) ──────────────────────────
+#
+# A funnel's TEXT is global; its MEDIA is per-account (OF vault ids don't carry
+# between models). These routes ARE account-scoped, so — unlike the funnel CRUD
+# above — they `assert_account_owned` (mirrors nudge_config_api / automation_
+# rules_api). One row per (funnel, account): the model's opener media + a
+# step-number-keyed map of {media_files, previews}.
+
+def _vault_ids(key: str, raw: Any) -> list[int]:
+    """Coerce a media-id list to ints (raw vault ids). reply_mass_funnel /
+    of_client expect ints, so each entry must be an int or a digit string."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(422, f"{key} must be a list of vault ids")
+    out: list[int] = []
+    for m in raw:
+        if isinstance(m, bool) or not (
+            isinstance(m, int) or (isinstance(m, str) and m.isdigit())
+        ):
+            raise HTTPException(422, f"{key} must be raw vault ids (int/digit-string)")
+        out.append(int(m))
+    return out
+
+
+def _validate_steps_media(raw: Any) -> dict[str, dict]:
+    """`steps_media` → a clean {step_no_str: {media_files, previews}} map. Keys
+    are step numbers (the funnel numbers steps from 1); previews are clamped to
+    ids actually in that step's media set (a free teaser is a SUBSET of the
+    locked send)."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise HTTPException(422, "steps_media must be an object keyed by step number")
+    out: dict[str, dict] = {}
+    for k, v in raw.items():
+        ks = str(k)
+        if not ks.isdigit():
+            raise HTTPException(422, f"steps_media key {k!r} must be a step number")
+        if not isinstance(v, dict):
+            raise HTTPException(422, f"steps_media[{ks}] must be an object")
+        media = _vault_ids(f"steps_media[{ks}].media_files", v.get("media_files"))
+        previews = _vault_ids(f"steps_media[{ks}].previews", v.get("previews"))
+        previews = [m for m in previews if m in media]
+        if media or previews:
+            out[ks] = {"media_files": media, "previews": previews}
+    return out
+
+
+def _media_payload(row: FunnelAccountMedia | None, funnel_id: int, account_id: str) -> dict[str, Any]:
+    if row is None:
+        return {"funnel_id": funnel_id, "account_id": account_id,
+                "opening_media_ids": [], "steps_media": {}}
+    try:
+        opening = json.loads(row.opening_media_ids or "[]")
+    except (TypeError, ValueError):
+        opening = []
+    try:
+        steps_media = json.loads(row.steps_media_json or "{}")
+    except (TypeError, ValueError):
+        steps_media = {}
+    return {
+        "funnel_id": funnel_id,
+        "account_id": account_id,
+        "opening_media_ids": opening if isinstance(opening, list) else [],
+        "steps_media": steps_media if isinstance(steps_media, dict) else {},
+    }
+
+
+class FunnelMediaBody(BaseModel):
+    opening_media_ids: list[Any] | None = None
+    steps_media: dict[str, Any] | None = None
+
+
+@router.get("/admin/funnels/{funnel_id}/media/{account_id}")
+async def get_funnel_media(funnel_id: int, account_id: str) -> dict[str, Any]:
+    assert_account_owned(account_id)
+    async with get_session() as s:
+        if await s.get(MassMessageFunnel, funnel_id) is None:
+            raise HTTPException(404, "funnel not found")
+        row = await s.get(FunnelAccountMedia, (funnel_id, account_id))
+    return _media_payload(row, funnel_id, account_id)
+
+
+@router.put("/admin/funnels/{funnel_id}/media/{account_id}")
+async def put_funnel_media(
+    funnel_id: int, account_id: str, body: FunnelMediaBody = Body(...)
+) -> dict[str, Any]:
+    assert_account_owned(account_id)
+    opening = _vault_ids("opening_media_ids", body.opening_media_ids)
+    steps_media = _validate_steps_media(body.steps_media)
+    now = datetime.utcnow()
+    opening_json = json.dumps(opening)
+    steps_json = json.dumps(steps_media)
+    async with get_session() as s:
+        if await s.get(MassMessageFunnel, funnel_id) is None:
+            raise HTTPException(404, "funnel not found")
+        await s.execute(
+            sqlite_insert(FunnelAccountMedia)
+            .values(funnel_id=funnel_id, account_id=account_id,
+                    opening_media_ids=opening_json, steps_media_json=steps_json,
+                    created_at=now, updated_at=now)
+            .on_conflict_do_update(
+                index_elements=["funnel_id", "account_id"],
+                set_={"opening_media_ids": opening_json,
+                      "steps_media_json": steps_json, "updated_at": now})
+        )
+        row = await s.get(FunnelAccountMedia, (funnel_id, account_id))
+        out = _media_payload(row, funnel_id, account_id)
+    log.info("funnel_media_saved funnel=%s account=%s opener=%d steps=%d",
+             funnel_id, account_id, len(opening), len(steps_media))
+    return out
+
+
+@router.delete("/admin/funnels/{funnel_id}/media/{account_id}")
+async def delete_funnel_media(funnel_id: int, account_id: str) -> dict[str, Any]:
+    assert_account_owned(account_id)
+    async with get_session() as s:
+        row = await s.get(FunnelAccountMedia, (funnel_id, account_id))
+        if row is not None:
+            await s.delete(row)
+    log.info("funnel_media_cleared funnel=%s account=%s", funnel_id, account_id)
+    return {"cleared": True, "funnel_id": funnel_id, "account_id": account_id}

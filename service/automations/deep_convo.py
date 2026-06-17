@@ -91,7 +91,7 @@ from ._common import (
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
     strip_emojis,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
-    skip_unreachable_fan, typing_delay_seconds,
+    should_skip_muted_creator, skip_unreachable_fan, typing_delay_seconds,
 )
 
 log = logging.getLogger("of-relay.automation.deep_convo")
@@ -547,6 +547,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 skipped_not_complete += 1
                 continue
         if f is not None and f.automation_paused_until and f.automation_paused_until > now:
+            skipped_listed += 1
+            continue
+        # Muted creator we follow — HARD skip (stop_skips already blocks the durable
+        # skip_list row; this also catches the pre-scrape window). Counts as listed.
+        if should_skip_muted_creator(f):
             skipped_listed += 1
             continue
 
