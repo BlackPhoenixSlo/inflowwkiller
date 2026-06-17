@@ -68,7 +68,28 @@ export default function AccountsTable() {
   const deleteM = useMutation({
     mutationFn: (id: string) =>
       relay.delete<unknown>(`/admin/accounts/${encodeURIComponent(id)}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["accounts"] }),
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      // Hard-EVICT every per-account cache for the dropped model so a manual
+      // logout/login is no longer needed to clear it. Per-account query keys
+      // embed the accountId somewhere in the key — ["chats", kind, accountId,
+      // ...], ["vault-media", accountId], ["of-user", accountId, fanId],
+      // ["fan", accountId, ...], *-config / *-rules / automation-* / nudge-*,
+      // etc. A predicate scan over the live cache removes them all without a
+      // hand-maintained prefix list. removeQueries (not invalidate) drops them
+      // from memory, which also evicts the persisted localStorage snapshot
+      // since the persister only dehydrates live queries. The split(",") check
+      // also matches the unified ("all" scope) chat key, whose accountKey is a
+      // comma-joined list of every fanned-out account id (useChatList.ts).
+      qc.removeQueries({
+        predicate: (q) =>
+          q.queryKey.some(
+            (part) =>
+              typeof part === "string" &&
+              (part === id || part.split(",").includes(id)),
+          ),
+      });
+    },
   });
 
   const healthByAid = new Map(

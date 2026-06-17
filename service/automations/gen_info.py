@@ -396,7 +396,7 @@ def _known_block(c: "_Candidate") -> str:
 class _Candidate:
     __slots__ = ("fan_id", "fan_msg_n", "total_msg_n", "spend_cents",
                  "recent_spend_cents", "subscribed_at",
-                 "source", "of_name", "of_username", "known", "messages")
+                 "source", "is_muted", "of_name", "of_username", "known", "messages")
 
     def __init__(self, fan_id: int):
         self.fan_id = fan_id
@@ -406,6 +406,7 @@ class _Candidate:
         self.recent_spend_cents = 0          # cleared spend in the last _RECENT_SPEND_WINDOW
         self.subscribed_at = None            # fans.subscribed_at — for the new-sub tier
         self.source = ""    # "fan" = subscribedOn (real fan); else peer creator/unknown
+        self.is_muted = False  # OF chat muted — a muted creator is spam, never profile
         self.of_name = ""
         self.of_username = ""
         # Prior extracted facts from the fans row — fed back as ground truth so
@@ -462,7 +463,7 @@ async def _gather_candidates(
                     Fan.real_name, Fan.his_age, Fan.home_city, Fan.home_country,
                     Fan.hobbies, Fan.occupation, Fan.relationship_status,
                     Fan.fetishes, Fan.recent_events, Fan.generated_nickname,
-                    Fan.custom_nickname, Fan.source, Fan.subscribed_at,
+                    Fan.custom_nickname, Fan.source, Fan.is_muted, Fan.subscribed_at,
                 ).where(
                     Fan.account_id == account_id,
                     Fan.fan_id.in_(list(counts)),
@@ -485,6 +486,7 @@ async def _gather_candidates(
                     "generated_nickname": r.generated_nickname or "",
                     "custom_nickname": r.custom_nickname or "",
                     "source": r.source or "",
+                    "is_muted": bool(r.is_muted),
                 }
 
         # Lifetime spend from the transactions ledger (cleared, fan-attributed) is
@@ -527,18 +529,21 @@ async def _gather_candidates(
         c.of_name = info.get("of_display_name") or ""
         c.of_username = info.get("of_username") or ""
         c.source = info.get("source") or ""
+        c.is_muted = bool(info.get("is_muted"))
         c.subscribed_at = subdates.get(fan_id)
         c.known = info
         forced = fan_id in force_ids
         # Promo-spam guard (mirrors of_ai_chat): don't waste an LLM profile on
         # peer creators who blast the inbox. `source == "creator_we_follow"` =
         # WE subscribed to THEM (subscribedBy), i.e. a creator, never a fan of
-        # ours — real fans are NEVER this value in the live data. Gated on $0
-        # spend so a paying collab is still profiled. Re-evaluated each run.
+        # ours — real fans are NEVER this value in the live data. Spam when EITHER
+        # they've spent $0 (an unproven collab) OR we've muted their chat (a
+        # deliberate "silence this creator" — never profile a muted creator even
+        # if they once paid). Re-evaluated each run.
         is_spam = (
             not forced
-            and c.spend_cents == 0
             and c.source == "creator_we_follow"
+            and (c.spend_cents == 0 or c.is_muted)
         )
         qualified = forced or (
             not is_spam

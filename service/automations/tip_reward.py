@@ -42,9 +42,12 @@ from datetime import datetime, timedelta
 import automation_executor as ax        # _make_client / _parse_iso seams
 from attribution import write_outbound_attribution
 from automation_registry import register
-from automations._common import apply_word_restriction
+from automations._common import (
+    DEFAULT_TIP_ASK_DOLLARS, apply_word_restriction, load_hard_skip_ids,
+    should_skip_muted_creator,
+)
 from db.engine import get_session
-from db.models import AccountAiConfig, TipRewardLog, Transaction, VaultSend
+from db.models import AccountAiConfig, Fan, TipRewardLog, Transaction, VaultSend
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -62,6 +65,11 @@ _DEFAULTS: dict = {
     "max_images": 5,           # cap so a whale tip can't drain a folder in one shot
     "caption": "",             # optional thank-you text ('' → media-only message)
     "window_hours": 72,        # rolling window for the cumulative tier basis
+    # The ASK side of the loop (read by of_ai_chat/autoreply, not tip_reward itself):
+    # when a fan asks to SEE content via text, those senders ask him to tip this much
+    # ("tip me $X and ill send something"). One config home for the whole tip loop.
+    "ask_amount_dollars": DEFAULT_TIP_ASK_DOLLARS,
+    "ask_template": "",        # optional phrasing seed ('' → the model phrases it)
     "tiers": [
         {"name": "basic",   "min_basis_cents": 0,      "folders": []},
         {"name": "mid",     "min_basis_cents": 1000,   "folders": []},   # ≥ $10
@@ -283,6 +291,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     cfg = await _load_config(account_id)
     if not cfg.get("enabled"):
         return {"status": "skipped", "reason": "disabled"}
+
+    # Durably restricted (muted peer-creator / hand-restricted "no automations")
+    # → never auto-reward, even on a real tip. `force` (manual re-reward) bypasses.
+    if not force:
+        async with get_session() as s:
+            fan = await s.get(Fan, (str(account_id), fan_id))
+        if fan_id in await load_hard_skip_ids(account_id) or should_skip_muted_creator(fan):
+            return {"status": "skipped", "reason": "restricted", "fan_id": fan_id}
 
     # Idempotency: one reward per tip (webhooks replay). `force` re-rewards.
     if tip_message_id is not None and not force and await _already_rewarded(account_id, tip_message_id):

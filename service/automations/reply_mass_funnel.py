@@ -95,7 +95,10 @@ from ._common import (
     typing_delay_seconds,
 )
 from db.engine import get_session
-from db.models import AccountAiConfig, FunnelState, MassMessageFunnel, MassRun, Message
+from db.models import (
+    AccountAiConfig, FunnelAccountMedia, FunnelState, MassMessageFunnel, MassRun,
+    Message,
+)
 from llm_client import LLMCapExceeded
 
 log = logging.getLogger("of-relay.automation.reply_mass_funnel")
@@ -216,6 +219,64 @@ async def _load_funnel_steps(funnel_id: int) -> list[dict]:
         log.warning("reply_mass_funnel_bad_steps_json funnel=%s", funnel_id)
         return []
     return [s for s in steps if isinstance(s, dict)] if isinstance(steps, list) else []
+
+
+def _digit_ids(raw) -> list[int]:
+    """Coerce a media-id list to ints, dropping non-digit junk (mirrors the
+    isdigit filter _send_step has always applied to vault ids)."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [int(m) for m in raw if str(m).isdigit()]
+
+
+async def _load_account_media(funnel_id: int, account_id: str) -> dict | None:
+    """The per-(funnel, account) MEDIA binding (FunnelAccountMedia) → a dict
+    `{"opening": [int...], "steps": {step_no_str: {"media_files": [int...],
+    "previews": [int...]}}}`, or None when this model hasn't mapped any media for
+    the funnel yet (→ caller falls back to the funnel's legacy in-step media).
+
+    Funnel TEXT is shared across models; the MEDIA is per-account because vault
+    ids don't carry between accounts."""
+    async with get_session() as s:
+        row = await s.get(FunnelAccountMedia, (int(funnel_id), str(account_id)))
+    if row is None:
+        return None
+    try:
+        opening = _digit_ids(json.loads(row.opening_media_ids or "[]"))
+    except Exception:
+        opening = []
+    try:
+        steps_raw = json.loads(row.steps_media_json or "{}")
+    except Exception:
+        steps_raw = {}
+    steps: dict[str, dict] = {}
+    if isinstance(steps_raw, dict):
+        for k, v in steps_raw.items():
+            if not isinstance(v, dict):
+                continue
+            steps[str(k)] = {
+                "media_files": _digit_ids(v.get("media_files")),
+                "previews": _digit_ids(v.get("previews")),
+            }
+    return {"opening": opening, "steps": steps}
+
+
+def _resolve_step_media(step: dict, acct_media: dict | None) -> tuple[list[int], list[int]]:
+    """The (media_files, previews) to attach to THIS step's PPV send. Prefers the
+    per-account binding (keyed by step number); falls back to any legacy in-step
+    `media_files`/`previews` for funnels not yet seeded into funnel_account_media.
+    Previews are clamped to ids actually in the media set."""
+    per = None
+    if acct_media:
+        per = (acct_media.get("steps") or {}).get(str(step.get("step")))
+    if per is not None:
+        media = list(per.get("media_files") or [])
+        previews = list(per.get("previews") or [])
+    else:
+        media = _digit_ids(step.get("media_files"))
+        previews = _digit_ids(step.get("previews"))
+    previews = [m for m in previews if m in media]
+    return media, previews
 
 
 # ── Reply detection (DB-first — the WS pump already wrote inbound) ────
@@ -478,13 +539,18 @@ async def _step_texts(
 async def _send_step(
     client, account_id: str, fan_id: int, mass_run_id: int, step: dict,
     texts: list[str], is_ppv: bool,
-    *, typing_wpm: float = 0.0, typing_indicator: bool = False,
+    *, media: list[int] | None = None, previews: list[int] | None = None,
+    typing_wpm: float = 0.0, typing_indicator: bool = False,
     strip_emoji_on: bool = False,
 ) -> int:
     """Send the step's message(s) and persist each outbound row (tagged
     mass_run_id + funnel_step, emit_live for the WORKER→SSE bridge). Returns the
-    count of messages actually sent. PPV: price + explicit media on the FIRST
-    (only) message."""
+    count of messages actually sent. PPV: price (from the shared step) + the
+    caller-resolved per-account `media`/`previews` on the FIRST (only) message —
+    vault ids are per-account, so the run loop resolves them via
+    FunnelAccountMedia before calling here."""
+    media = list(media or [])
+    previews = [m for m in (previews or []) if m in media]
     step_num = step.get("step")
     try:
         step_num = int(step_num)
@@ -500,7 +566,8 @@ async def _send_step(
                 price = int(price) if price is not None else _DEFAULT_PPV_PRICE
             except (TypeError, ValueError):
                 price = _DEFAULT_PPV_PRICE
-            media = [int(m) for m in (step.get("media_files") or []) if str(m).isdigit()]
+            # `media`/`previews` are the caller-resolved per-account vault ids
+            # (FunnelAccountMedia), normalized at the top of this function.
             # PPV: the TEXT is the sales pitch and must stay FREE/readable — only
             # the MEDIA is paywalled. So lockedText defaults to False (fan reads the
             # copy, the $24 image stays locked). A step may opt back into a fully
@@ -509,9 +576,7 @@ async def _send_step(
             if media:
                 kwargs["media_files"] = media
                 # Free teaser: the leading N media go out UNLOCKED (OF `previews`);
-                # keep only ids that are actually in this send's media set.
-                previews = [int(m) for m in (step.get("previews") or []) if str(m).isdigit()]
-                previews = [m for m in previews if m in media]
+                # already clamped to this send's media set by the caller.
                 if previews:
                     kwargs["previews"] = previews
 
@@ -596,6 +661,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             log.info("reply_mass_funnel run=%s funnel=%s has no steps — skipping",
                      mass_run_id, funnel_id)
             continue
+        # MEDIA is per-account (vault ids don't carry between models) — resolve
+        # this account's binding once per run; _resolve_step_media falls back to
+        # any legacy in-step media for funnels not yet seeded.
+        acct_media = await _load_account_media(funnel_id, account_id)
 
         # ── 0) List-audience sends wrote no per-fan rows — adopt the
         #      scrape-backfilled opener rows so those fans are discoverable.
@@ -681,9 +750,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     advanced += 1  # would-send; do NOT send or advance state
                     continue
 
+                step_media, step_previews = (
+                    _resolve_step_media(step, acct_media) if is_ppv else ([], []))
                 try:
                     n = await _send_step(client, account_id, fan_id, mass_run_id,
                                          step, texts, is_ppv,
+                                         media=step_media, previews=step_previews,
                                          typing_wpm=typing_wpm,
                                          typing_indicator=typing_indicator,
                                          strip_emoji_on=strip_emoji_on)

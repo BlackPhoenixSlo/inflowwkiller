@@ -67,7 +67,7 @@ from attribution import (
 import automation_executor as ax  # shared _make_client seam (tests patch ax._make_client)
 from automation_registry import register
 from db.engine import get_session
-from db.models import ListMember, MassMessageFunnel, MassRun
+from db.models import FunnelAccountMedia, ListMember, MassMessageFunnel, MassRun
 from event_transcoder import _parse_iso, _to_cents
 
 log = logging.getLogger("of-relay.automation.send_mass_message")
@@ -84,6 +84,24 @@ def _int_list(raw) -> list[int]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+async def _opener_media(funnel_id: int, account_id: str) -> tuple[list[int], list[int]]:
+    """This model's opener vault media for the funnel (FunnelAccountMedia) →
+    (media_files, previews). MEDIA is per-account because vault ids don't carry
+    between models; the funnel only holds the shared opener TEXT. Returns ([], [])
+    when this account hasn't mapped opener media yet."""
+    async with get_session() as s:
+        row = await s.get(FunnelAccountMedia, (int(funnel_id), str(account_id)))
+    if row is None:
+        return [], []
+    try:
+        media = _int_list(json.loads(row.opening_media_ids or "[]"))
+    except Exception:
+        media = []
+    # The opener has no per-step preview slot of its own; previews ride the PPV
+    # steps. Keep the signature symmetric for any future opener-preview use.
+    return media, []
 
 
 async def _resolve_funnel(s, payload: dict) -> MassMessageFunnel | None:
@@ -199,6 +217,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     price = payload.get("price") or 0
     media_files = _int_list(payload.get("media_files"))
     previews = _int_list(payload.get("previews"))
+    # No explicit opener media in the payload but this IS a funnel send → use the
+    # model's per-account opener media (vault ids are per-account; the funnel only
+    # holds shared text). Falls back to nothing if this model hasn't mapped any.
+    if not media_files and funnel is not None:
+        media_files, opener_previews = await _opener_media(funnel.id, account_id)
+        if media_files and not previews:
+            previews = opener_previews
 
     # Attribution: a broadcast from the worker is the system Automation actor
     # (no X-Employee-Id in a background run). Best-effort — NULL is acceptable.

@@ -4653,6 +4653,84 @@ def of_hide_chat(chat_id: int):
 def of_unhide_chat(chat_id: int):
     return _proxy(lambda: _get_client().unhide_chat(chat_id))
 
+
+# ── Per-fan "Restrict from automations" (durable skip_list, NOT an OF call) ──
+# A human can durably opt a fan out of EVERY automation from the chat ⋯ menu /
+# Settings. It writes skip_list(reason='manual_restrict') in OUR DB — honoured by
+# every sender (see automations/_common HARD_SKIP_REASONS). Distinct from the
+# auto 'muted_creator' skip the scrape manages off the OF mute state.
+
+@app.get("/api/of/v2/automation-restrict/{fan_id}")
+async def of_automation_restrict_status(fan_id: int, request: Request) -> dict:
+    """Is this fan restricted from automations? {restricted, reason}."""
+    from automations._common import automation_restrict_status
+    account_id = _resolve_account_id(request)
+    return await automation_restrict_status(account_id, fan_id)
+
+@app.post("/api/of/v2/automation-restrict/{fan_id}")
+async def of_automation_restrict(fan_id: int, request: Request) -> dict:
+    """Restrict this fan from ALL automations (durable until unrestricted)."""
+    from automations._common import set_automation_restrict
+    account_id = _resolve_account_id(request)
+    await set_automation_restrict(account_id, fan_id, True)
+    return {"ok": True, "restricted": True, "fan_id": fan_id}
+
+@app.delete("/api/of/v2/automation-restrict/{fan_id}")
+async def of_automation_unrestrict(fan_id: int, request: Request) -> dict:
+    """Lift the manual restriction for this fan."""
+    from automations._common import set_automation_restrict
+    account_id = _resolve_account_id(request)
+    await set_automation_restrict(account_id, fan_id, False)
+    return {"ok": True, "restricted": False, "fan_id": fan_id}
+
+@app.get("/api/of/v2/automation-restrict")
+async def of_automation_restrict_list(request: Request) -> dict:
+    """Fans this account has manually restricted from automations (newest first),
+    joined to their identity for the Settings list."""
+    from db.engine import get_session
+    from db.models import Fan, SkipList
+    from automations._common import MANUAL_RESTRICT_REASON
+    from sqlalchemy import select
+    account_id = _resolve_account_id(request)
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(SkipList.fan_id, SkipList.added_at,
+                   Fan.of_username, Fan.of_display_name)
+            .join(Fan, (Fan.account_id == SkipList.account_id)
+                       & (Fan.fan_id == SkipList.fan_id), isouter=True)
+            .where(SkipList.account_id == str(account_id),
+                   SkipList.reason == MANUAL_RESTRICT_REASON)
+            .order_by(SkipList.added_at.desc())
+        )).all()
+    return {
+        "count": len(rows),
+        "list": [
+            {"fan_id": int(r.fan_id),
+             "of_username": r.of_username,
+             "of_display_name": r.of_display_name,
+             "added_at": (r.added_at.isoformat() + "Z") if r.added_at else None}
+            for r in rows
+        ],
+    }
+
+@app.delete("/api/of/v2/automation-restrict")
+async def of_automation_unrestrict_all(request: Request) -> dict:
+    """Lift EVERY manual restriction for this account (the Settings "Unrestrict
+    all" button). Leaves auto 'muted_creator' skips alone."""
+    from db.engine import get_session
+    from db.models import SkipList
+    from automations._common import MANUAL_RESTRICT_REASON
+    from sqlalchemy import delete as sa_delete
+    account_id = _resolve_account_id(request)
+    async with get_session() as s:
+        result = await s.execute(
+            sa_delete(SkipList).where(
+                SkipList.account_id == str(account_id),
+                SkipList.reason == MANUAL_RESTRICT_REASON,
+            )
+        )
+    return {"ok": True, "cleared": result.rowcount or 0}
+
 @app.get("/api/of/v2/chats/{chat_id}/media")
 def of_chat_media(
     chat_id: int,
@@ -5904,13 +5982,27 @@ def admin_accounts_update(account_id: str, body: _AccountUpdateBody = Body(...))
 
 
 @app.delete("/admin/accounts/{account_id}")
-def admin_accounts_remove(account_id: str) -> dict[str, Any]:
-    """Permanently remove an account dir (sessions + meta). Stops its WS pump
-    and drops its pooled client. Cannot be undone."""
+async def admin_accounts_remove(account_id: str) -> dict[str, Any]:
+    """Permanently remove an account dir (sessions + meta). Stops its WS pump,
+    drops its pooled client, and clears every server-side cache scoped to it.
+    Cannot be undone."""
     if account_registry.get_account(account_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown account {account_id!r}")
     _stop_account_pump(account_id)
     _invalidate_client(account_id)
+    # Purge both server caches for this account so a re-added account (same
+    # account_id) can't read the prior session's chats/vault, and so the
+    # next caller after the drop goes upstream instead of serving ghost
+    # data. Both are strictly account-scoped — zero collateral on other
+    # accounts. Best-effort: cache cleanup must never fail the delete.
+    try:
+        relay_cache.invalidate_account(account_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("relay_cache: invalidate-on-delete failed for %s: %s", account_id, e)
+    try:
+        await vault_cache.invalidate(account_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("vault_cache: invalidate-on-delete failed for %s: %s", account_id, e)
     ok = account_registry.delete_account(account_id)
     _kick_db_sync(f"accounts-delete-{account_id}")
     return {"ok": ok}

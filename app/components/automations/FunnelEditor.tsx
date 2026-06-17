@@ -8,22 +8,22 @@
  *
  *   REPLY — poll the fan on `check_intervals_min`, then send one of a message
  *           VARIANT pool (first ≤2 used) or generate via `prompt`/`generate`.
- *   PPV   — sales copy + locked vault media at a price (`type:"paid_ppv"`).
+ *   PPV   — sales copy at a price (`type:"paid_ppv"`).
  *
- * PPV media MUST be RAW vault ids in `media_files` (reply_mass_funnel does
- * int(m) per id). Client-side validation mirrors the server's _validate_steps.
+ * This editor is TEXT-ONLY. PPV MEDIA is per-account (vault ids don't carry
+ * between models), so each model maps its own via the FunnelMediaPane ("Media"
+ * action in `MassFunnelsTab`) — NOT here.
  *
  * `MassFunnelsTab` is the list + editor toggle mounted under ReadyMadePanel's
- * "Mass funnels" tab; it passes the panel's accountId to the VaultPicker.
+ * "Mass funnels" tab.
  */
 
 import { useEffect, useMemo, useState } from "react";
 
 import { Badge, Button, Card, Input } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
-import { VaultPicker } from "@/components/chat/VaultPicker";
 import { FunnelLaunchPanel } from "@/components/automations/FunnelLaunchPanel";
-import type { VaultMedia } from "@/lib/relay";
+import { FunnelMediaPane } from "@/components/automations/FunnelMediaPane";
 import {
   useCreateFunnel,
   useDeleteFunnel,
@@ -59,11 +59,8 @@ interface DraftStep {
   /** Generate the reply/copy with the AI instead of static messages. */
   generate: boolean;
   prompt: string;
-  // PPV only:
+  // PPV only (media is per-account → FunnelMediaPane, not here):
   price: string;
-  mediaIds: number[];
-  /** How many of the leading picked media are FREE previews (the teaser). */
-  previewCount: number;
   lockedText: boolean;
 }
 
@@ -75,8 +72,6 @@ function blankStep(kind: StepKind): DraftStep {
     generate: false,
     prompt: "",
     price: kind === "ppv" ? "0" : "",
-    mediaIds: [],
-    previewCount: 0,
     lockedText: false,
   };
 }
@@ -90,12 +85,6 @@ function toDraft(step: FunnelStep): DraftStep {
   const ivRaw = (step as { check_intervals_min?: number[] }).check_intervals_min;
   const intervals = Array.isArray(ivRaw) ? ivRaw.join(", ") : "";
   const ppv = step as PpvStep;
-  const mediaIds = isPpv && Array.isArray(ppv.media_files)
-    ? ppv.media_files.map((m) => Number(m)).filter((n) => Number.isInteger(n) && n > 0)
-    : [];
-  const previewCount = isPpv && Array.isArray(ppv.previews)
-    ? Math.min(ppv.previews.length, mediaIds.length)
-    : 0;
   return {
     kind: isPpv ? "ppv" : "reply",
     intervals,
@@ -103,8 +92,6 @@ function toDraft(step: FunnelStep): DraftStep {
     generate,
     prompt: step.prompt ?? "",
     price: isPpv && typeof ppv.price === "number" ? String(ppv.price) : isPpv ? "0" : "",
-    mediaIds,
-    previewCount,
     lockedText: isPpv ? Boolean(ppv.locked_text) : false,
   };
 }
@@ -133,6 +120,7 @@ function toWire(d: DraftStep, idx: number): FunnelStep {
   }
 
   if (d.kind === "ppv") {
+    // TEXT-ONLY: media is per-account (FunnelMediaPane), never written here.
     const out: PpvStep = { step: idx + 1, type: "paid_ppv" };
     const price = Number(d.price);
     if (d.price.trim() !== "") {
@@ -140,10 +128,6 @@ function toWire(d: DraftStep, idx: number): FunnelStep {
         throw new Error(`${label} price must be a whole number ≥ 0.`);
       }
       out.price = price;
-    }
-    if (d.mediaIds.length) out.media_files = d.mediaIds;
-    if (d.mediaIds.length && d.previewCount > 0) {
-      out.previews = d.mediaIds.slice(0, Math.min(d.previewCount, d.mediaIds.length));
     }
     if (generated) {
       out.generate = true;
@@ -180,12 +164,10 @@ type ReplyWire = {
 
 export function FunnelEditor({
   funnelId,
-  accountId,
   onClose,
   onSaved,
 }: {
   funnelId: number | null; // null = create
-  accountId: string | null; // for the VaultPicker (PPV media)
   onClose: () => void;
   onSaved?: () => void;
 }) {
@@ -199,7 +181,6 @@ export function FunnelEditor({
   const [opening, setOpening] = useState("");
   const [steps, setSteps] = useState<DraftStep[]>([]);
   const [seeded, setSeeded] = useState(!isEdit);
-  const [pickerFor, setPickerFor] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   // Seed once from the loaded funnel (edit mode). Create mode starts blank.
@@ -361,7 +342,6 @@ export function FunnelEditor({
             onMsgChange={(mi, v) => patchMsg(i, mi, v)}
             onMsgAdd={() => addMsg(i)}
             onMsgRemove={(mi) => removeMsg(i, mi)}
-            onPickMedia={() => setPickerFor(i)}
           />
         ))}
 
@@ -386,24 +366,11 @@ export function FunnelEditor({
         </Button>
       </div>
 
-      <VaultPicker
-        open={pickerFor !== null}
-        onClose={() => setPickerFor(null)}
-        accountId={accountId}
-        fanId={null}
-        initialSelectedIds={pickerFor !== null ? steps[pickerFor]?.mediaIds ?? [] : []}
-        onConfirm={(picked: VaultMedia[]) => {
-          if (pickerFor !== null) {
-            const ids = picked
-              .map((m) => m.id)
-              .filter((id): id is number => typeof id === "number" && id > 0);
-            // Clamp the free-preview count to the new media length.
-            const prevCount = Math.min(steps[pickerFor]?.previewCount ?? 0, ids.length);
-            patchStep(pickerFor, { mediaIds: ids, previewCount: prevCount });
-          }
-          setPickerFor(null);
-        }}
-      />
+      <p className="text-[11px] text-fg-dim">
+        💡 PPV media is set per model — close this and use the{" "}
+        <span className="text-fg">Media</span> action on the funnel to map each
+        model&apos;s vault content to its PPV steps.
+      </p>
     </Card>
   );
 }
@@ -419,7 +386,6 @@ function StepCard({
   onMsgChange,
   onMsgAdd,
   onMsgRemove,
-  onPickMedia,
 }: {
   index: number;
   total: number;
@@ -430,7 +396,6 @@ function StepCard({
   onMsgChange: (mi: number, val: string) => void;
   onMsgAdd: () => void;
   onMsgRemove: (mi: number) => void;
-  onPickMedia: () => void;
 }) {
   const isPpv = step.kind === "ppv";
   return (
@@ -483,63 +448,24 @@ function StepCard({
         </label>
       )}
 
-      {/* PPV: price + media + locked-text. */}
+      {/* PPV: price + locked-text. MEDIA is per-model → set in the Media pane. */}
       {isPpv && (
         <div className="space-y-2">
-          <div className="grid grid-cols-2 gap-2">
-            <label className="block space-y-1">
-              <span className="text-[11px] text-fg-dim">Price (USD, whole)</span>
-              <Input
-                type="number"
-                min={0}
-                value={step.price}
-                onChange={(e) => onPatch({ price: e.target.value })}
-                placeholder="0"
-              />
-            </label>
-            <div className="flex flex-col gap-1">
-              <span className="text-[11px] text-fg-dim">Media (vault)</span>
-              <div className="flex items-center gap-2">
-                <Button size="sm" variant="secondary" onClick={onPickMedia}>
-                  {step.mediaIds.length ? `🖼 ${step.mediaIds.length} picked` : "🖼 Pick media"}
-                </Button>
-                {step.mediaIds.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => onPatch({ mediaIds: [], previewCount: 0 })}
-                    className="text-[11px] text-fg-dim hover:text-err"
-                  >clear</button>
-                )}
-              </div>
-            </div>
+          <label className="block space-y-1 max-w-[12rem]">
+            <span className="text-[11px] text-fg-dim">Price (USD, whole)</span>
+            <Input
+              type="number"
+              min={0}
+              value={step.price}
+              onChange={(e) => onPatch({ price: e.target.value })}
+              placeholder="0"
+            />
+          </label>
+          <div className="text-[11px] text-fg-dim italic">
+            🖼 Media for this PPV step is set per model in the funnel&apos;s{" "}
+            <span className="text-fg not-italic">Media</span> action (vault ids
+            differ per account).
           </div>
-          {/* Free preview: the leading N picked media go out UNLOCKED as the
-              teaser; the rest stay paywalled (OF `previews`). */}
-          {step.mediaIds.length > 0 && (
-            <label className="block space-y-1">
-              <span className="text-[11px] text-fg-dim">
-                Free preview — first
-                {" "}
-                <Input
-                  type="number"
-                  min={0}
-                  max={step.mediaIds.length}
-                  value={String(step.previewCount)}
-                  onChange={(e) => {
-                    const n = Math.max(0, Math.min(Number(e.target.value) || 0, step.mediaIds.length));
-                    onPatch({ previewCount: n });
-                  }}
-                  className="inline-block w-16 mx-1 align-middle"
-                />
-                {" "}of {step.mediaIds.length} shown free as a teaser
-              </span>
-              <span className="block text-[11px] text-fg-dim">
-                {step.previewCount > 0
-                  ? `${step.previewCount} preview image${step.previewCount === 1 ? "" : "s"} sent unlocked; the rest are paywalled.`
-                  : "0 = nothing shown free (fully locked PPV)."}
-              </span>
-            </label>
-          )}
           <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
             <input
               type="checkbox"
@@ -636,6 +562,7 @@ export function MassFunnelsTab({ accountId }: { accountId: string | null }) {
   const [editing, setEditing] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
   const [launching, setLaunching] = useState<number | null>(null);
+  const [mediaFor, setMediaFor] = useState<number | null>(null);
   const [rowErr, setRowErr] = useState<{ id: number; msg: string } | null>(null);
 
   const funnels = listQ.data ?? [];
@@ -748,7 +675,6 @@ export function MassFunnelsTab({ accountId }: { accountId: string | null }) {
         <FunnelEditor
           key={editing ?? "new"}
           funnelId={editing}
-          accountId={accountId}
           onClose={close}
         />
       )}
@@ -783,16 +709,23 @@ export function MassFunnelsTab({ accountId }: { accountId: string | null }) {
                     <Button
                       size="sm"
                       variant="primary"
-                      onClick={() => { setEditing(null); setAdding(false); setLaunching(launching === f.id ? null : f.id); }}
+                      onClick={() => { setEditing(null); setAdding(false); setMediaFor(null); setLaunching(launching === f.id ? null : f.id); }}
                     >
                       ▶ Start
                     </Button>
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => { setAdding(false); setLaunching(null); setEditing(f.id); }}
+                      onClick={() => { setAdding(false); setLaunching(null); setMediaFor(null); setEditing(f.id); }}
                     >
                       Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => { setAdding(false); setEditing(null); setLaunching(null); setMediaFor(mediaFor === f.id ? null : f.id); }}
+                    >
+                      🖼 Media
                     </Button>
                     <Button
                       size="sm"
@@ -828,6 +761,13 @@ export function MassFunnelsTab({ accountId }: { accountId: string | null }) {
                       onClose={() => setLaunching(null)}
                     />
                   </>
+                )}
+                {mediaFor === f.id && (
+                  <FunnelMediaPane
+                    funnel={f}
+                    accountId={accountId}
+                    onClose={() => setMediaFor(null)}
+                  />
                 )}
                 {rowErr?.id === f.id && (
                   <div className="text-[11px] text-err">{rowErr.msg}</div>

@@ -19,7 +19,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay, type OFChatItem } from "@/lib/relay";
 import { useOFUser, type OFListState } from "@/hooks/useOFUser";
@@ -110,6 +110,38 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
     onError: (e: Error) => flash(false, e.message),
   });
 
+  // "Restrict from automations" — a durable skip_list row in OUR DB (not OF), so
+  // NO automation (welcome / AI chat / nudge / tip reward / …) ever messages this
+  // fan again until it's lifted. `reason==='muted_creator'` means it was set
+  // automatically because the chat is muted (an OF mute) — unmuting (above) lifts
+  // that, so we surface it read-only rather than offer a manual toggle.
+  const restrictQ = useQuery({
+    queryKey: ["automation-restrict", accountId, fanId],
+    queryFn: () =>
+      relay.get<{ restricted: boolean; reason: string | null }>(
+        `/api/of/v2/automation-restrict/${fanId}`, { accountId }),
+    staleTime: 30_000,
+  });
+  const restrictReason = restrictQ.data?.reason ?? null;
+  const autoMuted = restrictReason === "muted_creator";
+  const [manualRestricted, setManualRestricted] = useState(false);
+  useEffect(() => {
+    setManualRestricted(restrictReason === "manual_restrict");
+  }, [restrictReason]);
+
+  const toggleRestrict = useMutation({
+    mutationFn: () =>
+      manualRestricted
+        ? relay.delete(`/api/of/v2/automation-restrict/${fanId}`, { accountId })
+        : relay.post(`/api/of/v2/automation-restrict/${fanId}`, undefined, { accountId }),
+    onSuccess: () => {
+      setManualRestricted((v) => !v);
+      qc.invalidateQueries({ queryKey: ["automation-restrict"] });
+      flash(true, manualRestricted ? "Automations resumed" : "Restricted from automations");
+    },
+    onError: (e: Error) => flash(false, e.message),
+  });
+
   return (
     <div
       ref={ref}
@@ -135,6 +167,21 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
             onClick={() => hide.mutate()}
             icon="🚫"
           />
+          {autoMuted ? (
+            <Item
+              label="Auto-restricted (chat muted)"
+              disabled
+              onClick={() => {}}
+              icon="🔕"
+            />
+          ) : (
+            <Item
+              label={manualRestricted ? "Allow automations" : "Restrict from automations"}
+              disabled={toggleRestrict.isPending || restrictQ.isLoading}
+              onClick={() => toggleRestrict.mutate()}
+              icon={manualRestricted ? "▶" : "⛔"}
+            />
+          )}
           <Item
             label="Add to list ▸"
             onClick={() => setSubmenu("list")}

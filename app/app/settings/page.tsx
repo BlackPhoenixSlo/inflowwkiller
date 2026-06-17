@@ -24,12 +24,13 @@ import TemplatesTab from "@/components/settings/TemplatesTab";
 import ScheduledTab from "@/components/settings/ScheduledTab";
 import MassMessagesTab from "@/components/settings/MassMessagesTab";
 import AutoStoriesTab from "@/components/settings/AutoStoriesTab";
+import RestrictionsTab from "@/components/settings/RestrictionsTab";
 import TransferTab from "@/components/settings/TransferTab";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
 import { cn } from "@/lib/utils";
 
-type Tab = "employees" | "chatters" | "templates" | "scheduled" | "mass" | "stories" | "audit" | "transfer";
+type Tab = "employees" | "chatters" | "templates" | "scheduled" | "mass" | "stories" | "restrictions" | "audit" | "transfer";
 
 interface TabDef {
   key: Tab;
@@ -47,6 +48,7 @@ const TABS: TabDef[] = [
   { key: "scheduled", label: "Scheduled" },
   { key: "mass",      label: "Mass messages" },
   { key: "stories",   label: "Auto stories", chatterHidden: true },
+  { key: "restrictions", label: "Restrictions" },
   { key: "transfer",  label: "Transfer model", chatterHidden: true },
   { key: "audit",     label: "Audit log",      chatterHidden: true },
 ];
@@ -86,6 +88,7 @@ export default function SettingsPage() {
       {tab === "scheduled" && <ScheduledTab />}
       {tab === "mass" && <MassMessagesTab />}
       {tab === "stories" && !isChatterOnly && <AutoStoriesTab />}
+      {tab === "restrictions" && <RestrictionsTab />}
       {tab === "transfer" && !isChatterOnly && <TransferTab />}
       {tab === "audit" && !isChatterOnly && <AuditTab />}
     </div>

@@ -176,6 +176,30 @@ def invalidate(
     return removed
 
 
+def invalidate_account(account_id: str) -> int:
+    """Drop EVERY cached entry for an account across ALL namespaces.
+
+    `invalidate()` is namespace-scoped; this is the account-wide variant
+    used when an account is removed (or re-added) so no hot-path cache
+    (list_chats, my_settings, init, notifications, ...) can serve a
+    dropped account's data to a later caller — or leak a prior session's
+    data if the same account_id is re-captured. Strictly scoped to the
+    one account_id, so it never touches another account's entries.
+
+    Sync (RAM-only), like `invalidate`. Returns the count removed.
+    """
+    to_drop = [key for key in _cache.keys() if key[1] == account_id]
+    for key in to_drop:
+        _cache.pop(key, None)
+        _locks.pop(key, None)
+    if to_drop:
+        log.debug(
+            "relay_cache.invalidate_account account=%s removed=%d",
+            account_id, len(to_drop),
+        )
+    return len(to_drop)
+
+
 def stats() -> dict[str, Any]:
     """Snapshot of hit/miss counters + current entry counts.
 

@@ -35,10 +35,14 @@ _INT_KNOBS = {
     "min_images": (0, 50),
     "max_images": (1, 50),
     "window_hours": (1, 8760),
+    # The content-ask tip-ask amount (read by of_ai_chat/autoreply — the ASK side
+    # of the loop). Kept here so the whole tip loop has one config surface.
+    "ask_amount_dollars": (1, 10_000),
 }
 _MAX_TIERS = 10
 _MAX_FOLDERS_PER_TIER = 25
 _CAPTION_MAX = 500
+_ASK_TEMPLATE_MAX = 300
 
 
 def _validate_tier(t: Any) -> dict:
@@ -76,6 +80,8 @@ def _validate(cfg: dict) -> dict:
                 raise HTTPException(422, f"{k} must be a number")
     if "caption" in cfg:
         out["caption"] = str(cfg["caption"] or "")[:_CAPTION_MAX]
+    if "ask_template" in cfg:
+        out["ask_template"] = str(cfg["ask_template"] or "")[:_ASK_TEMPLATE_MAX]
     if "tiers" in cfg:
         tiers = cfg["tiers"]
         if not isinstance(tiers, (list, tuple)):

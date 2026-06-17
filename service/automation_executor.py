@@ -61,6 +61,7 @@ from db.models import (
     Message,
     ScheduledJob,
     ScrapeHistory,
+    SkipList,
 )
 from of_client import OFClient
 from automation_registry import register, get_automation, load_automation_plugins
@@ -877,11 +878,17 @@ async def _upsert_fan_identity(
     *,
     last_in_at: datetime | None,
     last_out_at: datetime | None,
+    is_muted: bool | None = None,
 ) -> None:
     """Ensure the fans row exists + carry identity (username/name/avatar). Prefer
     the chat's `withUser`; else lift it from the newest INBOUND message's
     fromUser (outbound fromUser is us). AI-extracted facts are never touched
-    here — only identity + last-message timestamps."""
+    here — only identity + last-message timestamps.
+
+    `is_muted` is the chat-level `isMutedNotifications` (None = unknown, leave the
+    column alone). When it flips we reconcile the durable 'muted_creator' skip so
+    muting a peer-creator's chat silences every automation (and un-muting frees
+    them) — see _common.should_skip_muted_creator."""
     info: dict = {}
     if with_user and with_user.get("id"):
         info = with_user
@@ -910,6 +917,9 @@ async def _upsert_fan_identity(
         update_set["last_message_received_at"] = last_in_at
     if last_out_at is not None:
         update_set["last_message_sent_at"] = last_out_at
+    if is_muted is not None:
+        insert_extra["is_muted"] = bool(is_muted)
+        update_set["is_muted"] = bool(is_muted)
 
     stmt = (
         sqlite_insert(Fan)
@@ -932,6 +942,36 @@ async def _upsert_fan_identity(
         )
     )
     await s.execute(stmt)
+
+    # Reconcile the durable 'muted_creator' skip as the OF mute state flips. Read
+    # the PERSISTED source (list_chats strips subscribedBy via skip_users=all, so
+    # the live `info` can't classify a creator) — same source the runtime guard
+    # reads. Done on THIS session so it commits atomically with the scrape.
+    if is_muted is not None:
+        from automations._common import MUTED_CREATOR_REASON
+        source = (await s.execute(
+            select(Fan.source).where(
+                Fan.account_id == str(account_id), Fan.fan_id == int(fan_id))
+        )).scalar_one_or_none()
+        if is_muted and (source or "") == "creator_we_follow":
+            await s.execute(
+                sqlite_insert(SkipList)
+                .values(account_id=str(account_id), fan_id=int(fan_id),
+                        reason=MUTED_CREATOR_REASON, added_at=datetime.utcnow())
+                .on_conflict_do_update(
+                    index_elements=["account_id", "fan_id"],
+                    set_={"reason": MUTED_CREATOR_REASON, "added_at": datetime.utcnow()},
+                )
+            )
+        elif not is_muted:
+            # Un-muted (or no longer a creator): drop ONLY the auto skip we added.
+            await s.execute(
+                delete(SkipList).where(
+                    SkipList.account_id == str(account_id),
+                    SkipList.fan_id == int(fan_id),
+                    SkipList.reason == MUTED_CREATOR_REASON,
+                )
+            )
 
 
 async def _upsert_chat_and_history(
@@ -1085,6 +1125,7 @@ async def _scrape_one_chat(
     max_pages: int,
     recent_cap: int = _SCRAPE_RECENT_CAP,
     oldest_cap: int = _SCRAPE_OLDEST_CAP,
+    is_muted: bool | None = None,
 ) -> tuple[int, int]:
     """Page one chat and write everything in ONE fresh AsyncSession.
 
@@ -1166,6 +1207,7 @@ async def _scrape_one_chat(
         await _upsert_fan_identity(
             s, account_id, fan_id, own_user_id, with_user, collected,
             last_in_at=last_in_at, last_out_at=last_out_at,
+            is_muted=is_muted,
         )
         for m in collected:
             await _upsert_message(s, account_id, fan_id, own_user_id, m)
@@ -1194,9 +1236,12 @@ async def _automation_scrape_chats(
     oldest_cap = int(payload.get("oldest_cap") or _SCRAPE_OLDEST_CAP)
 
     explicit = payload.get("chat_ids") or payload.get("fan_ids")
-    targets: list[tuple[int, dict | None]] = []
+    # (chat_id, withUser, is_muted) — is_muted is the chat-level
+    # `isMutedNotifications` (creator-side mute). None when unknown (explicit-id
+    # scrapes don't list the chat object) → identity upsert leaves is_muted alone.
+    targets: list[tuple[int, dict | None, bool | None]] = []
     if explicit:
-        targets = [(int(c), None) for c in explicit]
+        targets = [(int(c), None, None) for c in explicit]
     else:
         # OF's /chats returns ~10 per page regardless of `limit`, so PAGINATE by
         # offset until we've collected `limit` chats or OF runs dry — a single call
@@ -1222,7 +1267,9 @@ async def _automation_scrape_chats(
                 if cid is None or int(cid) in seen_chat_ids:
                     continue
                 seen_chat_ids.add(int(cid))
-                targets.append((int(cid), wu))
+                # `isMutedNotifications` lives on the top-level chat object (NOT
+                # on withUser — confirmed live); coerce to a definite bool.
+                targets.append((int(cid), wu, bool(ch.get("isMutedNotifications"))))
             offset += len(rows)
             if page.get("hasMore") is False:
                 break
@@ -1232,12 +1279,13 @@ async def _automation_scrape_chats(
     chats_failed = 0
     messages_inserted = 0
     messages_seen = 0
-    for chat_id, with_user in targets:
+    for chat_id, with_user, is_muted in targets:
         try:
             ins, seen = await _scrape_one_chat(
                 account_id, own_user_id, client, chat_id, with_user,
                 page_size=page_size, max_pages=max_pages,
                 recent_cap=recent_cap, oldest_cap=oldest_cap,
+                is_muted=is_muted,
             )
             messages_inserted += ins
             messages_seen += seen

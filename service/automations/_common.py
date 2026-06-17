@@ -137,6 +137,125 @@ async def _skip_and_rest(account_id, fan_id, now) -> None:
         )
 
 
+# ── Muted-creator + manual "restrict from automations" skip-listing ─────────
+# Two DURABLE skip_list reasons that mean "no automation may ever message this
+# fan" — a HARD block honoured by EVERY sender (unlike the of_ai_chat promo-spam
+# guard, which is reversible and only covers the gather opener):
+#   • 'muted_creator'   — auto: the fan is a creator we follow (subscribedBy) AND
+#       we've muted their chat on OF (isMutedNotifications). Mutual-promo spam.
+#       Written/cleared by the chat-scrape as the OF mute state flips.
+#   • 'manual_restrict' — a human hit "Restrict this fan from automations" in the
+#       chat ⋯ menu / Settings. Stays until they Unrestrict.
+# Senders that already gate on FULL skip_list membership (of_ai_chat,
+# send_followup, deep_convo[≠info], ai_chatter[≠graduation]) honour both for
+# free; the senders that DON'T (autoreply, tip_reward, send_welcome) and the
+# list-broadcasts (mass_nudge, online_blast) load `load_hard_skip_ids` and
+# exclude these explicitly.
+MUTED_CREATOR_REASON = "muted_creator"
+MANUAL_RESTRICT_REASON = "manual_restrict"
+HARD_SKIP_REASONS = frozenset({MUTED_CREATOR_REASON, MANUAL_RESTRICT_REASON})
+
+
+def should_skip_muted_creator(fan) -> bool:
+    """True when this Fan row is a creator we follow whose chat we've muted — i.e.
+    mutual-promo spam no automation should ever touch. Belt-and-suspenders to the
+    durable skip_list row: it catches the fan at candidate time even in the window
+    BEFORE the scrape has written the row (or if the row was cleared by hand)."""
+    return bool(
+        fan is not None
+        and getattr(fan, "is_muted", False)
+        and (getattr(fan, "source", "") or "") == "creator_we_follow"
+    )
+
+
+async def load_hard_skip_ids(account_id) -> set[int]:
+    """fan_ids this account has on skip_list under a HARD reason (muted_creator /
+    manual_restrict) — for the senders that don't already gate on skip_list."""
+    from sqlalchemy import select
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(SkipList.fan_id).where(
+                SkipList.account_id == str(account_id),
+                SkipList.reason.in_(tuple(HARD_SKIP_REASONS)),
+            )
+        )).all()
+    return {int(r[0]) for r in rows}
+
+
+async def mark_muted_creator_skip(account_id, fan_id, *, now=None) -> None:
+    """Durably skip-list a muted creator. Upserts reason='muted_creator' so the
+    block is a HARD stop everywhere (it deliberately wins over a softer existing
+    reason such as 'info', which deep_convo would otherwise let through)."""
+    now = now or datetime.utcnow()
+    async with get_session() as s:
+        await s.execute(
+            sqlite_insert(SkipList)
+            .values(account_id=str(account_id), fan_id=int(fan_id),
+                    reason=MUTED_CREATOR_REASON, added_at=now)
+            .on_conflict_do_update(
+                index_elements=["account_id", "fan_id"],
+                set_={"reason": MUTED_CREATOR_REASON, "added_at": now},
+            )
+        )
+
+
+async def clear_muted_creator_skip(account_id, fan_id) -> None:
+    """Reverse mark_muted_creator_skip when the creator UN-mutes the chat. Only
+    removes rows we auto-added (reason='muted_creator') — a manual_restrict or any
+    other reason is left untouched."""
+    from sqlalchemy import delete as sa_delete
+    async with get_session() as s:
+        await s.execute(
+            sa_delete(SkipList).where(
+                SkipList.account_id == str(account_id),
+                SkipList.fan_id == int(fan_id),
+                SkipList.reason == MUTED_CREATOR_REASON,
+            )
+        )
+
+
+async def set_automation_restrict(account_id, fan_id, restricted: bool, *, now=None) -> None:
+    """The manual "Restrict this fan from automations" toggle (chat ⋯ menu /
+    Settings). restricted=True upserts skip_list(reason='manual_restrict');
+    restricted=False removes ONLY that manual row (an auto 'muted_creator' is left
+    to the scrape to clear when the chat is un-muted)."""
+    from sqlalchemy import delete as sa_delete
+    now = now or datetime.utcnow()
+    async with get_session() as s:
+        if restricted:
+            await s.execute(
+                sqlite_insert(SkipList)
+                .values(account_id=str(account_id), fan_id=int(fan_id),
+                        reason=MANUAL_RESTRICT_REASON, added_at=now)
+                .on_conflict_do_update(
+                    index_elements=["account_id", "fan_id"],
+                    set_={"reason": MANUAL_RESTRICT_REASON, "added_at": now},
+                )
+            )
+        else:
+            await s.execute(
+                sa_delete(SkipList).where(
+                    SkipList.account_id == str(account_id),
+                    SkipList.fan_id == int(fan_id),
+                    SkipList.reason == MANUAL_RESTRICT_REASON,
+                )
+            )
+
+
+async def automation_restrict_status(account_id, fan_id) -> dict:
+    """{restricted, reason} for one fan — restricted iff a HARD skip row exists
+    (manual_restrict OR muted_creator). The UI flips its toggle off this."""
+    from sqlalchemy import select
+    async with get_session() as s:
+        row = (await s.execute(
+            select(SkipList.reason).where(
+                SkipList.account_id == str(account_id),
+                SkipList.fan_id == int(fan_id),
+            )
+        )).scalar_one_or_none()
+    return {"restricted": row in HARD_SKIP_REASONS, "reason": row}
+
+
 async def _set_status_and_pause(account_id, fan_id, status, until) -> None:
     """UPSERT subscription_status + automation_paused_until (candidates can come
     from the messages table with no Fan row yet — UPDATE would no-op)."""
@@ -1121,3 +1240,98 @@ def guard_offplatform(text: str, rng) -> tuple[str, list[str]]:
     if not reasons:
         return text, reasons
     return rng.choice(_OFF_DEFLECTIONS), reasons
+
+
+# ── "Fan asked to see content via text" → natural tip-ask ─────────────
+# When a fan asks to SEE content in a plain text ("can i see some content??",
+# "show me more", "what u got"), the info-gather / keep-warm senders (of_ai_chat,
+# autoreply) don't sell PPV — but answering with banter ignores a buying signal,
+# and the old never-sell fallback literally blurted the bare word "tip". So those
+# senders swap in a natural, in-voice tip-ask ("tip me $X and i'll send u something
+# 😏") — NEVER the bare word "tip". The fan then tips and the existing tip_reward
+# automation delivers the media: ask → tip → reward.
+#
+# Two natural ways to tip (the model picks whichever flows): a $amount tip right
+# here in chat, OR a tip under a feed post/pic he likes. A post tip lands in chat
+# as a tip message too, so it routes through the SAME on_inbound_tip → tip_reward
+# path (no new trigger needed) — and it doubles as a signal of what he's into.
+#
+# CONTENT_ASK_RE is the canonical detector (hoisted from ai_chatter, which still
+# uses it for its PPV pitch). Code-side, not model judgment — when he's begging to
+# buy, the gather goal yields. Extended over the original to also catch the
+# "(can i) see (some) content/pics/..." family the original missed.
+CONTENT_ASK_RE = re.compile(
+    r"(what else|what'?s next|whats next|show me|send (me |it |smth |something )"
+    r"|got (any|anything)|anything (spicy|hot|else|for (me|us))|gimme|"
+    r"i want (more|it|some)|more (pics|vids|photos|videos|content)|next one|"
+    r"what (else )?(do|did) (u|you) (have|got|film)|unlock|spoil (u|you)|"
+    r"in the mood|what (u|you) got"
+    r"|can i see|lemme see|let me see|wanna see|want to see"
+    r"|see (some |the |ur |your |more |any )?"
+    r"(content|pics?|photos?|vids?|videos?|nudes?|something))",
+    re.IGNORECASE)
+
+
+def is_content_ask(text: str | None) -> bool:
+    """True when the fan's message is explicitly asking to SEE content (the buying
+    signal CONTENT_ASK_RE detects). Empty/None → False."""
+    return bool(text) and bool(CONTENT_ASK_RE.search(text))
+
+
+# The suggested tip (dollars) when a fan asks for content via text. A sensible
+# default so the behavior ships ON with no config; per-account overridable via
+# tip_reward_config_json.ask_amount_dollars (the whole tip loop lives in one
+# config). `ask_template` (optional) seeds the phrasing in the creator's voice.
+DEFAULT_TIP_ASK_DOLLARS = 15
+_TIP_ASK_TEMPLATE_MAX = 300
+
+
+async def load_tip_ask_config(account_id: str) -> tuple[int, str]:
+    """(suggested_tip_dollars, optional_template) for the content-ask tip-ask,
+    read from account_ai_config.tip_reward_config_json (one home for the whole
+    tip loop — the ask reads it independently of tip_reward's `enabled` flag).
+    Absent/NULL/parse-error/bad value → (DEFAULT_TIP_ASK_DOLLARS, '')."""
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    raw = getattr(cfg, "tip_reward_config_json", None) if cfg else None
+    amount, template = DEFAULT_TIP_ASK_DOLLARS, ""
+    if raw:
+        try:
+            d = json.loads(raw) or {}
+            if d.get("ask_amount_dollars") is not None:
+                amount = max(1, int(d["ask_amount_dollars"]))
+            template = str(d.get("ask_template") or "").strip()[:_TIP_ASK_TEMPLATE_MAX]
+        except (ValueError, TypeError):
+            log.warning("bad tip_ask config account=%s", account_id, exc_info=True)
+    return amount, template
+
+
+def build_tip_ask_block(amount_dollars: int, template: str = "") -> str:
+    """The system-prompt directive for the 'fan just asked to see content' branch:
+    ask him to TIP for it in the creator's OWN voice — ONE short human line, teasing
+    not needy, and NEVER the bare word "tip". Two natural ways to tip (the model
+    picks whichever fits, it doesn't have to name both): a $amount tip right here in
+    chat, OR a tip under a feed post/pic he likes (a post tip lands in chat too, so
+    it rewards the same way — and it tells the creator what he's into). An optional
+    `template` (with an optional {amount} placeholder) seeds the phrasing; the model
+    still says it in voice. Shared by of_ai_chat + autoreply so it reads identically."""
+    amt = max(1, int(amount_dollars or 1))
+    block = (
+        "HE JUST ASKED TO SEE CONTENT. This message is NOT a get-to-know question "
+        "and NOT a brush-off — answer the ask. In your OWN voice, ONE short human "
+        f"line, tease him a little and tell him to TIP for it — either tip you ${amt} "
+        "right here and you'll send him something, OR drop a tip under any post/pic of "
+        "yours he likes (that shows you what he's into, and you'll spoil him back for "
+        "it). Pick whichever way flows naturally — you don't have to name both. Be "
+        "playful and a touch teasing, never needy, desperate, or pushy. NEVER write "
+        "the bare word \"tip\" on its own — always a natural line, e.g. \"tip me "
+        f"${amt} n ill send u something 😏\" or \"drop a lil tip under a post u like n "
+        "ill spoil u 😈\". Don't attach anything now and don't name a specific piece — "
+        "just the teasing tip-ask (the content goes out once he tips)."
+    )
+    tmpl = (template or "").strip()
+    if tmpl:
+        tmpl = tmpl.replace("{amount}", str(amt))
+        block += (f"\n\nSTART FROM THIS (rewrite it in your own voice, keep the "
+                  f"tip-ask): {tmpl}")
+    return block
