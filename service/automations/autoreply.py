@@ -399,8 +399,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Content-ask tip-ask: when a fan asks to SEE content, Auto Convo answers with a
     # natural "tip me $X" line instead of pure keep-warm banter (tip_reward delivers
     # once he tips), NEVER the bare word "tip". Account-level → build once.
-    tip_amount, tip_template = await load_tip_ask_config(account_id)
-    tip_ask_block = build_tip_ask_block(tip_amount, tip_template)
+    tip_ask_enabled, tip_amount, tip_template = await load_tip_ask_config(account_id)
+    # Off (per-account toggle) → empty block; the content-ask just gets keep-warm
+    # banter, no tip-ask.
+    tip_ask_block = (build_tip_ask_block(tip_amount, tip_template)
+                     if tip_ask_enabled else "")
     # Double-pitch guard: when ai_chatter (the closer) owns this account, IT handles
     # selling — Auto Convo stays purely keep-warm even on a content-ask.
     ai_chatter_owns = False

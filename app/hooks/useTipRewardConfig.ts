@@ -21,6 +21,11 @@ export interface TipRewardConfig {
   caption?: string;
   window_hours?: number;
   tiers?: TipRewardTier[];
+  // ASK side of the loop (read by of_ai_chat/autoreply): when a fan asks to see
+  // content, ask them to tip. On by default; amount null = ask with no set price.
+  ask_enabled?: boolean;
+  ask_amount_dollars?: number | null;
+  ask_template?: string;
 }
 
 interface TipRewardConfigResponse {

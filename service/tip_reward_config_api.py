@@ -72,6 +72,10 @@ def _validate(cfg: dict) -> dict:
     out: dict[str, Any] = {}
     if "enabled" in cfg:
         out["enabled"] = bool(cfg["enabled"])
+    # The content-ask tip-ask toggle (ASK side). Independent of `enabled` (the
+    # delivery side) — the ask can be on while reward delivery is off, or vice versa.
+    if "ask_enabled" in cfg:
+        out["ask_enabled"] = bool(cfg["ask_enabled"])
     for k, (lo, hi) in _INT_KNOBS.items():
         if k in cfg and cfg[k] is not None:
             try:

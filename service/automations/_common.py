@@ -1325,60 +1325,72 @@ def is_content_ask(text: str | None) -> bool:
     return bool(text) and bool(CONTENT_ASK_RE.search(text))
 
 
-# The suggested tip (dollars) when a fan asks for content via text. A sensible
-# default so the behavior ships ON with no config; per-account overridable via
-# tip_reward_config_json.ask_amount_dollars (the whole tip loop lives in one
-# config). `ask_template` (optional) seeds the phrasing in the creator's voice.
-DEFAULT_TIP_ASK_DOLLARS = 15
+# The content-ask tip-ask ships ON by default (ask_enabled); an owner can flip it
+# off per-account via tip_reward_config_json.ask_enabled. By design it names NO
+# fixed dollar amount — she asks for a tip naturally — UNLESS an owner sets
+# ask_amount_dollars (then she suggests that figure). `ask_template` (optional)
+# seeds the phrasing in her voice. The whole tip loop lives in one config home.
+DEFAULT_TIP_ASK_ENABLED = True
 _TIP_ASK_TEMPLATE_MAX = 300
 
 
-async def load_tip_ask_config(account_id: str) -> tuple[int, str]:
-    """(suggested_tip_dollars, optional_template) for the content-ask tip-ask,
-    read from account_ai_config.tip_reward_config_json (one home for the whole
-    tip loop — the ask reads it independently of tip_reward's `enabled` flag).
-    Absent/NULL/parse-error/bad value → (DEFAULT_TIP_ASK_DOLLARS, '')."""
+async def load_tip_ask_config(account_id: str) -> tuple[bool, int | None, str]:
+    """(ask_enabled, suggested_tip_dollars_or_None, optional_template) for the
+    content-ask tip-ask, read from account_ai_config.tip_reward_config_json (one
+    home for the whole tip loop — the ask reads it independently of tip_reward's
+    own `enabled` flag). The ask is ON by default and names NO specific dollar
+    amount unless `ask_amount_dollars` is set. Absent/NULL/parse-error →
+    (DEFAULT_TIP_ASK_ENABLED, None, '')."""
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, str(account_id))
     raw = getattr(cfg, "tip_reward_config_json", None) if cfg else None
-    amount, template = DEFAULT_TIP_ASK_DOLLARS, ""
+    enabled, amount, template = DEFAULT_TIP_ASK_ENABLED, None, ""
     if raw:
         try:
             d = json.loads(raw) or {}
+            if d.get("ask_enabled") is not None:
+                enabled = bool(d["ask_enabled"])
             if d.get("ask_amount_dollars") is not None:
                 amount = max(1, int(d["ask_amount_dollars"]))
             template = str(d.get("ask_template") or "").strip()[:_TIP_ASK_TEMPLATE_MAX]
         except (ValueError, TypeError):
             log.warning("bad tip_ask config account=%s", account_id, exc_info=True)
-    return amount, template
+    return enabled, amount, template
 
 
-def build_tip_ask_block(amount_dollars: int, template: str = "") -> str:
+def build_tip_ask_block(amount_dollars: int | None = None, template: str = "") -> str:
     """The system-prompt directive for the 'fan just asked to see content' branch:
     ask him to TIP for it in the creator's OWN voice — ONE short human line, teasing
     not needy, and NEVER the bare word "tip". Two natural ways to tip (the model
-    picks whichever fits, it doesn't have to name both): a $amount tip right here in
-    chat, OR a tip under a feed post/pic he likes (a post tip lands in chat too, so
-    it rewards the same way — and it tells the creator what he's into). An optional
-    `template` (with an optional {amount} placeholder) seeds the phrasing; the model
-    still says it in voice. Shared by of_ai_chat + autoreply so it reads identically."""
-    amt = max(1, int(amount_dollars or 1))
+    picks whichever fits, it doesn't have to name both): a tip right here in chat,
+    OR a tip under a feed post/pic he likes (a post tip lands in chat too, so it
+    rewards the same way — and it tells the creator what he's into). When
+    `amount_dollars` is set she SUGGESTS that figure; when None she asks for a tip
+    WITHOUT naming a price (no static number). An optional `template` (with an
+    optional {amount} placeholder) seeds the phrasing; the model still says it in
+    voice. Shared by of_ai_chat + autoreply so it reads identically."""
+    has_amt = amount_dollars is not None
+    amt = max(1, int(amount_dollars)) if has_amt else 0
+    chat_tip = (f"tip you ${amt} right here" if has_amt
+                else "send you a lil tip right here")
+    example = (f"\"tip me ${amt} n ill send u something 😏\"" if has_amt
+               else "\"tip me n ill send u something 😏\"")
     block = (
         "HE JUST ASKED TO SEE CONTENT. This message is NOT a get-to-know question "
         "and NOT a brush-off — answer the ask. In your OWN voice, ONE short human "
-        f"line, tease him a little and tell him to TIP for it — either tip you ${amt} "
-        "right here and you'll send him something, OR drop a tip under any post/pic of "
-        "yours he likes (that shows you what he's into, and you'll spoil him back for "
+        f"line, tease him a little and tell him to TIP for it — either {chat_tip} "
+        "and you'll send him something, OR drop a tip under any post/pic of yours "
+        "he likes (that shows you what he's into, and you'll spoil him back for "
         "it). Pick whichever way flows naturally — you don't have to name both. Be "
         "playful and a touch teasing, never needy, desperate, or pushy. NEVER write "
-        "the bare word \"tip\" on its own — always a natural line, e.g. \"tip me "
-        f"${amt} n ill send u something 😏\" or \"drop a lil tip under a post u like n "
-        "ill spoil u 😈\". Don't attach anything now and don't name a specific piece — "
-        "just the teasing tip-ask (the content goes out once he tips)."
+        "the bare word \"tip\" on its own — always a natural line, e.g. "
+        f"{example} or \"drop a lil tip under a post u like n ill spoil u 😈\". "
+        "Don't attach anything now and don't name a specific piece — just the "
+        "teasing tip-ask (the content goes out once he tips)."
     )
     tmpl = (template or "").strip()
     if tmpl:
-        tmpl = tmpl.replace("{amount}", str(amt))
+        tmpl = tmpl.replace("{amount}", str(amt) if has_amt else "")
         block += (f"\n\nSTART FROM THIS (rewrite it in your own voice, keep the "
                   f"tip-ask): {tmpl}")
     return block
