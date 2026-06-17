@@ -4647,11 +4647,19 @@ def of_unmute_chat(chat_id: int):
 @app.post("/api/of/v2/chats/{chat_id}/hide")
 def of_hide_chat(chat_id: int):
     """Hide chat from inbox (chat still exists; fan can still message)."""
-    return _proxy(lambda: _get_client().hide_chat(chat_id))
+    r = _proxy(lambda: _get_client().hide_chat(chat_id))
+    # OF already drops the chat from its `/chats` feed server-side, but our
+    # relay caches that feed for 10 min — without busting it the hidden row
+    # lingers in the inbox until the TTL expires. Drop it so the row vanishes
+    # on the very next refetch the hide mutation already fires.
+    _bust_chat_list_cache()
+    return r
 
 @app.delete("/api/of/v2/chats/{chat_id}/hide")
 def of_unhide_chat(chat_id: int):
-    return _proxy(lambda: _get_client().unhide_chat(chat_id))
+    r = _proxy(lambda: _get_client().unhide_chat(chat_id))
+    _bust_chat_list_cache()  # symmetric: surface the un-hidden chat immediately
+    return r
 
 
 # ── Per-fan "Restrict from automations" (durable skip_list, NOT an OF call) ──
