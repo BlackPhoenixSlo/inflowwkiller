@@ -64,6 +64,10 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   const [caption, setCaption] = useState("");
   const [tiers, setTiers] = useState<TierForm[]>([]);
   const [pickerTier, setPickerTier] = useState<number | null>(null);
+  // ASK side (independent of the delivery `enabled` above): default ON, no set price.
+  const [askEnabled, setAskEnabled] = useState(true);
+  const [askAmount, setAskAmount] = useState<string>(""); // "" → ask with no fixed price
+  const [askTemplate, setAskTemplate] = useState("");
 
   useEffect(() => {
     setEnabled(!!eff.enabled);
@@ -73,6 +77,9 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setWindowHours(eff.window_hours ?? 72);
     setCaption(eff.caption ?? "");
     setTiers(tiersToForm(eff.tiers));
+    setAskEnabled(eff.ask_enabled !== false); // default ON when unset
+    setAskAmount(eff.ask_amount_dollars == null ? "" : String(eff.ask_amount_dollars));
+    setAskTemplate(eff.ask_template ?? "");
   }, [eff]);
 
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
@@ -98,6 +105,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   };
 
   function buildConfig(): TipRewardConfig {
+    const askAmtTrim = askAmount.trim();
     return {
       enabled,
       dollars_per_image: dollarsPerImage,
@@ -105,6 +113,10 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       max_images: maxImages,
       window_hours: windowHours,
       caption: caption.trim(),
+      // ASK side — null amount means "ask for a tip without naming a price".
+      ask_enabled: askEnabled,
+      ask_amount_dollars: askAmtTrim === "" ? null : Math.max(1, Math.round(Number(askAmtTrim) || 0)),
+      ask_template: askTemplate.trim(),
       tiers: tiers
         // a tier with no folders does nothing — drop it on save
         .map((t) => ({
@@ -277,6 +289,58 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
           </Button>
         </div>
       </fieldset>
+
+      {/* ── ASK side ──────────────────────────────────────────────────────
+          Independent of the delivery toggle above (lives OUTSIDE the disabled
+          fieldset): the AI can ask for a tip even when reward delivery is off. */}
+      <div className="rounded-lg border border-border p-3 space-y-3">
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-[var(--accent)]"
+            checked={askEnabled}
+            onChange={(e) => {
+              markDirty();
+              setAskEnabled(e.target.checked);
+            }}
+          />
+          <span className="text-sm font-medium">
+            Ask fans to tip when they ask to see content
+          </span>
+        </label>
+        <p className="text-[11px] text-fg-dim/80 leading-relaxed">
+          When a fan asks to see content in chat (&ldquo;can i see…&rdquo;, &ldquo;send me
+          something&rdquo;), the AI (Get-to-know fans &amp; Auto Convo) answers with a
+          natural, teasing &ldquo;tip me and I&apos;ll send you something&rdquo; instead of a
+          normal reply. Works whether or not the reward delivery above is enabled. Turn off
+          to never ask.
+        </p>
+        <div style={{ opacity: askEnabled ? 1 : 0.5 }}>
+          <label className="block space-y-1">
+            <div className="text-xs font-medium text-fg">Suggested amount (optional)</div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-fg-dim">$</span>
+              <input
+                type="number"
+                min={1}
+                max={10000}
+                disabled={!askEnabled}
+                placeholder="no set amount"
+                className={`${INPUT} w-40`}
+                value={askAmount}
+                onChange={(e) => {
+                  markDirty();
+                  setAskAmount(e.target.value);
+                }}
+              />
+            </div>
+            <div className="text-[11px] text-fg-dim/70">
+              Leave blank (recommended) so she asks for a tip without naming a price. Set a
+              number only if you want her to suggest a specific amount.
+            </div>
+          </label>
+        </div>
+      </div>
 
       {/* Save + feedback */}
       <div className="flex items-center gap-3 pt-1">

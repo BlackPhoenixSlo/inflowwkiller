@@ -43,7 +43,7 @@ import automation_executor as ax        # _make_client / _parse_iso seams
 from attribution import write_outbound_attribution
 from automation_registry import register
 from automations._common import (
-    DEFAULT_TIP_ASK_DOLLARS, apply_word_restriction, load_hard_skip_ids,
+    DEFAULT_TIP_ASK_ENABLED, apply_word_restriction, load_hard_skip_ids,
     should_skip_muted_creator,
 )
 from db.engine import get_session
@@ -66,9 +66,11 @@ _DEFAULTS: dict = {
     "caption": "",             # optional thank-you text ('' → media-only message)
     "window_hours": 72,        # rolling window for the cumulative tier basis
     # The ASK side of the loop (read by of_ai_chat/autoreply, not tip_reward itself):
-    # when a fan asks to SEE content via text, those senders ask him to tip this much
-    # ("tip me $X and ill send something"). One config home for the whole tip loop.
-    "ask_amount_dollars": DEFAULT_TIP_ASK_DOLLARS,
+    # when a fan asks to SEE content via text, those senders ask him to tip. ON by
+    # default; ask_amount_dollars=None → she asks naturally WITHOUT naming a price
+    # (set a number to suggest one). One config home for the whole tip loop.
+    "ask_enabled": DEFAULT_TIP_ASK_ENABLED,
+    "ask_amount_dollars": None,
     "ask_template": "",        # optional phrasing seed ('' → the model phrases it)
     "tiers": [
         {"name": "basic",   "min_basis_cents": 0,      "folders": []},

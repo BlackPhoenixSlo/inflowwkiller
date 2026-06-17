@@ -1202,8 +1202,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # tips). Account-level, so build the directive once. No double-pitch risk: when
     # ai_chatter (the closer) owns this account, run() already short-circuited
     # above, and mid-funnel fans are excluded from the candidate set below.
-    tip_ask_amount, tip_ask_template = await load_tip_ask_config(account_id)
-    tip_ask_block = build_tip_ask_block(tip_ask_amount, tip_ask_template)
+    tip_ask_enabled, tip_ask_amount, tip_ask_template = await load_tip_ask_config(account_id)
+    # Off (per-account toggle) → empty block, so `selling` stays False and the
+    # content-ask just gets a normal reply instead of a tip-ask.
+    tip_ask_block = (build_tip_ask_block(tip_ask_amount, tip_ask_template)
+                     if tip_ask_enabled else "")
     persona = await _load_persona(account_id)
     blacklist, skip_list = await _load_stop_lists(account_id)
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)  # W7 cross-tick ownership
