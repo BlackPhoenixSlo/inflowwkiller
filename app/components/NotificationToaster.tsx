@@ -318,9 +318,9 @@ function NotificationDeltaPoller() {
           ? Date.parse(t.createdAt) || Date.now()
           : Date.now();
 
-        // Always mirror into history + bump the badge — independent of
-        // whether the user has toasts enabled for this type. The toast
-        // popup itself is what the per-type filter gates.
+        // Always mirror into history — independent of the per-type toggle,
+        // so the feed dropdown still lists everything (incl. likes). The
+        // badge bump + toast popup are gated by the per-type filter below.
         appendNotifHistory({
           id,
           accountId: aid,
@@ -336,10 +336,12 @@ function NotificationDeltaPoller() {
           replacePairs: repl ?? (t.replacePairs as Record<string, string> | undefined),
           createdAt: new Date(createdMs).toISOString(),
         });
-        dispatchNotifArrived();
         pushedAny = true;
 
-        // Per-type filter for the visible toast popup only.
+        // Per-type filter for the visible toast popup AND the unread badge.
+        // A type toggled off (e.g. Likes) is still recorded to history above
+        // — so it shows in the feed dropdown — but does NOT ping: no popup,
+        // no OS notification, no badge increment.
         if (typeKey && !settings.toast[typeKey]) {
           // Resolve username → id in the background even if we didn't
           // toast — the history entry will be patched.
@@ -352,6 +354,9 @@ function NotificationDeltaPoller() {
           }
           continue;
         }
+
+        // Passed the per-type gate → this one is allowed to ping.
+        dispatchNotifArrived();
 
         const now = Date.now();
         pushToast({
