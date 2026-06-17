@@ -156,6 +156,53 @@ MANUAL_RESTRICT_REASON = "manual_restrict"
 HARD_SKIP_REASONS = frozenset({MUTED_CREATOR_REASON, MANUAL_RESTRICT_REASON})
 
 
+# ── Self-healing fans.source classification ─────────────────────────────────
+# `fans.source` is what tells the muted-creator auto-skip AND the of_ai_chat /
+# gen_info / ai_chatter promo-spam guards that a chat is a peer-creator
+# (`creator_we_follow`) rather than a real fan. It is derived from OF's
+# relationship flags (`subscribedOn` → us=their creator → 'fan';
+# `subscribedBy` → we follow THEM → 'creator_we_follow'). The trap: those flags
+# are ABSENT from the two highest-volume ingestion paths — the chat scrape
+# (`list_chats` was forcing skip_users=all, which strips them) and plain WS DMs
+# (payload is just `fromUser:{id}`) — and `source` was only ever written on the
+# INSERT, never refreshed. So a creator first seen via either path was stuck as
+# 'onlyfans'/'unknown' forever and stayed invisible to every creator guard.
+#
+# These helpers let ANY path that DOES carry the flags repair the row on
+# conflict: UPGRADE a weak/unknown source to the class OF's flags imply, and
+# NEVER downgrade an already-authoritative ('fan' / 'creator_we_follow') value
+# nor touch the row when the payload carries no flag.
+_WEAK_SOURCES = ("onlyfans", "unknown", "ledger")
+
+
+def classify_source(subscribed_on, subscribed_by) -> str | None:
+    """The authoritative source OF's relationship flags imply, or None when the
+    payload carries neither (→ the caller must NOT touch `source`)."""
+    if subscribed_on:
+        return "fan"
+    if subscribed_by:
+        return "creator_we_follow"
+    return None
+
+
+def source_self_heal_set(subscribed_on, subscribed_by) -> dict:
+    """An on-conflict SET fragment (mergeable into an upsert's `set_`/`update_set`)
+    that upgrades a weak/unknown `source` to the class OF's flags imply and leaves
+    an already-strong value untouched. Returns {} when the payload has no
+    authoritative flag, so callers can splat it unconditionally."""
+    strong = classify_source(subscribed_on, subscribed_by)
+    if strong is None:
+        return {}
+    from sqlalchemy import case
+    return {
+        "source": case(
+            (Fan.source.is_(None), strong),
+            (Fan.source.in_(_WEAK_SOURCES), strong),
+            else_=Fan.source,
+        )
+    }
+
+
 def should_skip_muted_creator(fan) -> bool:
     """True when this Fan row is a creator we follow whose chat we've muted — i.e.
     mutual-promo spam no automation should ever touch. Belt-and-suspenders to the

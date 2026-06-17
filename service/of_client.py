@@ -399,7 +399,8 @@ class OFClient:
     def list_chats(self, *, limit: int = 10, order: str = "recent",
                    offset: int = 0, filter: str | None = None,
                    list_id: int | str | None = None,
-                   query: str | None = None) -> dict:
+                   query: str | None = None,
+                   skip_users: str | None = "all") -> dict:
         """GET /api2/v2/chats — list conversations.
 
         OF UI uses three orthogonal filters:
@@ -412,10 +413,19 @@ class OFClient:
 
         All defaults match the captured DevTools curls (skip_users=all,
         order=recent). offset+limit are inclusive — i.e. offset=10&limit=10
-        gives the 11th through 20th chat."""
+        gives the 11th through 20th chat.
+
+        `skip_users="all"` (the OF UI default) strips the heavy relationship
+        flags (`subscribedOn`/`subscribedBy`) from each `withUser` — fine for the
+        inbox list, but it's exactly what left the chat-scrape unable to classify
+        peer-creators (source stuck as 'onlyfans'). Pass `skip_users=None` to omit
+        the param and get the full `withUser` so callers can classify the source.
+        """
         params: dict[str, Any] = {
-            "limit": limit, "order": order, "offset": offset, "skip_users": "all",
+            "limit": limit, "order": order, "offset": offset,
         }
+        if skip_users is not None:
+            params["skip_users"] = skip_users
         if filter:
             params["filter"] = filter
         if list_id is not None:

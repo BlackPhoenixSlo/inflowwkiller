@@ -39,6 +39,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
 from db.models import Chat, Fan, Message, Transaction
+from automations._common import source_self_heal_set
 import relay_cache
 
 log = logging.getLogger("of-relay.transcode")
@@ -329,6 +330,11 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
             on_conflict["of_display_name"] = from_user["name"]
         if from_user.get("avatar"):
             on_conflict["avatar_url"] = from_user["avatar"]
+        # Self-heal a weak/unknown source if THIS payload carries OF's
+        # subscribedOn/subscribedBy (rare on a plain DM, present on toast/online
+        # frames) — upgrade-only, never downgrades a known 'fan'/'creator_we_follow'.
+        on_conflict.update(source_self_heal_set(
+            from_user.get("subscribedOn"), from_user.get("subscribedBy")))
         fan_stmt = fan_stmt.on_conflict_do_update(
             index_elements=["account_id", "fan_id"],
             set_=on_conflict,

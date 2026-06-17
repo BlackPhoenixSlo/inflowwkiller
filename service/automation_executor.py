@@ -920,6 +920,13 @@ async def _upsert_fan_identity(
     if is_muted is not None:
         insert_extra["is_muted"] = bool(is_muted)
         update_set["is_muted"] = bool(is_muted)
+    # Self-heal a weak/unknown source when the chat's withUser carries OF's
+    # subscribedOn/subscribedBy — upgrade-only (never downgrades a known
+    # classification). The reconciliation below re-reads source, so a muted
+    # creator classified for the first time here is auto-restricted same-tick.
+    from automations._common import source_self_heal_set
+    update_set.update(source_self_heal_set(
+        info.get("subscribedOn"), info.get("subscribedBy")))
 
     stmt = (
         sqlite_insert(Fan)
@@ -1257,6 +1264,9 @@ async def _automation_scrape_chats(
             page = await asyncio.to_thread(
                 client.list_chats, limit=_SCRAPE_PAGE_SIZE, offset=offset,
                 order="recent",
+                # skip_users=None → full withUser incl. subscribedOn/subscribedBy
+                # so _upsert_fan_identity can classify (and self-heal) the source.
+                skip_users=None,
             )
             rows = page.get("list") or []
             if not rows:
