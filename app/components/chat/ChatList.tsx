@@ -981,7 +981,13 @@ export function ChatList({
                   title={acc?.nickname || accountId}
                 />
               )}
-              <div className="w-9 h-9 rounded-full bg-bg-elev-1 grid place-items-center text-xs overflow-hidden shrink-0">
+              <div className={cn(
+                "w-9 h-9 rounded-full bg-bg-elev-1 grid place-items-center text-xs overflow-hidden shrink-0",
+                // Muted chats read as grayed-out at a glance. Dimming the
+                // avatar + content (not the row button) keeps the unread
+                // badge sibling below at full opacity.
+                c.isMutedNotifications && "opacity-60",
+              )}>
                 {avatarUrl ? (
                   <img
                     src={avatarUrl}
@@ -998,9 +1004,14 @@ export function ChatList({
                   <span className="text-fg-dim">{fanName.slice(0, 1).toUpperCase()}</span>
                 )}
               </div>
-              <div className="min-w-0 flex-1">
+              <div className={cn("min-w-0 flex-1", c.isMutedNotifications && "opacity-60")}>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium truncate">{fanName}</span>
+                  <span className="flex items-center gap-1 min-w-0">
+                    {c.isMutedNotifications && (
+                      <span className="text-fg-dim shrink-0 text-[11px]" title="Muted notifications">🔕</span>
+                    )}
+                    <span className="text-sm font-medium truncate">{fanName}</span>
+                  </span>
                   <span className="text-[10px] text-fg-dim shrink-0">
                     {fmtTime(c.lastMessage?.createdAt)}
                   </span>

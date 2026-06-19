@@ -67,6 +67,13 @@ export interface OFUser {
   notice?: string | null;
   subscribedOnData?: OFSubscribedOnData;
   listsStates?: OFListState[];
+  /** Native OnlyFans restrict state. A restricted fan can still type, but
+   *  OF stops their messages reaching us (`canReceiveChatMessage` flips
+   *  false). Toggled via POST/DELETE /users/{id}/restrict. DISTINCT from
+   *  our internal "restrict from automations" skip_list (DB-only). */
+  isRestricted?: boolean;
+  canRestrict?: boolean;
+  canReceiveChatMessage?: boolean;
   [k: string]: unknown;
 }
 
