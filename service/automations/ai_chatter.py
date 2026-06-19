@@ -152,6 +152,61 @@ async def gate_for(account_id: str) -> int | None:
     return int(cfg.get("max_lifetime_spend_cents") or 0)
 
 
+async def is_intent_only(account_id: str) -> bool:
+    """True when ai_chatter is the CLOSER — it engages only fans showing buying
+    intent (or with an open offer) and stays silent on pure chatter. The opener /
+    drill automations read this to know they must COVER everyone else instead of
+    standing down for the whole account."""
+    cfg = await _load_config(account_id)
+    return bool(cfg.get("enabled") and cfg.get("intent_only"))
+
+
+async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
+    """Of `fan_ids`, the ones ai_chatter currently OWNS — i.e. will (or may) answer
+    THIS tick. of_ai_chat and deep_convo consult this so they cover exactly the
+    fans ai_chatter leaves alone: no second bot voice on the same fan, and no fan
+    left silent either.
+
+      • disabled                  → empty set (owns nobody)
+      • full chatter              → all of `fan_ids` (it replies to everyone it sees)
+      • closer mode (intent_only) → only fans with an OPEN OFFER we're walking, or a
+                                    content-ask in their latest inbound message. Pure
+                                    chatter is deliberately excluded — left to
+                                    of_ai_chat / deep_convo / the team, matching the
+                                    closer's own "pure chatter is left to Auto Convo"
+                                    rule in run().
+
+    The intent test mirrors run() exactly (open offer OR _CONTENT_ASK_RE over the
+    HTML-stripped latest inbound), so ownership here can never diverge from who the
+    closer actually answers."""
+    if not fan_ids:
+        return set()
+    cfg = await _load_config(account_id)
+    if not cfg.get("enabled"):
+        return set()
+    if not cfg.get("intent_only"):
+        return set(fan_ids)
+    # Closer mode: open offers ∪ content-ask intent on the latest inbound message.
+    owned = {int(o.fan_id) for o in await _open_offers(account_id)
+             if int(o.fan_id) in fan_ids}
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.fan_id, Message.body)
+            .where(Message.account_id == str(account_id),
+                   Message.fan_id.in_(fan_ids),
+                   Message.direction == "in",
+                   Message.is_unsent.is_(False))
+            .order_by(Message.fan_id, Message.created_at, Message.message_id)
+        )).all()
+    last_in: dict[int, str] = {}
+    for fid, body in rows:
+        last_in[int(fid)] = body or ""   # rows asc → last write per fan = newest inbound
+    for fid, body in last_in.items():
+        if _CONTENT_ASK_RE.search(_strip_html(body)):
+            owned.add(fid)
+    return owned
+
+
 # ── Candidate gathering (own pass — needs timing + human-send metadata) ──────
 
 class _Cand:

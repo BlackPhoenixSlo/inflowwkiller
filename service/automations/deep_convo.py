@@ -515,14 +515,23 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_done = 0
     backed_off = 0              # waiting on a fan reply this tick
 
-    # When ai_chatter is enabled it OWNS every fan under its spend gate (one bot
-    # voice per fan) — deep_convo's scripted drill must not interleave them.
+    # When ai_chatter is enabled it OWNS the fans it will actually answer — one bot
+    # voice per fan, so deep_convo's scripted drill must not interleave THOSE. In
+    # FULL-chatter mode that's every fan under its spend gate; in CLOSER mode
+    # (intent_only) it answers only buyers and leaves pure chatter to us, so we must
+    # yield ONLY its open-offer/intent fans, not blanket-skip every sub-gate fan.
+    # `ai_engaged` resolves that per-fan; `ai_gate` keeps the spend bound.
     # Lazy import: ai_chatter imports of_ai_chat helpers, avoid a module cycle.
     try:
-        from .ai_chatter import gate_for as _ai_chatter_gate
+        from .ai_chatter import (gate_for as _ai_chatter_gate,
+                                  engaged_subset as _ai_chatter_engaged)
         ai_gate = await _ai_chatter_gate(account_id)
+        # Fail-safe below mirrors the OLD blanket-yield (everyone) on error, so a
+        # transient failure never double-voices a fan.
+        ai_engaged = await _ai_chatter_engaged(account_id, set(profiles))
     except Exception:
         ai_gate = None
+        ai_engaged = set(profiles)
 
     # Fan rows carry the bio facts (info-complete gate + prompt) and the
     # deep_convo_* state. Only fans that HAVE a profile-Q+Tease can be candidates.
@@ -561,9 +570,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             skipped_high_spend += 1
             continue
 
-        # ai_chatter owns fans under its gate — yield them (force_ids bypasses).
+        # ai_chatter owns the fans it will answer (full chatter: everyone sub-gate;
+        # closer: only its open-offer/intent fans) — yield those (force_ids bypasses).
+        # A sub-gate pure-chatter fan in closer mode is NOT in ai_engaged, so it
+        # falls through to us — exactly the "leave pure chatter to Auto Convo" intent.
         if (not forced and ai_gate is not None
-                and int((f.lifetime_spend_cents if f else 0) or 0) < ai_gate):
+                and int((f.lifetime_spend_cents if f else 0) or 0) < ai_gate
+                and fan_id in ai_engaged):
             skipped_ai_chatter += 1
             continue
 
