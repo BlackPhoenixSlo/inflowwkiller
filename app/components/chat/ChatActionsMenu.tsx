@@ -142,6 +142,33 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
     onError: (e: Error) => flash(false, e.message),
   });
 
+  // ── Native OnlyFans restrict — DISTINCT from "Restrict from automations"
+  // above. That one is an internal skip_list (only stops OUR automations);
+  // this is OF's own shadow-restrict: the fan can still type, but OF stops
+  // delivering their messages to us (isRestricted→true, canReceiveChatMessage
+  // →false). The live state comes off the OF user object — the same query
+  // backs the "Add to list" submenu + the drawer, so React Query dedupes it.
+  const ofUser = useOFUser(accountId, fanId);
+  const isRestricted = !!ofUser.data?.isRestricted;
+  const canRestrict = !!ofUser.data?.canRestrict;
+
+  const toggleOfRestrict = useMutation({
+    mutationFn: () =>
+      isRestricted
+        ? relay.delete(`/api/of/v2/users/${fanId}/restrict`, { accountId })
+        : relay.post(`/api/of/v2/users/${fanId}/restrict`, undefined, { accountId }),
+    onSuccess: () => {
+      // Refetch the OF user so the label flips to its true post-toggle state;
+      // refresh the inbox too since a restricted fan usually drops out of the
+      // active conversation set. Kept separate from `hide` so lifting the
+      // restrict never force-unhides the chat.
+      qc.invalidateQueries({ queryKey: ["of-user", accountId, fanId] });
+      qc.invalidateQueries({ queryKey: ["chats"] });
+      flash(true, isRestricted ? "OnlyFans restrict lifted" : "Restricted on OnlyFans");
+    },
+    onError: (e: Error) => flash(false, e.message),
+  });
+
   return (
     <div
       ref={ref}
@@ -180,6 +207,14 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
               disabled={toggleRestrict.isPending || restrictQ.isLoading}
               onClick={() => toggleRestrict.mutate()}
               icon={manualRestricted ? "▶" : "⛔"}
+            />
+          )}
+          {(isRestricted || canRestrict) && (
+            <Item
+              label={isRestricted ? "Lift OnlyFans restrict" : "Restrict on OnlyFans"}
+              disabled={toggleOfRestrict.isPending || ofUser.isLoading}
+              onClick={() => toggleOfRestrict.mutate()}
+              icon={isRestricted ? "🔓" : "🛑"}
             />
           )}
           <Item
