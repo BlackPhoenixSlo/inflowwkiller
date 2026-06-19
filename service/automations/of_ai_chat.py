@@ -1176,16 +1176,23 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # gets the spend/too_long/info checks; it only limits the candidate set.
     only_fan_ids = coerce_ids(payload.get("only_fan_ids"))
 
-    # PPVscriptAI hand-over: when ai_chatter is enabled for this account it
-    # REPLACES of_ai_chat — its population (every fan under its spend gate,
-    # default $1000) is a superset of ours (the $1 gather pool), so running both
-    # would be a second bot voice on the same fans. force_ids still targets
-    # manually. Lazy import: ai_chatter imports our helpers (module cycle).
+    # PPVscriptAI hand-over: when ai_chatter is the FULL chatter it REPLACES us —
+    # its population (every fan under its spend gate, default $1000) is a superset
+    # of ours (the $1 gather pool), so running both would be a second bot voice on
+    # the same fans → stand down for the whole account. But when ai_chatter is the
+    # CLOSER (intent_only) it answers ONLY buyers and leaves pure chatter to us, so
+    # we KEEP RUNNING and instead drop just the fans it owns (computed once by_fan
+    # is built). force_ids still targets manually. Lazy import: cycle.
+    ai_closer = False
     if not force_ids:
         try:
-            from .ai_chatter import is_enabled as _ai_chatter_enabled
+            from .ai_chatter import (is_enabled as _ai_chatter_enabled,
+                                     is_intent_only as _ai_chatter_intent_only)
             if await _ai_chatter_enabled(account_id):
-                return {"status": "skipped", "reason": "ai_chatter_owns_account"}
+                if await _ai_chatter_intent_only(account_id):
+                    ai_closer = True
+                else:
+                    return {"status": "skipped", "reason": "ai_chatter_owns_account"}
         except Exception:
             log.debug("of_ai_chat ai_chatter gate check failed", exc_info=True)
 
@@ -1212,6 +1219,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)  # W7 cross-tick ownership
     by_fan = await _gather(account_id, only_fan_ids or None)
 
+    # Closer-mode ai_chatter owns only the fans it will answer (open offer / buying
+    # intent) — drop exactly those and cover the rest. Empty unless ai_closer.
+    ai_owns: set[int] = set()
+    if ai_closer:
+        try:
+            from .ai_chatter import engaged_subset as _ai_chatter_engaged
+            ai_owns = await _ai_chatter_engaged(account_id, set(by_fan))
+        except Exception:
+            log.debug("of_ai_chat engaged_subset failed", exc_info=True)
+
     # of_client only — no DOM. Built via the executor seam tests override.
     client = await asyncio.to_thread(ax._make_client, account_id)
 
@@ -1228,6 +1245,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_not_turn = 0    # we (or nobody) spoke last
     skipped_spam = 0        # promo-spam: $0 spend + creator_we_follow (peer creator)
     skipped_muted_creator = 0  # muted creator we follow — HARD skip (durable)
+    skipped_ai_chatter = 0  # closer-mode ai_chatter owns this fan (buyer/open offer)
     newly_skiplisted = 0    # spent / too_long / info this tick
 
     for fan_id, c in by_fan.items():
@@ -1239,6 +1257,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # step waits — don't interleave it here (force_ids can still override).
         if fan_id in mid_funnel_fans and not forced:
             skipped_listed += 1
+            continue
+        # Closer-mode ai_chatter is actively answering this fan (open offer or
+        # buying intent) — don't add a second voice. force_ids overrides.
+        if fan_id in ai_owns and not forced:
+            skipped_ai_chatter += 1
             continue
         # Only answer when the fan spoke last (the "You: " sidebar skip).
         if c.last_dir != "in":
@@ -1538,6 +1561,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_not_turn": skipped_not_turn,
         "skipped_spam": skipped_spam,
         "skipped_muted_creator": skipped_muted_creator,
+        "skipped_ai_chatter": skipped_ai_chatter,
         "newly_skiplisted": newly_skiplisted,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
