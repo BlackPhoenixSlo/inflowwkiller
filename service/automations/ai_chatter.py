@@ -68,12 +68,13 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from ._common import (
-    CONTENT_ASK_RE, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, ONPLATFORM_GUARDRAIL,
-    STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
+    CONTENT_ASK_RE, ESCALATION_RE, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER,
+    ONPLATFORM_GUARDRAIL, STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER,
+    STYLE_MAX_BUBBLES,
     apply_nonnative_style, apply_word_restriction, coerce_ids, guard_offplatform,
     hold_with_typing, humanize_typos, load_nonnative_flags, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags,
-    quarantine_if_undeliverable, resolve_fan_name, resolve_model,
+    quarantine_if_undeliverable, recent_payer_fans, resolve_fan_name, resolve_model,
     should_skip_muted_creator, skip_unreachable_fan, typing_delay_seconds,
 )
 # Deliberate sibling reuse — keeps the texting voice byte-compatible with
@@ -169,16 +170,18 @@ async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
 
       • disabled                  → empty set (owns nobody)
       • full chatter              → all of `fan_ids` (it replies to everyone it sees)
-      • closer mode (intent_only) → only fans with an OPEN OFFER we're walking, or a
-                                    content-ask in their latest inbound message. Pure
+      • closer mode (intent_only) → fans with an OPEN OFFER we're walking, a
+                                    content-ask OR sexual escalation in their latest
+                                    inbound, or a RECENT PAYER (hot lead). Pure
                                     chatter is deliberately excluded — left to
                                     of_ai_chat / deep_convo / the team, matching the
                                     closer's own "pure chatter is left to Auto Convo"
                                     rule in run().
 
-    The intent test mirrors run() exactly (open offer OR _CONTENT_ASK_RE over the
-    HTML-stripped latest inbound), so ownership here can never diverge from who the
-    closer actually answers."""
+    The intent test mirrors run() exactly (open offer OR _CONTENT_ASK_RE OR
+    ESCALATION_RE over the HTML-stripped latest inbound OR recent payer), so
+    ownership here can never diverge from who the closer actually answers — and
+    autoreply skips exactly this set as hot leads."""
     if not fan_ids:
         return set()
     cfg = await _load_config(account_id)
@@ -186,9 +189,10 @@ async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
         return set()
     if not cfg.get("intent_only"):
         return set(fan_ids)
-    # Closer mode: open offers ∪ content-ask intent on the latest inbound message.
+    # Closer mode: open offers ∪ content-ask/escalation intent ∪ recent payers.
     owned = {int(o.fan_id) for o in await _open_offers(account_id)
              if int(o.fan_id) in fan_ids}
+    owned |= await recent_payer_fans(account_id, fan_ids)
     async with get_session() as s:
         rows = (await s.execute(
             select(Message.fan_id, Message.body)
@@ -202,7 +206,8 @@ async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
     for fid, body in rows:
         last_in[int(fid)] = body or ""   # rows asc → last write per fan = newest inbound
     for fid, body in last_in.items():
-        if _CONTENT_ASK_RE.search(_strip_html(body)):
+        stripped = _strip_html(body)
+        if _CONTENT_ASK_RE.search(stripped) or ESCALATION_RE.search(stripped):
             owned.add(fid)
     return owned
 
@@ -1045,6 +1050,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                              dry_run=dry_run,
                                              only_fan_ids=only_fan_ids or None)
     open_by_fan = {int(o.fan_id): o for o in await _open_offers(account_id)}
+    # Recent payers (tip/PPV unlock in the last RECENT_PAYER_HOURS) count as
+    # intent in closer mode — the seller rides a just-paid hot moment even if the
+    # latest line isn't an explicit buy-ask. autoreply skips this exact set, so a
+    # hot lead is never demoted to never-sell keep-warm. Mirrors engaged_subset.
+    recent_payers = await recent_payer_fans(account_id, list(by_fan.keys()))
 
     async with get_session() as s:
         fan_rows = (await s.execute(
@@ -1134,7 +1144,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # the cooldown/lease/LLM work so skipped fans cost nothing. Pure chatter
         # is left to the team / Auto Convo.
         if intent_only and open_by_fan.get(fan_id) is None \
-                and not _CONTENT_ASK_RE.search(c.last_body or ""):
+                and fan_id not in recent_payers \
+                and not _CONTENT_ASK_RE.search(c.last_body or "") \
+                and not ESCALATION_RE.search(c.last_body or ""):
             skipped_no_intent += 1
             continue
         if await ax.fan_on_cooldown(account_id, fan_id):

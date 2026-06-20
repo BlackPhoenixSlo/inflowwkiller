@@ -60,6 +60,7 @@ from llm_client import LLMCapExceeded, LLMError
 from ._common import (
     build_structured_nickname,
     coerce_ids,
+    is_substantive_msg,
     push_nick_and_notes,
     resolve_model,
 )
@@ -446,11 +447,16 @@ async def _gather_candidates(
             if c is None:
                 c = counts[fan_id] = _Candidate(int(fan_id))
             c.total_msg_n += 1
-            if direction == "in":
+            text = _strip_html(body)[:_MSG_CLIP]
+            # Count only substantive inbound (matches of_ai_chat): emoji-only
+            # reactions don't inflate fan_msg_n, so message_count_at_gen and the
+            # of_ai_chat staleness baseline stay on ONE scale (no suppressed/false
+            # refreshes for emoji-heavy fans).
+            if direction == "in" and is_substantive_msg(text):
                 c.fan_msg_n += 1
             if direction == "out" and is_paid and (price_cents or 0) > 0:
                 c.spend_cents += int(price_cents or 0)
-            c.messages.append((direction, _strip_html(body)[:_MSG_CLIP]))
+            c.messages.append((direction, text))
 
         # Lift display name + username + prior extracted facts (ground truth, W2h)
         # for the fans we care about — ONE DB read, no OF call (proxy-safe).
