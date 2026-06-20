@@ -272,10 +272,33 @@ def _sync_exclude_list_blocking(client, ids: set[int]) -> int:
 
     # Stale members are REMOVED, not just superseded — a fan left behind from
     # a previous tick would be excluded from every future broadcast forever.
-    for uid in sorted(ids - members):
-        client.add_user_to_list(list_id, uid)
+    #
+    # Per-user adds are best-effort: OF 403s "Unable to add user to user list"
+    # for the odd un-listable id (deleted/blocked/restricted account, the creator
+    # herself). ONE such id must not abort the whole exclude build and sink the
+    # broadcast — skip it and carry on. An un-addable id is almost always also
+    # undeliverable, so leaving it off the guard is low-risk. If EVERY add fails
+    # the list is unusable, so re-raise the last error (a systemic auth problem,
+    # not a stray fan).
+    to_add = sorted(ids - members)
+    add_fail = 0
+    last_err: Exception | None = None
+    for uid in to_add:
+        try:
+            client.add_user_to_list(list_id, uid)
+        except Exception as e:  # noqa: BLE001 — per-user tolerance, see above
+            add_fail += 1
+            last_err = e
+    if to_add and add_fail == len(to_add):
+        raise last_err  # nothing landed → the guard is empty, fail loudly
+    if add_fail:
+        log.warning("auto_exclude partial account-list=%s added=%d skipped=%d (last=%r)",
+                    list_id, len(to_add) - add_fail, add_fail, last_err)
     for uid in sorted(members - ids):
-        client.remove_user_from_list(list_id, uid)
+        try:
+            client.remove_user_from_list(list_id, uid)
+        except Exception:  # noqa: BLE001 — a stale member we can't drop is harmless
+            log.warning("auto_exclude remove failed account-list=%s uid=%s", list_id, uid)
     return int(list_id)
 
 
