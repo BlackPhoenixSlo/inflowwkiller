@@ -293,6 +293,19 @@ async def _eligible_fans(account_id: str):
     return fan_rows, last_purchase
 
 
+async def _all_fan_ids(account_id: str) -> list[int]:
+    """EVERY fan id we know for the account (NO bot/blacklist/buyer filter). Used as
+    the broadcast exclude: a 'message all subscribers' send skips everyone we've
+    already handled per-fan above (tier-sent, or deliberately dropped as
+    bot/blacklist/buyer), so ONLY the uncached followers get the default-price
+    broadcast — no fan is messaged twice, the blacklist is honoured."""
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Fan.fan_id).where(Fan.account_id == account_id)
+        )).scalars().all()
+    return [int(x) for x in rows]
+
+
 async def _owners_of_media(account_id: str, media_ids: list[int]) -> set[int]:
     """Fan ids who ALREADY unlocked any of this PPV's media (a paid Message whose
     media overlaps). Used to skip re-pitching content a fan already owns. Reads
@@ -439,6 +452,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if not cfg.get("enabled") or not ppv.get("enabled", True):
         return {"status": "skipped", "reason": "disabled"}
 
+    # "Send to everyone": after the per-tier sends to KNOWN fans, fire ONE
+    # default-price broadcast to ALL subscribers (OF-resolved, reaches uncached
+    # followers too), excluding every known fan so nobody is double-sent. Off
+    # until enabled per account (a deploy alone never mass-blasts a sub list).
+    reach_all = bool(cfg.get("reach_all", False))
+    # Pause = don't re-touch a fan messaged in the last N hours (the contact
+    # guard). Default 0 = NO pause (send to everyone). Applies to both phases.
+    try:
+        pause_hours = max(0, int(cfg.get("pause_hours") or 0))
+    except (TypeError, ValueError):
+        pause_hours = 0
+
     # Cheap fail-fast checks before the fan scan.
     base_cents = int(ppv.get("base_price_cents") or 0)
     if base_cents <= 0:
@@ -477,7 +502,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         owners = await _owners_of_media(account_id, media_ids)
         if owners:
             fan_rows = [r for r in fan_rows if int(r[0]) not in owners]
-    if not fan_rows:
+    # No known fans is only a hard stop when we're NOT also broadcasting to all
+    # subscribers (reach_all): the broadcast can still reach the uncached list.
+    broadcasting = reach_all and not force_ids
+    if not fan_rows and not broadcasting:
         return {"status": "skipped", "reason": "no_fans"}
 
     cells = _segments(fan_rows, last_purchase, now)
@@ -494,7 +522,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 "preview": _rotate_preview(preview_pool, day_idx),
             })
         return {"dry_run": True, "ppv_id": ppv_id, "is_resend": is_resend,
-                "cells": len(plan), "fans": len(fan_rows), "plan": plan, "sent": 0}
+                "cells": len(plan), "fans": len(fan_rows), "plan": plan, "sent": 0,
+                "broadcast_all": broadcasting,
+                "broadcast_price": (base_cents / 100) if broadcasting else None,
+                "pause_hours": pause_hours}
 
     # ── send: one mass call per non-empty cell, matrix price + rotated preview
     from automations.send_mass_message import run as send_mass_run
@@ -516,9 +547,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "price": price / 100,                 # OF wants dollars
             "included_users": fan_ids,
             "automation_kind": "ppv_send",        # Mass Messages tab attribution
-
-            # exclude_replied/inbound left UNSET → default-on guard (6h/2h) =
-            # the idempotency + don't-double-pitch-recent-buyers guarantee.
+            # Pause = the contact guard. 0 → guard OFF (send to everyone, the
+            # default); >0 → skip fans messaged in the last N hours.
+            "exclude_replied_hours": pause_hours,
+            "exclude_inbound_hours": pause_hours,
         }
         res = await send_mass_run(account_id, send_payload, run_id=run_id)
         results.append({"cell": key, "price": price / 100,
@@ -526,6 +558,32 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if res.get("status") not in ("skipped", "error"):
             sent_cells += 1
             total_recipients += len(fan_ids)
+
+    # ── broadcast: ONE default-price send to ALL subscribers (OF-resolved), with
+    #    EVERY known fan excluded (the per-tier sends above + buyers/bots/blacklist)
+    #    → only the uncached followers get it, at the base "default" price. This is
+    #    how a PPV reaches her whole free-page list without scraping it. ──────────
+    broadcast = None
+    if broadcasting:
+        known_ids = await _all_fan_ids(account_id)
+        broadcast_payload = {
+            "text": _pick_caption(ppv, base_cents),   # default-price caption
+            "media_files": media_ids,
+            "previews": _rotate_preview(preview_pool, day_idx),
+            "price": base_cents / 100,                # the DEFAULT price
+            "user_lists": ["fans"],                   # ALL active subscribers
+            "excluded_users": known_ids,              # → Auto_Exclude (no double-send)
+            "automation_kind": "ppv_send",
+            "exclude_replied_hours": pause_hours,
+            "exclude_inbound_hours": pause_hours,
+        }
+        res = await send_mass_run(account_id, broadcast_payload, run_id=run_id)
+        broadcast = res.get("status")
+        results.append({"cell": "broadcast:all", "price": base_cents / 100,
+                        "recipients": res.get("recipients", 0), "status": broadcast,
+                        "excluded_known": len(known_ids)})
+        if broadcast not in ("skipped", "error"):
+            sent_cells += 1   # counts as a send for the cap + 'ok' status
 
     # ── monthly resend: one-shot +30d (a resend gets a fresh random preview) ─
     resend_job_id = None
@@ -537,12 +595,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             run_at=now + timedelta(days=30),
         )
 
-    log.info("ppv_send account=%s ppv=%s cells=%d recipients=%d resend_job=%s",
-             account_id, ppv_id, sent_cells, total_recipients, resend_job_id)
+    log.info("ppv_send account=%s ppv=%s cells=%d recipients=%d broadcast=%s resend_job=%s",
+             account_id, ppv_id, sent_cells, total_recipients, broadcast, resend_job_id)
     return {
         "status": "ok" if sent_cells else "skipped",
         "reason": None if sent_cells else "all_cells_empty",
         "ppv_id": ppv_id, "is_resend": is_resend,
         "cells_sent": sent_cells, "recipients": total_recipients,
+        "broadcast": broadcast, "pause_hours": pause_hours,
         "resend_job_id": resend_job_id, "results": results,
     }
