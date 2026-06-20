@@ -12,11 +12,12 @@
  * Writes account_ai_config.ppv_library_config_json via /admin/ppv-library-config.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DollarSign, Image as ImageIcon, Copy } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/primitives";
 import { VaultPicker } from "@/components/chat/VaultPicker";
+import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { cn } from "@/lib/utils";
 import { proxyImage } from "@/lib/relay";
 import {
@@ -148,6 +149,23 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   // bulk one-liner import: which card's paste box is open + its text
   const [importIdx, setImportIdx] = useState<number | null>(null);
   const [importText, setImportText] = useState("");
+
+  // Resolve SAVED media ids → thumbnails so the grid shows real images after a
+  // RELOAD. mediaThumbs only holds items picked this session (from the picker's
+  // onConfirm); a reload restores media_ids from config but no thumbs, so the
+  // tiles fell back to "#N". Fan out a by-id vault read per stored id (cached,
+  // 404-tolerant) and prefer the session cache when present.
+  const allMediaIds = useMemo(
+    () => Array.from(new Set(ppvs.flatMap((p) => p.media_ids))),
+    [ppvs],
+  );
+  const resolvedById = useVaultMediaByIds(accountId, allMediaIds);
+  const thumbFor = (id: number): string => {
+    if (mediaThumbs[id]) return mediaThumbs[id];
+    const f = resolvedById[id]?.files;
+    const raw = f?.thumb?.url || f?.squarePreview?.url || f?.preview?.url || null;
+    return raw ? proxyImage(raw, accountId) : "";
+  };
 
   const pools = cfgQ.data?.pools ?? Object.keys(POOL_LABELS);
   const captionPools = cfgQ.data?.caption_pools ?? {};
@@ -434,7 +452,7 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                 <div className="flex flex-wrap gap-2">
                   {p.media_ids.map((id, mi) => {
                     const isPrev = (p.preview_options ?? []).includes(id);
-                    const thumb = mediaThumbs[id];
+                    const thumb = thumbFor(id);
                     return (
                       <button
                         key={id}
