@@ -1,0 +1,548 @@
+"""service/automations/ppv_send.py — the PPV Library sender.
+
+One premade PPV → fanned out to spend×recency fan SEGMENTS, the SAME media at a
+DIFFERENT price per segment, with a rotated preview teaser. Self-registers via
+`@register("ppv_send")`.
+
+Where it fits:
+  • Operator builds ~20 PPVs in the "PPV Library" tab (ppv_library_config_api),
+    each = vault media ids + a caption-pool key + a base price + preview options
+    + sends_per_week + resend_monthly.
+  • On save the config API upserts ONE `ppv_send` AutomationRule per enabled PPV,
+    cadence `every_seconds = 604800 / sends_per_week`. The existing rule
+    materializer is the scheduler — there is no rotator here.
+  • When a rule fires, the job payload names one PPV (`{account_id, ppv_id}`).
+    THIS module reads that PPV from the config blob and does the send.
+
+Per run it:
+  1. reads the PPV from `account_ai_config.ppv_library_config_json`,
+  2. buckets every fan into exactly ONE spend×recency cell (so nobody is double
+     billed in a run) via the indexed `fans.lifetime_spend_cents` /
+     `fans.last_message_received_at` columns,
+  3. for each non-empty cell: price = base × spend_mult × recency_mult (rounded to
+     .99, floored at $3.99 — OF rejects priced messages under $3.00), a day-ROTATED
+     preview from the pool (every resend looks fresh), a random caption with the
+     {now}/{was}/{off} discount tokens filled, then delegates to `send_mass_message.run`,
+  4. if `resend_monthly`, enqueues a one-shot `ppv_send` at now+30d (a later day →
+     a different rotated preview). Buyers drop out (exclude_buyers); non-buyers keep
+     getting the same locked content re-pitched with a new teaser until they unlock.
+
+Idempotency: NONE of its own — it leans on send_mass_message's DEFAULT-ON contact
+guard (6h outbound / 2h inbound). A duplicate fire within 6h finds every recipient
+already messaged → empty audience → skipped. No state blob, no dedup table.
+
+Payload shape::
+
+    {"account_id": "123456789", "ppv_id": "ppv_a3f9",
+     "is_resend": false,            # true = the +30d monthly repeat (fresh preview)
+     "dry_run": false,              # plan only — no send, no enqueue
+     "force_ids": [123]}            # test-scope: restrict the audience to these fans
+"""
+from __future__ import annotations
+
+import json
+import logging
+import random
+from datetime import datetime, timedelta
+
+from sqlalchemy import func, select
+
+from automation_registry import register
+from db.engine import get_session
+from db.models import (
+    AccountAiConfig, AutomationRun, Blacklist, Fan, Message, ScheduledJob, Transaction,
+)
+
+log = logging.getLogger("of-relay.automation.ppv_send")
+
+# ── Price matrix (confirmed defaults: whale 2×, $100 whale cutoff, medium win-back)
+# spend band: (name, min_cents_inclusive, max_cents_exclusive, multiplier)
+SPEND_BANDS: list[tuple[str, int, float, float]] = [
+    ("whale", 10_000, float("inf"), 2.0),   # $100+ lifetime
+    ("mid",    2_500, 10_000,       1.0),    # $25–100
+    ("low",        1,  2_500,       0.7),    # under $25
+    ("free",       0,      1,       0.5),    # never paid
+]
+# recency band by days since last inbound message: (name, max_days_exclusive, mult)
+RECENCY_BANDS: list[tuple[str, float, float]] = [
+    ("hot",     3,            1.15),   # active in the last 3 days
+    ("warm",   14,            1.0),    # this week-ish
+    ("cool",   90,            0.8),    # cooling off
+    ("quiet",  float("inf"),  0.55),   # gone quiet (also: never messaged)
+]
+# OF rejects any priced message below $3.00 ("Minimum message price is $3.00",
+# verified live 2026-06-20). We floor at $3.99 to clear it AND keep the .99 styling.
+_PRICE_FLOOR_CENTS = 399
+_PRICE_CEIL_CENTS = 20_000     # OF PPV max ($200)
+
+_DEFAULTS = {"enabled": False, "ppvs": []}
+
+# ── Caption pools (mirror of library/PPV_CAPTIONS.md) ────────────────────────
+# The library JSON stores a pool KEY per PPV (captions are global, not per-account);
+# the runner random-picks one line at send time and fills {was}/{now}.
+PPV_CAPTION_POOLS: dict[str, list[str]] = {
+    "intro_new": [
+        "ok i dont usually do this but i made somethin just for u 🙈 wanna see?",
+        "u been so sweet to me so im lettin u in first... its only a lil to unlock, promise its worth it",
+        "i was thinkin bout u when i shot this lol. open it, dont leave me hangin",
+        "first one basically on me, barely costs anything. just unlock n tell me what u think",
+        "im a lil nervous to send this ngl... but u get to see it before anyone. go on 👀",
+        "new here so i wanna spoil u a bit. peek at this n lemme know",
+    ],
+    "standard_active": [
+        "been thinkin about sendin u this all day... finally did it 🤭 unlock it for me",
+        "u always know what i like so i made this with u in mind. go see",
+        "okay this one might be my fav ive done. dont sleep on it babe",
+        "i shouldnt be this naughty on a tuesday lol. its waitin for u",
+        "filmed somethin earlier n immediately thought of u. its urs if u want it",
+        "stop bein shy n open it already 😏 u know u wanna",
+    ],
+    "vip_whale": [
+        "only sendin this to like 3 of my fav people n ur one of them. its special, dont share ok",
+        "this is the one i dont post anywhere. made it for the ones who actually take care of me 🖤",
+        "i went all out on this... its way more than i usually give. for u only",
+        "u spoil me so im spoilin u back, this my best work hands down. go see what i did",
+        "savin the real stuff for u. this aint the lil teasers i send everyone, unlock n youll get it",
+    ],
+    "winback_dormant": [
+        "hey stranger... where u been? made this hopin itd bring u back. {off} off just for u, was {was} now {now}",
+        "okay i miss u fr 🙈 heres a lil somethin to make up for it, basically nothing. come back to me",
+        "u forgot about me?? rude lol. unlock this n ill forgive u, takin {off} off so its just {now}",
+        "been a min since i heard from u. this used to be {was}, givin it {off} off for {now}, dont waste it",
+        "i kept this one for when u came back... here. its only {now} ({off} off babe), just open it n say hi",
+    ],
+    "teaser_free": [
+        "this is just the lil preview... the rest is so much better trust me 👀",
+        "im only showin u this much for free lol. wait til u see what happens after",
+        "lil taste. u want the full thing? say the word",
+        "couldnt help myself today. this the soft version, the real one is comin",
+        "consider this a teaser. ull be thinkin bout the rest all day promise",
+    ],
+    "photoset_striptease": [
+        "starts cute n innocent... it does NOT stay that way lol. unlock to see where it goes",
+        "i may have started dressed in these 🙈 may have not ended that way. ur call to find out",
+        "it gets better with every single pic. dont stop til the last one",
+        "watch me lose the outfit one pic at a time. the last few r my fav",
+        "this set is a whole lil story... u gotta see how it ends",
+    ],
+    "video_ppv": [
+        "couldnt keep my hands still in this one 🤭 its a video, unlock n watch",
+        "made u a lil clip. first few seconds r tame, give it a min n youll see why i sent it",
+        "this video is longer than i usually do... worth every second i promise. go play it",
+        "filmed this in one take n didnt even edit much, its all me",
+        "u said u wanted to actually see me move... here. press play",
+    ],
+    "followup_nonunlocker": [
+        "u left me on read with that one 🥺 it dont expire yet but dont make me wait",
+        "still sittin there waitin for u to open it lol. u good?",
+        "ok ill sweeten it since u been busy. same one, lil cheaper now",
+        "hellooo did u forget what i sent u 👀 its still there",
+        "not gonna lie i kept checkin if u opened it. u gonna leave me hangin?",
+    ],
+    "bundle_anchor": [
+        "okay im doin somethin crazy... a whole bundle of my stuff for like 80 off. its a LOT, unlock it",
+        "cleanin out my vault n givin u everything for one price. this wont be up long babe",
+        "ive never dropped this much at once. all of it, one unlock, way less than its worth. go fast",
+        "huge drop just for my real ones. tons of content one price, dont overthink it just open it",
+    ],
+    # ── long-form, multi-paragraph sales copy (the "screenshot" look). \n\n =
+    #    a blank line between paragraphs; {off}/{was}/{now} auto-fill the discount.
+    "bundle_long": [
+        "🌟 just for u babe 🌟\n\nim doin {off} off my full bundle today only ❤️‍🔥 unlock this n u get everything... all the pics, all the vids, the stuff i dont post anywhere else\n\nwas {was}, urs for {now} right now 🙈 i wont leave it up long so dont sleep on it 😘",
+        "okay im finally droppin the big one 🔥\n\nthis is everything ive been holdin back from u. the whole set, nothin cut, n u keep it for life the second u open it\n\nnormally {was}... takin it down to {now} just for the ones who actually show up for me. thats u 🖤 go before i change my mind",
+        "im doin somethin a lil crazy tonight 😳\n\nu always take such good care of me so heres my whole vault in one drop. every angle, every tease, the full thing\n\n{off} off so its only {now} (was {was}) babe. trust me ur gonna want this one forever 😈",
+        "real talk i almost didnt post this 🙈\n\nbut i put together my biggest bundle yet n i want u to have it. tons of content, one unlock, way more than its worth\n\nwas {was}, urs for {now} today only. dont leave me waitin ok 💋",
+    ],
+    # ── short, punchy discount blasts with urgency
+    "flash_discount": [
+        "🔥 {off} OFF today only babe 🔥 ive literally never sold it this cheap... was {was} now just {now} 🙈 unlock before i put it back up",
+        "okay sale time 😈 {off} off for the next few hours only. {now} instead of {was}. go go go before i change my mind 🤭",
+        "{now}?? thats nothin for what u get 🙈 was {was}, droppin it just for today. unlock n thank me later 😘",
+        "flash deal just for u 🔥 {off} off, only {now} (was {was}). ends tonight, dont leave it sittin there 👀",
+        "spoilin u today babe 💋 {off} off my newest set. was {was}, urs for {now} rn. dont make me regret bein this generous 😏",
+    ],
+    # ── "you're on my special list" exclusivity + a bulleted what's-inside
+    "exclusive_list": [
+        "⚠️ this aint a mass dm babe ur on my special lil list 🙈\n\nso ur gettin my brand new bundle before i drop it to everyone. heres whats inside (n u keep it all for life):\n\n✨ the full set\n✨ all my fav angles\n✨ the views u always ask for\n✨ n more 😻\n\n{off} off so its just {now} (was {was}). dont tell the others 🤫",
+        "psst... not sendin this to everyone ok 🙈 just my real ones\n\ni made a lil exclusive drop n ur on the list for it. whats included:\n\n✨ my newest pics\n✨ a video i never posted\n✨ the closeups u love\n\nonly {now} for u babe (was {was}, thats {off} off). keep it between us 🤍",
+        "hey u 🙈 ur literally one of like a handful gettin this\n\nbrand new bundle, way too much to show all my fans on here haha. so its just for the special list. heres the rundown:\n\n✨ full set\n✨ behind the scenes\n✨ my absolute fav angles\n\nyours for {now} (was {was}) 😻 dont share ok",
+    ],
+    # ── vulnerable / personal "im finally ready to show u this side of me"
+    "intimate_reveal": [
+        "it took me a while to get this comfy with u but im finally ready to show u this side of me 🙈 please dont judge me ok... its a lot for me. unlock it n be sweet",
+        "this is one of the most personal things ive ever filmed 😳 kinda nervous sendin it ngl. but i trust u. go see, just dont share it 🤍",
+        "i guess we all got our secret lil kinks right 🙈 well this is mine. i never show this part of me but... here. dont disappoint me ok",
+        "ive never been this open on here. unlockin this honestly feels like a big step for me. be gentle with it babe, its just for u 🥺",
+        "okay i almost didnt send this one... its real intimate. but somethin bout u makes me wanna show u everything. its urs 😳",
+    ],
+}
+_FALLBACK_CAPTION = "made somethin for u 🙈 unlock it"
+
+
+def round_to_99(amount_cents: float) -> int:
+    """Round to the nearest whole dollar, then end in .99, floored at $0.99 and
+    capped at $200. e.g. 5750 → 5799 ($57.99); 4999 → 4999 ($49.99)."""
+    dollars = round(amount_cents / 100)
+    cents = 99 if dollars < 1 else dollars * 100 - 1
+    return max(_PRICE_FLOOR_CENTS, min(cents, _PRICE_CEIL_CENTS))
+
+
+def _spend_band(cents: int) -> tuple[str, float]:
+    c = max(0, int(cents or 0))
+    for name, lo, hi, mult in SPEND_BANDS:
+        if lo <= c < hi:
+            return name, mult
+    return "free", 0.5
+
+
+def _recency_band(last_dt: datetime | None, now: datetime) -> tuple[str, float]:
+    if last_dt is None:
+        return "quiet", 0.55
+    days = max(0.0, (now - last_dt).total_seconds() / 86_400)
+    for name, hi_days, mult in RECENCY_BANDS:
+        if days < hi_days:
+            return name, mult
+    return "quiet", 0.55
+
+
+def _money(cents: int) -> str:
+    return f"${cents // 100}" if cents % 100 == 0 else f"${cents / 100:.2f}"
+
+
+def _anchor_price(now_cents: int) -> int:
+    """A believable 'was' price for the discount framing: ~4x what the fan actually
+    pays, rounded to end in .99. Display only (NOT a real OF price) so no $200 ceiling
+    — this keeps EVERY segment's caption reading like a genuine ~75% off deal, even
+    the whale cell where the real price is high. {now} < {was} always holds."""
+    dollars = max(1, round(now_cents * 4 / 100))
+    return dollars * 100 - 1
+
+
+def _pct_off(now_cents: int, was_cents: int) -> int:
+    if was_cents <= 0 or now_cents >= was_cents:
+        return 0
+    return round((1 - now_cents / was_cents) * 100)
+
+
+def _pick_caption(ppv: dict, cell_price_cents: int) -> str:
+    """Random caption (custom caption_texts win over the pool), discount tokens filled:
+    {now} = this segment's price, {was} = an auto anchor ~4x above (always a discount),
+    {off} = the resulting percent off (e.g. '75%')."""
+    texts = ppv.get("caption_texts")
+    if not (isinstance(texts, list) and texts):
+        texts = PPV_CAPTION_POOLS.get(str(ppv.get("caption_pool_key") or ""), [])
+    line = random.choice(texts) if texts else _FALLBACK_CAPTION
+    if "{now}" in line or "{was}" in line or "{off}" in line:
+        was = _anchor_price(cell_price_cents)
+        line = (line.replace("{now}", _money(cell_price_cents))
+                    .replace("{was}", _money(was))
+                    .replace("{off}", f"{_pct_off(cell_price_cents, was)}%"))
+    return line
+
+
+def _rotate_preview(pool: list, idx: int) -> list[int]:
+    """Deterministic round-robin so each RESEND (a different day) shows a DIFFERENT
+    teaser with NO stored state — pool[idx % len]. A fan who didn't buy keeps getting
+    the same locked content with a fresh preview each cycle. Empty pool → no preview."""
+    return [pool[idx % len(pool)]] if pool else []
+
+
+def _segments(fan_rows: list, last_purchase: dict, now: datetime) -> dict[str, dict]:
+    """Bucket fans into one spend×recency cell each. Spend = lifetime_spend_cents;
+    recency = days since last PURCHASE (Transaction.occurred_at), NOT last message —
+    a non-messaging buyer must still bucket by when they bought, and a never-buyer
+    falls to 'quiet' (the cheapest intro price). Returns
+    {cell_key: {spend, recency, spend_mult, rec_mult, fan_ids:[...]}}."""
+    cells: dict[str, dict] = {}
+    for fan_id, spend_cents in fan_rows:
+        sname, smult = _spend_band(spend_cents)
+        rname, rmult = _recency_band(last_purchase.get(int(fan_id)), now)
+        key = f"{sname}:{rname}"
+        cell = cells.get(key)
+        if cell is None:
+            cell = cells[key] = {
+                "spend": sname, "recency": rname,
+                "spend_mult": smult, "rec_mult": rmult, "fan_ids": [],
+            }
+        cell["fan_ids"].append(int(fan_id))
+    return cells
+
+
+async def _eligible_fans(account_id: str):
+    """All non-bot, non-blacklisted fans for the account + their last-PURCHASE time.
+    We filter bots/blacklisted HERE because ppv_send passes explicit included_users,
+    and the send-side contact guard does NOT bot/blacklist-filter an explicit set.
+    Recency is last purchase (Transaction.occurred_at), not last message."""
+    blacklisted = select(Blacklist.fan_id)
+    async with get_session() as s:
+        fan_rows = (await s.execute(
+            select(Fan.fan_id, Fan.lifetime_spend_cents).where(
+                Fan.account_id == account_id,
+                Fan.is_bot.is_(False),
+                Fan.fan_id.not_in(blacklisted),
+            )
+        )).all()
+        purchases = (await s.execute(
+            select(Transaction.fan_id, func.max(Transaction.occurred_at)).where(
+                Transaction.account_id == account_id,
+                Transaction.amount_cents > 0,
+                Transaction.fan_id.is_not(None),
+            ).group_by(Transaction.fan_id)
+        )).all()
+    last_purchase = {int(fid): dt for fid, dt in purchases if fid is not None}
+    return fan_rows, last_purchase
+
+
+async def _owners_of_media(account_id: str, media_ids: list[int]) -> set[int]:
+    """Fan ids who ALREADY unlocked any of this PPV's media (a paid Message whose
+    media overlaps). Used to skip re-pitching content a fan already owns. Reads
+    `Message.is_paid is True` (True = unlocked) + the per-message `media_ids` JSON."""
+    target = {int(x) for x in media_ids}
+    if not target:
+        return set()
+    owners: set[int] = set()
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.fan_id, Message.media_ids).where(
+                Message.account_id == account_id,
+                Message.is_paid.is_(True),
+            )
+        )).all()
+    for fid, mids_json in rows:
+        if fid is None:
+            continue
+        try:
+            mids = {int(x) for x in json.loads(mids_json or "[]")}
+        except Exception:
+            continue
+        if mids & target:
+            owners.add(int(fid))
+    return owners
+
+
+# ── Per-account cap: max PPV sends per rolling day / week / month ────────────
+_CAP_WINDOWS = (("per_day", 86_400), ("per_week", 7 * 86_400), ("per_month", 30 * 86_400))
+
+
+async def _recent_ppv_send_times(account_id: str, now: datetime) -> list[datetime]:
+    """completed_at of this account's ppv_send fires that ACTUALLY sent (cells_sent>0)
+    in the last 30 days — the cap counter. AutomationRun.status is always 'ok' so we
+    key on the per-fire stats_json: a capped/skipped fire has no cells_sent."""
+    since = now - timedelta(days=30)
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(AutomationRun.completed_at).where(
+                AutomationRun.account_id == account_id,
+                AutomationRun.kind == "ppv_send",
+                AutomationRun.completed_at.is_not(None),
+                AutomationRun.completed_at >= since,
+                func.json_extract(AutomationRun.stats_json, "$.cells_sent") > 0,
+            )
+        )).scalars().all()
+    return sorted(r for r in rows if r is not None)
+
+
+def _cap_release(caps: dict, send_times: list, now: datetime):
+    """Even-spread throttle. With cap N per window W, enforce a MINIMUM gap of W/N
+    between PPV sends — so 2/day becomes one every 12h, 3/day every 8h, etc. — measured
+    from the LAST send (the spacing restarts from the moment the previous one went /
+    the cap lifted). The widest required gap across the day/week/month caps wins.
+    Returns (capped, release_at, which_cap): release_at = the earliest the next send is
+    allowed (last_send + that gap). Clear to send now → (False, None, None)."""
+    if not send_times:
+        return (False, None, None)
+    last = max(send_times)
+    release = None
+    which = None
+    for key, window_s in _CAP_WINDOWS:
+        try:
+            limit = int(caps.get(key) or 0)
+        except (TypeError, ValueError):
+            limit = 0
+        if limit <= 0:
+            continue
+        earliest = last + timedelta(seconds=window_s / limit)   # one slot every W/N
+        if now < earliest and (release is None or earliest > release):
+            release, which = earliest, key
+    return (release is not None, release, which)
+
+
+async def _defer_capped(account_id: str, ppv_id: str, release_at: datetime, now: datetime):
+    """Re-enqueue a one-shot ppv_send for this ppv at the cap-free time, UNLESS one is
+    already pending (dedup → no pile-up across the rule's repeated fires)."""
+    import automation_executor as ax
+    async with get_session() as s:
+        existing = (await s.execute(
+            select(ScheduledJob.id).where(
+                ScheduledJob.account_id == account_id,
+                ScheduledJob.kind == "ppv_send",
+                ScheduledJob.status == "pending",
+                ScheduledJob.run_at > now,
+                func.json_extract(ScheduledJob.payload_json, "$.ppv_id") == ppv_id,
+            ).limit(1)
+        )).scalar_one_or_none()
+    if existing is not None:
+        return None
+    return await ax.enqueue_job(account_id, "ppv_send",
+                                payload={"account_id": account_id, "ppv_id": ppv_id},
+                                run_at=release_at)
+
+
+async def segment_preview(account_id: str, base_price_cents: int) -> dict:
+    """Per-cell recipient counts + prices for a base price — the UI dry-run. Surfaces
+    the 'everyone collapses into the cheap cell' case (thin data) BEFORE any send."""
+    now = datetime.utcnow()
+    fan_rows, last_purchase = await _eligible_fans(account_id)
+    base = max(_PRICE_FLOOR_CENTS, min(int(base_price_cents or 0), _PRICE_CEIL_CENTS))
+    cells = _segments(fan_rows, last_purchase, now)
+    plan = [
+        {
+            "cell": key, "spend": c["spend"], "recency": c["recency"],
+            "recipients": len(c["fan_ids"]),
+            "price": round_to_99(base * c["spend_mult"] * c["rec_mult"]) / 100,
+        }
+        for key, c in sorted(cells.items())
+    ]
+    return {"total_fans": len(fan_rows), "cells": plan}
+
+
+def _load_ppv(cfg_json: str | None, ppv_id: str) -> tuple[dict, dict] | tuple[None, dict]:
+    cfg = dict(_DEFAULTS)
+    if cfg_json:
+        try:
+            cfg.update(json.loads(cfg_json) or {})
+        except Exception:
+            pass
+    for p in cfg.get("ppvs") or []:
+        if isinstance(p, dict) and str(p.get("id")) == str(ppv_id):
+            return p, cfg
+    return None, cfg
+
+
+@register("ppv_send")
+async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
+    payload = payload or {}
+    ppv_id = payload.get("ppv_id")
+    if not ppv_id:
+        return {"status": "skipped", "reason": "no_ppv_id"}
+    is_resend = bool(payload.get("is_resend"))
+    dry_run = bool(payload.get("dry_run"))
+    force_ids = {int(x) for x in (payload.get("force_ids") or [])}
+
+    now = datetime.utcnow()
+
+    async with get_session() as s:
+        cfg_row = await s.get(AccountAiConfig, account_id)
+    ppv, cfg = _load_ppv(cfg_row.ppv_library_config_json if cfg_row else None, ppv_id)
+    if ppv is None:
+        return {"status": "skipped", "reason": "ppv_not_found"}
+    if not cfg.get("enabled") or not ppv.get("enabled", True):
+        return {"status": "skipped", "reason": "disabled"}
+
+    # Cheap fail-fast checks before the fan scan.
+    base_cents = int(ppv.get("base_price_cents") or 0)
+    if base_cents <= 0:
+        return {"status": "skipped", "reason": "no_base_price"}
+    media_ids = [int(x) for x in (ppv.get("media_ids") or []) if str(x).strip()]
+    if not media_ids:
+        return {"status": "skipped", "reason": "no_media"}
+    media_set = set(media_ids)
+    # OF `previews` are the attached media shown FREE as the teaser, so each preview
+    # id MUST be one of media_files — anything else → OF 400 "Wrong preview". Keep
+    # only valid ones; an empty pool = a fully-locked PPV (also valid).
+    preview_pool = [int(x) for x in (ppv.get("preview_options") or [])
+                    if str(x).strip() and int(x) in media_set]
+    day_idx = now.toordinal()   # rotates the preview once per day → fresh on each resend
+
+    # ── per-account cap: even-spread the day/week/month limit (one send every
+    #    window/N, re-scheduling a too-soon send to its slot).
+    # (force_ids = an explicit live-test scope, bypasses the cap.)
+    caps = cfg.get("ppv_caps") or {}
+    if not dry_run and not force_ids and any((caps.get(k) or 0) for k in
+                                             ("per_day", "per_week", "per_month")):
+        capped, release_at, which = _cap_release(
+            caps, await _recent_ppv_send_times(account_id, now), now)
+        if capped:
+            job_id = await _defer_capped(account_id, ppv_id, release_at, now)
+            log.info("ppv_send capped account=%s ppv=%s cap=%s release=%s defer_job=%s",
+                     account_id, ppv_id, which, release_at, job_id)
+            return {"status": "skipped", "reason": f"capped_{which}",
+                    "retry_at": release_at.isoformat() + "Z", "defer_job_id": job_id}
+
+    fan_rows, last_purchase = await _eligible_fans(account_id)
+    if force_ids:
+        # Explicit scope (live test) bypasses the buyer filter.
+        fan_rows = [r for r in fan_rows if int(r[0]) in force_ids]
+    elif ppv.get("exclude_buyers", True):
+        owners = await _owners_of_media(account_id, media_ids)
+        if owners:
+            fan_rows = [r for r in fan_rows if int(r[0]) not in owners]
+    if not fan_rows:
+        return {"status": "skipped", "reason": "no_fans"}
+
+    cells = _segments(fan_rows, last_purchase, now)
+
+    # ── dry_run: the per-cell plan, no send, no enqueue ─────────────────
+    if dry_run:
+        plan = []
+        for key, cell in sorted(cells.items()):
+            price = round_to_99(base_cents * cell["spend_mult"] * cell["rec_mult"])
+            plan.append({
+                "cell": key, "recipients": len(cell["fan_ids"]),
+                "price": price / 100,
+                "caption": _pick_caption(ppv, price)[:80],
+                "preview": _rotate_preview(preview_pool, day_idx),
+            })
+        return {"dry_run": True, "ppv_id": ppv_id, "is_resend": is_resend,
+                "cells": len(plan), "fans": len(fan_rows), "plan": plan, "sent": 0}
+
+    # ── send: one mass call per non-empty cell, matrix price + rotated preview
+    from automations.send_mass_message import run as send_mass_run
+
+    sent_cells = 0
+    total_recipients = 0
+    results: list[dict] = []
+    for key, cell in sorted(cells.items()):
+        fan_ids = cell["fan_ids"]
+        if not fan_ids:
+            continue
+        price = round_to_99(base_cents * cell["spend_mult"] * cell["rec_mult"])
+        send_payload = {
+            # Text is intentionally NOT locked — fans see the teaser caption free,
+            # only the media sits behind the price (locked_text defaults off).
+            "text": _pick_caption(ppv, price),
+            "media_files": media_ids,
+            "previews": _rotate_preview(preview_pool, day_idx),
+            "price": price / 100,                 # OF wants dollars
+            "included_users": fan_ids,
+            "automation_kind": "ppv_send",        # Mass Messages tab attribution
+
+            # exclude_replied/inbound left UNSET → default-on guard (6h/2h) =
+            # the idempotency + don't-double-pitch-recent-buyers guarantee.
+        }
+        res = await send_mass_run(account_id, send_payload, run_id=run_id)
+        results.append({"cell": key, "price": price / 100,
+                        "recipients": len(fan_ids), "status": res.get("status")})
+        if res.get("status") not in ("skipped", "error"):
+            sent_cells += 1
+            total_recipients += len(fan_ids)
+
+    # ── monthly resend: one-shot +30d (a resend gets a fresh random preview) ─
+    resend_job_id = None
+    if ppv.get("resend_monthly") and not is_resend:
+        import automation_executor as ax
+        resend_job_id = await ax.enqueue_job(
+            account_id, "ppv_send",
+            payload={"account_id": account_id, "ppv_id": ppv_id, "is_resend": True},
+            run_at=now + timedelta(days=30),
+        )
+
+    log.info("ppv_send account=%s ppv=%s cells=%d recipients=%d resend_job=%s",
+             account_id, ppv_id, sent_cells, total_recipients, resend_job_id)
+    return {
+        "status": "ok" if sent_cells else "skipped",
+        "reason": None if sent_cells else "all_cells_empty",
+        "ppv_id": ppv_id, "is_resend": is_resend,
+        "cells_sent": sent_cells, "recipients": total_recipients,
+        "resend_job_id": resend_job_id, "results": results,
+    }

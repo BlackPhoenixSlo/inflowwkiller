@@ -141,6 +141,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     mint a `mass_runs` row, and persist one optimistic `messages` row per known
     recipient. Returns a stats dict (lands in `automation_runs.stats_json`)."""
     payload = payload or {}
+    # Attribution tag for MassRun / optimistic rows (Mass Messages tab badge). A
+    # caller like ppv_send passes its own kind; default is this automation's name.
+    attr_kind = str(payload.get("automation_kind") or "send_mass_message")
 
     # ── 1) Resolve text + audience (funnels / lists / fans) ──────────────
     async with get_session() as s:
@@ -272,7 +275,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 account_id=str(account_id),
                 funnel_id=funnel.id if funnel else None,
                 started_by_employee_id=employee_id,
-                automation_kind="send_mass_message",
+                automation_kind=attr_kind,
                 audience_filter=audience_filter,
                 recipient_count=len(recipients),
                 status="running",
@@ -336,7 +339,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 price_cents=price_cents,
                 created_at=created_at,
                 mass_run_id=mass_run_id,
-                automation_kind="send_mass_message",
+                automation_kind=attr_kind,
                 emit_live=True,  # WORKER→SSE bridge
             )
             await reconcile_mass_placeholder(
@@ -355,7 +358,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             body=text,
             price_cents=price_cents,
             created_at=created_at,
-            automation_kind="send_mass_message",
+            automation_kind=attr_kind,
             emit_live=True,  # WORKER→SSE bridge
         )
 
