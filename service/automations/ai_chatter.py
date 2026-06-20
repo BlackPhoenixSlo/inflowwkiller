@@ -72,7 +72,7 @@ from ._common import (
     ONPLATFORM_GUARDRAIL, STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER,
     STYLE_MAX_BUBBLES,
     apply_nonnative_style, apply_word_restriction, coerce_ids, guard_offplatform,
-    hold_with_typing, humanize_typos, load_nonnative_flags, load_style_flags,
+    hold_with_typing, apply_typo_throttle, load_nonnative_flags, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags,
     quarantine_if_undeliverable, recent_payer_fans, resolve_fan_name, resolve_model,
     should_skip_muted_creator, skip_unreachable_fan, typing_delay_seconds,
@@ -115,6 +115,13 @@ _DEFAULTS: dict = {
     "offer_mode": "both",                # M3: "tip" | "ppv" | "both"
     "max_offers_per_fan_per_day": 2,     # M3
     "min_fan_msgs_between_offers": 4,    # M3
+    "pivot_on_escalation": True,         # closer pivots tease→offer when the fan
+                                         # leans in / gets physical (ESCALATION_RE)
+                                         # even without an explicit "show me" — but
+                                         # only after he's chatted a bit. Still bound
+                                         # by the offer pacing caps above.
+    "min_fan_msgs_before_escalation_pitch": 2,  # "chat a bit first": no escalation
+                                                # pivot until he's sent >= this many
     "max_fans_per_tick": 8,
     "resume_after_manual_hours": 6,      # cautious resume after a human chatted
     "stall_ttl_hours": 48,               # M3: open offer → expired
@@ -850,7 +857,8 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     style_on: bool = False,
                     nonnative_on: bool = False,
                     sell_block: str = "",
-                    content_ask: bool = False) -> tuple[list[dict], list[str]]:
+                    content_ask: bool = False,
+                    escalation: bool = False) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — of_ai_chat's girly info-gather prompt
     with one structural difference: `sell_block`. Empty (M2) → the no-offers
     line stays, byte-equal behavior. Non-empty (M3) → the catalog/offer rules
@@ -913,6 +921,19 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
             "don't ask a get-to-know question this message. Pick the piece from "
             "WHAT YOU CAN SELL that best fits the vibe, tease it from its "
             "description, give the terms, and end with the >>OFFER line."
+        )
+        presented = []
+        ask = False
+    elif escalation and sell_block.strip():
+        # He's leaning in / getting physical with a live manifest: stop teasing and
+        # convert. Softer than a content-ask (he didn't literally say "show me"), so
+        # one flirty line THEN the offer — never a cold price-drop.
+        need_block = (
+            "HE'S CLEARLY INTO IT RIGHT NOW — leaning in, getting flirty/physical. "
+            "This is the moment to SELL, not tease again. Don't ask a get-to-know "
+            "question. Match his heat with one short line, then pick the piece from "
+            "WHAT YOU CAN SELL that fits the vibe, tease it from its description, give "
+            "the terms, and end with the >>OFFER line."
         )
         presented = []
         ask = False
@@ -1045,6 +1066,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # buy), then load the catalog + the open-offer map the prompts read.
     cfg_offer_mode = str(cfg.get("offer_mode") or "both")
     intent_only = bool(cfg.get("intent_only"))
+    pivot_on_escalation = bool(cfg.get("pivot_on_escalation"))
+    esc_min_msgs = int(cfg.get("min_fan_msgs_before_escalation_pitch") or 0)
     scripts, catalog_items = await _load_catalog(account_id)
     offer_stats = await _resolve_open_offers(account_id, client, cfg,
                                              dry_run=dry_run,
@@ -1124,6 +1147,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     sent = 0
     offers_made = 0
+    offers_made_on_escalation = 0   # offers triggered by the lean-in pivot
     teasers_sent = 0
     would_offer = 0          # dry-run: offers that would have been recorded
     unbacked_stripped = 0    # price-talk bubbles dropped (no offer behind them)
@@ -1196,11 +1220,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
             content_ask = bool(offerable) and bool(
                 _CONTENT_ASK_RE.search(c.last_body or ""))
+            # Lean-in pivot: he's getting physical/horny (ESCALATION_RE) with a live
+            # manifest and HAS chatted a bit — ride it as an offer instead of teasing
+            # again. An explicit content-ask already owns the pivot, so don't
+            # double-count. Offer pacing caps still gate whether `offerable` is live.
+            escalation = (bool(offerable) and pivot_on_escalation and not content_ask
+                          and c.fan_msg_n >= esc_min_msgs
+                          and bool(ESCALATION_RE.search(c.last_body or "")))
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
                                               style_on=style_on,
                                               nonnative_on=nonnative_on,
                                               sell_block=sell_block,
-                                              content_ask=content_ask)
+                                              content_ask=content_ask,
+                                              escalation=escalation)
             try:
                 res = await llm_client.chat(
                     model=model,
@@ -1281,8 +1313,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 parts = [apply_nonnative_style(p, protect=name_protect) for p in parts]
             if typo_on:
                 protect = name_protect + (list(NONNATIVE_OUTPUTS) if nonnative_on else [])
-                parts = humanize_typos(parts, random.Random(f"{fan_id}:{raw}"),
-                                       protect=protect, max_bubbles=max_bubbles)[:max_bubbles]
+                parts = await apply_typo_throttle(
+                    account_id, fan_id, parts, random.Random(f"{fan_id}:{raw}"),
+                    protect=protect, max_bubbles=max_bubbles)
 
             if dry_run:
                 sent += 1
@@ -1363,6 +1396,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # ATTACH time for media that actually went out (teaser/PPV) so the
             # unseen filter can never re-attach the same piece.
             if offer_item is not None and sent_ok:
+                if escalation:
+                    offers_made_on_escalation += 1
                 await _ensure_progress(account_id, fan_id, offer_item)
                 if offer_item.is_free_teaser:
                     await _record_vault_sends(account_id, fan_id,
@@ -1413,6 +1448,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "candidates": len(candidates),
         "replies_sent": sent,
         "offers_made": offers_made,
+        "offers_made_on_escalation": offers_made_on_escalation,
         "teasers_sent": teasers_sent,
         "would_offer": would_offer,
         "unbacked_stripped": unbacked_stripped,

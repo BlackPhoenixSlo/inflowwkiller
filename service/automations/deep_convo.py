@@ -87,7 +87,7 @@ from ._common import (
     STYLE_HUMANIZER, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style,
     apply_word_restriction, build_facts_note,
     build_structured_nickname, casualize_qtease, coerce_ids, facts_from_fan,
-    hold_with_typing, humanize_typos, load_nonnative_flags, load_style_flags,
+    hold_with_typing, apply_typo_throttle, load_nonnative_flags, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
     strip_emojis,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
@@ -467,8 +467,9 @@ async def _send(client, account_id: str, fan_id: int, text: str,
     if typo:
         # protect words non-native already mangled so the thumb-typo can't double-corrupt
         typo_protect = list(protect) + (list(NONNATIVE_OUTPUTS) if nonnative else [])
-        parts = humanize_typos(parts, random.Random(f"{fan_id}:{text}"),
-                               protect=typo_protect, max_bubbles=len(parts) + 1) or parts
+        parts = (await apply_typo_throttle(
+            account_id, fan_id, parts, random.Random(f"{fan_id}:{text}"),
+            protect=typo_protect, max_bubbles=len(parts) + 1)) or parts
 
     main, *extra = parts
     await _send_one(client, account_id, fan_id, main, typing_wpm, typing_indicator)

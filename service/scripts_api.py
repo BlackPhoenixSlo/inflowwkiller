@@ -60,6 +60,7 @@ _INT_KNOBS = {
     "max_lifetime_spend_cents": (0, 100_000_000),
     "max_offers_per_fan_per_day": (0, 50),
     "min_fan_msgs_between_offers": (0, 100),
+    "min_fan_msgs_before_escalation_pitch": (0, 100),
     "max_fans_per_tick": (1, 100),
     "resume_after_manual_hours": (0, 168),
     "stall_ttl_hours": (1, 720),
@@ -80,6 +81,8 @@ def _validate_cfg(cfg: dict) -> dict:
         out["enabled"] = bool(cfg["enabled"])
     if "intent_only" in cfg:
         out["intent_only"] = bool(cfg["intent_only"])
+    if "pivot_on_escalation" in cfg:
+        out["pivot_on_escalation"] = bool(cfg["pivot_on_escalation"])
     if "mode" in cfg and cfg["mode"] is not None:
         if cfg["mode"] not in _MODES:
             raise HTTPException(422, f"mode must be one of {_MODES}")
