@@ -55,7 +55,7 @@ from ._common import (
     LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, guard_offplatform,
     STYLE_3LINE, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style, apply_word_restriction,
-    build_tip_ask_block, hold_with_typing, humanize_typos, is_content_ask,
+    build_tip_ask_block, hold_with_typing, apply_typo_throttle, is_content_ask,
     load_nonnative_flags, load_strip_emojis, load_style_flags, load_tip_ask_config,
     load_typing_indicator, load_typing_wpm, load_typo_flags, load_hard_skip_ids,
     recent_payer_fans, resolve_fan_name, resolve_model, should_skip_muted_creator,
@@ -544,10 +544,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                     f.of_display_name) if n]
         if nonnative_on:  # opt-in: deterministic non-native misspellings (always)
             parts = [apply_nonnative_style(p, protect=name_protect) for p in parts]
-        if typo_on:  # opt-in: a realistic thumb-slip (+ maybe a "*fix" bubble)
+        if typo_on:  # opt-in: a realistic thumb-slip (+ a throttled "*fix" bubble)
             protect = name_protect + (list(NONNATIVE_OUTPUTS) if nonnative_on else [])
-            parts = humanize_typos(parts, random.Random(f"{f.fan_id}:{raw}"),
-                                   protect=protect, max_bubbles=max_bubbles)[:max_bubbles]
+            parts = await apply_typo_throttle(
+                account_id, f.fan_id, parts, random.Random(f"{f.fan_id}:{raw}"),
+                protect=protect, max_bubbles=max_bubbles)
         if dry_run:
             sent += 1
             continue

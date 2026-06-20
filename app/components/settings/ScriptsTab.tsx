@@ -700,6 +700,12 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
               onChange={(e) => set({ min_fan_msgs_between_offers: parseInt(e.target.value || "0", 10) })} />
           </label>
           <label className="space-y-1">
+            <div className="text-fg-dim text-xs">Chat first: msgs before lean-in offer</div>
+            <input type="number" className={`${INPUT} w-full`} min={0}
+              value={cfg.min_fan_msgs_before_escalation_pitch ?? 2}
+              onChange={(e) => set({ min_fan_msgs_before_escalation_pitch: parseInt(e.target.value || "0", 10) })} />
+          </label>
+          <label className="space-y-1">
             <div className="text-fg-dim text-xs">Hands-off after human send (h)</div>
             <input type="number" className={`${INPUT} w-full`} min={0}
               value={cfg.resume_after_manual_hours ?? 6}
@@ -712,6 +718,11 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
               onChange={(e) => set({ stall_ttl_hours: parseInt(e.target.value || "1", 10) })} />
           </label>
         </div>
+        <label className="flex items-center gap-1.5 text-sm">
+          <input type="checkbox" checked={cfg.pivot_on_escalation ?? true}
+            onChange={(e) => set({ pivot_on_escalation: e.target.checked })} />
+          Pivot to an offer when he&apos;s clearly into it (lean-in/flirty, not just &quot;show me&quot;)
+        </label>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm border-t border-border pt-2">
           <span className="text-xs text-fg-dim">Texting style:</span>
           <label className="flex items-center gap-1.5">

@@ -727,21 +727,24 @@ def _correction_bubble(word: str, rng) -> str:
             "omg_star": f"omg *{w}", "retype": w}[form]
 
 
-def humanize_typos(parts: list[str], rng, *, protect=(),
-                   max_bubbles: int = STYLE_MAX_BUBBLES) -> list[str]:
-    """Inject at most one thumb-typo across `parts` (the bubble list), rate ~1 per
-    5 sentences, and sometimes append a '*fix' correction bubble. Pure: takes an
-    explicit `rng` (random.Random) and returns a NEW list — caller seeds it off
-    (fan_id, text) for reproducibility. Empty/typo-free input returns a copy."""
+def _humanize_typos_impl(parts: list[str], rng, *, protect=(),
+                         max_bubbles: int = STYLE_MAX_BUBBLES,
+                         allow_correction: bool = True) -> tuple[list[str], bool]:
+    """Core injector → (new_parts, correction_emitted). At most one thumb-typo across
+    `parts`, rate ~1 per 5 sentences, and SOMETIMES a '*fix' correction bubble. Pure:
+    takes an explicit `rng` (random.Random) — caller seeds it off (fan_id, text) for
+    reproducibility. When `allow_correction` is False the thumb-slip still rides but
+    the '*fix' bubble is suppressed (the per-fan throttle path); the True branch keeps
+    the original RNG draw order so seeded callers stay byte-identical."""
     parts = [p for p in parts if p and p.strip()]
     if not parts:
-        return parts
+        return parts, False
     protect_set = {w.lower() for name in protect for w in _WORD_RE.findall(str(name))}
 
     # sentences across the whole reply → P(one typo) = min(1, n * rate)
     n_sent = sum(max(1, len(_SENT_RE.findall(p))) for p in parts)
     if rng.random() >= min(1.0, n_sent * _TYPO_SENTENCE_RATE):
-        return list(parts)
+        return list(parts), False
 
     # collect eligible words across all bubbles, pick one. Scan WHOLE
     # whitespace-tokens (not bare alpha runs) so a word embedded in a handle /
@@ -756,12 +759,12 @@ def humanize_typos(parts: list[str], rng, *, protect=(),
             if _typo_eligible(core, protect_set):
                 cands.append((bi, m.start() + lead, m.start() + lead + len(core), core))
     if not cands:
-        return list(parts)
+        return list(parts), False
 
     bi, start, end, word = rng.choice(cands)
     slipped = _mutate_word(word, rng)
     if slipped is None:
-        return list(parts)
+        return list(parts), False
 
     out = list(parts)
     out[bi] = out[bi][:start] + slipped + out[bi][end:]
@@ -771,10 +774,89 @@ def humanize_typos(parts: list[str], rng, *, protect=(),
     # a 2-bubble reply becomes 3 — but NEVER a stray 4th: if the reply is already at
     # max_bubbles, the "*word" would be a bubble too far (out of place), so we skip.
     # Chance is severity-weighted (ugly garbles get fixed more) and the SHAPE varies
-    # so the literal "*word" isn't itself a tell.
+    # so the literal "*word" isn't itself a tell. `allow_correction` short-circuits
+    # FIRST so a throttled reply never consumes the fix RNG draw — the allowed path's
+    # draw order is unchanged.
     fix_p = _TYPO_FIX_P_UGLY if _slip_is_ugly(word, slipped) else _TYPO_FIX_P_BASE
-    if len(out) < max_bubbles and rng.random() < fix_p:
+    emitted = False
+    if allow_correction and len(out) < max_bubbles and rng.random() < fix_p:
         out.append(_correction_bubble(word, rng))
+        emitted = True
+    return out, emitted
+
+
+def humanize_typos(parts: list[str], rng, *, protect=(),
+                   max_bubbles: int = STYLE_MAX_BUBBLES) -> list[str]:
+    """Back-compat wrapper returning just the bubble list (drops the emitted flag).
+    Callers that need the per-fan '*fix' throttle use apply_typo_throttle instead."""
+    return _humanize_typos_impl(parts, rng, protect=protect, max_bubbles=max_bubbles)[0]
+
+
+# ── Per-fan '*fix' correction throttle ───────────────────────────────
+# The thumb-typo itself always rides (an uncorrected slip reads natural), but the
+# "*fix" self-correct bubble is the strongest tell — two of them minutes apart reads
+# like a bot. So across ALL senders a fan sees at most one correction per window:
+# another only after _TYPO_FIX_MIN_INTERVAL has passed OR _TYPO_FIX_MIN_EXCHANGES
+# replies have gone by (whichever comes first re-enables it). State is per-fan and
+# shared between automations, stamped under fans.custom_fields[_TYPO_FIX_STATE_KEY]
+# (an otherwise-unused JSON column → no migration), namespaced under a leading "_"
+# so it never collides with a future user-facing custom field.
+_TYPO_FIX_MIN_INTERVAL = timedelta(hours=1)
+_TYPO_FIX_MIN_EXCHANGES = 50
+_TYPO_FIX_STATE_KEY = "_typo_fix"
+
+
+def _typo_correction_allowed(state: dict, now: datetime) -> bool:
+    """True if a '*fix' bubble may fire now given the per-fan throttle `state`
+    ({'at': iso, 'since': int}). First correction always allowed; afterwards gated
+    on 1h elapsed OR _TYPO_FIX_MIN_EXCHANGES replies since the last one."""
+    last_raw = state.get("at")
+    if not last_raw:
+        return True
+    try:
+        last = datetime.fromisoformat(last_raw)
+    except Exception:
+        return True
+    since = int(state.get("since", 0) or 0)
+    return (now - last) >= _TYPO_FIX_MIN_INTERVAL or since >= _TYPO_FIX_MIN_EXCHANGES
+
+
+async def apply_typo_throttle(account_id, fan_id, parts, rng, *, protect=(),
+                              max_bubbles: int = STYLE_MAX_BUBBLES) -> list[str]:
+    """humanize_typos + the per-fan, cross-automation '*fix' throttle. The thumb-slip
+    always rides; the correction bubble is suppressed unless _typo_correction_allowed.
+    Every reply that runs this layer bumps the per-fan 'since' counter (shared across
+    all 4 senders); a fired correction resets it and stamps the time. Returns the
+    bubble list sliced to max_bubbles. The fan-lease guarantees one sender per fan per
+    tick, so the read-modify-write needs no extra locking."""
+    now = datetime.utcnow()
+    async with get_session() as s:
+        fan = await s.get(Fan, (str(account_id), int(fan_id)))
+        try:
+            cf = json.loads(fan.custom_fields) if fan and fan.custom_fields else {}
+            if not isinstance(cf, dict):
+                cf = {}
+        except Exception:
+            cf = {}
+        state = cf.get(_TYPO_FIX_STATE_KEY)
+        if not isinstance(state, dict):
+            state = {}
+
+        out, emitted = _humanize_typos_impl(
+            parts, rng, protect=protect, max_bubbles=max_bubbles,
+            allow_correction=_typo_correction_allowed(state, now))
+        out = out[:max_bubbles]
+
+        if emitted:
+            cf[_TYPO_FIX_STATE_KEY] = {"at": now.isoformat(), "since": 0}
+        else:
+            cf[_TYPO_FIX_STATE_KEY] = {
+                "at": state.get("at"),
+                "since": int(state.get("since", 0) or 0) + 1,
+            }
+        if fan is not None:
+            fan.custom_fields = json.dumps(cf)
+            await s.commit()
     return out
 
 

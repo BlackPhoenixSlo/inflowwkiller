@@ -50,6 +50,11 @@ export interface AiChatterConfig {
   offer_mode?: "tip" | "ppv" | "both";
   max_offers_per_fan_per_day?: number;
   min_fan_msgs_between_offers?: number;
+  /** Closer pivots tease→offer when the fan leans in / gets physical
+   *  (ESCALATION_RE), not only on an explicit "show me". Bound by the pacing caps. */
+  pivot_on_escalation?: boolean;
+  /** "Chat a bit first": no lean-in pivot until the fan has sent >= this many msgs. */
+  min_fan_msgs_before_escalation_pitch?: number;
   max_fans_per_tick?: number;
   resume_after_manual_hours?: number;
   stall_ttl_hours?: number;
