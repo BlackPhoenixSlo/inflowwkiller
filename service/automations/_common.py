@@ -25,7 +25,8 @@ from datetime import datetime, timedelta
 
 import llm_client
 from db.engine import get_session
-from db.models import AccountAiConfig, Fan, SkipList
+from db.models import AccountAiConfig, Fan, Message, SkipList
+from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 log = logging.getLogger("of-relay.automation.common")
@@ -431,6 +432,17 @@ def strip_emojis(s: str) -> str:
     """Remove emojis and tidy the spacing they leave behind. Keeps em-dashes and
     apostrophes (only the emoji unicode blocks are targeted)."""
     return _EMOJI_WS_RE.sub(" ", _EMOJI_STRIP_RE.sub("", s or "")).strip()
+
+
+def is_substantive_msg(text: str | None) -> bool:
+    """True if an inbound carries real conversational content — at least one
+    alphanumeric char once emoji are stripped. Pure reactions ('😍', '🔥🔥', '...')
+    are NOT a real message turn: they must not burn a slot toward of_ai_chat's
+    runaway cap (_MAX_FAN_MESSAGES) nor inflate gen_info's message_count_at_gen
+    (the profile-staleness baseline). of_ai_chat AND gen_info both call this so the
+    cap-count and the staleness baseline use ONE convention. Pass HTML-STRIPPED
+    text (the '<p>' tags are alnum and would falsely read as content)."""
+    return bool(text) and any(ch.isalnum() for ch in _EMOJI_STRIP_RE.sub("", text))
 
 
 async def load_style_flags(account_id: str) -> dict[str, bool]:
@@ -1323,6 +1335,66 @@ def is_content_ask(text: str | None) -> bool:
     """True when the fan's message is explicitly asking to SEE content (the buying
     signal CONTENT_ASK_RE detects). Empty/None → False."""
     return bool(text) and bool(CONTENT_ASK_RE.search(text))
+
+
+# ESCALATION_RE — closer-ONLY buying-adjacent signal. A fan getting physical /
+# horny ("can i spank it", "wanna play", "so hard") is a HOT moment the SELLER
+# (ai_chatter) should ride, even though it's not an explicit "show me content"
+# ask. Kept SEPARATE from CONTENT_ASK_RE on purpose: CONTENT_ASK_RE also drives
+# of_ai_chat's and autoreply's tip-ask, and we do NOT want the opener pitching
+# mid-gather — only the closer's intent gate consults this.
+ESCALATION_RE = re.compile(
+    r"(spank|choke|"
+    r"wanna play|let'?s play|can i play|"
+    r"so hard|getting hard|i'?m hard|im hard|rock hard|"
+    r"turn(?:s)? me on|so horny|i'?m horny|im horny|"
+    r"make me (?:cum|wet|hard)|get me off|"
+    r"can i (?:touch|taste|feel|lick|kiss) (?:it|u|you|ur|your)|"
+    r"wanna (?:touch|taste|feel|fuck) (?:it|u|you|ur|your)|"
+    r"f+u+c+k+ (?:you|u|me))",
+    re.IGNORECASE)
+
+
+def is_escalation(text: str | None) -> bool:
+    """True when the fan's latest message is sexual/physical ESCALATION — the
+    closer-only hot-moment signal ESCALATION_RE detects. Empty/None → False."""
+    return bool(text) and bool(ESCALATION_RE.search(text))
+
+
+# A fan who just put money down — a tip received, or a PPV unlock — is a HOT
+# lead: for a SHORT window right after he pays, the SELLER (ai_chatter) owns the
+# moment and never-sell keep-warm (autoreply) must NOT babysit him. After the
+# window he's a normal fan again (Auto Convo may keep him warm). 1 hour = ride the
+# buy moment, then let go. Read from the messages table (the WS source of truth),
+# NOT the Transaction / lifetime rollup, which lags PPV unlocks and would let a
+# just-paid fan slip past every spend gate.
+RECENT_PAYER_HOURS = 1
+
+
+async def recent_payer_fans(account_id: str, fan_ids,
+                            within_hours: int = RECENT_PAYER_HOURS) -> set[int]:
+    """Subset of `fan_ids` with a money event (inbound tip OR a PPV unlock) in the
+    last `within_hours`. Tips land as inbound is_tip rows; PPV unlocks stamp
+    purchased_at on the original message — both LEAD the spend rollup, so this
+    catches a just-paid fan the lifetime/recent-spend gates would miss."""
+    ids = [int(x) for x in fan_ids]
+    if not ids:
+        return set()
+    cut = datetime.utcnow() - timedelta(hours=int(within_hours))
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.fan_id).where(
+                Message.account_id == str(account_id),
+                Message.fan_id.in_(ids),
+                Message.is_unsent.is_(False),
+                or_(
+                    and_(Message.is_tip.is_(True), Message.created_at >= cut),
+                    and_(Message.purchased_at.isnot(None),
+                         Message.purchased_at >= cut),
+                ),
+            )
+        )).all()
+    return {int(r[0]) for r in rows}
 
 
 # The content-ask tip-ask ships ON by default (ask_enabled); an owner can flip it

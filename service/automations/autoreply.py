@@ -48,7 +48,7 @@ from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
 from db.models import (
-    AccountAiConfig, AutoreplyState, Blacklist, Fan, Message, Transaction,
+    AccountAiConfig, AutoreplyState, Blacklist, Fan, Message, SkipList, Transaction,
 )
 from llm_client import LLMCapExceeded
 from ._common import (
@@ -58,11 +58,11 @@ from ._common import (
     build_tip_ask_block, hold_with_typing, humanize_typos, is_content_ask,
     load_nonnative_flags, load_strip_emojis, load_style_flags, load_tip_ask_config,
     load_typing_indicator, load_typing_wpm, load_typo_flags, load_hard_skip_ids,
-    resolve_fan_name, resolve_model, should_skip_muted_creator,
+    recent_payer_fans, resolve_fan_name, resolve_model, should_skip_muted_creator,
     skip_unreachable_fan, strip_emojis, typing_delay_seconds,
 )
-from .of_ai_chat import (_is_info_complete, _strip_html, split_for_bubbles,
-                         _dedupe_lead_reaction)
+from .of_ai_chat import (_is_info_complete, _strip_html,
+                         split_for_bubbles, _dedupe_lead_reaction)
 
 log = logging.getLogger("of-relay.automation.autoreply")
 
@@ -347,6 +347,19 @@ async def _fan_still_waiting(account_id: str, fan_id: int, inbound_at) -> bool:
     return row is None
 
 
+async def _load_unreachable_ids(account_id: str) -> set[int]:
+    """Fans skip-listed 'unreachable' (deleted/blocked — every send 404s and burns
+    an LLM call). autoreply otherwise ignores skip_list, but this one reason must
+    be honored: the 7d undeliverable pause eventually expires and, without this,
+    a widened autoreply would re-generate + re-fail on a dead fan."""
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(SkipList.fan_id).where(SkipList.account_id == str(account_id),
+                                          SkipList.reason == "unreachable")
+        )).all()
+    return {int(r[0]) for r in rows}
+
+
 @register("autoreply")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     payload = payload or {}
@@ -389,11 +402,25 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # HARD skips (muted_creator / manual "restrict this fan") explicitly and skip
     # them here too, so a restricted fan is silenced on EVERY automation.
     hard_skip = await load_hard_skip_ids(account_id)
+    # The info-complete gate used to ACCIDENTALLY shield no-info / promo /
+    # unreachable fans from Auto Convo. With info_not_required widening coverage,
+    # those exclusions must be explicit — mirror what every other chat sender does
+    # so a widened autoreply never texts a dead fan or peer-creator promo spam.
+    # (Mid-funnel fans are NOT excluded here by design — the funnel replies fast,
+    # so a fan is never left waiting long enough mid-funnel for Auto Convo to step
+    # in; if the funnel stalls, a keep-warm line is preferable to silence.)
+    unreachable = await _load_unreachable_ids(account_id)
+    cand_ids = [int(f.fan_id) for (f, _) in cands]
+    # Hot leads (tip/PPV unlock within RECENT_PAYER_HOURS) belong to the CLOSER,
+    # not never-sell Auto Convo — skip them here; ai_chatter owns/sells the moment.
+    # Both sides call recent_payer_fans with the SAME (default) window, so the
+    # skip-set and the closer's own-set can never diverge.
+    hot_leads = await recent_payer_fans(account_id, cand_ids)
 
     # Spend-window + last-purchase gates (one transactions query for the set).
     win_start = now - timedelta(days=int(cfg["recent_spend_days"]))
     purchase_cut = now - timedelta(days=int(cfg["min_days_since_purchase"]))
-    spend = await _spend_and_last_purchase(account_id, [int(f.fan_id) for (f, _) in cands], win_start)
+    spend = await _spend_and_last_purchase(account_id, cand_ids, win_start)
 
     persona = await _load_persona(account_id)
     # Content-ask tip-ask: when a fan asks to SEE content, Auto Convo answers with a
@@ -415,6 +442,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     client = None
     sent = skipped_spend = skipped_cap = skipped_raced = errors = 0
     skipped_restricted = 0   # muted creator / manual "restrict from automations"
+    skipped_unreachable = 0  # skip_list 'unreachable' (dead/blocked → send 404s)
+    skipped_spam = 0         # $0-spend creator_we_follow (peer-creator promo)
+    skipped_hot_lead = 0     # tipped/unlocked recently → closer's moment
+    skipped_cooldown = 0     # a sibling sender paused him this tick
+    skipped_locked = 0       # another sender holds the fan-lease
 
     for f, inbound_at in cands:
         if sent >= max_sends:
@@ -423,6 +455,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # Durably restricted (muted peer-creator, or hand-restricted) → never reply.
         if fid in hard_skip or should_skip_muted_creator(f):
             skipped_restricted += 1
+            continue
+        # Dead/blocked fan — sending 404s and burns an LLM call.
+        if fid in unreachable:
+            skipped_unreachable += 1
+            continue
+        # Peer-creator promo spam ($0 spend + creator_we_follow) — the jaka problem.
+        if int(f.lifetime_spend_cents or 0) == 0 and (f.source or "") == "creator_we_follow":
+            skipped_spam += 1
+            continue
+        # Just-paid hot lead → the closer (ai_chatter) owns the moment, not us.
+        if fid in hot_leads:
+            skipped_hot_lead += 1
             continue
         recent_spend, last_purchase = spend.get(fid, (0, None))
         # recent spend gate
@@ -508,48 +552,78 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             sent += 1
             continue
 
-        if client is None:
-            try:
-                client = await asyncio.to_thread(ax._make_client, account_id)
-            except Exception:
-                log.warning("autoreply client init failed account=%s", account_id,
-                            exc_info=True)
-                break
+        # Just before sending: a fresh cooldown read (catches a fan a sibling
+        # paused EARLIER THIS TICK, after our candidate snapshot), then the
+        # DB-atomic fan-lease so two senders can't both message him this tick.
+        if await ax.fan_on_cooldown(account_id, fid):
+            skipped_cooldown += 1
+            continue
+        if not await ax.acquire_fan_lease(account_id, fid, _PURPOSE):
+            skipped_locked += 1
+            continue
 
+        # Everything from here holds the lease — a try/finally guarantees it's
+        # released on every non-send path (like of_ai_chat/ai_chatter/deep_convo)
+        # so a future raise can never leak it for the full TTL. autoreply NEVER
+        # sets a cooldown (it must not freeze the other senders): on a confirmed
+        # send it KEEPS the lease to expire by TTL (no sibling double-messages
+        # right after us), on anything else it RELEASES for a faster retry.
         sent_ok = False
-        for idx, part in enumerate(parts):
-            await hold_with_typing(account_id, fid,
-                                   typing_delay_seconds(part, typing_wpm),
-                                   typing_indicator=typing_indicator)  # "typing"
-            try:
-                result = await asyncio.to_thread(client.send_message, fid, part)
-            except Exception as e:
-                errors += 1
-                # Permanent (deleted/blocked) → quarantine, so the next tick's
-                # paused-gate drops the fan BEFORE the LLM call. Transients retry.
-                await skip_unreachable_fan(account_id, fid, e, log=log)
-                log.warning("autoreply send failed account=%s fan=%s", account_id, fid,
-                            exc_info=True)
-                break
-            mid = result.get("id") if isinstance(result, dict) else None
-            if mid:
-                await write_outbound_attribution(
-                    account_id=account_id, fan_id=fid, message_id=int(mid),
-                    sent_by_employee_id=None, automation_kind=_PURPOSE,  # autoreply
-                    body=str(result.get("text") or part),
-                    price_cents=0,
-                    created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
-                    emit_live=True,
-                )
-                sent_ok = True
-        if sent_ok:
-            await _save_state(account_id, fid, spell_inbound_at=spell_anchor,
-                              nudges_sent=nudges + 1, last_nudge_at=datetime.utcnow())
-            sent += 1
+        try:
+            # Re-check AFTER acquiring: the LLM call above can take longer than a
+            # sibling's short (10-15s) cooldown, so someone may have answered him
+            # while we generated. If he's no longer waiting, stand down.
+            if not await _fan_still_waiting(account_id, fid, inbound_at):
+                skipped_raced += 1
+                continue
+
+            if client is None:
+                try:
+                    client = await asyncio.to_thread(ax._make_client, account_id)
+                except Exception:
+                    log.warning("autoreply client init failed account=%s", account_id,
+                                exc_info=True)
+                    break
+
+            for idx, part in enumerate(parts):
+                await hold_with_typing(account_id, fid,
+                                       typing_delay_seconds(part, typing_wpm),
+                                       typing_indicator=typing_indicator)  # "typing"
+                try:
+                    result = await asyncio.to_thread(client.send_message, fid, part)
+                except Exception as e:
+                    errors += 1
+                    # Permanent (deleted/blocked) → quarantine, so the next tick's
+                    # paused-gate drops the fan BEFORE the LLM call. Transients retry.
+                    await skip_unreachable_fan(account_id, fid, e, log=log)
+                    log.warning("autoreply send failed account=%s fan=%s", account_id, fid,
+                                exc_info=True)
+                    break
+                mid = result.get("id") if isinstance(result, dict) else None
+                if mid:
+                    await write_outbound_attribution(
+                        account_id=account_id, fan_id=fid, message_id=int(mid),
+                        sent_by_employee_id=None, automation_kind=_PURPOSE,  # autoreply
+                        body=str(result.get("text") or part),
+                        price_cents=0,
+                        created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
+                        emit_live=True,
+                    )
+                    sent_ok = True
+            if sent_ok:
+                await _save_state(account_id, fid, spell_inbound_at=spell_anchor,
+                                  nudges_sent=nudges + 1, last_nudge_at=datetime.utcnow())
+                sent += 1
+        finally:
+            if not sent_ok:
+                await ax.release_fan_lease(account_id, fid)
 
     return {"enabled": True, "candidates": len(cands), "sent": sent,
             "skipped_spend": skipped_spend, "skipped_cap": skipped_cap,
             "skipped_raced": skipped_raced, "skipped_restricted": skipped_restricted,
+            "skipped_unreachable": skipped_unreachable, "skipped_spam": skipped_spam,
+            "skipped_hot_lead": skipped_hot_lead, "skipped_cooldown": skipped_cooldown,
+            "skipped_locked": skipped_locked,
             "errors": errors, "dry_run": dry_run, "model": model}
 
 

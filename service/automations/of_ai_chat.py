@@ -77,6 +77,7 @@ from ._common import (
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style, apply_word_restriction,
     build_facts_note, build_structured_nickname, build_tip_ask_block, coerce_ids,
     facts_from_fan, hold_with_typing, humanize_typos, is_content_ask,
+    is_substantive_msg,
     load_nonnative_flags, load_strip_emojis, load_style_flags, load_tip_ask_config,
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
@@ -589,7 +590,10 @@ async def _gather(account_id: str,
         c.messages.append((direction, text))
         c.last_dir = direction
         c.last_body = text
-        if direction == "in":
+        # Count only substantive inbound toward the runaway-loop cap: emoji-only
+        # reactions are not a real message turn (see is_substantive_msg). gen_info
+        # counts the same way, so the staleness baseline stays on one scale.
+        if direction == "in" and is_substantive_msg(text):
             c.fan_msg_n += 1
     return out
 
