@@ -139,6 +139,10 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   const [capDay, setCapDay] = useState(0);
   const [capWeek, setCapWeek] = useState(0);
   const [capMonth, setCapMonth] = useState(0);
+  // "send to everyone" broadcast (default ON) + the optional pause
+  const [reachAll, setReachAll] = useState(true);
+  const [pauseOn, setPauseOn] = useState(false);
+  const [pauseHours, setPauseHours] = useState(12);
   // which card's audience preview is showing
   const [previewFor, setPreviewFor] = useState<string | null>(null);
   // bulk one-liner import: which card's paste box is open + its text
@@ -166,6 +170,10 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     setCapDay(caps.per_day ?? 0);
     setCapWeek(caps.per_week ?? 0);
     setCapMonth(caps.per_month ?? 0);
+    setReachAll(c.reach_all ?? true);
+    const ph = c.pause_hours ?? 0;
+    setPauseOn(ph > 0);
+    if (ph > 0) setPauseHours(ph);
   }, [cfgQ.data]);
 
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
@@ -243,6 +251,8 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
 
   const buildConfig = () => ({
     enabled,
+    reach_all: reachAll,
+    pause_hours: pauseOn ? Math.max(1, Math.min(pauseHours || 1, 168)) : 0,
     quiet_hours: quietOn ? ([quietStart, quietEnd] as [number, number]) : null,
     ppv_caps: {
       ...(capDay > 0 ? { per_day: capDay } : {}),
@@ -282,6 +292,39 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
         />
         <span className="text-sm">{enabled ? "Library ON" : "Library OFF"}</span>
       </label>
+
+      {/* Send to everyone: also broadcast to ALL subscribers at the default price. */}
+      <div className="rounded-lg border border-border p-3 space-y-2">
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-[var(--accent)]"
+            checked={reachAll}
+            onChange={(e) => { markDirty(); setReachAll(e.target.checked); }}
+          />
+          <span className="text-sm font-medium">Send to everyone (all subscribers)</span>
+        </label>
+        <div className="text-[11px] text-fg-dim/80 leading-relaxed">
+          {reachAll
+            ? <>After the per-tier sends to fans we know (whales pay more, cold fans less), it fires <b>one broadcast to her whole subscriber list</b> at the <b>default price (your Base price)</b> — reaching everyone, even silent/uncached subs. Everyone we already messaged is excluded, so no fan gets it twice.</>
+            : <>Only fans already in the system get it (priced by tier). Silent/uncached subscribers are <b>not</b> reached.</>}
+        </div>
+        <label className="flex items-center gap-2 text-xs cursor-pointer flex-wrap pt-1">
+          <input
+            type="checkbox"
+            className="h-3.5 w-3.5 accent-[var(--accent)]"
+            checked={pauseOn}
+            onChange={(e) => { markDirty(); setPauseOn(e.target.checked); }}
+          />
+          <span>Pause — don&apos;t re-message the same fan for</span>
+          <input
+            type="number" min={1} max={168} disabled={!pauseOn}
+            className={`${INPUT} w-16`} value={pauseHours}
+            onChange={(e) => { markDirty(); setPauseHours(Math.max(1, Math.min(Number(e.target.value) || 1, 168))); }}
+          />
+          <span>hours {pauseOn ? "" : "(off = send to everyone, no pause)"}</span>
+        </label>
+      </div>
 
       <label className="flex items-center gap-2 text-xs cursor-pointer flex-wrap">
         <input
@@ -619,6 +662,8 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
           <li><b>Skip fans who already bought it</b> — don&apos;t re-pitch content a fan already owns (recommended ON).</li>
           <li><b>Quiet hours</b> — never send between these hours (creator-local), e.g. while you sleep.</li>
           <li><b>Max PPVs per day/week/month</b> — a whole-account speed limit that <b>spreads sends evenly</b> (counts PPV sends, not single messages). E.g. 2/day = one about every 12h; a PPV due too soon waits its turn. 0 = no limit.</li>
+          <li><b>Send to everyone (all subscribers)</b> — after pricing the fans we know by tier, it sends <b>one broadcast to her entire subscriber list at the Base price</b> (everyone already messaged is excluded, so no doubles). This is how a PPV reaches silent/uncached subs — her whole free-page list, not just the few hundred cached.</li>
+          <li><b>Pause</b> — don&apos;t re-message the same fan for X hours. <b>Off by default</b> (send to everyone). Turn it on + set the hours if you want breathing room between touches.</li>
           <li><b>Library ON/OFF</b> — the master switch. OFF stops everything instantly.</li>
         </ul>
       </details>

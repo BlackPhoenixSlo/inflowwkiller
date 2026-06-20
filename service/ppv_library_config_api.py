@@ -117,6 +117,16 @@ def _validate(cfg: dict) -> dict:
     if not isinstance(cfg, dict):
         raise HTTPException(422, "config must be an object")
     out: dict[str, Any] = {"enabled": bool(cfg.get("enabled"))}
+    # "Send to everyone": also broadcast each PPV to ALL subscribers at the
+    # default price (every known fan excluded so no double-send). UI default ON;
+    # the runtime treats an ABSENT key as off, so it never blasts until saved.
+    out["reach_all"] = bool(cfg.get("reach_all", True))
+    # Pause between re-messaging the same fan (the contact guard), in hours.
+    # 0 = no pause (send to everyone). Clamp to a sane ceiling.
+    try:
+        out["pause_hours"] = max(0, min(int(cfg.get("pause_hours") or 0), 168))
+    except (TypeError, ValueError):
+        out["pause_hours"] = 0
     # Optional creator-local quiet window [start_hour, end_hour] (0-23). Applies to
     # every PPV rule (baked into each rule's quiet_hours_json). Null/absent = 24/7.
     qh = cfg.get("quiet_hours")

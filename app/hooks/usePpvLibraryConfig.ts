@@ -33,6 +33,10 @@ export interface PpvLibraryConfig {
   quiet_hours?: [number, number] | null;
   /** Max PPV sends per rolling day/week/month; a hit cap holds + releases later. */
   ppv_caps?: PpvCaps;
+  /** Also broadcast each PPV to ALL subscribers at the default price (known fans excluded). */
+  reach_all?: boolean;
+  /** Don't re-message a fan for N hours (contact guard). 0 = no pause. */
+  pause_hours?: number;
   ppvs?: PpvItem[];
 }
 
