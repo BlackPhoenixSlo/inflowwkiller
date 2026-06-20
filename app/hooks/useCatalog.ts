@@ -55,6 +55,8 @@ export interface AiChatterConfig {
   pivot_on_escalation?: boolean;
   /** "Chat a bit first": no lean-in pivot until the fan has sent >= this many msgs. */
   min_fan_msgs_before_escalation_pitch?: number;
+  /** On offer expiry, unsend (pull) the unpurchased PPV/offer message from the chat. */
+  unsend_expired_offer?: boolean;
   max_fans_per_tick?: number;
   resume_after_manual_hours?: number;
   stall_ttl_hours?: number;
