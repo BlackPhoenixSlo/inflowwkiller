@@ -1,0 +1,102 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
+import { relay, type RelayContext } from "@/lib/relay";
+
+const KEY = "ppv-library-config";
+const BG_CTX: RelayContext = { priority: "background" };
+
+/** One premade PPV. The same media is fanned out to spend×recency fan segments
+ *  at a per-segment price (base × matrix multiplier); the runner random-picks a
+ *  caption line + a preview each send. Cadence = 604800 / sends_per_week. */
+export interface PpvItem {
+  id: string;
+  name?: string;
+  media_ids: number[];
+  caption_pool_key: string;
+  caption_texts?: string[];
+  base_price_cents: number;
+  preview_options: number[];
+  sends_per_week: number;
+  resend_monthly: boolean;
+  exclude_buyers?: boolean;
+  enabled: boolean;
+}
+
+export interface PpvCaps {
+  per_day?: number;
+  per_week?: number;
+  per_month?: number;
+}
+export interface PpvLibraryConfig {
+  enabled?: boolean;
+  /** Creator-local quiet window [startHour, endHour] (0-23); null = 24/7. */
+  quiet_hours?: [number, number] | null;
+  /** Max PPV sends per rolling day/week/month; a hit cap holds + releases later. */
+  ppv_caps?: PpvCaps;
+  ppvs?: PpvItem[];
+}
+
+export interface PpvPreviewCell {
+  cell: string;
+  spend: string;
+  recency: string;
+  recipients: number;
+  price: number;
+}
+export interface PpvPreview {
+  account_id: string;
+  total_fans: number;
+  cells: PpvPreviewCell[];
+}
+
+export interface PriceMatrix {
+  spend_bands: Array<{ name: string; min_cents: number; max_cents: number | null; mult: number }>;
+  recency_bands: Array<{ name: string; max_days: number | null; mult: number }>;
+}
+
+interface PpvLibraryConfigResponse {
+  account_id: string;
+  config: PpvLibraryConfig;
+  defaults: PpvLibraryConfig;
+  pools: string[];
+  caption_pools: Record<string, string[]>;
+  matrix: PriceMatrix;
+}
+
+export function usePpvLibraryConfig(accountId: string | null) {
+  return useQuery<PpvLibraryConfigResponse>({
+    queryKey: [KEY, accountId],
+    enabled: !!accountId,
+    queryFn: () =>
+      relay.get<PpvLibraryConfigResponse>(
+        `/admin/ppv-library-config?account_id=${encodeURIComponent(accountId!)}`,
+        BG_CTX,
+      ),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useSavePpvLibraryConfig(accountId: string | null) {
+  const qc = useQueryClient();
+  return useMutation<
+    { account_id: string; config: PpvLibraryConfig; rules: Record<string, number> },
+    Error,
+    PpvLibraryConfig
+  >({
+    mutationFn: (config) =>
+      relay.put(`/admin/ppv-library-config`, { account_id: accountId, config }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
+  });
+}
+
+/** Dry-run: how the account's current fans split into price cells (no send). */
+export function usePpvPreview(accountId: string | null) {
+  return useMutation<PpvPreview, Error, number>({
+    mutationFn: (basePriceCents) =>
+      relay.post(`/admin/ppv-library-config/preview`, {
+        account_id: accountId,
+        base_price_cents: basePriceCents,
+      }),
+  });
+}

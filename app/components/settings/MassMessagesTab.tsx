@@ -539,6 +539,7 @@ const MASS_AUTOMATION_LABELS: Record<string, string> = {
   reply_mass_funnel: "Funnel reply",
   mass_nudge: "Mass nudge",
   online_blast: "Online blast",
+  ppv_send: "PPV Library",
 };
 
 function MassMessageRowItem({

@@ -1054,6 +1054,14 @@ class AccountAiConfig(Base):
     # (DISABLED — ships off until a creator enables it). Own column to avoid
     # the nudge/webhook shallow-merge collision.
     ai_chatter_config_json: Mapped[str | None] = mapped_column(Text)
+    # PPV Library: the premade-PPV store + global price-matrix knobs for the
+    # `ppv_send` automation. JSON {enabled, matrix:{spend_bands, recency_bands},
+    # ppvs:[{id, name, media_ids, caption_pool_key, base_price_cents,
+    # preview_options, sends_per_week, resend_monthly, enabled}]}. On save the
+    # config API upserts one `ppv_send` AutomationRule per enabled PPV (cadence =
+    # 604800/sends_per_week). Absent/NULL → DISABLED, empty library. Own column to
+    # avoid the nudge/webhook shallow-merge collision.
+    ppv_library_config_json: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = _ts_now()
 
 
