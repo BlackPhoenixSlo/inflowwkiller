@@ -714,7 +714,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           <label className="space-y-1">
             <div className="text-fg-dim text-xs">Offer expires after (h)</div>
             <input type="number" className={`${INPUT} w-full`} min={1}
-              value={cfg.stall_ttl_hours ?? 48}
+              value={cfg.stall_ttl_hours ?? 6}
               onChange={(e) => set({ stall_ttl_hours: parseInt(e.target.value || "1", 10) })} />
           </label>
         </div>
@@ -722,6 +722,11 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           <input type="checkbox" checked={cfg.pivot_on_escalation ?? true}
             onChange={(e) => set({ pivot_on_escalation: e.target.checked })} />
           Pivot to an offer when he&apos;s clearly into it (lean-in/flirty, not just &quot;show me&quot;)
+        </label>
+        <label className="flex items-center gap-1.5 text-sm">
+          <input type="checkbox" checked={cfg.unsend_expired_offer ?? true}
+            onChange={(e) => set({ unsend_expired_offer: e.target.checked })} />
+          Unsend the offer message when it expires (pull the unpurchased PPV)
         </label>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm border-t border-border pt-2">
           <span className="text-xs text-fg-dim">Texting style:</span>

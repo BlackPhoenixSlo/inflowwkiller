@@ -124,7 +124,10 @@ _DEFAULTS: dict = {
                                                 # pivot until he's sent >= this many
     "max_fans_per_tick": 8,
     "resume_after_manual_hours": 6,      # cautious resume after a human chatted
-    "stall_ttl_hours": 48,               # M3: open offer → expired
+    "stall_ttl_hours": 6,                # open offer → expired after this many hours
+    "unsend_expired_offer": True,        # on expiry, pull (unsend) the unpurchased
+                                         # PPV/offer message from the chat (per-chat
+                                         # unsend; bounded by OF's 24h window)
 }
 
 
@@ -775,8 +778,9 @@ async def _resolve_open_offers(account_id: str, client, cfg: dict,
     for a recently-active fan (the bought-then-replied fast path). Also expires
     offers past the stall TTL."""
     stats = {"unlocked_tip": 0, "unlocked_ppv": 0, "offers_expired": 0,
-             "deliveries_failed": 0, "would_unlock": 0}
+             "offers_unsent": 0, "deliveries_failed": 0, "would_unlock": 0}
     ttl_h = int(cfg.get("stall_ttl_hours") or 0)
+    unsend_expired = bool(cfg.get("unsend_expired_offer"))
     now = datetime.utcnow()
     for offer in await _open_offers(account_id):
         fan_id = int(offer.fan_id)
@@ -784,6 +788,19 @@ async def _resolve_open_offers(account_id: str, client, cfg: dict,
             continue
         if ttl_h and offer.offered_at and offer.offered_at < now - timedelta(hours=ttl_h):
             if not dry_run:
+                # Pull the unpurchased offer message FIRST (best-effort; per-chat
+                # unsend only works inside OF's 24h window, and stall_ttl is well
+                # under it), then mark the offer expired.
+                if unsend_expired and offer.offer_message_id:
+                    try:
+                        await asyncio.to_thread(
+                            client.unsend_message,
+                            int(offer.offer_message_id), fan_id)
+                        stats["offers_unsent"] += 1
+                    except Exception:
+                        log.debug("ai_chatter expired-offer unsend failed account=%s "
+                                  "fan=%s msg=%s", account_id, fan_id,
+                                  offer.offer_message_id, exc_info=True)
                 await _resolve_offer(int(offer.id), status="expired", resolved_by=None)
             stats["offers_expired"] += 1
             continue

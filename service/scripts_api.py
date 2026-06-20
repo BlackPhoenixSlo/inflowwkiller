@@ -83,6 +83,8 @@ def _validate_cfg(cfg: dict) -> dict:
         out["intent_only"] = bool(cfg["intent_only"])
     if "pivot_on_escalation" in cfg:
         out["pivot_on_escalation"] = bool(cfg["pivot_on_escalation"])
+    if "unsend_expired_offer" in cfg:
+        out["unsend_expired_offer"] = bool(cfg["unsend_expired_offer"])
     if "mode" in cfg and cfg["mode"] is not None:
         if cfg["mode"] not in _MODES:
             raise HTTPException(422, f"mode must be one of {_MODES}")
