@@ -520,7 +520,7 @@ function NotificationDeltaPoller() {
 function ToastCard({ t }: { t: Toast }) {
   const avatar = proxyImage(t.user.avatar ?? null, t.accountId);
   const ring = t.bubble
-    ? "ring-2 ring-accent shadow-[0_0_24px_-4px_var(--accent)]"
+    ? "ring-2 ring-accent shadow-[0_0_24px_-4px_var(--color-accent)]"
     : "ring-1 ring-border";
   const sticker = t.bubble ? "text-base" : "text-xs";
   const body = (

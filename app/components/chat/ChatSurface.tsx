@@ -245,11 +245,27 @@ export function ChatSurface({
   // background (fire-and-forget — OF will catch up on its next poll
   // even if our request 5xxs).
   useEffect(() => {
-    if (!chat.hasUnread) return;
     let cancelled = false;
+    // (1) LOCAL read-marker — zero our chats.unread_count regardless of OF's
+    //     state. Opening a chat we DON'T reply to must move it off the roster's
+    //     blue (unread) count and onto orange (owe reply). Fires even when OF
+    //     already considered it read (chat.hasUnread === false), so it can't be
+    //     gated on hasUnread. Refresh the roster badge only when it cleared.
     relay
-      .post(`/api/of/v2/chats/${fanId}/mark-as-read`, undefined, { accountId })
-      .catch((err) => console.warn("[mark-as-read] failed", err));
+      .post<{ cleared?: boolean }>(`/admin/messages/${accountId}/${fanId}/mark-read`, undefined)
+      .then((res) => {
+        if (res?.cleared && !cancelled) {
+          qc.invalidateQueries({ queryKey: ["roster-counts"] });
+        }
+      })
+      .catch((err) => console.warn("[mark-read local] failed", err));
+    // (2) OF read-marker — only when OF still shows it unread (avoids a needless
+    //     upstream call + "seen" receipt on an already-read chat).
+    if (chat.hasUnread) {
+      relay
+        .post(`/api/of/v2/chats/${fanId}/mark-as-read`, undefined, { accountId })
+        .catch((err) => console.warn("[mark-as-read] failed", err));
+    }
     type Page = { rows: OFChatItem[]; hasMore: boolean };
     type Infinite = { pages: Page[]; pageParams: unknown[] };
     qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
@@ -322,6 +338,44 @@ export function ChatSurface({
       window.alert(`Mass-unsend failed: ${reason}`);
     }
   }, [unsender]);
+
+  // Manual "🎁 Send reward" on a tip bubble → fire the tip_reward automation
+  // for this fan on demand (force=true bypasses the once-per-tip guard so a
+  // chatter can re-reward). The endpoint runs the automation inline and returns
+  // its real result, so we can confirm exactly what was sent. Confirms first —
+  // it sends real vault images, like the unsend flow above.
+  const handleSendReward = useCallback(async (msg: OFMessage) => {
+    if (!accountId || fanId == null) return;
+    const dollars = typeof msg.price === "number" ? msg.price : 0;
+    const amountLabel = dollars > 0 ? ` ($${dollars.toFixed(2)} tip)` : "";
+    if (!window.confirm(
+      `Send a free vault reward to this fan${amountLabel}? This fires the tip_reward automation and sends real images.`,
+    )) return;
+    const messageId = Number(msg.id);
+    try {
+      const resp = await relay.post<{
+        ok?: boolean; status?: string; reason?: string; images_sent?: number;
+      }>("/admin/tip-reward/send", {
+        account_id: accountId,
+        fan_id: fanId,
+        tip_cents: Math.round(dollars * 100) || undefined,
+        tip_message_id: Number.isFinite(messageId) && messageId > 0 ? messageId : undefined,
+      }, { accountId });
+      const sent = resp?.images_sent ?? 0;
+      if ((resp?.ok ?? resp?.status === "ok") && sent > 0) {
+        window.alert(`🎁 Sent ${sent} reward image${sent === 1 ? "" : "s"}.`);
+      } else if (resp?.status === "ok") {
+        window.alert(
+          "No reward sent — this fan already received every image in the matching tier (or no tier folder is configured).",
+        );
+      } else {
+        window.alert(`Couldn't send reward: ${resp?.reason ?? resp?.status ?? "unknown error"}`);
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      window.alert(`Couldn't send reward: ${reason}`);
+    }
+  }, [accountId, fanId]);
 
   // Pre-warm only the fan-specific cache here — the account-wide ones
   // (vault-lists, wall-media) are kicked off from the inbox page at app
@@ -709,6 +763,7 @@ export function ChatSurface({
         onQuoteReply={onQuoteReply}
         onTogglePin={(msg) => pinner.toggle(msg)}
         onUnsend={handleUnsend}
+        onSendReward={handleSendReward}
         highlightId={highlightId}
         lastReadByPeerId={lastReadByPeerId}
         attribution={attributionMap}

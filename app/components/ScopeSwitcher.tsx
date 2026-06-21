@@ -16,8 +16,10 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 
+import { relay } from "@/lib/relay";
 import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
@@ -48,6 +50,17 @@ export default function ScopeSwitcher() {
   }, [groupByOwner, chatterAccounts]);
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  // Per-model color editing. PATCH /admin/accounts/{id} is owner-only (it
+  // 403s under a chatter-only session), so the swatch only turns editable
+  // when an owner principal is driving — chatters keep the read-only dot.
+  const qc = useQueryClient();
+  const canEditColor = !!user;
+  const recolorM = useMutation({
+    mutationFn: ({ id, color }: { id: string; color: string }) =>
+      relay.patch<unknown>(`/admin/accounts/${encodeURIComponent(id)}`, { color }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["accounts"] }),
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -139,6 +152,22 @@ export default function ScopeSwitcher() {
                     className="w-3.5 h-3.5 cursor-pointer"
                   />
                 </label>
+                {canEditColor ? (
+                  <input
+                    type="color"
+                    value={a.color || "#666666"}
+                    onChange={(ev) => recolorM.mutate({ id: a.id, color: ev.target.value })}
+                    onClick={(ev) => ev.stopPropagation()}
+                    className="w-4 h-4 rounded-full border border-border bg-transparent cursor-pointer p-0 shrink-0"
+                    title="Set model color"
+                    aria-label={`Color for ${a.nickname || a.id}`}
+                  />
+                ) : (
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ background: a.color || "#666" }}
+                  />
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -147,10 +176,6 @@ export default function ScopeSwitcher() {
                   }}
                   className="flex-1 pr-3 py-2 flex items-center gap-2 text-left"
                 >
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ background: a.color || "#666" }}
-                  />
                   <span className="truncate flex-1">{a.nickname || a.id}</span>
                   {active && <span className="text-[10px] text-fg-dim">●</span>}
                 </button>

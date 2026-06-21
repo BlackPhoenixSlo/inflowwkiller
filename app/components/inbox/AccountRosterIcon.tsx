@@ -27,29 +27,41 @@ import type { RosterCount } from "@/hooks/useRosterCounts";
 import { proxyImage, type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
+/** One colored count pill. */
+function CountPill({ n, color, title }: { n: number; color: "blue" | "orange"; title: string }) {
+  return (
+    <span
+      title={title}
+      className={cn(
+        "min-w-[16px] h-[14px] px-1 rounded-full grid place-items-center",
+        "text-[9px] font-bold leading-none text-white tabular-nums select-none",
+        color === "blue" ? "bg-blue-500" : "bg-orange-500",
+      )}
+    >
+      {n > 99 ? "99+" : n}
+    </span>
+  );
+}
+
 /**
- * RosterCountBadge — the little pill under a roster avatar.
- *   • BLUE  = unread conversations (fans waiting to be read) — wins when > 0.
- *   • ORANGE = read but the fan spoke last (we owe a reply) — shown only when
- *     there's nothing unread, so the colors never compete: blue = "read this",
- *     orange = "answer this", nothing = all caught up.
+ * RosterCountBadge — the count pill(s) under a roster avatar. Always shows BOTH
+ * totals side by side, each only when > 0:
+ *
+ *   • BLUE   = unread conversations (fans waiting to be read).
+ *   • ORANGE = read but the fan spoke last (we owe a reply).
+ *
+ * Same treatment per-model and for the all-models aggregate, so every icon
+ * surfaces the whole picture — "read this" (blue) and "answer this" (orange) —
+ * at a glance. Renders nothing when both are zero (all caught up).
  */
 export function RosterCountBadge({ count }: { count?: RosterCount | null }) {
   const unread = count?.unread ?? 0;
   const owe = count?.owe_reply ?? 0;
-  const mode = unread > 0 ? "unread" : owe > 0 ? "owe" : null;
-  if (!mode) return null;
-  const n = mode === "unread" ? unread : owe;
+  if (unread <= 0 && owe <= 0) return null;
   return (
-    <span
-      title={mode === "unread" ? `${unread} unread chats` : `${owe} read · awaiting your reply`}
-      className={cn(
-        "min-w-[16px] h-[14px] px-1 rounded-full grid place-items-center",
-        "text-[9px] font-bold leading-none text-white tabular-nums select-none",
-        mode === "unread" ? "bg-blue-500" : "bg-orange-500",
-      )}
-    >
-      {n > 99 ? "99+" : n}
+    <span className="flex items-center gap-0.5">
+      {unread > 0 && <CountPill n={unread} color="blue" title={`${unread} unread chats`} />}
+      {owe > 0 && <CountPill n={owe} color="orange" title={`${owe} read · awaiting your reply`} />}
     </span>
   );
 }

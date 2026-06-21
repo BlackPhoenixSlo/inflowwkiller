@@ -9,44 +9,48 @@
  */
 
 import { useAccountAvatar } from "@/hooks/useAccountAvatar";
+import type { RosterCount } from "@/hooks/useRosterCounts";
 import { decodeHtmlEntities } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import type { AccountMeta } from "@/lib/relay";
 
-import { AccountAvatarSlot, AllModelsAvatarSlot } from "./AccountRosterIcon";
+import { AccountAvatarSlot, AllModelsAvatarSlot, RosterCountBadge } from "./AccountRosterIcon";
 
 interface AccountRosterExpandedProps {
   accounts: AccountMeta[];
   activeAccountId: string | null;
   isIncluded: (id: string) => boolean;
+  counts: Record<string, RosterCount>;
+  allCount: RosterCount;
   onPick: (accountId: string) => void;
   onPickAll: () => void;
   allActive: boolean;
 }
 
 export function AccountRosterExpanded({
-  accounts, activeAccountId, isIncluded, onPick, onPickAll, allActive,
+  accounts, activeAccountId, isIncluded, counts, allCount, onPick, onPickAll, allActive,
 }: AccountRosterExpandedProps) {
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
-      {allActive && <AllModelsBlock active onPick={onPickAll} />}
+      {allActive && <AllModelsBlock active onPick={onPickAll} count={allCount} />}
       {accounts.map((a) => (
         <AccountBlock
           key={a.id}
           account={a}
           active={a.id === activeAccountId}
           included={isIncluded(a.id)}
+          count={counts[a.id]}
           onPick={() => onPick(a.id)}
         />
       ))}
-      {!allActive && <AllModelsBlock active={false} onPick={onPickAll} />}
+      {!allActive && <AllModelsBlock active={false} onPick={onPickAll} count={allCount} />}
     </div>
   );
 }
 
 function AllModelsBlock({
-  active, onPick,
-}: { active: boolean; onPick: () => void }) {
+  active, onPick, count,
+}: { active: boolean; onPick: () => void; count?: RosterCount | null }) {
   return (
     <button
       type="button"
@@ -61,16 +65,18 @@ function AllModelsBlock({
       <div className="min-w-0 flex-1">
         <div className="text-xs font-medium truncate">All models</div>
       </div>
+      <RosterCountBadge count={count} />
     </button>
   );
 }
 
 function AccountBlock({
-  account, active, included, onPick,
+  account, active, included, count, onPick,
 }: {
   account: AccountMeta;
   active: boolean;
   included: boolean;
+  count?: RosterCount | null;
   onPick: () => void;
 }) {
   const avatarQ = useAccountAvatar(account.id);
@@ -94,6 +100,7 @@ function AccountBlock({
           <div className="text-[10px] text-fg-dim">excluded from all-models</div>
         )}
       </div>
+      <RosterCountBadge count={count} />
     </button>
   );
 }

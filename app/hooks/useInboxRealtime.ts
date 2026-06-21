@@ -170,6 +170,11 @@ export function useInboxRealtime() {
   const allowedRef = useRef(allowedAccountIds);
   allowedRef.current = allowedAccountIds;
 
+  // Last time we nudged the roster badge counts, so a mass-send burst doesn't
+  // fire one refetch per recipient. The counts query is cheap, but no need to
+  // hammer it.
+  const rosterNudgedAtRef = useRef(0);
+
   useEffect(() => {
     const offMsg = eventBus.on("api2_chat_message", (env: EventEnvelope) => {
       const target = resolveChatTarget(env as unknown as ChatMessageEvent);
@@ -183,6 +188,16 @@ export function useInboxRealtime() {
       // yet (empty set) by letting events through until we know the roster.
       const allowed = allowedRef.current;
       if (allowed.size > 0 && !allowed.has(accountId)) return;
+
+      // Roster badge counts (per-model unread / owe-reply) move on every inbound
+      // (adds unread) and outbound (clears the owe-reply we just answered). The
+      // badge is a 60s poll with no other live wiring, so a send/receive left it
+      // stale — nudge it. Throttled so a mass-send burst doesn't refetch per fan.
+      const nowMs = Date.now();
+      if (nowMs - rosterNudgedAtRef.current > 4000) {
+        rosterNudgedAtRef.current = nowMs;
+        void qc.invalidateQueries({ queryKey: ["roster-counts"] });
+      }
 
       // A scheduled send firing arrives as an outbound message. Drop its ghost
       // bubble the instant the real one lands (instead of waiting for the poll).

@@ -119,6 +119,8 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
           accounts={ordered}
           activeAccountId={scope.kind === "model" ? scope.accountId : null}
           isIncluded={isIncluded}
+          counts={counts}
+          allCount={allCount}
           onPick={(accountId) => setScope({ kind: "model", accountId })}
           onPickAll={() => setScope({ kind: "all" })}
           allActive={scope.kind === "all"}
