@@ -3185,10 +3185,27 @@ async def list_chats(
                 list_id=list_id, query=q,
             ),
         ))
-    return await relay_cache.get_or_fetch(
+    resp = await relay_cache.get_or_fetch(
         "list_chats", aid, (limit, offset, order, filter, list_id, q),
         ttl_seconds=600.0, fetcher=_fetch, bypass=refresh,
     )
+    # Reconcile OF's authoritative read state + last-message direction into the
+    # local `chats` mirror the roster badge aggregates. Done on EVERY plain recent
+    # load (cache hit OR miss), not just a fresh fetch — otherwise a model served
+    # from cache never gets its stale unread_count corrected and the badge stays
+    # inflated. Safe on a cache hit: an inbound DM busts this cache
+    # (event_transcoder invalidates "list_chats"), so a hit means OF's read state
+    # hasn't moved since the snapshot. Only the unfiltered/no-search/no-folder view
+    # (unbiased snapshot); fire-and-forget so it never adds latency.
+    if resp and not filter and not q and list_id is None:
+        chats = resp.get("list") or resp.get("chats") or []
+        if chats:
+            from messages import reconcile_chats_from_of
+            asyncio.create_task(
+                reconcile_chats_from_of(aid, chats),
+                name=f"reconcile-chats-{aid}",
+            )
+    return resp
 
 
 @app.get("/api/of/v2/chats/folders")
@@ -4622,20 +4639,45 @@ def of_unpin_message(message_id: int, user_id: int):
 # Static path BEFORE dynamic /chats/{chat_id}/... to avoid `chat_id="mark-as-read"`
 # int-validation 422.
 
+async def _set_local_unread(account_id: str, *, fan_id: int | None, value: int) -> None:
+    """Mirror an OF read-state change into local `chats.unread_count` so the roster
+    badge (a local aggregate) updates immediately instead of waiting for the next
+    /chats reconcile. fan_id=None → every chat on the account (bulk mark-all-read).
+    Best-effort: own session, swallows errors."""
+    try:
+        from db.engine import get_session as _gs
+        from db.models import Chat as _Chat
+        from sqlalchemy import update as _update
+        async with _gs() as s:
+            stmt = _update(_Chat).where(_Chat.account_id == account_id).values(unread_count=value)
+            if fan_id is not None:
+                stmt = stmt.where(_Chat.fan_id == fan_id)
+            await s.execute(stmt)
+            await s.commit()
+    except Exception:
+        log.warning("_set_local_unread(%s, fan=%s) failed — best-effort", account_id, fan_id,
+                    exc_info=True)
+
 @app.post("/api/of/v2/chats/mark-as-read")
-def of_mark_all_chats_read():
+async def of_mark_all_chats_read():
     """Mark EVERY chat as read (bulk no-arg endpoint)."""
-    return _proxy(lambda: _get_client().mark_all_chats_read())
+    aid = _resolve_account_id(_request_ctx.get())
+    await _set_local_unread(aid, fan_id=None, value=0)
+    return await asyncio.to_thread(_proxy, lambda: _get_client().mark_all_chats_read())
 
 @app.post("/api/of/v2/chats/{chat_id}/mark-as-read")
-def of_mark_chat_read(chat_id: int):
-    """Mark chat as read."""
-    return _proxy(lambda: _get_client().mark_chat_read(chat_id))
+async def of_mark_chat_read(chat_id: int):
+    """Mark chat as read (chat_id == fan id). Clears local unread_count too."""
+    aid = _resolve_account_id(_request_ctx.get())
+    await _set_local_unread(aid, fan_id=chat_id, value=0)
+    return await asyncio.to_thread(_proxy, lambda: _get_client().mark_chat_read(chat_id))
 
 @app.delete("/api/of/v2/chats/{chat_id}/mark-as-read")
-def of_mark_chat_unread(chat_id: int):
+async def of_mark_chat_unread(chat_id: int):
     """Mark chat as unread (same path as mark-read but DELETE)."""
-    return _proxy(lambda: _get_client().mark_chat_unread(chat_id))
+    aid = _resolve_account_id(_request_ctx.get())
+    await _set_local_unread(aid, fan_id=chat_id, value=1)
+    return await asyncio.to_thread(_proxy, lambda: _get_client().mark_chat_unread(chat_id))
 
 @app.post("/api/of/v2/chats/{chat_id}/mute")
 def of_mute_chat(chat_id: int):
@@ -4740,6 +4782,97 @@ async def of_automation_unrestrict_all(request: Request) -> dict:
             )
         )
     return {"ok": True, "cleared": result.rowcount or 0}
+
+# ── Manual "Send reward" override (fire tip_reward on demand) ────────────────
+# The tip_reward automation auto-sends free vault images when a fan tips
+# (webhook_dispatch.on_inbound_tip → enqueue tip_reward). This is the HUMAN
+# override: a chatter clicks "🎁 Send reward" on a tip bubble and we fire the
+# SAME automation inline via run_once with force=True (bypass the once-per-tip
+# idempotency + restriction gates — the click IS the authorization), then return
+# the real send result so the UI can toast images_sent / skip reason / error.
+# Inline (not enqueue) so the click gets immediate, truthful feedback.
+
+class _TipRewardSendBody(BaseModel):
+    account_id: str = Field(..., description="Model account id (must be owned by the caller).")
+    fan_id: int = Field(..., description="Fan's OF user id to reward.")
+    # Tier basis. The UI sends it from the tip bubble (price*100); optional —
+    # if omitted we recover it from the stored tip Message (the exact
+    # tip_message_id if given, else the fan's most recent tip).
+    tip_cents: int | None = None
+    tip_message_id: int | None = None
+
+@app.post("/admin/tip-reward/send")
+async def admin_tip_reward_send(request: Request, body: _TipRewardSendBody = Body(...)) -> dict:
+    """Manually fire tip_reward for one fan (the chat-bubble "Send reward"
+    button). Reuses the automation's own send path through run_once with
+    force=True, returning its result dict verbatim for the UI toast."""
+    account_id = str(body.account_id)
+    # Ownership gate — same rule as _resolve_account_id, applied to the body's
+    # account_id (this endpoint carries the account in the JSON, not a header).
+    if account_registry.get_account(account_id) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown account_id {account_id!r}")
+    user = _get_request_user()
+    if user is not None:
+        if account_id not in user.account_ids:
+            raise HTTPException(status_code=403, detail="not your account")
+    else:
+        chatter = _get_request_chatter()
+        if chatter is not None and account_id not in chatter.account_ids:
+            raise HTTPException(status_code=403, detail="not your account")
+
+    fan_id = int(body.fan_id)
+    tip_cents = int(body.tip_cents or 0)
+    # tip_reward.run requires tip_cents > 0 (it's the tier basis). The UI passes
+    # it from the bubble; if absent, recover it from the persisted tip Message.
+    # NOTE: OF tips land with price_cents=0 (the $ rides in tipAmount/tipText,
+    # which the WS transcoder drops into the *body* text — "I sent you a $10.00
+    # tip"). So fall back to parsing the dollar amount out of the body when the
+    # stored price is zero, matching what the bubble shows the chatter.
+    if tip_cents <= 0:
+        import re as _re
+        from db.engine import get_session
+        from db.models import Message
+        from sqlalchemy import select
+
+        def _cents_from(price_cents: int | None, body_text: str | None) -> int:
+            if price_cents and price_cents > 0:
+                return int(price_cents)
+            m = _re.search(r"\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)", body_text or "")
+            return int(round(float(m.group(1).replace(",", "")) * 100)) if m else 0
+
+        async with get_session() as s:
+            row = None
+            if body.tip_message_id is not None:
+                row = (await s.execute(
+                    select(Message.price_cents, Message.body).where(
+                        Message.account_id == account_id,
+                        Message.fan_id == fan_id,
+                        Message.message_id == int(body.tip_message_id),
+                    )
+                )).first()
+            if row is None:
+                row = (await s.execute(
+                    select(Message.price_cents, Message.body)
+                    .where(Message.account_id == account_id,
+                           Message.fan_id == fan_id,
+                           Message.is_tip.is_(True))
+                    .order_by(Message.created_at.desc())
+                    .limit(1)
+                )).first()
+            if row is not None:
+                tip_cents = _cents_from(row.price_cents, row.body)
+    if tip_cents <= 0:
+        raise HTTPException(status_code=400,
+                            detail="No tip amount found for this fan — pass tip_cents.")
+
+    payload: dict = {"fan_id": fan_id, "tip_cents": tip_cents, "force": True}
+    if body.tip_message_id is not None:
+        payload["tip_message_id"] = int(body.tip_message_id)
+
+    from automation_executor import run_once
+    result = await run_once(account_id, "tip_reward", payload=payload)
+    return {"ok": result.get("status") == "ok", **result}
+
 
 @app.get("/api/of/v2/chats/{chat_id}/media")
 def of_chat_media(
@@ -5956,22 +6089,87 @@ def admin_accounts_list(response: Response) -> dict[str, Any]:
     }
 
 
+# Roster badge reads OF's LIVE chat list — the SAME source the chat-list rows
+# read — over the inbox's first-page window, so the per-model badge matches what
+# you see at a glance and the All-icon sums to the unified header's "Owe reply".
+#
+# Why NOT the local `chats` table (an earlier implementation): it is not a
+# faithful mirror of OF — it accumulates phantom/old rows (Lexi: ~290 local vs
+# OF's ~106), `last_message_at` ordering is unreliable, and `unread_count` drifts
+# (WS only increments it), so a local scan read 3 "unread" for a model OF reports
+# as 0. Why NOT a deep scan: paginating the whole history over-counted owe-reply
+# vs the inbox (the All-icon read 11 where the unified header showed 5-6). Why NOT
+# OF's `filter=unread` for blue: it proved unreliable — returned 0 for a model
+# (Amia) that had a genuine `unreadMessagesCount=1` chat in its recent window.
+_ROSTER_SCAN_MAX = 25    # most-recent conversations per model = the inbox's first page (PAGE_SIZE)
+_ROSTER_PAGE = 10        # OF caps /chats at ~10 per page regardless of `limit`
+
+
+def _compute_roster_count_of(account_id: str) -> dict[str, int]:
+    """Blocking: a model's inbox backlog straight from OF (runs in a thread).
+
+    ONE shallow scan of the most-recent _ROSTER_SCAN_MAX conversations — the same
+    window the inbox loads first — counting both colors exactly as the chat-list
+    rows do:
+
+      • unread (blue)    — `unreadMessagesCount > 0` (OF's per-chat read state =
+                           the inbox's blue unread badge).
+      • owe_reply (orange) — READ (`unreadMessagesCount == 0`) AND the fan spoke
+                           last (`lastMessage.fromUser.id != my id`, the chat-list
+                           header's `isUnresponded` rule). Disjoint from blue so
+                           the two pills don't double-count.
+
+    Deduped by fan id; stops at the window cap rather than paginating the whole
+    history. The WS pump busts the roster_count cache on every chat message
+    (event_transcoder), so a new inbound DM bumps blue — and our reply drops
+    orange — on the next poll."""
+    client = _load_client(account_id)
+    me = str(client.user_id)
+    blue = owe = 0
+    seen: set[Any] = set()
+    for p in range((_ROSTER_SCAN_MAX // _ROSTER_PAGE) + 2):
+        r = client.list_chats(limit=_ROSTER_PAGE, offset=p * _ROSTER_PAGE, order="recent")
+        rows = r.get("list") or r.get("chats") or []
+        capped = False
+        for ch in rows:
+            fid = (ch.get("withUser") or {}).get("id")
+            if fid is None or fid in seen:
+                continue
+            if len(seen) >= _ROSTER_SCAN_MAX:
+                capped = True
+                break
+            seen.add(fid)
+            if int(ch.get("unreadMessagesCount") or 0) > 0:
+                blue += 1
+                continue
+            lm = ch.get("lastMessage") or {}
+            from_id = (lm.get("fromUser") or {}).get("id")
+            if from_id is not None and str(from_id) != me:
+                owe += 1
+        if capped or not r.get("hasMore"):
+            break
+
+    return {"unread": blue, "owe_reply": owe}
+
+
 @app.get("/admin/accounts/roster-counts")
 async def admin_accounts_roster_counts(response: Response) -> dict[str, Any]:
-    """Per-model inbox badge counts for the left roster strip:
+    """Per-model inbox badge counts for the left roster strip.
 
-      • unread    — number of CONVERSATIONS with unread messages (blue badge:
-                    "fans waiting to be read"). A conversation count, not a
-                    message sum — summing unread messages is perpetually in the
-                    hundreds and pins the badge at 99+, telling you nothing.
-      • owe_reply — conversations that are READ but the fan spoke last, i.e. we
-                    owe a reply (orange badge: "seen, not yet answered"). There's
-                    no OF filter for this — it's our own derived state — so we
-                    compute it from the local `chats`/`messages` mirror.
+    Two colors, both straight from OF's live chat list (see
+    `_compute_roster_count_of`) so the badge always agrees with the model's own
+    inbox header:
 
-    Scoped to the signed-in principal's accounts (never the full registry, same
-    as /admin/accounts). Computed from the local tables the WS pump keeps fresh,
-    so it's ONE cheap aggregate instead of paginating OF's /chats per model."""
+      • unread    — OF reports the conversation unread (blue: "fans waiting to be
+                    read").
+      • owe_reply — read, but the fan spoke last (orange: "seen, not answered").
+
+    Scoped to the signed-in principal's accounts (never the full registry, same as
+    /admin/accounts). Each model's count is cached 5 min in relay_cache and the
+    models are scanned concurrently, so a 60s frontend poll almost always serves
+    from cache and a cold miss costs one bounded burst of OF reads, not one per
+    poll. A model that fails to read (no session / OF hiccup) yields zero counts
+    rather than failing the whole strip."""
     response.headers["Cache-Control"] = "no-store"
     user = _get_request_user()
     if user is None:
@@ -5980,38 +6178,20 @@ async def admin_accounts_roster_counts(response: Response) -> dict[str, Any]:
     if not ids:
         return {"counts": {}}
 
-    from db.engine import get_session
-    from db.models import Chat, Message
-    from sqlalchemy import select, func, and_
+    async def _one(aid: str) -> tuple[str, dict[str, int]]:
+        try:
+            value = await relay_cache.get_or_fetch(
+                "roster_count", aid, (),
+                ttl_seconds=300.0,
+                fetcher=lambda: _compute_roster_count_of(aid),
+            )
+            return aid, value
+        except Exception:  # noqa: BLE001 — one bad model must not blank the strip
+            log.warning("roster-counts: OF read failed for %s", aid, exc_info=True)
+            return aid, {"unread": 0, "owe_reply": 0}
 
-    counts: dict[str, dict[str, int]] = {aid: {"unread": 0, "owe_reply": 0} for aid in ids}
-    async with get_session() as s:
-        # Blue: count of conversations with unread messages (skip hidden chats).
-        for aid, n in (await s.execute(
-            select(Chat.account_id, func.count())
-            .where(Chat.account_id.in_(ids), Chat.hidden_locally.is_(False),
-                   Chat.unread_count > 0)
-            .group_by(Chat.account_id)
-        )).all():
-            if aid in counts:
-                counts[aid]["unread"] = int(n or 0)
-        # Orange: read chats (unread_count == 0) whose LAST message is inbound —
-        # the fan spoke last and we haven't answered. Join the chat's
-        # last_message_id to messages.direction (fan_id-qualified so a shared
-        # mass-placeholder id can't mis-link).
-        for aid, n in (await s.execute(
-            select(Chat.account_id, func.count())
-            .select_from(Chat)
-            .join(Message, and_(Message.account_id == Chat.account_id,
-                                Message.fan_id == Chat.fan_id,
-                                Message.message_id == Chat.last_message_id))
-            .where(Chat.account_id.in_(ids), Chat.hidden_locally.is_(False),
-                   Chat.unread_count == 0, Message.direction == "in")
-            .group_by(Chat.account_id)
-        )).all():
-            if aid in counts:
-                counts[aid]["owe_reply"] = int(n or 0)
-    return {"counts": counts}
+    pairs = await asyncio.gather(*[_one(a) for a in ids])
+    return {"counts": {aid: c for aid, c in pairs}}
 
 
 class _ActivateBody(BaseModel):

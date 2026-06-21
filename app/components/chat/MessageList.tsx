@@ -62,6 +62,11 @@ export interface MessageListProps {
    *  when the message turns out to be part of a mass send. Only shown
    *  on outbound bubbles — OF refuses unsend on incoming. */
   onUnsend?: (msg: OFMessage) => void;
+  /** Click "🎁 Send reward" on a tip bubble's hover toolbar. Manually fires
+   *  the tip_reward automation for this fan (free vault images), reusing the
+   *  same send path the inbound-tip webhook uses. Only shown on incoming tip
+   *  bubbles (`msg.isTip`). Parent owns the POST + success/error toast. */
+  onSendReward?: (msg: OFMessage) => void;
   /** Highlight a single message id (used by the search results panel
    *  click-to-jump). The bubble gets a transient ring + scrolls into view. */
   highlightId?: number | string | null;
@@ -86,7 +91,8 @@ export function MessageList(props: MessageListProps) {
   const {
     messages, ownerUserId, accountId, fanId, isLoading, isError, error,
     hasOlder, loadingOlder, onLoadOlder, onRetry, onCancelScheduled,
-    onToggleLike, onQuoteReply, onTogglePin, onUnsend, highlightId, lastReadByPeerId,
+    onToggleLike, onQuoteReply, onTogglePin, onUnsend, onSendReward,
+    highlightId, lastReadByPeerId,
     attribution, currentEmployeeName,
   } = props;
 
@@ -469,6 +475,7 @@ export function MessageList(props: MessageListProps) {
             onQuoteReply={onQuoteReply}
             onTogglePin={onTogglePin}
             onUnsend={onUnsend}
+            onSendReward={onSendReward}
             onJumpTo={(id) => {
               // Tapping the quote card scrolls to the original. Same logic
               // as search-result click: set highlightId via the existing
@@ -503,7 +510,7 @@ export function MessageList(props: MessageListProps) {
 function Bubble({
   msg, replyTo, isOutgoing, isOptimisticOutgoing, accountId, fanId, ownerUserId,
   onRetry, onCancelScheduled,
-  onToggleLike, onQuoteReply, onTogglePin, onUnsend, onJumpTo,
+  onToggleLike, onQuoteReply, onTogglePin, onUnsend, onSendReward, onJumpTo,
   highlighted, isRealOutgoing, seenByPeer,
   eagerMediaIds, employeeLabel,
 }: {
@@ -520,6 +527,7 @@ function Bubble({
   onQuoteReply?: (msg: OFMessage) => void;
   onTogglePin?: (msg: OFMessage) => void;
   onUnsend?: (msg: OFMessage) => void;
+  onSendReward?: (msg: OFMessage) => void;
   onJumpTo?: (messageId: number) => void;
   highlighted?: boolean;
   isRealOutgoing?: boolean;
@@ -564,6 +572,11 @@ function Bubble({
   const canUnsend = !!onUnsend && (isOutgoing || isOptimisticOutgoing)
     && !scheduled && !failed && !pending
     && Number.isFinite(numericIdForPin) && numericIdForPin > 0;
+  // Manual tip-reward override: only on a real INCOMING tip bubble (a fan
+  // tips us). Fires the tip_reward automation on demand — see onSendReward.
+  const canSendReward = !!onSendReward && !!msg.isTip
+    && !isOutgoing && !isOptimisticOutgoing && !scheduled && !failed && !pending
+    && Number.isFinite(numericIdForPin) && numericIdForPin > 0;
 
   function onBubbleDoubleClick() {
     if (!canLike) return;
@@ -592,7 +605,7 @@ function Bubble({
       <div className="max-w-[75%] flex flex-col gap-1 relative">
         {/* Hover toolbar — sits above the bubble. Only shows when the
          *  message is in a state where actions make sense. */}
-        {(canReply || canLike || canPin || canUnsend) && (
+        {(canReply || canLike || canPin || canUnsend || canSendReward) && (
           <div
             className={cn(
               "absolute -top-7 opacity-0 group-hover:opacity-100 transition-opacity",
@@ -644,6 +657,16 @@ function Bubble({
                 title="Unsend (within OF's 24h window)"
               >
                 🗑 unsend
+              </button>
+            )}
+            {canSendReward && (
+              <button
+                type="button"
+                onClick={() => onSendReward!(msg)}
+                className="text-[10px] px-1.5 py-0.5 rounded hover:bg-info/10 text-fg-dim hover:text-info"
+                title="Send a free vault reward for this tip (fires the tip_reward automation)"
+              >
+                🎁 reward
               </button>
             )}
           </div>

@@ -1062,25 +1062,132 @@ async def list_message_attribution(
     return {"by_msg_id": by_msg_id}
 
 
+def _iso(v: Any) -> datetime | None:
+    """Parse an OF ISO timestamp ('...Z' or '+00:00'); None on anything odd."""
+    if not isinstance(v, str) or not v:
+        return None
+    try:
+        return datetime.fromisoformat(v.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+async def reconcile_chats_from_of(account_id: str, of_chats: list[dict]) -> int:
+    """Reconcile local `chats` from a fresh OF /chats payload — read state +
+    last-message direction. Returns the number of chats touched.
+
+    Why this exists: OF's `unreadMessagesCount` is the SOURCE OF TRUTH for read
+    state (cleared when a chat is read on OF web OR via our mark-as-read), but
+    nothing local mirrored it. `chats.unread_count` is WS-incremented and only
+    zeroed by an app-side outbound send, so it drifted toward "every chat that
+    ever got a DM" — which is why the roster blue badge read as a *total* instead
+    of the real unread backlog. We piggy-back on the inbox's existing /chats fetch
+    (NO new OF calls) to pull OF's truth into the tables the roster aggregate reads.
+
+    Per chat we:
+      • set `unread_count` = OF's count (unconditional — OF is authoritative), and
+      • advance the last message + persist its direction MONOTONICALLY, so an
+        OF-web reply (which the WS pump skips) flips the chat off the owe-reply
+        badge without waiting for the next scrape.
+
+    Monotonic-on-message_id makes the last-message advance safe against a
+    concurrent WS write landing a newer inbound mid-reconcile; unread_count is set
+    every time because read state isn't monotonic. Best-effort: own session,
+    swallows errors — a sync hiccup must never break the inbox response it rides on.
+    """
+    own = str(account_id)
+    touched = 0
+    try:
+        async with get_session() as s:
+            for c in of_chats:
+                wu = c.get("withUser") or {}
+                fan_id = wu.get("id")
+                if fan_id is None:
+                    continue
+                unread = int(c.get("unreadMessagesCount") or 0)
+                lm = c.get("lastMessage") or {}
+                lm_id = lm.get("id")
+                from_id = (lm.get("fromUser") or {}).get("id")
+
+                # (a) Ensure the last message exists locally WITH its direction so
+                #     the roster's last_message_id→direction join can classify it.
+                #     do_nothing: never clobber a fuller row the WS/scrape wrote.
+                if lm_id is not None and from_id is not None:
+                    direction = "out" if str(from_id) == own else "in"
+                    await s.execute(
+                        sqlite_insert(Message)
+                        .values(account_id=own, fan_id=int(fan_id),
+                                message_id=int(lm_id), direction=direction,
+                                body=(lm.get("text") or ""),
+                                created_at=_iso(lm.get("createdAt")) or datetime.utcnow())
+                        .on_conflict_do_nothing(
+                            index_elements=["account_id", "fan_id", "message_id"])
+                    )
+
+                # (b) unread_count = OF truth, unconditionally (create row if new).
+                await s.execute(
+                    sqlite_insert(Chat)
+                    .values(account_id=own, fan_id=int(fan_id), unread_count=unread)
+                    .on_conflict_do_update(
+                        index_elements=["account_id", "fan_id"],
+                        set_={"unread_count": unread})
+                )
+
+                # (c) Advance the chat's last message forward-only.
+                if lm_id is not None:
+                    preview = (lm.get("text") or "")[:120]
+                    await s.execute(
+                        sqlite_insert(Chat)
+                        .values(account_id=own, fan_id=int(fan_id),
+                                last_message_id=int(lm_id),
+                                last_message_at=_iso(lm.get("createdAt")),
+                                last_message_preview=preview)
+                        .on_conflict_do_update(
+                            index_elements=["account_id", "fan_id"],
+                            set_={"last_message_id": int(lm_id),
+                                  "last_message_at": _iso(lm.get("createdAt")),
+                                  "last_message_preview": preview},
+                            where=(Chat.last_message_id.is_(None))
+                                  | (Chat.last_message_id < int(lm_id)),
+                        )
+                    )
+                touched += 1
+            await s.commit()
+    except Exception:
+        log.warning("reconcile_chats_from_of(%s) failed — best-effort", account_id,
+                    exc_info=True)
+    return touched
+
+
 @router.post("/admin/messages/{account_id}/{fan_id}/mark-read")
 async def mark_chat_read(account_id: str, fan_id: int) -> dict[str, Any]:
     """LOCAL read-marker — zeroes `chats.unread_count` for this pair.
 
     Does NOT call OF. The relay endpoint that POSTs to OF's chat read
     endpoint is responsible for the upstream side; this just keeps our
-    inbox badge from lying after the user has clearly seen the messages."""
+    inbox badge from lying after the user has clearly seen the messages.
+    The inbox calls this on EVERY chat open (no OF round-trip) so a chat the
+    chatter reads but doesn't reply to flips from the roster's blue (unread)
+    count to orange (owe reply) immediately, even when OF already considered
+    it read (so our `reconcile_chats_from_of` left nothing to clear).
+
+    The WHERE guards on `unread_count > 0` so the rowcount tells the caller
+    whether anything ACTUALLY changed — a chat opened with nothing locally
+    unread returns `cleared=false`, letting the UI skip a needless roster
+    refetch."""
     assert_account_owned(account_id)
     async with get_session() as s:
         stmt = (
             update(Chat)
-            .where(Chat.account_id == account_id, Chat.fan_id == fan_id)
+            .where(Chat.account_id == account_id, Chat.fan_id == fan_id,
+                   Chat.unread_count > 0)
             .values(unread_count=0)
         )
         result = await s.execute(stmt)
         await s.commit()
-        # rowcount=0 just means we don't have a chats row yet (WS hasn't
-        # transcoded one). Not an error — return 200 with updated=false.
-        return {"account_id": account_id, "fan_id": fan_id, "updated": (result.rowcount or 0) > 0}
+        # rowcount=0 → no chats row yet (WS hasn't transcoded one) OR it was
+        # already read. Not an error — 200 with cleared=false.
+        return {"account_id": account_id, "fan_id": fan_id, "cleared": (result.rowcount or 0) > 0}
 
 
 @router.post("/admin/messages/detect-mass")

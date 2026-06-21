@@ -398,6 +398,10 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     relay_cache.invalidate("list_chats", aid_s)
     relay_cache.invalidate("init", aid_s)
     relay_cache.invalidate("notifications_count", aid_s)
+    # Roster strip badge: an inbound DM bumps this model's unread, our reply
+    # clears its owe-reply — bust the cached count so the next 60s poll recomputes
+    # from OF. This is what keeps the unread badge live off the WS pump.
+    relay_cache.invalidate("roster_count", aid_s)
 
     # W7 webhook-priority dispatch: an inbound DM is now persisted, so kick the
     # owning automation to react in real time (gated per-account, default OFF).
