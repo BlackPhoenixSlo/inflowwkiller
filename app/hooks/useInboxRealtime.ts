@@ -260,6 +260,20 @@ export function useInboxRealtime() {
         const isUnfiltered =
           filterKey === null && listIdKey === null && queryKeyText === null;
 
+        // Does this cache's SCOPE actually include the event's account? The key
+        // is ["chats", kind, accountKey, …]; accountKey is the single id in a
+        // model scope, or the sorted comma-joined included ids in an all scope.
+        // An inbound DM for one of the principal's models (model A) must NOT be
+        // synthesized into ANOTHER of its models' single-account list (model B) —
+        // that's the cross-model leak where the same fan shows up under a model
+        // it doesn't belong to, double-counting unread until the next refetch.
+        const scopeKind = q.queryKey[1];
+        const accountKey = String(q.queryKey[2] ?? "");
+        const accountInScope =
+          scopeKind === "model"
+            ? accountKey === accountId
+            : accountKey.split(",").includes(accountId);
+
         let existing: OFChatItem | null = null;
         const stripped: Page[] = data.pages.map((p) => ({
           ...p,
@@ -271,11 +285,15 @@ export function useInboxRealtime() {
           }),
         }));
 
-        // Filtered/folder/search cache that doesn't already hold this fan:
-        // skip it. We can't know whether the fan satisfies the filter, so
-        // leave it to that view's next refetch rather than inject a row it
-        // may not match.
-        if (!existing && !isUnfiltered) return;
+        // Only SYNTHESIZE a brand-new row into a cache that can validly hold it.
+        // Skip when the fan isn't already present AND either:
+        //   • it's a filtered/folder/search view (we can't know the fan matches
+        //     the filter), or
+        //   • the event's account isn't in this cache's scope (a DIFFERENT
+        //     model's list — the cross-model leak).
+        // Bumping an EXISTING row is always fine: it's already correctly scoped,
+        // so this guard only gates the new-row path.
+        if (!existing && (!isUnfiltered || !accountInScope)) return;
 
         const base: OFChatItem = existing ?? ({
           __accountId: accountId,
