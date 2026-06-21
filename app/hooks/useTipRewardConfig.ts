@@ -15,6 +15,9 @@ export interface TipRewardTier {
 
 export interface TipRewardConfig {
   enabled?: boolean;
+  // Fire the reward on every tip even when an ai_chatter PPV offer is open for
+  // the fan (overrides the standdown; the offer is still credited).
+  always_reward?: boolean;
   dollars_per_image?: number;
   min_images?: number;
   max_images?: number;

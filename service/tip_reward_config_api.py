@@ -72,6 +72,10 @@ def _validate(cfg: dict) -> dict:
     out: dict[str, Any] = {}
     if "enabled" in cfg:
         out["enabled"] = bool(cfg["enabled"])
+    # "Always reward" — fire on every tip even when an ai_chatter PPV offer is
+    # open for the fan (overrides the standdown; the offer is still credited).
+    if "always_reward" in cfg:
+        out["always_reward"] = bool(cfg["always_reward"])
     # The content-ask tip-ask toggle (ASK side). Independent of `enabled` (the
     # delivery side) — the ask can be on while reward delivery is off, or vice versa.
     if "ask_enabled" in cfg:
