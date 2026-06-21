@@ -38,6 +38,10 @@ _INT_KNOBS = {
     # The content-ask tip-ask amount (read by of_ai_chat/autoreply — the ASK side
     # of the loop). Kept here so the whole tip loop has one config surface.
     "ask_amount_dollars": (1, 10_000),
+    # Inbound-image reply knobs (Flag 1 — a fan sends US a photo).
+    "image_reply_count": (1, 10),
+    "image_reply_basis_cents": (0, 1_000_000),
+    "image_reply_cooldown_hours": (0, 8760),
 }
 _MAX_TIERS = 10
 _MAX_FOLDERS_PER_TIER = 25
@@ -76,6 +80,12 @@ def _validate(cfg: dict) -> dict:
     # open for the fan (overrides the standdown; the offer is still credited).
     if "always_reward" in cfg:
         out["always_reward"] = bool(cfg["always_reward"])
+    # Inbound-image buying-signal handler (a fan sends US a photo). Two independent
+    # flags, both default OFF, both independent of the tip `enabled` master switch.
+    if "image_reply_enabled" in cfg:
+        out["image_reply_enabled"] = bool(cfg["image_reply_enabled"])
+    if "image_closer_enabled" in cfg:
+        out["image_closer_enabled"] = bool(cfg["image_closer_enabled"])
     # The content-ask tip-ask toggle (ASK side). Independent of `enabled` (the
     # delivery side) — the ask can be on while reward delivery is off, or vice versa.
     if "ask_enabled" in cfg:
@@ -88,6 +98,8 @@ def _validate(cfg: dict) -> dict:
                 raise HTTPException(422, f"{k} must be a number")
     if "caption" in cfg:
         out["caption"] = str(cfg["caption"] or "")[:_CAPTION_MAX]
+    if "image_reply_caption" in cfg:
+        out["image_reply_caption"] = str(cfg["image_reply_caption"] or "")[:_CAPTION_MAX]
     if "ask_template" in cfg:
         out["ask_template"] = str(cfg["ask_template"] or "")[:_ASK_TEMPLATE_MAX]
     if "tiers" in cfg:

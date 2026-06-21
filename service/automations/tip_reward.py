@@ -77,6 +77,21 @@ _DEFAULTS: dict = {
     "ask_enabled": DEFAULT_TIP_ASK_ENABLED,
     "ask_amount_dollars": None,
     "ask_template": "",        # optional phrasing seed ('' → the model phrases it)
+    # ── Inbound-IMAGE buying-signal handler (a fan sends a photo) ────────────
+    # A fan sending US a picture is a buying signal ("look what I've got" → "what
+    # have YOU got"). Two independent switches, both fired by webhook_dispatch.
+    # on_inbound_image off an inbound, non-tip media DM. Default OFF.
+    "image_reply_enabled": False,   # Flag 1: send ONE free vault image straight back
+    "image_closer_enabled": False,  # Flag 2: kick the ai_chatter CLOSER for this fan
+    # Image-reply knobs (only matter when image_reply_enabled):
+    "image_reply_count": 1,            # how many free items to send back (usually 1)
+    "image_reply_basis_cents": 999,    # tier basis for the freebie folder — "under
+                                       # $10 spend" → the basic tier (mid starts at
+                                       # $10 = 1000c). _pick_tier walks DOWN from here.
+    "image_reply_cooldown_hours": 6,   # per-fan throttle so a photo-spamming fan
+                                       # doesn't drain a folder; also dedups webhook
+                                       # replays. 0 → every inbound image (replay risk).
+    "image_reply_caption": "",         # optional caption ('' → media-only)
     "tiers": [
         {"name": "basic",   "min_basis_cents": 0,      "folders": []},
         {"name": "mid",     "min_basis_cents": 1000,   "folders": []},   # ≥ $10
@@ -123,6 +138,15 @@ async def reward_flags(account_id: str) -> tuple[bool, bool]:
     is still credited."""
     cfg = await _load_config(account_id)
     return bool(cfg.get("enabled")), bool(cfg.get("always_reward"))
+
+
+async def image_reply_flags(account_id: str) -> tuple[bool, bool]:
+    """(image_reply_enabled, image_closer_enabled) in ONE config read — for the
+    inbound-image dispatcher (webhook_dispatch.on_inbound_image). Both default
+    OFF and are independent of the tip `enabled` master switch: a fan sending a
+    photo can trigger a freebie and/or the closer without tip rewards being on."""
+    cfg = await _load_config(account_id)
+    return bool(cfg.get("image_reply_enabled")), bool(cfg.get("image_closer_enabled"))
 
 
 def _media_count(tip_cents: int, cfg: dict) -> int:
@@ -290,10 +314,149 @@ async def _record_reward(account_id: str, fan_id: int, *, tip_message_id: int | 
             )
 
 
+# ── Inbound-image reply (Flag 1) ─────────────────────────────────────────────
+# A fan sending US a photo is a buying signal — reply with ONE free vault item
+# from the "under $10" (basic) tier. Reuses the tip path's folder/unseen/send
+# machinery; the only new state is a per-fan cooldown so a photo-spamming fan
+# can't drain a folder (and webhook replays of the same image don't re-send).
+# Stamp lives in fans.custom_fields['_image_reply'] = {'at': iso} — an otherwise
+# AI-owned JSON column, namespaced under a leading "_" → no migration, mirrors
+# the cross-automation '*fix' typo throttle.
+_IMAGE_REPLY_STATE_KEY = "_image_reply"
+
+
+def _load_custom_fields(fan: Fan | None) -> dict:
+    try:
+        cf = json.loads(fan.custom_fields) if fan and fan.custom_fields else {}
+        return cf if isinstance(cf, dict) else {}
+    except Exception:
+        return {}
+
+
+async def _image_reply_recent(account_id: str, fan_id: int, cooldown_hours: int) -> bool:
+    """True if an image-reply freebie was sent to this fan within the last
+    `cooldown_hours` (per-fan throttle; also dedups webhook replays). 0 → never
+    throttle (every inbound image replies)."""
+    if cooldown_hours <= 0:
+        return False
+    async with get_session() as s:
+        fan = await s.get(Fan, (str(account_id), int(fan_id)))
+    at = (_load_custom_fields(fan).get(_IMAGE_REPLY_STATE_KEY) or {}).get("at")
+    if not at:
+        return False
+    try:
+        last = datetime.fromisoformat(at)
+    except Exception:
+        return False
+    return (datetime.utcnow() - last) < timedelta(hours=max(1, int(cooldown_hours)))
+
+
+async def _run_image_reply(account_id: str, payload: dict, cfg: dict, *,
+                           dry_run: bool) -> dict:
+    """Flag 1: a fan sent us a photo → send ONE (config: image_reply_count) free,
+    unseen vault item from the 'under $10' tier straight back. NO tip required, NO
+    TipRewardLog (there's no tip to key on); a per-fan cooldown both throttles a
+    photo-spamming fan and dedups webhook replays. Mirrors the tip path's restricted
+    skip, unseen filter and free (price=0) send."""
+    fan_id = int(payload["fan_id"])
+    force = bool(payload.get("force"))
+    base = {"fan_id": fan_id, "image_reply": True, "dry_run": dry_run}
+
+    # Durably restricted (muted peer-creator / hand-restricted) → never auto-reply.
+    if not force:
+        async with get_session() as s:
+            fan = await s.get(Fan, (str(account_id), fan_id))
+        if fan_id in await load_hard_skip_ids(account_id) or should_skip_muted_creator(fan):
+            return {**base, "status": "skipped", "reason": "restricted"}
+
+    # Per-fan cooldown (also dedups webhook replays of the same image). `force`
+    # (manual re-send) bypasses.
+    cooldown_h = int(cfg.get("image_reply_cooldown_hours") or 0)
+    if not force and await _image_reply_recent(account_id, fan_id, cooldown_h):
+        return {**base, "status": "skipped", "reason": "throttled"}
+
+    count = max(1, int(cfg.get("image_reply_count") or 1))
+    basis_cents = max(0, int(cfg.get("image_reply_basis_cents") or 0))
+    tier = _pick_tier(basis_cents, cfg)
+    tier_name = tier.get("name") if tier else None
+    folders = [f for f in (tier.get("folders") if tier else []) if str(f).strip()]
+    base.update({"basis_cents": basis_cents, "tier": tier_name, "image_count": count})
+    if not folders:
+        return {**base, "status": "skipped", "reason": "no_folders", "images_sent": 0}
+
+    client = await asyncio.to_thread(ax._make_client, account_id)
+    by_name = await asyncio.to_thread(_resolve_folders, client, folders)
+    seen = await _seen_media(account_id, fan_id)
+    media_ids = await asyncio.to_thread(_gather_unseen, client, folders, by_name, seen, count)
+    if not media_ids:
+        # Fan has seen everything in the tier — nothing fresh to send back. Don't
+        # stamp the cooldown (we sent nothing); the next image can try again.
+        return {**base, "status": "ok", "reason": "no_unseen_media", "images_sent": 0}
+
+    caption = apply_word_restriction(str(cfg.get("image_reply_caption") or ""))
+    if dry_run:
+        return {**base, "status": "ok", "images_sent": len(media_ids),
+                "media_ids": media_ids, "would_send": True}
+
+    try:
+        result = await asyncio.to_thread(
+            lambda: client.send_message(fan_id, caption, media_files=media_ids, price=0)
+        )
+    except Exception as e:
+        log.warning("image_reply send failed account=%s fan=%s", account_id, fan_id,
+                    exc_info=True)
+        return {**base, "status": "error", "images_sent": 0, "error": repr(e)[:300]}
+
+    reward_message_id = result.get("id") if isinstance(result, dict) else None
+    now = datetime.utcnow()
+    if reward_message_id:
+        await write_outbound_attribution(
+            account_id=account_id, fan_id=fan_id, message_id=int(reward_message_id),
+            sent_by_employee_id=None, body=caption, price_cents=0, created_at=now,
+            automation_kind="image_reply", emit_live=True,
+        )
+    # Persist the VaultSend rows AND the cooldown stamp in ONE transaction (mirrors
+    # the tip path's _record_reward batching VaultSend + log). If these were two
+    # commits, a crash between them would leave a SENT freebie with no cooldown
+    # stamped — and the orphan-requeue on restart would re-run the job and double-
+    # send (the unseen filter only caps it, doesn't prevent a 2nd freebie). The fan
+    # row is upserted by event_transcoder before this fires, so `fan is None` is a
+    # defensive best-effort skip. NOTE: this stamp can still race a concurrent
+    # ai_chatter typo-throttle write of the SAME custom_fields row when both flags
+    # (and ai_chatter + typos) are on — two un-leased jobs of different kinds. The
+    # loser drops one key: bounded to one extra freebie OR one typo-throttle reset,
+    # both self-healing on the next message. Accepted as a low-severity exposure.
+    async with get_session() as s:
+        for mid in media_ids:
+            s.add(VaultSend(account_id=str(account_id), fan_id=fan_id, media_id=int(mid),
+                            message_id=int(reward_message_id) if reward_message_id else None,
+                            price_cents=0, sent_at=now))
+        fan = await s.get(Fan, (str(account_id), fan_id))
+        if fan is not None:
+            cf = _load_custom_fields(fan)
+            cf[_IMAGE_REPLY_STATE_KEY] = {"at": now.isoformat()}
+            fan.custom_fields = json.dumps(cf)
+
+    log.info("image_reply sent account=%s fan=%s tier=%s images=%d msg=%s",
+             account_id, fan_id, tier_name, len(media_ids), reward_message_id)
+    return {**base, "status": "ok", "images_sent": len(media_ids),
+            "media_ids": media_ids, "reward_message_id": reward_message_id}
+
+
 @register("tip_reward")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     payload = payload or {}
     dry_run = bool(payload.get("dry_run"))
+
+    # Inbound-image path (Flag 1) — a separate trigger from a tip; its own gate
+    # and machinery. Branches BEFORE the tip-required check below.
+    if payload.get("image_reply"):
+        cfg = await _load_config(account_id)
+        if not cfg.get("image_reply_enabled"):
+            return {"status": "skipped", "reason": "image_reply_disabled",
+                    "fan_id": payload.get("fan_id")}
+        return await _run_image_reply(account_id, payload, cfg, dry_run=dry_run)
+
     force = bool(payload.get("force"))               # bypass idempotency (manual re-reward)
 
     fan_id = payload.get("fan_id")

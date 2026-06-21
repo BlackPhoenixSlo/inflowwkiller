@@ -1043,6 +1043,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     dry_run = bool(payload.get("dry_run"))
     force_ids = coerce_ids(payload.get("force_ids"))
     only_fan_ids = coerce_ids(payload.get("only_fan_ids"))
+    # Fans flagged as buying-intent by the caller (e.g. the inbound-image hook: a
+    # fan sending US a photo IS a buying signal, but it carries no text the intent
+    # regexes can match). In closer (intent_only) mode these engage like an explicit
+    # content-ask — every other gate (spend, cooldown, lease, fan-spoke-last) still
+    # applies. Empty by default → no behavior change for normal sweeps.
+    intent_fan_ids = coerce_ids(payload.get("intent_fan_ids"))
     history_tail = int(payload.get("history_tail") or _HISTORY_TAIL)
 
     cfg = await _load_config(account_id)
@@ -1183,9 +1189,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # Closer mode: stay silent unless the fan's latest message shows buying
         # intent, or he already has an open offer we're walking. Checked BEFORE
         # the cooldown/lease/LLM work so skipped fans cost nothing. Pure chatter
-        # is left to the team / Auto Convo.
+        # is left to the team / Auto Convo. A caller-flagged intent fan (e.g. one
+        # who just sent us a PHOTO) counts as intent even with no text signal.
         if intent_only and open_by_fan.get(fan_id) is None \
                 and fan_id not in recent_payers \
+                and fan_id not in intent_fan_ids \
                 and not _CONTENT_ASK_RE.search(c.last_body or "") \
                 and not ESCALATION_RE.search(c.last_body or ""):
             skipped_no_intent += 1
