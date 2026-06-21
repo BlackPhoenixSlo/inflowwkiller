@@ -51,15 +51,22 @@ export default function ScopeSwitcher() {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
-  // Per-model color editing. PATCH /admin/accounts/{id} is owner-only (it
-  // 403s under a chatter-only session), so the swatch only turns editable
-  // when an owner principal is driving — chatters keep the read-only dot.
+  // Per-model color editing. Every principal may recolor a model — owners
+  // AND chatters (PATCH /admin/accounts/{id} is carved out for chatter
+  // sessions and the handler forces it to color-only). The swatch is
+  // read-only only for a truly anonymous viewer (no user, no chatter).
   const qc = useQueryClient();
-  const canEditColor = !!user;
+  const canEditColor = !!user || !!chatter;
   const recolorM = useMutation({
     mutationFn: ({ id, color }: { id: string; color: string }) =>
       relay.patch<unknown>(`/admin/accounts/${encodeURIComponent(id)}`, { color }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["accounts"] }),
+    // Owners read accounts from ["accounts", ...]; chatters from
+    // ["chatter","self","accounts"]. Invalidate both so the new color
+    // propagates to the roster dot regardless of which principal is driving.
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["accounts"] });
+      void qc.invalidateQueries({ queryKey: ["chatter", "self", "accounts"] });
+    },
   });
 
   useEffect(() => {

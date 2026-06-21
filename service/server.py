@@ -6165,16 +6165,20 @@ async def admin_accounts_roster_counts(response: Response) -> dict[str, Any]:
       • owe_reply — read, but the fan spoke last (orange: "seen, not answered").
 
     Scoped to the signed-in principal's accounts (never the full registry, same as
-    /admin/accounts). Each model's count is cached 5 min in relay_cache and the
-    models are scanned concurrently, so a 60s frontend poll almost always serves
-    from cache and a cold miss costs one bounded burst of OF reads, not one per
-    poll. A model that fails to read (no session / OF hiccup) yields zero counts
-    rather than failing the whole strip."""
+    /admin/accounts). The principal may be a User (owner) OR a Chatter — a
+    chatter sees the badges for the SET UNION of every linked owner's accounts,
+    exactly the set its roster strip already renders. Each model's count is
+    cached 5 min in relay_cache and the models are scanned concurrently, so a 60s
+    frontend poll almost always serves from cache and a cold miss costs one
+    bounded burst of OF reads, not one per poll. A model that fails to read (no
+    session / OF hiccup) yields zero counts rather than failing the whole strip."""
     response.headers["Cache-Control"] = "no-store"
     user = _get_request_user()
-    if user is None:
-        return {"counts": {}}
-    ids = list(user.account_ids or [])
+    if user is not None:
+        ids = list(user.account_ids or [])
+    else:
+        chatter = _get_request_chatter()
+        ids = list(chatter.account_ids or []) if chatter is not None else []
     if not ids:
         return {"counts": {}}
 
@@ -6216,14 +6220,32 @@ class _AccountUpdateBody(BaseModel):
 
 @app.patch("/admin/accounts/{account_id}")
 def admin_accounts_update(account_id: str, body: _AccountUpdateBody = Body(...)) -> dict[str, Any]:
-    """Rename / recolor / re-link Incogniton profile. Doesn't touch sessions."""
+    """Rename / recolor / re-link Incogniton profile. Doesn't touch sessions.
+
+    A chatter principal may ONLY recolor — `nickname` and `incogniton_profile_id`
+    are owner management (a re-linked browser profile can break a model's
+    session/automation). For a chatter every field except `color` is forced to
+    None so a crafted body can't rename or re-link. Owners and unauthed internal
+    callers (curl/setup flows) keep the full field set. The chatter-allowed-admin
+    gate already restricts chatters here to PATCH-only."""
     if account_registry.get_account(account_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown account {account_id!r}")
+    # Explicit ownership gate. The account-isolation middleware only catches
+    # NUMERIC account-id path segments — real OF ids are numeric so owners are
+    # covered, but now that chatters can reach this path we assert ownership at
+    # the handler regardless of id shape (no-op for unauthed curl; the full
+    # registry set clears it for owners/masters).
+    assert_account_owned(account_id)
+    nickname = body.nickname
+    incogniton_profile_id = body.incogniton_profile_id
+    if _get_request_user() is None and _get_request_chatter() is not None:
+        nickname = None
+        incogniton_profile_id = None
     meta = account_registry.upsert_account(
         account_id,
-        nickname=body.nickname,
+        nickname=nickname,
         color=body.color,
-        incogniton_profile_id=body.incogniton_profile_id,
+        incogniton_profile_id=incogniton_profile_id,
     )
     _kick_db_sync(f"accounts-update-{account_id}")
     return {"ok": True, "account": meta}

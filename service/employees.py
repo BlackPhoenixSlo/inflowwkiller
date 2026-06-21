@@ -115,10 +115,11 @@ async def list_employees(include_disabled: bool = Query(True)) -> dict[str, Any]
         stmt = select(Employee).order_by(Employee.created_at)
         if not include_disabled:
             stmt = stmt.where(Employee.is_active == True)  # noqa: E712
-        if user is not None:
+        if user is not None and not user.is_admin:
             stmt = stmt.where(Employee.user_id == user.id)
         else:
-            # Hide the system Automation sentinel from unauthed listings.
+            # Admin (master) OR unauthed: every owner's roster, minus the
+            # system Automation sentinel (user_id IS NULL).
             stmt = stmt.where(Employee.user_id.isnot(None))
         rows = (await s.execute(stmt)).scalars().all()
         return {
@@ -461,13 +462,14 @@ async def list_audit(
     Scoped to the signed-in friend: only actions whose `account_id` is in
     their `user_accounts` set OR whose `employee_id` is one they own.
     Filter parameters (`employee_id`, `account_id`) are intersected with
-    that scope — they can never widen it. Unauthed callers see everything
-    (back-compat for internal curl flows).
+    that scope — they can never widen it. A master (is_admin) and unauthed
+    callers see everything (master oversight / back-compat for internal curl
+    flows); the optional `employee_id`/`account_id` filters still apply.
     """
     user = get_request_user()
     async with get_session() as s:
         stmt = select(Action).order_by(desc(Action.at)).limit(limit).offset(offset)
-        if user is not None:
+        if user is not None and not user.is_admin:
             owned_emp_ids = (await s.execute(
                 select(Employee.id).where(Employee.user_id == user.id)
             )).scalars().all()
