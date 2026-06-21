@@ -1888,6 +1888,13 @@ class User(Base):
     # request by the session middleware. Cookie is rejected once
     # (now - last_seen_at) > 30 days.
     last_seen_at: Mapped[datetime] = _ts_now()
+    # Permanent master role. A master sees/acts on EVERY account (its
+    # request-time account_ids snapshot becomes the full registry set — see
+    # auth._auth_session_middleware) and sees every owner's employee roster
+    # (the user_id scoping in employees.py is bypassed). Distinct from the
+    # transient founder impersonation cookie. Flip via the ADMIN_PASSWORD
+    # founder gate or a DB update; migration 0039_user_is_admin.
+    is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=False)
 
 
 class UserAccount(Base):

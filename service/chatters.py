@@ -692,6 +692,11 @@ async def _flat_accounts_for(c: "ChatterIdentity") -> list[FlatAccountDTO]:
 # / `assert_account_owned` / the account-isolation middleware) enforces
 # the chatter's account_ids union. Single place to add new owner-only
 # surfaces — keep this curated.
+#
+# NOTE: `/admin/accounts` is NOT a blanket-blocked prefix — chatters get two
+# carved-out sub-surfaces under it (see `_chatter_allowed_admin`). It is
+# handled explicitly there rather than listed here, the same way as
+# `/admin/employees`.
 _CHATTER_BLOCKED_ADMIN_PREFIXES: tuple[str, ...] = (
     "/admin/users",        # founder-only user CRUD + grants + transfers
     "/admin/impersonate",  # founder-only
@@ -699,7 +704,6 @@ _CHATTER_BLOCKED_ADMIN_PREFIXES: tuple[str, ...] = (
     "/admin/proxies",      # proxy registry — owner-only
     "/admin/session",      # session bootstrap / capture — owner-only
     "/admin/rev",          # drift detection — owner-only
-    "/admin/accounts",     # raw multi-tenant account list — chatter reads /chatter/me/accounts
     "/admin/audit",        # multi-tenant audit log
 )
 
@@ -707,15 +711,33 @@ _CHATTER_BLOCKED_ADMIN_PREFIXES: tuple[str, ...] = (
 def _chatter_allowed_admin(path: str, method: str) -> bool:
     """Return True if a chatter session may reach this /admin/* path.
 
-    Carved out specifically: GET /admin/employees (read-only roster used
-    by the messages filter dropdown). Sub-paths and mutating methods on
-    /admin/employees stay owner-only — a chatter shouldn't be able to
-    enumerate one employee's audit log or rename someone else's roster.
+    Carved out specifically:
+      • GET /admin/employees — read-only roster used by the messages filter
+        dropdown. Sub-paths and mutating methods stay owner-only — a chatter
+        shouldn't enumerate one employee's audit log or rename a roster.
+      • GET /admin/accounts/roster-counts — the per-model unread / owe-reply
+        inbox badges (the endpoint scopes its counts to the chatter's union).
+      • PATCH /admin/accounts/{id} — recolor a model. The handler forces every
+        field except `color` to None for a chatter principal, so a crafted body
+        can't rename or re-link (incogniton) a model.
+
+    Everything else under /admin/accounts stays owner-only: GET /admin/accounts
+    (the raw multi-tenant list — chatters read /chatter/me/accounts), POST
+    /admin/accounts/active (flips the GLOBAL default account, body-carried so
+    the isolation middleware can't catch it), and DELETE /admin/accounts/{id}.
     """
     if any(path.startswith(p) for p in _CHATTER_BLOCKED_ADMIN_PREFIXES):
         return False
     if path.startswith("/admin/employees"):
         return path == "/admin/employees" and method == "GET"
+    if path == "/admin/accounts" or path.startswith("/admin/accounts/"):
+        if method == "GET" and path == "/admin/accounts/roster-counts":
+            return True
+        # PATCH /admin/accounts/{id} (recolor). `/admin/accounts/active` is a
+        # POST, so it can never reach this branch; the guard is belt-and-braces.
+        if method == "PATCH" and path != "/admin/accounts/active":
+            return True
+        return False
     return True
 
 

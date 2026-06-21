@@ -114,12 +114,19 @@ class AuthedUser:
     per `_resolve_account_id` call.
     """
 
-    __slots__ = ("id", "username", "account_ids")
+    __slots__ = ("id", "username", "account_ids", "is_admin")
 
-    def __init__(self, id_: str, username: str, account_ids: frozenset[str]):
+    def __init__(
+        self, id_: str, username: str, account_ids: frozenset[str],
+        is_admin: bool = False,
+    ):
         self.id = id_
         self.username = username
+        # For a master (is_admin), this is the FULL registry account set, so
+        # every per-account gate that tests membership passes. The employee
+        # axis is a separate column — gated explicitly via `is_admin`.
         self.account_ids = account_ids
+        self.is_admin = is_admin
 
 
 def get_request_user() -> AuthedUser | None:
@@ -228,6 +235,8 @@ async def assert_employee_filter_owned(employee_id: int | None) -> None:
         raise HTTPException(status_code=403, detail="not your employee")
     user = _request_user.get()
     if user is not None:
+        if user.is_admin:
+            return  # master may slice any employee's revenue/messages
         if row.user_id != user.id:
             raise HTTPException(status_code=403, detail="not your employee")
         return
@@ -567,6 +576,21 @@ async def session_middleware(request: Request, call_next):
                             )
                         )).all()
                         account_ids = frozenset(r[0] for r in acct_rows)
+                        is_admin = bool(getattr(row, "is_admin", False))
+                        if is_admin:
+                            # Master role: the account_ids snapshot becomes the
+                            # FULL account set, sourced from the registry — the
+                            # SAME source the isolation middleware and
+                            # _resolve_account_id check against, NOT this DB —
+                            # so a registry-only account can never 403 the
+                            # master. Recomputed each request, so a freshly
+                            # captured account appears without re-login.
+                            # Deferred import mirrors the `chatters` pattern to
+                            # keep auth.py free of a hard registry dependency.
+                            import accounts as _registry
+                            account_ids = frozenset(
+                                a["id"] for a in _registry.list_accounts()
+                            )
                         # Only bump last_seen_at once per ~5 min to avoid
                         # write amplification — a chat session fires
                         # hundreds of requests/min.
@@ -574,7 +598,9 @@ async def session_middleware(request: Request, call_next):
                             await s.execute(update(User).where(
                                 User.id == user_id
                             ).values(last_seen_at=now))
-                        _request_user.set(AuthedUser(row.id, row.username, account_ids))
+                        _request_user.set(
+                            AuthedUser(row.id, row.username, account_ids, is_admin)
+                        )
 
                         # Impersonation overlay. Resolved only when the
                         # founder is signed in (the impersonate cookie
@@ -604,8 +630,19 @@ async def session_middleware(request: Request, call_next):
                                             )
                                         )).all()
                                         imp_account_ids = frozenset(r[0] for r in imp_acct_rows)
+                                        imp_is_admin = bool(getattr(imp_row, "is_admin", False))
+                                        if imp_is_admin:
+                                            # Impersonating a master = the full
+                                            # registry set (read-only — mutation
+                                            # is blocked below for any
+                                            # impersonation).
+                                            import accounts as _registry
+                                            imp_account_ids = frozenset(
+                                                a["id"] for a in _registry.list_accounts()
+                                            )
                                         _request_user.set(AuthedUser(
-                                            imp_row.id, imp_row.username, imp_account_ids,
+                                            imp_row.id, imp_row.username,
+                                            imp_account_ids, imp_is_admin,
                                         ))
                                         _impersonation.set(Impersonation(
                                             real_user_id=row.id,

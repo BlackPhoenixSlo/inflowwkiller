@@ -8,10 +8,10 @@
  *   • owe_reply → conversations READ but the fan spoke last, i.e. we owe a
  *                 reply (orange badge: seen, not yet answered).
  *
- * Backed by GET /admin/accounts/roster-counts (one cheap local-DB aggregate,
- * scoped to the signed-in principal). Owner-scoped: the /admin endpoint returns
- * empty counts under a chatter-only session, so we don't fire it there (no
- * badges for chatters — graceful). Polls every 60s to match the chat-list cadence.
+ * Backed by GET /admin/accounts/roster-counts, scoped to the signed-in
+ * principal. Both principals get badges: an owner sees its own models, a
+ * chatter sees the union across every linked owner (the same set its roster
+ * strip already renders). Polls every 60s to match the chat-list cadence.
  */
 
 import { useQuery } from "@tanstack/react-query";
@@ -34,12 +34,13 @@ const EMPTY: Record<string, RosterCount> = {};
 export function useRosterCounts(): Record<string, RosterCount> {
   const { user } = useUser();
   const { chatter } = useChatter();
-  const isChatterOnly = !user && !!chatter;
 
   const q = useQuery<RosterCountsResp>({
-    queryKey: ["roster-counts", user?.user_id ?? "anon"],
+    // Key per-principal so an owner's counts can't bleed into a chatter's
+    // view (or vice-versa) on an identity switch in the same browser.
+    queryKey: ["roster-counts", user?.user_id ?? chatter?.chatter_id ?? "anon"],
     queryFn: () => relay.get<RosterCountsResp>("/admin/accounts/roster-counts"),
-    enabled: !isChatterOnly && !!user,
+    enabled: !!user || !!chatter,
     refetchInterval: 60_000,
     staleTime: 30_000,
     refetchOnWindowFocus: false,
