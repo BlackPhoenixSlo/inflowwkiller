@@ -373,25 +373,31 @@ async def on_inbound_tip(account_id: str, fan_id: int, message_id: int,
     SEPARATELY from the W7 reply dispatch above: a tip reward should fire even on
     a terminal-stage fan that no chat automation would reply to. Never raises."""
     try:
+        from automations.tip_reward import reward_flags  # lazy: avoid import cycle
+        enabled, always_reward = await reward_flags(account_id)
+
         # PPVscriptAI: a fan with an OPEN tip-capable ai_chatter offer is paying
         # toward THAT — the offer claims the tip (the run's unlock watcher
-        # accumulates + delivers) and the generic tip_reward stands down, so the
-        # fan never gets reward media on top of the unlocked piece.
+        # accumulates + delivers) and the generic tip_reward normally stands down,
+        # so the fan doesn't get reward media on top of the unlocked piece.
+        # `always_reward` overrides that standdown: the offer is STILL credited
+        # below, and the tip_reward fires anyway (the creator opted in).
         try:
             from automations.ai_chatter import has_open_tip_offer
             if await has_open_tip_offer(account_id, fan_id):
                 await ax.enqueue_job(account_id, "ai_chatter",
                                      payload={"only_fan_ids": [int(fan_id)]})
                 ax.wake_supervisor()
-                log.info("ai_chatter_tip_claim account=%s fan=%s msg=%s cents=%s",
-                         account_id, fan_id, message_id, tip_cents)
-                return
+                log.info("ai_chatter_tip_claim account=%s fan=%s msg=%s cents=%s%s",
+                         account_id, fan_id, message_id, tip_cents,
+                         " (always_reward: tip_reward also firing)" if always_reward else "")
+                if not always_reward:
+                    return
         except Exception:
             log.warning("ai_chatter_tip_claim_failed account=%s fan=%s — falling "
                         "back to tip_reward", account_id, fan_id, exc_info=True)
 
-        from automations.tip_reward import is_enabled  # lazy: avoid import cycle
-        if not await is_enabled(account_id):
+        if not enabled:
             return
         await ax.enqueue_job(
             account_id, "tip_reward",

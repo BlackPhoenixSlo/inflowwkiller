@@ -60,6 +60,11 @@ _TIP_KINDS = ("tip", "tip_post", "tip_stream")
 # folders so the automation is inert until a creator configures it.
 _DEFAULTS: dict = {
     "enabled": False,
+    # "Always reward" — fire the reward on EVERY tip even when an ai_chatter PPV
+    # offer is open for the fan (the normal standdown, so the fan doesn't get
+    # bonus media on top of the unlock). The offer is STILL credited; the reward
+    # just also fires. Default OFF (keep the standdown). See webhook_dispatch.
+    "always_reward": False,
     "dollars_per_image": 10,   # 1 image per $10 of the tip
     "min_images": 1,           # any tip ≥ $0.01 still gets at least this many
     "max_images": 5,           # cap so a whale tip can't drain a folder in one shot
@@ -109,6 +114,15 @@ async def is_enabled(account_id: str) -> bool:
     """Cheap gate for the dispatcher: skip enqueuing a job for a disabled account."""
     cfg = await _load_config(account_id)
     return bool(cfg.get("enabled"))
+
+
+async def reward_flags(account_id: str) -> tuple[bool, bool]:
+    """(enabled, always_reward) in ONE config read — for the tip dispatcher.
+    `always_reward` makes a tip reward fire even when an ai_chatter PPV offer is
+    open for the fan (the standdown `on_inbound_tip` normally takes); the offer
+    is still credited."""
+    cfg = await _load_config(account_id)
+    return bool(cfg.get("enabled")), bool(cfg.get("always_reward"))
 
 
 def _media_count(tip_cents: int, cfg: dict) -> int:
