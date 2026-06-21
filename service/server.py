@@ -5956,6 +5956,64 @@ def admin_accounts_list(response: Response) -> dict[str, Any]:
     }
 
 
+@app.get("/admin/accounts/roster-counts")
+async def admin_accounts_roster_counts(response: Response) -> dict[str, Any]:
+    """Per-model inbox badge counts for the left roster strip:
+
+      • unread    — number of CONVERSATIONS with unread messages (blue badge:
+                    "fans waiting to be read"). A conversation count, not a
+                    message sum — summing unread messages is perpetually in the
+                    hundreds and pins the badge at 99+, telling you nothing.
+      • owe_reply — conversations that are READ but the fan spoke last, i.e. we
+                    owe a reply (orange badge: "seen, not yet answered"). There's
+                    no OF filter for this — it's our own derived state — so we
+                    compute it from the local `chats`/`messages` mirror.
+
+    Scoped to the signed-in principal's accounts (never the full registry, same
+    as /admin/accounts). Computed from the local tables the WS pump keeps fresh,
+    so it's ONE cheap aggregate instead of paginating OF's /chats per model."""
+    response.headers["Cache-Control"] = "no-store"
+    user = _get_request_user()
+    if user is None:
+        return {"counts": {}}
+    ids = list(user.account_ids or [])
+    if not ids:
+        return {"counts": {}}
+
+    from db.engine import get_session
+    from db.models import Chat, Message
+    from sqlalchemy import select, func, and_
+
+    counts: dict[str, dict[str, int]] = {aid: {"unread": 0, "owe_reply": 0} for aid in ids}
+    async with get_session() as s:
+        # Blue: count of conversations with unread messages (skip hidden chats).
+        for aid, n in (await s.execute(
+            select(Chat.account_id, func.count())
+            .where(Chat.account_id.in_(ids), Chat.hidden_locally.is_(False),
+                   Chat.unread_count > 0)
+            .group_by(Chat.account_id)
+        )).all():
+            if aid in counts:
+                counts[aid]["unread"] = int(n or 0)
+        # Orange: read chats (unread_count == 0) whose LAST message is inbound —
+        # the fan spoke last and we haven't answered. Join the chat's
+        # last_message_id to messages.direction (fan_id-qualified so a shared
+        # mass-placeholder id can't mis-link).
+        for aid, n in (await s.execute(
+            select(Chat.account_id, func.count())
+            .select_from(Chat)
+            .join(Message, and_(Message.account_id == Chat.account_id,
+                                Message.fan_id == Chat.fan_id,
+                                Message.message_id == Chat.last_message_id))
+            .where(Chat.account_id.in_(ids), Chat.hidden_locally.is_(False),
+                   Chat.unread_count == 0, Message.direction == "in")
+            .group_by(Chat.account_id)
+        )).all():
+            if aid in counts:
+                counts[aid]["owe_reply"] = int(n or 0)
+    return {"counts": counts}
+
+
 class _ActivateBody(BaseModel):
     account_id: str | None
 

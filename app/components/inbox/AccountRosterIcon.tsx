@@ -23,8 +23,36 @@ import { useState } from "react";
 import { Users } from "lucide-react";
 
 import { useAccountAvatar, pickAvatarUrl } from "@/hooks/useAccountAvatar";
+import type { RosterCount } from "@/hooks/useRosterCounts";
 import { proxyImage, type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
+
+/**
+ * RosterCountBadge — the little pill under a roster avatar.
+ *   • BLUE  = unread conversations (fans waiting to be read) — wins when > 0.
+ *   • ORANGE = read but the fan spoke last (we owe a reply) — shown only when
+ *     there's nothing unread, so the colors never compete: blue = "read this",
+ *     orange = "answer this", nothing = all caught up.
+ */
+export function RosterCountBadge({ count }: { count?: RosterCount | null }) {
+  const unread = count?.unread ?? 0;
+  const owe = count?.owe_reply ?? 0;
+  const mode = unread > 0 ? "unread" : owe > 0 ? "owe" : null;
+  if (!mode) return null;
+  const n = mode === "unread" ? unread : owe;
+  return (
+    <span
+      title={mode === "unread" ? `${unread} unread chats` : `${owe} read · awaiting your reply`}
+      className={cn(
+        "min-w-[16px] h-[14px] px-1 rounded-full grid place-items-center",
+        "text-[9px] font-bold leading-none text-white tabular-nums select-none",
+        mode === "unread" ? "bg-blue-500" : "bg-orange-500",
+      )}
+    >
+      {n > 99 ? "99+" : n}
+    </span>
+  );
+}
 
 /** Color used everywhere the UI represents the "all models" aggregate.
  *  Mirrors the ScopeSwitcher dot. */
@@ -36,6 +64,8 @@ export interface AccountRosterIconProps {
   onClick: () => void;
   /** Optional tier-color overlay ring (ask #1 — single-fan view). */
   tierColor?: string | null;
+  /** Per-model inbox counts → the blue/orange pill under the avatar. */
+  count?: RosterCount | null;
 }
 
 /**
@@ -84,7 +114,7 @@ export function AccountAvatarSlot({
 }
 
 export function AccountRosterIcon({
-  account, active, onClick, tierColor,
+  account, active, onClick, tierColor, count,
 }: AccountRosterIconProps) {
   return (
     <button
@@ -92,11 +122,12 @@ export function AccountRosterIcon({
       onClick={onClick}
       title={account.nickname || account.id}
       aria-pressed={active}
-      className={cn(
-        "rounded-full shrink-0 transition-transform hover:scale-105 focus:outline-none",
-      )}
+      className="group flex flex-col items-center gap-0.5 shrink-0 focus:outline-none"
     >
-      <AccountAvatarSlot account={account} active={active} tierColor={tierColor} />
+      <span className="inline-block rounded-full transition-transform group-hover:scale-105">
+        <AccountAvatarSlot account={account} active={active} tierColor={tierColor} />
+      </span>
+      <RosterCountBadge count={count} />
     </button>
   );
 }
@@ -128,17 +159,20 @@ export function AllModelsAvatarSlot({ active }: { active: boolean }) {
  * Click swaps scope back to the unified all-models view.
  */
 export function AllModelsRosterIcon({
-  active, onClick,
-}: { active: boolean; onClick: () => void }) {
+  active, onClick, count,
+}: { active: boolean; onClick: () => void; count?: RosterCount | null }) {
   return (
     <button
       type="button"
       onClick={onClick}
       title="All models"
       aria-pressed={active}
-      className="rounded-full shrink-0 transition-transform hover:scale-105 focus:outline-none"
+      className="group flex flex-col items-center gap-0.5 shrink-0 focus:outline-none"
     >
-      <AllModelsAvatarSlot active={active} />
+      <span className="inline-block rounded-full transition-transform group-hover:scale-105">
+        <AllModelsAvatarSlot active={active} />
+      </span>
+      <RosterCountBadge count={count} />
     </button>
   );
 }

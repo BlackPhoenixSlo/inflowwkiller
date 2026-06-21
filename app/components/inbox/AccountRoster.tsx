@@ -22,6 +22,7 @@ import { ChevronRight, ChevronLeft } from "lucide-react";
 
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
+import { useRosterCounts, type RosterCount } from "@/hooks/useRosterCounts";
 import { useScope } from "@/contexts/ScopeContext";
 import { cn } from "@/lib/utils";
 import type { AccountMeta } from "@/lib/relay";
@@ -47,6 +48,7 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
   const accounts = useActiveAccounts();
   const { scope, setScope } = useScope();
   const { isIncluded } = useAllModelsInclude();
+  const counts = useRosterCounts();
 
   // Active first, rest by last_used_at desc. Excluded models (unchecked
   // in the All-Models aggregate via ScopeSwitcher) are hidden — unconditionally,
@@ -65,6 +67,18 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
       .sort(compareAccounts);
     return active ? [active, ...rest] : rest;
   }, [accounts, scope, isIncluded]);
+
+  // Aggregate badge for the "all models" icon = sum across the visible models.
+  const allCount = useMemo<RosterCount>(() => {
+    return ordered.reduce(
+      (acc, a) => {
+        const c = counts[a.id];
+        if (c) { acc.unread += c.unread || 0; acc.owe_reply += c.owe_reply || 0; }
+        return acc;
+      },
+      { unread: 0, owe_reply: 0 },
+    );
+  }, [ordered, counts]);
 
   if (accounts.length === 0) {
     // No session-bearing accounts → no strip. Inbox still renders its
@@ -114,6 +128,7 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
           {scope.kind === "all" && (
             <AllModelsRosterIcon
               active
+              count={allCount}
               onClick={() => setScope({ kind: "all" })}
             />
           )}
@@ -124,6 +139,7 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
                 key={a.id}
                 account={a}
                 active={active}
+                count={counts[a.id]}
                 onClick={() => setScope({ kind: "model", accountId: a.id })}
               />
             );
@@ -131,6 +147,7 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
           {scope.kind !== "all" && (
             <AllModelsRosterIcon
               active={false}
+              count={allCount}
               onClick={() => setScope({ kind: "all" })}
             />
           )}
