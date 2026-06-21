@@ -789,6 +789,12 @@ async def _start_event_pumps() -> None:
     # Touches no fan rows. Hourly ticks. See _payload_size_cap_loop.
     asyncio.create_task(_payload_size_cap_loop(), name="payload-size-cap")
 
+    # Retention sweep for the append-only audit/log tables (automation_runs,
+    # grok_calls, scheduled_jobs terminal rows, actions) — none had any prune,
+    # so they grew unbounded and crept the DB back up after the raw-payload
+    # columns were capped. Daily ticks; per-table windows via *_RETAIN_S env.
+    asyncio.create_task(_audit_retention_evictor_loop(), name="audit-retention-evictor")
+
     # Phase F: poll OF's /api2/v2/payouts/transactions ledger so per-model
     # stats include subs / tips / PPV unlocks / paid posts. 10-min ticks,
     # sequential per-account refresh, parallel backfill (sem=4). See
@@ -2010,6 +2016,71 @@ async def _perflog_evictor_loop() -> None:
             log.warning("perflog evictor cycle failed", exc_info=True)
 
 
+# ── audit / log table retention ──────────────────────────────────────
+#
+# Four append-only tables had NO prune and grew unbounded — so the DB crept
+# back toward bloat from the audit side even after the raw-payload columns were
+# capped. Each gets a retention window; one daily sweep DELETEs rows past it.
+# Row-deletes (auto_vacuum=INCREMENTAL on prod returns the freed pages to the OS
+# on the next payload-cap tick). Set any window to 0 to disable that table.
+_AUTOMATION_RUNS_RETAIN_S = int(os.environ.get("AUTOMATION_RUNS_RETAIN_S", str(14 * 24 * 60 * 60)))
+_GROK_CALLS_RETAIN_S = int(os.environ.get("GROK_CALLS_RETAIN_S", str(30 * 24 * 60 * 60)))
+_SCHEDULED_JOBS_RETAIN_S = int(os.environ.get("SCHEDULED_JOBS_RETAIN_S", str(7 * 24 * 60 * 60)))
+_ACTIONS_RETAIN_S = int(os.environ.get("ACTIONS_RETAIN_S", str(90 * 24 * 60 * 60)))
+_AUDIT_EVICT_INTERVAL_S = int(os.environ.get("AUDIT_EVICT_INTERVAL_S", str(24 * 60 * 60)))
+
+
+async def evict_audit_logs_once() -> dict[str, int]:
+    """One retention sweep of the append-only audit/log tables that otherwise
+    grow unbounded: automation_runs (run audit), grok_calls (LLM-call audit),
+    scheduled_jobs (only the TERMINAL done/error rows), actions (mutation audit).
+    Deletes rows older than each table's own window. grok_daily_cost (the cap
+    rollup) is a SEPARATE, tiny, un-pruned table, so spend/cap history survives
+    the grok_calls per-call prune. Returns {tablename: deleted_count}."""
+    from db.engine import get_session
+    from db.models import Action, AutomationRun, GrokCall, ScheduledJob
+    from sqlalchemy import delete as sa_delete
+
+    now = datetime.utcnow()
+    plan = [
+        (AutomationRun, AutomationRun.started_at, _AUTOMATION_RUNS_RETAIN_S, None),
+        (GrokCall, GrokCall.called_at, _GROK_CALLS_RETAIN_S, None),
+        (ScheduledJob, ScheduledJob.created_at, _SCHEDULED_JOBS_RETAIN_S,
+         ScheduledJob.status.in_(("done", "error"))),
+        (Action, Action.at, _ACTIONS_RETAIN_S, None),
+    ]
+    out: dict[str, int] = {}
+    for model, col, retain_s, extra in plan:
+        if retain_s <= 0:
+            continue
+        cutoff = now - timedelta(seconds=retain_s)
+        stmt = sa_delete(model).where(col < cutoff)
+        if extra is not None:
+            stmt = stmt.where(extra)
+        async with get_session() as s:
+            res = await s.execute(stmt)
+            await s.commit()
+            out[model.__tablename__] = int(res.rowcount or 0)
+    return out
+
+
+async def _audit_retention_evictor_loop() -> None:
+    """Daily retention sweep of the unbounded audit/log tables. Tune each window
+    via AUTOMATION_RUNS_RETAIN_S / GROK_CALLS_RETAIN_S / SCHEDULED_JOBS_RETAIN_S
+    / ACTIONS_RETAIN_S (0 disables a table). See evict_audit_logs_once."""
+    while True:
+        try:
+            await asyncio.sleep(_AUDIT_EVICT_INTERVAL_S)
+            res = await evict_audit_logs_once()
+            pruned = {k: v for k, v in res.items() if v}
+            if pruned:
+                log.info("audit-retention evictor pruned %s", pruned)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.warning("audit-retention evictor cycle failed", exc_info=True)
+
+
 # ── raw-OF-payload SIZE cap (event_inbox + messages.raw_json) ─────────
 #
 # Two columns hoard raw OnlyFans payloads we receive but read back only for
@@ -2049,6 +2120,17 @@ _PAYLOAD_BUDGET_BYTES = int(os.environ.get("PAYLOAD_BUDGET_BYTES", str(1_500_000
 _PAYLOAD_RETAIN_FLOOR_S = int(os.environ.get("EVENT_INBOX_RETAIN_FLOOR_S", str(2 * 24 * 60 * 60)))
 _PAYLOAD_CAP_INTERVAL_S = int(os.environ.get("PAYLOAD_CAP_INTERVAL_S", str(60 * 60)))
 _PAYLOAD_EVICT_BATCH = int(os.environ.get("PAYLOAD_EVICT_BATCH", "2000"))
+# Unconditional age cap on the event_inbox landing table — runs EVERY tick,
+# independent of the byte budget above. event_inbox is a spent-envelope log:
+# the WS transcoder writes the real message/chat/transaction rows synchronously,
+# so nothing reads an envelope older than a couple days. The budget-driven cap
+# only trims event_inbox once LOGICAL payload exceeds PAYLOAD_BUDGET_BYTES
+# (1.5 GB) — which the envelope + raw_json bytes can sit under for a month while
+# the table still accretes hundreds of thousands of rows (the exact failure we
+# saw: 360k rows / 421 MB with the budget cap never firing). This hard age floor
+# holds event_inbox at a fixed ~2-day window no matter what the budget is doing.
+# Set to 0 to disable (fall back to budget-only behavior).
+_EVENT_INBOX_MAX_AGE_S = int(os.environ.get("EVENT_INBOX_MAX_AGE_S", str(2 * 24 * 60 * 60)))
 # One-time conversion of an existing auto_vacuum=NONE DB to INCREMENTAL +
 # the heavy full VACUUM that makes it take effect. Off by default; flip on
 # for a single off-peak restart (via a deploy), then unset. After conversion,
@@ -2182,6 +2264,50 @@ async def evict_payloads_once(
     return summary
 
 
+async def prune_event_inbox_once(
+    *,
+    max_age_s: int | None = None,
+    batch: int | None = None,
+) -> dict[str, int]:
+    """Unconditional age-based prune of the event_inbox landing table. Deletes
+    EVERY row older than `max_age_s` (default _EVENT_INBOX_MAX_AGE_S = 2 days),
+    regardless of the size budget — unlike evict_payloads_once, which only trims
+    event_inbox when total LOGICAL payload exceeds PAYLOAD_BUDGET_BYTES.
+
+    event_inbox is a spent-envelope log: by the time a row lands here the WS
+    transcoder has already written the real message/chat/transaction rows, so an
+    envelope older than a couple days is dead weight (kept only for short-window
+    debugging + SSE replay). Touches ONLY event_inbox — messages / fans /
+    transactions are never referenced. Batched autocommit deletes so the WS
+    pump's write lock is released between batches and the firehose keeps flowing.
+    SQLite only (no-op elsewhere — Postgres has no rowid and autovacuums).
+
+    Returns {"deleted_events": N} (0 = nothing older than the cutoff)."""
+    from db.engine import engine, _is_sqlite
+    age = _EVENT_INBOX_MAX_AGE_S if max_age_s is None else max_age_s
+    bsize = _PAYLOAD_EVICT_BATCH if batch is None else batch
+    if not _is_sqlite or age <= 0:
+        return {"deleted_events": 0, "skipped": int(age <= 0)}
+
+    cutoff = _floor_cutoff_str(age)
+    deleted = 0
+    async with engine.connect() as conn:
+        await conn.execution_options(isolation_level="AUTOCOMMIT")
+        while True:
+            res = await conn.exec_driver_sql(
+                "DELETE FROM event_inbox WHERE rowid IN "
+                "(SELECT rowid FROM event_inbox WHERE received_at < ? "
+                " ORDER BY rowid ASC LIMIT ?)",
+                (cutoff, bsize),
+            )
+            n = int(res.rowcount or 0)
+            deleted += n
+            if n < bsize:
+                break
+            await asyncio.sleep(0)  # yield between batches — let the pump write
+    return {"deleted_events": deleted, "cutoff": cutoff}
+
+
 async def _maybe_convert_to_incremental_autovacuum() -> None:
     """One-time: convert an existing auto_vacuum=NONE DB to INCREMENTAL so the
     freelist can be returned to the OS. The conversion itself requires a full
@@ -2236,13 +2362,21 @@ async def _reclaim_freelist() -> None:
 
 
 async def _payload_size_cap_loop() -> None:
-    """Periodic size cap on the raw OF payload columns. Each tick: evict down
-    to PAYLOAD_BUDGET_BYTES (honoring the retention floor), then return freed
-    pages to the OS. Hourly by default; tune via PAYLOAD_* env vars."""
+    """Periodic size cap on the raw OF payload columns. Each tick:
+      1. prune event_inbox to a hard ~2-day age window (unconditional — this is
+         what keeps the landing table from accreting a month-long backlog while
+         the byte budget sits idle);
+      2. evict raw payloads down to PAYLOAD_BUDGET_BYTES (honoring the floor);
+      3. return freed pages to the OS (once auto_vacuum=INCREMENTAL).
+    Hourly by default; tune via EVENT_INBOX_MAX_AGE_S / PAYLOAD_* env vars."""
     await _maybe_convert_to_incremental_autovacuum()
     while True:
         try:
             await asyncio.sleep(_PAYLOAD_CAP_INTERVAL_S)
+            pruned = await prune_event_inbox_once()
+            if pruned.get("deleted_events"):
+                log.info("event-inbox prune: deleted %d rows older than %ds",
+                         pruned["deleted_events"], _EVENT_INBOX_MAX_AGE_S)
             summary = await evict_payloads_once()
             if summary.get("freed_bytes"):
                 log.info(
