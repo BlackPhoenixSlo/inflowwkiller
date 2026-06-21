@@ -23,6 +23,7 @@ import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useDeferredMount } from "@/hooks/useDeferredMount";
 import { useNotificationSettings } from "@/hooks/useNotificationSettings";
 import { eventBus, type EventEnvelope } from "@/lib/events";
+import { resolveChatTarget, toUtcIso, type ChatTarget } from "@/hooks/useInboxRealtime";
 import { relay, proxyImage } from "@/lib/relay";
 import {
   appendNotifHistory,
@@ -402,6 +403,107 @@ function NotificationDeltaPoller() {
     });
     return off;
   }, [qc, settings.enabled, settings.toast, settings.bubble, settings.osPing, ready, targetIds]);
+
+  // SSE: inbound chat messages — OF's native `toasts` feed does NOT carry
+  // DMs (those arrive on `api2_chat_message`, consumed by useInboxRealtime
+  // for the chat cache), so without this a new webhook message never
+  // produced a toast/bubble. Mirror inbound messages into the same toast
+  // pipeline: shown when the per-type "message" Toast toggle is on, and
+  // rendered as an accent-ring "bubble" when `settings.bubble.message` is
+  // on. Outbound (our own sends / AI replies / mass / funnel) never ping.
+  useEffect(() => {
+    if (!settings.enabled || !ready) return;
+    const off = eventBus.on("api2_chat_message", (env: EventEnvelope) => {
+      const target: ChatTarget | null = resolveChatTarget(
+        env as unknown as Parameters<typeof resolveChatTarget>[0],
+      );
+      if (!target) return;
+      const { accountId: aid, fanId, isOutbound, msg, fromId } = target;
+      if (isOutbound) return;                 // only a fan's inbound DM pings
+      if (!targetIds.includes(aid)) return;   // in-scope accounts only
+
+      // Namespace the id with "m" so a message can't collide with an OF
+      // notification id in the shared per-account seen set / toast dedup.
+      const id = "m" + String(msg.id);
+      const seen = seenIdsByAccount.get(aid) ?? new Set<string>();
+      if (seen.has(id)) return;
+      markSeen(seen, id);
+      seenIdsByAccount.set(aid, seen);
+
+      const fromUser = (msg.fromUser ?? {}) as NotificationUser;
+      const user: NotificationUser = {
+        id: fromId,
+        name: fromUser.name || fromUser.username,
+        username: fromUser.username,
+        avatar: fromUser.avatar,
+      };
+      if (user.id != null) {
+        qc.setQueryData(["of-user", aid, user.id], (prev: { customNickname?: string | null } | undefined) => ({
+          id: user.id,
+          name: user.name,
+          username: user.username,
+          avatar: user.avatar ?? null,
+          customNickname: prev?.customNickname ?? null,
+        }));
+      }
+
+      const rawText = (typeof msg.text === "string" ? msg.text : "").trim();
+      const text =
+        renderText(rawText) ||
+        ((msg.mediaCount ?? 0) > 0 ? "Sent you media" : "Sent you a message");
+      const createdMs = msg.createdAt
+        ? Date.parse(toUtcIso(msg.createdAt)) || Date.now()
+        : Date.now();
+
+      // Mirror into the bell's history so opening the dropdown reflects the
+      // badge bump (OF's /notifications feed lists DMs inconsistently).
+      appendNotifHistory({
+        id,
+        accountId: aid,
+        type: "message",
+        typeKey: "message",
+        user: { id: user.id, name: user.name, username: user.username, avatar: user.avatar },
+        text: rawText || text,
+        createdAt: new Date(createdMs).toISOString(),
+      });
+
+      // History is mirrored above REGARDLESS of the per-type toggle, so the
+      // bell dropdown still lists DMs even with message toasts off. The badge
+      // bump + toast popup + OS ping ARE gated by the toggle — mirroring the
+      // `toasts` handler, so turning message toasts off no longer drops DMs
+      // from the feed dropdown.
+      if (!settings.toast.message) return;
+
+      dispatchNotifArrived();
+
+      const now = Date.now();
+      pushToast({
+        id,
+        accountId: aid,
+        typeKey: "message",
+        rawType: "message",
+        user,
+        text,
+        createdAt: createdMs,
+        bubble: !!settings.bubble.message,
+        href: `/chat/${encodeURIComponent(aid)}/${fanId}`,
+        expiresAt: now + TOAST_TTL_MS,
+      });
+
+      const focused = typeof document !== "undefined" ? document.hasFocus() : true;
+      const perm = typeof Notification !== "undefined" ? Notification.permission : "unsupported";
+      if (settings.osPing && typeof Notification !== "undefined" && !focused && perm === "granted") {
+        try {
+          new Notification(user.name || user.username || "Fastt", { body: text, tag: id });
+        } catch (err) {
+          console.warn("[toaster] OS Notification threw:", err);
+        }
+      }
+
+      qc.invalidateQueries({ queryKey: ["notif-list", aid], exact: false });
+    });
+    return off;
+  }, [qc, settings.enabled, settings.toast.message, settings.bubble.message, settings.osPing, ready, targetIds]);
 
   // Request OS permission lazily once the user has flipped osPing on.
   useEffect(() => {
