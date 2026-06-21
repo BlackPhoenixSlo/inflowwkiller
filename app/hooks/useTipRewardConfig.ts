@@ -29,6 +29,14 @@ export interface TipRewardConfig {
   ask_enabled?: boolean;
   ask_amount_dollars?: number | null;
   ask_template?: string;
+  // Inbound-image buying-signal handler — a fan sends US a photo. Two independent
+  // flags, both default OFF (handled by webhook_dispatch.on_inbound_image):
+  image_reply_enabled?: boolean; // Flag 1: send ONE free vault item back (basic tier)
+  image_closer_enabled?: boolean; // Flag 2: kick the ai_chatter closer for the fan
+  image_reply_count?: number; // how many free items to send back (usually 1)
+  image_reply_basis_cents?: number; // tier basis for the freebie (default 999 = "under $10")
+  image_reply_cooldown_hours?: number; // per-fan throttle (also dedups webhook replays)
+  image_reply_caption?: string; // optional caption ('' → media-only)
 }
 
 interface TipRewardConfigResponse {

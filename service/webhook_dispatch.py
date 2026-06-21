@@ -410,3 +410,54 @@ async def on_inbound_tip(account_id: str, fan_id: int, message_id: int,
     except Exception:
         log.warning("tip_reward_dispatch_failed account=%s fan=%s",
                     account_id, fan_id, exc_info=True)
+
+
+async def on_inbound_image(account_id: str, fan_id: int, message_id: int) -> None:
+    """A fan sent an IMAGE (non-tip inbound media) → a buying signal. Two
+    independent, separately-gated reactions (both config in tip_reward_config_json,
+    both default OFF):
+
+      • image_reply_enabled  → enqueue ONE free vault item from the tip folder's
+        'under $10' (basic) tier — the tip_reward `image_reply` mode, per-fan
+        throttled (also dedups webhook replays of the same image).
+      • image_closer_enabled → kick the ai_chatter CLOSER for this fan NOW, flagging
+        the image as buying intent so closer (intent_only) mode engages it (the
+        photo carries no text the intent regexes can match). Requires ai_chatter
+        enabled — the closer IS ai_chatter; with it off this flag is inert.
+
+    Gated SEPARATELY from the reply (W7) and tip hooks: an image reply / closer
+    pivot should fire even on a fan no chat sweep would answer. Never raises."""
+    try:
+        from automations.tip_reward import image_reply_flags  # lazy: avoid cycle
+        send_img, run_closer = await image_reply_flags(account_id)
+        if not (send_img or run_closer):
+            return
+
+        woke = False
+        if send_img:
+            await ax.enqueue_job(
+                account_id, "tip_reward",
+                payload={"fan_id": int(fan_id), "image_reply": True,
+                         "trigger_message_id": int(message_id)},
+            )
+            woke = True
+        if run_closer:
+            from automations.ai_chatter import is_enabled as _ai_enabled
+            if await _ai_enabled(account_id):
+                await ax.enqueue_job(
+                    account_id, "ai_chatter",
+                    payload={"only_fan_ids": [int(fan_id)],
+                             "intent_fan_ids": [int(fan_id)]},
+                )
+                woke = True
+            else:
+                run_closer = False  # closer flag on but ai_chatter off → inert
+                log.debug("image_closer inert (ai_chatter disabled) account=%s fan=%s",
+                          account_id, fan_id)
+        if woke:
+            ax.wake_supervisor()
+        log.info("image_dispatch account=%s fan=%s msg=%s reply=%s closer=%s",
+                 account_id, fan_id, message_id, send_img, run_closer)
+    except Exception:
+        log.warning("image_dispatch_failed account=%s fan=%s",
+                    account_id, fan_id, exc_info=True)

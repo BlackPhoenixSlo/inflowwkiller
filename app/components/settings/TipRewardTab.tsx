@@ -21,7 +21,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Gift, FolderOpen, MessageCircle } from "lucide-react";
+import { Gift, FolderOpen, MessageCircle, Image as ImageIcon, Flame } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/primitives";
 import { VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
@@ -73,6 +73,11 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   const [askEnabled, setAskEnabled] = useState(true);
   const [askAmount, setAskAmount] = useState<string>(""); // "" → ask with no fixed price
   const [askTemplate, setAskTemplate] = useState("");
+  // Inbound-image buying-signal handler — two independent flags (default OFF).
+  const [imageReplyEnabled, setImageReplyEnabled] = useState(false);
+  const [imageCloserEnabled, setImageCloserEnabled] = useState(false);
+  const [imageReplyCooldown, setImageReplyCooldown] = useState(6);
+  const [imageReplyCaption, setImageReplyCaption] = useState("");
 
   useEffect(() => {
     setEnabled(!!eff.enabled);
@@ -86,6 +91,10 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setAskEnabled(eff.ask_enabled !== false); // default ON when unset
     setAskAmount(eff.ask_amount_dollars == null ? "" : String(eff.ask_amount_dollars));
     setAskTemplate(eff.ask_template ?? "");
+    setImageReplyEnabled(!!eff.image_reply_enabled);
+    setImageCloserEnabled(!!eff.image_closer_enabled);
+    setImageReplyCooldown(eff.image_reply_cooldown_hours ?? 6);
+    setImageReplyCaption(eff.image_reply_caption ?? "");
   }, [eff]);
 
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
@@ -124,6 +133,11 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       ask_enabled: askEnabled,
       ask_amount_dollars: askAmtTrim === "" ? null : Math.max(1, Math.round(Number(askAmtTrim) || 0)),
       ask_template: askTemplate.trim(),
+      // Inbound-image buying-signal handler — both flags draw on the tiers below.
+      image_reply_enabled: imageReplyEnabled,
+      image_closer_enabled: imageCloserEnabled,
+      image_reply_cooldown_hours: imageReplyCooldown,
+      image_reply_caption: imageReplyCaption.trim(),
       tiers: tiers
         // a tier with no folders does nothing — drop it on save
         .map((t) => ({
@@ -145,9 +159,10 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       </header>
 
       <p className="text-xs text-fg-dim leading-relaxed">
-        Two independent switches: get the AI to <b>ask</b> fans for a tip when they
-        beg to see content, and automatically <b>reward</b> fans who tip with free
-        vault photos &amp; videos. Either one works on its own.
+        Independent switches around the tip loop: get the AI to <b>ask</b> fans for a
+        tip when they beg to see content, <b>reward</b> fans who tip with free vault
+        media, and react when a fan <b>sends you a photo</b> (a buying signal) — send
+        one back and/or hand them to the AI closer. Each works on its own.
       </p>
 
       {/* ── ASK ───────────────────────────────────────────────────────────
@@ -359,6 +374,75 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
               </Button>
             </div>
           </div>
+        )}
+      </Section>
+
+      {/* ── IMAGE REPLY (Flag 1) ───────────────────────────────────────────
+          A fan sending US a photo is a buying signal — send one free pic back. */}
+      <Section
+        icon={<ImageIcon size={15} />}
+        title="Send a free pic back when a fan sends one"
+        subtitle="When a fan sends you a photo (a buying signal), reply with one free vault item they haven’t seen — drawn from the basic “under $10” tier folders below. Throttled per fan so a photo-spammer can’t drain a folder."
+        toggle={
+          <Toggle
+            checked={imageReplyEnabled}
+            onChange={(v) => {
+              markDirty();
+              setImageReplyEnabled(v);
+            }}
+          />
+        }
+      >
+        {imageReplyEnabled && (
+          <div className="space-y-4">
+            <NumField
+              label="Cooldown (hours)"
+              hint="min hours between free pics to the same fan (0 = every photo)"
+              value={imageReplyCooldown} min={0} max={8760}
+              onChange={(n) => { markDirty(); setImageReplyCooldown(n); }}
+            />
+            <label className="block space-y-1">
+              <div className="text-xs font-medium text-fg">Caption (optional)</div>
+              <input
+                type="text"
+                className={`${INPUT} w-full`}
+                placeholder="mmm you first 🙈 here's one back…"
+                value={imageReplyCaption}
+                onChange={(e) => {
+                  markDirty();
+                  setImageReplyCaption(e.target.value);
+                }}
+              />
+              <div className="text-[11px] text-fg-dim/70">
+                Draws from the <b>basic</b> (lowest) tier in “Reward tippers” above —
+                set folders there for this to have anything to send.
+              </div>
+            </label>
+          </div>
+        )}
+      </Section>
+
+      {/* ── IMAGE CLOSER (Flag 2) ───────────────────────────────────────────
+          Hand a fan who just sent a photo to the AI closer (ai_chatter). */}
+      <Section
+        icon={<Flame size={15} />}
+        title="Let the AI closer take over when a fan sends a pic"
+        subtitle="A fan sending a photo is a hot moment — kick the AI Seller (closer) for that fan right away to convert it into a sale, even in intent-only mode."
+        toggle={
+          <Toggle
+            checked={imageCloserEnabled}
+            onChange={(v) => {
+              markDirty();
+              setImageCloserEnabled(v);
+            }}
+          />
+        }
+      >
+        {imageCloserEnabled && (
+          <p className="text-[11px] text-fg-dim/80 leading-relaxed">
+            Requires <b>AI Seller</b> (ai_chatter) to be enabled for this account —
+            the closer <i>is</i> the AI Seller. With it off, this switch does nothing.
+          </p>
         )}
       </Section>
 

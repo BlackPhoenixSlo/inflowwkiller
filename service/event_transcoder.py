@@ -424,6 +424,20 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
             )
         except Exception:
             log.debug("tip_reward dispatch hook failed", exc_info=True)
+    # Inbound IMAGE (a fan-sent photo, NOT a tip) = a buying signal. Kick the
+    # (gated, default-OFF) image-reply / closer hook in real time. Separate from
+    # the tip hook above: a tip-with-media is the tip path's; a bare media DM is
+    # this one's. Guard on `not is_tip` (not just the tip_cents>0 branch above) so
+    # a degenerate isTip frame with a 0/missing tipAmount that ALSO carries media
+    # is never misread as a bare buying-signal photo. The hook decides the flags.
+    elif media_ids and not is_tip:
+        try:
+            from webhook_dispatch import on_inbound_image
+            asyncio.create_task(
+                on_inbound_image(aid_s, int(fan_id), int(message_id))
+            )
+        except Exception:
+            log.debug("image dispatch hook failed", exc_info=True)
 
 
 async def _transcode_ppv_unlock(

@@ -1,0 +1,1034 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Telegram Vault · Operator Panel</title>
+<style>
+  :root {
+    --bg: #0e1621;
+    --panel: #17212b;
+    --panel-2: #1c2733;
+    --panel-3: #232e3c;
+    --accent: #2ea6ff;
+    --link: #64b5ef;
+    --border: #283442;
+    --border-soft: #1f2a36;
+    --text: #e9eef3;
+    --text-dim: #7d8e9e;
+    --text-faint: #5b6b7a;
+    --ok: #4dcf6f;
+    --ok-deep: #2faa57;
+    --warn: #f2c94c;
+    --danger: #ff5b5b;
+    --neutral-caution: #9aa7b3;
+    --purple: #9b7dff;
+    --star: #ffce4d;
+    --radius: 10px;
+    --shadow: 0 18px 50px rgba(0,0,0,.55);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background:
+      radial-gradient(1200px 700px at 80% -10%, #14222f 0%, transparent 55%),
+      radial-gradient(1000px 600px at -10% 110%, #122130 0%, transparent 50%),
+      var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    font-size: 14px;
+  }
+
+  .stage {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 360px;
+    gap: 22px;
+    max-width: 1480px;
+    margin: 0 auto;
+    padding: 26px 26px 60px;
+    align-items: start;
+  }
+
+  /* ===================== OPERATOR PANEL (slide-over feel) ===================== */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 86vh;
+  }
+
+  /* REGION 1 — HEADER */
+  .pp-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 20px;
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    border-bottom: 1px solid var(--border);
+  }
+  .tg-glyph {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: linear-gradient(160deg, #2ea6ff 0%, #1c8add 100%);
+    display: grid; place-items: center;
+    flex: 0 0 auto;
+    box-shadow: 0 4px 14px rgba(46,166,255,.35);
+  }
+  .tg-glyph svg { width: 19px; height: 19px; }
+  .pp-title-wrap { display: flex; flex-direction: column; line-height: 1.25; }
+  .pp-title { font-size: 16px; font-weight: 600; letter-spacing: .2px; }
+  .pp-sub { font-size: 11.5px; color: var(--text-dim); }
+  .pp-sub b { color: var(--link); font-weight: 600; }
+  .pp-header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+  .health-note {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 11px; color: #ffd9a0;
+    background: rgba(242,159,76,.10);
+    border: 1px solid rgba(242,159,76,.30);
+    padding: 5px 10px; border-radius: 999px;
+  }
+  .health-note .dot { width: 7px; height: 7px; border-radius: 50%; background: #f29f4c; box-shadow: 0 0 7px #f29f4c; }
+
+  .icon-btn {
+    width: 32px; height: 32px; border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel-3);
+    color: var(--text-dim);
+    cursor: pointer; display: grid; place-items: center;
+    font-size: 17px; line-height: 1;
+  }
+  .icon-btn:hover { color: var(--text); background: #2a3848; }
+
+  /* REGION 2 — TYPE FILTER + CONTROLS */
+  .pp-controls {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+  }
+  .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    font-size: 12px; padding: 6px 12px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--panel-2);
+    color: var(--text-dim); cursor: pointer; user-select: none;
+    white-space: nowrap;
+  }
+  .chip:hover { color: var(--text); border-color: #344657; }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: #04121f; font-weight: 600; }
+
+  .control-spacer { flex: 1 1 auto; }
+  .select {
+    appearance: none; font-size: 12px; color: var(--text);
+    background: var(--panel-2) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' stroke='%237d8e9e' stroke-width='1.5' fill='none' stroke-linecap='round'/></svg>") no-repeat right 10px center;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 28px 7px 11px; cursor: pointer; white-space: nowrap;
+  }
+  .select:hover { border-color: #344657; }
+
+  /* REGION 3 — TOPIC TABS / QUICK CHIPS */
+  .topic-tabs {
+    display: flex; gap: 6px; padding: 10px 18px;
+    border-bottom: 1px solid var(--border-soft);
+    overflow-x: auto;
+  }
+  .topic-tab {
+    font-size: 12.5px; padding: 7px 13px; border-radius: 8px;
+    color: var(--text-dim); cursor: pointer; white-space: nowrap;
+    border: 1px solid transparent;
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+  .topic-tab .count {
+    font-size: 10.5px; color: var(--text-faint);
+    background: rgba(255,255,255,.05); padding: 1px 6px; border-radius: 999px;
+  }
+  .topic-tab:hover { color: var(--text); background: var(--panel-2); }
+  .topic-tab.active {
+    color: var(--text); background: var(--panel-3);
+    border-color: var(--border);
+  }
+  .topic-tab.active .count { color: var(--link); background: rgba(46,166,255,.12); }
+  .topic-tab.uncat { color: var(--text-faint); font-style: italic; }
+
+  /* REGION 4 — GRID */
+  .grid-wrap { flex: 1 1 auto; overflow-y: auto; padding: 16px 18px 18px; }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 14px;
+    font-size: 11px; color: var(--text-dim);
+    padding: 0 2px 14px; margin-bottom: 4px;
+    border-bottom: 1px dashed var(--border);
+  }
+  .legend .lg { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 13px; height: 13px; border-radius: 4px; border: 2px solid; }
+  .swatch.unsel { border-color: var(--border); background: var(--panel-3); }
+  .swatch.sel { border-color: var(--purple); box-shadow: 0 0 0 2px rgba(155,125,255,.25); background: var(--panel-3); }
+  .swatch.sent { border-color: var(--warn); background: rgba(242,201,76,.12); }
+  .swatch.sold { border-color: var(--ok); background: rgba(77,207,111,.14); }
+  .swatch.locked { border-color: var(--danger); background: rgba(255,91,91,.10); }
+  .swatch.pending { border-color: var(--neutral-caution); border-style: dashed; background: transparent; }
+  .swatch.preview { border-color: var(--border); background: repeating-linear-gradient(45deg,#1c2733,#1c2733 4px,#222f3d 4px,#222f3d 8px); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+  @media (min-width: 1180px) { .grid { grid-template-columns: repeat(5, 1fr); } }
+
+  .tile {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    border-radius: var(--radius);
+    border: 2px solid var(--border);
+    overflow: hidden;
+    cursor: pointer;
+    background: #11202c;
+    transition: transform .08s ease, border-color .12s ease, box-shadow .12s ease;
+  }
+  .tile:hover { transform: translateY(-1px); }
+  .tile .media { position: absolute; inset: 0; }
+
+  /* fake media gradients */
+  .m1 { background: linear-gradient(135deg,#3a2b4f,#6d4d8c); }
+  .m2 { background: linear-gradient(135deg,#1f3a4d,#2b6d7c); }
+  .m3 { background: linear-gradient(135deg,#4d2f2f,#8c5d4d); }
+  .m4 { background: linear-gradient(135deg,#23344a,#3f5a7c); }
+  .m5 { background: linear-gradient(135deg,#3a4d2b,#6d8c4d); }
+  .m6 { background: linear-gradient(135deg,#4d2b3f,#8c4d70); }
+  .m7 { background: linear-gradient(135deg,#2b3a4d,#4d6a8c); }
+  .m8 { background: linear-gradient(135deg,#42344f,#6d5a8c); }
+  .m9 { background: linear-gradient(135deg,#1f444d,#2b7c78); }
+  .m10 { background: linear-gradient(135deg,#4d3a2b,#8c6d4d); }
+  .m11 { background: linear-gradient(135deg,#2f3a4d,#506a8c); }
+  .m12 { background: linear-gradient(135deg,#4d2b4a,#8c4d86); }
+  .m13 { background: linear-gradient(135deg,#34404d,#5a728c); }
+  .m14 { background: linear-gradient(135deg,#3a2f4d,#6a4d8c); }
+  .m15 { background: linear-gradient(135deg,#2b4d3f,#4d8c6d); }
+
+  .media::after {
+    content: ""; position: absolute; inset: 0;
+    background: radial-gradient(120% 90% at 50% 30%, rgba(255,255,255,.10), transparent 60%),
+                linear-gradient(180deg, transparent 50%, rgba(0,0,0,.30));
+  }
+
+  .type-glyph {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%,-50%);
+    color: rgba(255,255,255,.78);
+    font-size: 26px; line-height: 1;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,.5));
+    z-index: 2;
+  }
+
+  .topic-tag {
+    position: absolute; left: 6px; bottom: 6px;
+    font-size: 9.5px; color: rgba(255,255,255,.72);
+    background: rgba(0,0,0,.42); backdrop-filter: blur(2px);
+    padding: 2px 6px; border-radius: 5px; z-index: 3;
+    max-width: 78%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  .dur-pill, .gif-pill, .stack-pill {
+    position: absolute; z-index: 3;
+    font-size: 9.5px; font-weight: 600; color: #fff;
+    background: rgba(0,0,0,.55); padding: 2px 6px; border-radius: 5px;
+  }
+  .dur-pill { right: 6px; bottom: 6px; }
+  .gif-pill { left: 6px; bottom: 6px; letter-spacing: .5px; }
+  .stack-pill {
+    right: 6px; top: 6px;
+    display: inline-flex; align-items: center; gap: 3px;
+    background: rgba(0,0,0,.55);
+  }
+  .stack-pill svg { width: 11px; height: 11px; }
+
+  /* corner status pill (top-left) */
+  .status-pill {
+    position: absolute; top: 6px; left: 6px; z-index: 4;
+    font-size: 9.5px; font-weight: 700; letter-spacing: .3px;
+    padding: 3px 7px; border-radius: 6px;
+    display: inline-flex; align-items: center; gap: 4px;
+    box-shadow: 0 2px 6px rgba(0,0,0,.4);
+  }
+  .pill-sent { background: var(--warn); color: #2a230a; }
+  .pill-sold { background: var(--ok-deep); color: #fff; }
+  .pill-locked { background: var(--danger); color: #fff; }
+  .pill-free { background: var(--warn); color: #2a230a; }
+  .pill-pending {
+    background: rgba(154,167,179,.18); color: var(--neutral-caution);
+    border: 1px dashed rgba(154,167,179,.55); box-shadow: none;
+  }
+  .pill-star::before { content: "⭐"; font-size: 9px; }
+
+  /* selection check (top-right) */
+  .check {
+    position: absolute; top: 6px; right: 6px; z-index: 5;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: var(--purple); color: #fff;
+    display: none; place-items: center;
+    box-shadow: 0 2px 8px rgba(155,125,255,.6);
+    font-size: 12px; font-weight: 800;
+  }
+
+  /* status ring overlays via box-shadow inset / border swap */
+  .tile.is-sent { border-color: var(--warn); }
+  .tile.is-sold { border-color: var(--ok); box-shadow: 0 0 0 1px rgba(77,207,111,.30); }
+  .tile.is-locked { border-color: var(--danger); }
+  .tile.is-pending { border-color: var(--neutral-caution); border-style: dashed; }
+
+  /* selected overrides all */
+  .tile.selected {
+    border-color: var(--purple) !important; border-style: solid !important;
+    box-shadow: 0 0 0 3px rgba(155,125,255,.30) !important;
+  }
+  .tile.selected .check { display: grid; }
+
+  .stale-mark {
+    position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+    z-index: 4; font-size: 10px; font-weight: 800;
+    color: #ffd9a0; background: rgba(242,159,76,.20);
+    border: 1px solid rgba(242,159,76,.5);
+    width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
+  }
+
+  /* preview / loading placeholder tile */
+  .tile.preview-tile { cursor: default; }
+  .tile.preview-tile .media {
+    background:
+      linear-gradient(100deg, #1c2733 30%, #283342 50%, #1c2733 70%);
+    background-size: 220% 100%;
+    animation: shimmer 1.5s linear infinite;
+  }
+  @keyframes shimmer { to { background-position: -220% 0; } }
+  .preview-tile .ph-label {
+    position: absolute; bottom: 8px; left: 0; right: 0; z-index: 3;
+    text-align: center; font-size: 10px; color: var(--text-faint);
+  }
+
+  /* protect_content faint tint affordance (demoted, no badge) */
+  .tile.protected::before {
+    content: ""; position: absolute; inset: 0; z-index: 1;
+    background: repeating-linear-gradient(135deg, rgba(255,255,255,.035) 0 6px, transparent 6px 12px);
+    pointer-events: none;
+  }
+
+  /* REGION 5 + 6 — SEND TRAY + FOOTER */
+  .send-tray {
+    border-top: 1px solid var(--border);
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    padding: 14px 18px 16px;
+  }
+  .tray-chips {
+    display: flex; gap: 8px; overflow-x: auto; padding-bottom: 10px;
+    min-height: 0;
+  }
+  .tray-chips:empty::after {
+    content: "Selected items appear here — click a tile to start.";
+    color: var(--text-faint); font-size: 11.5px; padding: 8px 2px;
+  }
+  .tray-chip {
+    position: relative; flex: 0 0 auto;
+    width: 64px; height: 64px; border-radius: 9px;
+    border: 1.5px solid var(--border); overflow: hidden;
+  }
+  .tray-chip .x {
+    position: absolute; top: -2px; right: -2px; z-index: 3;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #0e1621; border: 1px solid var(--border);
+    color: var(--text-dim); font-size: 11px; line-height: 16px;
+    text-align: center; cursor: pointer;
+  }
+  .tray-chip .x:hover { color: #fff; background: var(--danger); border-color: var(--danger); }
+  .tray-chip .badge {
+    position: absolute; bottom: 0; left: 0; right: 0; z-index: 3;
+    font-size: 8.5px; font-weight: 700; text-align: center; padding: 1px 0;
+  }
+  .badge-free { background: rgba(0,0,0,.55); color: var(--warn); }
+  .badge-ppv { background: var(--accent); color: #04121f; }
+
+  .caption-row { margin: 4px 0 12px; }
+  .caption-input {
+    width: 100%; background: var(--panel-3); border: 1px solid var(--border);
+    border-radius: 9px; color: var(--text); font-size: 13px;
+    padding: 10px 12px; resize: none; font-family: inherit;
+  }
+  .caption-input::placeholder { color: var(--text-faint); }
+  .caption-input:focus { outline: none; border-color: var(--accent); }
+
+  /* 2-button reflex */
+  .reflex-row { display: flex; gap: 10px; align-items: stretch; }
+  .ppv-cluster {
+    display: flex; align-items: stretch; gap: 0;
+    border: 1px solid var(--accent); border-radius: 10px; overflow: hidden;
+    flex: 1 1 auto;
+  }
+  .btn-free, .btn-ppv {
+    flex: 1 1 0; border: none; cursor: pointer;
+    font-size: 13.5px; font-weight: 600; padding: 11px 10px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  }
+  .btn-free {
+    flex: 1 1 0; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--panel-3); color: var(--text);
+  }
+  .btn-free:hover { background: #2a3848; }
+  .btn-ppv {
+    background: var(--accent); color: #04121f;
+  }
+  .btn-ppv:hover { filter: brightness(1.06); }
+  .ppv-price {
+    background: #04121f; color: var(--star); font-weight: 800;
+    border: none; width: 86px; text-align: center; font-size: 13.5px;
+    border-left: 1px solid rgba(0,0,0,.25); font-family: inherit;
+  }
+  .ppv-price:focus { outline: none; background: #07182a; }
+  .ppv-mode {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: #04121f; color: #04121f; padding: 0 10px;
+    font-size: 11px; font-weight: 700;
+  }
+  .ppv-toggle {
+    display: inline-flex; border-left: 1px solid rgba(0,0,0,.25);
+  }
+  .ppv-toggle button {
+    border: none; background: transparent; cursor: pointer;
+    font-size: 10.5px; font-weight: 800; padding: 0 9px; color: rgba(4,18,31,.45);
+  }
+  .ppv-toggle button.on { color: #04121f; }
+
+  .custom-toggle {
+    margin-top: 12px; display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--link); cursor: pointer; user-select: none;
+  }
+  .custom-toggle .caret { transition: transform .15s ease; display: inline-block; }
+  .custom-panel {
+    display: none; margin-top: 10px; padding: 12px;
+    background: var(--panel-3); border: 1px solid var(--border-soft); border-radius: 10px;
+  }
+  .custom-panel.open { display: block; }
+  .custom-toggle.open .caret { transform: rotate(90deg); }
+
+  .cp-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--border-soft);
+    font-size: 12px; color: var(--text-dim);
+  }
+  .cp-row:last-child { border-bottom: none; }
+  .cp-row label { color: var(--text); }
+
+  .stepper { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .stepper button { width: 26px; height: 26px; border: none; background: var(--panel-2); color: var(--text); cursor: pointer; font-size: 15px; }
+  .stepper button:hover { background: #2a3848; }
+  .stepper .val { width: 30px; text-align: center; font-size: 12px; }
+
+  .divider-concept {
+    display: flex; align-items: stretch; gap: 0; margin-top: 4px;
+    border-radius: 7px; overflow: hidden; height: 26px; font-size: 10.5px; font-weight: 700;
+  }
+  .divider-concept .free-side {
+    flex: 0 0 30%; background: rgba(242,201,76,.18); color: var(--warn);
+    display: grid; place-items: center; border-right: 2px dashed var(--warn);
+  }
+  .divider-concept .paid-side {
+    flex: 1 1 auto; background: rgba(46,166,255,.14); color: var(--link);
+    display: grid; place-items: center;
+  }
+
+  .switch {
+    position: relative; width: 38px; height: 21px; border-radius: 999px;
+    background: var(--panel-2); border: 1px solid var(--border); cursor: pointer;
+  }
+  .switch::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 15px; height: 15px; border-radius: 50%; background: var(--text-dim);
+    transition: .15s;
+  }
+  .switch.on { background: rgba(46,166,255,.4); border-color: var(--accent); }
+  .switch.on::after { left: 19px; background: var(--accent); }
+
+  .seg {
+    display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  }
+  .seg button {
+    border: none; background: var(--panel-2); color: var(--text-dim); cursor: pointer;
+    font-size: 11px; font-weight: 600; padding: 6px 11px;
+  }
+  .seg button.on { background: var(--accent); color: #04121f; }
+
+  /* footer action bar */
+  .footer-bar {
+    display: flex; align-items: center; gap: 14px;
+    margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--border-soft);
+  }
+  .footer-summary { font-size: 12.5px; color: var(--text-dim); line-height: 1.4; }
+  .footer-summary b { color: var(--text); }
+  .footer-summary .net { color: var(--star); font-weight: 800; }
+  .footer-summary .net .lbl { color: var(--text-faint); font-weight: 500; font-size: 10.5px; }
+  .footer-actions { margin-left: auto; display: flex; gap: 10px; }
+  .btn-cancel {
+    border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+    border-radius: 9px; padding: 10px 16px; font-size: 13px; cursor: pointer;
+  }
+  .btn-cancel:hover { color: var(--text); border-color: #344657; }
+  .btn-send {
+    border: none; background: var(--accent); color: #04121f;
+    border-radius: 9px; padding: 10px 22px; font-size: 13.5px; font-weight: 700; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .btn-send:hover { filter: brightness(1.06); }
+  .btn-send:disabled { background: var(--panel-3); color: var(--text-faint); cursor: not-allowed; filter: none; }
+
+  /* ===================== FAN-SIDE PANEL ===================== */
+  .fan-col { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 26px; }
+
+  .fan-meta {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 14px 16px;
+  }
+  .fan-meta h3 {
+    margin: 0 0 4px; font-size: 12px; font-weight: 700; letter-spacing: .6px;
+    color: var(--text-dim); text-transform: uppercase;
+  }
+  .reach-row { display: flex; align-items: center; gap: 9px; margin-top: 8px; font-size: 12.5px; }
+  .reach-dot { width: 9px; height: 9px; border-radius: 50%; }
+  .reach-ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .reach-row b { color: var(--text); }
+  .reach-sub { font-size: 11px; color: var(--text-faint); margin-top: 6px; }
+
+  .phone {
+    background: #0b1420;
+    border: 8px solid #05090e;
+    border-radius: 30px;
+    box-shadow: var(--shadow), inset 0 0 0 1px #1b2733;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .phone-notch {
+    height: 26px; background: #05090e; position: relative;
+  }
+  .phone-notch::after {
+    content: ""; position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+    width: 70px; height: 6px; border-radius: 999px; background: #1b2733;
+  }
+  .chat-header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .chat-ava {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: linear-gradient(150deg,#9b7dff,#2ea6ff);
+    display: grid; place-items: center; font-size: 13px; font-weight: 700; color: #fff;
+  }
+  .chat-name { font-size: 13px; font-weight: 600; }
+  .chat-status { font-size: 10.5px; color: var(--link); }
+
+  .chat-body {
+    background:
+      radial-gradient(700px 380px at 20% 0%, #15222f 0, transparent 55%),
+      #0b1420;
+    padding: 14px 12px 18px;
+    display: flex; flex-direction: column; gap: 12px;
+    min-height: 320px;
+  }
+  .day-sep { align-self: center; font-size: 10px; color: var(--text-faint); background: rgba(0,0,0,.35); padding: 2px 10px; border-radius: 999px; }
+
+  .bubble {
+    max-width: 86%; align-self: flex-start;
+    background: var(--panel-2); border-radius: 14px 14px 14px 4px;
+    padding: 8px 11px; font-size: 12.5px; line-height: 1.45;
+    box-shadow: 0 1px 4px rgba(0,0,0,.3);
+  }
+
+  /* paid-media native blurred unlock overlay (fan sees) */
+  .paid-card {
+    align-self: flex-start; max-width: 86%;
+    background: var(--panel-2); border-radius: 14px 14px 14px 4px;
+    overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  }
+  .paid-media {
+    position: relative; height: 168px;
+    background: linear-gradient(135deg,#3a2b4f,#6d4d8c);
+  }
+  .paid-media .blur {
+    position: absolute; inset: 0;
+    backdrop-filter: blur(18px);
+    background: rgba(10,18,28,.30);
+    display: grid; place-items: center; gap: 8px; text-align: center;
+  }
+  .lock-circle {
+    width: 46px; height: 46px; border-radius: 50%;
+    background: rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.25);
+    display: grid; place-items: center;
+  }
+  .lock-circle svg { width: 20px; height: 20px; }
+  .paid-hint { font-size: 10.5px; color: rgba(255,255,255,.78); }
+  .paid-stack {
+    position: absolute; top: 8px; right: 8px;
+    font-size: 10px; font-weight: 700; color: #fff;
+    background: rgba(0,0,0,.5); padding: 2px 7px; border-radius: 6px;
+    display: inline-flex; align-items: center; gap: 3px;
+  }
+  .paid-cta {
+    width: 100%; border: none; cursor: pointer;
+    background: var(--accent); color: #04121f;
+    font-size: 13px; font-weight: 700; padding: 11px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  }
+  .paid-caption { padding: 8px 11px; font-size: 12px; color: var(--text); }
+
+  .free-card {
+    align-self: flex-start; max-width: 86%;
+    border-radius: 14px 14px 14px 4px; overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  }
+  .free-media { height: 150px; background: linear-gradient(135deg,#1f3a4d,#2b6d7c); position: relative; }
+  .free-media .play {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 40px; height: 40px; border-radius: 50%; background: rgba(0,0,0,.45);
+    display: grid; place-items: center; color: #fff;
+  }
+  .free-media .dur { position: absolute; right: 7px; bottom: 7px; font-size: 10px; font-weight: 600; color: #fff; background: rgba(0,0,0,.55); padding: 2px 6px; border-radius: 5px; }
+  .free-tag { position: absolute; left: 7px; top: 7px; font-size: 9.5px; font-weight: 700; color: #2a230a; background: var(--warn); padding: 2px 7px; border-radius: 5px; }
+
+  .meta-time { font-size: 9.5px; color: var(--text-faint); margin-top: 3px; text-align: right; }
+
+  .fan-input {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 11px; background: var(--panel); border-top: 1px solid var(--border);
+  }
+  .fan-input .box {
+    flex: 1 1 auto; background: var(--panel-3); border-radius: 999px;
+    padding: 8px 13px; font-size: 12px; color: var(--text-faint);
+  }
+  .fan-input .ico { color: var(--text-dim); font-size: 16px; }
+
+  .fan-foot {
+    font-size: 10.5px; color: var(--text-faint); text-align: center;
+    padding: 8px 14px 4px;
+  }
+
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: #2a3848; border-radius: 999px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+  <div class="stage">
+
+    <!-- ============ OPERATOR CONTROL PANEL ============ -->
+    <section class="panel" aria-label="Telegram Vault operator panel">
+
+      <!-- REGION 1: HEADER -->
+      <div class="pp-header">
+        <span class="tg-glyph" style="background:linear-gradient(160deg,#2ea6ff,#1c8add)">
+          <svg viewBox="0 0 24 24" fill="#fff"><path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.7.8l-4.7-3.5-2.3 2.2c-.3.3-.5.5-.9.5l.3-4.7 8.6-7.8c.4-.3-.1-.5-.6-.2L6.9 13.4l-4.6-1.4c-1-.3-1-1 .2-1.5L20.6 3c.8-.3 1.6.2 1.3 1.3Z"/></svg>
+        </span>
+        <div class="pp-title-wrap">
+          <span class="pp-title">Library</span>
+          <span class="pp-sub"><b>@bella_staging</b> · forum supergroup</span>
+        </div>
+        <div class="pp-header-right">
+          <span class="health-note" title="A Stars webhook hasn't confirmed in 6 min — SOLD tiles flagged stale">
+            <span class="dot"></span> payment status stale · 6m
+          </span>
+          <button class="icon-btn" title="Close">✕</button>
+        </div>
+      </div>
+
+      <!-- REGION 2: TYPE FILTER + CONTROLS -->
+      <div class="pp-controls">
+        <div class="chips">
+          <span class="chip active">All</span>
+          <span class="chip">Photos</span>
+          <span class="chip">Videos</span>
+          <span class="chip">GIFs</span>
+          <span class="chip">Files</span>
+          <span class="chip">Audio</span>
+        </div>
+        <span class="control-spacer"></span>
+        <select class="select" aria-label="Topic">
+          <option>Topic: Solo Photos (42)</option>
+          <option>Videos (28)</option>
+          <option>Customs (11)</option>
+          <option>GIFs (19)</option>
+          <option>PPV bundles (7)</option>
+          <option>Uncategorized (3)</option>
+        </select>
+        <select class="select" aria-label="Sort">
+          <option>Newest</option>
+          <option>Oldest</option>
+        </select>
+      </div>
+
+      <!-- REGION 3: TOPIC TABS -->
+      <div class="topic-tabs">
+        <span class="topic-tab active">All</span>
+        <span class="topic-tab">Solo Photos <span class="count">42</span></span>
+        <span class="topic-tab">Videos <span class="count">28</span></span>
+        <span class="topic-tab">Customs <span class="count">11</span></span>
+        <span class="topic-tab">GIFs <span class="count">19</span></span>
+        <span class="topic-tab">PPV bundles <span class="count">7</span></span>
+        <span class="topic-tab uncat">Uncategorized <span class="count">3</span></span>
+      </div>
+
+      <!-- REGION 4: GRID -->
+      <div class="grid-wrap">
+        <div class="legend">
+          <span class="lg"><span class="swatch unsel"></span> Unselected</span>
+          <span class="lg"><span class="swatch sel"></span> Selected</span>
+          <span class="lg"><span class="swatch sent"></span> Sent-free</span>
+          <span class="lg"><span class="swatch sold"></span> Sold / unlocked</span>
+          <span class="lg"><span class="swatch locked"></span> Locked / PPV</span>
+          <span class="lg"><span class="swatch pending"></span> Pending</span>
+          <span class="lg"><span class="swatch preview"></span> Loading placeholder</span>
+        </div>
+
+        <div class="grid" id="grid">
+
+          <!-- 1: DEFAULT photo -->
+          <div class="tile" onclick="toggle(this)">
+            <div class="media m1"></div>
+            <span class="type-glyph">🖼</span>
+            <span class="topic-tag">Solo Photos</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 2: SELECTED (pre-checked) video -->
+          <div class="tile selected" onclick="toggle(this)">
+            <div class="media m2"></div>
+            <span class="type-glyph">▶</span>
+            <span class="dur-pill">0:42</span>
+            <span class="topic-tag">Videos</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 3: SOLD / UNLOCKED photo -->
+          <div class="tile is-sold" onclick="toggle(this)">
+            <div class="media m3"></div>
+            <span class="type-glyph">🖼</span>
+            <span class="status-pill pill-sold pill-star">120 PAID</span>
+            <span class="topic-tag">PPV bundles</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 4: SENT-FREE photo -->
+          <div class="tile is-sent" onclick="toggle(this)">
+            <div class="media m4"></div>
+            <span class="type-glyph">🖼</span>
+            <span class="status-pill pill-sent">SENT</span>
+            <span class="topic-tag">Solo Photos</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 5: LOCKED / PPV video -->
+          <div class="tile is-locked" onclick="toggle(this)">
+            <div class="media m5"></div>
+            <span class="type-glyph">▶</span>
+            <span class="dur-pill">1:18</span>
+            <span class="status-pill pill-locked pill-star">250</span>
+            <span class="topic-tag">Customs</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 6: PENDING (invoice awaiting payment) -->
+          <div class="tile is-pending" onclick="toggle(this)">
+            <div class="media m6"></div>
+            <span class="type-glyph">🖼</span>
+            <span class="status-pill pill-pending">⏳ ⭐80</span>
+            <span class="topic-tag">PPV bundles</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 7: ALBUM (stack) photo set -->
+          <div class="tile" onclick="toggle(this)">
+            <div class="media m7"></div>
+            <span class="type-glyph">🖼</span>
+            <span class="stack-pill">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><rect x="7" y="3" width="14" height="14" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg>
+              4
+            </span>
+            <span class="topic-tag">Solo Photos</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 8: GIF -->
+          <div class="tile" onclick="toggle(this)">
+            <div class="media m8"></div>
+            <span class="type-glyph">◉</span>
+            <span class="gif-pill">GIF</span>
+            <span class="topic-tag">GIFs</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 9: SOLD video (stale flag because health note active) -->
+          <div class="tile is-sold" onclick="toggle(this)">
+            <div class="media m9"></div>
+            <span class="type-glyph">▶</span>
+            <span class="dur-pill">2:05</span>
+            <span class="stale-mark" title="Status stale — do not re-charge">?</span>
+            <span class="status-pill pill-sold pill-star">300 PAID</span>
+            <span class="topic-tag">Videos</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 10: PREVIEW / loading placeholder tile -->
+          <div class="tile preview-tile">
+            <div class="media"></div>
+            <span class="ph-label">media renders on the fan's device</span>
+          </div>
+
+          <!-- 11: DEFAULT file (document) -->
+          <div class="tile" onclick="toggle(this)">
+            <div class="media m11"></div>
+            <span class="type-glyph">📎</span>
+            <span class="topic-tag">customs_set.zip</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 12: protected free teaser (faint tint, no badge) -->
+          <div class="tile protected is-sent" onclick="toggle(this)">
+            <div class="media m12"></div>
+            <span class="type-glyph">🖼</span>
+            <span class="status-pill pill-free">FREE</span>
+            <span class="topic-tag">Solo Photos · no-save</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 13: Audio file -->
+          <div class="tile" onclick="toggle(this)">
+            <div class="media m13"></div>
+            <span class="type-glyph">🎙</span>
+            <span class="dur-pill">0:33</span>
+            <span class="topic-tag">Audio</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 14: DEFAULT photo -->
+          <div class="tile" onclick="toggle(this)">
+            <div class="media m14"></div>
+            <span class="type-glyph">🖼</span>
+            <span class="topic-tag">Solo Photos</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 15: SOLD album set -->
+          <div class="tile is-sold" onclick="toggle(this)">
+            <div class="media m15"></div>
+            <span class="type-glyph">🖼</span>
+            <span class="stack-pill">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><rect x="7" y="3" width="14" height="14" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg>
+              6
+            </span>
+            <span class="status-pill pill-sold pill-star">450 PAID</span>
+            <span class="topic-tag">PPV bundles</span>
+            <span class="check">✓</span>
+          </div>
+
+          <!-- 16: LOCKED video -->
+          <div class="tile is-locked" onclick="toggle(this)">
+            <div class="media m2"></div>
+            <span class="type-glyph">▶</span>
+            <span class="dur-pill">3:41</span>
+            <span class="status-pill pill-locked pill-star">500</span>
+            <span class="topic-tag">Customs</span>
+            <span class="check">✓</span>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- REGION 5: SEND TRAY -->
+      <div class="send-tray">
+        <div class="tray-chips" id="trayChips">
+          <!-- one pre-filled chip mirroring the pre-selected tile -->
+          <div class="tray-chip">
+            <div class="media m2" style="position:absolute;inset:0"></div>
+            <span class="x" title="Remove">✕</span>
+            <span class="badge badge-ppv">⭐120</span>
+          </div>
+        </div>
+
+        <div class="caption-row">
+          <textarea class="caption-input" rows="2" placeholder="Add a caption for {fan}…  (sent above the media)"></textarea>
+        </div>
+
+        <!-- 2-button reflex -->
+        <div class="reflex-row">
+          <button class="btn-free">Send Free</button>
+          <div class="ppv-cluster">
+            <button class="btn-ppv">Send PPV</button>
+            <input class="ppv-price" value="⭐120" aria-label="Price in Stars" />
+            <span class="ppv-toggle">
+              <button class="on" title="Stars (default)">⭐</button>
+              <button title="External fiat link">LINK</button>
+            </span>
+          </div>
+        </div>
+
+        <!-- Custom expander -->
+        <div class="custom-toggle" id="customToggle" onclick="toggleCustom()">
+          <span class="caret">▸</span> Custom… (per-chip price · order · previews · mechanism · protect)
+        </div>
+        <div class="custom-panel" id="customPanel">
+          <div class="cp-row">
+            <label>Previews — leading free teasers</label>
+            <span class="stepper">
+              <button onclick="event.stopPropagation()">−</button>
+              <span class="val">1</span>
+              <button onclick="event.stopPropagation()">+</button>
+            </span>
+          </div>
+          <div class="divider-concept">
+            <span class="free-side">FREE ↑ 1</span>
+            <span class="paid-side">PAID ↓ — ⭐120 each</span>
+          </div>
+          <div class="cp-row" style="margin-top:8px">
+            <label>Mechanism</label>
+            <span class="seg">
+              <button class="on">Stars</button>
+              <button>External Link</button>
+            </span>
+          </div>
+          <div class="cp-row">
+            <label>protect_content <span style="color:var(--text-faint);font-weight:400">· screenshot-permeable deterrent · free/copy path only</span></label>
+            <span class="switch" onclick="this.classList.toggle('on')"></span>
+          </div>
+          <div class="cp-row" style="border:none;color:var(--text-faint);font-style:italic">
+            Drag-reorder & per-chip pricing apply to the curated multi-price set — the 95% path never opens this.
+          </div>
+        </div>
+
+        <!-- REGION 6: FOOTER ACTION BAR -->
+        <div class="footer-bar">
+          <div class="footer-summary">
+            <b id="selCount">1</b> selected · <b>0</b> free / <b>1</b> paid<br/>
+            <span class="net">⭐103 net <span class="lbl">(after platform cut · ⭐120 gross)</span></span>
+          </div>
+          <div class="footer-actions">
+            <button class="btn-cancel">Cancel</button>
+            <button class="btn-send" id="sendBtn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="#04121f"><path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.7.8l-4.7-3.5-2.3 2.2c-.3.3-.5.5-.9.5l.3-4.7 8.6-7.8c.4-.3-.1-.5-.6-.2L6.9 13.4l-4.6-1.4c-1-.3-1-1 .2-1.5L20.6 3c.8-.3 1.6.2 1.3 1.3Z"/></svg>
+              Send
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ============ FAN-SIDE VIEW ============ -->
+    <aside class="fan-col">
+
+      <div class="fan-meta">
+        <h3>Target fan</h3>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span class="chat-ava">J</span>
+          <div>
+            <div style="font-size:13px;font-weight:600">jake_m</div>
+            <div style="font-size:11px;color:var(--text-dim)">tg user_id 5571…831 · OF #123456789</div>
+          </div>
+        </div>
+        <div class="reach-row">
+          <span class="reach-dot reach-ok"></span>
+          <span><b>Reachable</b> — started the bot</span>
+        </div>
+        <div class="reach-sub">Send is gated on reachability. A fan who never /started or blocked the bot shows an UNREACHABLE banner here and the Send button is disabled.</div>
+      </div>
+
+      <div class="phone" aria-label="Fan-side Telegram view">
+        <div class="phone-notch"></div>
+        <div class="chat-header">
+          <span class="chat-ava">B</span>
+          <div>
+            <div class="chat-name">Bella 💋</div>
+            <div class="chat-status">bot · online</div>
+          </div>
+        </div>
+
+        <div class="chat-body">
+          <span class="day-sep">What the fan sees the moment it lands</span>
+
+          <div class="bubble">
+            hey babe 🥺 made something just for you… unlock it below 👇
+          </div>
+
+          <!-- PAID MEDIA native blurred unlock card -->
+          <div class="paid-card">
+            <div class="paid-media">
+              <span class="paid-stack">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><rect x="7" y="3" width="14" height="14" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg>
+                4
+              </span>
+              <div class="blur">
+                <span class="lock-circle">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+                </span>
+                <span class="paid-hint">Tap to unlock · 4 items</span>
+              </div>
+            </div>
+            <button class="paid-cta">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="#04121f"><path d="m12 2 2.9 6.3 6.9.6-5.2 4.6 1.6 6.8L12 17.3 5.8 20.9l1.6-6.8L2.2 8.9l6.9-.6z"/></svg>
+              Unlock for ⭐120 Stars
+            </button>
+          </div>
+
+          <!-- FREE teaser card -->
+          <div class="free-card">
+            <div class="free-media">
+              <span class="free-tag">FREE</span>
+              <span class="play">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z"/></svg>
+              </span>
+              <span class="dur">0:42</span>
+            </div>
+          </div>
+
+          <div class="bubble" style="background:var(--panel-3)">
+            this one's on me 😘 the locked set is the real treat though…
+            <div class="meta-time">9:14 PM</div>
+          </div>
+        </div>
+
+        <div class="fan-input">
+          <span class="ico">😊</span>
+          <span class="box">Message</span>
+          <span class="ico">🎤</span>
+        </div>
+        <div class="fan-foot">Paid media is non-forwardable by construction · Stars unlock is instant</div>
+      </div>
+
+    </aside>
+
+  </div>
+
+  <script>
+    function toggle(tile){
+      tile.classList.toggle('selected');
+      updateCount();
+    }
+    function updateCount(){
+      var n = document.querySelectorAll('#grid .tile.selected').length;
+      document.getElementById('selCount').textContent = n;
+      document.getElementById('sendBtn').disabled = (n === 0);
+    }
+    function toggleCustom(){
+      document.getElementById('customPanel').classList.toggle('open');
+      document.getElementById('customToggle').classList.toggle('open');
+    }
+    // tray chip remove (cosmetic)
+    document.addEventListener('click', function(e){
+      if(e.target.classList && e.target.classList.contains('x')){
+        e.target.closest('.tray-chip').remove();
+      }
+    });
+    updateCount();
+  </script>
+</body>
+</html>
