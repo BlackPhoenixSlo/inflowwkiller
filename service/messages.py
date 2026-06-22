@@ -24,6 +24,7 @@ of_client.py and the relay endpoints in server.py.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
@@ -1188,6 +1189,41 @@ async def mark_chat_read(account_id: str, fan_id: int) -> dict[str, Any]:
         # rowcount=0 → no chats row yet (WS hasn't transcoded one) OR it was
         # already read. Not an error — 200 with cleared=false.
         return {"account_id": account_id, "fan_id": fan_id, "cleared": (result.rowcount or 0) > 0}
+
+
+@router.post("/admin/messages/{account_id}/{fan_id}/rescrape-now")
+async def rescrape_chat_now(account_id: str, fan_id: int) -> dict[str, Any]:
+    """Synchronously re-scrape ONE fan's chat from OF into the local DB and
+    return when done — the chat ↻ refresh's "instant re-cache".
+
+    Runs INLINE, NOT via the automation queue, on purpose. The queued
+    scrape_chats path dispatches per (account, kind) behind a per-(account, kind)
+    in-flight guard, so an interactive single-fan refresh would otherwise wait
+    for a whole multi-minute account-wide scrape sweep that shares the same
+    (account, 'scrape_chats') pair to finish first. Calling _scrape_one_chat
+    directly sidesteps the queue, both bulk-lane slots, and that guard, so the
+    re-cache lands in ~1-2s regardless of background sweeps. Recent-end fast-skip
+    makes repeat clicks cheap. Best-effort: returns ok=false on failure — the UI
+    already shows live OF data (messages/profile/PPV) regardless of this call."""
+    assert_account_owned(account_id)
+    try:
+        # Local import: the executor pulls in the whole automation graph; defer
+        # it to request time (it's already loaded in-process) to avoid a cycle.
+        from automation_executor import (  # noqa: PLC0415
+            _make_client, _scrape_one_chat,
+            _SCRAPE_PAGE_SIZE, _SCRAPE_MAX_PAGES,
+        )
+        client = await asyncio.to_thread(_make_client, account_id)
+        inserted, seen = await _scrape_one_chat(
+            account_id, client.user_id, client, int(fan_id), None,
+            page_size=_SCRAPE_PAGE_SIZE, max_pages=_SCRAPE_MAX_PAGES,
+        )
+        return {"account_id": account_id, "fan_id": fan_id,
+                "ok": True, "inserted": inserted, "seen": seen}
+    except Exception as exc:  # best-effort — never 500 a UI refresh
+        log.warning("rescrape_chat_now(%s,%s) failed — best-effort",
+                    account_id, fan_id, exc_info=True)
+        return {"account_id": account_id, "fan_id": fan_id, "ok": False, "error": str(exc)}
 
 
 @router.post("/admin/messages/detect-mass")

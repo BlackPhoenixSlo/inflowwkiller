@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 from datetime import datetime
 from typing import Any
 
@@ -27,11 +28,13 @@ from db.engine import get_session
 from db.models import AccountAiConfig, AutomationRule
 from automations.ppv_send import (
     PPV_CAPTION_POOLS,
+    PPV_FEED_CAPTION_POOLS,
     RECENCY_BANDS,
     SPEND_BANDS,
     _DEFAULTS,
     _PRICE_CEIL_CENTS,
     _PRICE_FLOOR_CENTS,
+    post_to_feed,
 )
 
 log = logging.getLogger("of-relay.ppv_library_config_api")
@@ -83,6 +86,20 @@ def _validate_ppv(p: Any) -> dict:
             s = str(t or "").strip()[:_CAPTION_MAX]
             if s:
                 clean_texts.append(s)
+    # Feed-post captions: optional override used ONLY by /post-now (a public feed
+    # post wants a different voice than a 1:1 DM). Empty → the feed post falls back
+    # to caption_texts / the pool. Same shape/caps as caption_texts.
+    feed_caps_raw = p.get("feed_captions")
+    clean_feed: list[str] = []
+    if isinstance(feed_caps_raw, (list, tuple)):
+        for t in feed_caps_raw[:_MAX_CAPTION_TEXTS]:
+            s = str(t or "").strip()[:_CAPTION_MAX]
+            if s:
+                clean_feed.append(s)
+    # Feed-post caption STYLE pool (auto-picked, public voice). "" = none.
+    feed_pool_key = str(p.get("feed_caption_pool_key") or "").strip()
+    if feed_pool_key and feed_pool_key not in PPV_FEED_CAPTION_POOLS:
+        raise HTTPException(422, f"unknown feed_caption_pool_key: {feed_pool_key}")
     if pool_key and pool_key not in PPV_CAPTION_POOLS:
         raise HTTPException(422, f"unknown caption_pool_key: {pool_key}")
     if not pool_key and not clean_texts:
@@ -103,6 +120,16 @@ def _validate_ppv(p: Any) -> dict:
         "media_ids": media,
         "caption_pool_key": pool_key,
         "caption_texts": clean_texts,
+        "feed_captions": clean_feed,
+        "feed_caption_pool_key": feed_pool_key,
+        # Two INDEPENDENT delivery enables: `enabled` = sent as PPV messages on cadence
+        # (gates the AutomationRule); `feed_enabled` = available for feed posting (the
+        # button + random picker + auto-post). A PPV can be messages-only, feed-only,
+        # or both. Both default on so nothing regresses.
+        "feed_enabled": bool(p.get("feed_enabled", True)),
+        # "Auto post to feed with each send" — when this PPV's mass send fires, also
+        # drop it on the feed as a paid post (same base price + ⭐ preview). Default off.
+        "also_post_to_feed": bool(p.get("also_post_to_feed")),
         "base_price_cents": base,
         "preview_options": previews,
         "sends_per_week": spw,
@@ -252,6 +279,8 @@ async def get_ppv_library_config(account_id: str = Query(...)) -> dict[str, Any]
         "defaults": dict(_DEFAULTS),
         "pools": sorted(PPV_CAPTION_POOLS),
         "caption_pools": PPV_CAPTION_POOLS,   # key → lines, for the UI caption preview
+        "feed_pools": sorted(PPV_FEED_CAPTION_POOLS),
+        "feed_caption_pools": PPV_FEED_CAPTION_POOLS,   # public-voice feed caption styles
         "matrix": _matrix_view(),
     }
 
@@ -296,3 +325,84 @@ async def preview_ppv_library(body: _PreviewBody = Body(...)) -> dict[str, Any]:
     from automations.ppv_send import segment_preview
     base = max(_PRICE_FLOOR_CENTS, min(int(body.base_price_cents or 0), _PRICE_CEIL_CENTS))
     return {"account_id": body.account_id, **await segment_preview(body.account_id, base)}
+
+
+class _PostNowBody(BaseModel):
+    account_id: str
+    ppv_id: str | None = None     # absent → a random ENABLED PPV (skips the last posted)
+
+
+@router.post("/admin/ppv-library-config/post-now")
+async def post_ppv_to_feed(body: _PostNowBody = Body(...)) -> dict[str, Any]:
+    """One-click: post one library PPV to the FEED as a paid post at its BASE price
+    (the un-tiered "normal" price the messages start from), via the shared
+    `ppv_send.post_to_feed` (feed-voice caption + ⭐ preview + `Post` row), then stamps
+    `last_posted_ppv_id` so the random picker varies. No scheduler, no contact guard —
+    a feed post is one public drop, not a per-fan message.
+
+    Picks the PPV by explicit `ppv_id`; otherwise a random ENABLED one, skipping the
+    PPV posted last time (best-effort — the marker lives in the config blob)."""
+    assert_account_owned(body.account_id)
+
+    async with get_session() as s:
+        row = await s.get(AccountAiConfig, body.account_id)
+    stored: dict = {}
+    if row is not None and row.ppv_library_config_json:
+        try:
+            stored = json.loads(row.ppv_library_config_json) or {}
+        except Exception:
+            stored = {}
+    all_ppvs = [p for p in (stored.get("ppvs") or []) if isinstance(p, dict)]
+
+    if body.ppv_id:
+        chosen = next((p for p in all_ppvs if str(p.get("id")) == str(body.ppv_id)), None)
+        if chosen is None:
+            raise HTTPException(404, "ppv not found")
+    else:
+        # Feed posting is gated by `feed_enabled` (NOT the message-send `enabled`) — a
+        # feed-only PPV (messages off) is still pickable here.
+        pool = [p for p in all_ppvs if p.get("feed_enabled", True)]
+        last = str(stored.get("last_posted_ppv_id") or "")
+        # Skip the one posted last time so back-to-back clicks vary; fall back to the
+        # full pool when that leaves nothing (e.g. only one feed-enabled PPV).
+        choices = [p for p in pool if str(p.get("id")) != last] or pool
+        if not choices:
+            raise HTTPException(422, "no feed-enabled PPVs to post — add one and turn on 'Post to feed'")
+        chosen = random.choice(choices)
+
+    if not _int_list(chosen.get("media_ids"), _MAX_MEDIA):
+        raise HTTPException(422, "this PPV has no content to post")
+
+    # Post + record via the shared helper (feed-voice caption priority, ⭐ preview).
+    res = await post_to_feed(body.account_id, chosen)
+    if res.get("status") != "ok":
+        raise HTTPException(502, f"feed post failed: {res.get('reason') or 'unknown'}")
+
+    # Stamp skip-last back into the blob (best-effort; a UI Save resets it).
+    if stored:
+        stored["last_posted_ppv_id"] = str(chosen.get("id") or "")
+        blob = json.dumps(stored)
+        now = datetime.utcnow()
+        async with get_session() as s:
+            await s.execute(
+                sqlite_insert(AccountAiConfig)
+                .values(account_id=body.account_id, utc_offset=0,
+                        ppv_library_config_json=blob, updated_at=now)
+                .on_conflict_do_update(
+                    index_elements=["account_id"],
+                    set_={"ppv_library_config_json": blob, "updated_at": now})
+            )
+    log.info("ppv_post_now account=%s ppv=%s of_post=%s price=%s previews=%s",
+             body.account_id, chosen.get("id"), res.get("of_post_id"),
+             res.get("price"), res.get("preview_count"))
+    return {
+        "account_id": body.account_id,
+        "ppv_id": chosen.get("id"),
+        "name": chosen.get("name") or "",
+        "of_post_id": res.get("of_post_id"),
+        "price": res.get("price"),
+        "caption": res.get("caption"),
+        "used_feed_caption": res.get("used_feed_caption", False),
+        "media_count": res.get("media_count", 0),
+        "preview_count": res.get("preview_count", 0),
+    }

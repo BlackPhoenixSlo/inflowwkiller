@@ -40,6 +40,7 @@ Payload shape::
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
@@ -50,7 +51,7 @@ from sqlalchemy import func, select
 from automation_registry import register
 from db.engine import get_session
 from db.models import (
-    AccountAiConfig, AutomationRun, Blacklist, Fan, Message, ScheduledJob, Transaction,
+    AccountAiConfig, AutomationRun, Blacklist, Fan, Message, Post, ScheduledJob, Transaction,
 )
 
 log = logging.getLogger("of-relay.automation.ppv_send")
@@ -178,6 +179,52 @@ PPV_CAPTION_POOLS: dict[str, list[str]] = {
 }
 _FALLBACK_CAPTION = "made somethin for u 🙈 unlock it"
 
+# ── Feed-post caption pools ──────────────────────────────────────────────────
+# Public-FEED voice (a post is broadcast to everyone, NOT a 1:1 DM) — so NO "just
+# for u" / "ur on my special list" framing. Used ONLY by the "post to feed" path
+# (ppv_library_config_api.post_ppv_to_feed); one line is random-picked + the
+# {now}/{was}/{off} discount tokens filled, same as the message pools.
+PPV_FEED_CAPTION_POOLS: dict[str, list[str]] = {
+    "feed_new_drop": [
+        "just posted somethin new 🙈 unlock it below babe",
+        "new set is up 🔥 go unlock it, u wont regret it",
+        "couldnt wait to share this one... its locked below, go see 👀",
+        "fresh content just dropped 😏 tap to unlock",
+        "posted somethin a lil spicy today 🙈 its all urs below",
+    ],
+    "feed_flash_sale": [
+        "🔥 {off} OFF today only 🔥 was {was} now just {now}, unlock before i put it back up",
+        "flash sale time 😈 {off} off, only {now} (was {was}). dont sleep on it",
+        "{now} instead of {was} for the next few hours only 🙈 go go go",
+        "spoilin u today 💋 {off} off, was {was} now {now}. unlock below",
+        "puttin this on sale for a bit — {off} off, just {now} (was {was}) 👀",
+    ],
+    "feed_bundle_drop": [
+        "huge bundle just dropped 🔥 everything in one unlock, way more than its worth",
+        "dropped my biggest set yet 🙈 tons of content, one price below. go unlock",
+        "new bundle is live 😈 all the pics + vids in one, dont miss it",
+        "{off} off my full bundle today 🌟 was {was} now {now}, unlock everything below",
+    ],
+    "feed_teaser": [
+        "this is just the preview... the full thing is locked below 👀",
+        "lil taste of what i posted 🙈 unlock for the rest",
+        "u want the full version? its right below babe, go unlock 😏",
+        "consider this the soft version... the real one is locked below",
+    ],
+    "feed_video_drop": [
+        "new video is up 🔥 unlock it below n press play",
+        "posted a lil clip today 🙈 its locked below, go watch",
+        "filmed somethin special... its all urs below, unlock to see 😈",
+        "new vid just dropped 👀 worth every second i promise, unlock below",
+    ],
+    "feed_photoset": [
+        "new photo set is up 🙈 starts cute... does NOT stay that way. unlock below",
+        "posted a whole set today 🔥 it gets better with every pic, go unlock",
+        "dropped a striptease set 😏 watch me lose the outfit one pic at a time, below",
+        "new pics are live 👀 the last few r my fav, unlock to see",
+    ],
+}
+
 
 def round_to_99(amount_cents: float) -> int:
     """Round to the nearest whole dollar, then end in .99, floored at $0.99 and
@@ -245,6 +292,67 @@ def _rotate_preview(pool: list, idx: int) -> list[int]:
     teaser with NO stored state — pool[idx % len]. A fan who didn't buy keeps getting
     the same locked content with a fresh preview each cycle. Empty pool → no preview."""
     return [pool[idx % len(pool)]] if pool else []
+
+
+def pick_feed_caption(ppv: dict, base_cents: int) -> tuple[str, bool]:
+    """Caption for the FEED post (public voice). Priority: the PPV's own feed_captions
+    → its feed_caption_pool_key (PPV_FEED_CAPTION_POOLS) → fall back to the message
+    captions/pool via _pick_caption. Returns (caption, used_feed_specific). Tokens are
+    filled at the base price (a feed post is one price for everyone)."""
+    feed_caps = [s for s in (ppv.get("feed_captions") or []) if isinstance(s, str) and s.strip()]
+    if feed_caps:
+        return _pick_caption({"caption_texts": feed_caps}, base_cents), True
+    key = str(ppv.get("feed_caption_pool_key") or "").strip()
+    if key and key in PPV_FEED_CAPTION_POOLS:
+        return _pick_caption({"caption_texts": PPV_FEED_CAPTION_POOLS[key]}, base_cents), True
+    return _pick_caption(ppv, base_cents), False
+
+
+async def post_to_feed(account_id: str, ppv: dict, *, employee_id: int | None = None) -> dict:
+    """Post ONE PPV to the OF FEED as a paid post at its BASE price, with the ⭐ free
+    previews (preview_options) shown as the teaser and a feed-voice caption. Records a
+    Post row. SHARED by the manual post-now endpoint and the auto 'also post to feed
+    with each send' path in run(). No fan messaging — a feed post is one public drop."""
+    import automation_executor as ax
+    base_cents = max(_PRICE_FLOOR_CENTS, min(int(ppv.get("base_price_cents") or 0), _PRICE_CEIL_CENTS))
+    media_ids = [int(x) for x in (ppv.get("media_ids") or []) if str(x).strip()]
+    if not media_ids:
+        return {"status": "skipped", "reason": "no_media"}
+    media_set = set(media_ids)
+    # Previews must be ⊆ media_files (OF rejects/ignores stray ids), mirroring the message path.
+    previews = [int(x) for x in (ppv.get("preview_options") or [])
+                if str(x).strip() and int(x) in media_set]
+    caption, used_feed_caption = pick_feed_caption(ppv, base_cents)
+    price = base_cents / 100   # OF wants dollars
+
+    client = await asyncio.to_thread(ax._make_client, account_id)
+    result = await ax.of_write_paced(
+        account_id,
+        lambda: client.create_post(text=caption, media_files=media_ids,
+                                   price=price, previews=previews),
+    )
+    of_post_id = result.get("id") if isinstance(result, dict) else None
+    if of_post_id is None:
+        log.warning("post_to_feed account=%s ppv=%s create_post returned no id (%r)",
+                    account_id, ppv.get("id"), result)
+        return {"status": "error", "reason": "no_post_id", "caption": caption}
+    of_post_id = int(of_post_id)
+
+    now = datetime.utcnow()
+    async with get_session() as s:
+        s.add(Post(
+            account_id=str(account_id), of_post_id=of_post_id, status="posted",
+            text=caption, price_cents=base_cents, media_ids=json.dumps(media_ids),
+            posted_at=now, created_by_employee_id=employee_id,
+            raw_json=json.dumps(result, default=str)[:20000],
+        ))
+    log.info("post_to_feed account=%s ppv=%s of_post=%s price=%s previews=%d",
+             account_id, ppv.get("id"), of_post_id, price, len(previews))
+    return {
+        "status": "ok", "of_post_id": of_post_id, "price": price, "caption": caption,
+        "used_feed_caption": used_feed_caption, "media_count": len(media_ids),
+        "preview_count": len(previews),
+    }
 
 
 def _segments(fan_rows: list, last_purchase: dict, now: datetime) -> dict[str, dict]:
@@ -585,6 +693,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if broadcast not in ("skipped", "error"):
             sent_cells += 1   # counts as a send for the cap + 'ok' status
 
+    # ── also post to feed: opt-in ("auto post to feed with mass"). Fire ONCE per
+    #    run, only when a send actually went out (don't post to the feed on an
+    #    all-empty/skipped cycle). Best-effort — a feed-post failure never fails the
+    #    send. Same paid post + ⭐ preview + feed-voice caption as the manual button.
+    feed_post = None
+    if ppv.get("feed_enabled", True) and ppv.get("also_post_to_feed") and sent_cells:
+        try:
+            feed_post = await post_to_feed(account_id, ppv)
+        except Exception:
+            log.exception("ppv_send also_post_to_feed failed account=%s ppv=%s", account_id, ppv_id)
+            feed_post = {"status": "error", "reason": "exception"}
+
     # ── monthly resend: one-shot +30d (a resend gets a fresh random preview) ─
     resend_job_id = None
     if ppv.get("resend_monthly") and not is_resend:
@@ -595,13 +715,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             run_at=now + timedelta(days=30),
         )
 
-    log.info("ppv_send account=%s ppv=%s cells=%d recipients=%d broadcast=%s resend_job=%s",
-             account_id, ppv_id, sent_cells, total_recipients, broadcast, resend_job_id)
+    log.info("ppv_send account=%s ppv=%s cells=%d recipients=%d broadcast=%s resend_job=%s feed=%s",
+             account_id, ppv_id, sent_cells, total_recipients, broadcast, resend_job_id,
+             (feed_post or {}).get("status"))
     return {
         "status": "ok" if sent_cells else "skipped",
         "reason": None if sent_cells else "all_cells_empty",
         "ppv_id": ppv_id, "is_resend": is_resend,
         "cells_sent": sent_cells, "recipients": total_recipients,
         "broadcast": broadcast, "pause_hours": pause_hours,
-        "resend_job_id": resend_job_id, "results": results,
+        "resend_job_id": resend_job_id, "feed_post": feed_post, "results": results,
     }
