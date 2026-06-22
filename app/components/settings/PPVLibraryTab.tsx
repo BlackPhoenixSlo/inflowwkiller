@@ -24,12 +24,23 @@ import {
   usePpvLibraryConfig,
   useSavePpvLibraryConfig,
   usePpvPreview,
+  usePostPpvToFeed,
   type PpvItem,
   type PriceMatrix,
 } from "@/hooks/usePpvLibraryConfig";
 
 const INPUT =
   "bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent";
+
+// Feed-post caption styles (public voice) — keys mirror PPV_FEED_CAPTION_POOLS.
+const FEED_POOL_LABELS: Record<string, string> = {
+  feed_new_drop: "New drop",
+  feed_flash_sale: "Flash sale (% off)",
+  feed_bundle_drop: "Bundle drop",
+  feed_teaser: "Teaser",
+  feed_video_drop: "Video drop",
+  feed_photoset: "Photo set",
+};
 
 const POOL_LABELS: Record<string, string> = {
   intro_new: "New fan (soft intro)",
@@ -116,6 +127,7 @@ function blankPpv(): PpvItem {
     resend_monthly: false,
     exclude_buyers: true,
     enabled: true,
+    feed_enabled: true,
   };
 }
 
@@ -125,6 +137,9 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   const cfgQ = usePpvLibraryConfig(accountId);
   const saveM = useSavePpvLibraryConfig(accountId);
   const previewM = usePpvPreview(accountId);
+  const postM = usePostPpvToFeed(accountId);
+  // which "Post to feed" is in flight: a PPV id, or "__random__" for the bottom button
+  const [postFor, setPostFor] = useState<string | null>(null);
 
   const [enabled, setEnabled] = useState(false);
   const [ppvs, setPpvs] = useState<PpvItem[]>([]);
@@ -169,6 +184,8 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
 
   const pools = cfgQ.data?.pools ?? Object.keys(POOL_LABELS);
   const captionPools = cfgQ.data?.caption_pools ?? {};
+  const feedPools = cfgQ.data?.feed_pools ?? Object.keys(FEED_POOL_LABELS);
+  const feedCaptionPools = cfgQ.data?.feed_caption_pools ?? {};
   const matrix = cfgQ.data?.matrix;
 
   useEffect(() => {
@@ -253,6 +270,22 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     markDirty();
     setPpvs((ps) => ps.map((p, j) =>
       j === i ? { ...p, caption_texts: (p.caption_texts ?? []).filter((_, k) => k !== ci) } : p));
+  };
+  // feed-post captions (used ONLY by "Post to feed") — same one-box-per-caption shape
+  const setFeedCaption = (i: number, ci: number, val: string) => {
+    markDirty();
+    setPpvs((ps) => ps.map((p, j) =>
+      j === i ? { ...p, feed_captions: (p.feed_captions ?? []).map((c, k) => (k === ci ? val : c)) } : p));
+  };
+  const addFeedCaption = (i: number) => {
+    markDirty();
+    setPpvs((ps) => ps.map((p, j) =>
+      j === i ? { ...p, feed_captions: [...(p.feed_captions ?? []), ""] } : p));
+  };
+  const removeFeedCaption = (i: number, ci: number) => {
+    markDirty();
+    setPpvs((ps) => ps.map((p, j) =>
+      j === i ? { ...p, feed_captions: (p.feed_captions ?? []).filter((_, k) => k !== ci) } : p));
   };
   // paste a list, one caption per line → each becomes its own box
   const importLines = (text: string) => text.split("\n").map((s) => s.trim()).filter(Boolean);
@@ -409,14 +442,15 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                 value={p.name ?? ""}
                 onChange={(e) => setPpv(i, { name: e.target.value })}
               />
-              <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer"
+                     title="Send this PPV as a paid message to fans on a schedule (priced by fan group)">
                 <input
                   type="checkbox"
                   className="h-3.5 w-3.5 accent-[var(--accent)]"
                   checked={p.enabled}
                   onChange={(e) => setPpv(i, { enabled: e.target.checked })}
                 />
-                {p.enabled ? "On" : "Off"}
+                Send as PPV messages
               </label>
               <button
                 type="button"
@@ -434,6 +468,50 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
               >
                 ✕
               </button>
+            </div>
+
+            {/* Feed delivery — a SEPARATE enable from the PPV messages above. "Post to
+                feed" turns on feed posting for this PPV (the button + the random picker +
+                auto-post); leave "Send as PPV messages" off for a feed-only PPV. */}
+            <div className="flex items-center gap-2 flex-wrap rounded-md bg-bg/40 px-2 py-1.5">
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer font-medium"
+                     title="Make this PPV available to post to your public feed (independent of the message send)">
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 accent-[var(--accent)]"
+                  checked={p.feed_enabled !== false}
+                  onChange={(e) => setPpv(i, { feed_enabled: e.target.checked })}
+                />
+                Post to feed
+              </label>
+              <Button
+                size="sm" variant="secondary"
+                onClick={() => { setPostFor(p.id); postM.mutate(p.id); }}
+                disabled={postM.isPending || p.media_ids.length === 0 || p.feed_enabled === false}
+                title="Post this PPV to your feed now as a paid post at its base price"
+              >
+                {postM.isPending && postFor === p.id ? "Posting…" : "Post to feed now"}
+              </Button>
+              <label className={cn("flex items-center gap-1.5 text-xs cursor-pointer",
+                                   p.feed_enabled === false && "opacity-40 pointer-events-none")}>
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 accent-[var(--accent)]"
+                  checked={(p.also_post_to_feed ?? false) && p.feed_enabled !== false}
+                  disabled={p.feed_enabled === false}
+                  onChange={(e) => setPpv(i, { also_post_to_feed: e.target.checked })}
+                />
+                Also auto-post to feed with each send
+              </label>
+              {postFor === p.id && postM.isSuccess && (
+                <span className="text-[11px] text-emerald-500">
+                  Posted @ ${postM.data.price} ✓{postM.data.used_feed_caption ? " (feed caption)" : ""}
+                  {postM.data.preview_count ? ` · ${postM.data.preview_count} free preview` : ""}
+                </span>
+              )}
+              {postFor === p.id && postM.isError && (
+                <span className="text-[11px] text-red-500">{postM.error?.message || "post failed"}</span>
+              )}
             </div>
 
             {/* content: ONE picker, then ⭐ a thumbnail to make it a free teaser */}
@@ -628,6 +706,71 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
               />
             </div>
 
+            {/* Feed-post captions — used ONLY by "Post to feed" (public voice).
+                Empty = the feed post reuses the message captions / style pool above. */}
+            <details className="block rounded-lg border border-border/60 p-2.5">
+              <summary className="cursor-pointer text-xs text-fg-dim">
+                Feed-post captions{" "}
+                <span className="text-fg-dim/60">
+                  ({(p.feed_captions ?? []).filter((t) => t.trim()).length || "none"})
+                </span>{" "}
+                — optional, public-feed voice
+              </summary>
+              <div className="mt-2 space-y-1.5">
+                <div className="text-[11px] text-fg-dim/70 leading-relaxed">
+                  Used when this PPV goes to the <b>feed</b> (the <b>Post to feed</b> button or
+                  auto-post). A feed post is public, so avoid 1:1 lines like &quot;just for u&quot;.
+                  <b> Priority:</b> your own feed captions below → the <b>Feed caption style</b> →
+                  otherwise it reuses the message captions/style above. Price tokens{" "}
+                  (<span className="font-mono">{"{now}"}</span> /{" "}
+                  <span className="font-mono">{"{was}"}</span> /{" "}
+                  <span className="font-mono">{"{off}"}</span>) work here too.
+                </div>
+                <label className="flex items-center gap-2 text-xs flex-wrap">
+                  <span className="text-fg-dim">Feed caption style (auto-picked)</span>
+                  <select
+                    className={`${INPUT} w-52`}
+                    value={p.feed_caption_pool_key ?? ""}
+                    onChange={(e) => setPpv(i, { feed_caption_pool_key: e.target.value })}
+                  >
+                    <option value="">— none (use my captions / message style) —</option>
+                    {feedPools.map((k) => (
+                      <option key={k} value={k}>{FEED_POOL_LABELS[k] ?? k}</option>
+                    ))}
+                  </select>
+                </label>
+                {(p.feed_caption_pool_key ?? "") && !(p.feed_captions ?? []).some((t) => t.trim()) && (
+                  <CaptionPreview
+                    lines={feedCaptionPools[p.feed_caption_pool_key as string] ?? []}
+                    baseCents={p.base_price_cents}
+                  />
+                )}
+                <div className="text-[11px] text-fg-dim/60">Or write your own feed captions (these win over the style):</div>
+                {(p.feed_captions ?? []).map((cap, ci) => (
+                  <div key={ci} className="flex items-start gap-1.5">
+                    <textarea
+                      rows={Math.max(2, cap.split("\n").length)}
+                      className={`${INPUT} w-full font-mono text-[12px]`}
+                      placeholder={"🔥 new set just dropped 🔥 unlock below babe — {off} off today, was {was} now {now}"}
+                      value={cap}
+                      onChange={(e) => setFeedCaption(i, ci, e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeFeedCaption(i, ci)}
+                      className="text-fg-dim hover:text-err text-sm px-1 pt-2"
+                      title="Remove feed caption"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                <Button size="sm" variant="secondary" onClick={() => addFeedCaption(i)}>
+                  + Add feed caption
+                </Button>
+              </div>
+            </details>
+
             {matrix && <PriceGrid baseCents={p.base_price_cents} matrix={matrix} />}
 
             <div className="flex items-center gap-2 flex-wrap">
@@ -685,6 +828,33 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
           <li><b>Library ON/OFF</b> — the master switch. OFF stops everything instantly.</li>
         </ul>
       </details>
+
+      {/* One-click: post a fresh random PPV to the feed now (paid, at its base price). */}
+      <div className="rounded-lg border border-border p-3 space-y-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            size="sm" variant="secondary"
+            onClick={() => { setPostFor("__random__"); postM.mutate(undefined); }}
+            disabled={postM.isPending || ppvs.filter((p) => p.feed_enabled !== false && p.media_ids.length).length === 0}
+          >
+            {postM.isPending && postFor === "__random__" ? "Posting…" : "Post a fresh PPV to feed now →"}
+          </Button>
+          {postFor === "__random__" && postM.isSuccess && (
+            <span className="text-xs text-emerald-500">
+              Posted “{postM.data.name || postM.data.ppv_id}” @ ${postM.data.price} ✓
+              {postM.data.used_feed_caption ? " (feed caption)" : ""}
+            </span>
+          )}
+          {postFor === "__random__" && postM.isError && (
+            <span className="text-xs text-red-500">{postM.error?.message || "post failed"}</span>
+          )}
+        </div>
+        <div className="text-[11px] text-fg-dim/70 leading-relaxed">
+          Picks one of your <b>feed-enabled</b> PPVs (a fresh caption each time, skips the one
+          posted last), and posts it to your <b>feed</b> as a paid post at its <b>base price</b> —
+          the same &quot;normal&quot; price your messages start from. One click, no scheduling.
+        </div>
+      </div>
 
       <div className="flex items-center gap-3 pt-1">
         <Button onClick={() => saveM.mutate(buildConfig())} disabled={saveM.isPending}>

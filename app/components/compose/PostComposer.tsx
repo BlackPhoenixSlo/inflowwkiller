@@ -49,7 +49,17 @@ interface CreatePostResp {
   [k: string]: unknown;
 }
 
-export function PostComposer({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function PostComposer({
+  open,
+  onClose,
+  onSuccess,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** Fired after a successful create (before the modal closes) so a caller
+   *  surface — e.g. the feed tab — can refetch its own list. */
+  onSuccess?: () => void;
+}) {
   const qc = useQueryClient();
   const activeAccounts = useActiveAccounts();
   // Shared include set with ScopeSwitcher's all-models aggregate — a model
@@ -157,6 +167,7 @@ export function PostComposer({ open, onClose }: { open: boolean; onClose: () => 
       // The wall-media query backs the vault picker's blue ring; nuking
       // it ensures the freshly-posted media flips state on next open.
       qc.invalidateQueries({ queryKey: ["wall-media"] });
+      onSuccess?.();
       reset();
       onClose();
     },

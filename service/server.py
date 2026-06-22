@@ -3388,10 +3388,13 @@ async def get_messages(
         # WS pump + SSE; caching the head would mask them for ~TTL.
         payload = await _fetch()
     else:
-        # Paginated tail: history is immutable, 10min TTL bounds memory.
+        # Paginated tail: mostly immutable, but PPV lock/unlock state can flip
+        # on an old message when a fan pays — so cap the cache at 5min (not
+        # 10) to bound how long a just-paid PPV lingers as "locked". Still
+        # plenty to coalesce a scroll-burst; `bypass=refresh` forces fresh.
         payload = await relay_cache.get_or_fetch(
             "get_messages_tail", aid, (chat_id, before_id, limit),
-            ttl_seconds=600.0, fetcher=_fetch, bypass=refresh,
+            ttl_seconds=300.0, fetcher=_fetch, bypass=refresh,
         )
     # Media render-stability (18_chat_render_stability §1.1): persist any OF
     # files/info width+height into message_media (the primary dims source)
@@ -4140,10 +4143,19 @@ async def of_tagged_friend_users(
 
 @app.get("/api/of/v2/users/{user_id}/posts")
 def of_user_posts(user_id: str, limit: int = Query(10, ge=1, le=50),
-                  type: str | None = Query(None, description="'photo'|'video'|'audio'")):
-    """Posts owned by another user (creator). `user_id` accepts numeric id or 'me'.
-    `type` filters by media."""
-    return _proxy(lambda: _get_client().user_posts(user_id, limit=limit, type=type))
+                  type: str | None = Query(None, description="'photo'|'video'|'audio'"),
+                  before_publish_time: str | None = Query(
+                      None, description="OF cursor (tailMarker) for the next/older page"),
+                  format: str | None = Query(
+                      None, description="'infinite' → OF returns hasMore/tailMarker for stitching")):
+    """Posts owned by a creator's OWN profile wall — NOT the subscriptions
+    home feed (`/posts`, which mixes in other creators). `user_id` accepts a
+    numeric id or 'me'. `type` filters by media. Pass `format=infinite` plus
+    the previous response's `tailMarker` as `before_publish_time` to page
+    backwards through the wall."""
+    return _proxy(lambda: _get_client().user_posts(
+        user_id, limit=limit, type=type,
+        before_publish_time=before_publish_time, format=format))
 
 # /posts/bookmarks declared earlier above (before /posts/{post_id}) so static
 # path wins over the dynamic one.
@@ -4698,6 +4710,8 @@ class _CreatePostBody(BaseModel):
     # the /upload endpoint's `send_with`. OF accepts mixed.
     media_files: list[int | dict] = Field(default_factory=list)
     price: float = Field(0, ge=0)
+    # Media ids (⊆ media_files) shown FREE as the teaser on a PAID post.
+    previews: list[int] = Field(default_factory=list)
     posted_at: str | None = None
     # OF user ids of creators to @-tag in the post (sent as `userTags`).
     tagged_users: list[int] = Field(default_factory=list)
@@ -5739,7 +5753,7 @@ async def of_cancel_scheduled(request: Request, queue_id: int):
 def of_create_post(body: _CreatePostBody = Body(...)):
     return _proxy(lambda: _get_client().create_post(
         text=body.text, media_files=body.media_files,
-        price=body.price, posted_at=body.posted_at,
+        price=body.price, previews=body.previews, posted_at=body.posted_at,
         tagged_users=body.tagged_users,
         giphy_id=body.giphy_id,
     ))

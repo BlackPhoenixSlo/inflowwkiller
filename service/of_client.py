@@ -1795,6 +1795,7 @@ class OFClient:
     def create_post(self, text: str, *,
                     media_files: list[int] | None = None,
                     price: int | float = 0,
+                    previews: list[int] | None = None,
                     posted_at: str | None = None,
                     fund_raising_target: float | None = None,
                     voting_due_date: str | None = None,
@@ -1803,12 +1804,17 @@ class OFClient:
                     giphy_id: str | None = None) -> Any:
         """POST /api2/v2/posts — create a feed post.
         `posted_at` ISO for scheduling. `expire_period` in days for paid posts.
+        `previews` = media ids (⊆ media_files) shown FREE as the teaser on a PAID
+        post; the wire field is `preview` (singular) — CONFIRMED live 2026-06-22:
+        a 21-media $60 post stored exactly the 5 passed ids in its `preview` array,
+        the other 16 paywalled.
         `giphy_id` rides along as top-level `giphyId`, mirroring chat sends."""
         body: dict = {
             "text": text,
             "mediaFiles": media_files or [],
             "price": price,
         }
+        if previews:            body["preview"] = [int(p) for p in previews]
         if posted_at:           body["postedAt"] = posted_at
         if fund_raising_target: body["fundRaisingTarget"] = fund_raising_target
         if voting_due_date:     body["votingDueDate"] = voting_due_date

@@ -14,6 +14,14 @@ export interface PpvItem {
   media_ids: number[];
   caption_pool_key: string;
   caption_texts?: string[];
+  /** Captions used ONLY when posting this PPV to the feed (public voice). Empty → reuse caption_texts/pool. */
+  feed_captions?: string[];
+  /** Feed caption STYLE pool (public voice, auto-picked). "" = none → manual feed_captions or message fallback. */
+  feed_caption_pool_key?: string;
+  /** When this PPV's mass send fires, ALSO post it to the feed (paid, base price). Default off. */
+  also_post_to_feed?: boolean;
+  /** Available for feed posting (button + random picker + auto-post). Independent of `enabled`. Default on. */
+  feed_enabled?: boolean;
   base_price_cents: number;
   preview_options: number[];
   sends_per_week: number;
@@ -64,6 +72,8 @@ interface PpvLibraryConfigResponse {
   defaults: PpvLibraryConfig;
   pools: string[];
   caption_pools: Record<string, string[]>;
+  feed_pools: string[];
+  feed_caption_pools: Record<string, string[]>;
   matrix: PriceMatrix;
 }
 
@@ -101,6 +111,30 @@ export function usePpvPreview(accountId: string | null) {
       relay.post(`/admin/ppv-library-config/preview`, {
         account_id: accountId,
         base_price_cents: basePriceCents,
+      }),
+  });
+}
+
+export interface PostPpvResult {
+  account_id: string;
+  ppv_id: string;
+  name: string;
+  of_post_id: number;
+  price: number;
+  caption: string;
+  used_feed_caption: boolean;
+  media_count: number;
+  preview_count: number;
+}
+
+/** Post one PPV to the FEED as a paid post at its base price. Pass a `ppvId` to
+ *  post that one; omit it for a random ENABLED PPV (skips the last one posted). */
+export function usePostPpvToFeed(accountId: string | null) {
+  return useMutation<PostPpvResult, Error, string | undefined>({
+    mutationFn: (ppvId) =>
+      relay.post(`/admin/ppv-library-config/post-now`, {
+        account_id: accountId,
+        ...(ppvId ? { ppv_id: ppvId } : {}),
       }),
   });
 }

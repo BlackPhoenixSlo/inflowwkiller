@@ -240,6 +240,54 @@ export function ChatSurface({
   });
   const profile = profileQ.data;
 
+  // Header ↻ refresh: a full re-pull of this chat AND the fan, plus a
+  // re-cache into the local SQLite mirror. The plain `handle.refresh()`
+  // only re-fetched the message page, so a fan who just paid a tip / a PPV
+  // could keep showing the stale "unseen"/locked state and the drawer's
+  // sales/revenue lagged. This invalidates every cache the chat + fan panel
+  // render from, then asks the server to re-scrape this fan's chat from OF
+  // so anything the live pull alone misses lands in the persisted history.
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const handleRefresh = useCallback(async () => {
+    if (!accountId || fanId == null) return;
+    setIsRefreshing(true);
+    try {
+      await Promise.all([
+        // Live OF re-pull — messages, fan profile (nickname/notice/spend),
+        // local fan row, the PPV gallery + ledger spine behind the drawer's
+        // chart/Sales, and the roster unread badges.
+        qc.invalidateQueries({ queryKey: ["messages", accountId, fanId] }),
+        qc.invalidateQueries({ queryKey: ["of-user", accountId, fanId] }),
+        qc.invalidateQueries({ queryKey: ["fan", accountId, fanId] }),
+        qc.invalidateQueries({
+          queryKey: ["fan-chat-media", accountId, fanId],
+          exact: false,
+        }),
+        qc.invalidateQueries({
+          queryKey: ["fan-ppv-history", accountId, fanId],
+          exact: false,
+        }),
+        qc.invalidateQueries({ queryKey: ["last-purchases", accountId] }),
+        qc.invalidateQueries({ queryKey: ["roster-counts"] }),
+        // Re-cache into the local mirror: re-scrape this fan's chat from OF so
+        // the persisted history catches a just-paid PPV/tip that the live UI
+        // pull alone wouldn't reconcile. Runs INLINE (not the automation queue)
+        // so it lands in ~1-2s even while a big background scrape sweep is
+        // hogging the bulk lane — the queued path would wait behind it.
+        // Best-effort — the UI already refreshed from OF above regardless.
+        relay
+          .post(
+            `/admin/messages/${accountId}/${fanId}/rescrape-now`,
+            undefined,
+            { accountId },
+          )
+          .catch(() => { /* re-cache is best-effort; UI is already fresh */ }),
+      ]);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [qc, accountId, fanId]);
+
   // Mark the chat read on open. Patches the inbox cache locally so the
   // blue dot disappears immediately, then fires the server POST in the
   // background (fire-and-forget — OF will catch up on its next poll
@@ -689,10 +737,11 @@ export function ChatSurface({
         <GroupChatButton accountId={accountId} fanId={fanId} />
         <button
           type="button"
-          onClick={() => handle.refresh()}
+          onClick={() => handleRefresh()}
+          title="Refresh chat, fan info & re-cache"
           className="hidden md:inline-flex items-center gap-1 text-[11px] text-fg-dim hover:text-fg underline underline-offset-2"
         >
-          <span className={cn("inline-block no-underline", handle.isFetching && "animate-spin")}>↻</span>
+          <span className={cn("inline-block no-underline", (isRefreshing || handle.isFetching) && "animate-spin")}>↻</span>
           <span>refresh</span>
         </button>
         <button

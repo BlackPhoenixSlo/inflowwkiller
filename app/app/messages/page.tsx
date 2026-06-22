@@ -29,16 +29,21 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import DateRangePicker, { type RangePreset } from "@/components/stats/DateRangePicker";
 import AllMessagesTab from "@/components/messages/AllMessagesTab";
+import MyFeedTab from "@/components/messages/MyFeedTab";
 import PaidMessagesTab from "@/components/messages/PaidMessagesTab";
+import PostsTab from "@/components/messages/PostsTab";
 import TipsTab from "@/components/messages/TipsTab";
+import TopPostsTab from "@/components/messages/TopPostsTab";
 import TopTippersCard from "@/components/messages/TopTippersCard";
 import { cn } from "@/lib/utils";
 import { daysAgoISO, todayISO, toLocalIso } from "@/lib/dateRange";
 
-type Tab = "ppv" | "tips" | "all";
+type Tab = "ppv" | "tips" | "all" | "posts" | "myfeed" | "top";
 
 function parseTab(raw: string | null): Tab {
-  if (raw === "tips" || raw === "all") return raw;
+  if (raw === "tips" || raw === "all" || raw === "posts" || raw === "myfeed" || raw === "top") {
+    return raw;
+  }
   return "ppv";
 }
 
@@ -161,6 +166,15 @@ function MessagesPageInner() {
         <TabButton active={tab === "all"} onClick={() => setTab("all")}>
           All
         </TabButton>
+        <TabButton active={tab === "posts"} onClick={() => setTab("posts")}>
+          Posts
+        </TabButton>
+        <TabButton active={tab === "myfeed"} onClick={() => setTab("myfeed")}>
+          My Feed
+        </TabButton>
+        <TabButton active={tab === "top"} onClick={() => setTab("top")}>
+          Top Posts
+        </TabButton>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-5">
@@ -185,6 +199,9 @@ function MessagesPageInner() {
               onClearFanId={onClearFanId}
             />
           )}
+          {tab === "posts" && <PostsTab />}
+          {tab === "myfeed" && <MyFeedTab />}
+          {tab === "top" && <TopPostsTab from={fromIso} to={toIso} />}
         </div>
         <aside className="space-y-3">
           <TopTippersCard

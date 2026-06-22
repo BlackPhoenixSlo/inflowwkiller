@@ -752,9 +752,10 @@ async def delete_rule(rule_id: int) -> dict[str, Any]:
 @router.post("/admin/automation-rules/{rule_id}/run-now")
 async def run_now(rule_id: int) -> dict[str, Any]:
     """Enqueue one immediate job for this rule, bypassing the cadence. The
-    worker picks it up on the next supervisor tick (≤30s). No-op-safe if a job
-    is already pending for this (account, kind) — the executor dedups."""
-    from automation_executor import enqueue_job  # local import: avoid load cycle
+    supervisor is woken right after enqueue so it drains and runs the job
+    immediately (~5ms) instead of waiting up to a 30s poll tick. No-op-safe if
+    a job is already pending for this (account, kind) — the executor dedups."""
+    from automation_executor import enqueue_job, wake_supervisor  # local: avoid load cycle
 
     async with get_session() as s:
         rule = await _load_owned(s, rule_id)
@@ -762,6 +763,7 @@ async def run_now(rule_id: int) -> dict[str, Any]:
         payload = _payload_of(rule)
 
     job_id = await enqueue_job(account_id, kind, payload=payload, rule_id=rule_id)
+    wake_supervisor()  # drain NOW (W7 pattern) — don't wait for the 30s poll tick
     log.info("automation_rule_run_now id=%s job=%s account=%s kind=%s",
              rule_id, job_id, account_id, kind)
     return {"enqueued_job_id": job_id, "account_id": account_id, "kind": kind}
@@ -780,7 +782,9 @@ async def enqueue_one_shot(
 ) -> dict[str, Any]:
     """Fire a single one-shot automation job WITHOUT a persistent rule — the
     trigger seam for action-style kinds the UI launches by hand (auto_posts,
-    mass_premade, unsend_messages). The worker claims it on the next tick (≤30s).
+    mass_premade, unsend_messages, the chat ↻ refresh's scrape_chats). For an
+    immediate job (no `run_at`) the supervisor is woken right after enqueue so it
+    drains and runs in ~5ms instead of waiting up to a 30s poll tick.
     `run_at` schedules it for the future; omitted = immediate."""
     assert_account_owned(body.account_id)
     if not _is_known_kind(body.kind):
@@ -794,12 +798,16 @@ async def enqueue_one_shot(
     except (TypeError, ValueError):
         employee_id = None
 
-    from automation_executor import enqueue_job  # local import: avoid load cycle
+    from automation_executor import enqueue_job, wake_supervisor  # local: avoid load cycle
     job_id = await enqueue_job(
         body.account_id, body.kind,
         payload=payload, run_at=body.run_at,
         created_by_employee_id=employee_id,
     )
+    # Drain NOW for immediate jobs (W7 pattern). A wake with only a future-dated
+    # job pending is a harmless no-op — the supervisor only claims due jobs.
+    if body.run_at is None:
+        wake_supervisor()
     log.info("automation_enqueue_one_shot job=%s account=%s kind=%s by_emp=%s",
              job_id, body.account_id, body.kind, employee_id)
     return {"enqueued_job_id": job_id, "account_id": body.account_id, "kind": body.kind}
