@@ -40,3 +40,6 @@ app/.turbo/
 
 # ---- network captures / dumps (contain live cookies/PII) ----
 *.har
+
+# ---- graphify build cache (regenerable; graph.json + GRAPH_REPORT.md ARE committed) ----
+graphify-out/cache/
