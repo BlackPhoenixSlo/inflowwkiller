@@ -495,6 +495,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 flipped = await _flip_mass_unsent(account_id, t.get("mass_run_id"))
                 if t.get("from_cache"):
                     flipped += await _flip_cache_canceled(account_id, t["queue_id"])
+                # #R4: the first mass is gone → stop enrolling NEW funnel repliers
+                # off it (the walker keeps going until a buy). Idempotent; covers
+                # both the per-target (mass_run_id) and cache-sweep (queue only)
+                # paths. Best-effort — never fail an unsend on this.
+                try:
+                    from audiences import close_funnel_discovery_for_queue
+                    await close_funnel_discovery_for_queue(
+                        account_id, queue_id=t.get("queue_id"),
+                        mass_run_id=t.get("mass_run_id"))
+                except Exception:
+                    log.warning("close_funnel_discovery failed account=%s queue=%s",
+                                account_id, t.get("queue_id"), exc_info=True)
             elif t["kind"] == "post":
                 await asyncio.to_thread(client.delete_post, t["post_id"])
                 flipped = await _flip_post_deleted(

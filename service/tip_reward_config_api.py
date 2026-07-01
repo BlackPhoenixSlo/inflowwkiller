@@ -48,6 +48,45 @@ _MAX_FOLDERS_PER_TIER = 25
 _CAPTION_MAX = 500
 _ASK_TEMPLATE_MAX = 300
 
+# Item-42 "tip request" sub-config numeric knobs (nudge a quiet mass-buyer with a
+# free teaser image + tip ask). Shares this column but drives its OWN automation
+# (`tip_request`) — nested here to avoid a cross-lane models.py schema change.
+_TIP_REQUEST_INT_KNOBS = {
+    "min_wait_hours": (0, 8760),
+    "max_age_hours": (1, 8760),
+    "cooldown_hours": (0, 8760),
+    "guard_hours": (0, 8760),
+    "limit": (1, 5000),
+}
+
+
+def _validate_tip_request(t: Any) -> dict:
+    """Validate/clamp the nested `tip_request` sub-object. Unknown keys dropped;
+    numeric knobs clamped so a typo can't blast a folder or chase ancient buys."""
+    if not isinstance(t, dict):
+        raise HTTPException(422, "tip_request must be an object")
+    out: dict[str, Any] = {}
+    if "enabled" in t:
+        out["enabled"] = bool(t["enabled"])
+    if "media_id" in t:
+        mid = t["media_id"]
+        if mid in (None, "", 0):
+            out["media_id"] = None            # explicit clear (back to disabled)
+        else:
+            try:
+                out["media_id"] = int(mid)
+            except (TypeError, ValueError):
+                raise HTTPException(422, "tip_request.media_id must be a number")
+    if "caption" in t:
+        out["caption"] = str(t["caption"] or "")[:_CAPTION_MAX]
+    for k, (lo, hi) in _TIP_REQUEST_INT_KNOBS.items():
+        if k in t and t[k] is not None:
+            try:
+                out[k] = max(lo, min(int(t[k]), hi))
+            except (TypeError, ValueError):
+                raise HTTPException(422, f"tip_request.{k} must be a number")
+    return out
+
 
 def _validate_tier(t: Any) -> dict:
     if not isinstance(t, dict):
@@ -107,6 +146,10 @@ def _validate(cfg: dict) -> dict:
         if not isinstance(tiers, (list, tuple)):
             raise HTTPException(422, "tiers must be a list")
         out["tiers"] = [_validate_tier(t) for t in tiers[:_MAX_TIERS]]
+    # Item 42: nudge-a-quiet-mass-buyer sub-config (its own automation, shares
+    # this column). Passthrough-validated so a tip-reward save doesn't drop it.
+    if "tip_request" in cfg:
+        out["tip_request"] = _validate_tip_request(cfg["tip_request"])
     # max_images must be ≥ min_images (an inverted cap would send nothing useful).
     if (out.get("max_images") is not None and out.get("min_images") is not None
             and out["max_images"] < out["min_images"]):

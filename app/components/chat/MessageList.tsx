@@ -451,7 +451,12 @@ export function MessageList(props: MessageListProps) {
           // sentinel — prefer the specific automation name ("AI Chat",
           // "Auto-reply", …) so the bubble says which one actually sent it.
           const autoName = automationLabel(entry?.automation_kind);
-          if (autoName) {
+          if (entry?.sender_name) {
+            // Human mass broadcast: the backend denormalized "mass-kingsley1"
+            // into sender_name (empty for 1:1 sends and automation-fired mass,
+            // so this branch only fires for a human blast). Prefer it verbatim.
+            employeeLabel = entry.sender_name;
+          } else if (autoName) {
             employeeLabel = autoName;
           } else if (entry?.display_name) {
             employeeLabel = entry.display_name;

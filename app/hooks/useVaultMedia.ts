@@ -95,10 +95,20 @@ export interface UseVaultMediaOpts {
   type?: "all" | "photo" | "video" | "gif" | "audio";
   listId?: number | null;
   enabled?: boolean;
+  /** OF honors server-side ordering — "oldest" maps to `sort=asc`. Kept out
+   *  of client-side reversal so pagination stays correct (older pages append
+   *  at the bottom, not the top). */
+  sort?: "newest" | "oldest";
+  /** OF-native vault search (wire param `query`). Empty = no filter. */
+  query?: string;
 }
 
 export function useVaultMedia(opts: UseVaultMediaOpts) {
-  const { accountId, type = "all", listId = null, enabled = true } = opts;
+  const {
+    accountId, type = "all", listId = null, enabled = true,
+    sort = "newest", query = "",
+  } = opts;
+  const queryTrimmed = query.trim();
   const qc = useQueryClient();
   // Flipped to `true` by `refresh()` so the very next queryFn run appends
   // `&refresh=1` and bypasses the shared server-side vault cache. Cleared
@@ -107,7 +117,7 @@ export function useVaultMedia(opts: UseVaultMediaOpts) {
   const bypassServerCacheRef = useRef(false);
 
   const q = useInfiniteQuery<VaultMediaResp>({
-    queryKey: ["vault-media", accountId, type, listId],
+    queryKey: ["vault-media", accountId, type, listId, sort, queryTrimmed],
     enabled: enabled && !!accountId,
     initialPageParam: 0,
     getNextPageParam: (last, all) =>
@@ -117,7 +127,11 @@ export function useVaultMedia(opts: UseVaultMediaOpts) {
       params.set("limit", String(PAGE));
       params.set("offset", String(pageParam ?? 0));
       params.set("type", type);
+      // OF orders server-side; asc = oldest-first. Sorting here (not a
+      // client reverse) keeps infinite-scroll appending in the right place.
+      params.set("sort", sort === "oldest" ? "asc" : "desc");
       if (listId != null) params.set("list_id", String(listId));
+      if (queryTrimmed) params.set("query", queryTrimmed);
       if (bypassServerCacheRef.current) {
         params.set("refresh", "1");
         bypassServerCacheRef.current = false;

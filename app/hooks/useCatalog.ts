@@ -60,6 +60,28 @@ export interface AiChatterConfig {
   max_fans_per_tick?: number;
   resume_after_manual_hours?: number;
   stall_ttl_hours?: number;
+
+  /** Cadence controller (items 10/17/18/21) — makes the bot back off deliberately
+   *  instead of chatting/selling forever. OFF by default (historical behavior). */
+  cadence_enabled?: boolean;
+  /** Per-signal reply caps within a burst (0 = unlimited). Sent as a COMPLETE
+   *  object — the server fills any missing tier from defaults. */
+  msg_limits_by_signal?: {
+    baseline?: number;
+    buying_signal?: number;
+    no_signal?: number;
+    pic_sent?: number;
+  };
+  /** Silence gap (min) that starts a fresh burst for the caps above. */
+  session_gap_minutes?: number;
+  /** Keep chatting a just-paid fan this long (min); past it with no new spend, hand off. */
+  post_purchase_minutes?: number;
+  /** A pending unbought offer older than this (min) drops to the short-leash tier. */
+  offer_expiry_minutes?: number;
+  /** One gentle re-engage nudge if an offered fan goes quiet without buying.
+   *  The only cadence piece that SENDS — OFF by default even when cadence is on. */
+  nudge_enabled?: boolean;
+  nudge_after_minutes?: number;
 }
 
 interface AiChatterConfigResponse {

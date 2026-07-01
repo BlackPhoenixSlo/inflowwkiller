@@ -27,6 +27,7 @@ import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useRosterCountActions } from "@/hooks/useRosterCounts";
 import { scheduledSendsKey } from "@/hooks/useServerScheduledSends";
 import type { OFChatItem, OFMessage } from "@/lib/relay";
 
@@ -170,10 +171,13 @@ export function useInboxRealtime() {
   const allowedRef = useRef(allowedAccountIds);
   allowedRef.current = allowedAccountIds;
 
-  // Last time we nudged the roster badge counts, so a mass-send burst doesn't
-  // fire one refetch per recipient. The counts query is cheap, but no need to
-  // hammer it.
-  const rosterNudgedAtRef = useRef(0);
+  // Targeted roster-badge refresh on every send/receive. Held in a ref so the
+  // subscription below stays mounted across principal changes (same pattern as
+  // allowedRef). `refreshOne` is per-account cooldown-guarded, so a mass-send
+  // burst to one model coalesces to a single OF re-read, not one per recipient.
+  const { refreshOne } = useRosterCountActions();
+  const refreshOneRef = useRef(refreshOne);
+  refreshOneRef.current = refreshOne;
 
   useEffect(() => {
     const offMsg = eventBus.on("api2_chat_message", (env: EventEnvelope) => {
@@ -190,13 +194,15 @@ export function useInboxRealtime() {
       if (allowed.size > 0 && !allowed.has(accountId)) return;
 
       // Roster badge counts (per-model unread / owe-reply) move on every inbound
-      // (adds unread) and outbound (clears the owe-reply we just answered). The
-      // badge is a 60s poll with no other live wiring, so a send/receive left it
-      // stale — nudge it. Throttled so a mass-send burst doesn't refetch per fan.
-      const nowMs = Date.now();
-      if (nowMs - rosterNudgedAtRef.current > 4000) {
-        rosterNudgedAtRef.current = nowMs;
-        void qc.invalidateQueries({ queryKey: ["roster-counts"] });
+      // (adds unread) and outbound (clears the owe-reply we just answered). Fire a
+      // TARGETED refresh for just this model — busts its 5-min server cache and
+      // re-reads only it — instead of a full-strip refetch. The 8s per-account
+      // cooldown absorbs a mass-send burst (all the same accountId) to one OF read.
+      // Gate strictly on the owned set: during cold start `allowedRef` is empty and
+      // the guard above lets events through for LIST patching, but a roster bust
+      // for a foreign/unknown account is wasted and could patch the pre-auth cache.
+      if (allowedRef.current.has(accountId)) {
+        void refreshOneRef.current(accountId);
       }
 
       // A scheduled send firing arrives as an outbound message. Drop its ghost

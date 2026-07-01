@@ -44,6 +44,9 @@ export interface PaidMessageRow {
   purchased_at: string | null;
   sent_by_employee_id: number | null;
   employee_name: string | null;
+  /** Denormalized "mass-<who>" attribution tag stamped on mass rows at send
+   *  time (e.g. "mass-kingsley1"). "" / null for non-mass or automation sends. */
+  sender_name?: string | null;
   /** Which automation sent this (of_ai_chat, welcome, send_mass_message, …).
    *  null = human send or a legacy pre-0032 row. */
   automation_kind?: string | null;

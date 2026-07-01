@@ -4268,11 +4268,14 @@ async def of_vault_media(
     type: str = Query("all", pattern="^(all|photo|video|gif|audio)$",
                       description="OF uses `type=`, not `filter=` — guessing wrong silently returns everything"),
     list_id: int | None = Query(None),
-    sort: str = Query("desc"),
+    sort: str = Query("desc", pattern="^(asc|desc)$",
+                      description="OF honors server-side sort; asc = oldest-first"),
     field: str = Query("recent"),
+    query: str | None = Query(None, description="OF-native vault search (wire param `query`)"),
     refresh: bool = Query(False, description="Bypass the shared server cache; forces a fresh OF fetch"),
 ):
-    """My vault items. Filter by media kind via `type=`.
+    """My vault items. Filter by media kind via `type=`, order via `sort=`
+    (asc/desc — OF honors both), full-text search via `query=`.
 
     Reads from the shared server-side cache (vault_response_cache) keyed
     on (account_id, query_key). All employees on the same OF account
@@ -4290,7 +4293,10 @@ async def of_vault_media(
         list_id is None or list_id not in allowed_folders
     ):
         return {"list": [], "hasMore": False}
-    key = f"media:type={type}|list={list_id}|offset={offset}|limit={limit}|sort={sort}|field={field}"
+    # `query` is part of the cache key so a search result can never be served
+    # for a different (or empty) query.
+    q_norm = (query or "").strip()
+    key = f"media:type={type}|list={list_id}|offset={offset}|limit={limit}|sort={sort}|field={field}|query={q_norm}"
     if not refresh:
         cached = await vault_cache.get(aid, key)
         if cached is not None:
@@ -4298,7 +4304,8 @@ async def of_vault_media(
     result = await asyncio.to_thread(
         _proxy,
         lambda: _get_client().vault_media(
-            limit=limit, offset=offset, type=type, list_id=list_id, sort=sort, field=field,
+            limit=limit, offset=offset, type=type, list_id=list_id,
+            sort=sort, field=field, query=q_norm or None,
         ),
     )
     await vault_cache.put(aid, key, result)
@@ -5602,9 +5609,21 @@ async def of_send_or_schedule_mass(
     # DB-sourced audience: merge "chatted in the last N hours" fan ids into the
     # explicit user_ids before anything else, so mass-run attribution + the OF
     # send both see the full recipient set.
-    if (body.recent_chat_hours or body.exclude_replied_hours
-            or body.exclude_inbound_hours or body.unread_limit):
-        from audiences import resolve_mass_audience
+    # R1/R2: also resolve whenever a funnel_id is present (even with no other
+    # audience knob) — else a plain funnel launch skips the resolver entirely and
+    # never dedups answerers (the composer used to gate only on recent/exclude/
+    # unread). exclude_funnel_responders drops fans who already answered THIS
+    # funnel; for explicit ids they leave user_ids, for OF-native list/online
+    # audiences they ride the Auto_Exclude list path below (excluded_users).
+    _skipped_answered: list[int] = []
+    _answered_total = 0
+    # Run UNCONDITIONALLY (not just when an audience knob is set): the resolver
+    # ALSO applies the always-on "Do Not Mass" exclude list + not-yet-fired
+    # queued-send dedup, so a plain composer blast still skips an excluded /
+    # already-queued fan. The client is only needed for the OF "Unread" lookup,
+    # so build it only when unread_limit is set.
+    if True:
+        from audiences import MASSDMEXCLUDE_LIST, MASSPPVEXCLUDE_LIST, resolve_mass_audience
         _aid = _resolve_account_id(request)
         resolved = await resolve_mass_audience(
             _aid,
@@ -5614,11 +5633,16 @@ async def of_send_or_schedule_mass(
             recent_chat_limit=body.recent_chat_limit,
             exclude_replied_hours=body.exclude_replied_hours,
             exclude_inbound_hours=body.exclude_inbound_hours,
+            exclude_funnel_responders=body.funnel_id,  # R1/R2 answered-once dedup
             unread_limit=body.unread_limit,
-            client=_get_client(),  # for the OF "Unread" inbox lookup
+            # Priced blast → PPV opt-out list; unpriced → DM opt-out list.
+            exclude_list_name=(MASSPPVEXCLUDE_LIST if (body.price or 0) > 0 else MASSDMEXCLUDE_LIST),
+            client=_get_client() if body.unread_limit else None,
         )
         body.user_ids = resolved["included_users"]
         body.excluded_users = resolved["excluded_users"]
+        _skipped_answered = resolved.get("skipped_funnel_responders") or []
+        _answered_total = int(resolved.get("funnel_responders_total") or 0)
     # Excluded ids must leave `user_ids` HERE too — of_client subtracts them
     # from the wire `userIds` (OF has no per-user exclude field), so if we left
     # them in `body.user_ids` the mass_runs recipient_count + the optimistic
@@ -5723,6 +5747,12 @@ async def of_send_or_schedule_mass(
                 result["_auto_unsend_job_id"] = job_id
     if mass_run_id is not None and isinstance(result, dict):
         result.setdefault("_mass_run_id", mass_run_id)
+    if isinstance(result, dict) and (_answered_total or _skipped_answered):
+        # R1/R2 surfacing: how many known answerers of this funnel were excluded
+        # from the send (total), and the precise ids removed from an explicit-id
+        # audience. The UI prints "N already answered — skipped".
+        result["_skipped_already_answered"] = _answered_total or len(_skipped_answered)
+        result["_skipped_already_answered_ids"] = _skipped_answered
     return result
 
 @app.delete("/api/of/v2/messages/queue/{queue_id}")
@@ -5741,6 +5771,11 @@ async def of_cancel_scheduled(request: Request, queue_id: int):
     try:
         account_id = _resolve_account_id(request)
         await cache.mark_canceled(account_id, queue_id)
+        # #R4: a manual mass unsend also closes funnel discovery for that run —
+        # stop enrolling NEW repliers off the deleted mass (the walker keeps
+        # advancing already-engaged fans until a purchase halts them).
+        from audiences import close_funnel_discovery_for_queue
+        await close_funnel_discovery_for_queue(account_id, queue_id=queue_id)
     except Exception as e:
         # Cache update is best-effort — the upstream cancel already
         # succeeded, the user shouldn't see a 500.
@@ -6182,7 +6217,7 @@ def wipe_fresh_browser_buckets() -> dict[str, Any]:
     so the bucket itself is disposable. This endpoint frees the disk and
     guarantees no leftover logged-in state is sitting around.
 
-    Untouched: account-id-bucketed dirs (e.g. `446300082/`) and the
+    Untouched: account-id-bucketed dirs (e.g. `123456789/`) and the
     legacy `unbound/` / proxy-label dirs (`hu-1`, `hu-3`, ...). Those are
     still re-usable for warmed-up re-captures.
     """
@@ -6301,7 +6336,9 @@ def _compute_roster_count_of(account_id: str) -> dict[str, int]:
 
 
 @app.get("/admin/accounts/roster-counts")
-async def admin_accounts_roster_counts(response: Response) -> dict[str, Any]:
+async def admin_accounts_roster_counts(
+    response: Response, bust: str | None = None
+) -> dict[str, Any]:
     """Per-model inbox badge counts for the left roster strip.
 
     Two colors, both straight from OF's live chat list (see
@@ -6319,7 +6356,16 @@ async def admin_accounts_roster_counts(response: Response) -> dict[str, Any]:
     cached 5 min in relay_cache and the models are scanned concurrently, so a 60s
     frontend poll almost always serves from cache and a cold miss costs one
     bounded burst of OF reads, not one per poll. A model that fails to read (no
-    session / OF hiccup) yields zero counts rather than failing the whole strip."""
+    session / OF hiccup) yields zero counts rather than failing the whole strip.
+
+    `?bust=<account_id>` force-recomputes ONE model (the just-swapped-to / just-read
+    one) so its badge is authoritative the instant the user touches it, instead of
+    up to the 5-min cache TTL stale. Only that account re-reads OF; every other
+    model still serves from cache, so a swap/hover costs the same one bounded burst
+    a cold miss would — not a full-strip rescan. The bust is scoped to the
+    principal's own accounts: an id outside `ids` is ignored (no cross-tenant cache
+    poisoning), and the path is unchanged so the chatter admin allow-list still
+    matches (chatters.py permits GET /admin/accounts/roster-counts)."""
     response.headers["Cache-Control"] = "no-store"
     user = _get_request_user()
     if user is not None:
@@ -6341,6 +6387,17 @@ async def admin_accounts_roster_counts(response: Response) -> dict[str, Any]:
         except Exception:  # noqa: BLE001 — one bad model must not blank the strip
             log.warning("roster-counts: OF read failed for %s", aid, exc_info=True)
             return aid, {"unread": 0, "owe_reply": 0}
+
+    # Targeted force-refresh: drop + recompute JUST this model and return only it.
+    # The frontend merges the single entry into its cached map, so a swap / hover /
+    # read costs exactly ONE bounded OF read — not a full-strip rescan, which the
+    # gather would trigger for any *other* model whose cache is cold/expired. Gated
+    # on ownership (a crafted `bust` can't evict another tenant's entry); an id the
+    # principal doesn't own falls through to the normal full-map path.
+    if bust and bust in ids:
+        relay_cache.invalidate("roster_count", bust)
+        _, value = await _one(bust)
+        return {"counts": {bust: value}}
 
     pairs = await asyncio.gather(*[_one(a) for a in ids])
     return {"counts": {aid: c for aid, c in pairs}}

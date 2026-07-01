@@ -525,6 +525,12 @@ function ReadyMadeRuleEditor({
   });
   const [composerOpen, setComposerOpen] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Raw-JSON escape hatch (mirrors RuleEditor): hand-edit / paste the whole
+  // `{posts|messages:[…]}` payload directly — the composer forces you to PICK
+  // every media id, so this is the only way to paste a big media_files pool or
+  // tweak a field the form doesn't expose. `dry_run` stays owned by the toggle.
+  const [rawMode, setRawMode] = useState(false);
+  const [rawText, setRawText] = useState("");
 
   const everySeconds = Math.round(intervalValue * UNIT_S[intervalUnit]);
   const busy = createM.isPending || updateM.isPending;
@@ -538,17 +544,69 @@ function ReadyMadeRuleEditor({
     headerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
 
+  /** The composed payload from whichever mode is active — raw text is parsed and
+   *  required to be an object; `dry_run` is stripped (the toggle re-merges it on
+   *  save). Throws with a clear message on bad JSON. */
+  function currentComposed(): Record<string, unknown> {
+    if (!rawMode) return composed;
+    const t = rawText.trim();
+    if (!t) return {};
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(t);
+    } catch (e) {
+      throw new Error(`Payload is not valid JSON: ${(e as Error).message}`);
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error(
+        `Payload must be a JSON object, e.g. { "${kind === "auto_posts" ? "posts" : "messages"}": [ … ] }`,
+      );
+    }
+    const p = { ...(parsed as Record<string, unknown>) };
+    delete p.dry_run; // owned by the Dry-run toggle; re-merged on save
+    return p;
+  }
+
+  /** Enter raw mode: seed the textarea from the current composed payload. */
+  function enterRaw() {
+    setRawText(JSON.stringify(composed, null, 2));
+    setErr(null);
+    setRawMode(true);
+  }
+  /** Leave raw mode: parse the textarea back into `composed` (keeps the two
+   *  views in sync so "Re-compose" opens pre-filled with the hand edits). */
+  function exitRaw() {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = currentComposed();
+    } catch (e) {
+      setErr((e as Error).message);
+      return;
+    }
+    setComposed(parsed);
+    setRawMode(false);
+    setErr(null);
+  }
+
   async function save() {
     setErr(null);
     if (everySeconds < 30) {
       setErr("Interval must be at least 30 seconds.");
       return;
     }
-    if (!summary) {
+    let base: Record<string, unknown>;
+    try {
+      base = currentComposed();
+    } catch (e) {
+      setErr((e as Error).message);
+      return;
+    }
+    const arr = kind === "auto_posts" ? base.posts : base.messages;
+    if (!Array.isArray(arr) || arr.length === 0) {
       setErr(`Compose at least one ${kind === "auto_posts" ? "post" : "message"} first.`);
       return;
     }
-    const payload: Record<string, unknown> = { ...composed };
+    const payload: Record<string, unknown> = { ...base };
     if (dryRun) payload.dry_run = true;
     try {
       if (isEdit && editing) {
@@ -644,27 +702,68 @@ function ReadyMadeRuleEditor({
         </label>
       </div>
 
-      {/* Compose the payload with the rich PremadeForm (return-payload mode). */}
+      {/* Compose the payload with the rich PremadeForm (return-payload mode), or
+       *  hand-edit the raw JSON directly (paste a big media_files pool, tweak a
+       *  field the form doesn't expose). Same escape hatch RuleEditor has. */}
       <div className="rounded-lg border border-border bg-bg-elev-1 p-3 space-y-2">
-        <div className="text-[11px] text-fg-dim">
-          {summary ?? `No content yet — build this ${kind === "auto_posts" ? "feed" : "broadcast"} with the composer.`}
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] uppercase tracking-wide text-fg-dim">
+            {kind === "auto_posts" ? "Posts" : "Messages"}
+          </span>
+          <button
+            type="button"
+            onClick={() => (rawMode ? exitRaw() : enterRaw())}
+            className="text-[11px] text-accent hover:underline"
+          >
+            {rawMode ? "← Composer" : "Edit raw JSON →"}
+          </button>
         </div>
-        <Button
-          size="sm"
-          variant={summary ? "secondary" : "primary"}
-          onClick={() => setComposerOpen(true)}
-        >
-          {summary ? "Re-compose" : "Compose…"}
-        </Button>
-        {summary && (
-          <details className="pt-1">
-            <summary className="text-[11px] text-accent cursor-pointer select-none">
-              View JSON
-            </summary>
-            <pre className="mt-1 text-[11px] font-mono text-fg-dim bg-bg border border-border rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-words max-h-64 overflow-y-auto">
-              {JSON.stringify(composed, null, 2)}
-            </pre>
-          </details>
+
+        {rawMode ? (
+          <>
+            <textarea
+              value={rawText}
+              onChange={(e) => {
+                setRawText(e.target.value);
+                if (err) setErr(null);
+              }}
+              rows={12}
+              spellCheck={false}
+              className="w-full rounded-lg bg-bg border border-border text-[11px] font-mono px-2 py-1.5 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
+              placeholder={`{ "${kind === "auto_posts" ? "posts" : "messages"}": [ … ] }`}
+            />
+            <div className="text-[10px] text-fg-dim leading-relaxed">
+              Edit the whole <code className="text-accent">
+                {kind === "auto_posts" ? "{ posts: [ … ] }" : "{ messages: [ … ] }"}
+              </code>{" "}
+              payload by hand — e.g. paste a <code className="text-accent">media_files</code> list
+              and set <code className="text-accent">media_count</code>. The Dry-run toggle above
+              owns <code className="text-accent">dry_run</code>, so leave it out here.
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="text-[11px] text-fg-dim">
+              {summary ?? `No content yet — build this ${kind === "auto_posts" ? "feed" : "broadcast"} with the composer.`}
+            </div>
+            <Button
+              size="sm"
+              variant={summary ? "secondary" : "primary"}
+              onClick={() => setComposerOpen(true)}
+            >
+              {summary ? "Re-compose" : "Compose…"}
+            </Button>
+            {summary && (
+              <details className="pt-1">
+                <summary className="text-[11px] text-accent cursor-pointer select-none">
+                  View JSON
+                </summary>
+                <pre className="mt-1 text-[11px] font-mono text-fg-dim bg-bg border border-border rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-words max-h-64 overflow-y-auto">
+                  {JSON.stringify(composed, null, 2)}
+                </pre>
+              </details>
+            )}
+          </>
         )}
       </div>
 

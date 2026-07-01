@@ -22,7 +22,9 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay, type OFChatItem } from "@/lib/relay";
-import { useOFUser, type OFListState } from "@/hooks/useOFUser";
+import { useOFUser } from "@/hooks/useOFUser";
+import { useMassExclude } from "@/hooks/useMassExclude";
+import { useAllChatFolders, type ChatFolder } from "@/hooks/useChatFolders";
 
 interface Props {
   accountId: string;
@@ -100,15 +102,10 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
     onError: (e: Error) => flash(false, e.message),
   });
 
-  const hide = useMutation({
-    mutationFn: () =>
-      relay.post(`/api/of/v2/chats/${fanId}/hide`, undefined, { accountId }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["chats"] });
-      flash(true, "Chat hidden");
-    },
-    onError: (e: Error) => flash(false, e.message),
-  });
+  // NOTE: the OF "Hide chat" action was removed from this menu (#9) — hiding a
+  // chat on OF is not durable (the thread reappears on the next inbound), so the
+  // button just confused operators. The relay endpoint (POST/DELETE
+  // /api/of/v2/chats/{id}/hide) is left in place but is now unused from the UI.
 
   // "Restrict from automations" — a durable skip_list row in OUR DB (not OF), so
   // NO automation (welcome / AI chat / nudge / tip reward / …) ever messages this
@@ -142,6 +139,17 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
     onError: (e: Error) => flash(false, e.message),
   });
 
+  // Mass-exclude toggles: per-fan opt-out from mass PPV (MASSppvEXCLUDE) and/or
+  // mass DM (MASSdmEXCLUDE) — two separate system lists so a fan can skip one
+  // kind of broadcast without the other. PPV gates PRICED mass sends (mass PPV /
+  // premade PPV); DM gates UNPRICED ones (mass DM / online blast / nudge). Each
+  // mirrors a local kind='exclude' List to a same-named pinned OF list. Leaves
+  // welcomes, AI replies and manual 1:1s intact — narrower than "Restrict from
+  // automations" above. account_id + fan_id + kind ride the query string (the
+  // /admin/do-not-mass handler reads them via Query, not the header).
+  const ppvExclude = useMassExclude(accountId, fanId, "ppv");
+  const dmExclude = useMassExclude(accountId, fanId, "dm");
+
   // ── Native OnlyFans restrict — DISTINCT from "Restrict from automations"
   // above. That one is an internal skip_list (only stops OUR automations);
   // this is OF's own shadow-restrict: the fan can still type, but OF stops
@@ -149,6 +157,9 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
   // →false). The live state comes off the OF user object — the same query
   // backs the "Add to list" submenu + the drawer, so React Query dedupes it.
   const ofUser = useOFUser(accountId, fanId);
+  // Warm the account's custom-list cache now so the "Add to list" submenu opens
+  // instantly (shared query key with the submenu; 60s cached).
+  useAllChatFolders(accountId);
   const isRestricted = !!ofUser.data?.isRestricted;
   const canRestrict = !!ofUser.data?.canRestrict;
 
@@ -188,12 +199,6 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
             onClick={() => toggleMute.mutate()}
             icon={muted ? "🔔" : "🔕"}
           />
-          <Item
-            label="Hide chat"
-            disabled={hide.isPending}
-            onClick={() => hide.mutate()}
-            icon="🚫"
-          />
           {autoMuted ? (
             <Item
               label="Auto-restricted (chat muted)"
@@ -209,6 +214,34 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
               icon={manualRestricted ? "▶" : "⛔"}
             />
           )}
+          <Item
+            label={ppvExclude.isOn ? "Remove from MASSppvEXCLUDE" : "Add to MASSppvEXCLUDE"}
+            disabled={ppvExclude.toggle.isPending || ppvExclude.isLoading}
+            onClick={() =>
+              ppvExclude.toggle.mutate(!ppvExclude.isOn, {
+                onSuccess: (data, next) =>
+                  flash(true,
+                    (next ? "Added to MASSppvEXCLUDE" : "Mass PPVs allowed") +
+                    (data?.of_synced === false ? " (OF sync pending)" : "")),
+                onError: (e: Error) => flash(false, e.message),
+              })
+            }
+            icon={ppvExclude.isOn ? "✅" : "🚫"}
+          />
+          <Item
+            label={dmExclude.isOn ? "Remove from MASSdmEXCLUDE" : "Add to MASSdmEXCLUDE"}
+            disabled={dmExclude.toggle.isPending || dmExclude.isLoading}
+            onClick={() =>
+              dmExclude.toggle.mutate(!dmExclude.isOn, {
+                onSuccess: (data, next) =>
+                  flash(true,
+                    (next ? "Added to MASSdmEXCLUDE" : "Mass DMs allowed") +
+                    (data?.of_synced === false ? " (OF sync pending)" : "")),
+                onError: (e: Error) => flash(false, e.message),
+              })
+            }
+            icon={dmExclude.isOn ? "✅" : "🚫"}
+          />
           {(isRestricted || canRestrict) && (
             <Item
               label={isRestricted ? "Lift OnlyFans restrict" : "Restrict on OnlyFans"}
@@ -262,11 +295,6 @@ function Item({
   );
 }
 
-/** Lists you can never modify — even if hasUser is true. We still show
- *  them as ✓ chips (so the user knows the membership) but disable the
- *  toggle button. `recent` and `tagged` are OF-system-managed entirely. */
-const SYSTEM_LOCKED = new Set(["fans", "following", "recent", "tagged", "rebill_on", "rebill_off"]);
-
 function ToggleListsSubmenu({
   accountId, fanId, onFlash, onBack,
 }: {
@@ -276,25 +304,29 @@ function ToggleListsSubmenu({
   onBack: () => void;
 }) {
   const qc = useQueryClient();
-  const ofUser = useOFUser(accountId, fanId);
-  // Track in-flight list ids so we can disable just the row being toggled,
-  // not the whole submenu.
+  // The lists an operator can add/remove a fan to come from /chats/folders
+  // (custom + close-friends lists, canAddUsers=true) — NOT the OF /users
+  // listsStates, which only returns SYSTEM buckets (fans/following/…) with
+  // canAddUser=false. Reading listsStates is why this menu used to say "No
+  // lists you can modify" even on accounts with dozens of custom lists.
+  const foldersQ = useAllChatFolders(accountId);
+  // In-flight list ids so we disable just the row being toggled.
   const [busy, setBusy] = useState<Set<string>>(new Set());
+  // Optimistic membership overrides — OF's users[] preview is capped so we
+  // can't always know membership up front; flip it locally on click.
+  const [override, setOverride] = useState<Map<string, boolean>>(new Map());
 
-  // OF returns membership inline in /users/{id}.listsStates. We mirror it
-  // into local state so each click flips the visible ✓ instantly; the
-  // real source of truth gets refreshed on the next of-user refetch.
-  const [local, setLocal] = useState<Map<string, boolean> | null>(null);
-  useEffect(() => {
-    const states = ofUser.data?.listsStates ?? [];
-    const m = new Map<string, boolean>();
-    for (const s of states) m.set(String(s.id), !!s.hasUser);
-    setLocal(m);
-  }, [ofUser.data]);
+  const lists = (foldersQ.data ?? []).filter((f) => f.canAddUsers);
 
-  async function toggle(s: OFListState) {
-    const idStr = String(s.id);
-    const currentlyIn = local?.get(idStr) ?? !!s.hasUser;
+  function isMember(f: ChatFolder): boolean {
+    const idStr = String(f.id);
+    if (override.has(idStr)) return !!override.get(idStr);
+    return (f.users ?? []).some((u) => Number(u.id) === fanId);
+  }
+
+  async function toggle(f: ChatFolder) {
+    const idStr = String(f.id);
+    const currentlyIn = isMember(f);
     setBusy((prev) => new Set(prev).add(idStr));
     try {
       if (currentlyIn) {
@@ -302,24 +334,22 @@ function ToggleListsSubmenu({
           `/api/of/v2/lists/${encodeURIComponent(idStr)}/users/${fanId}`,
           { accountId },
         );
-        onFlash(`Removed from "${s.name || idStr}"`, true);
+        onFlash(`Removed from "${f.name || idStr}"`, true);
       } else {
         await relay.post(
           `/api/of/v2/lists/${encodeURIComponent(idStr)}/users/${fanId}`,
           undefined,
           { accountId },
         );
-        onFlash(`Added to "${s.name || idStr}"`, true);
+        onFlash(`Added to "${f.name || idStr}"`, true);
       }
-      setLocal((prev) => {
-        const next = new Map(prev ?? []);
-        next.set(idStr, !currentlyIn);
-        return next;
-      });
-      // Background refresh so the next open sees authoritative server state.
-      qc.invalidateQueries({ queryKey: ["of-user", accountId, fanId] });
+      setOverride((prev) => new Map(prev).set(idStr, !currentlyIn));
+      // Membership changed → refresh the folder chips/counts + roster so the
+      // VIP/list view reflects it immediately.
+      qc.invalidateQueries({ queryKey: ["chat-folders", accountId] });
+      qc.invalidateQueries({ queryKey: ["chats"] });
     } catch (e) {
-      onFlash((e as Error).message || "Toggle failed", false);
+      onFlash((e as Error).message || "Couldn't update that list", false);
     } finally {
       setBusy((prev) => {
         const next = new Set(prev);
@@ -328,14 +358,6 @@ function ToggleListsSubmenu({
       });
     }
   }
-
-  const visible = (ofUser.data?.listsStates ?? []).filter((s) => {
-    // Show: any list the fan is already in (so removal is possible) OR
-    // any list the user can add to. Skip "recent"/"tagged" which OF
-    // updates implicitly — keeping them would be confusing.
-    if (s.type === "recent" || s.type === "tagged") return false;
-    return s.hasUser || s.canAddUser;
-  });
 
   return (
     <div className="max-h-[280px] overflow-y-auto">
@@ -346,45 +368,44 @@ function ToggleListsSubmenu({
       >
         ← Back
       </button>
-      {ofUser.isLoading && (
+      {foldersQ.isLoading && (
         <div className="px-3 py-2 text-[11px] text-fg-dim">Loading lists…</div>
       )}
-      {ofUser.isError && (
+      {foldersQ.isError && (
         <div className="px-3 py-2 text-[11px] text-err">
-          {(ofUser.error as Error)?.message || "Failed to load lists"}
+          {(foldersQ.error as Error)?.message || "Failed to load lists"}
         </div>
       )}
-      {!ofUser.isLoading && visible.length === 0 && (
+      {!foldersQ.isLoading && !foldersQ.isError && lists.length === 0 && (
         <div className="px-3 py-2 text-[11px] text-fg-dim">
-          No lists you can modify. Create one on OF first.
+          No custom lists on this account yet. Create one on OF first.
         </div>
       )}
-      {visible.map((s) => {
-        const idStr = String(s.id);
-        const inList = local?.get(idStr) ?? !!s.hasUser;
-        const locked = SYSTEM_LOCKED.has(s.type) && !s.canAddUser;
+      {lists.map((f) => {
+        const idStr = String(f.id);
+        const inList = isMember(f);
         const inflight = busy.has(idStr);
         return (
           <button
             key={idStr}
             type="button"
-            disabled={inflight || locked}
-            onClick={() => toggle(s)}
+            disabled={inflight}
+            onClick={() => toggle(f)}
             className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-fg hover:bg-bg-elev-1 disabled:opacity-60 disabled:hover:bg-transparent"
-            title={locked ? "System-managed, can't be modified" : (inList ? "Remove" : "Add")}
+            title={inList ? "Remove from list" : "Add to list"}
           >
             <span
               className={
                 "w-4 h-4 rounded border grid place-items-center text-[10px] shrink-0 " +
-                (inList
-                  ? "bg-accent border-accent text-white"
-                  : "border-border bg-bg")
+                (inList ? "bg-accent border-accent text-white" : "border-border bg-bg")
               }
             >
               {inList ? "✓" : ""}
             </span>
-            <span className="flex-1 truncate">{s.name || `list ${idStr}`}</span>
-            {locked && <span className="text-[9px] text-fg-dim">system</span>}
+            <span className="flex-1 truncate">{f.name || `list ${idStr}`}</span>
+            {typeof f.usersCount === "number" && (
+              <span className="text-[9px] text-fg-dim">{f.usersCount}</span>
+            )}
             {inflight && <span className="text-[9px] text-fg-dim">…</span>}
           </button>
         );

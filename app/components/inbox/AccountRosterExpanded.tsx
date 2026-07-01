@@ -23,16 +23,21 @@ interface AccountRosterExpandedProps {
   counts: Record<string, RosterCount>;
   allCount: RosterCount;
   onPick: (accountId: string) => void;
+  onHover?: (accountId: string) => void;
+  onHoverEnd?: () => void;
   onPickAll: () => void;
+  onHoverAll?: () => void;
   allActive: boolean;
 }
 
 export function AccountRosterExpanded({
-  accounts, activeAccountId, isIncluded, counts, allCount, onPick, onPickAll, allActive,
+  accounts, activeAccountId, isIncluded, counts, allCount, onPick, onHover, onHoverEnd, onPickAll, onHoverAll, allActive,
 }: AccountRosterExpandedProps) {
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
-      {allActive && <AllModelsBlock active onPick={onPickAll} count={allCount} />}
+      {allActive && (
+        <AllModelsBlock active onPick={onPickAll} onHover={onHoverAll} onHoverEnd={onHoverEnd} count={allCount} />
+      )}
       {accounts.map((a) => (
         <AccountBlock
           key={a.id}
@@ -41,20 +46,34 @@ export function AccountRosterExpanded({
           included={isIncluded(a.id)}
           count={counts[a.id]}
           onPick={() => onPick(a.id)}
+          onHover={onHover ? () => onHover(a.id) : undefined}
+          onHoverEnd={onHoverEnd}
         />
       ))}
-      {!allActive && <AllModelsBlock active={false} onPick={onPickAll} count={allCount} />}
+      {!allActive && (
+        <AllModelsBlock active={false} onPick={onPickAll} onHover={onHoverAll} onHoverEnd={onHoverEnd} count={allCount} />
+      )}
     </div>
   );
 }
 
 function AllModelsBlock({
-  active, onPick, count,
-}: { active: boolean; onPick: () => void; count?: RosterCount | null }) {
+  active, onPick, onHover, onHoverEnd, count,
+}: {
+  active: boolean;
+  onPick: () => void;
+  onHover?: () => void;
+  onHoverEnd?: () => void;
+  count?: RosterCount | null;
+}) {
   return (
     <button
       type="button"
       onClick={onPick}
+      onMouseEnter={onHover}
+      onMouseLeave={onHoverEnd}
+      onFocus={onHover}
+      onBlur={onHoverEnd}
       className={cn(
         "w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-bg-elev-1",
         "border-b border-border/40",
@@ -71,13 +90,15 @@ function AllModelsBlock({
 }
 
 function AccountBlock({
-  account, active, included, count, onPick,
+  account, active, included, count, onPick, onHover, onHoverEnd,
 }: {
   account: AccountMeta;
   active: boolean;
   included: boolean;
   count?: RosterCount | null;
   onPick: () => void;
+  onHover?: () => void;
+  onHoverEnd?: () => void;
 }) {
   const avatarQ = useAccountAvatar(account.id);
   const profileName = avatarQ.data?.name || avatarQ.data?.username || null;
@@ -87,6 +108,10 @@ function AccountBlock({
     <button
       type="button"
       onClick={onPick}
+      onMouseEnter={onHover}
+      onMouseLeave={onHoverEnd}
+      onFocus={onHover}
+      onBlur={onHoverEnd}
       className={cn(
         "w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-bg-elev-1",
         "border-b border-border/40",

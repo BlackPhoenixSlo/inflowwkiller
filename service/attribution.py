@@ -137,6 +137,49 @@ async def _manual_yield_seconds(account_id: str) -> int:
 _MASS_PLACEHOLDER_BASE = 5_000_000_000_000_000
 
 
+def _slug_sender(display_name: str) -> str:
+    """`"Kingsley 1"` → `"kingsley1"`. Lowercase + strip whitespace so the tag
+    reads like the operator's shorthand ("mass-kingsley1") rather than a
+    spaced/cased display name. Empty in → empty out."""
+    return re.sub(r"\s+", "", (display_name or "").strip().lower())
+
+
+async def mass_sender_tag(sent_by_employee_id: int | None) -> str:
+    """Visible attribution token for a MASS row's `sender_name` — e.g.
+    ``"mass-kingsley1"`` for the human who fired the broadcast. Denormalized on
+    the message row itself so the tag survives an employee delete and shows in
+    raw exports, independent of the `Employee` join the Messages tab does.
+
+    Returns "" (no tag) when:
+      • no employee id (degraded chatter resolution), or
+      • the id is the system Automation sentinel — an automation-fired mass
+        already labels itself via `automation_kind`, so "mass-automation" would
+        be noise.
+
+    Best-effort: any lookup failure returns "" — a missing tag must never break
+    the (already-succeeded) send's attribution write.
+    """
+    if sent_by_employee_id is None:
+        return ""
+    try:
+        from employees import get_automation_employee_id
+        try:
+            auto_id = await get_automation_employee_id()
+        except Exception:
+            auto_id = None
+        if auto_id is not None and int(sent_by_employee_id) == int(auto_id):
+            return ""
+        from db.models import Employee
+        async with get_session() as s:
+            emp = await s.get(Employee, int(sent_by_employee_id))
+        slug = _slug_sender(emp.display_name) if emp is not None else ""
+        return f"mass-{slug}" if slug else ""
+    except Exception:
+        log.debug("mass_sender_tag resolve failed (emp=%s)",
+                  sent_by_employee_id, exc_info=True)
+        return ""
+
+
 def mass_placeholder_message_id(mass_run_id: int) -> int:
     """Collision-proof synthetic `message_id` for an un-reconciled mass
     placeholder row.
@@ -234,6 +277,12 @@ async def write_outbound_attribution(
                     exc_info=True,
                 )
 
+    # MASS row → stamp the visible sender tag ("mass-kingsley1"). A per-chat 1:1
+    # send (mass_run_id None) stays untagged — the Messages tab surfaces those
+    # via the Employee join. Resolved AFTER the sent_by fallback above so an
+    # automation-fired broadcast (Automation sentinel) correctly yields no tag.
+    mass_tag = await mass_sender_tag(sent_by_employee_id) if mass_run_id is not None else ""
+
     try:
         async with get_session() as s:
             stmt = sqlite_insert(Message).values(
@@ -241,7 +290,7 @@ async def write_outbound_attribution(
                 fan_id=int(fan_id),
                 message_id=int(message_id),
                 direction="out",
-                sender_name="",
+                sender_name=mass_tag,
                 body=body,
                 media_ids="[]",
                 media_count=0,
@@ -361,6 +410,10 @@ async def write_mass_optimistic_rows(
     # NULL = no PPV; False = PPV not yet purchased. Mirrors the per-chat
     # outbound writer above so the PPV/All-Messages tabs read consistently.
     is_paid = False if (price_cents or 0) > 0 else None
+    # Visible "who fired this broadcast" tag (e.g. "mass-kingsley1"); "" for an
+    # automation-fired mass (its automation_kind already labels it). Resolved
+    # once — one employee per broadcast.
+    sender_tag = await mass_sender_tag(sent_by_employee_id)
 
     seen: set[int] = set()
     rows: list[dict] = []
@@ -377,7 +430,7 @@ async def write_mass_optimistic_rows(
             "fan_id": fid,
             "message_id": placeholder_id,
             "direction": "out",
-            "sender_name": "",
+            "sender_name": sender_tag,
             "body": body,
             "media_ids": "[]",
             "media_count": 0,

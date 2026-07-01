@@ -17,12 +17,18 @@
  * swap renders in one tick — no awaiting, no fetch, no SSE handshake.
  */
 
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, ChevronLeft } from "lucide-react";
 
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
-import { useRosterCounts, type RosterCount } from "@/hooks/useRosterCounts";
+import { prefetchModelChatList } from "@/hooks/useChatList";
+import {
+  useRosterCounts,
+  useRosterCountActions,
+  type RosterCount,
+} from "@/hooks/useRosterCounts";
 import { useScope } from "@/contexts/ScopeContext";
 import { cn } from "@/lib/utils";
 import type { AccountMeta } from "@/lib/relay";
@@ -49,6 +55,49 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
   const { scope, setScope } = useScope();
   const { isIncluded } = useAllModelsInclude();
   const counts = useRosterCounts();
+  const { refreshOne } = useRosterCountActions();
+  const qc = useQueryClient();
+
+  // Prewarm a model the instant it's touched: force its unread badge fresh from
+  // OF (bust the 5-min server cache) AND prefetch its chat list, so a swap paints
+  // authoritative + spinner-free instead of waiting on the 60s poll. `refreshOne`
+  // is per-account cooldown-guarded, so hover→click doesn't double-read OF.
+  const warm = useCallback(
+    (accountId: string) => {
+      void refreshOne(accountId);
+      void prefetchModelChatList(qc, accountId);
+    },
+    [refreshOne, qc],
+  );
+
+  // Hover intent: only warm after the pointer settles (250ms) so sweeping the
+  // mouse down the strip doesn't fire a live OF read per icon it crosses.
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearHover = useCallback(() => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  }, []);
+  const onHoverModel = useCallback(
+    (accountId: string) => {
+      clearHover();
+      hoverTimerRef.current = setTimeout(() => warm(accountId), 250);
+    },
+    [clearHover, warm],
+  );
+  useEffect(() => clearHover, [clearHover]);
+
+  // Swap: reorder is client-side/instant; also warm so the just-picked model's
+  // badge + list are fresh. Cooldown means a prior hover already covered it.
+  const onPickModel = useCallback(
+    (accountId: string) => {
+      clearHover();
+      setScope({ kind: "model", accountId });
+      warm(accountId);
+    },
+    [clearHover, setScope, warm],
+  );
 
   // Active first, rest by last_used_at desc. Excluded models (unchecked
   // in the All-Models aggregate via ScopeSwitcher) are hidden — unconditionally,
@@ -79,6 +128,25 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
       { unread: 0, owe_reply: 0 },
     );
   }, [ordered, counts]);
+
+  // The "all models" aggregate badge is the SUM of the per-model counts, so it's
+  // only as fresh as those are — and clicking it just switches scope, nothing
+  // refreshes the underlying models. Refresh EVERY visible model so the sum goes
+  // fresh. Each refreshOne is per-account cooldown-guarded, so this can't storm OF
+  // on repeated clicks (and a model just refreshed via its own icon is skipped).
+  // Defined AFTER `ordered` so the dep isn't read in its temporal dead zone.
+  const warmAll = useCallback(() => {
+    for (const a of ordered) void refreshOne(a.id);
+  }, [ordered, refreshOne]);
+  const onPickAll = useCallback(() => {
+    clearHover();
+    setScope({ kind: "all" });
+    warmAll();
+  }, [clearHover, setScope, warmAll]);
+  const onHoverAll = useCallback(() => {
+    clearHover();
+    hoverTimerRef.current = setTimeout(() => warmAll(), 250);
+  }, [clearHover, warmAll]);
 
   if (accounts.length === 0) {
     // No session-bearing accounts → no strip. Inbox still renders its
@@ -121,8 +189,11 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
           isIncluded={isIncluded}
           counts={counts}
           allCount={allCount}
-          onPick={(accountId) => setScope({ kind: "model", accountId })}
-          onPickAll={() => setScope({ kind: "all" })}
+          onPick={onPickModel}
+          onHover={onHoverModel}
+          onHoverEnd={clearHover}
+          onPickAll={onPickAll}
+          onHoverAll={onHoverAll}
           allActive={scope.kind === "all"}
         />
       ) : (
@@ -131,7 +202,9 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
             <AllModelsRosterIcon
               active
               count={allCount}
-              onClick={() => setScope({ kind: "all" })}
+              onClick={onPickAll}
+              onHover={onHoverAll}
+              onHoverEnd={clearHover}
             />
           )}
           {ordered.map((a) => {
@@ -142,7 +215,9 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
                 account={a}
                 active={active}
                 count={counts[a.id]}
-                onClick={() => setScope({ kind: "model", accountId: a.id })}
+                onClick={() => onPickModel(a.id)}
+                onHover={() => onHoverModel(a.id)}
+                onHoverEnd={clearHover}
               />
             );
           })}
@@ -150,7 +225,9 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
             <AllModelsRosterIcon
               active={false}
               count={allCount}
-              onClick={() => setScope({ kind: "all" })}
+              onClick={onPickAll}
+              onHover={onHoverAll}
+              onHoverEnd={clearHover}
             />
           )}
         </div>

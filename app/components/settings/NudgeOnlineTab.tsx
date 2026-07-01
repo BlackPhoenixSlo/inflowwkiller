@@ -20,6 +20,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Radio, Play, Rocket, Eye, ChevronDown, Plus, X, Image as ImageIcon } from "lucide-react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
+import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -239,7 +240,7 @@ export default function NudgeOnlineTab() {
 
   return (
     <div className="space-y-5 max-w-2xl">
-      <header className="flex items-center gap-2">
+      <header className="flex items-start gap-2">
         <Radio className="size-5 text-accent" />
         <div>
           <h2 className="text-lg font-semibold">Nudge online</h2>
@@ -248,6 +249,9 @@ export default function NudgeOnlineTab() {
             time-of-day tease (or a question from their profile). Runs in the
             background; it never pauses AI chat.
           </p>
+        </div>
+        <div className="ml-auto shrink-0">
+          <EditRawJsonButton surface="nudge-config" accountId={accountId} />
         </div>
       </header>
 

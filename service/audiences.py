@@ -7,6 +7,7 @@ DB-first: no OF call needed — we already have every message in `messages`.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
@@ -15,7 +16,10 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
-from db.models import Blacklist, Fan, Message, NudgeState
+from db.models import (
+    Blacklist, Fan, FunnelResponder, FunnelState, List as ListModel, ListMember,
+    MassRun, Message, NudgeState, ScheduledJob,
+)
 
 log = logging.getLogger("of-relay.audiences")
 
@@ -101,11 +105,31 @@ def resolve_window_hours(value, default: float) -> float:
         return float(default)
 
 
+async def _recent_nudged_ids(account_id: str, hours: float) -> set[int]:
+    """Fan ids stamped in `NudgeState.last_nudged_at` within `hours` — the
+    proactive-touch ledger mass_nudge / nudge_online / online_blast write
+    INSTEAD of a `messages` row. Naive-UTC cutoff to match the stored stamps.
+    `hours` None/0 → empty."""
+    if not hours or hours <= 0:
+        return set()
+    cutoff = datetime.utcnow() - timedelta(hours=float(hours))
+    async with get_session() as s:
+        nudged = (await s.execute(
+            select(NudgeState.fan_id).where(
+                NudgeState.account_id == str(account_id),
+                NudgeState.last_nudged_at.is_not(None),
+                NudgeState.last_nudged_at >= cutoff,
+            )
+        )).scalars().all()
+    return {int(n) for n in nudged}
+
+
 async def contact_guard_excludes(
     account_id: str,
     *,
     outbound_hours: float | None = None,
     inbound_hours: float | None = None,
+    either_hours: float | None = None,
     extra_ids: Iterable[int] | None = None,
 ) -> set[int]:
     """Fan ids a PROACTIVE touch must skip — the cross-automation contact guard.
@@ -119,6 +143,10 @@ async def contact_guard_excludes(
         online_blast stamps its online snapshot here too
         (`stamp_broadcast_touch` — OF echoes no per-fan ids for a list send),
       • `messages` inbound within `inbound_hours` — active repliers,
+      • `messages` in EITHER direction within `either_hours` — "last chatted"
+        (the send-side `exclude_last_chat_hours`): a fan we OR they messaged
+        recently, so a still-warm two-way chat isn't interrupted by a blast.
+        Also folds in the nudge ledger (a nudge is an outbound contact),
       • any `extra_ids` (explicit excludes, exclude-list members, …).
 
     Bots/blacklisted are NOT filtered out here — this builds an EXCLUDE set,
@@ -132,23 +160,181 @@ async def contact_guard_excludes(
             account_id, hours=float(outbound_hours), direction="out",
             exclude_bots=False, exclude_blacklisted=False,
         ))
-        # Nudge ledger: naive-UTC cutoff to match the stored stamps.
-        cutoff = datetime.utcnow() - timedelta(hours=float(outbound_hours))
-        async with get_session() as s:
-            nudged = (await s.execute(
-                select(NudgeState.fan_id).where(
-                    NudgeState.account_id == str(account_id),
-                    NudgeState.last_nudged_at.is_not(None),
-                    NudgeState.last_nudged_at >= cutoff,
-                )
-            )).scalars().all()
-        out |= {int(n) for n in nudged}
+        out |= await _recent_nudged_ids(account_id, float(outbound_hours))
     if inbound_hours and inbound_hours > 0:
         out |= set(await recent_chat_fan_ids(
             account_id, hours=float(inbound_hours), direction="in",
             exclude_bots=False, exclude_blacklisted=False,
         ))
+    if either_hours and either_hours > 0:
+        # BOTH directions — the inbound guard above only drops fans who messaged
+        # US; a warm two-way chat needs the outbound side too.
+        out |= set(await recent_chat_fan_ids(
+            account_id, hours=float(either_hours), direction=None,
+            exclude_bots=False, exclude_blacklisted=False,
+        ))
+        out |= await _recent_nudged_ids(account_id, float(either_hours))
     return out
+
+
+# The two system exclude lists (kind='exclude'), applied by SEND TYPE:
+#   MASSppvEXCLUDE — skipped from mass PPV sends (priced broadcasts)
+#   MASSdmEXCLUDE  — skipped from mass DM sends (unpriced text + online blast + nudge)
+# A fan on both is excluded from all mass. Mirrored to same-named pinned OF lists
+# by service/lists.py.
+MASSPPVEXCLUDE_LIST = "MASSppvEXCLUDE"
+MASSDMEXCLUDE_LIST = "MASSdmEXCLUDE"
+
+
+async def exclude_list_fan_ids(account_id: str, name: str) -> set[int]:
+    """Fan ids on the account's kind='exclude' list with the given NAME
+    (MASSPPVEXCLUDE or MASSDMEXCLUDE). Subtracted from the matching mass-send
+    type so a flagged fan never receives that kind of broadcast.
+    Local-only (of_list_id is NULL) — no OF round-trip."""
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(ListMember.fan_id).where(
+                ListMember.list_id.in_(
+                    select(ListModel.id).where(
+                        ListModel.account_id == str(account_id),
+                        ListModel.kind == "exclude",
+                        ListModel.name == name,
+                    )
+                )
+            )
+        )).scalars().all()
+    return {int(x) for x in rows if x is not None}
+
+
+# Pending-job kinds whose payload names its recipients. These jobs sit in
+# `scheduled_jobs` with a future `run_at` and write NO `messages` row until they
+# fire — so the time-window contact guard (which reads `messages`) is blind to
+# them. `pending_send_fan_ids` extracts their targets so a broadcast fired NOW
+# doesn't double-hit a fan a ≤15-min scheduled/drip send is about to reach.
+_PENDING_SEND_KINDS = ("scheduled_send", "send_mass_message", "mass_premade")
+
+
+def _payload_recipient_ids(payload: dict) -> set[int]:
+    """Fan ids a queued send payload targets: `fan_id` (scheduled_send 1:1) +
+    `included_users`/`fan_ids` (explicit mass) + the same, nested per message
+    in a mass_premade `messages` list. Non-numeric entries are dropped."""
+    ids: set[int] = set()
+    fid = payload.get("fan_id")
+    if fid is not None:
+        try:
+            ids.add(int(fid))
+        except (TypeError, ValueError):
+            pass
+    for key in ("included_users", "fan_ids"):
+        for v in payload.get(key) or []:
+            try:
+                ids.add(int(v))
+            except (TypeError, ValueError):
+                pass
+    for m in payload.get("messages") or []:
+        if isinstance(m, dict):
+            ids |= _payload_recipient_ids(m)
+    return ids
+
+
+async def pending_send_fan_ids(account_id: str) -> set[int]:
+    """Fan ids ALREADY QUEUED for an outbound send whose `messages` row doesn't
+    exist yet — the not-yet-fired scheduled / drip jobs the time-window contact
+    guard can't see. Reads PENDING `scheduled_jobs` of `_PENDING_SEND_KINDS` and
+    unions each payload's named recipients.
+
+    Closes the "15-min-delay sends aren't tracked → re-runs double-hit" gap: a
+    chatter's ≤15-min deferred 1:1 (`scheduled_send`) or a queued/drip broadcast
+    that hasn't sent yet would otherwise slip past the guard, so a blast fired
+    now re-hits a fan who is about to receive one. A job that is already firing
+    is 'running' (not 'pending'), so this never cannibalises the caller's own
+    recipients."""
+    out: set[int] = set()
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(ScheduledJob.payload_json).where(
+                ScheduledJob.account_id == str(account_id),
+                ScheduledJob.status == "pending",
+                ScheduledJob.kind.in_(_PENDING_SEND_KINDS),
+            )
+        )).scalars().all()
+    for payload_json in rows:
+        try:
+            payload = json.loads(payload_json or "{}")
+        except (ValueError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            out |= _payload_recipient_ids(payload)
+    return out
+
+
+async def funnel_responder_ids(account_id: str, funnel_id: int) -> set[int]:
+    """Fans who ALREADY ANSWERED this funnel — the durable per-funnel dedup set
+    (R1/R2). Union of:
+      • the `funnel_responders` ledger (written by reply_mass_funnel at discovery
+        for every confirmed opener-replier — precise + survives pruning/unsend),
+      • `funnel_state` fans for any run of this funnel (belt-and-suspenders for
+        fans mid-funnel whose ledger row predates this feature).
+    A funnel Send subtracts these so a responder is never re-sent the opener,
+    while a brand-new funnel (no rows) is unaffected. Keyed on funnel_id, so
+    re-running the SAME funnel to a fresh audience still skips prior answerers
+    (a future 'reset responders' action would DELETE the ledger rows)."""
+    out: set[int] = set()
+    async with get_session() as s:
+        led = (await s.execute(
+            select(FunnelResponder.fan_id).where(
+                FunnelResponder.account_id == str(account_id),
+                FunnelResponder.funnel_id == int(funnel_id),
+            )
+        )).scalars().all()
+        out |= {int(x) for x in led}
+        st = (await s.execute(
+            select(FunnelState.fan_id)
+            .join(MassRun, FunnelState.mass_run_id == MassRun.id)
+            .where(
+                MassRun.account_id == str(account_id),
+                MassRun.funnel_id == int(funnel_id),
+            )
+        )).scalars().all()
+        out |= {int(x) for x in st}
+    return out
+
+
+async def close_funnel_discovery_for_queue(
+    account_id: str, queue_id: int | None = None, mass_run_id: int | None = None,
+) -> int | None:
+    """Stamp a funnel `mass_run`'s `discovery_closed_at` (idempotent) when its
+    first mass is unsent/deleted — so reply_mass_funnel STOPS enrolling NEW
+    repliers off it (#R4). The walker keeps advancing already-engaged fans until
+    a purchase halts them (#30). Resolve by `mass_run_id` (validated to the
+    account) if given, else the most recent funnel `MassRun` by
+    (account_id, queue_id, funnel_id IS NOT NULL). Non-funnel runs are a no-op.
+    Returns the closed mass_run_id, or None if unresolved (logged, never raises).
+    Called from every unsend path (unsend_messages per-target + cache sweep, and
+    the manual DELETE /messages/queue endpoint)."""
+    async with get_session() as s:
+        run = None
+        if mass_run_id is not None:
+            run = await s.get(MassRun, int(mass_run_id))
+            if run is not None and run.account_id != str(account_id):
+                run = None
+        if run is None and queue_id is not None:
+            run = (await s.execute(
+                select(MassRun).where(
+                    MassRun.account_id == str(account_id),
+                    MassRun.queue_id == int(queue_id),
+                    MassRun.funnel_id.is_not(None),
+                ).order_by(MassRun.id.desc())
+            )).scalars().first()
+        if run is None:
+            log.info("close_funnel_discovery unresolved account=%s queue=%s run=%s",
+                     account_id, queue_id, mass_run_id)
+            return None
+        if run.funnel_id is None:
+            return None  # not a funnel run → nothing to close
+        if run.discovery_closed_at is None:  # idempotent
+            run.discovery_closed_at = datetime.utcnow()
+        return int(run.id)
 
 
 async def resolve_mass_audience(
@@ -160,7 +346,11 @@ async def resolve_mass_audience(
     recent_chat_limit: int | None = None,
     exclude_replied_hours: float | None = None,
     exclude_inbound_hours: float | None = None,
+    exclude_last_chat_hours: float | None = None,
+    exclude_funnel_responders: int | None = None,
     unread_limit: int | None = None,
+    exclude_pending_sends: bool = True,
+    exclude_list_name: str | None = None,
     client=None,
 ) -> dict:
     """Merge the DB/OF-sourced audience knobs into explicit include/exclude
@@ -204,13 +394,47 @@ async def resolve_mass_audience(
         )
         included = list(dict.fromkeys([*included, *unread_ids]))
 
-    if exclude_replied_hours or exclude_inbound_hours:
+    if exclude_replied_hours or exclude_inbound_hours or exclude_last_chat_hours:
         guard = await contact_guard_excludes(
             account_id,
             outbound_hours=exclude_replied_hours,
             inbound_hours=exclude_inbound_hours,
+            either_hours=exclude_last_chat_hours,
         )
         excluded += sorted(guard)
+
+    # Type-specific opt-out: subtract the matching mass-exclude list's members
+    # (MASSPPVEXCLUDE for priced sends, MASSDMEXCLUDE for DM sends). Added to
+    # `excluded` so they drop from the explicit userIds set below AND feed
+    # `ensure_exclude_list` for list/online audiences. Caller passes the name by
+    # send type; None → no list applied.
+    if exclude_list_name:
+        excluded += sorted(await exclude_list_fan_ids(account_id, exclude_list_name))
+
+    # Pending/queued sends the messages-based guards can't see yet: a ≤15-min
+    # scheduled 1:1 or a drip/queued broadcast writes no `messages` row until it
+    # fires, so a blast now would double-hit a fan who's already about to be
+    # reached. Exclude their queued targets. Always-on; pass
+    # exclude_pending_sends=False to skip. See `pending_send_fan_ids`.
+    if exclude_pending_sends:
+        excluded += sorted(await pending_send_fan_ids(account_id))
+
+    # ── Funnel-responder dedup (R1/R2): drop fans who already answered THIS
+    #    funnel. `skipped_funnel_responders` = the ones actually about to be sent
+    #    (in the resolved include set) — that's the count the UI prints. The full
+    #    responder set is added to `excluded` so the caller's list-exclude path
+    #    (Auto_Exclude) also drops them for a list/online audience. For a list
+    #    send the caller materializes members into `included` first (D6), so the
+    #    intersection below reflects the real skipped recipients.
+    skipped_responders: list[int] = []
+    responders_total = 0
+    if exclude_funnel_responders:
+        resp = await funnel_responder_ids(account_id, int(exclude_funnel_responders))
+        if resp:
+            responders_total = len(resp)
+            inc_set = {int(i) for i in included}
+            skipped_responders = sorted(inc_set & resp)
+            excluded += sorted(resp)
     excluded = list(dict.fromkeys(excluded))
 
     # Subtract excludes from the explicit include set HERE — OF's queue body
@@ -220,7 +444,16 @@ async def resolve_mass_audience(
     excl_set = {int(x) for x in excluded}
     included = [i for i in included if int(i) not in excl_set]
 
-    return {"included_users": included, "excluded_users": excluded}
+    return {
+        "included_users": included,
+        "excluded_users": excluded,
+        # Precise "removed from THIS send" (responders ∩ explicit includes).
+        "skipped_funnel_responders": skipped_responders,
+        # All known answerers for the funnel (ALL are excluded, incl. via the
+        # Auto_Exclude list for OF-native audiences we can't enumerate locally) —
+        # the honest "N already answered" number for a list/online funnel launch.
+        "funnel_responders_total": responders_total,
+    }
 
 
 AUTO_EXCLUDE_LIST_NAME = "Auto_Exclude"

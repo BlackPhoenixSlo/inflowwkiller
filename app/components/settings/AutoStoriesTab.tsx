@@ -20,6 +20,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Images, Play, Trash2 } from "lucide-react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
+import { EditRuleJsonButton } from "@/components/automations/EditRuleJsonModal";
+import { VaultPicker } from "@/components/chat/VaultPicker";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useVaultLists } from "@/hooks/useVaultMedia";
 import {
@@ -40,6 +42,7 @@ const SELECT_CLS =
 
 interface FormState {
   folderId: number | null;
+  mediaIds: number[];       // explicit image pool — combines with the folder
   mode: Mode;
   times: string[];          // ["09:00", …] for clock mode
   everyHours: number;       // interval mode
@@ -51,6 +54,7 @@ interface FormState {
 
 const DEFAULT_FORM: FormState = {
   folderId: null,
+  mediaIds: [],
   mode: "clock",
   times: ["09:00"],
   everyHours: 6,
@@ -71,6 +75,9 @@ function ruleToForm(rule: AutomationRule): FormState {
   const clock = Array.isArray(t.daily_at) && t.daily_at.length > 0;
   return {
     folderId: typeof p.folder_id === "number" ? p.folder_id : null,
+    mediaIds: Array.isArray(p.media_files)
+      ? (p.media_files as unknown[]).filter((x): x is number => typeof x === "number")
+      : [],
     mode: clock ? "clock" : "interval",
     times: clock ? (t.daily_at as string[]) : ["09:00"],
     everyHours: t.every_seconds ? Math.max(1, Math.round(t.every_seconds / 3600)) : 6,
@@ -120,6 +127,7 @@ export default function AutoStoriesTab() {
 
   const [err, setErr] = useState<string | null>(null);
   const [runMsg, setRunMsg] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   async function runNow() {
     if (!rule) return;
@@ -149,17 +157,22 @@ export default function AutoStoriesTab() {
   }
 
   function buildPayload() {
-    return {
+    const p: Record<string, unknown> = {
       folder_id: form.folderId,
       per_run: Math.max(1, Math.round(form.perRun)),
       hours_to_live: Math.max(0, Math.round(form.hoursToLive)),
     };
+    // Explicit image pool combines with the folder (backend unions them).
+    if (form.mediaIds.length) p.media_files = form.mediaIds;
+    return p;
   }
 
   async function save() {
     setErr(null);
     if (!accountId) return;
-    if (!form.folderId) { setErr("Pick a vault folder first."); return; }
+    if (!form.folderId && form.mediaIds.length === 0) {
+      setErr("Pick a vault folder or an image pool first."); return;
+    }
     if (form.mode === "clock" && form.times.length === 0) {
       setErr("Add at least one time."); return;
     }
@@ -185,7 +198,7 @@ export default function AutoStoriesTab() {
 
   return (
     <div className="space-y-5 max-w-2xl">
-      <header className="flex items-center gap-2">
+      <header className="flex items-start gap-2">
         <Images className="size-5 text-accent" />
         <div>
           <h2 className="text-lg font-semibold">Auto stories</h2>
@@ -193,6 +206,9 @@ export default function AutoStoriesTab() {
             Post random photos from a vault folder as stories on a schedule, each
             auto-deleting after a set number of hours.
           </p>
+        </div>
+        <div className="ml-auto shrink-0">
+          <EditRuleJsonButton accountId={accountId} kind="auto_stories" />
         </div>
       </header>
 
@@ -234,6 +250,36 @@ export default function AutoStoriesTab() {
               ))}
             </select>
           )}
+        </Field>
+
+        {/* Explicit image pool — combines with the folder above into one pool. */}
+        <Field label="…or pick specific images">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button
+              variant="ghost"
+              type="button"
+              onClick={() => setPickerOpen(true)}
+              disabled={!accountId}
+            >
+              <Images className="size-4" />
+              {form.mediaIds.length
+                ? `${form.mediaIds.length} image${form.mediaIds.length === 1 ? "" : "s"} in pool`
+                : "Pick images"}
+            </Button>
+            {form.mediaIds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => set("mediaIds", [])}
+                className="text-xs text-fg-dim hover:text-err"
+              >
+                clear
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-muted mt-1">
+            Folder + picked images form one pool; “Stories per run” photos are
+            sampled from it each time.
+          </p>
         </Field>
 
         {/* Schedule — pick ONE of the two modes */}
@@ -359,6 +405,18 @@ export default function AutoStoriesTab() {
           </div>
         )}
       </Card>
+
+      <VaultPicker
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        accountId={accountId}
+        fanId={null}
+        initialSelectedIds={form.mediaIds}
+        onConfirm={(picked) => {
+          set("mediaIds", picked.map((m) => m.id));
+          setPickerOpen(false);
+        }}
+      />
     </div>
   );
 }

@@ -171,6 +171,13 @@ function MassSummaryRow({ row }: Props) {
           {row.funnel_name && (
             <span className="text-xs text-fg-dim truncate">· {row.funnel_name}</span>
           )}
+          {/* Who fired the broadcast — the denormalized "mass-<who>" tag when
+              present (survives an employee delete), else the joined name. */}
+          {(row.sender_name || row.employee_name) && (
+            <span className="text-[11px] text-fg-dim">
+              {row.sender_name || `by ${row.employee_name}`}
+            </span>
+          )}
           {isPriced && (
             <span className="ml-auto text-sm font-semibold text-fg">
               {fmtCents(row.price_cents)}

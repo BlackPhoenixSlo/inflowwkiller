@@ -285,6 +285,9 @@ export function MassMessageComposer({
   // these resets would clobber it. They still fire on genuine later changes.
   const acctResetMounted = useRef(false);
   const allModelsResetMounted = useRef(false);
+  // Which account we've already auto-selected the standing MASSPPVEXCLUDE list
+  // for — so we seed it once per account (allowing a manual untick afterward).
+  const massExcludeSeededFor = useRef<string | null>(null);
 
   // When the account changes, re-seed audience to system defaults — the prior
   // set was scoped to a different model's custom lists.
@@ -312,6 +315,25 @@ export function MassMessageComposer({
     setIncludes(new Set(["fans", "following"]));
     setExcludes(new Set());
   }, [allModels]);
+
+  // Auto-select the standing MASSPPVEXCLUDE list (kept per account with this
+  // exact name) into the exclude set — so every mass send skips it by default;
+  // the operator can untick it for a one-off. Seeded once per account, AFTER the
+  // account-reset effect above clears the set and the account's lists settle
+  // (guarded on !isFetching so we read the CURRENT account's lists, not stale
+  // ones). Additive — never removes an operator's own excludes. Mirrors
+  // FunnelLaunchPanel's MASS_EXCLUDE_LIST_NAME.
+  const MASS_EXCLUDE_LIST_NAME = "MASSPPVEXCLUDE";
+  useEffect(() => {
+    if (allModels || !accountId) return;
+    if (listsQ.isLoading || listsQ.isFetching) return;
+    if (massExcludeSeededFor.current === accountId) return;
+    massExcludeSeededFor.current = accountId;
+    const match = (listsQ.data ?? []).find(
+      (l) => String(l.name ?? "").trim().toUpperCase() === MASS_EXCLUDE_LIST_NAME,
+    );
+    if (match) setExcludes((prev) => new Set(prev).add(String(match.id)));
+  }, [accountId, allModels, listsQ.isLoading, listsQ.isFetching, listsQ.data]);
 
   // All-models broadcasts force free + unlocked-text (ask #4). For per-employee
   // sends, a typed price > 0 is the sole paid signal — clearing the field is

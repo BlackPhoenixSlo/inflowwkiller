@@ -127,12 +127,59 @@ export interface PostPpvResult {
   preview_count: number;
 }
 
+export interface PostPpvArgs {
+  ppvId?: string;
+  /** WYSIWYG override: post exactly this caption (e.g. one already shown by a preview call). */
+  caption?: string;
+  /** Operator's chosen media in the EXACT order to post. When present & non-empty it
+   *  OVERRIDES the PPV's own media_ids. Absent/empty => behavior unchanged. */
+  mediaFiles?: number[];
+  /** Operator's chosen free-preview subset. Must be a subset of the effective media set. */
+  previews?: number[];
+}
+
 /** Post one PPV to the FEED as a paid post at its base price. Pass a `ppvId` to
  *  post that one; omit it for a random ENABLED PPV (skips the last one posted). */
 export function usePostPpvToFeed(accountId: string | null) {
-  return useMutation<PostPpvResult, Error, string | undefined>({
+  return useMutation<PostPpvResult, Error, string | undefined | PostPpvArgs>({
+    mutationFn: (arg) => {
+      const ppvId = typeof arg === "string" || arg === undefined ? arg : arg.ppvId;
+      const caption = typeof arg === "object" ? arg.caption : undefined;
+      const mediaFiles = typeof arg === "object" ? arg.mediaFiles : undefined;
+      const previews = typeof arg === "object" ? arg.previews : undefined;
+      return relay.post(`/admin/ppv-library-config/post-now`, {
+        account_id: accountId,
+        ...(ppvId ? { ppv_id: ppvId } : {}),
+        ...(caption ? { caption } : {}),
+        ...(mediaFiles && mediaFiles.length ? { media_files: mediaFiles } : {}),
+        ...(previews ? { previews } : {}),
+      });
+    },
+  });
+}
+
+export interface PreviewPpvToFeedResult {
+  account_id: string;
+  ppv_id: string;
+  name: string;
+  caption: string;
+  used_feed_caption: boolean;
+  price: number;
+  media_count: number;
+  preview_count: number;
+  /** The candidate PPV's media, in stored order. */
+  media_ids: number[];
+  /** The star (preview_options) free-preview subset, always a subset of media_ids. */
+  previews: number[];
+}
+
+/** Preview WHICH PPV + WHAT caption a "post to feed now" would use — no post, no
+ *  state change. Confirm by handing `{ ppvId, caption }` from the result to
+ *  `usePostPpvToFeed` for a WYSIWYG post-now. */
+export function usePreviewPpvToFeed(accountId: string | null) {
+  return useMutation<PreviewPpvToFeedResult, Error, string | undefined>({
     mutationFn: (ppvId) =>
-      relay.post(`/admin/ppv-library-config/post-now`, {
+      relay.post(`/admin/ppv-library-config/post-now/preview`, {
         account_id: accountId,
         ...(ppvId ? { ppv_id: ppvId } : {}),
       }),

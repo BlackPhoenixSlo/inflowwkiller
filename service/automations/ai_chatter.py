@@ -54,7 +54,7 @@ import random
 import re
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / lease / cooldown seams
@@ -64,7 +64,8 @@ from automation_registry import register
 from db.engine import get_session
 from db.models import (
     AccountAiConfig, Blacklist, CatalogItem, CatalogProgress, CatalogScript,
-    ContentOffer, Fan, Message, SkipList, Transaction, VaultSend,
+    ContentOffer, Fan, FanProfile, Message, ScheduledJob, SkipList, Transaction,
+    VaultSend,
 )
 from llm_client import LLMCapExceeded
 from ._common import (
@@ -128,6 +129,37 @@ _DEFAULTS: dict = {
     "unsend_expired_offer": True,        # on expiry, pull (unsend) the unpurchased
                                          # PPV/offer message from the chat (per-chat
                                          # unsend; bounded by OF's 24h window)
+
+    # ── Cadence controller (items 10/17/18/21) — the stop-condition subsystem.
+    # OFF by default: when disabled ai_chatter keeps its historical "no graduation
+    # cutoff" behavior (byte-compatible). Enable per-account to make the bot back
+    # off deliberately instead of chatting/selling forever.
+    "cadence_enabled": False,
+    # Item 21 — reply caps per burst, chosen by the fan's live signal. A "burst" is
+    # counted on the fly (outbound messages since the last >session_gap_minutes gap),
+    # NOT lifetime, so a long-term fan is never permanently silenced.
+    "msg_limits_by_signal": {
+        "baseline": 10,          # normal chatter — stop pestering after ~10
+        "buying_signal": 30,     # content-ask / escalation / fresh offer / recent buy
+        "no_signal": 5,          # offered but stalled (no buy, gone cold) — short leash
+        "pic_sent": 40,          # he sent US a photo — hottest lead, longest runway
+    },
+    "session_gap_minutes": 60,           # gap that starts a fresh burst for the caps
+    # Item 17 — post-purchase talk window: keep chatting a just-paid fan this long
+    # after his last money event; past it with no NEW spend, hand off (stop + cool
+    # off → in closer mode of_ai_chat/Auto Convo keeps him warm).
+    "post_purchase_minutes": 25,
+    "offer_expiry_minutes": 120,         # a pending offer older than this w/o a buy
+                                         # drops to the no_signal (short-leash) tier
+    # Item 10 — a "stop" is a cheap SKIP (no reply this tick), NOT a durable pause:
+    # the gate is a pure pre-LLM check, and skipping instead of pausing means a fan
+    # who re-engages with a real buying signal (tier upgrade) is served again, and a
+    # burst naturally reopens after a session_gap of silence. Nothing to configure.
+    # Item 18 — re-engage nudge: one gentle follow-up if a fan we made an offer to
+    # goes quiet without buying. Extra-guarded: OFF even when cadence is on, since
+    # it is the only cadence piece that SENDS an unsolicited message.
+    "nudge_enabled": False,
+    "nudge_after_minutes": 15,
 }
 
 
@@ -226,7 +258,7 @@ async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
 
 class _Cand:
     __slots__ = ("fan_id", "fan_msg_n", "last_dir", "last_body", "messages",
-                 "last_in_at", "last_human_out_at")
+                 "last_in_at", "last_human_out_at", "session_out_n")
 
     def __init__(self, fan_id: int):
         self.fan_id = fan_id
@@ -236,10 +268,14 @@ class _Cand:
         self.messages: list[tuple[str, str]] = []  # (direction, body) oldest→newest
         self.last_in_at: datetime | None = None
         self.last_human_out_at: datetime | None = None
+        self.session_out_n = 0   # non-mass outbound in the CURRENT burst (item 21
+                                 # cap counter); only populated when _gather is
+                                 # called with session_gap_min > 0
 
 
 async def _gather(account_id: str,
-                  fan_ids: set[int] | None = None) -> dict[int, _Cand]:
+                  fan_ids: set[int] | None = None,
+                  *, session_gap_min: int = 0) -> dict[int, _Cand]:
     """One pass over the account's messages → per-fan history PLUS the two
     timestamps the gates need: when the fan last spoke (SLA age) and when a
     HUMAN last sent (manual outbound = automation_kind IS NULL and not part of
@@ -247,8 +283,15 @@ async def _gather(account_id: str,
 
     When `fan_ids` is given (W7 fan-scoped dispatch), the scan is restricted to
     those fans IN SQL so reacting to one inbound DM never reads the whole
-    account's message history. None/empty → the full-account sweep."""
+    account's message history. None/empty → the full-account sweep.
+
+    `session_gap_min > 0` additionally counts each fan's `session_out_n` — non-mass
+    outbound messages in the CURRENT burst, where a burst ends at any silence gap
+    longer than `session_gap_min`. The cadence caps (item 21) read this so they
+    bound a conversation, not a fan's lifetime."""
     out: dict[int, _Cand] = {}
+    gap = timedelta(minutes=session_gap_min) if session_gap_min > 0 else None
+    last_ts: dict[int, datetime] = {}
     where = [Message.account_id == str(account_id), Message.is_unsent.is_(False)]
     if fan_ids:
         where.append(Message.fan_id.in_(fan_ids))
@@ -263,6 +306,13 @@ async def _gather(account_id: str,
         c = out.get(fan_id)
         if c is None:
             c = out[fan_id] = _Cand(int(fan_id))
+        # Burst boundary (item 21): a gap longer than session_gap resets the count —
+        # the current message opens a fresh burst.
+        if gap is not None and created_at is not None:
+            prev = last_ts.get(fan_id)
+            if prev is not None and created_at - prev > gap:
+                c.session_out_n = 0
+            last_ts[fan_id] = created_at
         text = _strip_html(body)[:_MSG_CLIP]
         c.messages.append((direction, text))
         c.last_dir = direction
@@ -270,8 +320,11 @@ async def _gather(account_id: str,
         if direction == "in":
             c.fan_msg_n += 1
             c.last_in_at = created_at
-        elif automation_kind is None and mass_run_id is None:
-            c.last_human_out_at = created_at
+        else:
+            if automation_kind is None and mass_run_id is None:
+                c.last_human_out_at = created_at
+            if gap is not None and mass_run_id is None:
+                c.session_out_n += 1   # conversational reply, not a mass blast
     return out
 
 
@@ -867,6 +920,205 @@ async def has_open_tip_offer(account_id: str, fan_id: int) -> bool:
     return False
 
 
+async def _maybe_bootstrap_profile(account_id: str, fan_id: int) -> bool:
+    """Item 22 — cold-start notes. `_maybe_refresh_profile` (shared with of_ai_chat)
+    only enqueues gen_info once a fan crosses gen_info's staleness gate
+    (`_MIN_NEW_MSGS = 8` new inbound). A fan who chats only a handful of times
+    therefore NEVER gets a profile — so no notes ever get pushed (the "Jordan never
+    got notes" case). This forces ONE gen_info regen for a PROFILE-LESS fan the
+    moment ai_chatter engages him, so notes/facts get built from the first
+    exchanges. Idempotent: skips when a profile already exists OR a gen_info job is
+    already queued for this fan (so it fires once, not every tick). Best-effort —
+    any failure is logged and swallowed. Returns True iff a regen was enqueued."""
+    try:
+        async with get_session() as s:
+            has_profile = (await s.execute(
+                select(FanProfile.fan_id)
+                .where(FanProfile.account_id == str(account_id),
+                       FanProfile.fan_id == int(fan_id))
+                .limit(1)
+            )).first()
+            if has_profile is not None:
+                return False
+            pending = (await s.execute(
+                select(ScheduledJob.id)
+                .where(ScheduledJob.account_id == str(account_id),
+                       ScheduledJob.kind == "gen_info",
+                       ScheduledJob.status.in_(("pending", "running")),
+                       ScheduledJob.payload_json.like(f"%[{int(fan_id)}]%"))
+                .limit(1)
+            )).first()
+            if pending is not None:
+                return False
+        await ax.enqueue_job(account_id, "gen_info",
+                             payload={"force_ids": [int(fan_id)]})
+        return True
+    except Exception:
+        log.debug("ai_chatter profile-bootstrap enqueue skipped account=%s fan=%s",
+                  account_id, fan_id, exc_info=True)
+        return False
+
+
+# ── Cadence controller (items 10/17/18/21) ──────────────────────────────────
+
+async def _last_money_at(account_id: str, fan_ids) -> dict[int, datetime]:
+    """{fan_id: newest money-event time} — the later of an inbound tip (is_tip, so
+    the event time is created_at) and a PPV unlock (purchased_at). Drives the
+    post-purchase talk window (item 17). Fans with no money event are absent."""
+    ids = [int(x) for x in fan_ids]
+    if not ids:
+        return {}
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.fan_id,
+                   func.max(func.coalesce(Message.purchased_at, Message.created_at)))
+            .where(Message.account_id == str(account_id),
+                   Message.fan_id.in_(ids),
+                   Message.is_unsent.is_(False),
+                   or_(Message.is_tip.is_(True), Message.purchased_at.isnot(None)))
+            .group_by(Message.fan_id)
+        )).all()
+    return {int(fid): ts for fid, ts in rows if ts is not None}
+
+
+def _cadence_gate(c: "_Cand", *, pending: ContentOffer | None, recent_payer: bool,
+                  money_at: datetime | None, pic: bool,
+                  now: datetime, cad: dict) -> tuple[bool, str]:
+    """Decide whether ai_chatter should keep engaging this fan THIS tick, and under
+    which signal tier. Returns (stop, tier) — a pure function of the fan's live
+    state; every limit comes from `cad` (the config). A "stop" means skip the reply
+    this tick (no LLM, no pause): the fan reopens on a real buying signal (tier
+    upgrade) or after a session-gap of silence resets his burst count.
+
+      • Post-purchase window (item 17): a fan who paid within post_purchase_minutes
+        stays engaged with no cap; once that window lapses with no newer money event
+        AND no live buying signal, stop and hand off (of_ai_chat keeps him warm in
+        closer mode).
+      • Otherwise classify the signal (item 21) and stop once the burst reply count
+        (`session_out_n`) reaches that tier's cap (item 10 / "selling stops")."""
+    body = c.last_body or ""
+    live_signal = bool(pic or _CONTENT_ASK_RE.search(body) or ESCALATION_RE.search(body))
+
+    # Item 17 — post-purchase talk window. Only a RECENT money event opens it (an
+    # ancient purchase must not stop a fan chatting again today), so bound it to the
+    # recent-payer horizon.
+    ppm = int(cad.get("post_purchase_minutes") or 0)
+    if money_at is not None and ppm and (now - money_at) < timedelta(hours=1):
+        if now - money_at <= timedelta(minutes=ppm):
+            return (False, "post_purchase")          # still warm — keep talking
+        if not live_signal:
+            return (True, "post_purchase_done")       # quiet after the window → hand off
+        # he's asking for more AFTER the window → a fresh sale opportunity, keep going
+
+    limits = cad.get("msg_limits_by_signal") or {}
+    if pic:
+        tier = "pic_sent"
+    elif recent_payer or live_signal:
+        tier = "buying_signal"
+    elif pending is not None:
+        # An offer is on the table. Fresh → keep working it (buying_signal); stale
+        # (older than offer_expiry_minutes, still unbought) → short-leash no_signal.
+        oem = int(cad.get("offer_expiry_minutes") or 0)
+        stale = bool(oem and pending.offered_at
+                     and (now - pending.offered_at) > timedelta(minutes=oem))
+        tier = "no_signal" if stale else "buying_signal"
+    else:
+        tier = "baseline"
+
+    cap = int(limits.get(tier) or 0)
+    if cap and c.session_out_n >= cap:
+        return (True, tier)
+    return (False, tier)
+
+
+# One gentle re-engage opener (item 18). {name} → his greetable name (or "babe").
+# Deliberately templated, not LLM-generated: a nudge is one unsolicited line, so we
+# keep it cheap, predictable, and easy to audit.
+_NUDGE_LINES = (
+    "hey {name} u still there? 🙈",
+    "miss talking to u {name} 🥺 what are u up to",
+    "u went quiet on me {name}.. everything ok?",
+    "cant stop thinking about our chat 😏 u around {name}?",
+    "hey u 👀 dont leave me hanging {name}",
+)
+
+
+async def _run_nudge(account_id: str, payload: dict, cfg: dict) -> dict:
+    """Item 18 — the delayed one-shot re-engage. Scheduled (enqueue_job, run_at =
+    +nudge_after_minutes) the moment a paid offer is made; ONE job ⇒ ONE nudge. On
+    fire it re-checks each fan and sends a single gentle line ONLY if he still has
+    an OPEN offer (didn't buy), hasn't replied since (else the normal loop owns
+    him), and isn't paused/on-cooldown. No-op unless nudge_enabled."""
+    fan_ids = coerce_ids(payload.get("nudge_fan_ids"))
+    if not (cfg.get("enabled") and cfg.get("cadence_enabled")
+            and cfg.get("nudge_enabled")) or not fan_ids:
+        return {"status": "skipped", "reason": "nudge_disabled",
+                "nudged": 0, "nudge_skipped": len(fan_ids)}
+    typing_wpm = await load_typing_wpm(account_id)
+    typing_indicator = await load_typing_indicator(account_id)
+    async with get_session() as s:
+        fan_rows = (await s.execute(
+            select(Fan).where(Fan.account_id == str(account_id),
+                              Fan.fan_id.in_(list(fan_ids)))
+        )).scalars().all()
+    fans = {int(f.fan_id): f for f in fan_rows}
+    client = await asyncio.to_thread(ax._make_client, account_id)
+
+    nudged = skipped = 0
+    for fan_id in fan_ids:
+        now = datetime.utcnow()
+        # Still awaiting a buy? A resolved (bought/expired) offer ⇒ nothing to nudge.
+        if not await _open_offers(account_id, fan_id):
+            skipped += 1
+            continue
+        by = await _gather(account_id, {fan_id})
+        c = by.get(fan_id)
+        if c is None or c.last_dir == "in":
+            skipped += 1          # he already replied — the normal loop re-engages him
+            continue
+        f = fans.get(fan_id)
+        if f is not None and f.automation_paused_until and f.automation_paused_until > now:
+            skipped += 1
+            continue
+        if await ax.fan_on_cooldown(account_id, fan_id):
+            skipped += 1
+            continue
+        if not await ax.acquire_fan_lease(account_id, fan_id, _PURPOSE):
+            skipped += 1
+            continue
+        try:
+            name = (resolve_fan_name(f) if f else "").split("/")[0][:20] or "babe"
+            line = apply_word_restriction(
+                random.choice(_NUDGE_LINES).replace("{name}", name))[:_REPLY_MAX_CHARS]
+            await hold_with_typing(account_id, fan_id,
+                                   typing_delay_seconds(line, typing_wpm),
+                                   typing_indicator=typing_indicator)
+            result = await asyncio.to_thread(
+                lambda p=line: client.send_message(fan_id, p))
+            msg_id = result.get("id") if isinstance(result, dict) else None
+            if msg_id:
+                await write_outbound_attribution(
+                    account_id=account_id, fan_id=int(fan_id),
+                    message_id=int(msg_id), sent_by_employee_id=None,
+                    automation_kind=_PURPOSE,
+                    body=str(result.get("text") or line), price_cents=0,
+                    created_at=ax._parse_iso(result.get("createdAt")) or now,
+                    emit_live=True)
+                await _mark_reply_sent(account_id, fan_id, now)
+                await ax.start_fan_cooldown(account_id, fan_id,
+                                            cooldown_s=_REPLY_COOLDOWN_S)
+                nudged += 1
+            else:
+                skipped += 1
+        except Exception:
+            skipped += 1
+            log.warning("ai_chatter nudge send failed account=%s fan=%s",
+                        account_id, fan_id, exc_info=True)
+        finally:
+            await ax.release_fan_lease(account_id, fan_id)
+    return {"status": "ok", "nudged": nudged, "nudge_skipped": skipped, "nudge": True}
+
+
 # ── Prompt (forked from of_ai_chat._build_messages — adds the sell seam) ─────
 
 def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
@@ -972,7 +1224,20 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     else:
         need_block = random.choice(_BREATHER_VARIANTS)
 
-    name_dodged = (not _nonempty(f.real_name) and "name:2" in asked)
+    # Item 15 — sticky name: once we hold a DURABLE name for him (team-curated
+    # custom_nickname or an extracted real_name), pin it so the model greets him by
+    # it and NEVER re-interviews for his name — killing the "what's ur name" loop
+    # even deep into a chat. resolve_fan_name already prefers these, so `name` here
+    # is exactly the token to keep using (same split/clip as the facts line).
+    have_durable_name = bool(name) and (_nonempty(getattr(f, "custom_nickname", None))
+                                        or _nonempty(getattr(f, "real_name", None)))
+    call_him = (
+        f"\n\nHIS NAME: call him {name.split('/')[0][:40]} from here on — we already "
+        "know it, so NEVER ask his name again; just use it naturally."
+        if have_durable_name else "")
+
+    name_dodged = (not have_durable_name and not _nonempty(f.real_name)
+                   and "name:2" in asked)
     dodge_note = (
         "\n\nIMPORTANT: you asked his name twice and he dodged — do NOT ask his name "
         "again. Pick a playful nickname for him and just use it from now on."
@@ -1002,7 +1267,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         f"{offers_line} "
         "He may send several texts in a row — read them all, reply to "
         "the latest.\n\n"
-        f"{need_block}{dodge_note}\n\n"
+        f"{need_block}{dodge_note}{call_him}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         "HOW YOU TEXT (a real 22yo girl, not an assistant):\n"
         "- Short and casual. lowercase, contractions, u/ur/ya. React to what he "
@@ -1052,6 +1317,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     history_tail = int(payload.get("history_tail") or _HISTORY_TAIL)
 
     cfg = await _load_config(account_id)
+    # Item 18 — a scheduled re-engage nudge rides the same job kind; handle it and
+    # return before the normal sweep machinery (its own gating lives in _run_nudge).
+    if payload.get("nudge_fan_ids"):
+        return await _run_nudge(account_id, payload, cfg)
     if not cfg.get("enabled"):
         # Paid-but-undelivered protection: an account can be disabled while
         # offers are still OPEN (incident stop, config flip). A fan who PAYS
@@ -1079,9 +1348,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     persona = await _load_persona(account_id)
 
+    # Cadence controller (items 10/17/18/21) — OFF unless the account opts in.
+    cadence_on = bool(cfg.get("cadence_enabled"))
+    nudge_on = cadence_on and bool(cfg.get("nudge_enabled"))
+    nudge_min = int(cfg.get("nudge_after_minutes") or 0)
+    session_gap_min = int(cfg.get("session_gap_minutes") or 0) if cadence_on else 0
+
     blacklist, skip_reasons = await _load_stop_lists(account_id)
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)
-    by_fan = await _gather(account_id, only_fan_ids or None)
+    by_fan = await _gather(account_id, only_fan_ids or None,
+                           session_gap_min=session_gap_min)
 
     client = await asyncio.to_thread(ax._make_client, account_id)
 
@@ -1101,6 +1377,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # latest line isn't an explicit buy-ask. autoreply skips this exact set, so a
     # hot lead is never demoted to never-sell keep-warm. Mirrors engaged_subset.
     recent_payers = await recent_payer_fans(account_id, list(by_fan.keys()))
+    # Newest money-event time per fan — the post-purchase talk window (item 17).
+    money_at = await _last_money_at(account_id, by_fan.keys()) if cadence_on else {}
 
     async with get_session() as s:
         fan_rows = (await s.execute(
@@ -1177,6 +1455,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_locked = 0
     skipped_cooldown = 0
     skipped_no_intent = 0   # intent_only: fan is just chatting, no buying signal
+    skipped_cadence = 0     # cadence: burst cap hit / post-purchase window lapsed
     errors = 0
     cap_hit = False
 
@@ -1198,6 +1477,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 and not ESCALATION_RE.search(c.last_body or ""):
             skipped_no_intent += 1
             continue
+        # Cadence controller (items 10/17/21): continue-vs-stop for this fan, decided
+        # BEFORE any cooldown/lease/LLM cost. A stop is a silent skip THIS tick — the
+        # fan reopens on a real buying signal (tier upgrade) or after a session-gap
+        # of silence resets his burst. OFF unless the account enabled cadence.
+        if cadence_on:
+            cad_stop, _cad_tier = _cadence_gate(
+                c, pending=open_by_fan.get(fan_id),
+                recent_payer=fan_id in recent_payers,
+                money_at=money_at.get(fan_id),
+                pic=fan_id in intent_fan_ids, now=now, cad=cfg)
+            if cad_stop:
+                skipped_cadence += 1
+                continue
         if await ax.fan_on_cooldown(account_id, fan_id):
             skipped_cooldown += 1
             continue
@@ -1414,6 +1706,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if target:
                 await _mark_question_asked(account_id, fan_id, target, asked)
             await _maybe_refresh_profile(account_id, fan_id, c.fan_msg_n, now)
+            # Item 22 — profile-less fan below gen_info's staleness gate: force one
+            # regen so his notes get built now instead of never.
+            await _maybe_bootstrap_profile(account_id, fan_id)
             sent += 1
             # Persist the offer the moment its message is confirmed on the wire.
             # A teaser is its own delivery (advance immediately); a paid offer
@@ -1443,6 +1738,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     await _record_offer(account_id, fan_id, offer_item,
                                         offer_mode_eff or "tip", offer_msg_id)
                     offers_made += 1
+                    # Item 18 — schedule the ONE delayed re-engage nudge for this
+                    # (unbought) paid offer. One job ⇒ one nudge; it self-cancels
+                    # in _run_nudge if he buys or replies first. Off by default.
+                    if nudge_on and nudge_min > 0:
+                        try:
+                            await ax.enqueue_job(
+                                account_id, "ai_chatter",
+                                payload={"nudge_fan_ids": [int(fan_id)]},
+                                run_at=now + timedelta(minutes=nudge_min))
+                        except Exception:
+                            log.debug("ai_chatter nudge schedule failed "
+                                      "account=%s fan=%s", account_id, fan_id,
+                                      exc_info=True)
                 log.info("ai_chatter offer account=%s fan=%s item=%s mode=%s msg=%s",
                          account_id, fan_id, offer_item.id,
                          "free" if offer_item.is_free_teaser else offer_mode_eff,
@@ -1488,6 +1796,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
         "skipped_no_intent": skipped_no_intent,
+        "skipped_cadence": skipped_cadence,
         "errors": errors,
         "cap_hit": cap_hit,
         "dry_run": dry_run,

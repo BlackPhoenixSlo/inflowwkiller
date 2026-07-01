@@ -16,8 +16,10 @@ import { useEffect, useMemo, useState } from "react";
 import { DollarSign, Image as ImageIcon, Copy } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/primitives";
+import { EditRawJsonButton } from "./JsonConfigModal";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
+import { useReorder } from "@/hooks/useReorder";
 import { cn } from "@/lib/utils";
 import { proxyImage } from "@/lib/relay";
 import {
@@ -25,8 +27,10 @@ import {
   useSavePpvLibraryConfig,
   usePpvPreview,
   usePostPpvToFeed,
+  usePreviewPpvToFeed,
   type PpvItem,
   type PriceMatrix,
+  type PreviewPpvToFeedResult,
 } from "@/hooks/usePpvLibraryConfig";
 
 const INPUT =
@@ -138,8 +142,12 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   const saveM = useSavePpvLibraryConfig(accountId);
   const previewM = usePpvPreview(accountId);
   const postM = usePostPpvToFeed(accountId);
+  const previewFeedM = usePreviewPpvToFeed(accountId);
   // which "Post to feed" is in flight: a PPV id, or "__random__" for the bottom button
   const [postFor, setPostFor] = useState<string | null>(null);
+  // the generated candidate for the GLOBAL "post fresh PPV" flow: Generate → this
+  // card (name/caption/price/counts) → Post to feed / Regenerate
+  const [feedCandidate, setFeedCandidate] = useState<PreviewPpvToFeedResult | null>(null);
 
   const [enabled, setEnabled] = useState(false);
   const [ppvs, setPpvs] = useState<PpvItem[]>([]);
@@ -829,30 +837,49 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
         </ul>
       </details>
 
-      {/* One-click: post a fresh random PPV to the feed now (paid, at its base price). */}
+      {/* Generate → preview → confirm: post a fresh random PPV to the feed now (paid, at its base price). */}
       <div className="rounded-lg border border-border p-3 space-y-2">
         <div className="flex items-center gap-2 flex-wrap">
           <Button
             size="sm" variant="secondary"
-            onClick={() => { setPostFor("__random__"); postM.mutate(undefined); }}
-            disabled={postM.isPending || ppvs.filter((p) => p.feed_enabled !== false && p.media_ids.length).length === 0}
+            onClick={() => {
+              setPostFor(null);
+              previewFeedM.mutate(undefined, { onSuccess: (data) => setFeedCandidate(data) });
+            }}
+            disabled={previewFeedM.isPending || ppvs.filter((p) => p.feed_enabled !== false && p.media_ids.length).length === 0}
           >
-            {postM.isPending && postFor === "__random__" ? "Posting…" : "Post a fresh PPV to feed now →"}
+            {previewFeedM.isPending ? "Generating…" : feedCandidate ? "Regenerate" : "Generate a fresh PPV to post →"}
           </Button>
-          {postFor === "__random__" && postM.isSuccess && (
-            <span className="text-xs text-emerald-500">
-              Posted “{postM.data.name || postM.data.ppv_id}” @ ${postM.data.price} ✓
-              {postM.data.used_feed_caption ? " (feed caption)" : ""}
-            </span>
-          )}
-          {postFor === "__random__" && postM.isError && (
-            <span className="text-xs text-red-500">{postM.error?.message || "post failed"}</span>
+          {previewFeedM.isError && (
+            <span className="text-xs text-red-500">{previewFeedM.error?.message || "generate failed"}</span>
           )}
         </div>
+
+        {feedCandidate && (
+          <FeedCandidateCard
+            candidate={feedCandidate}
+            thumbFor={thumbFor}
+            posting={postM.isPending && postFor === "__random__"}
+            regenerating={previewFeedM.isPending}
+            postSuccess={postFor === "__random__" && postM.isSuccess ? postM.data.price : null}
+            postError={postFor === "__random__" && postM.isError ? (postM.error?.message || "post failed") : null}
+            onPost={(mediaFiles, previews) => {
+              setPostFor("__random__");
+              postM.mutate(
+                { ppvId: feedCandidate.ppv_id, caption: feedCandidate.caption, mediaFiles, previews },
+                { onSuccess: () => setFeedCandidate(null) },
+              );
+            }}
+            onRegenerate={() =>
+              previewFeedM.mutate(undefined, { onSuccess: (data) => setFeedCandidate(data) })
+            }
+          />
+        )}
+
         <div className="text-[11px] text-fg-dim/70 leading-relaxed">
           Picks one of your <b>feed-enabled</b> PPVs (a fresh caption each time, skips the one
-          posted last), and posts it to your <b>feed</b> as a paid post at its <b>base price</b> —
-          the same &quot;normal&quot; price your messages start from. One click, no scheduling.
+          posted last), shows it here so you can check it, then posts it to your <b>feed</b> as a
+          paid post at its <b>base price</b> — the same &quot;normal&quot; price your messages start from.
         </div>
       </div>
 
@@ -865,6 +892,9 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
         {enabled && incomplete > 0 && (
           <span className="text-xs text-warn">{incomplete} enabled PPV(s) have no content yet.</span>
         )}
+        <div className="ml-auto">
+          <EditRawJsonButton surface="ppv-library-config" accountId={accountId} />
+        </div>
       </div>
 
       {picker !== null && accountId && (
@@ -895,6 +925,169 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
         />
       )}
     </Card>
+  );
+}
+
+/** Interactive candidate card for the "Generate a fresh PPV to post" flow.
+ *  Thumbnail grid of the candidate's media: drag to reorder, ✕ to exclude,
+ *  ⭐ to mark a free preview. Emits the chosen media order + preview subset to
+ *  the post-now call. `previews` is always kept a subset of the included set. */
+function FeedCandidateCard({
+  candidate, thumbFor, posting, regenerating, postSuccess, postError, onPost, onRegenerate,
+}: {
+  candidate: PreviewPpvToFeedResult;
+  thumbFor: (id: number) => string;
+  posting: boolean;
+  regenerating: boolean;
+  postSuccess: number | null;
+  postError: string | null;
+  onPost: (mediaFiles: number[], previews: number[]) => void;
+  onRegenerate: () => void;
+}) {
+  // Ordered id list + which are included + which are free previews. Re-seeded
+  // whenever a fresh candidate object arrives — i.e. on every Generate/Regenerate,
+  // even if the SAME ppv_id comes back (single feed-enabled PPV, or a random
+  // repeat: the preview endpoint never advances last_posted_ppv_id). Keying on
+  // the candidate OBJECT (a new reference per preview response) resets the
+  // operator's edits each time; keying on ppv_id would leave them stale.
+  const [order, setOrder] = useState<number[]>(candidate.media_ids);
+  const [included, setIncluded] = useState<Set<number>>(() => new Set(candidate.media_ids));
+  const [previews, setPreviews] = useState<Set<number>>(() => new Set(candidate.previews));
+
+  useEffect(() => {
+    setOrder(candidate.media_ids);
+    setIncluded(new Set(candidate.media_ids));
+    setPreviews(new Set(candidate.previews));
+  }, [candidate]);
+
+  const reorder = useReorder(order, setOrder, (id) => id);
+
+  const toggleIncluded = (id: number) => {
+    setIncluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+        // Dropping a tile removes it from previews (subset invariant).
+        setPreviews((pp) => {
+          if (!pp.has(id)) return pp;
+          const np = new Set(pp);
+          np.delete(id);
+          return np;
+        });
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const togglePreview = (id: number) => {
+    if (!included.has(id)) return; // previews ⊆ included
+    setPreviews((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const mediaFiles = order.filter((id) => included.has(id));
+  const previewIds = [...previews].filter((id) => mediaFiles.includes(id));
+  const canPost = mediaFiles.length > 0;
+
+  return (
+    <div className="rounded-lg border border-border bg-bg-subtle p-3 space-y-2">
+      <div className="text-xs font-medium">{candidate.name || candidate.ppv_id}</div>
+      <div className="text-[12px] text-fg-dim whitespace-pre-wrap">{candidate.caption}</div>
+
+      <div className="text-[11px] text-fg-dim/70">
+        ${candidate.price} · {mediaFiles.length} media · {previewIds.length} free preview
+        {previewIds.length === 1 ? "" : "s"}
+        {" "}<span className="text-fg-dim/50">— drag to reorder · ✕ to skip · ⭐ = free teaser</span>
+      </div>
+
+      {order.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {order.map((id, idx) => {
+            const isIncl = included.has(id);
+            const isPrev = previews.has(id) && isIncl;
+            const thumb = thumbFor(id);
+            const isDragging = reorder.draggingIndex === idx;
+            const isDragOver = reorder.dragOverIndex === idx && !isDragging;
+            return (
+              <div
+                key={id}
+                draggable
+                onDragStart={(e) => reorder.onDragStart(e, idx)}
+                onDragOver={(e) => reorder.onDragOver(e, idx)}
+                onDrop={(e) => reorder.onDrop(e, idx)}
+                onDragEnd={reorder.onDragEnd}
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowLeft") { e.preventDefault(); reorder.onKeyboardMove(idx, -1); }
+                  else if (e.key === "ArrowRight") { e.preventDefault(); reorder.onKeyboardMove(idx, 1); }
+                }}
+                className={cn(
+                  "relative w-14 h-14 rounded-md overflow-hidden border-2 bg-bg select-none",
+                  "cursor-grab active:cursor-grabbing focus:outline-none focus:ring-2 focus:ring-accent",
+                  isPrev ? "border-accent" : "border-border",
+                  !isIncl && "opacity-30",
+                  isDragging && "opacity-40 border-accent",
+                  isDragOver && "ring-2 ring-accent",
+                )}
+              >
+                {thumb ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={thumb} alt="" draggable={false} className="w-full h-full object-cover pointer-events-none" />
+                ) : (
+                  <div className="w-full h-full grid place-items-center text-[10px] text-fg-dim">#{idx + 1}</div>
+                )}
+                {/* ⭐ free-preview toggle (only meaningful when included) */}
+                <button
+                  type="button"
+                  onClick={() => togglePreview(id)}
+                  disabled={!isIncl}
+                  title={isPrev ? "Free teaser — tap to lock" : "Locked — tap to show free"}
+                  className="absolute top-0.5 left-0.5 text-[12px] drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] disabled:opacity-40"
+                >
+                  {isPrev ? "⭐" : "☆"}
+                </button>
+                {/* ✕ exclude/include toggle */}
+                <button
+                  type="button"
+                  onClick={() => toggleIncluded(id)}
+                  title={isIncl ? "Skip this one (don't post)" : "Include this one"}
+                  className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 text-white grid place-items-center text-[10px] opacity-90"
+                  aria-label={isIncl ? "Exclude" : "Include"}
+                >
+                  {isIncl ? "×" : "+"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <Button
+          size="sm"
+          onClick={() => onPost(mediaFiles, previewIds)}
+          disabled={posting || !canPost}
+        >
+          {posting ? "Posting…" : "Post to feed"}
+        </Button>
+        <Button size="sm" variant="secondary" onClick={onRegenerate} disabled={regenerating}>
+          {regenerating ? "Generating…" : "Regenerate"}
+        </Button>
+        {postSuccess !== null && (
+          <span className="text-xs text-emerald-500">Posted @ ${postSuccess} ✓</span>
+        )}
+        {postError && <span className="text-xs text-red-500">{postError}</span>}
+        {!canPost && (
+          <span className="text-[11px] text-warn">Include at least one item to post.</span>
+        )}
+      </div>
+    </div>
   );
 }
 

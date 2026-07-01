@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from datetime import datetime, timedelta
 
 import automation_executor as ax  # shared _make_client seam + enqueue_job
@@ -106,6 +107,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 "media_pool": len(_int_list(p.get("media_files"))) if isinstance(p, dict) else 0,
                 "media_folder_id": (p.get("media_folder_id") if isinstance(p, dict) else None),
                 "media_count": (p.get("media_count") or 1) if isinstance(p, dict) else 1,
+                "preview_pool": len(_int_list(p.get("preview_media_files"))) if isinstance(p, dict) else 0,
+                "preview_media_folder_id": (p.get("preview_media_folder_id") if isinstance(p, dict) else None),
+                "preview_media_count": (p.get("preview_media_count") or 1) if isinstance(p, dict) else 1,
                 "hours_to_live": _pos_float(p.get("hours_to_live")) if isinstance(p, dict) else None,
                 "delay_minutes": (_pos_float(p.get("delay_minutes")) or 0) if isinstance(p, dict) else 0,
             }
@@ -168,12 +172,48 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         log.warning("auto_posts: media pool resolved empty + no text — skipping item")
         remaining = await _drip_rest(account_id, rest, employee_id, cycle)
         return {"status": "skipped", "reason": "empty_after_resolve", "remaining": remaining}
+
+    # ── Free-preview pool (PAID posts only) ──────────────────────────────
+    # A paid post can show a FREE teaser: `preview` ⊆ mediaFiles is unlocked
+    # (of_client.create_post → OF `preview`). The preview pool is its own picker
+    # (preview_media_files / _folder_id / _count); its picks are ADDED to
+    # media_files so `previews` is always a valid subset. Free posts skip it.
+    previews: list[int] = []
+    if price and price > 0:
+        preview_spec = {
+            "media_files": spec.get("preview_media_files"),
+            "media_folder_id": spec.get("preview_media_folder_id"),
+            "media_count": spec.get("preview_media_count"),
+        }
+        if has_media_source(preview_spec):
+            preview_files = await asyncio.to_thread(pick_media, preview_spec, client)
+            for pid in preview_files:
+                if pid not in media_files:
+                    media_files.append(pid)
+            previews = [p for p in preview_files if p in media_files]
+
+    # Shuffle the attachment order (item 35): the pool is sampled but preview ids
+    # are appended last, so without this OF's gallery would post free-then-paid in
+    # a fixed order. The SAME shuffled list rides to create_post AND the stored
+    # posts row, so OF's display and our record never diverge.
+    if len(media_files) > 1:
+        random.shuffle(media_files)
+
+    # A PAID post must carry media — OF rejects a priced text-only post. Server
+    # mirror of the PostComposer guard (block only when price>0 && no media).
+    if price and price > 0 and not media_files:
+        log.warning("auto_posts: paid post resolved to no media — skipping item")
+        remaining = await _drip_rest(account_id, rest, employee_id, cycle)
+        return {"status": "skipped", "reason": "paid_no_media", "remaining": remaining}
+
     # Proactively SPACE this post ≥ the gap after the account's previous OF write
     # (so drips never crowd OF's 10s window), with async retry as a backstop. The
     # spacing wait is asyncio.sleep — the loop/threads stay free meanwhile.
     result = await ax.of_write_paced(
         account_id,
-        lambda: client.create_post(text=text, media_files=media_files, price=price),
+        lambda: client.create_post(
+            text=text, media_files=media_files, price=price, previews=previews,
+        ),
     )
     of_post_id = result.get("id") if isinstance(result, dict) else None
     if of_post_id is None:

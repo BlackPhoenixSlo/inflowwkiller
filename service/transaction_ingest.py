@@ -45,6 +45,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select, text
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import accounts as account_registry
 from db.engine import engine, get_session
@@ -118,6 +119,7 @@ KIND_CATALOG: tuple[tuple[str, str], ...] = (
     ("Payment for message from ",    "ppv_message"),   # OF's actual prefix for PPV unlocks
     ("Message from ",                "ppv_message"),
     ("Post from ",                   "ppv_post"),
+    ("Post purchase by ",            "ppv_post"),       # OF's actual ledger prefix for feed-post unlocks
     ("Stream from ",                 "ppv_stream"),
     ("Custom request from ",         "custom"),
     ("Custom from ",                 "custom"),
@@ -277,6 +279,74 @@ async def _link_ppv_message(
     msg.is_paid = True
     msg.purchased_at = occurred_at
     tx.message_id = msg.message_id
+
+
+# Synthetic message_id band for LEDGER-ingested chat tips the WS pump never saw
+# (so no real chat_message row exists). Sits ABOVE the mass-placeholder band
+# (5e15, attribution._MASS_PLACEHOLDER_BASE) and BELOW JS's 2**53 safe-integer
+# ceiling (9.007e15), so the id round-trips through the Number-typed frontend
+# `message_id` without precision loss and can't collide with a real OF id
+# (~9.9e12) or a mass placeholder. id = base + transactions.id (the globally
+# unique autoincrement PK) → stable + unique per (account, fan). NOT a sort key:
+# the per-chat thread orders by created_at, so the tip lands in its true
+# chronological slot no matter where this id sorts.
+_TIP_MSG_ID_BASE = 6_000_000_000_000_000
+
+
+async def _synthesize_tip_message(
+    s,
+    *,
+    account_id: str,
+    fan_id: int,
+    amount_cents: int,
+    occurred_at: datetime,
+    tx: Transaction,
+) -> None:
+    """Write an INBOUND `messages` row for a chat tip that only exists in the
+    ledger, so the tip shows INLINE in the chat thread instead of only in the
+    revenue panel.
+
+    Only called on a FRESH ledger insert of a chat `kind='tip'` with no WS
+    sibling (the fingerprint step found none) — so there's no real chat_message
+    row to duplicate. Idempotent via on_conflict_do_nothing on the composite PK.
+
+    The tip $ goes in the BODY, not price_cents (which stays 0, mirroring the WS
+    tip row): the frontend reads a bubble's price from price_cents and a non-zero
+    value would paint the tip as a locked PPV. `is_tip=True` paints it blue.
+
+    Deliberately does NOT touch `chats` (preview/unread): a cold 90-day backfill
+    replays old tips and must not resurrect the inbox badge; the message row
+    alone satisfies "show the tip inline". Never advances live SSE either — the
+    5-min ledger poll isn't a live path (the WS pump owns that).
+    """
+    # Flush so the autoincrement tx.id is populated for the synthetic id.
+    await s.flush()
+    if tx.id is None:
+        return
+    synth_id = _TIP_MSG_ID_BASE + int(tx.id)
+    amount = (amount_cents or 0) / 100
+    body = f"💸 Sent a ${amount:.2f} tip"
+    stmt = sqlite_insert(Message).values(
+        account_id=str(account_id),
+        fan_id=int(fan_id),
+        message_id=synth_id,
+        direction="in",
+        sender_name="",
+        body=body,
+        media_ids="[]",
+        media_count=0,
+        price_cents=0,
+        is_paid=None,
+        is_tip=True,
+        raw_json=None,
+        created_at=occurred_at,
+        ingested_at=datetime.utcnow(),
+    ).on_conflict_do_nothing(
+        index_elements=["account_id", "fan_id", "message_id"],
+    )
+    await s.execute(stmt)
+    log.info("ingest_tx_synth_tip_msg account=%s fan=%s tx=%s msg=%s cents=%d",
+             account_id, fan_id, tx.id, synth_id, amount_cents or 0)
 
 
 async def _bump_lifetime(s, account_id: str, fan_id: int, amount_cents: int) -> None:
@@ -493,6 +563,17 @@ async def _write_one(account_id: str, raw: dict) -> tuple[int, int]:
                 await _bump_lifetime(
                     s, account_id, parsed["fan_id"], parsed["amount_cents"]
                 )
+                # A chat tip that only exists in the ledger (WS pump missed it)
+                # has NO chat_message row → it never shows in the thread, only
+                # in the revenue panel. Synthesize an inbound row so it appears
+                # inline. Chat tips only (kind=='tip'); tips on posts/streams
+                # (tip_post/tip_stream) don't ride a chat and are excluded.
+                if kind == "tip":
+                    await _synthesize_tip_message(
+                        s, account_id=account_id, fan_id=parsed["fan_id"],
+                        amount_cents=parsed["amount_cents"],
+                        occurred_at=parsed["occurred_at"], tx=new_tx,
+                    )
             broadcast_reason = "insert"
 
     # Apply the chargeback delta after the row UPDATE committed. BEGIN

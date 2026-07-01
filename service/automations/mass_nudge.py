@@ -49,7 +49,12 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax
-from audiences import contact_guard_excludes, resolve_window_hours
+from audiences import (
+    MASSDMEXCLUDE_LIST,
+    contact_guard_excludes,
+    exclude_list_fan_ids,
+    resolve_window_hours,
+)
 from automation_registry import register
 from ._common import load_hard_skip_ids
 from db.engine import get_session
@@ -246,6 +251,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Durably restricted fans (muted peer-creator / hand-restricted) never get a
     # broadcast either — fold them into the exclusion set.
     excl |= await load_hard_skip_ids(account_id)
+    # MASSDMEXCLUDE members — mass_nudge is a mass DM, so it honors the DM opt-out.
+    excl |= await exclude_list_fan_ids(account_id, MASSDMEXCLUDE_LIST)
     recipients = [fid for fid in online if fid not in excl]
 
     if cfg.get("dry_run"):

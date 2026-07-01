@@ -21,10 +21,11 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Gift, FolderOpen, MessageCircle, Image as ImageIcon, Flame } from "lucide-react";
+import { Gift, FolderOpen, MessageCircle, Image as ImageIcon, Flame, HandCoins } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/primitives";
 import { VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
+import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import {
   useTipRewardConfig,
   useSaveTipRewardConfig,
@@ -79,6 +80,14 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   const [imageReplyCooldown, setImageReplyCooldown] = useState(6);
   const [imageReplyCaption, setImageReplyCaption] = useState("");
 
+  // Item 42 — tip-request follow-up (nested tip_request config).
+  const [trEnabled, setTrEnabled] = useState(false);
+  const [trMediaId, setTrMediaId] = useState<string>(""); // "" = unset
+  const [trCaption, setTrCaption] = useState("");
+  const [trMinWait, setTrMinWait] = useState(2);
+  const [trMaxAge, setTrMaxAge] = useState(48);
+  const [trCooldown, setTrCooldown] = useState(168);
+
   useEffect(() => {
     setEnabled(!!eff.enabled);
     setAlwaysReward(!!eff.always_reward);
@@ -95,6 +104,13 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setImageCloserEnabled(!!eff.image_closer_enabled);
     setImageReplyCooldown(eff.image_reply_cooldown_hours ?? 6);
     setImageReplyCaption(eff.image_reply_caption ?? "");
+    const tr = eff.tip_request ?? {};
+    setTrEnabled(!!tr.enabled);
+    setTrMediaId(tr.media_id == null ? "" : String(tr.media_id));
+    setTrCaption(tr.caption ?? "");
+    setTrMinWait(tr.min_wait_hours ?? 2);
+    setTrMaxAge(tr.max_age_hours ?? 48);
+    setTrCooldown(tr.cooldown_hours ?? 168);
   }, [eff]);
 
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
@@ -138,6 +154,15 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       image_closer_enabled: imageCloserEnabled,
       image_reply_cooldown_hours: imageReplyCooldown,
       image_reply_caption: imageReplyCaption.trim(),
+      // Item 42 — tip-request follow-up. media_id "" → null (stays disabled).
+      tip_request: {
+        enabled: trEnabled,
+        media_id: trMediaId.trim() === "" ? null : Math.max(1, Math.round(Number(trMediaId) || 0)),
+        caption: trCaption.trim(),
+        min_wait_hours: trMinWait,
+        max_age_hours: trMaxAge,
+        cooldown_hours: trCooldown,
+      },
       tiers: tiers
         // a tier with no folders does nothing — drop it on save
         .map((t) => ({
@@ -156,6 +181,9 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       <header className="flex items-center gap-2">
         <Gift size={16} className="text-accent" />
         <h3 className="text-sm font-medium">Tip Reward</h3>
+        <div className="ml-auto">
+          <EditRawJsonButton surface="tip-reward-config" accountId={accountId} />
+        </div>
       </header>
 
       <p className="text-xs text-fg-dim leading-relaxed">
@@ -443,6 +471,82 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
             Requires <b>AI Seller</b> (ai_chatter) to be enabled for this account —
             the closer <i>is</i> the AI Seller. With it off, this switch does nothing.
           </p>
+        )}
+      </Section>
+
+      {/* ── TIP REQUEST (item 42) ──────────────────────────────────────────
+          A fan buys a MASS PPV and goes quiet → send one free teaser + ask for
+          a tip. Its own automation (tip_request); needs a schedule rule to fire. */}
+      <Section
+        icon={<HandCoins size={15} />}
+        title="Ask a quiet mass-buyer for a tip"
+        subtitle="When a fan buys one of your mass PPVs and then doesn't reply, send them one free teaser image with a caption asking for a tip — to warm the chat back up. One global image for everyone."
+        toggle={
+          <Toggle
+            checked={trEnabled}
+            onChange={(v) => {
+              markDirty();
+              setTrEnabled(v);
+            }}
+          />
+        }
+      >
+        {trEnabled && (
+          <div className="space-y-4">
+            <label className="block space-y-1">
+              <div className="text-xs font-medium text-fg">Teaser image — vault media id</div>
+              <input
+                type="number"
+                min={1}
+                className={`${INPUT} w-56`}
+                placeholder="e.g. 4123456789"
+                value={trMediaId}
+                onChange={(e) => {
+                  markDirty();
+                  setTrMediaId(e.target.value);
+                }}
+              />
+              <div className="text-[11px] text-fg-dim/70">
+                The one free image sent to every quiet mass-buyer. Blank = disabled
+                (nothing sends). Grab the id from a vault item.
+              </div>
+            </label>
+            <label className="block space-y-1">
+              <div className="text-xs font-medium text-fg">Caption</div>
+              <input
+                type="text"
+                className={`${INPUT} w-full`}
+                placeholder="hope you loved that 🥺 wanna send me a lil tip so i keep going?"
+                value={trCaption}
+                onChange={(e) => {
+                  markDirty();
+                  setTrCaption(e.target.value);
+                }}
+              />
+            </label>
+            <div className="flex flex-wrap gap-4">
+              <NumField
+                label="Wait after buy (h)" hint="give them time to reply first"
+                value={trMinWait} min={0} max={8760}
+                onChange={(n) => { markDirty(); setTrMinWait(n); }}
+              />
+              <NumField
+                label="Max age (h)" hint="don't chase a purchase older than this"
+                value={trMaxAge} min={1} max={8760}
+                onChange={(n) => { markDirty(); setTrMaxAge(n); }}
+              />
+              <NumField
+                label="Cooldown (h)" hint="at most one tip-request per fan per this many hours"
+                value={trCooldown} min={0} max={8760}
+                onChange={(n) => { markDirty(); setTrCooldown(n); }}
+              />
+            </div>
+            <p className="text-[11px] text-fg-dim/70 leading-relaxed">
+              Runs as a scheduled sweep — add a <b>tip_request</b> automation rule
+              (with a cadence trigger) for it to fire. Skips anyone recently
+              contacted (contact guard) and won't re-nudge within the cooldown.
+            </p>
+          </div>
         )}
       </Section>
 

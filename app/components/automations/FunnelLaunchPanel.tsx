@@ -16,7 +16,7 @@
  * paid PPV lives in a later funnel step).
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Megaphone, X } from "lucide-react";
 
@@ -39,6 +39,13 @@ const SYSTEM_AUDIENCES: Array<{ id: string; label: string }> = [
   { id: "following", label: "Following" },
 ];
 
+// The standing "never mass PPV" exclude list, kept per account with this exact
+// name. Auto-selected in the Exclude set on open so every funnel start skips it
+// by default; the operator can untick it for a one-off. Matched case-insensitively.
+export const MASS_EXCLUDE_LIST_NAME = "MASSPPVEXCLUDE";
+// Default auto-unsend window for a funnel opener (hours). Pre-fills the field.
+const DEFAULT_UNSEND_HOURS = "4";
+
 export function FunnelLaunchPanel({
   funnel,
   accountId,
@@ -56,6 +63,11 @@ export function FunnelLaunchPanel({
   const [excludes, setExcludes] = useState<Set<string>>(() => new Set());
   const [onlineOnly, setOnlineOnly] = useState(false);
   const [skipMessagedHours, setSkipMessagedHours] = useState("");
+  // Auto-unsend the opener N hours after it sends. When it's unsent we also STOP
+  // enrolling NEW repliers off this mass (the walker keeps going until a buy).
+  // Pre-filled with the default; blank → no per-send auto-unsend.
+  const [unsendHours, setUnsendHours] = useState(DEFAULT_UNSEND_HOURS);
+  const [excludesSeeded, setExcludesSeeded] = useState(false);
   const [done, setDone] = useState<string | null>(null);
 
   const listsQ = useQuery<FanList[]>({
@@ -71,6 +83,18 @@ export function FunnelLaunchPanel({
     () => (listsQ.data ?? []).filter((l) => l.type !== "build-in" && l.type !== "built-in"),
     [listsQ.data],
   );
+
+  // Default the standing MASSPPVEXCLUDE list into the exclude set once the
+  // account's lists load (only if it exists; operator can untick it). Seeded
+  // once per open so a manual untick isn't re-added on the next render.
+  useEffect(() => {
+    if (excludesSeeded || !listsQ.data) return;
+    const match = (listsQ.data ?? []).find(
+      (l) => String(l.name ?? "").trim().toUpperCase() === MASS_EXCLUDE_LIST_NAME,
+    );
+    if (match) setExcludes((prev) => new Set(prev).add(String(match.id)));
+    setExcludesSeeded(true);
+  }, [excludesSeeded, listsQ.data]);
 
   // Toggle `id` in `set`. When adding it, drop it from the opposite set so an
   // audience can't be both included and excluded (a contradictory queue body).
@@ -116,12 +140,22 @@ export function FunnelLaunchPanel({
       if (skipMessagedHours.trim() !== "" && Number.isFinite(h) && h > 0) {
         body.exclude_replied_hours = h;
       }
-      return relay.post("/api/of/v2/messages/queue", body, {
-        accountId,
-        employeeId: currentEmployee?.id,
-      });
+      const uh = Number(unsendHours);
+      if (unsendHours.trim() !== "" && Number.isFinite(uh) && uh > 0) {
+        body.unsend_after_hours = uh;
+      }
+      return relay.post<{ _skipped_already_answered?: number }>(
+        "/api/of/v2/messages/queue", body,
+        { accountId, employeeId: currentEmployee?.id },
+      );
     },
-    onSuccess: () => setDone("Funnel started — opener queued to OnlyFans. Replies will auto-walk the steps."),
+    onSuccess: (resp) => {
+      const skipped = Number(resp?._skipped_already_answered) || 0;
+      const base = "Funnel started — opener queued to OnlyFans. Replies will auto-walk the steps.";
+      setDone(skipped > 0
+        ? `${base} (${skipped} already answered this funnel — skipped.)`
+        : base);
+    },
   });
 
   function confirmAndSend() {
@@ -233,7 +267,24 @@ export function FunnelLaunchPanel({
             onChange={(e) => { setDone(null); setSkipMessagedHours(e.target.value); }}
           />
         </label>
+        <label className="space-y-1">
+          <div className="text-[11px] text-fg-dim">Auto-unsend opener after … hours</div>
+          <Input
+            type="number"
+            min={0}
+            className="w-28"
+            placeholder="e.g. 4"
+            value={unsendHours}
+            onChange={(e) => { setDone(null); setUnsendHours(e.target.value); }}
+          />
+        </label>
       </div>
+      <p className="text-[11px] text-fg-dim -mt-1">
+        Fans who already answered this funnel are skipped automatically, and your{" "}
+        <span className="text-fg-dim font-medium">{MASS_EXCLUDE_LIST_NAME}</span>{" "}
+        list is excluded by default. When the opener is unsent, new repliers stop
+        enrolling — but anyone already chatting keeps going until they buy.
+      </p>
 
       <div className="flex items-center gap-3 pt-1">
         <Button variant="primary" onClick={confirmAndSend} disabled={send.isPending || !accountId}>

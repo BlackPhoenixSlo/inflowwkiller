@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Zap } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/primitives";
+import { EditRawJsonButton } from "./JsonConfigModal";
 import {
   useWebhookConfig,
   useSaveWebhookConfig,
@@ -66,11 +67,24 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
         <h3 className="text-sm font-medium">Instant reply (real-time dispatch)</h3>
       </header>
 
-      <p className="text-xs text-fg-dim leading-relaxed">
-        When ON, the AI reacts the moment a fan replies — in seconds, not on the
-        30-second timer. A human chatter always wins: if a person is handling the
-        chat, the bot stands down.
-      </p>
+      <div className="text-xs text-fg-dim leading-relaxed space-y-2">
+        <p>
+          This does not change <span className="text-fg">what</span> the AI says —
+          only <span className="text-fg">how fast</span> it replies. Normally the
+          bot checks each chat on a 30-second timer. When ON, an incoming fan
+          message wakes the same AI reply <span className="text-fg">instantly</span>,
+          so it answers in seconds instead of waiting for the next check.
+        </p>
+        <p>
+          The 30-second check keeps running underneath as a safety net, and the
+          two can never double-reply a fan: whichever fires first sends, the other
+          sees the fan was just answered and stands down.
+        </p>
+        <p>
+          A human always wins: if you or a chatter are handling a chat, the bot
+          backs off (see “Stand down”, below).
+        </p>
+      </div>
 
       {/* Enabled toggle */}
       <label className="flex items-center gap-3 cursor-pointer">
@@ -122,7 +136,9 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
           <span className="text-fg font-medium">
             {hi > lo ? `${lo}–${hi}s` : `${lo}s`}
           </span>{" "}
-          after a fan's message.
+          after a fan's message. A short, slightly random wait keeps it from
+          looking robotic and gives a human chatter a moment to step in first.
+          Leave both at 0 for an immediate reply.
         </p>
       )}
 
@@ -209,6 +225,9 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
         {saveM.isError && (
           <span className="text-xs text-red-500">Save failed</span>
         )}
+        <div className="ml-auto">
+          <EditRawJsonButton surface="webhook-config" accountId={accountId} />
+        </div>
       </div>
     </Card>
   );

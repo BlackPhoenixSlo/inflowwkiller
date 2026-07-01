@@ -17,10 +17,11 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useFan } from "@/hooks/useFan";
 import { useOFUser } from "@/hooks/useOFUser";
+import { useMassExclude, type MassExcludeKind } from "@/hooks/useMassExclude";
 import { useFanActivity } from "@/hooks/useLastPurchases";
 import { useFanPpvHistory, type PpvHistoryItem } from "@/hooks/useFanPpvHistory";
 import { useFanChatMedia, type FanChatMediaItem } from "@/hooks/useFanChatMedia";
@@ -67,6 +68,49 @@ function AiSellerChip({ accountId, fanId }: { accountId: string; fanId: number }
           ×
         </button>
       )}
+    </div>
+  );
+}
+
+/** 🚫 Mass-exclude toggle — flags a fan onto MASSppvEXCLUDE (kind="ppv") or
+ *  MASSdmEXCLUDE (kind="dm") so that kind of mass send skips them. Each mirrors a
+ *  server-side List(kind='exclude') to a same-named pinned OF list; PPV gates
+ *  priced mass sends, DM gates unpriced ones (mass DM / online blast / nudge).
+ *  Excluded fans STILL get welcomes / AI replies / manual 1:1s. Shares its query
+ *  key with the chat-header ⋯ menu toggle so both stay in sync. Optimistic. */
+function MassExcludeToggle({
+  accountId, fanId, kind, title, hint,
+}: {
+  accountId: string; fanId: number; kind: MassExcludeKind; title: string; hint: string;
+}) {
+  const { isOn, isLoading, toggle } = useMassExclude(accountId, fanId, kind);
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg px-2.5 py-2">
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-fg flex items-center gap-1.5">
+          <span>🚫</span> {title}
+        </div>
+        <div className="text-[10px] text-fg-dim leading-tight mt-0.5">{hint}</div>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={isOn}
+        disabled={isLoading || toggle.isPending}
+        onClick={() => toggle.mutate(!isOn)}
+        title={isOn ? `Remove from ${title}` : `Add to ${title}`}
+        className={cn(
+          "relative shrink-0 w-10 h-6 rounded-full transition-colors disabled:opacity-50",
+          isOn ? "bg-accent" : "bg-bg-elev-1 border border-border",
+        )}
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform",
+            isOn ? "translate-x-4" : "translate-x-0",
+          )}
+        />
+      </button>
     </div>
   );
 }
@@ -391,6 +435,13 @@ export function FanDrawer({
                   </div>
                 ) : null}
               </Field>
+
+              <div className="space-y-1.5">
+                <MassExcludeToggle accountId={accountId} fanId={fanId} kind="ppv"
+                  title="MASSppvEXCLUDE" hint="Never include in mass PPV sends." />
+                <MassExcludeToggle accountId={accountId} fanId={fanId} kind="dm"
+                  title="MASSdmEXCLUDE" hint="Never include in mass DMs or online blasts." />
+              </div>
 
               {/* Live numbers pulled from OF's /users/{id}.subscribedOnData,
                *  same path the desktop app uses. Falls back to our DB copy

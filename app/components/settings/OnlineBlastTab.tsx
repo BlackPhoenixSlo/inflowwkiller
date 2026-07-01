@@ -18,6 +18,7 @@ import { useEffect, useState } from "react";
 import { Radio, Play, Eye, ChevronDown, Plus, X, Image as ImageIcon } from "lucide-react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
+import { EditRuleJsonButton } from "@/components/automations/EditRuleJsonModal";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -197,7 +198,7 @@ export default function OnlineBlastTab() {
 
   return (
     <div className="space-y-5 max-w-2xl">
-      <header className="flex items-center gap-2">
+      <header className="flex items-start gap-2">
         <Radio className="size-5 text-accent" />
         <div>
           <h2 className="text-lg font-semibold">Online Blast</h2>
@@ -206,6 +207,9 @@ export default function OnlineBlastTab() {
             server-side, so a single call reaches tens of thousands. Built for large (100k+) accounts;
             skips anyone you’ve chatted with recently (both directions). No per-fan cap.
           </p>
+        </div>
+        <div className="ml-auto shrink-0">
+          <EditRuleJsonButton accountId={accountId} kind="online_blast" />
         </div>
       </header>
 

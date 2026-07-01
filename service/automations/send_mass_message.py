@@ -148,6 +148,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # ── 1) Resolve text + audience (funnels / lists / fans) ──────────────
     async with get_session() as s:
         funnel = await _resolve_funnel(s, payload)
+        # Capture the id INSIDE the session (the object expires on close) — it's
+        # the dedup key for exclude_funnel_responders (R1/R2).
+        funnel_id_resolved = int(funnel.id) if funnel is not None else None
 
         # Explicit fans + DB-list members → the KNOWN recipients we can write
         # optimistic rows for. OF list NAMES go through untouched as userLists.
@@ -170,6 +173,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     from audiences import (
         BROADCAST_DEFAULT_INBOUND_H,
         BROADCAST_DEFAULT_OUTBOUND_H,
+        MASSDMEXCLUDE_LIST,
+        MASSPPVEXCLUDE_LIST,
         resolve_mass_audience,
         resolve_window_hours,
     )
@@ -185,10 +190,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         recent_chat_limit=payload.get("recent_chat_limit"),
         exclude_replied_hours=out_h or None,   # explicit 0 → None → guard off
         exclude_inbound_hours=in_h or None,
+        # Opt-in "last chatted (either direction) within N h" guard — absent →
+        # off. Do-Not-Mass + pending-send excludes apply regardless.
+        exclude_last_chat_hours=payload.get("exclude_last_chat_hours"),
+        exclude_funnel_responders=funnel_id_resolved,  # R1/R2 answered-once dedup
         unread_limit=payload.get("unread_limit"),
+        # Priced broadcast → PPV opt-out list; unpriced text → DM opt-out list.
+        exclude_list_name=(MASSPPVEXCLUDE_LIST if float(payload.get("price") or 0) > 0 else MASSDMEXCLUDE_LIST),
     )
     included = resolved["included_users"]
     excluded = resolved["excluded_users"]
+    skipped_answered = resolved.get("skipped_funnel_responders") or []
 
     # Dedup while preserving order; drop excluded from the known set.
     excl_set = set(excluded)
@@ -388,9 +400,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     return {
         "mass_run_id": mass_run_id,
         "queue_id": int(queue_id) if queue_id is not None else None,
-        "funnel_id": funnel.id if funnel else None,
+        "funnel_id": funnel_id_resolved,
         "recipients": len(recipients),
         "user_lists": len(user_lists),
         "echoed_rows": len(echoed_fans),
         "optimistic_rows": optimistic,
+        # R1/R2: fans dropped because they already answered this funnel.
+        "skipped_already_answered": len(skipped_answered),
+        "skipped_already_answered_ids": skipped_answered,
     }

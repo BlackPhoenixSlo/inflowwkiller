@@ -808,7 +808,8 @@ class OFClient:
 
     def vault_media(self, *, limit: int = 24, offset: int = 0,
                     type: str = "all", list_id: int | None = None,
-                    sort: str = "desc", field: str = "recent") -> dict:
+                    sort: str = "desc", field: str = "recent",
+                    query: str | None = None) -> dict:
         """GET /api2/v2/vault/media — vault items.
 
         `type`: 'all'|'photo'|'video'|'gif'|'audio' — **OF uses `?type=`,
@@ -817,13 +818,20 @@ class OFClient:
         `list_id`: restrict to a vault list/folder. OF takes this on the
         `list` param (replacing the default 'all'), NOT as a separate
         `list_id` — sending both silently ignores the filter.
-        `sort` / `field`: ordering (captured from OF UI: `field=recent&sort=desc`)."""
+        `sort` / `field`: ordering. **`sort=asc` IS honored server-side**
+        (verified live: asc → 2018 items, desc → 2026 items) — OF's field name
+        is `sort`, values `asc`/`desc`, with `field=recent`.
+        `query`: OF-native full-text vault search. The wire param is **`query`**
+        (verified live: `query=bikini` narrowed 50→5; `search`/`q`/`text` are
+        silently ignored). Empty/None omits it."""
         params: dict[str, Any] = {
             "limit": limit, "offset": offset, "sort": sort, "field": field,
             "list": str(list_id) if list_id is not None else "all",
         }
         if type and type != "all":
             params["type"] = type
+        if query and query.strip():
+            params["query"] = query.strip()
         return self.get_json(f"{API_BASE}/vault/media", params=params)
 
     def vault_media_by_id(self, media_id: int) -> dict:
