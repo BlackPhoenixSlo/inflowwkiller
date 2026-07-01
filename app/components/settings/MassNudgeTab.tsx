@@ -14,6 +14,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Megaphone, Play, Rocket, Eye, ChevronDown, Plus, X, Image as ImageIcon } from "lucide-react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
+import { EditRuleJsonButton } from "@/components/automations/EditRuleJsonModal";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -232,7 +233,7 @@ export default function MassNudgeTab() {
 
   return (
     <div className="space-y-5 max-w-2xl">
-      <header className="flex items-center gap-2">
+      <header className="flex items-start gap-2">
         <Megaphone className="size-5 text-accent" />
         <div>
           <h2 className="text-lg font-semibold">Mass Nudge</h2>
@@ -241,6 +242,9 @@ export default function MassNudgeTab() {
             no names, no per-fan delay. For accounts with lots of fans coming online,
             where a personalized per-fan nudge would be too many sends.
           </p>
+        </div>
+        <div className="ml-auto shrink-0">
+          <EditRuleJsonButton accountId={accountId} kind="mass_nudge" />
         </div>
       </header>
 

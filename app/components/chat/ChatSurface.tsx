@@ -26,6 +26,7 @@ import { useLikeMessage } from "@/hooks/useLikeMessage";
 import { useTogglePinMessage } from "@/hooks/useTogglePinMessage";
 import { useUnsendMessage } from "@/hooks/useUnsendMessage";
 import { useFan } from "@/hooks/useFan";
+import { useRosterCountActions } from "@/hooks/useRosterCounts";
 import { readFanDrawerDefault, useFanDrawerDefault } from "@/hooks/useFanDrawerDefault";
 import {
   useServerScheduledSends,
@@ -42,6 +43,7 @@ import { FanDrawer } from "./FanDrawer";
 import { ScheduledForChat } from "./ScheduledForChat";
 import { ChatSearch } from "./ChatSearch";
 import { ChatActionsMenu } from "./ChatActionsMenu";
+import { ModelInfoButton } from "./ModelInfoButton";
 import { PinnedBar, PinnedPopover, PinnedSidePanel } from "./PinnedPanel";
 
 export interface QuotedReply {
@@ -106,6 +108,8 @@ export function ChatSurface({
 }) {
   const { current: currentEmployee } = useEmployee();
   const qc = useQueryClient();
+  const { refreshOne: refreshRosterOne, patchLocal: patchRosterLocal } =
+    useRosterCountActions();
 
   const [drawerKeepOpenPref] = useFanDrawerDefault();
   const drawerKeepOpen = forceDrawerOpen || drawerKeepOpenPref;
@@ -268,7 +272,14 @@ export function ChatSurface({
           exact: false,
         }),
         qc.invalidateQueries({ queryKey: ["last-purchases", accountId] }),
-        qc.invalidateQueries({ queryKey: ["roster-counts"] }),
+        // Force this model's badge authoritative (busts its server cache + re-reads
+        // only it); a plain invalidate would just refetch the stale cached count.
+        refreshRosterOne(accountId, { force: true }),
+        // #11: also refresh the account's list/folder membership view so Refresh
+        // updates which lists the fan is in / can be added to — the folder chips
+        // and counts — not just this fan's messages/profile. (of-user above
+        // already refreshes the per-fan listsStates.)
+        qc.invalidateQueries({ queryKey: ["chat-folders", accountId] }),
         // Re-cache into the local mirror: re-scrape this fan's chat from OF so
         // the persisted history catches a just-paid PPV/tip that the live UI
         // pull alone wouldn't reconcile. Runs INLINE (not the automation queue)
@@ -286,7 +297,7 @@ export function ChatSurface({
     } finally {
       setIsRefreshing(false);
     }
-  }, [qc, accountId, fanId]);
+  }, [qc, accountId, fanId, refreshRosterOne]);
 
   // Mark the chat read on open. Patches the inbox cache locally so the
   // blue dot disappears immediately, then fires the server POST in the
@@ -303,7 +314,17 @@ export function ChatSurface({
       .post<{ cleared?: boolean }>(`/admin/messages/${accountId}/${fanId}/mark-read`, undefined)
       .then((res) => {
         if (res?.cleared && !cancelled) {
-          qc.invalidateQueries({ queryKey: ["roster-counts"] });
+          // Opening an unread chat moves it off the roster's BLUE (unread) and
+          // onto ORANGE (read, fan spoke last) in the same tick — patch the cached
+          // badge optimistically so it drops instantly. We deliberately DON'T
+          // re-read OF here: the mark-read POST already busts the server-side
+          // roster cache, and the badge is OF-truth, so an immediate re-read could
+          // race OF's own read-processing and flicker the count back up. The 60s
+          // poll (now reading a busted cache) reconciles to OF-truth cleanly.
+          patchRosterLocal(accountId, (c) => ({
+            unread: Math.max(0, c.unread - 1),
+            owe_reply: c.owe_reply + 1,
+          }));
         }
       })
       .catch((err) => console.warn("[mark-read local] failed", err));
@@ -331,7 +352,7 @@ export function ChatSurface({
     });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, fanId]);
+  }, [accountId, fanId, patchRosterLocal]);
 
   const sender = useSendMessage({
     accountId,
@@ -504,6 +525,20 @@ export function ChatSurface({
       })
       .catch((err) => console.warn("[vault backfill] failed", err));
   }, [accountId, fanId, handle.data, meQ.data?.id, qc]);
+
+  // #19: the vault "restock" — the SENT / PURCHASED / UNSEEN badges the picker
+  // reads from ["vault-history"] — must refresh every time a chat is opened,
+  // from ANY entry point (a Tips-tab row, a PPV-message row, a deep link). The
+  // backfill effect above only invalidates when it *inserts* new rows, so a chat
+  // whose sends were already backfilled on an earlier open (e.g. first reached
+  // from Chat messages) never re-fetched its history when later opened from a
+  // tip — the reported "restock doesn't trigger from a tip" bug. A plain
+  // invalidate on open makes the restock entry-point-agnostic; it's a cheap,
+  // idempotent read (a no-op while the picker isn't mounted).
+  useEffect(() => {
+    if (!accountId || fanId == null) return;
+    qc.invalidateQueries({ queryKey: ["vault-history", accountId, fanId] });
+  }, [accountId, fanId, qc]);
 
   // The `chat` prop is a snapshot captured at click time and never refreshed.
   // After a scope switch the ChatList serves placeholderData while the new
@@ -744,6 +779,7 @@ export function ChatSurface({
           <span className={cn("inline-block no-underline", (isRefreshing || handle.isFetching) && "animate-spin")}>↻</span>
           <span>refresh</span>
         </button>
+        <ModelInfoButton accountId={accountId} />
         <button
           type="button"
           onClick={() => setActionsOpen((v) => !v)}

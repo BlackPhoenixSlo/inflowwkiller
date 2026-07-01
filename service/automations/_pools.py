@@ -51,8 +51,9 @@ def has_media_source(item: dict) -> bool:
 
 
 def _folder_photo_ids(client, folder_id: int) -> list[int]:
-    """Non-DRM photo ids in one vault folder (mirrors auto_stories._usable_photos,
-    but returns ids since posts/mass attach by vault id)."""
+    """Non-DRM photo ids in one vault folder — the shared photo-pool source for
+    auto_posts, mass_premade, and auto_stories (returns ids; callers that need a
+    url resolve them via vault_media_by_id)."""
     page = client.vault_media(type="photo", list_id=int(folder_id),
                               limit=48, field="recent", sort="desc")
     items = page.get("list") or page.get("items") or []

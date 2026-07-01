@@ -2,8 +2,10 @@
 
 Drives the Settings → Auto stories tab. On each trigger it:
 
-  1. lists photos in one vault folder (`folder_id`),
-  2. picks `per_run` random non-DRM photos (default 1),
+  1. builds a photo POOL — explicit `media_files` ids ∪ a vault folder
+     (`media_folder_id`, or the legacy `folder_id`) — via `_pools.pick_media`,
+  2. samples `media_count` (default = `per_run`) random photos and resolves
+     each id → its CDN url (stories need a url, not a bare vault id),
   3. posts each as a story  → of_client.post_story_from_url (the captured
      vault/CDN → convert → POST /stories flow),
   4. if `hours_to_live` is set, enqueues a one-shot `unsend_messages` job at
@@ -22,22 +24,26 @@ auto_posts / unsend_messages. Self-registers via `@register("auto_stories")`.
 Payload (steps_json) shape::
 
     {
-      "folder_id": 22454297,     # required — vault list/folder id
-      "per_run": 1,              # stories to post this trigger (default 1)
-      "hours_to_live": 6,        # auto-delete after N hours (null/0 = keep)
-      "watermark_text": null,    # optional watermark stamped on re-upload
-      "dry_run": false           # resolve picks, post nothing
+      "media_folder_id": 22454297, # vault folder pool (alias: legacy `folder_id`)
+      "media_files": [11, 12],     # explicit vault-id pool — joins the folder pool
+      "media_count": 1,            # photos per trigger (alias/fallback: `per_run`)
+      "per_run": 1,                # legacy count knob (used when media_count unset)
+      "hours_to_live": 6,          # auto-delete after N hours (null/0 = keep)
+      "watermark_text": null,      # optional watermark stamped on re-upload
+      "dry_run": false             # resolve picks, post nothing
     }
+
+At least one of `media_folder_id`/`folder_id`/`media_files` must be present.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import random
 from datetime import datetime, timedelta
 
 import automation_executor as ax  # shared _make_client seam + enqueue_job
 from automation_registry import register
+from automations._pools import has_media_source, pick_media
 
 log = logging.getLogger("of-relay.automation.auto_stories")
 
@@ -55,48 +61,76 @@ def _pos_int(raw: object, default: int) -> int:
     return default
 
 
-def _usable_photos(client, folder_id: int) -> list[dict]:
-    """Non-DRM photos with a real CDN url from one vault folder."""
-    page = client.vault_media(type="photo", list_id=folder_id,
-                              limit=48, field="recent", sort="desc")
-    items = page.get("list") or page.get("items") or []
-    out = []
-    for it in items:
-        full = ((it.get("files") or {}).get("full") or {})
-        if full.get("url") and not full.get("drm"):
-            out.append(it)
-    return out
+def _photo_url(client, media_id: int) -> str | None:
+    """Resolve one vault photo id → its full-res, non-DRM CDN url (or None).
+
+    /stories can't take a bare vault id (create_story rejects it), so each pool
+    pick is resolved to a url here via the by-id vault read; post_story_from_url
+    then downloads → re-uploads it. DRM / urlless items resolve to None and are
+    skipped by the caller."""
+    try:
+        it = client.vault_media_by_id(int(media_id))
+    except Exception:
+        log.warning("auto_stories: vault_media_by_id failed id=%r", media_id, exc_info=True)
+        return None
+    full = ((it.get("files") or {}).get("full") or {}) if isinstance(it, dict) else {}
+    url = full.get("url")
+    if url and not full.get("drm"):
+        return url
+    return None
 
 
 @register("auto_stories")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
-    """Post `per_run` random stories from `folder_id`, scheduling each delete."""
+    """Post `per_run` random stories from a media POOL, scheduling each delete.
+
+    The pool mirrors auto_posts: explicit `media_files` ids ∪ a vault folder,
+    with `media_count` (falls back to `per_run`) sampled per fire. The legacy
+    single-folder shape (`folder_id`) still works — it maps onto the pool's
+    `media_folder_id`."""
     payload = payload or {}
-    folder_id = payload.get("folder_id")
+
+    # Folder: prefer the pool name, fall back to the legacy `folder_id`.
+    folder_id = payload.get("media_folder_id")
+    if folder_id is None:
+        folder_id = payload.get("folder_id")
     try:
-        folder_id = int(folder_id)
+        folder_id = int(folder_id) if folder_id is not None else None
     except (TypeError, ValueError):
-        return {"status": "skipped", "reason": "no_folder_id"}
+        folder_id = None
 
     per_run = _pos_int(payload.get("per_run"), 1)
+    count = _pos_int(payload.get("media_count"), 0) or per_run
     hours_to_live = _pos_float(payload.get("hours_to_live"))
     watermark_text = payload.get("watermark_text") or None
 
+    pool_spec = {
+        "media_files": payload.get("media_files"),
+        "media_folder_id": folder_id,
+        "media_count": count,
+    }
+    if not has_media_source(pool_spec):
+        return {"status": "skipped", "reason": "no_media_source"}
+
     client = await asyncio.to_thread(ax._make_client, account_id)
 
-    usable = await asyncio.to_thread(_usable_photos, client, folder_id)
-    if not usable:
+    # Sample the pool → ids (shared _pools helper: dedups + non-DRM folder filter
+    # + clamps to pool size), then resolve each id → a CDN url stories can use.
+    picked_ids = await asyncio.to_thread(pick_media, pool_spec, client)
+    resolved: list[tuple[int, str]] = []
+    for mid in picked_ids:
+        url = await asyncio.to_thread(_photo_url, client, mid)
+        if url:
+            resolved.append((mid, url))
+    if not resolved:
         return {"status": "skipped", "reason": "no_usable_photos",
                 "folder_id": folder_id}
-
-    n = min(per_run, len(usable))
-    picks = random.sample(usable, n)
 
     # ── dry_run: report the picks, touch nothing ────────────────────────
     if payload.get("dry_run"):
         return {
             "dry_run": True, "folder_id": folder_id,
-            "would_post": [p.get("id") for p in picks],
+            "would_post": [mid for mid, _ in resolved],
             "posted": 0,
         }
 
@@ -111,18 +145,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     posted: list[dict] = []
     failed = 0
     now = datetime.utcnow()
-    for pick in picks:
-        url = pick["files"]["full"]["url"]
+    for mid, url in resolved:
         try:
             story = await asyncio.to_thread(
                 lambda u=url: client.post_story_from_url(u, watermark_text=watermark_text)
             )
         except Exception as e:  # noqa: BLE001 — one bad pick shouldn't strand the rest
             failed += 1
-            log.warning("auto_stories: post failed vault=%s: %s", pick.get("id"), e)
+            log.warning("auto_stories: post failed vault=%s: %s", mid, e)
             continue
         story_id = story.get("id") if isinstance(story, dict) else None
-        entry = {"vault_id": pick.get("id"), "story_id": story_id}
+        entry = {"vault_id": mid, "story_id": story_id}
 
         # Schedule the auto-delete (the cleanup leg).
         if story_id and hours_to_live:

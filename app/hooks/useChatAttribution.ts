@@ -24,6 +24,10 @@ export interface AttributionEntry {
   // present, the bubble label shows the specific automation name instead of the
   // flat "Automation" sentinel that every bot send's display_name resolves to.
   automation_kind: string | null;
+  // Denormalized mass sender tag ("mass-kingsley1") for human broadcast rows;
+  // "" (or null) for 1:1 sends and automation-fired mass. The bubble prefers it
+  // over the automation label / employee name when present.
+  sender_name: string | null;
   color: string | null;
 }
 

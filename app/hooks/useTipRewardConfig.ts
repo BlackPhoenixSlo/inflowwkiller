@@ -37,6 +37,17 @@ export interface TipRewardConfig {
   image_reply_basis_cents?: number; // tier basis for the freebie (default 999 = "under $10")
   image_reply_cooldown_hours?: number; // per-fan throttle (also dedups webhook replays)
   image_reply_caption?: string; // optional caption ('' → media-only)
+  // Item 42 — "tip request" follow-up: a fan buys a MASS PPV and goes quiet →
+  // send one free teaser image + a "send me a tip?" caption. Its own automation
+  // (`tip_request`), nested here because it shares this config column.
+  tip_request?: {
+    enabled?: boolean;
+    media_id?: number | null; // global-default teaser vault media id
+    caption?: string;
+    min_wait_hours?: number; // wait this long after the buy before nudging
+    max_age_hours?: number; // don't chase a purchase older than this
+    cooldown_hours?: number; // per-fan: at most one tip-request every N hours
+  };
 }
 
 interface TipRewardConfigResponse {

@@ -64,9 +64,19 @@ _INT_KNOBS = {
     "max_fans_per_tick": (1, 100),
     "resume_after_manual_hours": (0, 168),
     "stall_ttl_hours": (1, 720),
+    # Cadence controller (items 10/17/18/21).
+    "session_gap_minutes": (5, 1440),
+    "post_purchase_minutes": (0, 1440),
+    "offer_expiry_minutes": (0, 10_080),
+    "nudge_after_minutes": (1, 1440),
 }
 _MODES = ("backup", "always")
 _OFFER_MODES = ("tip", "ppv", "both")
+# msg_limits_by_signal is a NESTED object; validate its four tier caps against the
+# built-in defaults (single source of truth) and always emit the COMPLETE dict so
+# _load_config's shallow merge can never drop a tier. 0 = unlimited (see _cadence_gate).
+_MSG_LIMIT_DEFAULTS: dict = dict(_AI_CHATTER_DEFAULTS["msg_limits_by_signal"])
+_MSG_LIMIT_MAX = 500
 _MAX_ITEMS = 60
 _TXT = 2000
 
@@ -85,6 +95,10 @@ def _validate_cfg(cfg: dict) -> dict:
         out["pivot_on_escalation"] = bool(cfg["pivot_on_escalation"])
     if "unsend_expired_offer" in cfg:
         out["unsend_expired_offer"] = bool(cfg["unsend_expired_offer"])
+    if "cadence_enabled" in cfg:
+        out["cadence_enabled"] = bool(cfg["cadence_enabled"])
+    if "nudge_enabled" in cfg:
+        out["nudge_enabled"] = bool(cfg["nudge_enabled"])
     if "mode" in cfg and cfg["mode"] is not None:
         if cfg["mode"] not in _MODES:
             raise HTTPException(422, f"mode must be one of {_MODES}")
@@ -99,6 +113,18 @@ def _validate_cfg(cfg: dict) -> dict:
                 out[k] = max(lo, min(int(cfg[k]), hi))
             except (TypeError, ValueError):
                 raise HTTPException(422, f"{k} must be a number")
+    ml = cfg.get("msg_limits_by_signal")
+    if ml is not None:
+        if not isinstance(ml, dict):
+            raise HTTPException(422, "msg_limits_by_signal must be an object")
+        merged = dict(_MSG_LIMIT_DEFAULTS)
+        for tier in _MSG_LIMIT_DEFAULTS:
+            if ml.get(tier) is not None:
+                try:
+                    merged[tier] = max(0, min(int(ml[tier]), _MSG_LIMIT_MAX))
+                except (TypeError, ValueError):
+                    raise HTTPException(422, f"msg_limits_by_signal.{tier} must be a number")
+        out["msg_limits_by_signal"] = merged   # always complete → shallow-merge safe
     return out
 
 

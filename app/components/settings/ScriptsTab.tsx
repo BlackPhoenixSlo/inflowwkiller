@@ -26,6 +26,7 @@ import { BookOpen, Bot, ChevronDown, FolderOpen, Image as ImageIcon, Play, Plus,
 
 import { Badge, Button, Card, Textarea } from "@/components/ui/primitives";
 import { VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
+import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { MediaPreviewModal } from "@/components/settings/MediaPreviewModal";
 import { MediaCacheProvider, useMediaCache } from "@/hooks/useMediaCache";
@@ -613,6 +614,11 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
     return <div className="text-sm text-fg-dim">Loading…</div>;
 
   const set = (p: Partial<AiChatterConfig>) => setCfg((c) => ({ ...c, ...p }));
+  // Nested tier cap: always write a COMPLETE object so the server's shallow merge
+  // never drops a tier (matches _validate_cfg filling missing tiers from defaults).
+  const setLimit = (
+    tier: "baseline" | "buying_signal" | "no_signal" | "pic_sent", n: number,
+  ) => set({ msg_limits_by_signal: { ...(cfg.msg_limits_by_signal ?? {}), [tier]: n } });
   const openOffers = (sessionsQ.data?.offers ?? []).filter((o) => o.status === "open");
 
   return (
@@ -624,6 +630,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           <Bot size={16} />
           <h3 className="text-sm font-medium">AI Seller (replaces Auto-AI-chat for fans under the gate)</h3>
           <div className="flex-1" />
+          <EditRawJsonButton surface="ai-chatter-config" accountId={accountId} />
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={!!cfg.enabled}
               onChange={(e) => set({ enabled: e.target.checked })} />
@@ -728,6 +735,139 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
             onChange={(e) => set({ unsend_expired_offer: e.target.checked })} />
           Unsend the offer message when it expires (pull the unpurchased PPV)
         </label>
+        {/* ── cadence: stop / re-engage (items 10/17/18/21) ── */}
+        <div className="rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-3 text-sm">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={!!cfg.cadence_enabled}
+              onChange={(e) => set({ cadence_enabled: e.target.checked })} />
+            <span className="font-medium">Cadence — stop &amp; re-engage</span>
+            <span className="text-fg-dim text-xs">
+              back off after a burst instead of chatting/selling forever
+            </span>
+          </label>
+          <div className={cfg.cadence_enabled ? "space-y-3" : "space-y-3 opacity-50 pointer-events-none"}>
+            <div>
+              <div className="text-fg-dim text-xs mb-1">
+                Reply caps per conversation burst, by signal (0 = no limit)
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <label className="space-y-1">
+                  <div className="text-fg-dim text-xs">Baseline (just chatting)</div>
+                  <input type="number" className={`${INPUT} w-full`} min={0}
+                    value={cfg.msg_limits_by_signal?.baseline ?? 10}
+                    onChange={(e) => setLimit("baseline", parseInt(e.target.value || "0", 10))} />
+                </label>
+                <label className="space-y-1">
+                  <div className="text-fg-dim text-xs">Buying signal</div>
+                  <input type="number" className={`${INPUT} w-full`} min={0}
+                    value={cfg.msg_limits_by_signal?.buying_signal ?? 30}
+                    onChange={(e) => setLimit("buying_signal", parseInt(e.target.value || "0", 10))} />
+                </label>
+                <label className="space-y-1">
+                  <div className="text-fg-dim text-xs">Offered, no buy</div>
+                  <input type="number" className={`${INPUT} w-full`} min={0}
+                    value={cfg.msg_limits_by_signal?.no_signal ?? 5}
+                    onChange={(e) => setLimit("no_signal", parseInt(e.target.value || "0", 10))} />
+                </label>
+                <label className="space-y-1">
+                  <div className="text-fg-dim text-xs">He sent a pic</div>
+                  <input type="number" className={`${INPUT} w-full`} min={0}
+                    value={cfg.msg_limits_by_signal?.pic_sent ?? 40}
+                    onChange={(e) => setLimit("pic_sent", parseInt(e.target.value || "0", 10))} />
+                </label>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <label className="space-y-1">
+                <div className="text-fg-dim text-xs">New-burst gap (min)</div>
+                <input type="number" className={`${INPUT} w-full`} min={5}
+                  value={cfg.session_gap_minutes ?? 60}
+                  onChange={(e) => set({ session_gap_minutes: parseInt(e.target.value || "5", 10) })} />
+              </label>
+              <label className="space-y-1">
+                <div className="text-fg-dim text-xs">Post-purchase window (min)</div>
+                <input type="number" className={`${INPUT} w-full`} min={0}
+                  value={cfg.post_purchase_minutes ?? 25}
+                  onChange={(e) => set({ post_purchase_minutes: parseInt(e.target.value || "0", 10) })} />
+              </label>
+              <label className="space-y-1">
+                <div className="text-fg-dim text-xs">Offer goes stale after (min)</div>
+                <input type="number" className={`${INPUT} w-full`} min={0}
+                  value={cfg.offer_expiry_minutes ?? 120}
+                  onChange={(e) => set({ offer_expiry_minutes: parseInt(e.target.value || "0", 10) })} />
+              </label>
+            </div>
+            <label className="flex items-center gap-1.5">
+              <input type="checkbox" checked={!!cfg.nudge_enabled}
+                onChange={(e) => set({ nudge_enabled: e.target.checked })} />
+              Re-engage nudge — one message if an offered fan goes quiet without buying
+            </label>
+            {cfg.nudge_enabled && (
+              <label className="space-y-1 block max-w-[12rem]">
+                <div className="text-fg-dim text-xs">Nudge after (min)</div>
+                <input type="number" className={`${INPUT} w-full`} min={1}
+                  value={cfg.nudge_after_minutes ?? 15}
+                  onChange={(e) => set({ nudge_after_minutes: parseInt(e.target.value || "1", 10) })} />
+              </label>
+            )}
+          </div>
+          <details className="text-xs text-fg-dim">
+            <summary className="cursor-pointer select-none font-medium">
+              ⓘ How cadence &amp; the re-engage nudge work
+            </summary>
+            <div className="mt-2 space-y-2 leading-relaxed">
+              <p>
+                <span className="font-medium text-fg">Two layers.</span> Engagement
+                (Full chatter / Closer only) decides <em>who</em> the bot talks to;
+                Cadence decides <em>how long</em> before it backs off. A &quot;stop&quot;
+                is a silent skip for that tick, not a ban — a real buying signal re-opens
+                him, and a silence longer than the <span className="font-medium">New-burst
+                gap</span> starts a fresh burst (so the caps bound one conversation, not his
+                lifetime). <span className="font-medium">0 = no limit.</span>
+              </p>
+              <p>
+                <span className="font-medium text-fg">Full chatter</span> replies to
+                everyone, so the caps are the brake that stops it chatting forever — a plain
+                chatter stops after <span className="font-medium">Baseline</span>.{" "}
+                <span className="font-medium text-fg">Closer only</span> already skips pure
+                chit-chat (handed to Auto Convo), so only hot fans reach the caps and Baseline
+                rarely applies; when a window ends the fan is handed back to Auto Convo. (In
+                Full chatter there&apos;s no second voice, so the bot just goes quiet on him.)
+              </p>
+              <p>
+                <span className="font-medium text-fg">Re-engage nudge:</span> when the bot
+                sends a <em>paid</em> offer it arms a one-shot follow-up. After{" "}
+                <span className="font-medium">Nudge after</span> minutes it sends <em>one</em>{" "}
+                templated line — but only if he <em>still hasn&apos;t bought and hasn&apos;t
+                replied</em>. If he bought, replied, or the offer is gone, nothing is sent.
+                One offer = one nudge. It&apos;s the only cadence piece that sends an
+                unsolicited message, so it has its own toggle.
+              </p>
+              <ul className="list-disc pl-4 space-y-0.5">
+                <li>
+                  <span className="font-medium">Baseline</span> — just chatting, no buying signal.
+                </li>
+                <li>
+                  <span className="font-medium">Buying signal</span> — content-ask, lean-in /
+                  flirty, a recent buyer, or a fresh open offer.
+                </li>
+                <li>
+                  <span className="font-medium">Offered, no buy</span> — an open offer gone
+                  stale (older than <span className="font-medium">Offer goes stale after</span>)
+                  with no fresh interest → short leash.
+                </li>
+                <li>
+                  <span className="font-medium">He sent a pic</span> — he sent us a photo (a
+                  buying signal with no words) → longest runway.
+                </li>
+                <li>
+                  <span className="font-medium">Post-purchase window</span> — after he pays,
+                  keep talking this long; then, with no new spend and no fresh ask, hand off.
+                </li>
+              </ul>
+            </div>
+          </details>
+        </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm border-t border-border pt-2">
           <span className="text-xs text-fg-dim">Texting style:</span>
           <label className="flex items-center gap-1.5">

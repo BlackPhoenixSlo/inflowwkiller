@@ -34,6 +34,12 @@ What it does, per tick (`run(account_id, payload, *, run_id)`):
      next_check_at <= now). For each:
        • take the per-(account, fan) send-lease so A05/A06/A07/A09 can't
          double-message the same fan in an overlapping cycle;
+       • OFFER TAKEN (#30) — if the fan UNLOCKED a PPV since this funnel began
+         (their own or another automation's), halt: mark `done` and hand off to
+         the chatters rather than walking the remaining nudge steps;
+       • PRE-SEND GUARD (#1) — never send a blank paywall (a paid_ppv step with
+         no resolved vault media) or an empty bubble (text emptied by OF word-
+         restriction); such a step is logged, backed off, and skipped;
        • if the fan has NOT replied since our last funnel message → bump
          check_count, push next_check_at by this step's `check_intervals_min`
          (default [2,4,10] then 10 forever) and move on (no send);
@@ -96,8 +102,8 @@ from ._common import (
 )
 from db.engine import get_session
 from db.models import (
-    AccountAiConfig, FunnelAccountMedia, FunnelState, MassMessageFunnel, MassRun,
-    Message,
+    AccountAiConfig, FunnelAccountMedia, FunnelResponder, FunnelState,
+    MassMessageFunnel, MassRun, Message,
 )
 from llm_client import LLMCapExceeded
 
@@ -177,14 +183,16 @@ async def _load_persona(account_id: str) -> str:
 
 async def _active_mass_runs(
     account_id: str, only_id: int | None,
-) -> list[tuple[int, int, int | None, datetime | None, dict]]:
+) -> list[tuple[int, int, int | None, datetime | None, datetime | None, dict]]:
     """The account's completed funnel broadcasts →
-    [(mass_run_id, funnel_id, queue_id, started_at, audience_filter)].
-    A run is a funnel anchor when status='ok' and funnel_id is set."""
+    [(mass_run_id, funnel_id, queue_id, started_at, discovery_closed_at,
+      audience_filter)]. A run is a funnel anchor when status='ok' and funnel_id
+    is set. `discovery_closed_at` (set when the first mass was unsent) gates NEW
+    enrollment only — see the discovery loop."""
     async with get_session() as s:
         q = select(
             MassRun.id, MassRun.funnel_id, MassRun.queue_id,
-            MassRun.started_at, MassRun.audience_filter,
+            MassRun.started_at, MassRun.discovery_closed_at, MassRun.audience_filter,
         ).where(
             MassRun.account_id == str(account_id),
             MassRun.status == "ok",
@@ -193,16 +201,16 @@ async def _active_mass_runs(
         if only_id is not None:
             q = q.where(MassRun.id == only_id)
         rows = (await s.execute(q.order_by(MassRun.id))).all()
-    out: list[tuple[int, int, int | None, datetime | None, dict]] = []
+    out: list[tuple[int, int, int | None, datetime | None, datetime | None, dict]] = []
     for r in rows:
         try:
-            audience = json.loads(r[4]) if r[4] else {}
+            audience = json.loads(r[5]) if r[5] else {}
         except Exception:
             audience = {}
         out.append((
             int(r[0]), int(r[1]),
             int(r[2]) if r[2] is not None else None,
-            r[3], audience if isinstance(audience, dict) else {},
+            r[3], r[4], audience if isinstance(audience, dict) else {},
         ))
     return out
 
@@ -279,6 +287,22 @@ def _resolve_step_media(step: dict, acct_media: dict | None) -> tuple[list[int],
     return media, previews
 
 
+def _presend_problems(is_ppv: bool, texts: list[str], media: list[int]) -> list[str]:
+    """#1 pre-send guard: reasons THIS step must NOT be sent as-is ([] = safe).
+    Catches the blank-send traps the DOM flow could produce:
+      • `ppv_without_media` — a paid_ppv step with no resolved vault media would
+        send a blank paywall (a $-locked message with nothing behind it);
+      • `empty_text` — every bubble is empty after OF word-restriction, i.e. the
+        fan would get an empty message.
+    The caller LOGS + SKIPS on any problem rather than sending garbage."""
+    problems: list[str] = []
+    if not any(apply_word_restriction(str(t)).strip() for t in texts):
+        problems.append("empty_text")
+    if is_ppv and not media:
+        problems.append("ppv_without_media")
+    return problems
+
+
 # ── Reply detection (DB-first — the WS pump already wrote inbound) ────
 
 async def _last_funnel_out_at(account_id: str, fan_id: int, mass_run_id: int) -> datetime | None:
@@ -311,6 +335,63 @@ async def _has_fan_replied(account_id: str, fan_id: int, since: datetime | None)
             q = q.where(Message.created_at > since)
         hit = (await s.execute(q.limit(1))).first()
     return hit is not None
+
+
+async def _has_fan_paid_ppv(account_id: str, fan_id: int, since: datetime | None) -> bool:
+    """True iff the fan UNLOCKED (paid) an outbound PPV since `since` — the
+    "offer taken" signal (#30). Reads Message.is_paid, which transaction_ingest
+    flips True on the `ppv_message` ledger row (and ai_chatter's isOpened
+    fast-path). `since` None → any paid PPV counts. `purchased_at` is the unlock
+    time; we coalesce to created_at for rows the ledger hasn't stamped yet."""
+    async with get_session() as s:
+        q = select(Message.message_id).where(
+            Message.account_id == str(account_id),
+            Message.fan_id == int(fan_id),
+            Message.direction == "out",
+            Message.is_paid.is_(True),
+        )
+        if since is not None:
+            q = q.where(func.coalesce(Message.purchased_at, Message.created_at) > since)
+        hit = (await s.execute(q.limit(1))).first()
+    return hit is not None
+
+
+async def _last_inbound_at(
+    account_id: str, fan_id: int, *, since: datetime | None = None,
+) -> datetime | None:
+    """Timestamp of the fan's latest inbound (direction='in', not unsent), or
+    None. `since` bounds it to replies after our broadcast. Used to gate NEW
+    funnel enrollment against a run's `discovery_closed_at` cutoff (#R4)."""
+    async with get_session() as s:
+        q = select(func.max(Message.created_at)).where(
+            Message.account_id == str(account_id),
+            Message.fan_id == int(fan_id),
+            Message.direction == "in",
+            Message.is_unsent.is_(False),
+        )
+        if since is not None:
+            q = q.where(Message.created_at > since)
+        return (await s.execute(q)).scalar_one_or_none()
+
+
+async def _record_responder(
+    account_id: str, funnel_id: int, fan_id: int, mass_run_id: int, now: datetime,
+) -> None:
+    """Durable "answered this funnel" ledger write (R1/R2 dedup source). Called
+    for every confirmed opener-replier at discovery; idempotent per
+    (account, funnel, fan) so a later run of the same funnel never double-inserts
+    and a re-tick is a no-op."""
+    async with get_session() as s:
+        await s.execute(
+            sqlite_insert(FunnelResponder)
+            .values(
+                account_id=str(account_id), funnel_id=int(funnel_id),
+                fan_id=int(fan_id), mass_run_id=int(mass_run_id),
+                first_replied_at=now,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["account_id", "funnel_id", "fan_id"])
+        )
 
 
 async def _recipient_fans(account_id: str, mass_run_id: int) -> list[int]:
@@ -465,6 +546,7 @@ async def _save_state(cs: FunnelState, now: datetime) -> None:
         row.check_count = cs.check_count
         row.status = cs.status
         row.last_error = cs.last_error
+        row.last_ppv_sent_at = cs.last_ppv_sent_at
         row.updated_at = now
 
 
@@ -586,6 +668,11 @@ async def _send_step(
         text = apply_word_restriction(text)
         if strip_emoji_on:  # account-wide emoji strip (opt-in)
             text = strip_emojis(text)
+        if not text.strip():
+            # #1: never emit a blank bubble (word-restriction/emoji-strip emptied
+            # it). The run loop's _presend_problems already blocks an all-empty
+            # step; this guards a later bubble going empty on its own.
+            continue
 
         # Subsequent bubbles get a human pause first, then EVERY bubble holds for
         # the time it'd take to TYPE it — both waits show the live "...is typing"
@@ -650,12 +737,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     advanced = 0          # states that sent a step this tick
     waiting = 0           # due but fan hasn't replied yet → rescheduled
     completed = 0         # states marked done this tick
+    converted = 0         # halted because the fan bought the offer (#30)
+    blocked = 0           # pre-send guard refused a blank/broken step (#1)
     skipped_locked = 0
     skipped_cooldown = 0
     errors = 0
     cap_hit = False
 
-    for mass_run_id, funnel_id, queue_id, started_at, audience in runs:
+    for mass_run_id, funnel_id, queue_id, started_at, discovery_closed_at, audience in runs:
         steps = await _load_funnel_steps(funnel_id)
         if not steps:
             log.info("reply_mass_funnel run=%s funnel=%s has no steps — skipping",
@@ -678,7 +767,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 log.warning("reply_mass_funnel adopt failed run=%s", mass_run_id,
                             exc_info=True)
 
-        # ── 1) Discovery: new repliers → fresh step-0 state ──────────
+        # ── 1) Discovery: new repliers → ledger + fresh step-0 state ──
         tracked = await _tracked_fans(mass_run_id)
         for fan_id in await _recipient_fans(account_id, mass_run_id):
             if fan_id in tracked or (only_fan is not None and fan_id != only_fan):
@@ -686,6 +775,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Replied since the broadcast (our only funnel-out so far)?
             broadcast_at = await _last_funnel_out_at(account_id, fan_id, mass_run_id)
             if await _has_fan_replied(account_id, fan_id, broadcast_at):
+                # They ANSWERED this funnel's opener → durable dedup ledger
+                # (R1/R2), regardless of the discovery cutoff below.
+                await _record_responder(account_id, funnel_id, fan_id, mass_run_id, now)
+                # #R4: once the first mass is unsent (discovery_closed_at set),
+                # only ENROLL repliers whose inbound landed at/before the cutoff —
+                # a fan who replies after the mass is gone is deduped but not
+                # walked. Pre-cutoff replies (adopted late) still enroll.
+                if discovery_closed_at is not None:
+                    last_in = await _last_inbound_at(
+                        account_id, fan_id, since=broadcast_at)
+                    if last_in is None or last_in > discovery_closed_at:
+                        continue
                 if await _ensure_state(mass_run_id, fan_id, now):
                     discovered += 1
 
@@ -714,6 +815,21 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 continue
             sent_ok = False
             try:
+                # ── #30 Offer taken? A fan who UNLOCKED a PPV since this funnel
+                #    began (our own step, or another automation's) has converted —
+                #    halt and hand off to the chatters instead of walking the rest
+                #    of the steps. Checked BEFORE the reply gate so a SILENT buyer
+                #    (bought without texting back) also stops the nudges. Baseline
+                #    prefers our own last PPV send, else the broadcast time.
+                paid_since = cs.last_ppv_sent_at or started_at
+                if paid_since is not None and await _has_fan_paid_ppv(
+                        account_id, fan_id, paid_since):
+                    cs.status = "done"
+                    cs.last_error = "offer_taken"
+                    await _save_state(cs, now)
+                    converted += 1
+                    continue  # finally releases the lease (sent_ok False)
+
                 last_out = await _last_funnel_out_at(account_id, fan_id, mass_run_id)
                 if not await _has_fan_replied(account_id, fan_id, last_out):
                     # Not yet — reschedule on the just-sent step's interval list.
@@ -752,6 +868,22 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
                 step_media, step_previews = (
                     _resolve_step_media(step, acct_media) if is_ppv else ([], []))
+
+                # ── #1 Pre-send validation: never send a blank paywall or an empty
+                #    bubble. A broken step (PPV with no media bound for THIS account,
+                #    or text that empties after word-restriction) won't fix itself
+                #    per tick — record it, back off to the fallback interval, and
+                #    skip. It stays `pending` so a later media/text fix can resume.
+                problems = _presend_problems(is_ppv, texts, step_media)
+                if problems:
+                    blocked += 1
+                    cs.last_error = "blocked:" + ",".join(problems)
+                    cs.check_count += 1
+                    cs.next_check_at = now + timedelta(minutes=_FALLBACK_CHECK_MIN)
+                    await _save_state(cs, now)
+                    log.warning("reply_mass_funnel BLOCKED send account=%s fan=%s step=%s "
+                                "reasons=%s", account_id, fan_id, c, problems)
+                    continue
                 try:
                     n = await _send_step(client, account_id, fan_id, mass_run_id,
                                          step, texts, is_ppv,
@@ -778,6 +910,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
                 # Advance the state machine + schedule the next reply-check.
                 cs.current_step = c + 1
+                if is_ppv:
+                    # Stamp when our own offer went out — the precise baseline for
+                    # the #30 "offer taken" halt on any subsequent tick.
+                    cs.last_ppv_sent_at = now
                 if is_ppv or cs.current_step >= len(steps):
                     cs.status = "done"   # PPV is terminal → hand off to chatters
                     completed += 1
@@ -817,6 +953,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "advanced": advanced,
         "waiting": waiting,
         "completed": completed,
+        "converted": converted,
+        "blocked": blocked,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
         "errors": errors,

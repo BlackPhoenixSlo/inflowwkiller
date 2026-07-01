@@ -71,6 +71,12 @@ interface Row {
   // time (backend `media_folder_id`). "" = none. Combines with `media` above.
   folderId: string;
   mediaCount: string; // images per fire (default 1)
+  // Free-preview POOL (auto_posts, PAID posts only) — its picks are added to the
+  // attachment set and shown FREE as the teaser (`previews` ⊆ mediaFiles). Same
+  // pool shape as the image pool above. Ignored for free posts + mass_premade.
+  previewMedia: VaultMedia[];
+  previewFolderId: string;
+  previewCount: string; // free previews per fire (default 1)
   // shared timer
   delayMinutes: string;
   // auto_posts
@@ -103,6 +109,9 @@ function blankRow(): Row {
     media: [],
     folderId: "",
     mediaCount: "",
+    previewMedia: [],
+    previewFolderId: "",
+    previewCount: "",
     delayMinutes: "",
     hoursToLive: "",
     price: "",
@@ -143,6 +152,13 @@ function itemToRow(it: Record<string, unknown>): Row {
   }
   r.folderId = it.media_folder_id != null ? String(it.media_folder_id) : "";
   r.mediaCount = numStr(it.media_count);
+  if (Array.isArray(it.preview_media_files)) {
+    r.previewMedia = (it.preview_media_files as unknown[])
+      .filter((id): id is number => typeof id === "number")
+      .map((id) => ({ id, type: "photo" }) as VaultMedia);
+  }
+  r.previewFolderId = it.preview_media_folder_id != null ? String(it.preview_media_folder_id) : "";
+  r.previewCount = numStr(it.preview_media_count);
   r.delayMinutes = numStr(it.delay_minutes);
   // auto_posts
   r.hoursToLive = numStr(it.hours_to_live);
@@ -269,6 +285,7 @@ export function PremadeForm({
     posts ? numStr(initialPayload?.resend_count) : "",
   );
   const [pickerFor, setPickerFor] = useState<number | null>(null);
+  const [previewPickerFor, setPreviewPickerFor] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
 
@@ -417,6 +434,21 @@ export function PremadeForm({
     // `price or 0` default).
     const price = Number(r.price);
     if (Number.isFinite(price) && price > 0) item.price = price;
+    // Free-preview pool (auto_posts + PAID only) — its picks become free teasers
+    // on the paywalled post. Backend unions them into media_files so previews are
+    // always a valid subset. Per-account vault ids, so off in all-models mode.
+    if (posts && !allModels && Number.isFinite(price) && price > 0) {
+      const pmedia = r.previewMedia
+        .map((m) => m.id)
+        .filter((id): id is number => typeof id === "number");
+      const pfolder = r.previewFolderId ? Number(r.previewFolderId) : null;
+      if (pmedia.length) item.preview_media_files = pmedia;
+      if (pfolder) item.preview_media_folder_id = pfolder;
+      if (pmedia.length || pfolder) {
+        const pc = posNum(r.previewCount);
+        if (pc) item.preview_media_count = Math.floor(pc);
+      }
+    }
     if (posts) {
       const htl = posNum(r.hoursToLive);
       if (htl) item.hours_to_live = htl;
@@ -761,6 +793,71 @@ export function PremadeForm({
                 )}
               </div>
 
+              {/* Free-preview pool — PAID auto_posts only. These images post as a
+               *  FREE teaser on the paywalled post (the backend adds them to the
+               *  attachment set so they're always a valid subset). Same controls
+               *  as the image pool above; per-account, so off in all-models. */}
+              {posts && !allModels && Number(r.price) > 0 && (
+                <div className="space-y-2 border border-warn/30 bg-warn/5 rounded-md p-2.5">
+                  <div className="text-[11px] uppercase tracking-wide text-fg-dim">
+                    Free preview pool{" "}
+                    <span className="opacity-60 normal-case">(shown unlocked as the teaser)</span>
+                  </div>
+                  {/* Whole-folder preview pool. */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] text-fg-dim">📁 Folder pool</span>
+                    <select
+                      value={r.previewFolderId}
+                      onChange={(e) => patchRow(i, { previewFolderId: e.target.value })}
+                      disabled={!accountId || foldersQ.isLoading}
+                      className="text-[11px] bg-bg border border-border rounded-md px-2 py-1 text-fg focus:outline-none focus:border-accent disabled:opacity-50 max-w-[260px]"
+                    >
+                      <option value="">
+                        {photoFolders.length === 0 ? "— no photo folders —" : "— none —"}
+                      </option>
+                      {photoFolders.map((f) => (
+                        <option key={f.id} value={String(f.id)}>
+                          {f.name} ({f.photosCount} photos)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {/* Pre-picked preview pool. */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewPickerFor(i)}
+                      disabled={!accountId}
+                      className="text-[11px] px-2 py-1 rounded border border-border hover:border-border-light text-fg-dim hover:text-fg disabled:opacity-50"
+                    >
+                      {r.previewMedia.length ? `🖼 ${r.previewMedia.length} in preview pool` : "🖼 Pick preview pool"}
+                    </button>
+                    {r.previewMedia.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => patchRow(i, { previewMedia: [] })}
+                        className="text-[11px] text-fg-dim hover:text-err"
+                      >clear</button>
+                    )}
+                  </div>
+                  {/* How many previews are shown free per fire. */}
+                  {(r.previewMedia.length > 0 || r.previewFolderId) && (
+                    <label className="flex items-center gap-1 text-[11px] text-fg-dim">
+                      <span>show</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={r.previewCount}
+                        onChange={(e) => patchRow(i, { previewCount: e.target.value.replace(/[^0-9]/g, "") })}
+                        placeholder="1"
+                        className="w-12 bg-bg border border-border rounded-md px-2 py-1 text-xs text-fg text-center focus:outline-none focus:border-accent"
+                      />
+                      <span>image{r.previewCount === "1" ? "" : "s"} free per fire</span>
+                    </label>
+                  )}
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-2">
                 {posts ? (
                   <NumField
@@ -1019,6 +1116,18 @@ export function PremadeForm({
         onConfirm={(picked) => {
           if (pickerFor !== null) patchRow(pickerFor, { media: picked });
           setPickerFor(null);
+        }}
+      />
+
+      <VaultPicker
+        open={previewPickerFor !== null}
+        onClose={() => setPreviewPickerFor(null)}
+        accountId={accountId}
+        fanId={null}
+        initialSelectedIds={previewPickerFor !== null ? rows[previewPickerFor].previewMedia.map((m) => m.id) : []}
+        onConfirm={(picked) => {
+          if (previewPickerFor !== null) patchRow(previewPickerFor, { previewMedia: picked });
+          setPreviewPickerFor(null);
         }}
       />
     </>

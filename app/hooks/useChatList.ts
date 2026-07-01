@@ -311,6 +311,37 @@ async function fetchPage(
   return { rows: merged.sort(compareChats), hasMore: anyMore };
 }
 
+/**
+ * prefetchModelChatList — warm ONE model's inbox chat list into the query cache
+ * BEFORE the user swaps to it (hover / click prewarm), so opening it paints from
+ * cache instead of a spinner. Prefetches only page 0 of the default (no-filter)
+ * view — the exact key `useChatList` mounts with on a plain model swap — and is a
+ * no-op when that cache is still fresh (respects the same 30s staleTime). Any
+ * other active filter/list re-keys the query, so the prefetch simply misses;
+ * it's best-effort and never throws (prefetchInfiniteQuery swallows errors).
+ */
+export function prefetchModelChatList(
+  qc: QueryClient,
+  accountId: string,
+  limit: number = PAGE_SIZE,
+): Promise<void> {
+  if (!accountId) return Promise.resolve();
+  const scope = { kind: "model", accountId } as const;
+  return qc.prefetchInfiniteQuery({
+    queryKey: ["chats", "model", accountId, null, null, null, limit] as const,
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      fetchPage(scope, [], (pageParam as number) ?? 0, null, null, null, limit, qc, false),
+    // MUST mirror useChatList's infinite-query config: this prefetch shares the
+    // SAME query key as the live list, so an options mismatch (a missing
+    // getNextPageParam) corrupts that query and the list fails to load with
+    // "options.getNextPageParam is not a function". React Query v5 requires it.
+    getNextPageParam: (lastPage: ChatsPage, allPages: ChatsPage[]) =>
+      lastPage.hasMore ? allPages.length * limit : undefined,
+    staleTime: 30_000,
+  });
+}
+
 export function useChatList(params: ChatListParams = {}) {
   const { scope } = useScope();
   const allAccounts = useActiveAccounts();

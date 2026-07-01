@@ -62,7 +62,18 @@ interface DraftStep {
   // PPV only (media is per-account → FunnelMediaPane, not here):
   price: string;
   lockedText: boolean;
+  /** Step keys the typed form doesn't model (e.g. legacy in-step media, or a
+   *  field a raw-JSON edit added) — carried through toDraft→toWire so a
+   *  raw → typed → save round-trip never silently drops them. */
+  extra: Record<string, unknown>;
 }
+
+/** Step keys the typed editor owns (re-emitted by `toWire`) — everything else is
+ *  stashed in `DraftStep.extra` and merged back on save. */
+const KNOWN_STEP_KEYS = new Set([
+  "type", "step", "messages", "generate", "prompt", "price",
+  "locked_text", "check_intervals_min",
+]);
 
 function blankStep(kind: StepKind): DraftStep {
   return {
@@ -73,10 +84,12 @@ function blankStep(kind: StepKind): DraftStep {
     prompt: "",
     price: kind === "ppv" ? "0" : "",
     lockedText: false,
+    extra: {},
   };
 }
 
-/** A wire step → editor draft (best-effort; unknown keys are dropped on save). */
+/** A wire step → editor draft. Keys the form doesn't model are preserved in
+ *  `extra` so switching raw → typed → save is lossless. */
 function toDraft(step: FunnelStep): DraftStep {
   const isPpv = step.type === "paid_ppv";
   const msgs = Array.isArray(step.messages) ? step.messages.map(String) : [];
@@ -85,6 +98,10 @@ function toDraft(step: FunnelStep): DraftStep {
   const ivRaw = (step as { check_intervals_min?: number[] }).check_intervals_min;
   const intervals = Array.isArray(ivRaw) ? ivRaw.join(", ") : "";
   const ppv = step as PpvStep;
+  const extra: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(step)) {
+    if (!KNOWN_STEP_KEYS.has(k)) extra[k] = v;
+  }
   return {
     kind: isPpv ? "ppv" : "reply",
     intervals,
@@ -93,6 +110,7 @@ function toDraft(step: FunnelStep): DraftStep {
     prompt: step.prompt ?? "",
     price: isPpv && typeof ppv.price === "number" ? String(ppv.price) : isPpv ? "0" : "",
     lockedText: isPpv ? Boolean(ppv.locked_text) : false,
+    extra,
   };
 }
 
@@ -136,7 +154,8 @@ function toWire(d: DraftStep, idx: number): FunnelStep {
       out.messages = msgs;
     }
     if (d.lockedText) out.locked_text = true;
-    return out;
+    // Merge preserved unknown keys; the fields we set above win over `extra`.
+    return { ...d.extra, ...out } as FunnelStep;
   }
 
   // reply step
@@ -149,7 +168,7 @@ function toWire(d: DraftStep, idx: number): FunnelStep {
   } else {
     out.messages = msgs;
   }
-  return out;
+  return { ...d.extra, ...out } as FunnelStep;
 }
 
 type ReplyWire = {
@@ -182,6 +201,11 @@ export function FunnelEditor({
   const [steps, setSteps] = useState<DraftStep[]>([]);
   const [seeded, setSeeded] = useState(!isEdit);
   const [err, setErr] = useState<string | null>(null);
+  // Raw-JSON escape hatch: hand-edit the whole funnel body
+  // `{ name, opening_message, description, steps }` directly (paste steps, tweak
+  // a field the form doesn't expose). Server-side unknown keys pass through.
+  const [rawMode, setRawMode] = useState(false);
+  const [rawText, setRawText] = useState("");
 
   // Seed once from the loaded funnel (edit mode). Create mode starts blank.
   useEffect(() => {
@@ -229,32 +253,99 @@ export function FunnelEditor({
         : s));
   }
 
-  async function save() {
-    setErr(null);
-    if (!name.trim()) return setErr("Name is required.");
-    if (!opening.trim()) return setErr("Opening message is required.");
+  /** The funnel body from whichever mode is active (throws with a clear
+   *  message). Raw mode parses the textarea; typed mode wires the draft steps. */
+  function currentBody(): {
+    name: string;
+    opening_message: string;
+    description: string | null;
+    steps: FunnelStep[];
+  } {
+    if (rawMode) {
+      const t = rawText.trim();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(t || "{}");
+      } catch (e) {
+        throw new Error(`Funnel is not valid JSON: ${(e as Error).message}`);
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error('Funnel must be a JSON object, e.g. { "name": "…", "opening_message": "…", "steps": [] }');
+      }
+      const o = parsed as Record<string, unknown>;
+      const nm = String(o.name ?? "").trim();
+      const op = String(o.opening_message ?? "").trim();
+      if (!nm) throw new Error("Name is required.");
+      if (!op) throw new Error("Opening message is required.");
+      const desc = o.description == null ? null : String(o.description).trim() || null;
+      const st = Array.isArray(o.steps) ? (o.steps as FunnelStep[]) : [];
+      return { name: nm, opening_message: op, description: desc, steps: st };
+    }
+    if (!name.trim()) throw new Error("Name is required.");
+    if (!opening.trim()) throw new Error("Opening message is required.");
+    const wireSteps = steps.map((s, i) => toWire(s, i));
+    return {
+      name: name.trim(),
+      opening_message: opening.trim(),
+      description: description.trim() || null,
+      steps: wireSteps,
+    };
+  }
+
+  /** Enter raw mode: seed the textarea from the current draft (wires steps). */
+  function enterRaw() {
     let wireSteps: FunnelStep[];
     try {
       wireSteps = steps.map((s, i) => toWire(s, i));
+    } catch (e) {
+      setErr((e as Error).message);
+      return;
+    }
+    setRawText(
+      JSON.stringify(
+        {
+          name: name.trim(),
+          opening_message: opening.trim(),
+          description: description.trim() || null,
+          steps: wireSteps,
+        },
+        null,
+        2,
+      ),
+    );
+    setErr(null);
+    setRawMode(true);
+  }
+  /** Leave raw mode: parse the textarea back into the typed draft. */
+  function exitRaw() {
+    let body: ReturnType<typeof currentBody>;
+    try {
+      body = currentBody();
+    } catch (e) {
+      setErr((e as Error).message);
+      return;
+    }
+    setName(body.name);
+    setDescription(body.description ?? "");
+    setOpening(body.opening_message);
+    setSteps((body.steps ?? []).map(toDraft));
+    setRawMode(false);
+    setErr(null);
+  }
+
+  async function save() {
+    setErr(null);
+    let body: ReturnType<typeof currentBody>;
+    try {
+      body = currentBody();
     } catch (e) {
       return setErr((e as Error).message);
     }
     try {
       if (isEdit && funnelId != null) {
-        await updateM.mutateAsync({
-          id: funnelId,
-          name: name.trim(),
-          description: description.trim() || null,
-          opening_message: opening.trim(),
-          steps: wireSteps,
-        });
+        await updateM.mutateAsync({ id: funnelId, ...body });
       } else {
-        await createM.mutateAsync({
-          name: name.trim(),
-          description: description.trim() || null,
-          opening_message: opening.trim(),
-          steps: wireSteps,
-        });
+        await createM.mutateAsync(body);
       }
       onSaved?.();
       onClose();
@@ -283,16 +374,49 @@ export function FunnelEditor({
         <h3 className="text-sm font-semibold text-fg">
           {isEdit ? `Edit funnel · ${name || funnelId}` : "New funnel"}
         </h3>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-fg-dim hover:text-fg text-sm"
-          aria-label="Close editor"
-        >
-          ✕
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => (rawMode ? exitRaw() : enterRaw())}
+            className="text-[11px] text-accent hover:underline"
+          >
+            {rawMode ? "← Typed fields" : "Edit raw JSON →"}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-fg-dim hover:text-fg text-sm"
+            aria-label="Close editor"
+          >
+            ✕
+          </button>
+        </div>
       </div>
 
+      {rawMode ? (
+        <div className="space-y-2">
+          <textarea
+            value={rawText}
+            onChange={(e) => {
+              setRawText(e.target.value);
+              if (err) setErr(null);
+            }}
+            rows={16}
+            spellCheck={false}
+            className="w-full rounded-lg bg-bg border border-border text-[11px] font-mono px-2 py-1.5 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
+            placeholder='{ "name": "…", "opening_message": "…", "steps": [] }'
+          />
+          <div className="text-[10px] text-fg-dim leading-relaxed">
+            Edit the whole funnel body by hand —{" "}
+            <code className="text-accent">name</code>,{" "}
+            <code className="text-accent">opening_message</code>,{" "}
+            <code className="text-accent">description</code>, and the ordered{" "}
+            <code className="text-accent">steps</code> array (reply / paid_ppv).
+            PPV media stays per-model (set via the Media action), not here.
+          </div>
+        </div>
+      ) : (
+      <>
       {/* Header: name + description + opener. */}
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="block space-y-1">
@@ -354,6 +478,8 @@ export function FunnelEditor({
           </Button>
         </div>
       </div>
+      </>
+      )}
 
       {err && <div className="text-xs text-err whitespace-pre-wrap">{err}</div>}
 

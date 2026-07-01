@@ -672,6 +672,7 @@ async def _collapsed_mass_rows(
             func.max(Message.created_at).label("created_at"),
             func.max(Message.sent_by_employee_id).label("sent_by_employee_id"),
             func.max(Message.automation_kind).label("automation_kind"),
+            func.max(Message.sender_name).label("sender_name"),
             func.max(Employee.display_name).label("employee_name"),
             func.max(MassMessageFunnel.name).label("funnel_name"),
             func.max(MassRun.recipient_count).label("run_recipient_count"),
@@ -737,6 +738,10 @@ async def _collapsed_mass_rows(
             "purchased_at": None,
             "sent_by_employee_id": g.sent_by_employee_id,
             "employee_name": g.employee_name,
+            # Denormalized "mass-<who>" tag stamped on the rows at send time
+            # (attribution.mass_sender_tag); the summary row prefers it over the
+            # Employee join so it survives an employee delete.
+            "sender_name": g.sender_name,
             "automation_kind": g.automation_kind,
             # Mass-summary extras — the row renderer switches on is_mass_summary.
             "is_mass_summary": True,
@@ -1033,6 +1038,7 @@ async def list_message_attribution(
                 Message.message_id,
                 Message.sent_by_employee_id,
                 Message.automation_kind,
+                Message.sender_name,
                 Employee.display_name,
                 Employee.color,
             )
@@ -1058,6 +1064,11 @@ async def list_message_attribution(
             # the bubble shows the specific automation name instead of the flat
             # "Automation" sentinel that every bot send's display_name resolves to.
             "automation_kind": r.automation_kind,
+            # Denormalized mass sender tag ("mass-kingsley1") for HUMAN broadcast
+            # rows; "" for 1:1 sends and automation-fired mass (the Automation
+            # sentinel is excluded in attribution.mass_sender_tag). The bubble
+            # prefers this over the automation label / employee name.
+            "sender_name": r.sender_name,
             "color": r.color,
         }
     return {"by_msg_id": by_msg_id}
@@ -1186,9 +1197,18 @@ async def mark_chat_read(account_id: str, fan_id: int) -> dict[str, Any]:
         )
         result = await s.execute(stmt)
         await s.commit()
+        cleared = (result.rowcount or 0) > 0
         # rowcount=0 → no chats row yet (WS hasn't transcoded one) OR it was
         # already read. Not an error — 200 with cleared=false.
-        return {"account_id": account_id, "fan_id": fan_id, "cleared": (result.rowcount or 0) > 0}
+        if cleared:
+            # Reading a chat moves it off the roster's blue (unread) count. That
+            # badge is served from a 5-min OF cache that ONLY the WS pump busts
+            # (on messages) — a read isn't a message, so without this the poll
+            # would keep serving the pre-read count for up to the full TTL. Bust
+            # it so the next roster poll re-reads OF and the badge drop sticks.
+            import relay_cache  # noqa: PLC0415 — defer; avoids an import cycle at module load
+            relay_cache.invalidate("roster_count", account_id)
+        return {"account_id": account_id, "fan_id": fan_id, "cleared": cleared}
 
 
 @router.post("/admin/messages/{account_id}/{fan_id}/rescrape-now")

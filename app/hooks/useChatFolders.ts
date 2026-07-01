@@ -19,10 +19,20 @@ import { relay } from "@/lib/relay";
 export interface ChatFolder {
   id: number | string;
   name?: string;
+  /** OF list type: "custom" / "close_friends" (user-modifiable) or a system
+   *  bucket ("following"/"fans"/"recent"/…). */
+  type?: string;
   /** OF's flag — true means this list shows up as a sidebar chip. */
   isPinnedToChat?: boolean;
   usersCount?: number;
   subscribersCount?: number;
+  /** true when the operator may add/remove users on this list (custom +
+   *  close-friends); system buckets report false. */
+  canAddUsers?: boolean;
+  canManageUsers?: boolean;
+  /** A CAPPED preview of members (OF returns only the first few) — used for
+   *  best-effort membership display in the "Add to list" menu. */
+  users?: Array<{ id: number }>;
 }
 
 interface FoldersResp {
@@ -35,7 +45,7 @@ export function useAllChatFolders(accountId: string | null) {
   return useQuery({
     queryKey: ["chat-folders", accountId ?? "", "all"],
     enabled: !!accountId,
-    staleTime: 3 * 24 * 60 * 60_000,
+    staleTime: 60_000, // #12/#25: was 3 days — refresh folder/VIP membership actively
     queryFn: async (): Promise<ChatFolder[]> => {
       if (!accountId) return [];
       const r = await relay.get<FoldersResp>(
@@ -59,7 +69,7 @@ export function useChatFolders(accountId: string | null) {
   return useQuery({
     queryKey: ["chat-folders", accountId ?? "", "pinned"],
     enabled: !!accountId,
-    staleTime: 3 * 24 * 60 * 60_000,
+    staleTime: 60_000, // #12/#25: was 3 days — refresh folder/VIP membership actively
     queryFn: async (): Promise<ChatFolder[]> => {
       if (!accountId) return [];
       const r = await relay.get<FoldersResp>(

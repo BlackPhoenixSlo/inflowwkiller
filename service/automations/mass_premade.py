@@ -62,7 +62,8 @@ _SEND_KEYS = (
     # audiences.resolve_mass_audience (recent-chat / unread include, replied /
     # inbound exclude). The TIMER keys stay in this orchestrator, not here.
     "recent_chat_hours", "recent_chat_limit",
-    "exclude_replied_hours", "exclude_inbound_hours", "unread_limit",
+    "exclude_replied_hours", "exclude_inbound_hours", "exclude_last_chat_hours",
+    "unread_limit",
 )
 
 

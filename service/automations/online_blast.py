@@ -44,7 +44,12 @@ import logging
 from datetime import datetime, timedelta
 
 import automation_executor as ax
-from audiences import contact_guard_excludes, resolve_window_hours
+from audiences import (
+    MASSDMEXCLUDE_LIST,
+    contact_guard_excludes,
+    exclude_list_fan_ids,
+    resolve_window_hours,
+)
 from automation_registry import register
 from ._common import load_hard_skip_ids
 from . import mass_nudge   # reuse slot composition + the default pools
@@ -74,6 +79,9 @@ async def _excluded_ids(account_id: str, cfg: dict) -> list[int]:
     # Durably restricted fans (muted peer-creator / hand-restricted) — mirrored into
     # the Auto_Exclude OF list with the rest so the broadcast skips them too.
     excl |= await load_hard_skip_ids(account_id)
+    # MASSDMEXCLUDE members — online_blast is a mass DM broadcast, so it honors
+    # the DM opt-out list (its own exclude path bypasses resolve_mass_audience).
+    excl |= await exclude_list_fan_ids(account_id, MASSDMEXCLUDE_LIST)
     return sorted(excl)
 
 

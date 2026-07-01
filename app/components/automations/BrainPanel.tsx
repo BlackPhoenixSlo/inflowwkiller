@@ -15,6 +15,7 @@
 import { useEffect, useState } from "react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
+import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { cn } from "@/lib/utils";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import {
@@ -370,6 +371,7 @@ export default function BrainPanel() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <EditRawJsonButton surface="account-config" accountId={accountId} />
           <Button
             size="sm"
             variant="ghost"

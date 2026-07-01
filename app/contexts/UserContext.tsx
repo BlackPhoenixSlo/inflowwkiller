@@ -345,3 +345,10 @@ export function useUser(): UserContextValue {
   if (!ctx) throw new Error("useUser called outside <UserProvider>");
   return ctx;
 }
+
+/** Non-throwing variant: returns null outside <UserProvider> instead of
+ *  throwing. For hooks that only want the user *if one is mounted* (e.g. a
+ *  per-principal cache key) and must stay usable in provider-less contexts. */
+export function useOptionalUser(): UserContextValue | null {
+  return useContext(UserContext);
+}

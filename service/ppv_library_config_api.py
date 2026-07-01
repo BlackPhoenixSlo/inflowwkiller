@@ -34,6 +34,7 @@ from automations.ppv_send import (
     _DEFAULTS,
     _PRICE_CEIL_CENTS,
     _PRICE_FLOOR_CENTS,
+    pick_feed_caption,
     post_to_feed,
 )
 
@@ -327,9 +328,55 @@ async def preview_ppv_library(body: _PreviewBody = Body(...)) -> dict[str, Any]:
     return {"account_id": body.account_id, **await segment_preview(body.account_id, base)}
 
 
+async def _load_stored_config(account_id: str) -> dict:
+    async with get_session() as s:
+        row = await s.get(AccountAiConfig, account_id)
+    stored: dict = {}
+    if row is not None and row.ppv_library_config_json:
+        try:
+            stored = json.loads(row.ppv_library_config_json) or {}
+        except Exception:
+            stored = {}
+    return stored
+
+
+def _pick_feed_ppv(stored: dict, *, ppv_id: str | None) -> dict:
+    """Resolve WHICH PPV a feed post/preview targets — shared by preview and
+    post-now so they always agree. Explicit `ppv_id` wins; otherwise a random
+    feed-enabled PPV, skipping the one posted last time (best-effort — the
+    marker lives in the config blob)."""
+    all_ppvs = [p for p in (stored.get("ppvs") or []) if isinstance(p, dict)]
+
+    if ppv_id:
+        chosen = next((p for p in all_ppvs if str(p.get("id")) == str(ppv_id)), None)
+        if chosen is None:
+            raise HTTPException(404, "ppv not found")
+        return chosen
+
+    # Feed posting is gated by `feed_enabled` (NOT the message-send `enabled`) — a
+    # feed-only PPV (messages off) is still pickable here.
+    pool = [p for p in all_ppvs if p.get("feed_enabled", True)]
+    last = str(stored.get("last_posted_ppv_id") or "")
+    # Skip the one posted last time so back-to-back clicks vary; fall back to the
+    # full pool when that leaves nothing (e.g. only one feed-enabled PPV).
+    choices = [p for p in pool if str(p.get("id")) != last] or pool
+    if not choices:
+        raise HTTPException(422, "no feed-enabled PPVs to post — add one and turn on 'Post to feed'")
+    return random.choice(choices)
+
+
 class _PostNowBody(BaseModel):
     account_id: str
     ppv_id: str | None = None     # absent → a random ENABLED PPV (skips the last posted)
+    # Optional WYSIWYG override: the exact caption shown in a preview step. When set
+    # (non-empty), used verbatim — skips pick_feed_caption entirely.
+    caption: str | None = None
+    # Optional media override: the operator's chosen media in the EXACT order to post.
+    # When present & non-empty it OVERRIDES the PPV's media_ids (filtered to the PPV's
+    # own media server-side). previews is the operator's chosen free-preview subset,
+    # filtered to a ⊆ subset of the effective media set.
+    media_files: list[int] | None = None
+    previews: list[int] | None = None
 
 
 @router.post("/admin/ppv-library-config/post-now")
@@ -340,41 +387,24 @@ async def post_ppv_to_feed(body: _PostNowBody = Body(...)) -> dict[str, Any]:
     `last_posted_ppv_id` so the random picker varies. No scheduler, no contact guard —
     a feed post is one public drop, not a per-fan message.
 
-    Picks the PPV by explicit `ppv_id`; otherwise a random ENABLED one, skipping the
-    PPV posted last time (best-effort — the marker lives in the config blob)."""
+    Picks the PPV via the shared `_pick_feed_ppv` helper (explicit `ppv_id`, else a
+    random feed-enabled one skipping the last posted). If `caption` is supplied
+    (e.g. the exact text a `/post-now/preview` call showed the operator), it is used
+    verbatim for a WYSIWYG post-now."""
     assert_account_owned(body.account_id)
 
-    async with get_session() as s:
-        row = await s.get(AccountAiConfig, body.account_id)
-    stored: dict = {}
-    if row is not None and row.ppv_library_config_json:
-        try:
-            stored = json.loads(row.ppv_library_config_json) or {}
-        except Exception:
-            stored = {}
-    all_ppvs = [p for p in (stored.get("ppvs") or []) if isinstance(p, dict)]
-
-    if body.ppv_id:
-        chosen = next((p for p in all_ppvs if str(p.get("id")) == str(body.ppv_id)), None)
-        if chosen is None:
-            raise HTTPException(404, "ppv not found")
-    else:
-        # Feed posting is gated by `feed_enabled` (NOT the message-send `enabled`) — a
-        # feed-only PPV (messages off) is still pickable here.
-        pool = [p for p in all_ppvs if p.get("feed_enabled", True)]
-        last = str(stored.get("last_posted_ppv_id") or "")
-        # Skip the one posted last time so back-to-back clicks vary; fall back to the
-        # full pool when that leaves nothing (e.g. only one feed-enabled PPV).
-        choices = [p for p in pool if str(p.get("id")) != last] or pool
-        if not choices:
-            raise HTTPException(422, "no feed-enabled PPVs to post — add one and turn on 'Post to feed'")
-        chosen = random.choice(choices)
+    stored = await _load_stored_config(body.account_id)
+    chosen = _pick_feed_ppv(stored, ppv_id=body.ppv_id)
 
     if not _int_list(chosen.get("media_ids"), _MAX_MEDIA):
         raise HTTPException(422, "this PPV has no content to post")
 
     # Post + record via the shared helper (feed-voice caption priority, ⭐ preview).
-    res = await post_to_feed(body.account_id, chosen)
+    # Thread the operator's chosen media order + preview subset (both filtered to the
+    # PPV's own media inside post_to_feed; absent/empty → the PPV's own media/previews).
+    res = await post_to_feed(
+        body.account_id, chosen, caption=body.caption,
+        media_files=body.media_files, previews_override=body.previews)
     if res.get("status") != "ok":
         raise HTTPException(502, f"feed post failed: {res.get('reason') or 'unknown'}")
 
@@ -405,4 +435,46 @@ async def post_ppv_to_feed(body: _PostNowBody = Body(...)) -> dict[str, Any]:
         "used_feed_caption": res.get("used_feed_caption", False),
         "media_count": res.get("media_count", 0),
         "preview_count": res.get("preview_count", 0),
+    }
+
+
+class _PreviewPostBody(BaseModel):
+    account_id: str
+    ppv_id: str | None = None     # absent → a random feed-enabled PPV (skips the last posted)
+
+
+@router.post("/admin/ppv-library-config/post-now/preview")
+async def preview_ppv_to_feed(body: _PreviewPostBody = Body(...)) -> dict[str, Any]:
+    """Resolve the SAME pick + feed caption + price + media/preview counts that
+    `/post-now` would use — WITHOUT calling create_post and WITHOUT stamping
+    `last_posted_ppv_id`. Lets the operator see the exact candidate (name, caption,
+    price, content counts) before committing; the confirm step re-POSTs the same
+    ppv_id + this caption to `/post-now` for a WYSIWYG result."""
+    assert_account_owned(body.account_id)
+
+    stored = await _load_stored_config(body.account_id)
+    chosen = _pick_feed_ppv(stored, ppv_id=body.ppv_id)
+
+    if not _int_list(chosen.get("media_ids"), _MAX_MEDIA):
+        raise HTTPException(422, "this PPV has no content to post")
+
+    base_cents = max(_PRICE_FLOOR_CENTS, min(int(chosen.get("base_price_cents") or 0), _PRICE_CEIL_CENTS))
+    media_ids = _int_list(chosen.get("media_ids"), _MAX_MEDIA)
+    media_set = set(media_ids)
+    previews = [x for x in _int_list(chosen.get("preview_options"), _MAX_PREVIEWS) if x in media_set]
+    caption, used_feed_caption = pick_feed_caption(chosen, base_cents)
+
+    return {
+        "account_id": body.account_id,
+        "ppv_id": chosen.get("id"),
+        "name": chosen.get("name") or "",
+        "caption": caption,
+        "used_feed_caption": used_feed_caption,
+        "price": base_cents / 100,
+        "media_count": len(media_ids),
+        "preview_count": len(previews),
+        # The candidate's ordered media + the ⭐ free-preview subset — lets the operator
+        # reorder/reselect before confirming. previews is always ⊆ media_ids.
+        "media_ids": media_ids,
+        "previews": previews,
     }

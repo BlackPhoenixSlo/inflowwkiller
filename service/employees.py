@@ -574,9 +574,13 @@ async def resolve_outbound_employee_id(
         emp_id = int(emp_id_raw)
         async with get_session() as s:
             owned = await s.get(Employee, emp_id)
-        if owned is not None and owned.user_id == user.id:
+        # An admin/master sees the full registry, so a cross-owner pick is
+        # legitimate — let them attribute a send to ANY existing employee
+        # (mirrors the is_admin scoping bypass at employees.py:118/472).
+        # A non-admin owner may only attribute to their OWN employees.
+        if owned is not None and (owned.user_id == user.id or user.is_admin):
             return emp_id
-        # Spoof attempt — drop. The audit middleware will log it too.
+        # Non-admin owner picking someone else's employee → spoof; drop.
         return None
     # Chatter session: ignore the header (defensive), resolve mirror.
     if user is None:
@@ -866,7 +870,9 @@ async def audit_middleware(request: Request, call_next):
             if emp_id is not None and user is not None:
                 async with get_session() as _vs:
                     owned = await _vs.get(Employee, emp_id)
-                if owned is None or owned.user_id != user.id:
+                # Admins/master may act as ANY existing employee (full-registry
+                # scope); a non-admin friend may only use their own employees.
+                if owned is None or (owned.user_id != user.id and not user.is_admin):
                     log.warning(
                         "x-employee-id=%s rejected: not owned by user=%s (path=%s)",
                         emp_id, user.id, path,

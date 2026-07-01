@@ -70,6 +70,9 @@ export function PostComposer({
   const [text, setText] = useState("");
   const [attached, setAttached] = useState<VaultMedia[]>([]);
   const [price, setPrice] = useState<string>("");
+  // Leading N tiles are FREE previews on a paid post; the rest are PPV-locked.
+  // Only applied when price > 0 (MediaTray shows the FREE/PAID badges then).
+  const [previewCount, setPreviewCount] = useState<number>(0);
   const [schedule, setSchedule] = useState<string>("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,12 +100,21 @@ export function PostComposer({
     scheduledIso: string | null,
   ) {
     const priceNum = price ? Number(price) : 0;
+    // Leading `previewCount` numeric vault ids ride unlocked as the free teaser
+    // on a paid post — a subset of media_files, in the same order. Fresh-upload
+    // claim dicts have no id until OF resolves them, so they can't be previews.
+    const previewIds: number[] = priceNum > 0 && previewCount > 0
+      ? mediaFiles
+          .slice(0, previewCount)
+          .filter((m): m is number => typeof m === "number" && m > 0)
+      : [];
     const body: Record<string, unknown> = {
       text: text.trim(),
       media_files: mediaFiles,
       price: priceNum,
       posted_at: scheduledIso,
     };
+    if (previewIds.length > 0) body.previews = previewIds;
     if (taggedCreators.length > 0) {
       body.tagged_users = taggedCreators.map((c) => c.id);
     }
@@ -132,9 +144,13 @@ export function PostComposer({
         if (!accountId) throw new Error("Pick an account");
       }
       const totalMedia = allModels ? 0 : attached.length;
-      if (!trimmed && totalMedia === 0) throw new Error("Add text or media");
       const priceNum = price ? Number(price) : 0;
       if (!Number.isFinite(priceNum) || priceNum < 0) throw new Error("Invalid price");
+      // A paid/PPV post must carry media — OF rejects a priced text-only post, so
+      // require an image only when there IS a price and no media. A free post is
+      // fine on text alone. (Mirrored server-side in auto_posts: "paid_no_media".)
+      if (priceNum > 0 && totalMedia === 0) throw new Error("A paid post needs at least one image");
+      if (!trimmed && totalMedia === 0) throw new Error("Add text or media");
       const scheduledIso = schedule ? localDatetimeToIso(schedule) : null;
       if (schedule && !scheduledIso) throw new Error("Invalid schedule date");
 
@@ -181,6 +197,7 @@ export function PostComposer({
     setText("");
     setAttached([]);
     setPrice("");
+    setPreviewCount(0);
     setSchedule("");
     setError(null);
     setProgress(null);
@@ -206,6 +223,7 @@ export function PostComposer({
     if (t.price > 0) {
       setPrice(String(t.price));
     }
+    setPreviewCount(Array.isArray(t.previews) ? t.previews.length : 0);
     if (t.taggedUsers.length > 0) {
       setTaggedCreators((prev) => {
         const have = new Set(prev.map((c) => c.id));
@@ -335,6 +353,8 @@ export function PostComposer({
               onChange={setAttached}
               onOpenVaultPicker={() => setPickerOpen(true)}
               price={price ? Number(price) || 0 : 0}
+              previewCount={previewCount}
+              onPreviewCountChange={setPreviewCount}
             />
           )}
 

@@ -1143,6 +1143,12 @@ class MassRun(Base):
     started_at: Mapped[datetime] = _ts_now()
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
     status: Mapped[str] = mapped_column(String, nullable=False, default="running")
+    # When the first mass was unsent/deleted → reply_mass_funnel STOPS enrolling
+    # NEW repliers off this run (only replies at/before this cutoff enroll); the
+    # walker keeps advancing fans already engaged until #30 halts them on a buy.
+    # Stamped by close_funnel_discovery_for_queue on every unsend path.
+    # Nullable/additive: init_db self-heals it via ALTER TABLE (no migration).
+    discovery_closed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     __table_args__ = (
         # Mass Messages tab joins the cache to a run by (account_id, queue_id).
@@ -1169,7 +1175,41 @@ class FunnelState(Base):
     check_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     last_error: Mapped[str | None] = mapped_column(Text)
+    # When this funnel last sent a paid_ppv step to the fan — the baseline for the
+    # "offer taken" halt (#30). Nullable/additive: init_db self-heals it via
+    # ALTER TABLE, so no migration (mirrors the rest of funnel_state).
+    last_ppv_sent_at: Mapped[datetime | None] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = _ts_now()
+
+
+class FunnelResponder(Base):
+    """Durable per-(account, funnel) ledger of fans who ANSWERED a funnel's
+    opener — the "already answered this campaign" dedup source (R1/R2).
+
+    Written by reply_mass_funnel at DISCOVERY (a confirmed recipient of a run of
+    this funnel who replied to the opener), so it is:
+      • precise — only real opener-repliers, NOT anyone who happened to message
+        us after the run started (avoids over-excluding ai_chatter/human replies),
+      • durable — survives funnel_state pruning + the run's messages being unsent,
+      • per-funnel — keyed on funnel_id, so re-clicking Send skips prior answerers
+        while a fresh audience is unaffected.
+    resolve_mass_audience subtracts these ids from a funnel send's recipients.
+    (A future "reset responders for this funnel" action would DELETE these rows to
+    allow re-targeting the same funnel to the same fans.)"""
+    __tablename__ = "funnel_responders"
+
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    funnel_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("mass_message_funnels.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    fan_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # The run that first observed the reply (provenance; not part of the key so a
+    # later run of the same funnel doesn't double-insert the same answerer).
+    mass_run_id: Mapped[int | None] = mapped_column(Integer)
+    first_replied_at: Mapped[datetime] = _ts_now()
 
 
 class CatalogScript(Base):

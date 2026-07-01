@@ -256,3 +256,10 @@ export function useChatter(): ChatterContextValue {
   if (!ctx) throw new Error("useChatter called outside <ChatterProvider>");
   return ctx;
 }
+
+/** Non-throwing variant: returns null outside <ChatterProvider>. See
+ *  useOptionalUser — same rationale (per-principal cache key without forcing
+ *  every consumer to mount the auth providers). */
+export function useOptionalChatter(): ChatterContextValue | null {
+  return useContext(ChatterContext);
+}

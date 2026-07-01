@@ -179,6 +179,21 @@ PPV_CAPTION_POOLS: dict[str, list[str]] = {
 }
 _FALLBACK_CAPTION = "made somethin for u 🙈 unlock it"
 
+# ── Message-pool → feed-pool mapping ─────────────────────────────────────────
+# When a PPV has no explicit feed_captions/feed_caption_pool_key, the feed post
+# must still use PUBLIC-feed voice — never the 1:1 message caption. This maps each
+# message caption_pool_key to the closest-matching feed pool key.
+_MSG_TO_FEED_POOL: dict[str, str] = {
+    "photoset_striptease": "feed_photoset",
+    "video_ppv": "feed_video_drop",
+    "bundle_anchor": "feed_bundle_drop",
+    "bundle_long": "feed_bundle_drop",
+    "flash_discount": "feed_flash_sale",
+    "exclusive_list": "feed_teaser",
+    "intimate_reveal": "feed_teaser",
+    "followup_nonunlocker": "feed_new_drop",
+}
+
 # ── Feed-post caption pools ──────────────────────────────────────────────────
 # Public-FEED voice (a post is broadcast to everyone, NOT a 1:1 DM) — so NO "just
 # for u" / "ur on my special list" framing. Used ONLY by the "post to feed" path
@@ -295,34 +310,65 @@ def _rotate_preview(pool: list, idx: int) -> list[int]:
 
 
 def pick_feed_caption(ppv: dict, base_cents: int) -> tuple[str, bool]:
-    """Caption for the FEED post (public voice). Priority: the PPV's own feed_captions
-    → its feed_caption_pool_key (PPV_FEED_CAPTION_POOLS) → fall back to the message
-    captions/pool via _pick_caption. Returns (caption, used_feed_specific). Tokens are
-    filled at the base price (a feed post is one price for everyone)."""
+    """Caption for the FEED post (public voice, NEVER the 1:1 message caption).
+    Priority: the PPV's own feed_captions → its feed_caption_pool_key
+    (PPV_FEED_CAPTION_POOLS) → the feed pool mapped from the message caption_pool_key
+    via _MSG_TO_FEED_POOL (default 'feed_new_drop'). Returns (caption,
+    used_feed_specific) — used_feed_specific is always True; this never falls through
+    to the message pool. Tokens are filled at the base price (a feed post is one
+    price for everyone)."""
     feed_caps = [s for s in (ppv.get("feed_captions") or []) if isinstance(s, str) and s.strip()]
     if feed_caps:
         return _pick_caption({"caption_texts": feed_caps}, base_cents), True
     key = str(ppv.get("feed_caption_pool_key") or "").strip()
     if key and key in PPV_FEED_CAPTION_POOLS:
         return _pick_caption({"caption_texts": PPV_FEED_CAPTION_POOLS[key]}, base_cents), True
-    return _pick_caption(ppv, base_cents), False
+    feed_key = _MSG_TO_FEED_POOL.get(str(ppv.get("caption_pool_key") or "").strip(), "feed_new_drop")
+    return _pick_caption({"caption_texts": PPV_FEED_CAPTION_POOLS[feed_key]}, base_cents), True
 
 
-async def post_to_feed(account_id: str, ppv: dict, *, employee_id: int | None = None) -> dict:
+async def post_to_feed(account_id: str, ppv: dict, *, employee_id: int | None = None,
+                       caption: str | None = None,
+                       media_files: list[int] | None = None,
+                       previews_override: list[int] | None = None) -> dict:
     """Post ONE PPV to the OF FEED as a paid post at its BASE price, with the ⭐ free
     previews (preview_options) shown as the teaser and a feed-voice caption. Records a
     Post row. SHARED by the manual post-now endpoint and the auto 'also post to feed
-    with each send' path in run(). No fan messaging — a feed post is one public drop."""
+    with each send' path in run(). No fan messaging — a feed post is one public drop.
+
+    `caption`, when a non-empty string, is used VERBATIM (skips pick_feed_caption)
+    with used_feed_caption forced True — this gives WYSIWYG: a caption shown in a
+    preview step is exactly what gets posted on confirm.
+
+    `media_files`, when a NON-EMPTY list, is the operator's chosen media in the EXACT
+    order to post — it OVERRIDES the PPV's own media_ids, but is FILTERED to the PPV's
+    own media_ids (never post ids the PPV doesn't own; OF rejects strays). An empty /
+    absent list falls back to the PPV's media_ids (never post an empty media set).
+    `previews_override`, when provided, replaces the preview_options-based previews;
+    either way previews are filtered to a ⊆ subset of the media actually sent."""
     import automation_executor as ax
     base_cents = max(_PRICE_FLOOR_CENTS, min(int(ppv.get("base_price_cents") or 0), _PRICE_CEIL_CENTS))
-    media_ids = [int(x) for x in (ppv.get("media_ids") or []) if str(x).strip()]
+    ppv_media = [int(x) for x in (ppv.get("media_ids") or []) if str(x).strip()]
+    if not ppv_media:
+        return {"status": "skipped", "reason": "no_media"}
+    ppv_set = set(ppv_media)
+    # Operator override: chosen media in EXACT order, filtered to the PPV's own ids
+    # (never post a stray). Empty/absent → the PPV's own media (never an empty set).
+    if media_files:
+        media_ids = [int(x) for x in media_files if str(x).strip() and int(x) in ppv_set]
+    else:
+        media_ids = list(ppv_media)
     if not media_ids:
         return {"status": "skipped", "reason": "no_media"}
     media_set = set(media_ids)
     # Previews must be ⊆ media_files (OF rejects/ignores stray ids), mirroring the message path.
-    previews = [int(x) for x in (ppv.get("preview_options") or [])
+    prev_src = previews_override if previews_override is not None else (ppv.get("preview_options") or [])
+    previews = [int(x) for x in prev_src
                 if str(x).strip() and int(x) in media_set]
-    caption, used_feed_caption = pick_feed_caption(ppv, base_cents)
+    if isinstance(caption, str) and caption.strip():
+        used_feed_caption = True
+    else:
+        caption, used_feed_caption = pick_feed_caption(ppv, base_cents)
     price = base_cents / 100   # OF wants dollars
 
     client = await asyncio.to_thread(ax._make_client, account_id)

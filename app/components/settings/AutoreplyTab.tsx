@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 import { MessageCircle, Sparkles } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/primitives";
+import { EditRawJsonButton } from "./JsonConfigModal";
 import {
   useAutoreplyConfig,
   useSaveAutoreplyConfig,
@@ -121,6 +122,9 @@ function StyleSection({ accountId }: { accountId: string | null }) {
         {saveM.isError && (
           <span className="text-xs text-red-500">{saveM.error?.message || "Save failed"}</span>
         )}
+        <div className="ml-auto">
+          <EditRawJsonButton surface="style-config" accountId={accountId} />
+        </div>
       </div>
     </Card>
   );
@@ -278,6 +282,9 @@ export default function AutoreplyTab({ accountId }: { accountId: string | null }
         {saveM.isError && (
           <span className="text-xs text-red-500">{saveM.error?.message || "Save failed"}</span>
         )}
+        <div className="ml-auto">
+          <EditRawJsonButton surface="autoreply-config" accountId={accountId} />
+        </div>
       </div>
     </Card>
     <StyleSection accountId={accountId} />

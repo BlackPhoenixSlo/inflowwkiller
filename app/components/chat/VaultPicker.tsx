@@ -220,6 +220,14 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
   const [type, setType] = useState<MediaType>("all");
   const [listId, setListId] = useState<number | null>(null);
   const [sort, setSort] = useState<Sort>("newest");
+  // Vault search — OF-native (verified live: wire param `query`). Debounced
+  // so we fire one OF fetch after the user pauses typing, not per keystroke.
+  const [queryInput, setQueryInput] = useState("");
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setQuery(queryInput.trim()), 300);
+    return () => clearTimeout(t);
+  }, [queryInput]);
   // Per-fan folder MRU (last 3 used). Lives in localStorage so it
   // survives reloads + transfers between tabs.
   const [folderMru, setFolderMru] = useState<number[]>([]);
@@ -231,7 +239,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
     () => new Map(),
   );
 
-  const vault = useVaultMedia({ accountId, type, listId, enabled: open });
+  const vault = useVaultMedia({ accountId, type, listId, sort, query, enabled: open });
   const listsQ = useVaultLists(accountId, open);
   // Chatter Access (folders): for a RESTRICTED chatter session this is the
   // authoritative folder menu (DA-3). Owners get `restricted: false` (the
@@ -547,6 +555,8 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
       setType(state?.type ?? "all");
       setSort(state?.sort ?? "newest");
       setListId(state?.listId ?? null);
+      setQueryInput("");   // search is transient — start each open clean
+      setQuery("");
       setFolderMru(loadFanMru(accountId, fanId));
     }
     wasOpenRef.current = open;
@@ -689,26 +699,26 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
   );
   const confirm = useCallback(() => confirmWith(), [confirmWith]);
 
-  // Local sort applied AFTER the server paginated list lands. OF doesn't
-  // expose sort=asc on the vault endpoint, so reversing here is the only
-  // way to honor "Oldest first". Items arrive in createdAt-DESC order.
+  // Ordering is now server-side (`sort=asc|desc` — OF honors both, verified
+  // live), so we render `vault.items` in the exact order OF paginated them.
+  // A client reverse would be WRONG under infinite scroll: newly loaded
+  // pages would land at the top instead of the bottom.
   //
-  // Dedup by id along the way — OF's vault pagination occasionally returns
-  // the same item across adjacent pages (race between a vault edit and
-  // our offset-based reads), and React would warn about duplicate keys
-  // on the tile <button>s. Keep the FIRST occurrence so the position the
-  // user already sees stays stable when a re-fetch overlaps.
+  // Still dedup by id — OF's vault pagination occasionally returns the same
+  // item across adjacent pages (race between a vault edit and our offset-
+  // based reads), and React would warn about duplicate keys on the tile
+  // <button>s. Keep the FIRST occurrence so the position the user already
+  // sees stays stable when a re-fetch overlaps.
   const visibleItems = useMemo(() => {
-    const ordered = sort === "oldest" ? [...vault.items].reverse() : vault.items;
     const seen = new Set<number>();
     const out: VaultMedia[] = [];
-    for (const m of ordered) {
+    for (const m of vault.items) {
       if (seen.has(m.id)) continue;
       seen.add(m.id);
       out.push(m);
     }
     return out;
-  }, [vault.items, sort]);
+  }, [vault.items]);
 
   // Folder quick-chips: three-tier fallback so the row is always useful.
   //   1. Per-fan MRU (last 3 folders the chatter used on this fan).
@@ -834,11 +844,32 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
             value={sort}
             onChange={(e) => setSort(e.target.value as Sort)}
             className="ml-2 bg-bg border border-border rounded-md px-2 py-1 text-xs focus:outline-none focus:border-accent"
-            title="Sort order — applied locally since OF doesn't expose sort on the vault endpoint."
+            title="Sort order (applied by OF server-side)."
           >
             <option value="newest">Newest</option>
             <option value="oldest">Oldest</option>
           </select>
+
+          <div className="relative ml-2">
+            <input
+              type="search"
+              value={queryInput}
+              onChange={(e) => setQueryInput(e.target.value)}
+              placeholder="Search vault…"
+              title="Search your vault (OnlineFans-native full-text search)"
+              className="w-40 bg-bg border border-border rounded-md pl-2 pr-6 py-1 text-xs focus:outline-none focus:border-accent"
+            />
+            {queryInput && (
+              <button
+                type="button"
+                onClick={() => { setQueryInput(""); setQuery(""); }}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-fg-dim hover:text-fg leading-none"
+                aria-label="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
 
           <div className="ml-auto flex items-center gap-3">
             {/* Wall-scan indicator: only render while coverage is

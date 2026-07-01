@@ -74,6 +74,11 @@ export interface AccountRosterIconProps {
   account: AccountMeta;
   active: boolean;
   onClick: () => void;
+  /** Hover/focus intent → prewarm this model's badge + chat list so the swap is
+   *  instant. Fired on pointer-enter and keyboard focus; `onHoverEnd` cancels a
+   *  pending (debounced) warm when the pointer leaves before it settles. */
+  onHover?: () => void;
+  onHoverEnd?: () => void;
   /** Optional tier-color overlay ring (ask #1 — single-fan view). */
   tierColor?: string | null;
   /** Per-model inbox counts → the blue/orange pill under the avatar. */
@@ -126,12 +131,16 @@ export function AccountAvatarSlot({
 }
 
 export function AccountRosterIcon({
-  account, active, onClick, tierColor, count,
+  account, active, onClick, onHover, onHoverEnd, tierColor, count,
 }: AccountRosterIconProps) {
   return (
     <button
       type="button"
       onClick={onClick}
+      onMouseEnter={onHover}
+      onMouseLeave={onHoverEnd}
+      onFocus={onHover}
+      onBlur={onHoverEnd}
       title={account.nickname || account.id}
       aria-pressed={active}
       className="group flex flex-col items-center gap-0.5 shrink-0 focus:outline-none"
@@ -171,12 +180,22 @@ export function AllModelsAvatarSlot({ active }: { active: boolean }) {
  * Click swaps scope back to the unified all-models view.
  */
 export function AllModelsRosterIcon({
-  active, onClick, count,
-}: { active: boolean; onClick: () => void; count?: RosterCount | null }) {
+  active, onClick, onHover, onHoverEnd, count,
+}: {
+  active: boolean;
+  onClick: () => void;
+  onHover?: () => void;
+  onHoverEnd?: () => void;
+  count?: RosterCount | null;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
+      onMouseEnter={onHover}
+      onMouseLeave={onHoverEnd}
+      onFocus={onHover}
+      onBlur={onHoverEnd}
       title="All models"
       aria-pressed={active}
       className="group flex flex-col items-center gap-0.5 shrink-0 focus:outline-none"
