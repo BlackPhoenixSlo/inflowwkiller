@@ -51,6 +51,21 @@ log = logging.getLogger("of-relay.relay_cache")
 # Cache value shape: (value, expires_at_monotonic).
 _cache: dict[tuple[str, str, tuple], tuple[Any, float]] = {}
 
+# Invalidation generation per (namespace, account_id). A fetch snapshots the
+# generation BEFORE going upstream and only writes its result back if no
+# invalidation bumped it meanwhile — otherwise an in-flight fetch that read
+# upstream BEFORE a state change (e.g. mark-as-read, a WS-signalled message)
+# resolves after the invalidation and silently re-caches the pre-change
+# snapshot for a full TTL ("zombie" entries the invalidation was meant to
+# kill). Pair-level (not per-key) so a fetch on a key with no cached entry
+# yet is covered too. Bounded by namespace x account count.
+_pair_gen: dict[tuple[str, str], int] = {}
+
+
+def _bump_gen(namespace: str, account_id: str) -> None:
+    pair = (namespace, account_id)
+    _pair_gen[pair] = _pair_gen.get(pair, 0) + 1
+
 # Per-key locks, only used on the miss path. Guarded by `_registry_lock`
 # so two coroutines can't both create + register a fresh lock for the
 # same key.
@@ -126,12 +141,18 @@ async def get_or_fetch(
                     return value
 
         _record_miss(namespace)
+        gen0 = _pair_gen.get((namespace, account_id), 0)
         if asyncio.iscoroutinefunction(fetcher):
             value = await fetcher()
         else:
             value = await asyncio.to_thread(fetcher)
 
-        _cache[key] = (value, time.monotonic() + float(ttl_seconds))
+        # Latest-wins: skip the write-back if an invalidation landed while we
+        # were upstream — our snapshot predates it. The caller still gets the
+        # value it fetched; the NEXT reader misses and re-fetches post-change
+        # state. (See _pair_gen.)
+        if _pair_gen.get((namespace, account_id), 0) == gen0:
+            _cache[key] = (value, time.monotonic() + float(ttl_seconds))
         return value
 
 
@@ -154,6 +175,12 @@ def invalidate(
     can miss-the-cache, re-fetch the pre-commit upstream state, and
     cache it.
     """
+    # Bump the pair generation FIRST — even when nothing is currently cached —
+    # so any in-flight fetch under this pair skips its write-back instead of
+    # re-caching pre-invalidation state (see _pair_gen). Locks are deliberately
+    # NOT popped: dropping a live lock would let a second coroutine mint a
+    # fresh one and defeat single-flight; the dict is bounded by keyspace.
+    _bump_gen(namespace, account_id)
     removed = 0
     # Two passes to avoid mutating during iteration.
     to_drop: list[tuple[str, str, tuple]] = []
@@ -166,7 +193,6 @@ def invalidate(
         to_drop.append(key)
     for key in to_drop:
         _cache.pop(key, None)
-        _locks.pop(key, None)
         removed += 1
     if removed:
         log.debug(
@@ -189,9 +215,12 @@ def invalidate_account(account_id: str) -> int:
     Sync (RAM-only), like `invalidate`. Returns the count removed.
     """
     to_drop = [key for key in _cache.keys() if key[1] == account_id]
+    # Bump every namespace seen for this account (cached OR in flight via the
+    # lock registry) so no in-flight fetch writes back after the wipe.
+    for ns in {key[0] for key in to_drop} | {key[0] for key in _locks if key[1] == account_id}:
+        _bump_gen(ns, account_id)
     for key in to_drop:
         _cache.pop(key, None)
-        _locks.pop(key, None)
     if to_drop:
         log.debug(
             "relay_cache.invalidate_account account=%s removed=%d",

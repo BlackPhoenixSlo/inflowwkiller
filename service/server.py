@@ -3292,6 +3292,90 @@ def admin_storyboard_stats() -> dict:
     }
 
 
+# One TTL for every reader of the "list_chats" namespace (the inbox list AND
+# the roster badge, which derives its counts from the same cached window —
+# see _compute_roster_count_of). WS invalidation keeps it live; the TTL is the
+# no-WS fallback.
+_LIST_CHATS_TTL = 600.0
+
+# When the badge's page-0 window was last fetched LIVE from OF, per account.
+# The badge fold escalates to a live re-read when the window is older than
+# _ROSTER_WINDOW_MAX_AGE_S — without this, counts folded from a near-expiry
+# window and then cached for the roster TTL could serve ~900s-old state on a
+# WS-dead account (the pre-unification badge re-read OF at least every 300s).
+# Stamped by BOTH fetch sites (the inbox endpoint and the badge compute), so
+# either one refreshing the window resets the clock for both.
+_ROSTER_WINDOW_MAX_AGE_S = 300.0
+_chats_window_fetched_at: dict[str, float] = {}
+
+
+def _assemble_chats_page(
+    client: OFClient,
+    *,
+    limit: int,
+    offset: int,
+    order: str,
+    filter: str | None = None,
+    list_id: str | None = None,
+    q: str | None = None,
+) -> dict[str, Any]:
+    """Blocking: assemble ONE logical page of `limit` conversations from OF.
+
+    OF caps /chats at ~10 rows per response regardless of `limit` (same cap
+    the roster scan and automation_executor's chat scrape work around), so a
+    single upstream call for limit=25 silently returned ~10 rows — and the
+    frontend, which advances its next offset by the 25 it ASKED for, then
+    requested offset=25 and permanently skipped conversations ranked ~10-24:
+    an unread fan in that band was visible to the roster badge (which pages
+    by 10) but structurally unreachable by the chat list ("badge says 3, list
+    shows 2"). Loop on hasMore, advancing by rows RECEIVED, until the logical
+    page is full; dedupe fans that shift ranks between page reads."""
+    rows: list[dict[str, Any]] = []
+    seen: set[Any] = set()
+    cur = int(offset)
+    has_more = True
+    # Hard cap on upstream reads: ~3 for a 25-row page at OF's 10-row cap, with
+    # slack for rank churn. If OF ever serves repeating pages with hasMore=true,
+    # this bounds the loop instead of wedging the per-account lane + per-key
+    # cache lock (every future /chats and badge read for this key) forever.
+    for _ in range((limit // 10) + 3):
+        if len(rows) >= limit or not has_more:
+            break
+        r = client.list_chats(
+            limit=max(1, limit - len(rows)), offset=cur, order=order,
+            filter=filter, list_id=list_id, query=q,
+        )
+        page = r.get("list") or r.get("chats") or []
+        # OF's hasMore is authoritative and must be read BEFORE the empty-page
+        # break: an empty read past end-of-history (or a zero-match filter /
+        # empty inbox) carries hasMore=false, and returning the loop's True
+        # initializer instead gets cached for the full TTL and feeds the
+        # frontend's owe-reply scan / infinite scroll a "more available" lie
+        # it can never satisfy — an unbounded loadMore loop against live OF.
+        has_more = bool(r.get("hasMore"))
+        if not page:
+            break
+        cur += len(page)  # advance by RECEIVED, never by requested
+        added = 0
+        for ch in page:
+            fid = (ch.get("withUser") or {}).get("id")
+            if fid is not None:
+                if fid in seen:
+                    continue
+                seen.add(fid)
+            rows.append(ch)
+            added += 1
+        if added == 0:
+            # Dup-only page: pagination isn't progressing (heavy rank churn or
+            # an OF offset clamp). Stop rather than spin the lane.
+            log.warning("assemble_chats_page: no progress at offset=%s (limit=%s)", cur, limit)
+            break
+    overflow = len(rows) > limit
+    if overflow:
+        rows = rows[:limit]
+    return {"list": rows, "hasMore": has_more or overflow}
+
+
 @app.get("/api/of/v2/chats")
 async def list_chats(
     limit: int = Query(10, ge=1, le=50),
@@ -3312,17 +3396,37 @@ async def list_chats(
     aid = _resolve_account_id(_request_ctx.get())
     q = query or search
     coalesce_key = ("list_chats", aid, limit, offset, order, filter, list_id, q)
+    # The badge folds its counts from the plain recent page-0 window — when
+    # THIS request happens to be that exact view, a live read here also resets
+    # the badge's staleness clock (see _chats_window_fetched_at).
+    is_badge_window = (
+        limit == _ROSTER_SCAN_MAX and offset == 0 and order == "recent"
+        and not filter and list_id is None and not q
+    )
     async def _fetch():
-        return await relay_coalesce.coalesce(coalesce_key, lambda: asyncio.to_thread(
-            _proxy, lambda: _get_client().list_chats(
-                limit=limit, offset=offset, order=order, filter=filter,
-                list_id=list_id, query=q,
-            ),
-        ))
+        def _read():
+            value = _assemble_chats_page(
+                _get_client(), limit=limit, offset=offset, order=order,
+                filter=filter, list_id=list_id, q=q,
+            )
+            if is_badge_window:
+                _chats_window_fetched_at[aid] = _time_mod.monotonic()
+            return value
+        return await relay_coalesce.coalesce(
+            coalesce_key, lambda: asyncio.to_thread(_proxy, _read),
+        )
     resp = await relay_cache.get_or_fetch(
         "list_chats", aid, (limit, offset, order, filter, list_id, q),
-        ttl_seconds=600.0, fetcher=_fetch, bypass=refresh,
+        ttl_seconds=_LIST_CHATS_TTL, fetcher=_fetch, bypass=refresh,
     )
+    # Manual Refresh (?refresh=1) on the plain recent view just re-read the very
+    # window the roster badge folds its counts from — drop the cached fold so
+    # the next badge poll re-folds from these fresh rows (pure RAM, no OF read).
+    # Without this, the one button users press when badge≠list leaves the badge
+    # serving pre-refresh counts for up to its own TTL: the symptom survives its
+    # own remedy.
+    if refresh and offset == 0 and not filter and not q and list_id is None:
+        relay_cache.invalidate("roster_count", aid)
     # Reconcile OF's authoritative read state + last-message direction into the
     # local `chats` mirror the roster badge aggregates. Done on EVERY plain recent
     # load (cache hit OR miss), not just a fresh fetch — otherwise a model served
@@ -3954,6 +4058,13 @@ async def send_message(
         _pin_sent_media(account_id, result)
     except Exception:
         log.debug("pin sent media dispatch failed (chat_id=%s)", chat_id, exc_info=True)
+
+    # The reply moved the chat window (lastMessage direction → owe-reply/unread
+    # drop, preview text). The WS echo of our own send also busts these, but it
+    # can lag the response or be missed outright (pump down) — bust here so the
+    # sender's own next list/badge read reflects the reply immediately.
+    relay_cache.invalidate("list_chats", account_id)
+    relay_cache.invalidate("roster_count", account_id)
 
     return result
 
@@ -4813,26 +4924,40 @@ async def _set_local_unread(account_id: str, *, fan_id: int | None, value: int) 
         log.warning("_set_local_unread(%s, fan=%s) failed — best-effort", account_id, fan_id,
                     exc_info=True)
 
+def _bust_chat_read_state(aid: str) -> None:
+    """A read-state flip on OF (mark read/unread) changes `unreadMessagesCount`
+    in the chat window — the field BOTH the cached list rows and the badge
+    counts derive from. Bust both so neither serves the pre-flip snapshot for
+    up to its TTL (a read isn't a message, so the WS pump never busts these)."""
+    relay_cache.invalidate("list_chats", aid)
+    relay_cache.invalidate("roster_count", aid)
+
 @app.post("/api/of/v2/chats/mark-as-read")
 async def of_mark_all_chats_read():
     """Mark EVERY chat as read (bulk no-arg endpoint)."""
     aid = _resolve_account_id(_request_ctx.get())
     await _set_local_unread(aid, fan_id=None, value=0)
-    return await asyncio.to_thread(_proxy, lambda: _get_client().mark_all_chats_read())
+    result = await asyncio.to_thread(_proxy, lambda: _get_client().mark_all_chats_read())
+    _bust_chat_read_state(aid)
+    return result
 
 @app.post("/api/of/v2/chats/{chat_id}/mark-as-read")
 async def of_mark_chat_read(chat_id: int):
     """Mark chat as read (chat_id == fan id). Clears local unread_count too."""
     aid = _resolve_account_id(_request_ctx.get())
     await _set_local_unread(aid, fan_id=chat_id, value=0)
-    return await asyncio.to_thread(_proxy, lambda: _get_client().mark_chat_read(chat_id))
+    result = await asyncio.to_thread(_proxy, lambda: _get_client().mark_chat_read(chat_id))
+    _bust_chat_read_state(aid)
+    return result
 
 @app.delete("/api/of/v2/chats/{chat_id}/mark-as-read")
 async def of_mark_chat_unread(chat_id: int):
     """Mark chat as unread (same path as mark-read but DELETE)."""
     aid = _resolve_account_id(_request_ctx.get())
     await _set_local_unread(aid, fan_id=chat_id, value=1)
-    return await asyncio.to_thread(_proxy, lambda: _get_client().mark_chat_unread(chat_id))
+    result = await asyncio.to_thread(_proxy, lambda: _get_client().mark_chat_unread(chat_id))
+    _bust_chat_read_state(aid)
+    return result
 
 @app.post("/api/of/v2/chats/{chat_id}/mute")
 def of_mute_chat(chat_id: int):
@@ -6217,7 +6342,7 @@ def wipe_fresh_browser_buckets() -> dict[str, Any]:
     so the bucket itself is disposable. This endpoint frees the disk and
     guarantees no leftover logged-in state is sitting around.
 
-    Untouched: account-id-bucketed dirs (e.g. `123456789/`) and the
+    Untouched: account-id-bucketed dirs (e.g. `446300082/`) and the
     legacy `unbound/` / proxy-label dirs (`hu-1`, `hu-3`, ...). Those are
     still re-usable for warmed-up re-captures.
     """
@@ -6284,16 +6409,16 @@ def admin_accounts_list(response: Response) -> dict[str, Any]:
 # vs the inbox (the All-icon read 11 where the unified header showed 5-6). Why NOT
 # OF's `filter=unread` for blue: it proved unreliable — returned 0 for a model
 # (Amia) that had a genuine `unreadMessagesCount=1` chat in its recent window.
-_ROSTER_SCAN_MAX = 25    # most-recent conversations per model = the inbox's first page (PAGE_SIZE)
-_ROSTER_PAGE = 10        # OF caps /chats at ~10 per page regardless of `limit`
+# The badge window MUST equal the inbox's first page (frontend PAGE_SIZE in
+# useChatList.ts) — both are served from the SAME "list_chats" cache entry
+# keyed (25, 0, "recent", None, None, None), which is what guarantees the
+# badge and the visible list can never disagree.
+_ROSTER_SCAN_MAX = 25
 
 
-def _compute_roster_count_of(account_id: str) -> dict[str, int]:
-    """Blocking: a model's inbox backlog straight from OF (runs in a thread).
-
-    ONE shallow scan of the most-recent _ROSTER_SCAN_MAX conversations — the same
-    window the inbox loads first — counting both colors exactly as the chat-list
-    rows do:
+def _roster_counts_from_rows(rows: list[dict[str, Any]], me: str) -> dict[str, int]:
+    """Pure fold of a /chats window into the two badge colors, exactly as the
+    chat-list rows render them:
 
       • unread (blue)    — `unreadMessagesCount > 0` (OF's per-chat read state =
                            the inbox's blue unread badge).
@@ -6302,37 +6427,67 @@ def _compute_roster_count_of(account_id: str) -> dict[str, int]:
                            header's `isUnresponded` rule). Disjoint from blue so
                            the two pills don't double-count.
 
-    Deduped by fan id; stops at the window cap rather than paginating the whole
-    history. The WS pump busts the roster_count cache on every chat message
-    (event_transcoder), so a new inbound DM bumps blue — and our reply drops
-    orange — on the next poll."""
-    client = _load_client(account_id)
-    me = str(client.user_id)
+    Deduped by fan id and capped at the badge window."""
     blue = owe = 0
     seen: set[Any] = set()
-    for p in range((_ROSTER_SCAN_MAX // _ROSTER_PAGE) + 2):
-        r = client.list_chats(limit=_ROSTER_PAGE, offset=p * _ROSTER_PAGE, order="recent")
-        rows = r.get("list") or r.get("chats") or []
-        capped = False
-        for ch in rows:
-            fid = (ch.get("withUser") or {}).get("id")
-            if fid is None or fid in seen:
-                continue
-            if len(seen) >= _ROSTER_SCAN_MAX:
-                capped = True
-                break
-            seen.add(fid)
-            if int(ch.get("unreadMessagesCount") or 0) > 0:
-                blue += 1
-                continue
-            lm = ch.get("lastMessage") or {}
-            from_id = (lm.get("fromUser") or {}).get("id")
-            if from_id is not None and str(from_id) != me:
-                owe += 1
-        if capped or not r.get("hasMore"):
+    for ch in rows:
+        fid = (ch.get("withUser") or {}).get("id")
+        if fid is None or fid in seen:
+            continue
+        if len(seen) >= _ROSTER_SCAN_MAX:
             break
-
+        seen.add(fid)
+        if int(ch.get("unreadMessagesCount") or 0) > 0:
+            blue += 1
+            continue
+        lm = ch.get("lastMessage") or {}
+        from_id = (lm.get("fromUser") or {}).get("id")
+        if from_id is not None and str(from_id) != me:
+            owe += 1
     return {"unread": blue, "owe_reply": owe}
+
+
+async def _compute_roster_count_of(account_id: str, *, bypass: bool = False) -> dict[str, int]:
+    """A model's inbox backlog, derived from the SAME cached chats window the
+    inbox list is served from (namespace "list_chats", the page-0 key the
+    frontend requests). One OF read feeds both surfaces:
+
+      • warm window → the badge is a pure fold over cached rows, zero OF cost;
+      • cold window / `bypass=True` → ONE live scan that also REWARMS the list
+        cache, so the next /api/of/v2/chats read is a warm hit of fresh rows.
+
+    `bypass=True` is the ?bust= path: badge authoritative NOW **and** the list
+    the user is about to open comes from that same read — they cannot disagree.
+    The WS pump busts both namespaces on every chat message (event_transcoder),
+    so a new inbound DM bumps blue — and our reply drops orange — on the next
+    poll."""
+    client = await asyncio.to_thread(_load_client, account_id)
+    if not bypass:
+        # Freshness contract: never fold from a window older than the badge's
+        # pre-unification re-read cadence. A near-expiry window (≤600s) whose
+        # fold is then cached for the roster TTL (300s) could otherwise serve
+        # ~900s-old counts on a WS-dead account. Escalating to a live read
+        # also rewarms the window, so the list gets fresher along with us.
+        fetched_at = _chats_window_fetched_at.get(account_id)
+        if fetched_at is None or _time_mod.monotonic() - fetched_at > _ROSTER_WINDOW_MAX_AGE_S:
+            bypass = True
+
+    def _fetch_window() -> dict[str, Any]:
+        value = _assemble_chats_page(
+            client, limit=_ROSTER_SCAN_MAX, offset=0, order="recent",
+        )
+        _chats_window_fetched_at[account_id] = _time_mod.monotonic()
+        return value
+
+    resp = await relay_cache.get_or_fetch(
+        "list_chats", account_id,
+        (_ROSTER_SCAN_MAX, 0, "recent", None, None, None),
+        ttl_seconds=_LIST_CHATS_TTL,
+        fetcher=_fetch_window,
+        bypass=bypass,
+    )
+    rows = resp.get("list") or resp.get("chats") or []
+    return _roster_counts_from_rows(rows, str(client.user_id))
 
 
 @app.get("/admin/accounts/roster-counts")
@@ -6376,12 +6531,17 @@ async def admin_accounts_roster_counts(
     if not ids:
         return {"counts": {}}
 
-    async def _one(aid: str) -> tuple[str, dict[str, int]]:
+    async def _one(aid: str, *, bypass: bool = False) -> tuple[str, dict[str, int]]:
         try:
+            # Named async closure, not a lambda: get_or_fetch dispatches sync
+            # fetchers to a thread, and a lambda returning a coroutine would
+            # come back unawaited.
+            async def _fetch() -> dict[str, int]:
+                return await _compute_roster_count_of(aid, bypass=bypass)
             value = await relay_cache.get_or_fetch(
                 "roster_count", aid, (),
                 ttl_seconds=300.0,
-                fetcher=lambda: _compute_roster_count_of(aid),
+                fetcher=_fetch,
             )
             return aid, value
         except Exception:  # noqa: BLE001 — one bad model must not blank the strip
@@ -6394,9 +6554,14 @@ async def admin_accounts_roster_counts(
     # gather would trigger for any *other* model whose cache is cold/expired. Gated
     # on ownership (a crafted `bust` can't evict another tenant's entry); an id the
     # principal doesn't own falls through to the normal full-map path.
+    #
+    # bypass=True is the badge↔list bridge: the recompute forces a LIVE OF read
+    # of the shared chats window and REWARMS the "list_chats" page-0 entry, so
+    # the list refetch the frontend chains after this call is a warm hit of the
+    # same rows these counts were folded from.
     if bust and bust in ids:
         relay_cache.invalidate("roster_count", bust)
-        _, value = await _one(bust)
+        _, value = await _one(bust, bypass=True)
         return {"counts": {bust: value}}
 
     pairs = await asyncio.gather(*[_one(a) for a in ids])

@@ -42,9 +42,11 @@ export default function ChatByUsernamePage({
           setError(`Couldn't resolve @${username} on this account.`);
           return;
         }
-        // Replace so the back button skips this redirect frame.
+        // Replace so the back button skips this redirect frame. Carry the
+        // query string across — tip/purchase toasts append ?refresh=media
+        // and the canonical page's one-shot restock reads it on mount.
         window.location.replace(
-          `/chat/${encodeURIComponent(accountId)}/${encodeURIComponent(String(id))}`,
+          `/chat/${encodeURIComponent(accountId)}/${encodeURIComponent(String(id))}${window.location.search}`,
         );
       } catch (e) {
         if (cancelled) return;

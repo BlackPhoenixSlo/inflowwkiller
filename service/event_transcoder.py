@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -41,6 +42,13 @@ from db.engine import get_session
 from db.models import Chat, Fan, Message, Transaction
 from automations._common import source_self_heal_set
 import relay_cache
+
+# Outbound-echo cache-bust debounce (per account). A mass blast echoes one
+# outbound chat_message per recipient; busting list_chats/roster_count on each
+# would keep those caches permanently cold for the blast's duration. One bust
+# per window suffices — the 60/90s frontend polls are the refetch cadence.
+_OUT_BUST_DEBOUNCE_S = 20.0
+_last_out_bust: dict[str, float] = {}
 
 log = logging.getLogger("of-relay.transcode")
 
@@ -236,6 +244,23 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     # (account_id, fan_id, message_id) PK requires SOME fan_id. Skip for now
     # and let the send-side handler own outbound persistence.
     if direction == "out":
+        # Persistence is owned by the send handler, but the cached OF chat
+        # window is stale either way (lastMessage direction flipped → a fan
+        # drops off owe-reply, previews moved). This echo is the ONLY signal
+        # for sends made outside our send endpoint (OF web, another device,
+        # a different automation instance) — bust both readers of the window
+        # so the next list/badge fetch re-reads OF. Debounced per account: a
+        # mass blast echoes one outbound frame per recipient, and busting on
+        # every one keeps the caches permanently cold for the blast's whole
+        # duration (each 60/90s poll then pays a full live OF re-read). One
+        # bust per window is enough — polls are the refetch cadence anyway,
+        # so extra busts between polls buy nothing.
+        aid_out = str(account_id)
+        now_mono = time.monotonic()
+        if now_mono - _last_out_bust.get(aid_out, 0.0) >= _OUT_BUST_DEBOUNCE_S:
+            _last_out_bust[aid_out] = now_mono
+            relay_cache.invalidate("list_chats", aid_out)
+            relay_cache.invalidate("roster_count", aid_out)
         log.debug("skipping outbound chat_message %s — will be written at send time", message_id)
         return
 

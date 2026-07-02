@@ -11,7 +11,7 @@
  * populated.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useIsRestoring, useQuery, useQueryClient } from "@tanstack/react-query";
 import { use, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
@@ -110,6 +110,36 @@ export default function ChatPopoutPage({
   useEffect(() => {
     if (!hidden) setUnreadHidden(0);
   }, [hidden]);
+
+  // One-shot `?refresh=media`: tip/purchase notification toasts append it
+  // (NotificationToaster.withRefreshFlag) because the fan just moved money,
+  // so this tab's localStorage-rehydrated drawer caches are stale by
+  // seconds. Invalidate the same five keys as FanDrawer's manual ↻
+  // (refreshChatMedia), then strip the param so a plain reload doesn't
+  // re-fire. Must wait out the persister's restore — invalidating mid-restore
+  // would let the rehydrated snapshot land on top of the fresh refetch.
+  const qc = useQueryClient();
+  const isRestoring = useIsRestoring();
+  const refreshFiredRef = useRef(false);
+  useEffect(() => {
+    if (isRestoring || refreshFiredRef.current) return;
+    if (!Number.isFinite(fanId)) return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("refresh") !== "media") return;
+    refreshFiredRef.current = true;
+    void qc.invalidateQueries({ queryKey: ["fan-chat-media", accountId, fanId], exact: false });
+    void qc.invalidateQueries({ queryKey: ["fan-ppv-history", accountId, fanId], exact: false });
+    void qc.invalidateQueries({ queryKey: ["last-purchases", accountId] });
+    void qc.invalidateQueries({ queryKey: ["of-user", accountId, fanId] });
+    void qc.invalidateQueries({ queryKey: ["fan", accountId, fanId] });
+    url.searchParams.delete("refresh");
+    const qs = url.searchParams.toString();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      url.pathname + (qs ? `?${qs}` : "") + url.hash,
+    );
+  }, [isRestoring, qc, accountId, fanId]);
 
   if (!Number.isFinite(fanId)) {
     return (
