@@ -636,7 +636,27 @@ export default function BrainPanel() {
                     Greeting “{preview.name}” · {preview.slot}
                     {preview.image ? "" : " · no image"}
                   </div>
-                  <p className="whitespace-pre-wrap text-sm text-fg">{preview.text}</p>
+                  {preview.bubbles?.length ? (
+                    // Send shape: one block per chat bubble (image rides on the
+                    // first; the 2nd is AI-restyled into casual voice at send time).
+                    <div className="space-y-1">
+                      {preview.bubbles.map((b, i) => (
+                        <p
+                          key={i}
+                          className="whitespace-pre-wrap rounded-md bg-bg-elev-2 px-2 py-1 text-sm text-fg"
+                        >
+                          {b}
+                        </p>
+                      ))}
+                      {preview.bubbles.length > 1 && (
+                        <div className="text-[10px] text-fg-dim">
+                          2 bubbles · typing pauses between · 2nd line AI-restyled on send
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="whitespace-pre-wrap text-sm text-fg">{preview.text}</p>
+                  )}
                 </div>
               </div>
             )}

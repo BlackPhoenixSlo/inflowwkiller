@@ -191,6 +191,9 @@ export interface AutomationPreviewResult {
   account_id: string;
   kind: string;
   text: string;
+  /** send_welcome: the actual send shape — one entry per chat bubble (the image
+   *  rides on bubble 1; bubble 2 is AI-restyled at send time). */
+  bubbles?: string[];
   image: number | null;
   name: string;
   slot: string;

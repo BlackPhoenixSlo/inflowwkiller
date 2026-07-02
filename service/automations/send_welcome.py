@@ -44,11 +44,21 @@ It mirrors the scrape_chats reference in automation_executor.py:
     same fan in an overlapping cycle; run_once's per-(account, kind) lock stops
     a slow tick stacking on the next.
 
+SEND SHAPE (2026-07): the deterministic welcome goes out as TWO paced bubbles —
+bubble 1 is the stutter greeting with the time-of-day image attached, bubble 2 is
+the activity line AI-restyled into the creator's casual texting voice (verbatim
+template on any LLM failure; V1's canned third line is retired). The restyle is
+ONE cached LLM call per slot line shared across fans; a fan who already texted us
+gets a fresh per-fan call (see _restyle_cache). Each bubble is held for its human
+typing time with the live "...is typing" indicator
+(webhook_config_json.typing_wpm / typing_indicator — same knobs as of_ai_chat).
+
 Payload knobs (all optional): `limit` (notifications fetched), `max_welcomes`
 (per-run batch cap), `model` (LLM override), `dry_run` (generate but don't send),
 `with_image` (attach a time-of-day bot-folder vault image, default True — same
-picker as send_followup), `test_fan` (+ `test_name`) to force one hardcoded
-recipient.
+picker as send_followup), `restyle` (AI-restyle the activity bubble, default
+True; False sends the verbatim template line, zero LLM cost), `test_fan`
+(+ `test_name`) to force one hardcoded recipient.
 
 Returns a stats dict → automation_runs.stats_json.
 """
@@ -68,9 +78,11 @@ import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
-from ._common import (apply_word_restriction, load_hard_skip_ids,
-                      load_strip_emojis, name_token, resolve_model,
-                      skip_unreachable_fan, strip_emojis)
+from ._common import (apply_word_restriction, hold_with_typing,
+                      load_hard_skip_ids, load_strip_emojis,
+                      load_typing_indicator, load_typing_wpm, name_token,
+                      resolve_model, skip_unreachable_fan, strip_emojis,
+                      typing_delay_seconds)
 from db.engine import get_session
 from db.models import AccountAiConfig, Fan, FanProfile, Message, WelcomeSent
 from llm_client import LLMCapExceeded
@@ -417,36 +429,109 @@ async def _resolve_welcome_name(account_id: str, fan_id: int, sub: dict) -> str:
     return ""
 
 
-def _local_welcome(name: str, cfg: dict) -> str:
-    """V1 'precious' deterministic welcome (NO LLM call) — the signature charm:
-    a stutter prefix on the first letter that runs straight into the alliterative
-    nickname (adjective + name), an excited sign-off, then the verbatim time-of-day
-    activity tagged with the creator's local weekday / time-of-day / location, then a
-    busy sign-off:
+def _local_welcome_bubbles(name: str, cfg: dict) -> list[str]:
+    """V1 'precious' deterministic welcome as SEPARATE chat bubbles (NO LLM call):
 
-        Hey S-S-S-Sexy Sofie ! !!
-
-        By the way - just woke up and made myself a coffee ☕ my dogs are going crazy
-        wanting a walk lol (it's Friday morning in Vancouver Island, Canada where I am from)
-
-        Will reply when I am back :)
+        bubble 1:  Hey S-S-S-Sexy Sofie ! !!          ← the image rides on this one
+        bubble 2:  By the way - just woke up and made myself a coffee ☕ (it's
+                   Friday morning in Vancouver Island, Canada where I am from)
 
     The stutter prefix ('S-S-S-') sits on the first letter and leads into the full
-    alliterative nickname 'Sexy Sofie'. The image is attached separately by the caller."""
+    alliterative nickname 'Sexy Sofie'. Bubble 2 is the verbatim template line —
+    run() AI-restyles it into casual texting tone before sending (verbatim is the
+    fallback when the LLM is capped/down). The V1 third line ('Will reply when I
+    am back :)') is retired — it read canned; two paced bubbles land more human.
+    Bubble 2 is omitted entirely when the account has no activity for this slot."""
     L = name[0].upper()
     adj = _ADJS.get(L, "Flirty")
     stutter = f"{L}-{L}-{L}-{adj} {name}"
-    lines = [f"Hey {stutter} ! !!"]
+    bubbles = [f"Hey {stutter} ! !!"]
 
     hour = _model_hour(cfg.get("utc_offset") or 0)
     tod, activity = _time_activity(hour, cfg.get("time_activities") or {})
     location = (cfg.get("location") or "").strip()
     if activity:
         where = f" in {location}" if location else ""
-        lines += ["", f"By the way - {activity} (it's {_model_weekday(cfg.get('utc_offset'))} "
-                  f"{tod}{where} where I am from)"]
-    lines += ["", "Will reply when I am back :)"]
-    return "\n".join(lines).strip()
+        bubbles.append(f"By the way - {activity} (it's {_model_weekday(cfg.get('utc_offset'))} "
+                       f"{tod}{where} where I am from)")
+    return bubbles
+
+
+def _local_welcome(name: str, cfg: dict) -> str:
+    """Single-text form of the bubbles (preview / dev drivers / logs)."""
+    return "\n\n".join(_local_welcome_bubbles(name, cfg))
+
+
+# ── AI restyle of the activity bubble (casual texting tone) ───────────
+
+_RESTYLE_TEMPERATURE = 0.9
+
+
+def _compose_restyle_system(cfg: dict) -> str:
+    persona = (cfg.get("persona")
+               or "You are a warm, flirty OnlyFans creator texting a brand-new "
+                  "subscriber.").strip()
+    return "\n\n".join([
+        persona,
+        "Rewrite the given line from your welcome DM so it reads like a real, "
+        "casual text you just fired off — relaxed texting tone, natural phrasing, "
+        "a touch playful. KEEP every fact (what you're doing, the weekday / time "
+        "of day, where you're from). Do not add new facts or questions. ONE short "
+        "line only. Output only the rewritten line — no quotes, no preamble.",
+    ])
+
+
+# One restyle per (account, verbatim line), cached in-process: the line is
+# IDENTICAL for every fan in the same time slot (it embeds only the activity +
+# weekday + time-of-day + location — nothing fan-specific), and sampling showed
+# the LLM's rewrites are near-identical paraphrases of it. So pay for ONE call
+# and reuse it for the rest of the slot/day (the key rolls over naturally when
+# the slot activity or weekday changes). EXCEPTION: a fan who has ALREADY
+# texted us gets a fresh per-fan call — someone actively watching the chat
+# shouldn't receive a visibly copy-pasted line. In-memory only: a restart just
+# re-pays one call per slot.
+_RESTYLE_CACHE_MAX = 64
+_restyle_cache: dict[tuple[str, str], str] = {}
+
+
+async def _fans_with_inbound(account_id: str, fan_ids: list[int]) -> set[int]:
+    """Subset of `fan_ids` that has ≥1 INBOUND message — fans who already texted
+    us. Their activity bubble gets a fresh per-fan restyle instead of the cached
+    slot line. One grouped scan per tick (own session — house pattern)."""
+    if not fan_ids:
+        return set()
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.fan_id).where(
+                Message.account_id == str(account_id),
+                Message.fan_id.in_([int(f) for f in fan_ids]),
+                Message.direction == "in",
+            ).distinct()
+        )).all()
+    return {int(r[0]) for r in rows}
+
+
+async def _restyle_activity(
+    account_id: str, fan_id: int, cfg: dict, model: str, line: str
+) -> str:
+    """One LLM call → the activity bubble in the creator's casual texting voice.
+    Raises (incl. LLMCapExceeded) to the caller, which falls back to the verbatim
+    template line — a restyle failure must never cost a fan their welcome."""
+    res = await llm_client.chat(
+        model=model,
+        messages=[
+            {"role": "system", "content": _compose_restyle_system(cfg)},
+            {"role": "user", "content": line},
+        ],
+        purpose="welcome",
+        account_id=account_id,
+        fan_id=fan_id,
+        temperature=_RESTYLE_TEMPERATURE,
+    )
+    out = (res.content or "").strip().strip('"').strip("'")
+    # Enforce the one-line contract even if the model rambles.
+    out = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
+    return out or line
 
 
 async def _generate_welcome(
@@ -537,7 +622,12 @@ async def preview_compose(
     handle / number with no usable name falls back to a single LLM riff. When no
     `fan_id` is given we greet a representative name so the preview is deterministic
     and free. The image is the account's configured per-slot vault id for the
-    current hour (`time_images`), or None — no vault network call here."""
+    current hour (`time_images`), or None — no vault network call here.
+
+    Returns the send-shape as `bubbles` (the image rides on bubble 1) plus the
+    joined `text` for back-compat. The preview shows the VERBATIM activity bubble —
+    a real run AI-restyles bubble 2 into casual texting tone, but calling the LLM
+    here would make the preview non-deterministic and non-free."""
     cfg = await _load_ai_config(account_id)
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     hour = _model_hour(cfg.get("utc_offset"))
@@ -552,15 +642,17 @@ async def preview_compose(
         sub = {"id": 0, "name": test_name or name, "username": None}
 
     if name:
-        text = _local_welcome(name, cfg)
+        bubbles = _local_welcome_bubbles(name, cfg)
     else:
         model = model or await resolve_model(account_id, "welcome", None)
-        text = await _generate_welcome(account_id, int(fan_id or 0), sub, cfg, model)
+        bubbles = [await _generate_welcome(account_id, int(fan_id or 0), sub, cfg, model)]
 
-    text = apply_word_restriction(text)
+    bubbles = [apply_word_restriction(b) for b in bubbles]
     if strip_emoji_on:
-        text = strip_emojis(text)
-    return {"text": text, "image": _slot_image_id(cfg, hour),
+        bubbles = [strip_emojis(b) for b in bubbles]
+    bubbles = [b for b in bubbles if b.strip()]
+    return {"text": "\n\n".join(bubbles), "bubbles": bubbles,
+            "image": _slot_image_id(cfg, hour),
             "name": name, "slot": _slot_key(hour)}
 
 
@@ -577,6 +669,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     cfg = await _load_ai_config(account_id)
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     model = await resolve_model(account_id, "welcome", payload.get("model"))
+    typing_wpm = await load_typing_wpm(account_id)       # per-bubble "typing" pacing
+    typing_on = await load_typing_indicator(account_id)  # live "...is typing" frames
+    restyle = bool(payload.get("restyle", True))         # AI-restyle the activity bubble
 
     client = await asyncio.to_thread(ax._make_client, account_id)
 
@@ -670,6 +765,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     errors = 0
     cap_hit = False
     image_attached = 0
+    restyled = 0          # fresh LLM restyles this run
+    restyled_cached = 0   # bubbles served from the per-slot restyle cache
+    restyle_capped = False  # cap tripped mid-run → stop attempting restyles
+
+    # Fans who already texted us get a FRESH per-fan restyle (never the cached
+    # slot line); everyone else shares one cached rewrite per slot.
+    texted_ids: set[int] = set()
+    if restyle and new_subs:
+        texted_ids = await _fans_with_inbound(account_id, [s["id"] for s in new_subs])
 
     skipped_cooldown = 0
     for sub in new_subs:
@@ -687,13 +791,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             try:
                 # If we can resolve a real name (from the notif, the fan's real_name,
                 # or a stored nickname) → deterministic V1 'precious' template, ALWAYS
-                # prefix + stutter, no LLM, zero cost. Only a random handle / number
-                # (no usable name) falls back to the LLM riff.
+                # prefix + stutter, no LLM. Only a random handle / number (no usable
+                # name) falls back to the LLM riff. The local template is TWO bubbles:
+                # the stutter greeting (image rides on it), then the activity line.
                 name = await _resolve_welcome_name(account_id, fan_id, sub)
                 if name:
-                    text = _local_welcome(name, cfg)
+                    bubbles = _local_welcome_bubbles(name, cfg)
                 else:
-                    text = await _generate_welcome(account_id, fan_id, sub, cfg, model)
+                    bubbles = [await _generate_welcome(account_id, fan_id, sub, cfg, model)]
             except LLMCapExceeded:
                 cap_hit = True
                 log.warning("send_welcome daily LLM cap reached account=%s — stopping run",
@@ -705,57 +810,117 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             account_id, fan_id, exc_info=True)
                 continue
 
-            if not text:
+            # AI-restyle the activity bubble into the creator's casual texting voice
+            # so the templated line doesn't read canned. ONE cached rewrite per
+            # slot line is shared by every fan (the rewrites are near-identical
+            # paraphrases — no point paying per fan); a fan who already texted us
+            # gets a fresh per-fan call instead. Best-effort: any failure (cap
+            # included) falls back to the verbatim template line — a restyle
+            # hiccup must never cost a fan their welcome. Once the daily cap trips
+            # we stop attempting restyles for the rest of the run.
+            if name and restyle and len(bubbles) > 1 and not restyle_capped:
+                ck = (str(account_id), bubbles[1])
+                fresh = fan_id in texted_ids
+                cached = None if fresh else _restyle_cache.get(ck)
+                if cached is not None:
+                    if cached != bubbles[1]:
+                        restyled_cached += 1
+                    bubbles[1] = cached
+                else:
+                    try:
+                        styled = await _restyle_activity(
+                            account_id, fan_id, cfg, model, bubbles[1])
+                        if not fresh:
+                            # Cache even a verbatim echo — a model that refuses to
+                            # rewrite shouldn't be re-asked for every fan this slot.
+                            _restyle_cache[ck] = styled
+                            while len(_restyle_cache) > _RESTYLE_CACHE_MAX:
+                                _restyle_cache.pop(next(iter(_restyle_cache)))
+                        if styled != bubbles[1]:
+                            restyled += 1
+                            bubbles[1] = styled
+                    except LLMCapExceeded:
+                        cap_hit = True
+                        restyle_capped = True
+                        log.warning("send_welcome restyle capped account=%s — verbatim "
+                                    "activity line for the rest of this run", account_id)
+                    except Exception:
+                        log.warning("send_welcome restyle failed account=%s fan=%s — "
+                                    "sending verbatim line", account_id, fan_id,
+                                    exc_info=True)
+
+            # Last-mile per bubble: double the first vowel of any OF-restricted word
+            # (V1 ran apply_word_restriction on EVERY welcome). Covers the local
+            # template, the restyled line and the LLM riff.
+            bubbles = [apply_word_restriction(b) for b in bubbles]
+            if strip_emoji_on:
+                bubbles = [strip_emojis(b) for b in bubbles]
+            bubbles = [b for b in bubbles if b.strip()]
+            if not bubbles:
                 errors += 1
                 continue
-
-            # Last-mile: double the first vowel of any OF-restricted word (V1 ran
-            # apply_word_restriction on EVERY welcome). Covers both the local
-            # template and the LLM riff.
-            text = apply_word_restriction(text)
-            if strip_emoji_on:
-                text = strip_emojis(text)
 
             if dry_run:
                 sent += 1  # would-send; do NOT mark welcome_sent on a dry run
                 continue
 
-            media_files = [bot_media_id] if bot_media_id is not None else []
-            try:
-                result = await asyncio.to_thread(
-                    lambda: client.send_message(fan_id, text, media_files=media_files)
-                )
-            except Exception as e:
-                errors += 1
-                # Permanent (deleted/blocked) → quarantine AND claim welcome_sent —
-                # that claim is THIS sender's own gate, so the new-sub sweep never
-                # regenerates a welcome for a fan we can't deliver to. Transient
-                # errors leave the claim unwritten and retry next tick.
-                if await skip_unreachable_fan(account_id, fan_id, e, log=log):
-                    await _mark_welcomed(account_id, fan_id, sub.get("username"))
-                log.warning("send_welcome send failed account=%s fan=%s",
-                            account_id, fan_id, exc_info=True)
+            # The burst: image on bubble 1 only; each bubble held for its human
+            # typing time first (live "...is typing" frames when enabled) — same
+            # pacing as of_ai_chat, so the welcome lands like a person texting,
+            # not a bot blast.
+            media_ids = [bot_media_id] if bot_media_id is not None else []
+            landed = 0
+            for idx, part in enumerate(bubbles):
+                await hold_with_typing(account_id, fan_id,
+                                       typing_delay_seconds(part, typing_wpm),
+                                       typing_indicator=typing_on)
+                media = media_ids if idx == 0 else []
+                try:
+                    result = await asyncio.to_thread(
+                        lambda p=part, m=media: client.send_message(
+                            fan_id, p, media_files=m)
+                    )
+                except Exception as e:
+                    if idx == 0:
+                        errors += 1
+                        # Permanent (deleted/blocked) → quarantine AND claim
+                        # welcome_sent — that claim is THIS sender's own gate, so the
+                        # new-sub sweep never regenerates a welcome for a fan we can't
+                        # deliver to. Transient errors leave the claim unwritten and
+                        # retry next tick.
+                        if await skip_unreachable_fan(account_id, fan_id, e, log=log):
+                            await _mark_welcomed(account_id, fan_id, sub.get("username"))
+                        log.warning("send_welcome send failed account=%s fan=%s",
+                                    account_id, fan_id, exc_info=True)
+                    else:
+                        # The greeting already landed → the fan IS welcomed; losing
+                        # the follow-up bubble is cosmetic. Stop the burst, still mark.
+                        log.warning("send_welcome bubble %d failed account=%s fan=%s",
+                                    idx + 1, account_id, fan_id, exc_info=True)
+                    break
+                landed += 1
+                if idx == 0 and media:
+                    image_attached += 1
+                # Existing optimistic send path: persist each landed bubble
+                # (Automation employee). The WS pump skips outbound, so this is the
+                # only producer of the outbound `messages` rows.
+                msg_id = result.get("id") if isinstance(result, dict) else None
+                if msg_id:
+                    await write_outbound_attribution(
+                        account_id=account_id,
+                        fan_id=int(fan_id),
+                        message_id=int(msg_id),
+                        sent_by_employee_id=None,  # → system Automation employee
+                        automation_kind="welcome",  # matches grok_calls.purpose
+                        body=str(result.get("text") or part),
+                        price_cents=0,
+                        created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
+                        emit_live=True,  # WORKER→SSE bridge: surface the welcome live
+                    )
+            if landed == 0:
                 continue
-
-            if media_files:
-                image_attached += 1
-
-            # Existing optimistic send path: persist the outbound row (Automation
-            # employee), then mark welcome_sent — order matters so a crash before
-            # marking re-welcomes (rare, safe) rather than marking with no send.
-            msg_id = result.get("id") if isinstance(result, dict) else None
-            if msg_id:
-                await write_outbound_attribution(
-                    account_id=account_id,
-                    fan_id=int(fan_id),
-                    message_id=int(msg_id),
-                    sent_by_employee_id=None,  # → system Automation employee
-                    automation_kind="welcome",  # matches grok_calls.purpose
-                    body=str(result.get("text") or text),
-                    price_cents=0,
-                    created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
-                    emit_live=True,  # WORKER→SSE bridge: surface the welcome live
-                )
+            # Mark welcome_sent AFTER at least one bubble landed — a crash
+            # mid-welcome re-welcomes (rare, safe) rather than marking with no send.
             await _mark_welcomed(account_id, fan_id, sub.get("username"))
             sent += 1
             sent_ok = True
@@ -776,6 +941,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "new_subscribers": new_total,
         "welcomes_sent": sent,
         "image_attached": image_attached,
+        "restyled": restyled,
+        "restyled_cached": restyled_cached,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
         "skipped_existing": skipped_existing,
