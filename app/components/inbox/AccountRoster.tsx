@@ -62,10 +62,24 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
   // OF (bust the 5-min server cache) AND prefetch its chat list, so a swap paints
   // authoritative + spinner-free instead of waiting on the 60s poll. `refreshOne`
   // is per-account cooldown-guarded, so hover→click doesn't double-read OF.
+  //
+  // The ?bust= behind refreshOne re-reads OF's chat window AND rewarms the
+  // server-side "list_chats" page-0 entry the list is served from — the badge
+  // counts are folded from those same rows. Invalidating the model's chat-list
+  // queries AFTER it resolves therefore snaps the visible list to the exact
+  // rows the badge counted (a warm relay hit, no extra OF read) — without this,
+  // the prefetch's stale snapshot stays "fresh" for 30s and the list shows 2
+  // while the badge says 3. Every refreshOne path is safe to chain on: a real
+  // bust resolves after the rewarm; riding an in-flight bust resolves with it;
+  // a cooldown no-op means a bust ran <8s ago. If that bust FAILED (OF error —
+  // refreshOne swallows it), the refetch just re-reads whatever the relay has;
+  // badge and list still agree because both come from that same window.
   const warm = useCallback(
     (accountId: string) => {
-      void refreshOne(accountId);
       void prefetchModelChatList(qc, accountId);
+      void refreshOne(accountId).then(() =>
+        qc.invalidateQueries({ queryKey: ["chats", "model", accountId] }),
+      );
     },
     [refreshOne, qc],
   );
@@ -135,9 +149,17 @@ export function AccountRoster({ expanded, onToggleExpanded }: AccountRosterProps
   // fresh. Each refreshOne is per-account cooldown-guarded, so this can't storm OF
   // on repeated clicks (and a model just refreshed via its own icon is skipped).
   // Defined AFTER `ordered` so the dep isn't read in its temporal dead zone.
+  // Same badge↔list bridge as warm(), across the whole strip: each per-model
+  // bust rewarms that account's server-side chat window, and the unified list
+  // fans out per-account page-0 reads against those exact keys — so once the
+  // busts settle, one invalidation refetches the All tab as warm hits of the
+  // same rows the badges counted. allSettled: one bad model must not keep the
+  // rest of the tab stale.
   const warmAll = useCallback(() => {
-    for (const a of ordered) void refreshOne(a.id);
-  }, [ordered, refreshOne]);
+    void Promise.allSettled(ordered.map((a) => refreshOne(a.id))).then(() =>
+      qc.invalidateQueries({ queryKey: ["chats", "all"] }),
+    );
+  }, [ordered, refreshOne, qc]);
   const onPickAll = useCallback(() => {
     clearHover();
     setScope({ kind: "all" });

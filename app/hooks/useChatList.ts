@@ -381,10 +381,19 @@ export function useChatList(params: ChatListParams = {}) {
     getNextPageParam: (lastPage, allPages) =>
       lastPage.hasMore ? allPages.length * limit : undefined,
     queryFn: ({ pageParam }) => {
-      const bypass = refreshOnceRef.current;
-      refreshOnceRef.current = false;
+      // Bypass is scoped to PAGE 0 of the refetch triggered by refresh() (the
+      // flag lives until the refetch settles; queryFn no longer clears it on
+      // first consumption). Page 0 forced-fresh rewarms the shared server
+      // window (badge + list) and re-syncs the visible top of the inbox;
+      // deeper pages ride the relay cache — the server-side invalidations
+      // (WS message, reply, mark-read) already dropped them if anything
+      // actually changed, so a stale warm hit means "nothing happened", while
+      // forcing every loaded page × every account through a live ~3-call OF
+      // assemble turned one deep-scrolled unified Refresh into an OF storm.
+      const offset = (pageParam as number) ?? 0;
+      const bypass = refreshOnceRef.current && offset === 0;
       return fetchPage(
-        scope, accounts, (pageParam as number) ?? 0, filter, listId, query, limit, qc, bypass,
+        scope, accounts, offset, filter, listId, query, limit, qc, bypass,
       );
     },
     staleTime: 30_000,
@@ -413,11 +422,15 @@ export function useChatList(params: ChatListParams = {}) {
   }
 
   // Imperative "force-fresh" hook for the Refresh-inbox button. Sets the
-  // one-shot bypass flag, then triggers a refetch. The next queryFn run
-  // appends `?refresh=1` so Stage C's `list_chats` cache is bypassed.
+  // bypass flag for the WHOLE refetch (every loaded page forwards ?refresh=1
+  // so Stage C's `list_chats` cache is bypassed), cleared when it settles.
+  // An unrelated background poll landing inside that window also bypasses —
+  // harmless: it just re-reads OF once more.
   const refresh = useCallback(() => {
     refreshOnceRef.current = true;
-    return q.refetch();
+    return q.refetch().finally(() => {
+      refreshOnceRef.current = false;
+    });
   }, [q]);
 
   return {

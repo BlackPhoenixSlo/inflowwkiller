@@ -252,3 +252,70 @@ describe("NotificationToaster — inbound api2_chat_message bubble", () => {
     expect(card!.textContent).toContain("Media");
   });
 });
+
+// The `toasts` SSE path (OF notification toasts). Tip/purchase toasts must
+// deep-link with the one-shot ?refresh=media flag — the popout chat page
+// reads it on mount and refetches the FanDrawer's manual-↻ cache set so the
+// just-received transaction shows instead of the rehydrated stale copy.
+// Non-money types must link plain.
+describe("NotificationToaster — tip/purchase toast href carries ?refresh=media", () => {
+  function fireOfToast(aid: string, toast: Record<string, unknown>) {
+    fire("toasts", { __account_id: aid, toasts: [toast] });
+  }
+
+  function findChatAnchor(container: HTMLElement, fanId: number): HTMLAnchorElement | null {
+    const anchors = Array.from(container.querySelectorAll<HTMLAnchorElement>("a"));
+    return anchors.find((a) => a.getAttribute("href")?.includes(`/${fanId}`)) ?? null;
+  }
+
+  it("tip toast → href ends with ?refresh=media", async () => {
+    mockAccountId = "300";
+    const Comp = await loadComponent();
+    const { container } = renderToaster(Comp);
+
+    fireOfToast("300", {
+      id: 9001,
+      type: "tip",
+      text: "tipped you $10",
+      data: { relatedUser: { id: 555, name: "Tipper" } },
+    });
+
+    const a = findChatAnchor(container, 555);
+    expect(a).not.toBeNull();
+    expect(a!.getAttribute("href")).toBe("/chat/300/555?refresh=media");
+  });
+
+  it("purchase toast (paided_message) → href ends with ?refresh=media", async () => {
+    mockAccountId = "301";
+    const Comp = await loadComponent();
+    const { container } = renderToaster(Comp);
+
+    fireOfToast("301", {
+      id: 9002,
+      type: "paided_message",
+      text: "unlocked your message",
+      data: { relatedUser: { id: 556, name: "Buyer" } },
+    });
+
+    const a = findChatAnchor(container, 556);
+    expect(a).not.toBeNull();
+    expect(a!.getAttribute("href")).toBe("/chat/301/556?refresh=media");
+  });
+
+  it("subscribed toast → plain href, no refresh flag", async () => {
+    mockAccountId = "302";
+    const Comp = await loadComponent();
+    const { container } = renderToaster(Comp);
+
+    fireOfToast("302", {
+      id: 9003,
+      type: "subscribed",
+      text: "subscribed to you",
+      data: { relatedUser: { id: 557, name: "Newsub" } },
+    });
+
+    const a = findChatAnchor(container, 557);
+    expect(a).not.toBeNull();
+    expect(a!.getAttribute("href")).toBe("/chat/302/557");
+  });
+});

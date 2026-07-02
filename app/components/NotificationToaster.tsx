@@ -212,6 +212,17 @@ function hrefFor(n: NotificationItem, accountId: string): string | null {
   return null;
 }
 
+/** Tip / purchase toasts deep-link with a one-shot `?refresh=media` flag.
+ *  The fan just moved money, so the popout's rehydrated persisted caches
+ *  (PPV ledger, last-purchases, gallery, profile) are stale by seconds —
+ *  the popout chat page reads the flag on mount and refetches the
+ *  FanDrawer's manual-↻ set. Other types link plain: no reason to burn
+ *  five refetches on a like or a comment. */
+function withRefreshFlag(href: string, typeKey: NotifTypeKey | null): string {
+  if (typeKey !== "tip" && typeKey !== "purchases") return href;
+  return `${href}${href.includes("?") ? "&" : "?"}refresh=media`;
+}
+
 function NotificationDeltaPoller() {
   const { accountId } = useScope();
   const active = useActiveAccounts();
@@ -360,6 +371,7 @@ function NotificationDeltaPoller() {
         dispatchNotifArrived();
 
         const now = Date.now();
+        const baseHref = hrefFor({ user } as NotificationItem, aid);
         pushToast({
           id,
           accountId: aid,
@@ -369,7 +381,7 @@ function NotificationDeltaPoller() {
           text,
           createdAt: createdMs,
           bubble: typeKey ? !!settings.bubble[typeKey] : false,
-          href: hrefFor({ user } as NotificationItem, aid),
+          href: baseHref ? withRefreshFlag(baseHref, typeKey) : null,
           expiresAt: now + TOAST_TTL_MS,
         });
 
@@ -377,7 +389,10 @@ function NotificationDeltaPoller() {
           const uname = user.username;
           resolveUsernameId(aid, uname, qc).then((resolvedId) => {
             if (resolvedId == null) return;
-            const canonical = `/chat/${encodeURIComponent(aid)}/${resolvedId}`;
+            const canonical = withRefreshFlag(
+              `/chat/${encodeURIComponent(aid)}/${resolvedId}`,
+              typeKey,
+            );
             patchToastHref(aid, id, canonical);
             patchNotifHistoryUser(aid, id, { id: resolvedId });
           }).catch(() => { /* ignore */ });
