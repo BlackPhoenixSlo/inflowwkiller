@@ -17,7 +17,7 @@
 import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { relay } from "@/lib/relay";
+import { relay, type OFChatItem } from "@/lib/relay";
 import { useOptionalUser } from "@/contexts/UserContext";
 import { useOptionalChatter } from "@/contexts/ChatterContext";
 
@@ -26,7 +26,7 @@ export interface RosterCount {
   owe_reply: number;
 }
 
-interface RosterCountsResp {
+export interface RosterCountsResp {
   counts: Record<string, RosterCount>;
 }
 
@@ -48,10 +48,27 @@ export function useRosterCounts(): Record<string, RosterCount> {
   const user = useOptionalUser()?.user;
   const chatter = useOptionalChatter()?.chatter;
   const principalId = usePrincipalId();
+  const qc = useQueryClient();
 
   const q = useQuery<RosterCountsResp>({
     queryKey: rosterCountsKey(principalId),
-    queryFn: () => relay.get<RosterCountsResp>("/admin/accounts/roster-counts"),
+    queryFn: async () => {
+      // Stamp BEFORE the network read: any optimistic patchLocal that lands
+      // while this poll is in flight stamps a LATER time, and mergeRosterCounts
+      // then keeps the fresher local value instead of letting this (now stale)
+      // server snapshot clobber it. Without this, removing the per-message
+      // refreshOne — which used to cancelQueries the in-flight poll — would let
+      // the 60s poll revert an instant badge back to a pre-event count.
+      const fetchStartedAt = Date.now();
+      const resp = await relay.get<RosterCountsResp>("/admin/accounts/roster-counts");
+      const prev = qc.getQueryData<RosterCountsResp>(rosterCountsKey(principalId));
+      return mergeRosterCounts(
+        resp,
+        prev,
+        fetchStartedAt,
+        (aid) => lastLocalPatchAt.get(`${principalId}:${aid}`) ?? 0,
+      );
+    },
     enabled: !!user || !!chatter,
     refetchInterval: 60_000,
     staleTime: 30_000,
@@ -81,6 +98,88 @@ const inFlightRefresh = new Map<string, Promise<void>>();
 // write when a local patch landed after the refresh began. Keyed principalId:accountId.
 const lastLocalPatchAt = new Map<string, number>();
 
+/** A conversation's PRIOR state, distilled from its chat-list row, in the two
+ *  dimensions the roster badge cares about. */
+export interface RosterPrior {
+  /** Had unread fan messages (blue) before this event. */
+  wasUnread: boolean;
+  /** The fan spoke last while the chat was READ (orange "owe reply"). Only
+   *  meaningful when !wasUnread — an unread chat is blue, never orange. */
+  fanSpokeLast: boolean;
+}
+
+export interface RosterDelta {
+  dUnread: number;
+  dOwe: number;
+}
+
+/** Pure: the per-model badge delta for ONE message, given the fan conversation's
+ *  PRIOR state and the message direction. CONVERSATION-count semantics — a chat
+ *  contributes at most 1 to unread OR owe_reply, so a burst of messages to the
+ *  same chat only moves the badge on the FIRST state transition (dedupe). */
+export function rosterDelta(isOutbound: boolean, prior: RosterPrior): RosterDelta {
+  const { wasUnread, fanSpokeLast } = prior;
+  if (isOutbound) {
+    // We replied → the conversation is answered.
+    //  • was unread (blue)     → clear blue (mirrors the server zeroing unread on
+    //    an outbound reply + useSendMessage's optimistic row flip).
+    //  • was owe_reply (orange) → clear orange.
+    //  • was caught-up          → nothing to move.
+    if (wasUnread) return { dUnread: -1, dOwe: 0 };
+    if (fanSpokeLast) return { dUnread: 0, dOwe: -1 };
+    return { dUnread: 0, dOwe: 0 };
+  }
+  // Inbound (the fan spoke).
+  //  • already unread → still one unread conversation, no change (dedupe).
+  //  • was owe_reply (orange) → becomes unread (blue): +blue, -orange.
+  //  • was caught-up          → becomes unread (blue).
+  if (wasUnread) return { dUnread: 0, dOwe: 0 };
+  if (fanSpokeLast) return { dUnread: 1, dOwe: -1 };
+  return { dUnread: 1, dOwe: 0 };
+}
+
+/** Pure: apply a delta to a count, clamped at zero so a duplicate/stale event
+ *  can never drive a badge negative. */
+export function applyRosterDelta(cur: RosterCount, d: RosterDelta): RosterCount {
+  return {
+    unread: Math.max(0, cur.unread + d.dUnread),
+    owe_reply: Math.max(0, cur.owe_reply + d.dOwe),
+  };
+}
+
+/** Pure: distill a chat-list row into the roster-relevant prior state. Returns
+ *  null when there's no row (caller then falls back to an authoritative re-read).
+ *  `fanSpokeLast` = the last message's author is the fan, not us. */
+export function rosterPriorFromRow(row: OFChatItem | null | undefined): RosterPrior | null {
+  if (!row) return null;
+  const wasUnread = (row.unreadMessagesCount ?? 0) > 0 || row.hasUnread === true;
+  const lastFrom = row.lastMessage?.fromUser?.id;
+  const fanSpokeLast =
+    lastFrom != null && String(lastFrom) === String(row.withUser?.id);
+  return { wasUnread, fanSpokeLast };
+}
+
+/** Pure: fold a fresh server roster response over the currently-cached one,
+ *  PRESERVING any per-account value that an optimistic local patch rewrote WHILE
+ *  this poll was in flight. `patchedAt(aid)` returns an account's last local-patch
+ *  timestamp; `fetchStartedAt` is when this poll began its network read. Any
+ *  account patched AFTER that keeps its local value (the server snapshot predates
+ *  the patch); the next poll — started after the patch — reconciles to truth. */
+export function mergeRosterCounts(
+  server: RosterCountsResp | undefined,
+  prev: RosterCountsResp | undefined,
+  fetchStartedAt: number,
+  patchedAt: (accountId: string) => number,
+): RosterCountsResp {
+  const serverCounts = server?.counts ?? {};
+  const prevCounts = prev?.counts ?? {};
+  const out: Record<string, RosterCount> = { ...serverCounts };
+  for (const aid of Object.keys(prevCounts)) {
+    if (patchedAt(aid) > fetchStartedAt) out[aid] = prevCounts[aid];
+  }
+  return { counts: out };
+}
+
 export interface RosterCountActions {
   /** Force this ONE model's badge to authoritative NOW: bust its 5-min server
    *  cache, re-read from OF, merge just that account into the local map. Cooldown-
@@ -98,10 +197,18 @@ export function useRosterCountActions(): RosterCountActions {
 
   const patchLocal = useCallback<RosterCountActions["patchLocal"]>(
     (accountId, fn) => {
-      qc.setQueryData<RosterCountsResp>(rosterCountsKey(principalId), (old) => {
-        const counts = old?.counts ?? {};
-        const cur = counts[accountId] ?? { unread: 0, owe_reply: 0 };
-        return { counts: { ...counts, [accountId]: fn(cur) } };
+      const existing = qc.getQueryData<RosterCountsResp>(rosterCountsKey(principalId));
+      // No baseline yet (the roster query hasn't returned) → do NOT fabricate a
+      // from-zero count. mergeRosterCounts would then pin that fake {0,…}+delta
+      // over the real initial fetch (the stamp below marks it "newer"), so the
+      // badge would show just this one delta instead of the true total for up to
+      // 60s. The in-flight / next poll establishes truth and already counts this
+      // event (it's in the DB the server aggregates).
+      if (!existing) return;
+      const counts = existing.counts ?? {};
+      const cur = counts[accountId] ?? { unread: 0, owe_reply: 0 };
+      qc.setQueryData<RosterCountsResp>(rosterCountsKey(principalId), {
+        counts: { ...counts, [accountId]: fn(cur) },
       });
       // Stamp so an older targeted refresh (which read OF before this patch) can't
       // resolve later and revert it. See lastLocalPatchAt.
@@ -114,11 +221,20 @@ export function useRosterCountActions(): RosterCountActions {
     async (accountId, opts) => {
       if (!accountId) return;
       const cacheKey = `${principalId}:${accountId}`;
-      // Coalesce: if a refresh for this model is already busting + re-reading it,
-      // ride that one request instead of racing a second bust (which could land
-      // out of order and overwrite the fresher badge).
-      const pending = inFlightRefresh.get(cacheKey);
-      if (pending) return pending;
+      // In-flight handling:
+      //  • NOT forced → ride the pending read (coalesce hover/swap/WS bursts to a
+      //    single bust).
+      //  • forced → the caller needs state that may have changed AFTER that read
+      //    began (e.g. a send that just landed), so we must NOT ride it. Wait it
+      //    out, THEN do our own fresh read. Draining sequentially (not racing a
+      //    second concurrent bust) means our `startedAt` is stamped after the prior
+      //    write, so the latest-wins guard below lets our fresher read win.
+      let pending = inFlightRefresh.get(cacheKey);
+      if (pending && !opts?.force) return pending;
+      while (pending) {
+        await pending.catch(() => {});
+        pending = inFlightRefresh.get(cacheKey);
+      }
       const now = Date.now();
       if (!opts?.force && now - (lastRefreshAt.get(cacheKey) ?? 0) < REFRESH_COOLDOWN_MS) {
         return;
@@ -142,7 +258,17 @@ export function useRosterCountActions(): RosterCountActions {
           const fresh = resp?.counts?.[accountId];
           // Merge ONLY the target so we don't stomp fresher optimistic values on
           // the other models (the bust response carries only the target anyway).
-          if (fresh) patchLocal(accountId, () => fresh);
+          // Write DIRECTLY, not via patchLocal: this is an authoritative OF read,
+          // so it must land even when the roster cache is still empty (patchLocal
+          // skips a from-nothing write to avoid fabricating an optimistic baseline
+          // — see its guard). Stamp so a racing poll can't clobber this fresh read.
+          if (fresh) {
+            qc.setQueryData<RosterCountsResp>(rosterCountsKey(principalId), (old) => {
+              const counts = old?.counts ?? {};
+              return { counts: { ...counts, [accountId]: fresh } };
+            });
+            lastLocalPatchAt.set(cacheKey, Date.now());
+          }
         } catch {
           // Best-effort: the 60s poll reconciles if the targeted read fails.
         }

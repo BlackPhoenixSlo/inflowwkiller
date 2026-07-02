@@ -79,8 +79,10 @@ export function PostCard({
         {post.isPinned && (
           <span className="px-1.5 py-0.5 rounded bg-accent/15 text-accent font-medium">Pinned</span>
         )}
-        {price && (
-          <span className="px-1.5 py-0.5 rounded bg-ok/15 text-ok font-medium">{price}</span>
+        {isPaidPost && (
+          <span className="px-1.5 py-0.5 rounded bg-pink/15 text-pink font-semibold">
+            🔒 Paid wall{price ? ` · ${price}` : ""}
+          </span>
         )}
         <span>{dateStr}</span>
         {(onTogglePin || onEdit || onDelete) && (

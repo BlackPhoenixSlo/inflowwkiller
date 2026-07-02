@@ -27,7 +27,13 @@ import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { useActiveAccounts } from "@/hooks/useAccounts";
-import { useRosterCountActions } from "@/hooks/useRosterCounts";
+import {
+  useRosterCountActions,
+  rosterPriorFromRow,
+  rosterDelta,
+  applyRosterDelta,
+  type RosterDelta,
+} from "@/hooks/useRosterCounts";
 import { scheduledSendsKey } from "@/hooks/useServerScheduledSends";
 import type { OFChatItem, OFMessage } from "@/lib/relay";
 
@@ -89,6 +95,62 @@ export function resolveChatTarget(e: ChatMessageEvent): ChatTarget | null {
   const fanId = isOutbound ? Number(e.__fan_id ?? msg.toUser?.id ?? NaN) : fromId;
   if (!Number.isFinite(fanId)) return null;
   return { accountId, fanId, isOutbound, msg, fromId };
+}
+
+/** Scan every chats cache for a fan's row and return the FRESHEST match (or null).
+ *  The same fan can sit in several chats caches (unfiltered, folder, search,
+ *  all-scope) at different freshness — a first-match could be a stale inactive
+ *  variant and drive a wrong prior/delta. Pick the row whose `lastMessage` is
+ *  newest (ties / undated → first seen). Used to read a conversation's PRIOR
+ *  badge state before a live event mutates it. Exported for tests. */
+export function findFanChatRow(
+  qc: QueryClient,
+  accountId: string,
+  fanId: number,
+): OFChatItem | null {
+  type Page = { rows: OFChatItem[]; hasMore: boolean };
+  type Infinite = { pages: Page[]; pageParams: unknown[] };
+  let best: OFChatItem | null = null;
+  let bestAt = -Infinity;
+  for (const q of qc.getQueryCache().findAll({ queryKey: ["chats"] })) {
+    const data = q.state.data as Infinite | undefined;
+    if (!data?.pages?.length) continue;
+    for (const p of data.pages) {
+      for (const c of p.rows) {
+        if ((c.__accountId ?? "") === accountId && c.withUser?.id === fanId) {
+          const parsed = Date.parse(c.lastMessage?.createdAt ?? "");
+          const ts = Number.isFinite(parsed) ? parsed : -Infinity;
+          if (best === null || ts > bestAt) { best = c; bestAt = ts; }
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/** Pure: the roster badge delta for a live message, given the fan's PRIOR chat
+ *  row and the event direction/time. Returns null to mean "don't patch":
+ *   • existing == null → conversation not loaded; caller decides the fallback.
+ *   • out-of-order     → the event predates the cached last message (a replay /
+ *     reorder). Applying a delta would double-count; the chat-thread insert has
+ *     the same guard (insertByCreatedAt), this mirrors it for the badge.
+ *  Exported for tests. */
+export function rosterDeltaForEvent(args: {
+  isOutbound: boolean;
+  existing: OFChatItem | null;
+  eventCreatedAt: string;
+}): RosterDelta | null {
+  const { isOutbound, existing, eventCreatedAt } = args;
+  if (!existing) return null;
+  const lastAt = existing.lastMessage?.createdAt;
+  if (lastAt) {
+    const evt = Date.parse(eventCreatedAt);
+    const prev = Date.parse(lastAt);
+    if (Number.isFinite(evt) && Number.isFinite(prev) && evt < prev) return null;
+  }
+  const prior = rosterPriorFromRow(existing);
+  if (!prior) return null;
+  return rosterDelta(isOutbound, prior);
 }
 
 /**
@@ -171,13 +233,16 @@ export function useInboxRealtime() {
   const allowedRef = useRef(allowedAccountIds);
   allowedRef.current = allowedAccountIds;
 
-  // Targeted roster-badge refresh on every send/receive. Held in a ref so the
-  // subscription below stays mounted across principal changes (same pattern as
-  // allowedRef). `refreshOne` is per-account cooldown-guarded, so a mass-send
-  // burst to one model coalesces to a single OF re-read, not one per recipient.
-  const { refreshOne } = useRosterCountActions();
+  // Roster-badge actions, held in refs so the subscription below stays mounted
+  // across principal changes (same pattern as allowedRef). We patch the badge
+  // OPTIMISTICALLY from the message we already have (patchLocal) instead of an
+  // extra OF round-trip; refreshOne is only the fallback for a conversation we
+  // haven't loaded yet (can't dedupe → one authoritative read).
+  const { refreshOne, patchLocal } = useRosterCountActions();
   const refreshOneRef = useRef(refreshOne);
   refreshOneRef.current = refreshOne;
+  const patchLocalRef = useRef(patchLocal);
+  patchLocalRef.current = patchLocal;
 
   useEffect(() => {
     const offMsg = eventBus.on("api2_chat_message", (env: EventEnvelope) => {
@@ -193,16 +258,46 @@ export function useInboxRealtime() {
       const allowed = allowedRef.current;
       if (allowed.size > 0 && !allowed.has(accountId)) return;
 
+      // Prior conversation state, read NOW before any patch below mutates it. It
+      // drives BOTH the optimistic roster delta and the staleness guard: an event
+      // older than the fan's cached last message is a replay/reorder and must not
+      // move the badge OR reorder/bump the chat-list row (that would show a stale
+      // preview, inflate unread, and poison the very row we read as `prior` next
+      // time). Mirrors the message-thread insertByCreatedAt guard.
+      const owned = allowedRef.current.has(accountId);
+      const priorRow = owned ? findFanChatRow(qc, accountId, fanId) : null;
+      const eventAt = toUtcIso(msg.createdAt);
+      const evtMs = Date.parse(eventAt);
+      const priorMs = priorRow?.lastMessage?.createdAt
+        ? Date.parse(priorRow.lastMessage.createdAt)
+        : NaN;
+      const isStale =
+        Number.isFinite(evtMs) && Number.isFinite(priorMs) && evtMs < priorMs;
+
       // Roster badge counts (per-model unread / owe-reply) move on every inbound
-      // (adds unread) and outbound (clears the owe-reply we just answered). Fire a
-      // TARGETED refresh for just this model — busts its 5-min server cache and
-      // re-reads only it — instead of a full-strip refetch. The 8s per-account
-      // cooldown absorbs a mass-send burst (all the same accountId) to one OF read.
+      // (adds unread) and outbound (clears the owe-reply we answered). We already
+      // have the message AND the fan's PRIOR row, so derive the delta LOCALLY and
+      // patch the badge instantly — no extra OF round-trip.
+      //   • Manual outbound sends already decremented at send-time in
+      //     useSendMessage; by the time their echo lands here the row is flipped,
+      //     so the delta is a no-op. This branch moves AUTOMATION outbound
+      //     (welcome / AI / mass / funnel — they never touched useSendMessage).
+      //   • Cold (fan not in the loaded list) → can't derive a delta, so fall back
+      //     to ONE authoritative re-read (cooldown-guarded) — for outbound too,
+      //     since an off-screen owe-reply fan we just answered still needs clearing.
       // Gate strictly on the owned set: during cold start `allowedRef` is empty and
-      // the guard above lets events through for LIST patching, but a roster bust
-      // for a foreign/unknown account is wasted and could patch the pre-auth cache.
-      if (allowedRef.current.has(accountId)) {
-        void refreshOneRef.current(accountId);
+      // the guard above lets events through for LIST patching, but a roster patch
+      // for a foreign/unknown account is wasted and could hit the pre-auth cache.
+      // (rosterDeltaForEvent re-checks staleness itself, so no `isStale` guard here.)
+      if (owned) {
+        if (!priorRow) {
+          void refreshOneRef.current(accountId);
+        } else {
+          const delta = rosterDeltaForEvent({ isOutbound, existing: priorRow, eventCreatedAt: eventAt });
+          if (delta && (delta.dUnread !== 0 || delta.dOwe !== 0)) {
+            patchLocalRef.current(accountId, (cur) => applyRosterDelta(cur, delta));
+          }
+        }
       }
 
       // A scheduled send firing arrives as an outbound message. Drop its ghost
@@ -215,7 +310,7 @@ export function useInboxRealtime() {
         id: msg.id,
         text: msg.text ?? "",
         fromUser: { id: fromId, name: fromUser.name ?? fromUser.username ?? "" },
-        createdAt: toUtcIso(msg.createdAt),
+        createdAt: eventAt,
         media: msg.media ?? [],
         mediaCount: msg.mediaCount ?? 0,
         price: msg.price ?? 0,
@@ -256,6 +351,10 @@ export function useInboxRealtime() {
       // (filter==null && listId==null && query==null).
       type Page = { rows: OFChatItem[]; hasMore: boolean };
       type Infinite = { pages: Page[]; pageParams: unknown[] };
+      // Out-of-order replay: the message-thread insert above already slotted it by
+      // timestamp; do NOT reorder/bump the chat-list row — that would surface a
+      // stale preview, inflate unread, and corrupt the prior we read next event.
+      if (isStale) return;
       qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
         const data = q.state.data as Infinite | undefined;
         if (!data?.pages?.length) return;
