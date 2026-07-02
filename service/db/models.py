@@ -1742,6 +1742,12 @@ class WallMedia(Base):
     # Wall-post publishedAt — used during backfill to walk older history
     # via OF's before_publish_time cursor.
     post_published_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Highest price (in cents) this media was ever posted at on the wall.
+    # 0 = free wall post (or price not yet observed). Drives the picker's
+    # "WALL $X.XX" badge so a chatter can see the item is already public
+    # PPV and at what price. Upserted via MAX() so a media seen in both a
+    # free and a paid post keeps the paid signal (don't-undersell).
+    price_cents: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     first_seen_at: Mapped[datetime] = _ts_now()
 
     # Redundant w/ the composite PK's leading column on SQLite, but kept

@@ -7150,7 +7150,7 @@ async def admin_vault_wall_media(
     switch mid-walk frees the per-account proxy slot promptly."""
     from db.engine import get_session
     from db.models import WallMedia, WallScanState
-    from sqlalchemy import select
+    from sqlalchemy import func, select
     from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
     client = _load_client(account_id)
@@ -7233,6 +7233,15 @@ async def admin_vault_wall_media(
             if mode == "refresh" and stop_forward_at and posted_at and posted_at <= stop_forward_at:
                 hit_known_top = True
                 continue
+            # OF posts carry a top-level `price` (dollars, float) for paid /
+            # PPV wall posts; free posts omit it or send 0. Convert to cents
+            # so the picker can badge "WALL $X.XX".
+            try:
+                post_price_cents = int(round(float(post.get("price") or 0) * 100))
+            except (TypeError, ValueError):
+                post_price_cents = 0
+            if post_price_cents < 0:
+                post_price_cents = 0
             for m in (post.get("media") or []):
                 mid = m.get("id")
                 if isinstance(mid, int) and mid > 0 and mid not in seen_media_in_call:
@@ -7242,6 +7251,7 @@ async def admin_vault_wall_media(
                         "media_id": mid,
                         "post_id": int(pid) if isinstance(pid, int) else None,
                         "post_published_at": posted_at,
+                        "price_cents": post_price_cents,
                     })
         of_has_more = bool(resp.get("hasMore"))
         if hit_known_top:
@@ -7283,10 +7293,17 @@ async def admin_vault_wall_media(
             .on_conflict_do_nothing(index_elements=["id"])
         )
         if new_rows:
+            ins = sqlite_insert(WallMedia).values(new_rows)
+            # Upsert price_cents to MAX(existing, incoming) so a media seen
+            # in both a free and a paid wall post keeps the paid signal, and
+            # already-recorded rows pick up a price on a forward/force
+            # re-scan. post_id / post_published_at keep their first-seen
+            # values — only the price is refined.
             await s.execute(
-                sqlite_insert(WallMedia)
-                .values(new_rows)
-                .on_conflict_do_nothing(index_elements=["account_id", "media_id"])
+                ins.on_conflict_do_update(
+                    index_elements=["account_id", "media_id"],
+                    set_={"price_cents": func.max(WallMedia.price_cents, ins.excluded.price_cents)},
+                )
             )
         await s.execute(
             sqlite_insert(WallScanState)
@@ -7309,12 +7326,21 @@ async def admin_vault_wall_media(
                 },
             )
         )
-        all_ids_rows = (await s.execute(
-            select(WallMedia.media_id).where(WallMedia.account_id == account_id)
-        )).scalars().all()
+        all_rows = (await s.execute(
+            select(WallMedia.media_id, WallMedia.price_cents)
+            .where(WallMedia.account_id == account_id)
+        )).all()
 
+    # Only the priced rows go in the map — keeps the payload lean (free wall
+    # posts are the common case and the frontend defaults missing ids to 0).
+    media_prices = {
+        str(int(mid)): int(cents)
+        for mid, cents in all_rows
+        if cents and int(cents) > 0
+    }
     return {
-        "media_ids": sorted({int(x) for x in all_ids_rows}),
+        "media_ids": sorted({int(mid) for mid, _ in all_rows}),
+        "media_prices": media_prices,
         "scanned_posts": scanned,
         "new_media_count": len(new_rows),
         "has_more": not new_fully_backfilled,
