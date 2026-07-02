@@ -26,6 +26,13 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { relay, RelayError, type OFChatItem, type OFMedia, type OFMessage, type SendMessageBody, type VaultMedia } from "@/lib/relay";
 import { useEmployee } from "@/contexts/EmployeeContext";
+import {
+  useRosterCountActions,
+  rosterDelta,
+  applyRosterDelta,
+  rosterPriorFromRow,
+} from "@/hooks/useRosterCounts";
+import { findFanChatRow } from "@/hooks/useInboxRealtime";
 
 import { useChatMessages } from "./useChatMessages";
 import { scheduledSendsKey } from "./useServerScheduledSends";
@@ -110,6 +117,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
   const qc = useQueryClient();
   const { current: currentEmployee } = useEmployee();
   const employeeId = currentEmployee?.id ?? null;
+  const { patchLocal: patchRosterLocal, refreshOne: refreshRoster } = useRosterCountActions();
 
   // Decrementing temp-id counter (negative ids never collide with OF).
   const nextTempIdRef = useRef(-1);
@@ -141,6 +149,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
         // disappears for the 5-min attribution staleTime window.
         qc.invalidateQueries({ queryKey: ["msg-attribution", capturedAccountId, capturedFanId] });
         payloadByTempIdRef.current.delete(tempId);
+        return true;
       } catch (err) {
         // Leave the optimistic in place but flag it failed so Retry can
         // recover. Spread the upstream details so logs surface OF's
@@ -157,11 +166,16 @@ export function useSendMessage(opts: UseSendMessageOpts) {
           reason = (err as Error)?.message;
         }
         failLocal(tempId, reason);
+        // The optimistic roster decrement in the send path assumed this would
+        // land; it didn't → reconcile the badge to OF truth (force past the 8s
+        // cooldown — this only fires on the rare failure path).
+        void refreshRoster(capturedAccountId, { force: true });
+        return false;
       } finally {
         setInflight((n) => n - 1);
       }
     },
-    [failLocal, reconcileLocal, qc, employeeId],
+    [failLocal, reconcileLocal, qc, employeeId, refreshRoster],
   );
 
   // Immediate-send path, extracted so the no-schedule case (and retry) can
@@ -204,6 +218,10 @@ export function useSendMessage(opts: UseSendMessageOpts) {
       // Optimistically flip the chat-list row's `lastMessage.fromUser` to
       // us so the yellow "read but unanswered" dot disappears immediately.
       // Without this the dot lingers for up to 60s (the chat-list poll).
+      // Read the fan's PRE-flip roster state from the FRESHEST cached row
+      // (findFanChatRow picks newest lastMessage, not a stale first-match) BEFORE
+      // patchChatListAfterSend flips the row to us.
+      const prior = rosterPriorFromRow(findFanChatRow(qc, capturedAccountId, capturedFanId));
       patchChatListAfterSend(qc, capturedAccountId, capturedFanId, {
         fromUserId: fromUserId ?? Number(capturedAccountId),
         fromUserName: fromUserName ?? "you",
@@ -211,9 +229,20 @@ export function useSendMessage(opts: UseSendMessageOpts) {
         mediaCount: optimisticMedia.length,
         price: input.price ?? 0,
       });
+      // Clear this conversation's roster badge (orange owe-reply, or blue if it
+      // was still unread) the SAME tick we send. The outbound SSE echo can't do
+      // this — by the time it lands, the row above is already flipped to us, so
+      // the realtime handler would compute a no-op. Must happen here, from the
+      // prior state, or the manual-send badge waits out the 60s poll.
+      if (prior) {
+        const d = rosterDelta(true, prior);
+        if (d.dUnread !== 0 || d.dOwe !== 0) {
+          patchRosterLocal(capturedAccountId, (cur) => applyRosterDelta(cur, d));
+        }
+      }
       await doSend(tempId, body, capturedAccountId, capturedFanId);
     },
-    [fromUserId, fromUserName, appendLocal, doSend, qc],
+    [fromUserId, fromUserName, appendLocal, doSend, qc, patchRosterLocal],
   );
 
   const send = useCallback(
@@ -318,9 +347,14 @@ export function useSendMessage(opts: UseSendMessageOpts) {
         price: body.price ?? 0,
         replyToMessageId: body.reply_to_message_id,
       });
-      await doSend(tempId, body, accountId, fanId);
+      // A successful RETRY (the first attempt failed → D4's catch restored the
+      // badge) lands the send but took no send-time decrement — reconcile the
+      // badge to OF truth so the answered fan's orange/blue clears without waiting
+      // out the 60s poll.
+      const ok = await doSend(tempId, body, accountId, fanId);
+      if (ok) void refreshRoster(accountId, { force: true });
     },
-    [accountId, fanId, fromUserId, fromUserName, hookHandle, doSend, dropLocal],
+    [accountId, fanId, fromUserId, fromUserName, hookHandle, doSend, dropLocal, refreshRoster],
   );
 
   const cancelOptimistic = useCallback(

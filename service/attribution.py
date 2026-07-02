@@ -59,8 +59,14 @@ async def _advance_chat_preview(
 
     Forward-only by time: the `WHERE` guard only advances the preview when this
     send is at-or-after the row's current `last_message_at`, so an out-of-order
-    or backfilled write can't clobber a newer preview the transcoder set. Never
-    touches `unread_count` — outbound sends don't change the unread badge.
+    or backfilled write can't clobber a newer preview the transcoder set.
+
+    Also zeros `unread_count`: an outbound reply that is the newest message means
+    we've answered the fan, so the left-rail unread (blue) badge must clear — it
+    only ever went up on inbound WS and previously only zeroed when a chatter
+    opened the chat, leaving already-answered fans stuck blue. The same
+    forward-only `WHERE` protects this: if a fan message arrived AFTER this send,
+    `last_message_at > created_at` fails the guard and the inbound unread is kept.
 
     Runs in its OWN session and swallows every error: the `chats` FK to
     `accounts` (or any other hiccup) must never roll back the already-written
@@ -84,6 +90,10 @@ async def _advance_chat_preview(
                 "last_message_id": int(message_id),
                 "last_message_at": created_at,
                 "last_message_preview": preview,
+                # We replied → clear the unread (blue) badge for this fan. The
+                # forward-only WHERE below keeps this from wiping a fan message
+                # that landed after our send.
+                "unread_count": 0,
             },
             where=(
                 (Chat.last_message_at.is_(None))
