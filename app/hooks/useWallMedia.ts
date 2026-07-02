@@ -28,6 +28,10 @@ import { perfDelivered, perfError, perfLog, perfOpId } from "@/lib/perfLog";
 
 interface WallMediaResp {
   media_ids: number[];
+  /** { "<media_id>": price_cents } for media posted on the wall as a paid /
+   *  PPV post. Only priced ids are present — free wall posts are absent
+   *  (treated as 0). Drives the picker's "WALL $X.XX" badge. */
+  media_prices?: Record<string, number>;
   scanned_posts: number;
   new_media_count?: number;
   has_more: boolean;
@@ -47,6 +51,15 @@ export function useWallMedia(accountId: string | null, enabled = true) {
     enabled: enabled && !!accountId,
     queryFn: async ({ signal }) => {
       const qs = new URLSearchParams({ account_id: accountId! });
+      // A manual ↻ refresh sends force=true so the walker wipes its
+      // watermarks and re-walks from the top — the only path that
+      // re-prices media already recorded at price 0 (e.g. rows created
+      // before wall-post pricing existed). One-shot: cleared after use so
+      // background/auto refetches stay cheap incremental walks.
+      if (forceRef.current) {
+        qs.set("force", "true");
+        forceRef.current = false;
+      }
       const opId = perfOpId("wall.media");
       perfLog(opId, "wall.media", "requested", { accountId });
       try {
@@ -83,6 +96,8 @@ export function useWallMedia(accountId: string | null, enabled = true) {
   // posts doesn't drain rate-budget in one picker open — we'll resume
   // on the next session.
   const backfillsRef = useRef(0);
+  // Set by refresh() so the next queryFn run appends force=true exactly once.
+  const forceRef = useRef(false);
   const MAX_AUTO_BACKFILLS = 4;  // up to ~1000 extra posts per session
   useEffect(() => {
     if (!enabled || !accountId) return;
@@ -109,13 +124,32 @@ export function useWallMedia(accountId: string | null, enabled = true) {
     [q.data?.media_ids],
   );
 
+  // media_id -> price_cents for paid wall posts (free posts absent). Keyed
+  // by number so the picker can look up per-tile with `priceById.get(m.id)`.
+  const priceById = useMemo(() => {
+    const m = new Map<number, number>();
+    const raw = q.data?.media_prices;
+    if (raw) {
+      for (const [k, v] of Object.entries(raw)) {
+        const id = Number(k);
+        const cents = Number(v);
+        if (Number.isFinite(id) && Number.isFinite(cents) && cents > 0) {
+          m.set(id, cents);
+        }
+      }
+    }
+    return m;
+  }, [q.data?.media_prices]);
+
   const refresh = () => {
     backfillsRef.current = 0;
+    forceRef.current = true;
     return q.refetch();
   };
 
   return {
     set,
+    priceById,
     scanned: q.data?.scanned_posts ?? 0,
     hasMore: !!q.data?.has_more,
     fullyBackfilled: !!q.data?.fully_backfilled,

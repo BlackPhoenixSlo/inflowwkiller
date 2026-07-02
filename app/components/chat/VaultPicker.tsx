@@ -887,10 +887,10 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
             )}
             <button
               type="button"
-              onClick={() => vault.refresh()}
+              onClick={() => { vault.refresh(); wall.refresh(); }}
               className="inline-flex items-center gap-1 text-[11px] text-fg-dim hover:text-fg underline underline-offset-2"
             >
-              <span className={cn("inline-block no-underline", vault.isFetching && "animate-spin")}>↻</span>
+              <span className={cn("inline-block no-underline", (vault.isFetching || wall.isFetching) && "animate-spin")}>↻</span>
               <span>refresh</span>
             </button>
           </div>
@@ -1236,6 +1236,10 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                    *  legible at the smallest grid sizes. */}
                   {status && (() => {
                     const priceLabel = tilePriceLabel(fanEntry);
+                    // Paid wall posts carry the price OF was charging on the
+                    // wall, so the pill reads "WALL $6.99"; free wall posts
+                    // stay a plain "WALL".
+                    const wallCents = wall.priceById.get(m.id) ?? 0;
                     const text =
                       status === "unlocked"
                         ? (priceLabel ?? "PAID")
@@ -1243,6 +1247,8 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                         ? (priceLabel ?? "PPV")
                         : status === "free"
                         ? "FREE"
+                        : wallCents > 0
+                        ? `WALL $${(wallCents / 100).toFixed(2)}`
                         : "WALL";
                     return (
                       <span
