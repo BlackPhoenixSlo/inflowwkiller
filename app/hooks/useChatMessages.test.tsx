@@ -19,7 +19,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { mergeTopPage, useChatMessages } from "@/hooks/useChatMessages";
+import { mergeTopPage, selectMessages, useChatMessages } from "@/hooks/useChatMessages";
 import type { OFMessage } from "@/lib/relay";
 
 // The hook talks to the relay + an SSE event bus + a perf logger. Stub them all
@@ -184,5 +184,136 @@ describe("mergeTopPage", () => {
   it("empty prev → returns fresh unchanged", () => {
     const fresh = [msg(5), msg(6)];
     expect(mergeTopPage([], fresh)).toBe(fresh);
+  });
+});
+
+// Mass-broadcast placeholders (service/attribution.py's 5e15 id band, seeded
+// via /admin/messages or emit_live SSE) sit above every real OF id, so the
+// id-span drop can never retire one — pre-fix they rode the "newer than the
+// page" branch forever and long-unsent ppv_send blasts haunted the thread
+// whenever a chat opened through the DB seed (e.g. from a notification).
+// mergeTopPage now judges the band by TIME: once fresh proves the thread past
+// the placeholder's send time (+10min queue-lag grace), an uncorroborated
+// placeholder is stale.
+describe("mergeTopPage — mass placeholder band", () => {
+  const BAND = 5_000_000_000_000_123; // any id ≥ 5e15
+  const NOW = Date.parse("2026-07-02T10:00:30.000Z"); // fixed clock for the age rule
+
+  it("drops a stale placeholder once fresh covers a later time", () => {
+    const stale = msg(BAND, { createdAt: "2026-06-26T15:15:00.000Z" });
+    const fresh = [
+      msg(50, { createdAt: "2026-07-01T09:00:00.000Z" }),
+      msg(60, { createdAt: "2026-07-02T10:00:00.000Z" }),
+    ];
+    expect(ids(mergeTopPage([msg(50), stale], fresh, NOW))).toEqual(["50", "60"]);
+  });
+
+  it("keeps a just-sent placeholder that is still the newest thing (live bridge)", () => {
+    const justSent = msg(BAND, { createdAt: "2026-07-02T10:00:05.000Z" });
+    const fresh = [msg(60, { createdAt: "2026-07-02T10:00:00.000Z" })];
+    expect(ids(mergeTopPage([justSent], fresh, NOW))).toEqual(["60", String(BAND)]);
+  });
+
+  it("keeps a placeholder within the queue-lag grace window", () => {
+    // Fan replied 5min after the blast was queued — inside the 10min grace,
+    // the still-delivering broadcast must not be dropped.
+    const queued = msg(BAND, { createdAt: "2026-07-02T10:00:00.000Z" });
+    const fresh = [msg(60, { createdAt: "2026-07-02T10:05:00.000Z" })];
+    expect(ids(mergeTopPage([queued], fresh, Date.parse("2026-07-02T10:05:30.000Z"))))
+      .toEqual(["60", String(BAND)]);
+  });
+
+  it("quiet fan: placeholders NEWER than every real row still expire by age", () => {
+    // The screenshot shape: fan silent for 9 days, six stale ppv_send
+    // placeholders are the newest things in the thread. No fresh row ever
+    // lands past them, so the grace rule can't fire — the 1h bridge ceiling
+    // must retire them (pre-fix persisted caches kept them forever).
+    const blasts = [
+      msg(BAND, { createdAt: "2026-06-26T15:15:00.000Z" }),
+      msg(BAND + 1, { createdAt: "2026-07-01T10:48:00.000Z" }),
+    ];
+    const fresh = [msg(60, { createdAt: "2026-06-23T09:00:00.000Z" })]; // 9d-old real
+    expect(ids(mergeTopPage([msg(60), ...blasts], fresh, NOW))).toEqual(["60"]);
+  });
+
+  it("normalizes a zone-less (naive-UTC) placeholder timestamp before comparing", () => {
+    // DB-seed rows carry tz-naive isoformat; parsed as viewer-local it could
+    // skew hours either way. toUtcIso pins it to UTC → still dropped.
+    const stale = msg(BAND, { createdAt: "2026-06-26 15:15:00" });
+    const fresh = [msg(60, { createdAt: "2026-07-02T10:00:00.000Z" })];
+    expect(ids(mergeTopPage([stale], fresh, NOW))).toEqual(["60"]);
+  });
+
+  it("an empty fetch keeps a fresh placeholder but expires one past the ceiling", () => {
+    const justSent = msg(BAND, { createdAt: "2026-07-02T10:00:00.000Z" });
+    const expired = msg(BAND + 1, { createdAt: "2026-06-26T15:15:00.000Z" });
+    expect(ids(mergeTopPage([justSent, expired], [], NOW))).toEqual([String(BAND)]);
+  });
+
+  it("a placeholder never widens the fresh id span for real-row classification", () => {
+    // If BAND ever leaked into fresh (it can't come from OF, but guard), real
+    // cached rows must not be mass-dropped by an id span stretched to 5e15.
+    const out = mergeTopPage(
+      [msg(70, { createdAt: "2026-07-02T11:00:00.000Z" })],
+      [msg(60, { createdAt: "2026-07-02T10:00:00.000Z" }), msg(BAND)],
+      NOW,
+    );
+    expect(ids(out)).toContain("70");
+  });
+
+  it("select guard: a rehydrated poisoned cache never paints expired placeholders, even with NO successful fetch", async () => {
+    // The persisted-localStorage vector: a pre-fix snapshot restores stale
+    // 5e15 tails into the cache, and the OF fetch FAILS (expired session,
+    // 429). mergeTopPage never runs — the query's select must filter on the
+    // render path so the dead blast never reaches MessageList.
+    relayGet.mockRejectedValue(new Error("of session expired"));
+    const stale = msg(5_000_000_000_000_777, { createdAt: "2020-01-01T00:00:00.000Z" });
+    client.setQueryData(KEY, [msg(50), stale]);
+    const { result } = renderHook(
+      () => useChatMessages({ accountId: ACCT, fanId: FAN }),
+      { wrapper },
+    );
+    await waitFor(() => expect(ids(result.current.data)).toEqual(["50"]));
+  });
+
+  it("ledger-tip rows (6e15 band) are PERMANENT — never expired by the staleness rules", () => {
+    // transaction_ingest._TIP_MSG_ID_BASE synthesizes inline tip bubbles at
+    // 6e15+tx.id. They're months-old by design, OF can never corroborate
+    // them, and the DB seed is their only render path — both staleness rules
+    // (fresh-covers-later-time AND the 1h ceiling) must leave them alone.
+    const oldTip = msg(6_000_000_000_000_042, {
+      createdAt: "2026-04-01T09:00:00.000Z", isTip: true,
+    });
+    const fresh = [msg(60, { createdAt: "2026-07-02T10:00:00.000Z" })];
+    expect(ids(mergeTopPage([oldTip], fresh, NOW)))
+      .toEqual(["60", "6000000000000042"]);
+  });
+});
+
+// selectMessages is the render-path guard: dedup + expired-placeholder drop
+// applied to whatever the cache holds, fetch or no fetch.
+describe("selectMessages", () => {
+  const NOW = Date.parse("2026-07-02T12:00:00.000Z");
+  const BAND = 5_000_000_000_000_123;
+
+  it("drops an expired placeholder, keeps a fresh one, never touches tips or real rows", () => {
+    const rows = [
+      msg(50, { createdAt: "2026-01-01T00:00:00.000Z" }),               // real, old → keep
+      msg(BAND, { createdAt: "2026-06-26T15:15:00.000Z" }),             // placeholder, expired → drop
+      msg(BAND + 1, { createdAt: "2026-07-02T11:55:00.000Z" }),         // placeholder, 5min → keep
+      msg(6_000_000_000_000_042, { createdAt: "2026-01-01T00:00:00.000Z", isTip: true }), // tip → keep
+    ];
+    expect(ids(selectMessages(rows, NOW)))
+      .toEqual(["50", String(BAND + 1), "6000000000000042"]);
+  });
+
+  it("still dedups repeated ids, first occurrence wins", () => {
+    const rows = [msg(5), msg(5), msg(6)];
+    expect(ids(selectMessages(rows, NOW))).toEqual(["5", "6"]);
+  });
+
+  it("returns the SAME reference when nothing changed (structural sharing)", () => {
+    const rows = [msg(5), msg(6)];
+    expect(selectMessages(rows, NOW)).toBe(rows);
   });
 });

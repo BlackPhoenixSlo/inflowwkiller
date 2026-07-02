@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { mergeSeedIntoMessages } from "@/hooks/useChatMessagesLocal";
+import { mapRows, mergeSeedIntoMessages } from "@/hooks/useChatMessagesLocal";
 import type { OFMessage } from "@/lib/relay";
 
 function msg(over: Partial<OFMessage> & { id: number | string }): OFMessage {
@@ -70,5 +70,79 @@ describe("mergeSeedIntoMessages", () => {
     const merged = mergeSeedIntoMessages([existing], seed);
     // Only id 6 is genuinely missing; "5"/5 are the same message.
     expect(ids(merged)).toEqual(["6", "5"]);
+  });
+});
+
+// mapRows guards what the DB seed is allowed to plant in the thread. The mass
+// placeholder band (service/attribution.py 5e15 ids) is a just-sent bridge —
+// a stale one (dead reconcile / auto-unsent broadcast) must never seed, since
+// the OF fetch can't retire an id that high and it would haunt the chat pane
+// forever (the "stale ppv_send blasts on notification-open" bug).
+describe("mapRows — mass placeholder staleness", () => {
+  const NOW = Date.parse("2026-07-02T12:00:00.000Z");
+  const BAND = 5_000_000_000_000_042;
+
+  function row(over: Record<string, unknown>) {
+    return {
+      account_id: "acct1",
+      fan_id: 42,
+      message_id: 1,
+      direction: "out" as const,
+      sender_name: null,
+      body: "hey",
+      media_count: 0,
+      price_cents: 0,
+      is_tip: null,
+      is_unsent: null,
+      purchased_at: null,
+      created_at: "2026-07-02T11:59:00",
+      ...over,
+    };
+  }
+
+  it("drops a placeholder older than the 1h bridge window", () => {
+    const rows = mapRows(
+      [row({ message_id: BAND, created_at: "2026-06-26T15:15:00" })],
+      "acct1", 42, NOW,
+    );
+    expect(rows).toEqual([]);
+  });
+
+  it("keeps a fresh placeholder (the just-sent live bridge)", () => {
+    const rows = mapRows(
+      [row({ message_id: BAND, created_at: "2026-07-02T11:55:00" })],
+      "acct1", 42, NOW,
+    );
+    expect(rows.map((m) => String(m.id))).toEqual([String(BAND)]);
+  });
+
+  it("real rows are untouched by the placeholder cutoff, however old", () => {
+    const rows = mapRows(
+      [row({ message_id: 1000, created_at: "2025-01-01T00:00:00" })],
+      "acct1", 42, NOW,
+    );
+    expect(rows.map((m) => String(m.id))).toEqual(["1000"]);
+  });
+});
+
+// The band is bounded ABOVE too: 6e15 is transaction_ingest._TIP_MSG_ID_BASE —
+// ledger-synthesized inline tip bubbles whose ONLY render path is this seed.
+// The bridge cutoff must never age those out.
+describe("mapRows — ledger-tip band is exempt from the cutoff", () => {
+  const NOW = Date.parse("2026-07-02T12:00:00.000Z");
+
+  it("keeps a months-old synthetic tip row", () => {
+    const rows = mapRows(
+      [{
+        account_id: "acct1", fan_id: 42,
+        message_id: 6_000_000_000_000_042,
+        direction: "in" as const, sender_name: null, body: "tipped you",
+        media_count: 0, price_cents: 0, is_tip: true, is_unsent: null,
+        purchased_at: null, created_at: "2026-04-01T09:00:00",
+      }],
+      "acct1", 42, NOW,
+    );
+    expect(rows.map((m) => String(m.id))).toEqual(["6000000000000042"]);
+    expect(rows[0].isTip).toBe(true);
   });
 });

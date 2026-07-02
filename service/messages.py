@@ -29,7 +29,7 @@ import csv
 import io
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
@@ -991,12 +991,33 @@ async def list_messages(
 
     Cursor is the last seen `message_id`. Ordering by message_id DESC
     means the PK (account_id, fan_id, message_id) covers both the filter
-    and the sort, no separate sort step needed."""
+    and the sort, no separate sort step needed.
+
+    Mass-send optimistic placeholders (`attribution._MASS_PLACEHOLDER_BASE`
+    band) are served only while fresh (≤1h): they exist to bridge the
+    send→delivery window, but a placeholder that was never reconciled — or
+    whose broadcast was auto-unsent on OF — would otherwise seed the chat
+    pane forever, since its synthetic id sits above every real OF id and the
+    client's fresh-page merge can't retire it. The chat UI is this endpoint's
+    only consumer, and the OF fetch is the truth for anything older."""
     assert_account_owned(account_id)
+    from attribution import _MASS_PLACEHOLDER_BASE  # local: matches _collapsed_mass_rows
+    from transaction_ingest import _TIP_MSG_ID_BASE  # band END — tips start here
+    placeholder_floor = datetime.utcnow() - timedelta(hours=1)
     async with get_session() as s:
         q = (
             select(Message)
             .where(Message.account_id == account_id, Message.fan_id == fan_id)
+            # The age cutoff applies ONLY to the mass-placeholder band
+            # [5e15, 6e15). At 6e15 the ledger-synthesized TIP rows begin
+            # (transaction_ingest._TIP_MSG_ID_BASE) — those are permanent
+            # synthetic history the WS pump never saw, and this seed is their
+            # ONLY render path, so they must never age out.
+            .where(or_(
+                Message.message_id < _MASS_PLACEHOLDER_BASE,
+                Message.message_id >= _TIP_MSG_ID_BASE,
+                Message.created_at >= placeholder_floor,
+            ))
             .order_by(Message.message_id.desc())
             .limit(limit)
         )

@@ -115,13 +115,16 @@ function fmtBucketLabel(d: Date, p: Period): string {
 
 type Bucket = "subscriptions" | "tips" | "posts" | "messages" | "streams" | "referrals" | "other";
 
-function bucketOf(kind: string | null): Bucket {
+export function bucketOf(kind: string | null): Bucket {
   if (!kind) return "other";
   if (kind === "subscription" || kind === "rebill") return "subscriptions";
-  if (kind === "tip_post") return "posts";
-  if (kind === "tip_stream") return "streams";
+  // Paid feed-post sales land as `ppv_post` (and post-tips as `tip_post`);
+  // both are "Posts" in OF's vocab. Must precede the generic ppv→messages
+  // catch-all below, or `ppv_post` gets swallowed into Messages.
+  if (kind === "tip_post" || kind === "ppv_post") return "posts";
+  if (kind === "tip_stream" || kind === "ppv_stream") return "streams";
   if (kind === "tip") return "tips";
-  if (kind.startsWith("ppv")) return "messages";
+  if (kind.startsWith("ppv")) return "messages"; // ppv (WS pump) + ppv_message
   return "other";
 }
 

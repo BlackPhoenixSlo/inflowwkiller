@@ -66,7 +66,7 @@ from sqlalchemy import and_, or_, select, update
 import automation_executor as ax  # shared _make_client seam (tests patch ax._make_client)
 from automation_registry import register
 from db.engine import get_session
-from db.models import Action, MassBroadcastCache, Message, Post
+from db.models import Action, MassBroadcastCache, MassRun, Message, Post
 
 log = logging.getLogger("of-relay.automation.unsend")
 
@@ -249,7 +249,17 @@ async def _sweep_mass_targets(
     async with get_session() as s:
         rows = (
             await s.execute(
-                select(MassBroadcastCache.queue_id)
+                select(MassBroadcastCache.queue_id, MassRun.id)
+                .select_from(MassBroadcastCache)
+                # Recover OUR mass_run_id from the run's recorded OF queue_id so
+                # the post-unsend `_flip_mass_unsent` can mirror is_unsent onto
+                # the per-recipient placeholder rows (attribution's 5e15 band).
+                # Without it those rows stayed "sent" locally forever, and the
+                # chat pane's DB seed kept resurrecting long-unsent broadcasts.
+                .outerjoin(MassRun, and_(
+                    MassRun.account_id == MassBroadcastCache.account_id,
+                    MassRun.queue_id == MassBroadcastCache.queue_id,
+                ))
                 .where(
                     MassBroadcastCache.account_id == str(account_id),
                     MassBroadcastCache.sent_at.is_not(None),
@@ -262,10 +272,19 @@ async def _sweep_mass_targets(
                 .limit(_MAX_SWEEP)
             )
         ).all()
-    return [
-        {"kind": "mass", "queue_id": int(r[0]), "mass_run_id": None, "from_cache": True}
-        for r in rows
-    ]
+    out: list[dict] = []
+    seen_q: set[int] = set()
+    for qid_raw, run_id in rows:
+        qid = int(qid_raw)
+        if qid in seen_q:
+            continue  # dup runs on one queue_id — one OF unsend is enough
+        seen_q.add(qid)
+        out.append({
+            "kind": "mass", "queue_id": qid,
+            "mass_run_id": int(run_id) if run_id is not None else None,
+            "from_cache": True,
+        })
+    return out
 
 
 async def _refresh_mass_cache(account_id: str, client) -> bool:
@@ -338,9 +357,15 @@ async def _flip_chat_unsent(account_id: str, fan_id: int, message_id: int) -> in
 
 
 async def _flip_mass_unsent(account_id: str, mass_run_id: int | None) -> int:
-    """Mark every message of a mass run unsent once OF cancels the broadcast.
+    """Mark a mass run's BROADCAST rows unsent once OF cancels the queue.
     Without a `mass_run_id` we can't map the OF queue id back to our rows, so we
-    flip nothing locally (the OF unsend still happened). Returns rows flipped."""
+    flip nothing locally (the OF unsend still happened). Returns rows flipped.
+
+    `funnel_step IS NULL` scopes the flip to the broadcast itself: the
+    reply_mass_funnel walker stamps its per-chat follow-up sends with the SAME
+    mass_run_id (+ a step number), and those are individual messages that stay
+    live on OF when the queue is canceled — flipping them would hide real,
+    still-delivered bubbles from every is_unsent reader."""
     if mass_run_id is None:
         return 0
     now = datetime.utcnow()
@@ -350,6 +375,7 @@ async def _flip_mass_unsent(account_id: str, mass_run_id: int | None) -> int:
             .where(
                 Message.account_id == str(account_id),
                 Message.mass_run_id == int(mass_run_id),
+                Message.funnel_step.is_(None),
                 Message.is_unsent.is_(False),
             )
             .values(is_unsent=True, unsent_reason="automation:unsend_messages", unsent_at=now)

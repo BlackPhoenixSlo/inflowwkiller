@@ -30,7 +30,17 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import { MASS_PLACEHOLDER_END, MASS_PLACEHOLDER_MIN } from "@/hooks/useChatMessages";
+import { toUtcIso } from "@/hooks/useInboxRealtime";
 import { relay, type OFMessage } from "@/lib/relay";
+
+// Mass-send optimistic placeholders (service/attribution.py 5e15 band) are a
+// just-sent bridge, not history. A placeholder that outlived this window is a
+// dead reconcile or an already-unsent broadcast — and once seeded, the OF
+// fetch can't retire it by id (the synthetic id sits above every real OF id).
+// The relay's /admin/messages seed applies the same cutoff server-side; this
+// mirror covers a relay that hasn't been restarted onto that filter yet.
+const SEED_PLACEHOLDER_MAX_AGE_MS = 60 * 60_000;
 
 interface LocalMessageRow {
   account_id: string;
@@ -107,10 +117,11 @@ export function mergeSeedIntoMessages(
   return missing.length > 0 ? [...missing, ...prev] : prev;
 }
 
-function mapRows(
+export function mapRows(
   raw: LocalMessageRow[],
   accountId: string | null,
   fanId: number | null,
+  now: number = Date.now(),
 ): OFMessage[] {
   if (raw.length === 0 || !accountId || fanId == null) return [];
   // Backend orders DESC by message_id; consumer reads oldest → newest
@@ -125,6 +136,13 @@ function mapRows(
     // send-flow's reconciliation by tempId.
     if (!Number.isFinite(r.message_id) || r.message_id <= 0) continue;
     if (r.is_unsent) continue;
+    // Band-scoped: ids at/above MASS_PLACEHOLDER_END are ledger-synthesized
+    // TIP rows (permanent history whose ONLY render path is this seed) — the
+    // bridge cutoff must never age those out.
+    if (r.message_id >= MASS_PLACEHOLDER_MIN && r.message_id < MASS_PLACEHOLDER_END) {
+      const at = Date.parse(toUtcIso(r.created_at ?? undefined));
+      if (!Number.isFinite(at) || now - at > SEED_PLACEHOLDER_MAX_AGE_MS) continue;
+    }
     const isOut = r.direction === "out";
     // Carry the bubble side explicitly off the authoritative `direction`
     // column. The renderer reads `_side` first so DB-seed rows never have
