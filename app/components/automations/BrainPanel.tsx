@@ -28,6 +28,7 @@ import {
   useCreateRule,
   useUpdateRule,
   useAutomationPreview,
+  useWelcomePin,
   type AutomationPreviewResult,
 } from "@/hooks/useAutomations";
 import { VaultPicker } from "@/components/chat/VaultPicker";
@@ -118,12 +119,17 @@ export default function BrainPanel() {
   const createFollowupRule = useCreateRule(accountId);
   const updateFollowupRule = useUpdateRule(accountId);
   const previewM = useAutomationPreview();
+  const welcomePinM = useWelcomePin();
 
   const [welcomeEnabled, setWelcomeEnabled] = useState(false);
   const [welcomeMinutes, setWelcomeMinutes] = useState(WELCOME_DEFAULT_EVERY_S / 60);
   const [welcomeMsg, setWelcomeMsg] = useState<string | null>(null);
   const [previewFan, setPreviewFan] = useState("");
   const [preview, setPreview] = useState<AutomationPreviewResult | null>(null);
+  // "" = the creator's current local slot; otherwise one of the 6 slot keys.
+  const [previewSlot, setPreviewSlot] = useState("");
+  // Show the REAL AI-restyled line (what actually ships) vs the plain template.
+  const [previewRestyle, setPreviewRestyle] = useState(true);
 
   // ── Follow-ups AUTOMATION (the send_followup rule) — the 3 step-delay hours
   // live on the rule's payload.step_hours; we find-or-create one rule per account. ──
@@ -146,6 +152,8 @@ export default function BrainPanel() {
     setWelcomeMsg(null);
     setPreview(null);
     setPreviewFan("");
+    setPreviewSlot("");
+    setPreviewRestyle(true);
     setFollowupMsg(null);
     setFollowupPreview(null);
     setFollowupPreviewFan("");
@@ -293,18 +301,68 @@ export default function BrainPanel() {
     }
   }
 
-  async function runWelcomePreview() {
+  async function runWelcomePreview(ignorePin = false, slotOverride?: string) {
     if (!accountId) return;
     setWelcomeMsg(null);
+    // Preview against the UNSAVED on-screen edits (draft), not just the saved brain,
+    // so tweaking an activity line + Regenerate is WYSIWYG. Only the fields the
+    // welcome compose reads are sent; keys mirror the backend's _load_ai_config.
+    const draftCfg = form
+      ? {
+          persona: form.persona,
+          welcome_rules: form.welcome_rules,
+          location: form.location,
+          utc_offset: form.utc_offset,
+          time_activities: form.time_activities,
+          time_images: form.time_images,
+          model: form.model,
+        }
+      : null;
     try {
       const res = await previewM.mutateAsync({
         account_id: accountId,
         kind: "send_welcome",
         fan_id: previewFan.trim() ? Number(previewFan.trim()) : null,
+        // slotOverride pins the re-preview to a specific slot (after Keep/Unpin) so
+        // it can't drift to whatever the dropdown currently shows.
+        slot: slotOverride ?? (previewSlot || null),
+        restyle: previewRestyle,
+        config: draftCfg,
+        ignore_pin: ignorePin, // Regenerate bypasses the pin to sample a fresh one
       });
       setPreview(res);
     } catch (e) {
       setWelcomeMsg(`Preview failed: ${(e as Error)?.message || "unknown"}`);
+    }
+  }
+
+  // Pin the currently-previewed line for its slot → send_welcome sends exactly this
+  // (weekday auto-refreshed) instead of re-rolling. Re-previews to reflect the pin.
+  async function keepWelcomeLine() {
+    if (!accountId || !preview?.slot || !preview.bubbles?.[1]) return;
+    const slot = preview.slot; // the concrete slot the shown line belongs to
+    setWelcomeMsg(null);
+    try {
+      await welcomePinM.mutateAsync({ account_id: accountId, slot, line: preview.bubbles[1] });
+      setPreviewSlot(slot);              // keep the dropdown in sync with what we pinned
+      await runWelcomePreview(false, slot); // re-preview THAT slot (now shows the pin)
+      setWelcomeMsg("Pinned — this line will send for that slot.");
+    } catch (e) {
+      setWelcomeMsg(`Pin failed: ${(e as Error)?.message || "unknown"}`);
+    }
+  }
+
+  async function unpinWelcomeLine() {
+    if (!accountId || !preview?.slot) return;
+    const slot = preview.slot;
+    setWelcomeMsg(null);
+    try {
+      await welcomePinM.mutateAsync({ account_id: accountId, slot, line: null });
+      setPreviewSlot(slot);
+      await runWelcomePreview(false, slot);
+      setWelcomeMsg("Unpinned — back to auto AI lines.");
+    } catch (e) {
+      setWelcomeMsg(`Unpin failed: ${(e as Error)?.message || "unknown"}`);
     }
   }
 
@@ -602,8 +660,23 @@ export default function BrainPanel() {
               </label>
             </div>
 
-            {/* Live preview — composes the welcome text + image WITHOUT sending */}
+            {/* Live preview — composes the welcome text + image WITHOUT sending.
+                With "AI restyle" on it runs the REAL restyle so you see the exact
+                line that ships; Regenerate rerolls a fresh sample. */}
             <div className="flex flex-wrap items-end gap-2 pt-1">
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[11px] text-fg-dim">Time of day</span>
+                <select
+                  value={previewSlot}
+                  onChange={(e) => setPreviewSlot(e.target.value)}
+                  className={selectCls}
+                >
+                  <option value="">Current time</option>
+                  {slots.map((s) => (
+                    <option key={s} value={s}>{SLOT_LABEL[s] ?? s}</option>
+                  ))}
+                </select>
+              </label>
               <label className="flex items-center gap-1.5">
                 <span className="text-[11px] text-fg-dim">Preview for fan id</span>
                 <Input
@@ -613,15 +686,64 @@ export default function BrainPanel() {
                   className="w-32"
                 />
               </label>
+              <label
+                className="flex items-center gap-1.5 pb-1.5 text-sm text-fg"
+                title="Run the real AI restyle so the preview matches what actually sends. Each preview/regenerate is a small AI call that counts toward your daily cap."
+              >
+                <input
+                  type="checkbox"
+                  checked={previewRestyle}
+                  onChange={(e) => setPreviewRestyle(e.target.checked)}
+                  className="accent-accent"
+                />
+                AI restyle
+              </label>
               <Button
                 size="sm"
                 variant="ghost"
-                onClick={runWelcomePreview}
+                onClick={() => runWelcomePreview(false)}
                 disabled={previewM.isPending || !accountId}
               >
                 {previewM.isPending ? "Composing…" : "Preview"}
               </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => runWelcomePreview(true)}
+                disabled={previewM.isPending || !accountId || !preview}
+                title="Reroll a fresh AI-restyled sample (ignores any pinned line)"
+              >
+                {previewM.isPending ? "…" : "↻ Regenerate"}
+              </Button>
+              {preview && preview.bubbles && preview.bubbles.length > 1 && !preview.pinned && (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={keepWelcomeLine}
+                  disabled={welcomePinM.isPending || !accountId}
+                  title="Send THIS exact line for this slot from now on (weekday auto-updates)"
+                >
+                  {welcomePinM.isPending ? "Pinning…" : "✓ Keep this line"}
+                </Button>
+              )}
+              {preview?.pinned && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={unpinWelcomeLine}
+                  disabled={welcomePinM.isPending || !accountId}
+                  title="Stop sending the fixed line — go back to auto AI restyle"
+                >
+                  {welcomePinM.isPending ? "…" : "Unpin"}
+                </Button>
+              )}
             </div>
+            {previewRestyle && (
+              <p className="text-[10px] text-fg-dim">
+                Uses a real AI call (counts toward the daily cap) so the preview
+                matches what ships. Turn off to preview the plain template for free.
+              </p>
+            )}
             {preview && (
               <div className="flex items-start gap-2 rounded-lg border border-border bg-bg-elev-1 p-2">
                 {preview.image ? (
@@ -636,21 +758,41 @@ export default function BrainPanel() {
                     Greeting “{preview.name}” · {preview.slot}
                     {preview.image ? "" : " · no image"}
                   </div>
+                  {preview.cap_hit && (
+                    <div className="text-[10px] text-warn">
+                      Daily AI cap reached — showing the plain template line.
+                    </div>
+                  )}
+                  {preview.pinned && (
+                    <div className="text-[10px] text-accent">
+                      📌 Pinned — this exact line sends for “{SLOT_LABEL[preview.slot] ?? preview.slot}”
+                      (weekday auto-updates). Hit ↻ Regenerate to try a new one.
+                    </div>
+                  )}
                   {preview.bubbles?.length ? (
                     // Send shape: one block per chat bubble (image rides on the
-                    // first; the 2nd is AI-restyled into casual voice at send time).
+                    // first; the 2nd is the AI-restyled activity line).
                     <div className="space-y-1">
                       {preview.bubbles.map((b, i) => (
                         <p
                           key={i}
                           className="whitespace-pre-wrap rounded-md bg-bg-elev-2 px-2 py-1 text-sm text-fg"
                         >
+                          {i === 1 && (preview.pinned || preview.restyled) && (
+                            <span className="mr-1 rounded bg-accent/20 px-1 text-[9px] uppercase tracking-wide text-accent align-middle">
+                              {preview.pinned ? "📌 pinned" : "AI"}
+                            </span>
+                          )}
                           {b}
                         </p>
                       ))}
                       {preview.bubbles.length > 1 && (
                         <div className="text-[10px] text-fg-dim">
-                          2 bubbles · typing pauses between · 2nd line AI-restyled on send
+                          {preview.pinned
+                            ? "2 bubbles · typing pauses between · 2nd line is your pinned line (sends as-is)"
+                            : preview.restyled
+                            ? "2 bubbles · typing pauses between · 2nd line is the AI-restyled line that ships (↻ Regenerate for another, or Keep this line to lock it in)"
+                            : "2 bubbles · typing pauses between · 2nd line is the plain template (turn on AI restyle to preview the shipped line)"}
                         </div>
                       )}
                     </div>

@@ -199,15 +199,49 @@ export interface AutomationPreviewResult {
   slot: string;
   /** send_followup only: which escalation step (1–3) was previewed. */
   step?: number;
+  /** send_welcome only: whether bubble 2 is the real AI-restyled line (vs verbatim). */
+  restyled?: boolean;
+  /** send_welcome only: the restyle hit the daily AI cost cap → verbatim fallback. */
+  cap_hit?: boolean;
+  /** send_welcome only: this slot has an operator-pinned line — bubble 2 is that
+   *  exact line (what will ship), not a fresh roll. */
+  pinned?: boolean;
 }
 
 export function useAutomationPreview() {
   return useMutation<
     AutomationPreviewResult,
     Error,
-    { account_id: string; kind: string; fan_id?: number | null; test_name?: string | null }
+    {
+      account_id: string;
+      kind: string;
+      fan_id?: number | null;
+      test_name?: string | null;
+      /** send_welcome: run the real AI restyle so the preview matches what ships. */
+      restyle?: boolean;
+      /** send_welcome: pin a time-of-day slot (one of the 6 slot keys); null = now. */
+      slot?: string | null;
+      model?: string | null;
+      /** send_welcome: unsaved on-screen draft config to preview against. */
+      config?: Record<string, unknown> | null;
+      /** send_welcome: Regenerate bypasses a pinned slot line to sample a fresh one. */
+      ignore_pin?: boolean;
+    }
   >({
     mutationFn: (vars) => relay.post("/admin/automation-preview", vars),
+  });
+}
+
+/** Pin (line set) or unpin (line null/"") the approved welcome line for a slot, so
+ *  send_welcome sends that exact line instead of re-rolling. Mirrors the "keep this
+ *  one" flow in the Brain preview. */
+export function useWelcomePin() {
+  return useMutation<
+    { account_id: string; slot: string; pinned: boolean; pins: Record<string, unknown> },
+    Error,
+    { account_id: string; slot: string; line?: string | null }
+  >({
+    mutationFn: (vars) => relay.post("/admin/welcome-pin", vars),
   });
 }
 
