@@ -239,6 +239,52 @@ def _slot_key(hour: int) -> str:
     return _SLOT_KEYS[_photo_index(hour)]
 
 
+# Representative hour inside each time-of-day bucket — the inverse of _slot_key. A
+# preview can pin ANY slot (not just the creator's current one) by asking for that
+# slot's representative hour. Each value sits strictly inside its _photo_index bucket
+# so the round-trip holds: _slot_key(_slot_hour(k)) == k for every slot key.
+_SLOT_REPR_HOUR = {
+    "morning_1": 7, "morning_2": 10, "afternoon_1": 13,
+    "afternoon_2": 16, "evening": 19, "night": 22,
+}
+
+
+def _slot_hour(slot: str | None) -> int | None:
+    """Representative hour for a slot key, or None for an unknown/empty slot (caller
+    then falls back to the creator's current local hour)."""
+    return _SLOT_REPR_HOUR.get(slot or "")
+
+
+def _pinned_line(cfg: dict, hour: int) -> str | None:
+    """The operator-approved FIXED activity line for this slot (the Brain "pin"),
+    or None if the slot isn't pinned. The stored weekday is swapped to today's so a
+    daily welcome never shows a stale day. Everything else is sent exactly as pinned
+    — no LLM restyle, deterministic. Robust to a missing/echoed weekday: an absent
+    or already-current day is a no-op replace, so the line still sends cleanly."""
+    pins = cfg.get("welcome_pins") or {}
+    pin = pins.get(_slot_key(hour))
+    if not isinstance(pin, dict):
+        return None
+    line = str(pin.get("line") or "").strip()
+    if not line:
+        return None
+    old_wd = str(pin.get("weekday") or "").strip()
+    cur_wd = _model_weekday(cfg.get("utc_offset"))
+    if old_wd and old_wd.lower() != cur_wd.lower():
+        # Preserve the casing the operator wrote — a lowercase "thursday" in a
+        # casual line stays lowercase, ALL-CAPS stays ALL-CAPS — instead of forcing
+        # strftime's Title-case and capitalising the day mid-sentence.
+        def _sub(m: "re.Match") -> str:
+            s = m.group(0)
+            if s.isupper():
+                return cur_wd.upper()
+            if s.islower():
+                return cur_wd.lower()
+            return cur_wd  # Title / mixed → the canonical Title-case weekday
+        line = re.sub(rf"\b{re.escape(old_wd)}\b", _sub, line, flags=re.IGNORECASE)
+    return line
+
+
 def _slot_image_id(cfg: dict, hour: int) -> int | None:
     """Configured per-slot vault image id for the current time of day, or None.
     `cfg['time_images']` is {slot_key: media_id}; takes precedence over the
@@ -299,6 +345,12 @@ async def _load_ai_config(account_id: str) -> dict:
                 imgs = json.loads(cfg.time_images_json) or {}
             except Exception:
                 imgs = {}
+        pins: dict = {}
+        if getattr(cfg, "welcome_pinned_json", None):
+            try:
+                pins = json.loads(cfg.welcome_pinned_json) or {}
+            except Exception:
+                pins = {}
         return {
             "persona": cfg.persona,
             "welcome_rules": cfg.welcome_rules,
@@ -306,6 +358,7 @@ async def _load_ai_config(account_id: str) -> dict:
             "location": cfg.location,
             "time_activities": acts,
             "time_images": imgs,
+            "welcome_pins": pins,
             "model": cfg.model,
         }
 
@@ -429,7 +482,7 @@ async def _resolve_welcome_name(account_id: str, fan_id: int, sub: dict) -> str:
     return ""
 
 
-def _local_welcome_bubbles(name: str, cfg: dict) -> list[str]:
+def _local_welcome_bubbles(name: str, cfg: dict, *, hour: int | None = None) -> list[str]:
     """V1 'precious' deterministic welcome as SEPARATE chat bubbles (NO LLM call):
 
         bubble 1:  Hey S-S-S-Sexy Sofie ! !!          ← the image rides on this one
@@ -447,7 +500,10 @@ def _local_welcome_bubbles(name: str, cfg: dict) -> list[str]:
     stutter = f"{L}-{L}-{L}-{adj} {name}"
     bubbles = [f"Hey {stutter} ! !!"]
 
-    hour = _model_hour(cfg.get("utc_offset") or 0)
+    # `hour` lets a preview pin an arbitrary slot; the send path passes none → the
+    # creator's current local hour (behavior unchanged for run()).
+    if hour is None:
+        hour = _model_hour(cfg.get("utc_offset") or 0)
     tod, activity = _time_activity(hour, cfg.get("time_activities") or {})
     location = (cfg.get("location") or "").strip()
     if activity:
@@ -611,26 +667,50 @@ def _bot_folder_media_id(client, hour: int) -> int | None:
 
 async def preview_compose(
     account_id: str, *, fan_id: int | None = None, test_name: str | None = None,
-    model: str | None = None,
+    model: str | None = None, restyle: bool = False, slot: str | None = None,
+    config: dict | None = None, ignore_pin: bool = False,
 ) -> dict:
     """Compose the welcome a real run WOULD produce for one fan — the text + the
-    chosen time-of-day image id — WITHOUT sending and WITHOUT any state write.
-    Powers the Brain panel's "Preview" button (mirrors nudge_online.preview_compose).
+    chosen time-of-day image id — WITHOUT sending and WITHOUT writing send-state.
+    Powers the Brain panel's "Preview"/"Regenerate" buttons (mirrors
+    nudge_online.preview_compose).
 
     Name→text resolution mirrors run(): a resolvable real name takes the
-    deterministic 'precious' local template (no LLM, zero cost); only a random
-    handle / number with no usable name falls back to a single LLM riff. When no
-    `fan_id` is given we greet a representative name so the preview is deterministic
-    and free. The image is the account's configured per-slot vault id for the
-    current hour (`time_images`), or None — no vault network call here.
+    deterministic 'precious' local template; only a random handle / number with no
+    usable name falls back to a single LLM riff. When no `fan_id` is given we greet a
+    representative name so the verbatim preview is deterministic and free.
 
-    Returns the send-shape as `bubbles` (the image rides on bubble 1) plus the
-    joined `text` for back-compat. The preview shows the VERBATIM activity bubble —
-    a real run AI-restyles bubble 2 into casual texting tone, but calling the LLM
-    here would make the preview non-deterministic and non-free."""
+    `slot` pins any of the 6 time-of-day slots (else the creator's current local
+    hour); an unknown slot falls back to now. `config` is a DRAFT override
+    (unsaved on-screen edits — persona / activities / images / model) shallow-merged
+    over the saved brain so a preview is WYSIWYG.
+
+    `restyle=True` runs the SAME AI restyle of the activity bubble that a real run
+    sends, so the preview shows the actual shipped text (and each regenerate rerolls
+    a fresh sample). It is a real, cap-governed, audited `llm_client.chat` call — a
+    cap hit degrades to the verbatim line (`cap_hit`), never an error. It deliberately
+    does NOT read or write the shared per-slot `_restyle_cache` (so a preview can't
+    prime or pollute what the live run reuses). Beyond that LLM audit/cost row this
+    writes nothing: no send, no `welcome_sent`, no `messages`, no vault network call.
+
+    If the slot is PINNED (operator kept a line), the preview shows that exact line
+    (weekday refreshed) and `pinned=True`, skipping the restyle — this is what will
+    ship. `ignore_pin=True` (the "Regenerate" button) bypasses the pin to sample a
+    fresh candidate the operator can keep in its place.
+
+    Returns the send-shape as `bubbles` (image rides on bubble 1) + joined `text`,
+    plus `image`, `name`, `slot`, and `restyled`/`cap_hit`/`pinned` flags."""
     cfg = await _load_ai_config(account_id)
+    # Draft override wins over the saved brain (None never clobbers); the UI sends the
+    # full time_activities/time_images dicts, so a shallow merge is correct.
+    if config:
+        cfg = {**cfg, **{k: v for k, v in config.items() if v is not None}}
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
-    hour = _model_hour(cfg.get("utc_offset"))
+
+    # Pin the requested slot's representative hour; unknown/empty slot → current hour.
+    hour = _slot_hour(slot)
+    if hour is None:
+        hour = _model_hour(cfg.get("utc_offset"))
 
     if fan_id is not None:
         sub = {"id": int(fan_id), "name": test_name, "username": None}
@@ -642,10 +722,39 @@ async def preview_compose(
         sub = {"id": 0, "name": test_name or name, "username": None}
 
     if name:
-        bubbles = _local_welcome_bubbles(name, cfg)
+        bubbles = _local_welcome_bubbles(name, cfg, hour=hour)
     else:
-        model = model or await resolve_model(account_id, "welcome", None)
+        model = model or cfg.get("model") or await resolve_model(account_id, "welcome", None)
         bubbles = [await _generate_welcome(account_id, int(fan_id or 0), sub, cfg, model)]
+
+    # A PINNED slot line wins (unless the operator hit Regenerate → ignore_pin): show
+    # the exact approved line that will ship, weekday-refreshed, no LLM call.
+    restyled = False
+    cap_hit = False
+    pinned = False
+    pin = None if ignore_pin else (_pinned_line(cfg, hour) if name else None)
+    if pin is not None:
+        if len(bubbles) > 1:
+            bubbles[1] = pin
+        else:
+            bubbles.append(pin)  # pin ships even if the base activity was blanked
+        pinned = True
+    elif restyle and name and len(bubbles) > 1:
+        # AI restyle of the activity bubble — exactly what ships. Cache-bypassed
+        # (fresh sample per regenerate; never touches the live run's _restyle_cache);
+        # a cap hit or any failure degrades to the verbatim line.
+        rmodel = model or cfg.get("model") or await resolve_model(account_id, "welcome", None)
+        try:
+            styled = await _restyle_activity(
+                account_id, int(fan_id or 0), cfg, rmodel, bubbles[1])
+            if styled and styled != bubbles[1]:
+                bubbles[1] = styled
+                restyled = True
+        except LLMCapExceeded:
+            cap_hit = True
+        except Exception:
+            log.debug("preview restyle failed account=%s — verbatim line", account_id,
+                      exc_info=True)
 
     bubbles = [apply_word_restriction(b) for b in bubbles]
     if strip_emoji_on:
@@ -653,7 +762,8 @@ async def preview_compose(
     bubbles = [b for b in bubbles if b.strip()]
     return {"text": "\n\n".join(bubbles), "bubbles": bubbles,
             "image": _slot_image_id(cfg, hour),
-            "name": name, "slot": _slot_key(hour)}
+            "name": name, "slot": _slot_key(hour),
+            "restyled": restyled, "cap_hit": cap_hit, "pinned": pinned}
 
 
 # ── The automation ───────────────────────────────────────────────────
@@ -767,6 +877,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     image_attached = 0
     restyled = 0          # fresh LLM restyles this run
     restyled_cached = 0   # bubbles served from the per-slot restyle cache
+    pinned_used = 0       # bubbles served from an operator-pinned slot line (no LLM)
     restyle_capped = False  # cap tripped mid-run → stop attempting restyles
 
     # Fans who already texted us get a FRESH per-fan restyle (never the cached
@@ -818,7 +929,22 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # included) falls back to the verbatim template line — a restyle
             # hiccup must never cost a fan their welcome. Once the daily cap trips
             # we stop attempting restyles for the rest of the run.
-            if name and restyle and len(bubbles) > 1 and not restyle_capped:
+            # An operator-PINNED line for this slot wins over the AI restyle: send
+            # exactly the approved line (weekday refreshed to today), no LLM call,
+            # for every fan this slot. That is the whole point of the pin — "reroll
+            # until I like one, then use THAT" — so it also overrides the payload's
+            # restyle flag and the texted-fan fresh-call path.
+            pinned = _pinned_line(cfg, hour) if name else None
+            if pinned is not None:
+                # The pin is the operator's explicit "send THIS line" — authoritative
+                # even if they later blanked the slot's raw activity (then there's no
+                # bubble 2 to replace, so we ADD one).
+                if len(bubbles) > 1:
+                    bubbles[1] = pinned
+                else:
+                    bubbles.append(pinned)
+                pinned_used += 1
+            elif name and restyle and len(bubbles) > 1 and not restyle_capped:
                 ck = (str(account_id), bubbles[1])
                 fresh = fan_id in texted_ids
                 cached = None if fresh else _restyle_cache.get(ck)
@@ -943,6 +1069,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "image_attached": image_attached,
         "restyled": restyled,
         "restyled_cached": restyled_cached,
+        "pinned_used": pinned_used,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
         "skipped_existing": skipped_existing,

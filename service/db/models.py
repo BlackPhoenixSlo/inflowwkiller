@@ -1005,6 +1005,14 @@ class AccountAiConfig(Base):
     # (no vault-folder lookup). A future templates UI writes this. NULL → fall
     # back to the legacy folder picker. e.g. {"morning_1": 3663527656, ...}
     time_images_json: Mapped[str | None] = mapped_column(Text)
+    # Operator-approved FIXED welcome activity line per slot (the "pin" from the
+    # Brain preview: reroll until you like one, keep it, and send_welcome sends that
+    # exact line instead of re-rolling a fresh AI restyle each run). JSON dict
+    # {slot_key: {"line": str, "weekday": str}} — the stored weekday is swapped to
+    # the current day at send so a daily welcome never says the wrong weekday. NULL /
+    # missing slot → normal AI restyle. e.g. {"afternoon_1": {"line": "just got back
+    # from the beach, Thursday arvo in Argentina lol", "weekday": "Thursday"}}
+    welcome_pinned_json: Mapped[str | None] = mapped_column(Text)
     daily_cost_cap_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     # Per-account LLM model override. NULL → llm_client's default model
     # (grok-4-1-fast-non-reasoning), preserving current behavior. See 19 §4.
