@@ -61,7 +61,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 
 import automation_executor as ax  # shared _make_client seam (tests patch ax._make_client)
 from automation_registry import register
@@ -91,6 +91,13 @@ _MAX_SWEEP = 200
 _MASS_REFRESH_LOOKBACK_DAYS = 30
 _MASS_REFRESH_PAGE = 100
 _MASS_REFRESH_MAX_PAGES = 50  # 50 × 100 = 5000 broadcasts — far past any real hourly volume
+# Steady-state lookback once the cache holds rows for the account. A broadcast
+# only needs to be IN the cache by the time it ages past the smallest class
+# threshold (hours); the sweep itself reads the whole cache table, and canceled
+# state is flipped locally on every unsend — so re-pulling 30 days of history
+# every run buys nothing. 72h absorbs a weekend of relay downtime. The full
+# 30-day pull still runs on a COLD cache (new account / first-ever run).
+_MASS_REFRESH_WARM_LOOKBACK_H = 72
 
 
 def _norm_targets(raw: object) -> list[dict]:
@@ -287,11 +294,38 @@ async def _sweep_mass_targets(
     return out
 
 
+def _parse_item_date(raw: object) -> datetime | None:
+    """OF broadcast item `date` ('2026-07-04T15:42:29+00:00') → naive UTC, or None."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        d = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if d.tzinfo is not None:
+        d = (d - d.utcoffset()).replace(tzinfo=None)
+    return d
+
+
 async def _refresh_mass_cache(account_id: str, client) -> bool:
     """Write-through OF's broadcast history into `mass_broadcast_cache` so the mass
     sweep that follows reads a current list (see `_MASS_REFRESH_*`). Mirrors the
-    UI's /admin/mass-messages/refresh, but PAGINATES `hasMore` so an account that
-    blasts faster than one page won't leave its older broadcasts un-swept.
+    UI's /admin/mass-messages/refresh, but PAGINATES so an account that blasts
+    faster than one page won't leave its older broadcasts un-swept.
+
+    ⚠️ OF IGNORES `offset` on /users/me/stats/messages/group — verified live
+    2026-07-04: offset=0/100/300 all return the identical newest page, with
+    `hasMore: true` forever. A pager striding by offset alone re-reads the same
+    page to the 50-page cap (× ~10s/page = the 500-850s unsend runs that starved
+    the relay's thread pool). `endDate` IS honored (narrowed windows return
+    strictly older items, zero overlap), so pagination works like this: stride by
+    offset while pages yield NEW queue ids (keeps well-behaved servers / test
+    fakes on the cheap path), and the first time a page repeats itself, switch
+    permanently to date-window stepping — endDate ← oldest seen date − 1s,
+    offset reset to 0. Two fruitless pages in a row end the run.
+
+    Steady-state runs also narrow the pull to `_MASS_REFRESH_WARM_LOOKBACK_H`
+    when the account already has cache rows — see that constant's comment.
 
     Best-effort by design: a client without `mass_message_history` (test fakes)
     skips cleanly. Returns True on success OR a clean skip; False only when the OF
@@ -303,27 +337,75 @@ async def _refresh_mass_cache(account_id: str, client) -> bool:
     fetch = getattr(client, "mass_message_history", None)
     if not callable(fetch):
         return True  # client can't pull history → sweep the cached rows as-is
+    async with get_session() as s:
+        cached_rows = (
+            await s.execute(
+                select(func.count())
+                .select_from(MassBroadcastCache)
+                .where(MassBroadcastCache.account_id == str(account_id))
+            )
+        ).scalar() or 0
     end = datetime.utcnow()
-    start = end - timedelta(days=_MASS_REFRESH_LOOKBACK_DAYS)
+    lookback = (
+        timedelta(hours=_MASS_REFRESH_WARM_LOOKBACK_H)
+        if cached_rows
+        else timedelta(days=_MASS_REFRESH_LOOKBACK_DAYS)
+    )
+    start = end - lookback
     fmt = "%Y-%m-%d %H:%M:%S"
     written = 0
     offset = 0  # advance by ROWS RETURNED, not page index — OF may cap a page
     #             below the requested limit, and striding by the limit would skip
     #             the un-returned rows of a short page.
+    end_cursor = end
+    seen_qids: set[int] = set()
+    date_mode = False  # flips on the first repeated page → offset is ignored
+    fruitless = 0      # consecutive pages that yielded zero NEW rows
     try:
         for _ in range(_MASS_REFRESH_MAX_PAGES):
             resp = await asyncio.to_thread(
-                fetch, start_date=start.strftime(fmt), end_date=end.strftime(fmt),
+                fetch, start_date=start.strftime(fmt),
+                end_date=end_cursor.strftime(fmt),
                 limit=_MASS_REFRESH_PAGE, offset=offset,
             )
             items = (resp.get("items") if isinstance(resp, dict) else None) or []
-            if items:
-                written += await cache.upsert_many(str(account_id), items)
-                offset += len(items)
+            fresh: list[dict] = []
+            for it in items:
+                try:
+                    qid = int(it.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if qid not in seen_qids:
+                    seen_qids.add(qid)
+                    fresh.append(it)
+            if fresh:
+                written += await cache.upsert_many(str(account_id), fresh)
+                fruitless = 0
+            else:
+                fruitless += 1
+                if fruitless >= 2:
+                    break  # two dead pages — no cursor makes progress anymore
             # Stop at the last page (no more / empty); only keep paging while OF
             # says there's more AND this page actually returned rows.
             if not (isinstance(resp, dict) and resp.get("hasMore") and items):
                 break
+            if fresh and not date_mode:
+                offset += len(items)
+                continue
+            # Date-window step (entered on the first repeated page, then always).
+            date_mode = True
+            oldest = None
+            for it in items:
+                d = _parse_item_date(it.get("date"))
+                if d is not None and (oldest is None or d < oldest):
+                    oldest = d
+            if oldest is None or oldest <= start:
+                break  # un-dateable page / window exhausted — nothing older to pull
+            nxt = oldest - timedelta(seconds=1)
+            if nxt >= end_cursor:
+                break  # cursor must strictly shrink or we'd loop on one window
+            end_cursor = nxt
+            offset = 0
         else:
             # Loop ran the full page cap without OF saying "no more" — flag the
             # truncation rather than silently leaving the oldest blasts un-swept.

@@ -722,6 +722,23 @@ async def _start_event_pumps() -> None:
     except Exception:
         log.exception("could not bump anyio thread pool — sticking with default")
 
+    # Bump the ASYNCIO default executor too — a SEPARATE pool from anyio's.
+    # Every `asyncio.to_thread` in this codebase (all `_proxy` OF calls, the
+    # automation executor's OF roundtrips, media pulls) shares the loop's
+    # default ThreadPoolExecutor, which sizes at min(32, cpus+4) — just 6
+    # threads on the 2-CPU VPS. A couple of long automation sweeps pinned
+    # all 6 and every user-initiated send queued invisibly until the Next
+    # proxy gave up (2026-07-04 "socket hang up" / HTTP 500 incident). The
+    # threads only block on network I/O, so 64 is cheap headroom.
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        _main_loop.set_default_executor(
+            ThreadPoolExecutor(max_workers=64, thread_name_prefix="to-thread")
+        )
+        log.info("asyncio default executor bumped to 64 threads")
+    except Exception:
+        log.exception("could not resize asyncio default executor — default is min(32, cpus+4)")
+
     # Phase A — bring up SQLite. Idempotent: creates tables on first boot,
     # no-ops on subsequent. Must precede pump spawn because the SSE writer
     # below tries to insert event_inbox rows from the first event onward.
