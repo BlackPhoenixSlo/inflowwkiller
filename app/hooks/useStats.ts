@@ -149,6 +149,8 @@ export function usePerEmployee(
 
 export interface PerModelRevenueByKind {
   ppv: number;
+  /** Feed-post sales (ppv_post + tip_post) — broken out from ppv/tip. */
+  post: number;
   tip: number;
   subscription: number;
   rebill: number;
@@ -187,7 +189,7 @@ export interface PerModelResp {
 }
 
 const ZERO_MODEL_KIND: PerModelRevenueByKind = {
-  ppv: 0, tip: 0, subscription: 0, rebill: 0, custom: 0,
+  ppv: 0, post: 0, tip: 0, subscription: 0, rebill: 0, custom: 0,
 };
 
 export function usePerModel(from: string | null, to: string | null) {
@@ -449,6 +451,100 @@ export function useAccountProfile(accountId: string | null | undefined) {
       } catch {
         // Session expired / network blip / OF rate-limit — degrade
         // silently to "no profile" and let the card fall back to ID.
+        return null;
+      }
+    },
+    staleTime: 30 * 60_000,
+    gcTime: 24 * 60 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+    placeholderData: keepPreviousData,
+  });
+}
+
+// ── Live OF fan counts (the REAL numbers, not our thin DB roster) ─────
+// OF's /subscriptions/count/all is ground truth for "how many fans" — the
+// same population a mass message targets. Our `fans` table only holds fans
+// we've actually chatted with (~hundreds), so per_model's transaction-
+// derived sub counts read 0 for free pages that actually have thousands of
+// fans. We pull the true count live per card (mirrors useAccountProfile).
+//
+//   subscribers.active = fans currently subscribed TO this model (the total)
+//   subscribers.all    = active + expired (everyone who ever subscribed)
+// `subscriptions.*` is the OTHER direction (creators the model follows) and
+// must NOT be used as a fan count.
+
+export interface OfSubscriberCounts {
+  /** Currently-subscribed fans — the headline "total fans" number. */
+  active: number;
+  /** Ever-subscribed (active + expired + …). */
+  all: number;
+  expired: number;
+}
+
+export function useOfSubscriberCounts(accountId: string | null | undefined) {
+  return useQuery<OfSubscriberCounts | null>({
+    queryKey: ["of-sub-counts", accountId] as const,
+    enabled: !!accountId,
+    queryFn: async () => {
+      try {
+        const r = await relay.get<{ subscribers?: Record<string, number> }>(
+          "/api/of/v2/subscriptions/count/all",
+          { accountId: accountId!, priority: "background" },
+        );
+        const s = r?.subscribers ?? {};
+        return {
+          active: Number(s.active ?? 0),
+          all: Number(s.all ?? 0),
+          expired: Number(s.expired ?? 0),
+        };
+      } catch {
+        // Session expired / rate-limit — degrade to null so the card shows
+        // "—" for this account instead of blanking the whole grid.
+        return null;
+      }
+    },
+    staleTime: 30 * 60_000,
+    gcTime: 24 * 60 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+    placeholderData: keepPreviousData,
+  });
+}
+
+// New fans in a window, from OF's Statistics > Subscriptions chart
+// (/subscriptions/subscribers/chart). The response carries TWO series:
+//   • earnings   — new PAID subs (revenue-based; 0 for free pages)  ← NOT this
+//   • subscribes — new subscriber COUNT per day (free-inclusive)    ← this
+// plus a top-level `subscribers` == sum(subscribes[].count) — OF's own
+// "N Subscribers" header. We use `subscribers`, so it's correct for BOTH
+// free and paid pages (sakai free = 279, Lexi paid = 113). `from`/`to` are
+// the dashboard's ISO window (defaults to last 30 days upstream).
+export function useOfNewFans(
+  accountId: string | null | undefined,
+  from: string | null,
+  to: string | null,
+) {
+  return useQuery<number | null>({
+    queryKey: ["of-new-fans", accountId, from, to] as const,
+    enabled: !!accountId,
+    queryFn: async () => {
+      try {
+        const qs = new URLSearchParams();
+        if (from) qs.set("start", from);
+        if (to) qs.set("end", to);
+        const r = await relay.get<{
+          subscribers?: number;
+          subscribes?: Array<{ count?: number }>;
+        }>(
+          `/api/of/v2/subscriptions/subscribers/chart?${qs.toString()}`,
+          { accountId: accountId!, priority: "background" },
+        );
+        if (typeof r?.subscribers === "number") return r.subscribers;
+        // Fallback: sum the per-day subscriber-count series.
+        const arr = Array.isArray(r?.subscribes) ? r.subscribes : [];
+        return arr.reduce((sum, pt) => sum + Number(pt?.count ?? 0), 0);
+      } catch {
         return null;
       }
     },

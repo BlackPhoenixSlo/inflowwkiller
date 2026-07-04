@@ -618,6 +618,17 @@ class OFClient:
         """GET /api2/v2/subscriptions/count/all — full breakdown (active/expired/blocked/...)."""
         return self.get_json(f"{API_BASE}/subscriptions/count/all")
 
+    def subscribers_chart(self, *, start: str | None = None, end: str | None = None) -> dict:
+        """GET /api2/v2/subscriptions/subscribers/chart — OF Statistics >
+        Subscriptions. Returns TWO daily series plus totals:
+          • subscribes  — new-subscriber COUNT per day (free-inclusive)
+          • earnings    — new PAID-subscriber revenue per day (0 on free pages)
+          • subscribers — sum(subscribes[].count); OF's "N Subscribers" header
+          • total/delta — earnings total + delta
+        Use `subscribers` for a free-inclusive "new fans in window" count."""
+        return self.get_json(f"{API_BASE}/subscriptions/subscribers/chart",
+                             params=self._date_range_params(start, end))
+
     def my_promotions(self) -> dict:
         """GET /api2/v2/users/promotions — my outbound promo list (alt to /promotions)."""
         return self.get_json(f"{API_BASE}/users/promotions")
