@@ -4191,6 +4191,12 @@ def of_subscription_counts_all():
     """Full subscription breakdown (active/expired/blocked/etc) + subscribers + bookmarks."""
     return _proxy(lambda: _get_client().subscription_counts_all())
 
+@app.get("/api/of/v2/subscriptions/subscribers/chart")
+def of_subscribers_chart(start: str | None = Query(None), end: str | None = Query(None)):
+    """Daily new-subscriber time-series (Statistics > Fans). Earnings-based:
+    accurate for paid pages, 0 for free pages."""
+    return _proxy(lambda: _get_client().subscribers_chart(start=start, end=end))
+
 @app.get("/api/of/v2/users/promotions")
 def of_my_promotions():
     """My outbound promotions (alt path of /promotions)."""

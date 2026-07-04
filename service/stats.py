@@ -940,13 +940,19 @@ async def attribution_coverage_recent(
 
 
 def _kind_bucket(kind: str | None) -> str:
-    """Collapse Phase F's rich kind vocabulary to the 5 chip buckets the
+    """Collapse Phase F's rich kind vocabulary to the chip buckets the
     per-model card knows about. Without this, `ppv_message`/`ppv_post`/
     `tip_post`/etc. silently fall into `custom` because the response dict
     has no key for them — they go to `custom` in the chips and the PPV
-    chip shows $0 even when there is real PPV revenue."""
+    chip shows $0 even when there is real PPV revenue.
+
+    Feed-post sales (`ppv_post`, `tip_post`) get their own `post` bucket so
+    the card can show post revenue separately — these MUST be checked before
+    the generic `ppv`/`tip` prefix rules below or they'd fold into those."""
     if not kind:
         return "custom"
+    if kind in ("ppv_post", "tip_post"):
+        return "post"
     if kind.startswith("ppv"):
         return "ppv"
     if kind.startswith("tip"):
@@ -1211,6 +1217,7 @@ async def per_model(
             "display_name": None,
             "revenue_by_kind": {
                 "ppv": 0,
+                "post": 0,
                 "tip": 0,
                 "subscription": 0,
                 "rebill": 0,
@@ -1218,6 +1225,7 @@ async def per_model(
             },
             "pending_by_kind": {
                 "ppv": 0,
+                "post": 0,
                 "tip": 0,
                 "subscription": 0,
                 "rebill": 0,

@@ -26,6 +26,8 @@ import { proxyImage } from "@/lib/relay";
 import { useAccounts } from "@/hooks/useAccounts";
 import {
   useAccountProfile,
+  useOfSubscriberCounts,
+  useOfNewFans,
   usePerModel,
   type PerModelRow,
   type PerModelResp,
@@ -115,10 +117,27 @@ export default function PerModelKpiGrid({ from, to }: Props) {
         )}
       >
         {models.map((m) => (
-          <ModelCard key={m.account_id} m={m} activeUnavail={activeUnavail} />
+          <ModelCard key={m.account_id} m={m} activeUnavail={activeUnavail} from={from} to={to} />
         ))}
       </div>
+      <MetricsLegend />
     </section>
+  );
+}
+
+/** How each KPI on the cards is calculated — pinned at the bottom of the
+ *  grid so the numbers are never a black box. */
+function MetricsLegend() {
+  return (
+    <dl className="mt-1 rounded-md border border-border bg-bg-elev-1/40 p-3 text-[11px] leading-relaxed text-fg-dim space-y-1">
+      <div className="text-fg-dim font-medium uppercase tracking-wide">How these are calculated</div>
+      <div><span className="text-fg font-medium">Fans</span> — OF's current subscriber count (subscribers.active), the same audience a mass message reaches. Live from OF, not our chat DB.</div>
+      <div><span className="text-fg font-medium">New fans (30d)</span> — new subscribers in the window from OF Statistics (free-inclusive). <em>Paid pages show <span className="text-fg font-medium">New subs</span> instead</em> = new/renewed PAID subscriptions (free trial/promo subs excluded).</div>
+      <div><span className="text-fg font-medium">LTV</span> — revenue in the window ÷ new acquisitions in that window (New fans on free pages, New subs on paid pages).</div>
+      <div><span className="text-fg font-medium">ARPU</span> — revenue in the window ÷ total fans (average revenue per current fan).</div>
+      <div><span className="text-fg font-medium">Messages / PPVs sold</span> — outbound messages sent and PPV unlocks attributed in the window (our DB).</div>
+      <div><span className="text-fg font-medium">Revenue chips</span> — total revenue split by source: PPV (DM unlocks), Post (feed-post sales), Tip, Sub, Rebill, Other.</div>
+    </dl>
   );
 }
 
@@ -147,18 +166,18 @@ function SkeletonModelCard({ account }: { account: { id: string; nickname?: stri
         <div className="text-[11px] text-fg-dim mt-0.5">total revenue</div>
       </div>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2 pt-2 border-t border-border text-sm">
-        <Kpi label="New subs"    value="—" muted />
-        <Kpi label="Active subs" value="—" muted />
-        <Kpi label="LTV"         value="—" muted />
-        <Kpi label="ARPU"        value="—" muted />
-        <Kpi label="Messages"    value="—" muted />
-        <Kpi label="PPVs sold"   value="—" muted />
+        <Kpi label="Fans"          value="—" muted />
+        <Kpi label="New fans (30d)" value="—" muted />
+        <Kpi label="LTV"           value="—" muted />
+        <Kpi label="ARPU"          value="—" muted />
+        <Kpi label="Messages"      value="—" muted />
+        <Kpi label="PPVs sold"     value="—" muted />
       </dl>
     </Card>
   );
 }
 
-function ModelCard({ m, activeUnavail }: { m: PerModelRow; activeUnavail: boolean }) {
+function ModelCard({ m, activeUnavail, from, to }: { m: PerModelRow; activeUnavail: boolean; from: string | null; to: string | null }) {
   const kinds = m.revenue_by_kind;
   const pending = m.pending_by_kind;
   // Pull the model's OF profile (avatar + name) per card. React Query
@@ -170,6 +189,29 @@ function ModelCard({ m, activeUnavail }: { m: PerModelRow; activeUnavail: boolea
   // settled — otherwise the revenue-window fallback in isPaidPage paints a
   // guess that can flip once the real subscribePrice/isFree lands in.
   const paid = profile.isPending ? null : isPaidPage(m, p);
+  // Live OF fan counts — the REAL totals. Our DB `fans` roster is a tiny
+  // subset (only fans we've chatted with), so per_model's sub counts read 0
+  // for free pages that actually have thousands of fans. subscribers.active
+  // is the true current-fan count (the mass-message audience).
+  const counts = useOfSubscriberCounts(m.account_id);
+  const totalFans = counts.data?.active ?? null;
+  // New fans in the window — OF's Statistics > Subscriptions count. Correct
+  // for BOTH free and paid pages (uses the subscriber-count series, not the
+  // earnings series), so no paid-only gating.
+  const newFansQ = useOfNewFans(m.account_id, from, to);
+  const newFans = newFansQ.data ?? null;
+  // LTV = revenue in the window ÷ the new-count shown in slot 2 (paid pages:
+  // new PAID subs; free pages: new fans). Dividing by the displayed number
+  // keeps LTV > ARPU the way you'd expect (revenue per acquisition vs per
+  // current fan). "—" until the count lands / if it's 0.
+  const ltvDenom = paid === true ? m.new_subs_count : newFans;
+  const ltvCents =
+    ltvDenom && ltvDenom > 0 ? Math.round(m.total_revenue_cents / ltvDenom) : null;
+  // ARPU = revenue in the window ÷ total fans (live). On a free page every
+  // fan is a free sub; on a paid page every current fan is a paid sub — so
+  // total fans is the right per-fan denominator for both.
+  const arpuCents =
+    totalFans && totalFans > 0 ? Math.round(m.total_revenue_cents / totalFans) : null;
   const avatarSrc = proxyImage(
     p?.avatarThumbs?.c144 || p?.avatarThumbs?.c50 || p?.avatar || null,
     m.account_id,
@@ -230,6 +272,7 @@ function ModelCard({ m, activeUnavail }: { m: PerModelRow; activeUnavail: boolea
           suffix when present — lets you see un-cleared revenue per kind. */}
       <div className="flex flex-wrap gap-1.5">
         <KindChip label="PPV"    cents={kinds.ppv}          pending={pending.ppv} />
+        <KindChip label="Post"   cents={kinds.post}         pending={pending.post} />
         <KindChip label="Tip"    cents={kinds.tip}          pending={pending.tip} />
         <KindChip label="Sub"    cents={kinds.subscription} pending={pending.subscription} />
         <KindChip label="Rebill" cents={kinds.rebill}       pending={pending.rebill} />
@@ -237,10 +280,46 @@ function ModelCard({ m, activeUnavail }: { m: PerModelRow; activeUnavail: boolea
       </div>
 
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2 pt-2 border-t border-border text-sm">
-        <Kpi label="New subs"    value={fmtInt(m.new_subs_count)} />
-        <Kpi label="Active subs" value={fmtInt(m.active_subs_count)} muted={m.active_subs_count == null} />
-        <Kpi label="LTV"         value={fmtCents(m.ltv_cents)}     muted={m.ltv_cents == null} />
-        <Kpi label="ARPU"        value={fmtCents(m.arpu_cents)}    muted={m.arpu_cents == null} />
+        {/* Slot 1 = live total fans (OF subscribers.active) for BOTH page
+            types. Slot 2 adapts: a PAID page shows real new PAID subs (the
+            money metric, e.g. 9 — free trial/promo subs are excluded); a
+            FREE page shows OF's free-inclusive new-fan count. */}
+        <Kpi
+          label="Fans"
+          value={totalFans == null ? (counts.isPending ? "…" : "—") : fmtInt(totalFans)}
+          muted={totalFans == null}
+          title="Current fans subscribed to this model — OF's own count (subscribers.active), the same audience a mass message reaches. Not our chat DB, which only holds fans we've messaged."
+        />
+        {paid === true ? (
+          <Kpi
+            label="New subs"
+            value={fmtInt(m.new_subs_count)}
+            title="New PAID subscriptions (new + renewed) in the window, counted from OF transactions. Free trial/promo subscribers are NOT counted here — see a free page's 'New fans' for those."
+          />
+        ) : (
+          <Kpi
+            label="New fans (30d)"
+            value={newFans == null ? (newFansQ.isPending ? "…" : "—") : fmtInt(newFans)}
+            muted={newFans == null}
+            title="New fans in the selected window (default last 30 days) — OF's own Statistics > Subscriptions count (subscriber series, free-inclusive)."
+          />
+        )}
+        <Kpi
+          label="LTV"
+          value={fmtCents(ltvCents)}
+          muted={ltvCents == null}
+          title={
+            paid === true
+              ? "Revenue in the window ÷ new PAID subs in the window (the 'New subs' number)."
+              : "Revenue in the window ÷ new fans in the window (the 'New fans' number)."
+          }
+        />
+        <Kpi
+          label="ARPU"
+          value={fmtCents(arpuCents)}
+          muted={arpuCents == null}
+          title="Revenue in the selected window ÷ total fans (average revenue per current fan)."
+        />
         <Kpi label="Messages"    value={fmtInt(m.messages_sent)} />
         <Kpi label="PPVs sold"   value={fmtInt(m.ppv_conversions)} />
       </dl>
@@ -297,9 +376,9 @@ function KindChip({ label, cents, pending }: { label: string; cents: number; pen
   );
 }
 
-function Kpi({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
+function Kpi({ label, value, muted, title }: { label: string; value: string; muted?: boolean; title?: string }) {
   return (
-    <div>
+    <div title={title}>
       <dt className="text-[11px] uppercase tracking-wide text-fg-dim">{label}</dt>
       <dd className={cn("text-sm font-medium tabular-nums mt-0.5", muted ? "text-fg-dim" : "text-fg")}>
         {value}
