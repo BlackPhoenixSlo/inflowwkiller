@@ -471,22 +471,38 @@ def _page_all(fetch):
         page, so it's correct whatever page size OF actually honours (a short-
         page stop would under-read if OF ever caps below our requested limit).
     Without exhaustive paging, an exclude list with >1 page of members would
-    only read page 1 and wrongly drop everyone past it as 'stale'."""
+    only read page 1 and wrongly drop everyone past it as 'stale'.
+
+    Guards (2026-07-04): some OF endpoints IGNORE `offset` and report
+    hasMore=true forever (verified live on /users/me/stats/messages/group) —
+    an unguarded exhaustion loop then spins forever inside a to_thread worker
+    on the mass-broadcast hot path. Dedup by item id and stop on a page that
+    adds nothing new, plus a hard page ceiling as the backstop."""
     out: list[dict] = []
+    seen_ids: set = set()
     offset = 0
-    while True:
+    for _ in range(200):                              # backstop: 200 × 100 = 20k rows
         r = fetch(offset)
-        if isinstance(r, dict):                       # {list, hasMore} envelope
-            items = r.get("list") or []
-            out.extend(it for it in items if isinstance(it, dict))
-            if not items or not r.get("hasMore"):
-                break
-        else:                                         # bare list (no hasMore)
-            items = r or []
-            out.extend(it for it in items if isinstance(it, dict))
-            if not items:                             # empty page → exhausted
-                break
+        items = (r.get("list") or []) if isinstance(r, dict) else (r or [])
+        added = 0
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            iid = it.get("id")
+            if iid is not None:
+                if iid in seen_ids:
+                    continue
+                seen_ids.add(iid)
+            out.append(it)
+            added += 1
+        if not items or added == 0:                   # exhausted / repeated page
+            break
+        if isinstance(r, dict) and not r.get("hasMore"):
+            break
         offset += len(items)
+    else:
+        log.warning("_page_all hit the 200-page backstop (%d rows) — repeated-page "
+                    "guard never fired; result may be truncated", len(out))
     return out
 
 

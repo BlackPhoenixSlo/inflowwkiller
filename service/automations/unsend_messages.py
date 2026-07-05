@@ -447,7 +447,13 @@ async def _flip_mass_unsent(account_id: str, mass_run_id: int | None) -> int:
     reply_mass_funnel walker stamps its per-chat follow-up sends with the SAME
     mass_run_id (+ a step number), and those are individual messages that stay
     live on OF when the queue is canceled — flipping them would hide real,
-    still-delivered bubbles from every is_unsent reader."""
+    still-delivered bubbles from every is_unsent reader.
+
+    `purchased_at IS NULL` for the same reason: OF's queue cancel only pulls
+    the broadcast from fans who did NOT buy it — a purchaser keeps their paid
+    copy in-chat forever. Flipping a purchased row hid bought PPVs from the
+    thread mirror (seen live: fan 550702326's $3.99 buy vanished locally while
+    OF still showed it)."""
     if mass_run_id is None:
         return 0
     now = datetime.utcnow()
@@ -458,6 +464,7 @@ async def _flip_mass_unsent(account_id: str, mass_run_id: int | None) -> int:
                 Message.account_id == str(account_id),
                 Message.mass_run_id == int(mass_run_id),
                 Message.funnel_step.is_(None),
+                Message.purchased_at.is_(None),
                 Message.is_unsent.is_(False),
             )
             .values(is_unsent=True, unsent_reason="automation:unsend_messages", unsent_at=now)

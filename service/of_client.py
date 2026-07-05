@@ -743,17 +743,32 @@ class OFClient:
         the flat list of fan objects. OF caps `limit` at 20 for this list, so we
         walk `offset` until `hasMore` is false (or `max_fans` is hit)."""
         out: list[dict] = []
+        seen: set[int] = set()
         offset = 0
         page_size = max(1, min(int(page_size), 20))
+        # No-progress guard: some OF list endpoints IGNORE `offset` and report
+        # hasMore=true forever (verified on /users/me/stats/messages/group,
+        # 2026-07-04 incident) — dedup by fan id and stop on a page that adds
+        # nothing new, else this loop re-reads page 1 to the max_fans ceiling
+        # inside one thread-pool worker.
         while len(out) < max_fans:
             page = self.subscribers(type=type, limit=page_size, offset=offset, online=True)
             rows = page.get("list", page) if isinstance(page, dict) else page
             if not rows:
                 break
-            out.extend(rows)
+            added = 0
+            for f in rows:
+                fid = f.get("id")
+                if fid is None or int(fid) in seen:
+                    continue
+                seen.add(int(fid))
+                out.append(f)
+                added += 1
+            if added == 0:
+                break
             if isinstance(page, dict) and not page.get("hasMore"):
                 break
-            offset += page_size
+            offset += len(rows)
         return out[:max_fans]
 
     def unread_chat_fan_ids(self, *, max_fans: int = 100, page_size: int = 20) -> list[int]:
@@ -770,14 +785,23 @@ class OFClient:
             rows = page.get("list", page) if isinstance(page, dict) else page
             if not rows:
                 break
+            added = 0
             for ch in rows:
                 fid = (ch.get("withUser") or {}).get("id")
                 if fid and int(fid) not in seen:
                     seen.add(int(fid))
                     out.append(int(fid))
+                    added += 1
+            # No-progress guard — if OF ignores `offset` here (as it does on the
+            # group-stats endpoint) the dedup set stops `out` from growing, the
+            # `while len(out) < max_fans` cap can never be reached, and this
+            # would spin FOREVER inside a thread-pool worker. A repeated page
+            # means no cursor makes progress: stop.
+            if added == 0:
+                break
             if isinstance(page, dict) and not page.get("hasMore"):
                 break
-            offset += page_size
+            offset += len(rows)
         return out[:max_fans]
 
     # subscriptions (creators I follow): no clean direct path found on this
