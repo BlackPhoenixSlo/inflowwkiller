@@ -9,9 +9,16 @@
  * (we tag this on the chat-list row as `__accountId`). The relay scopes
  * by X-Account-Id and would otherwise fall back to the active account.
  *
- * Pagination: OF uses `before_id` (older). We treat the lowest positive
- * server id in messagesRef as the cursor. Optimistic messages (id <= 0)
- * are intentionally filtered out before computing the cursor.
+ * Pagination: OF uses `before_id` (older). The cursor is the lowest id we
+ * have actually FETCHED from OF this mount (`oldestCursorRef`), not the
+ * lowest id in the cache: the persisted cache can hold an old block (e.g.
+ * welcome-era rows from a previous session) separated from the fetched
+ * pages by a gap. Cursoring off the cache minimum would jump PAST that gap
+ * to the chat's first message, OF would answer "nothing older", and the
+ * unfetched middle became permanently unreachable ("Start of conversation"
+ * over a hole). Walking from the fetch-derived cursor pages through the
+ * gap instead, healing poisoned caches as the user scrolls. The cache
+ * minimum is only a fallback while no fetch has resolved yet.
  *
  * Smart refresh: §10 from MESSAGING-FULL-RECAP. Page-1 (offset 0) only
  * unless the user clicks the refresh button.
@@ -76,9 +83,19 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
   const [sseConnected, setSseConnected] = useState(() => eventBus.isConnected());
   useEffect(() => eventBus.onStateChange(setSseConnected), []);
 
-  // Tracks the oldest positive id we've loaded — drives the load-older
-  // cursor. Optimistic ids (≤ 0) never become the cursor.
+  // Tracks the oldest positive id we've FETCHED from OF this mount — the
+  // load-older cursor. Monotonically lowered (head refetches must not bounce
+  // it back up past pages the user already scrolled to), and never derived
+  // from cached rows: a persisted old block below a gap would fake a deeper
+  // cursor than we've really paged to. Optimistic ids (≤ 0) never enter.
   const oldestCursorRef = useRef<number | null>(null);
+  const lowerCursor = useCallback((page: OFMessage[]) => {
+    const oldest = page.find((m) => Number(m.id) > 0)?.id;
+    const n = Number(oldest);
+    if (!Number.isFinite(n) || n <= 0) return;
+    oldestCursorRef.current =
+      oldestCursorRef.current == null ? n : Math.min(oldestCursorRef.current, n);
+  }, []);
   // Reflects OF's `hasMore` flag from the most recent page. Default to
   // true so the auto-loader fires at least once; the first fetch will
   // settle it to the real value.
@@ -110,7 +127,7 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
         // OF returns newest-first. Reverse so the UI can scroll oldest→newest
         // top-to-bottom (the way humans read a thread).
         const list = (resp.list || []).slice().reverse();
-        oldestCursorRef.current = list.find((m) => Number(m.id) > 0)?.id as number ?? null;
+        lowerCursor(list);
         setHasMore(!!resp.hasMore);
         perfDelivered(opId, "chat.messages", {
           count: list.length, hasMore: !!resp.hasMore, phase: "initial",
@@ -164,8 +181,11 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
   const loadOlder = useCallback(async (): Promise<{ added: number; hasMore: boolean }> => {
     if (!accountId || fanId == null) return { added: 0, hasMore: false };
     if (inflightRef.current) return { added: 0, hasMore };
+    // Fetch-derived cursor first (see the header comment: the cache minimum
+    // can sit below an unfetched gap). Cache is only the bootstrap fallback
+    // for a restored cache whose first head fetch hasn't resolved yet.
     const current = qc.getQueryData<OFMessage[]>(queryKey) || [];
-    const oldest = current.find((m) => Number(m.id) > 0)?.id ?? oldestCursorRef.current;
+    const oldest = oldestCursorRef.current ?? current.find((m) => Number(m.id) > 0)?.id;
     if (oldest == null) return { added: 0, hasMore: false };
 
     inflightRef.current = true;
@@ -180,17 +200,16 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
         { accountId },
       );
       const older = (resp.list || []).slice().reverse();
+      lowerCursor(older);
       setHasMore(!!resp.hasMore);
       perfDelivered(opId, "chat.messages", {
         count: older.length, hasMore: !!resp.hasMore, phase: "older",
       });
       if (older.length === 0) return { added: 0, hasMore: !!resp.hasMore };
 
-      qc.setQueryData<OFMessage[]>(queryKey, (prev = []) => {
-        const have = new Set(prev.map((m) => String(m.id)));
-        const dedup = older.filter((m) => !have.has(String(m.id)));
-        return [...dedup, ...prev];
-      });
+      qc.setQueryData<OFMessage[]>(queryKey, (prev = []) =>
+        mergeOlderPage(prev, older),
+      );
       return { added: older.length, hasMore: !!resp.hasMore };
     } catch (err) {
       perfError(opId, "chat.messages", { message: (err as Error)?.message, phase: "older" });
@@ -199,7 +218,7 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
       inflightRef.current = false;
       setIsLoadingOlder(false);
     }
-  }, [accountId, fanId, qc, queryKey, hasMore]);
+  }, [accountId, fanId, qc, queryKey, hasMore, lowerCursor]);
 
   /** Force-refresh the top page. Mutates in place — Query handles the
    *  setQueryData internally via refetch. */
@@ -382,6 +401,33 @@ export function mergeTopPage(
   }
   if (older.length === 0 && tail.length === 0) return fresh;
   return [...older, ...fresh, ...tail];
+}
+
+/** Merge a load-older page into the cache, keeping oldest→newest order even
+ *  when the page lands INSIDE a gap — i.e. there are cached rows both older
+ *  (a persisted welcome-era block) and newer (the fetched head pages) than it.
+ *  The old blind-prepend assumed every fetched-older row predated the whole
+ *  cache, which scrambled order the moment the cursor walked a gap.
+ *
+ *  Real OF ids are time-ordered, so real rows (0 < id < placeholder band) are
+ *  sorted by id. Synthetic rows — optimistic sends (id ≤ 0), mass placeholders
+ *  (5e15 band), ledger tips (6e15 band) — keep their existing tail position in
+ *  original relative order; their ids don't encode time, so id-sorting them
+ *  would teleport them. For the common no-gap case the sort is a no-op
+ *  reorder-wise. Returns `prev` unchanged when the page brings nothing new. */
+export function mergeOlderPage(prev: OFMessage[], older: OFMessage[]): OFMessage[] {
+  const have = new Set(prev.map((m) => String(m.id)));
+  const dedup = older.filter((m) => !have.has(String(m.id)));
+  if (dedup.length === 0) return prev;
+  const real: OFMessage[] = [];
+  const synthetic: OFMessage[] = [];
+  for (const m of [...prev, ...dedup]) {
+    const id = Number(m.id);
+    if (Number.isFinite(id) && id > 0 && id < MASS_PLACEHOLDER_MIN) real.push(m);
+    else synthetic.push(m);
+  }
+  real.sort((a, b) => Number(a.id) - Number(b.id));
+  return [...real, ...synthetic];
 }
 
 /** Merge optimistic media's `files` into a server response — OF's CDN

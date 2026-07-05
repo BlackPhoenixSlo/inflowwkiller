@@ -19,7 +19,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { mergeTopPage, selectMessages, useChatMessages } from "@/hooks/useChatMessages";
+import { mergeOlderPage, mergeTopPage, selectMessages, useChatMessages } from "@/hooks/useChatMessages";
 import type { OFMessage } from "@/lib/relay";
 
 // The hook talks to the relay + an SSE event bus + a perf logger. Stub them all
@@ -120,6 +120,49 @@ describe("useChatMessages merge-on-poll", () => {
     expect(after!.find((m) => m._tempId === -1)?._pending).toBe(true);
   });
 
+  it("gap-heal: load-older cursors from the FETCHED pages, not a persisted old block", async () => {
+    // The Asian-yakuza shape (fan 550702326): a persisted localStorage cache
+    // restores welcome-era rows (ids 1,2), then the head fetch lands [100,101]
+    // — leaving an unfetched gap 3..99. Pre-fix loadOlder cursored off the
+    // cache MINIMUM (1): OF answered "nothing older than the first message",
+    // hasMore latched false, and the UI painted "Start of conversation." over
+    // an invisible two-day hole. Post-fix the cursor is the oldest FETCHED id
+    // (100), so scrolling up walks INTO the gap and heals it, id-ordered.
+    // Backdate the restored snapshot past staleTime so mounting refetches the
+    // head page — matching the real persisted-cache flow (restored data is
+    // hours old, the head fetch always fires on open).
+    client.setQueryData(KEY, [msg(1), msg(2)], { updatedAt: Date.now() - 60_000 });
+    relayGet.mockImplementation((url: string) => {
+      if (url.includes("before_id=100")) {
+        return Promise.resolve(resp([msg(99), msg(98)], true)); // the gap page
+      }
+      if (url.includes("before_id=")) {
+        // before_id=1 (the pre-fix dead-end): nothing predates the welcome.
+        return Promise.resolve(resp([], false));
+      }
+      return Promise.resolve(resp([msg(101), msg(100)], true)); // head page
+    });
+    const { result } = renderHook(
+      () => useChatMessages({ accountId: ACCT, fanId: FAN }),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(ids(client.getQueryData(KEY))).toEqual(["1", "2", "100", "101"]));
+
+    await act(async () => { await result.current.loadOlder(); });
+
+    // Cursor must have been the fetched 100, not the cached 1 — the gap page
+    // landed and slotted between the persisted block and the head page.
+    const olderCalls = relayGet.mock.calls
+      .map((c) => String(c[0])).filter((u) => u.includes("before_id="));
+    expect(olderCalls).toHaveLength(1);
+    expect(olderCalls[0]).toContain("before_id=100");
+    expect(ids(client.getQueryData(KEY))).toEqual(["1", "2", "98", "99", "100", "101"]);
+    // hasMore stays true — the walk continues into the rest of the gap
+    // instead of latching "Start of conversation".
+    expect(result.current.hasOlder).toBe(true);
+  });
+
   it("a poll that exactly overlaps the cache neither duplicates nor reorders", async () => {
     relayGet.mockResolvedValue(resp([msg(5), msg(4), msg(3)], true));
     const { result } = renderHook(
@@ -132,6 +175,42 @@ describe("useChatMessages merge-on-poll", () => {
 
     // Same ids, same order, no growth from the overlap.
     expect(ids(client.getQueryData(KEY))).toEqual(["3", "4", "5"]);
+  });
+});
+
+// mergeOlderPage keeps oldest→newest order even when a load-older page lands
+// INSIDE a gap (cached rows exist both older and newer than it) — the blind
+// prepend it replaced assumed every fetched-older row predated the whole cache.
+describe("mergeOlderPage", () => {
+  it("the common no-gap page prepends below existing history", () => {
+    expect(ids(mergeOlderPage([msg(3), msg(4)], [msg(1), msg(2)])))
+      .toEqual(["1", "2", "3", "4"]);
+  });
+
+  it("a page landing inside a gap slots id-ordered between the blocks", () => {
+    expect(ids(mergeOlderPage([msg(1), msg(100)], [msg(50), msg(51)])))
+      .toEqual(["1", "50", "51", "100"]);
+  });
+
+  it("returns the SAME prev reference when the page brings nothing new", () => {
+    const prev = [msg(1), msg(2)];
+    expect(mergeOlderPage(prev, [msg(1), msg(2)])).toBe(prev);
+  });
+
+  it("overlapping ids dedup (cache row wins), new ones insert", () => {
+    expect(ids(mergeOlderPage([msg(2), msg(3)], [msg(1), msg(2)])))
+      .toEqual(["1", "2", "3"]);
+  });
+
+  it("synthetic rows (optimistic, placeholder, tip) keep their tail position", () => {
+    const prev = [
+      msg(1),
+      msg(100),
+      msg(6_000_000_000_000_042, { isTip: true }),
+      msg(-1, { _tempId: -1, _pending: true }),
+    ];
+    expect(ids(mergeOlderPage(prev, [msg(50)])))
+      .toEqual(["1", "50", "100", "6000000000000042", "-1"]);
   });
 });
 

@@ -63,7 +63,7 @@ from db.models import (
     ScrapeHistory,
     SkipList,
 )
-from of_client import OFClient
+from of_client import OFAPIError, OFClient
 from automation_registry import register, get_automation, load_automation_plugins
 
 log = logging.getLogger("of-relay.automation")
@@ -1121,6 +1121,26 @@ async def _fetch_oldest_end(
     return collected
 
 
+async def _stamp_scrape_history(account_id: str, fan_id: int) -> None:
+    """Record "we scraped this fan at T" even when the scrape yielded NOTHING —
+    an empty chat, a full fast-skip, or a chat that's GONE on OF (404 from a
+    deleted/deactivated fan). gen_info's autoscrape re-enqueue gate is exactly
+    `ScrapeHistory.last_scrape_at` vs `_SCRAPE_REFRESH_AGE`; without this stamp a
+    dead/empty-chat fan was re-deferred and re-scraped every gen_info pass forever
+    (the 2026-07-04 storm: ~24 dead fans × 12 404s/hour, every day). The upsert
+    leaves last_message_id/text alone so the fast-skip cursor survives."""
+    now = datetime.utcnow()
+    async with get_session() as s:
+        await s.execute(
+            sqlite_insert(ScrapeHistory)
+            .values(account_id=str(account_id), fan_id=int(fan_id), last_scrape_at=now)
+            .on_conflict_do_update(
+                index_elements=["account_id", "fan_id"],
+                set_={"last_scrape_at": now},
+            )
+        )
+
+
 async def _scrape_one_chat(
     account_id: str,
     own_user_id: str,
@@ -1173,6 +1193,10 @@ async def _scrape_one_chat(
                 collected.append(m)
 
     if not collected:
+        # Empty chat or complete fast-skip — still a successful "we looked at OF
+        # at T" observation. Stamping keeps gen_info's autoscrape from re-deferring
+        # this fan on every pass (see _stamp_scrape_history).
+        await _stamp_scrape_history(account_id, fan_id)
         return (0, 0)
 
     # Precise insert count: which of the collected ids are genuinely new (a WS
@@ -1300,12 +1324,26 @@ async def _automation_scrape_chats(
             messages_inserted += ins
             messages_seen += seen
             chats_scanned += 1
-        except Exception:
+        except Exception as e:
             chats_failed += 1
-            log.warning(
-                "scrape_chat_failed account=%s chat=%s",
-                account_id, chat_id, exc_info=True,
-            )
+            # 404 = the chat no longer exists on OF (fan deleted/deactivated).
+            # Not transient — stamp scrape_history so gen_info's autoscrape
+            # stops re-enqueueing the fan every pass, and skip the traceback
+            # (one info line instead of 30 lines × 12/hour × 24 dead fans).
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if isinstance(e, OFAPIError) and status == 404:
+                log.info("scrape_chat_gone account=%s chat=%s (404 — fan gone; "
+                         "stamping scrape_history)", account_id, chat_id)
+                try:
+                    await _stamp_scrape_history(account_id, int(chat_id))
+                except Exception:
+                    log.warning("stamp_scrape_history failed account=%s chat=%s",
+                                account_id, chat_id, exc_info=True)
+            else:
+                log.warning(
+                    "scrape_chat_failed account=%s chat=%s",
+                    account_id, chat_id, exc_info=True,
+                )
         await asyncio.sleep(_PAGE_SLEEP_S)
 
     return {

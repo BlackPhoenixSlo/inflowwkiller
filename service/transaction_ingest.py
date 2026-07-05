@@ -918,6 +918,14 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
             rows_min_ts: datetime | None = None
             rows_max_ts: datetime | None = None
             floor_reached = False
+            # Repeated-page guard: some OF endpoints IGNORE `offset` and report
+            # hasMore=true forever (verified live 2026-07-04 on the group-stats
+            # endpoint) — without this, the loop is UNBOUNDED and wedges this
+            # account's _tick_lock for good. A page whose ids we've all seen
+            # means no cursor makes progress → stop WITHOUT floor_reached, so a
+            # backfill never marks itself complete off a truncated scan.
+            seen_tx_ids: set = set()
+            _PAGE_CEILING = 500  # 500 × 100 rows — far past any real window
 
             try:
                 log.info(
@@ -925,6 +933,12 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                     account_id, mode, start_dt.isoformat(), end_dt.isoformat(),
                 )
                 while True:
+                    if pages >= _PAGE_CEILING:
+                        log.warning(
+                            "ingest_tx_page_ceiling account=%s pages=%d — scan truncated",
+                            account_id, pages,
+                        )
+                        break
                     # NO `type=` — capture proves it's a filter, not a partition
                     # (synthesis §2 row 5). One unfiltered request per page.
                     resp = await asyncio.to_thread(
@@ -945,6 +959,15 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                     if not rows:
                         floor_reached = True
                         break
+                    page_ids = {raw.get("id") for raw in rows if raw.get("id") is not None}
+                    if page_ids and page_ids <= seen_tx_ids:
+                        log.warning(
+                            "ingest_tx_repeated_page account=%s page=%d offset=%d — "
+                            "OF ignored the offset cursor; stopping scan",
+                            account_id, pages, offset,
+                        )
+                        break
+                    seen_tx_ids |= page_ids
                     for raw in rows:
                         occ = _parse_iso(raw.get("createdAt"))
                         if occ is not None:
