@@ -72,7 +72,7 @@ describe("useAccounts principal isolation", () => {
     rerender();
 
     // Must refetch under the new principal's key — not reuse owner-A's
-    // (still-fresh, 3-day staleTime) cache entry.
+    // still-fresh cache entry.
     await waitFor(() => expect(result.current.data?.accounts?.[0]?.id).toBe("acct-b"));
     expect(relayGet).toHaveBeenCalledTimes(2);
   });
