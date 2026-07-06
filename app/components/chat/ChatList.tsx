@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 
 import { useChatList } from "@/hooks/useChatList";
+import { fetchAllVaultLists } from "@/hooks/useVaultMedia";
 import { useRecentChatsLocal } from "@/hooks/useRecentChatsLocal";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
@@ -138,11 +139,9 @@ export function ChatList({
     if (!aid) return;
     qc.prefetchQuery({
       queryKey: ["vault-lists", aid],
-      queryFn: () =>
-        relay.get(
-          "/api/of/v2/vault/lists?view=main&limit=50",
-          { accountId: aid, priority: "background" },
-        ),
+      // Shared paginating fetcher — a bare limit=50 fetch here would poison
+      // the picker's cache with a truncated folder list (see fetchAllVaultLists).
+      queryFn: () => fetchAllVaultLists({ accountId: aid, priority: "background" }),
       staleTime: 5 * 60 * 1000,
     }).catch(() => {});
     qc.prefetchInfiniteQuery({

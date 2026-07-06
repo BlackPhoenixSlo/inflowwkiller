@@ -261,19 +261,32 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
   // enriched with item counts from listsQ where present so the option still
   // reads "Name (N)". Names come from the access endpoint, NOT vault/lists,
   // so a folder past the paginated lists page still appears.
-  const folderSelectItems = useMemo<Array<{ id: number; name: string; count: number }>>(() => {
+  const folderSelectItems = useMemo<Array<{ id: number; name: string; label: string }>>(() => {
     const lists = listsQ.data?.list ?? [];
-    const countOf = (l?: VaultList) =>
-      (l?.photosCount ?? 0) + (l?.videosCount ?? 0) + (l?.gifsCount ?? 0) + (l?.audiosCount ?? 0);
+    // Infloww-style per-kind counts: "🖼 3 · 🎬 17". GIFs fold into the
+    // image bucket, audio gets its own segment; zero segments are hidden.
+    const countsOf = (l?: VaultList) => {
+      const parts: string[] = [];
+      const photos = (l?.photosCount ?? 0) + (l?.gifsCount ?? 0);
+      const videos = l?.videosCount ?? 0;
+      const audios = l?.audiosCount ?? 0;
+      if (photos) parts.push(`🖼 ${photos}`);
+      if (videos) parts.push(`🎬 ${videos}`);
+      if (audios) parts.push(`🎵 ${audios}`);
+      return parts.join(" · ");
+    };
     if (restricted) {
       const byId = new Map(lists.map((l) => [l.id, l] as const));
-      return allowedFolders.map((f) => ({
-        id: f.folder_id,
-        name: f.folder_name || byId.get(f.folder_id)?.name || `Folder ${f.folder_id}`,
-        count: countOf(byId.get(f.folder_id)),
-      }));
+      return allowedFolders.map((f) => {
+        const name = f.folder_name || byId.get(f.folder_id)?.name || `Folder ${f.folder_id}`;
+        const counts = countsOf(byId.get(f.folder_id));
+        return { id: f.folder_id, name, label: counts ? `${name} — ${counts}` : name };
+      });
     }
-    return lists.map((l) => ({ id: l.id, name: l.name, count: countOf(l) }));
+    return lists.map((l) => {
+      const counts = countsOf(l);
+      return { id: l.id, name: l.name, label: counts ? `${l.name} — ${counts}` : l.name };
+    });
   }, [restricted, allowedFolders, listsQ.data]);
 
   // Log vault.open `delivered` the first time the initial fetch lands this
@@ -834,7 +847,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
               {!restricted && <option value="">All folders</option>}
               {folderSelectItems.map((f) => (
                 <option key={f.id} value={f.id}>
-                  {f.name} ({f.count})
+                  {f.label}
                 </option>
               ))}
             </select>
