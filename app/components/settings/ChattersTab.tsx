@@ -26,6 +26,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button, Card } from "@/components/ui/primitives";
 import { relay, RelayError, type VaultListsResp } from "@/lib/relay";
+import { fetchAllVaultLists } from "@/hooks/useVaultMedia";
 import { useAccounts } from "@/hooks/useAccounts";
 
 interface ChatterRow {
@@ -512,10 +513,11 @@ function FolderLimit({
   onChange: (aid: string, next: FolderEntry) => void;
 }) {
   // Lazy: only fetch the model's folders when the limit is turned on.
+  // Shared paginating fetcher — the grant list must show EVERY folder, and
+  // a bare limit=50 fetch under this key would also poison the picker cache.
   const listsQ = useQuery<VaultListsResp>({
     queryKey: ["vault-lists", accountId],
-    queryFn: () =>
-      relay.get<VaultListsResp>("/api/of/v2/vault/lists?view=main&limit=50", { accountId }),
+    queryFn: () => fetchAllVaultLists({ accountId }),
     enabled: entry.limit,
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,

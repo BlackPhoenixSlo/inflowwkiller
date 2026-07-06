@@ -19,6 +19,7 @@ import { ChatList, type ChatListSelection } from "@/components/chat/ChatList";
 import { ChatSurface } from "@/components/chat/ChatSurface";
 import { AccountRoster } from "@/components/inbox/AccountRoster";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
+import { fetchAllVaultLists } from "@/hooks/useVaultMedia";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useScope } from "@/contexts/ScopeContext";
 import { cn } from "@/lib/utils";
@@ -99,8 +100,9 @@ export default function InboxPage() {
       await Promise.all([
         qc.prefetchQuery({
           queryKey: ["vault-lists", aid],
-          queryFn: () =>
-            relay.get("/api/of/v2/vault/lists?view=main&limit=50", { accountId: aid, ...BG }),
+          // Shared paginating fetcher — a bare limit=50 fetch here would
+          // poison the picker's cache with a truncated folder list.
+          queryFn: () => fetchAllVaultLists({ accountId: aid, ...BG }),
           staleTime: 5 * 60 * 1000,
         }).catch(() => {}),
         qc.prefetchInfiniteQuery({

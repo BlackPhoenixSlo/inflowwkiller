@@ -13,7 +13,7 @@
 import { useEffect, useRef } from "react";
 import { keepPreviousData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { relay, type VaultList, type VaultListsResp, type VaultMedia, type VaultMediaResp } from "@/lib/relay";
+import { relay, type RelayContext, type VaultList, type VaultListsResp, type VaultMedia, type VaultMediaResp } from "@/lib/relay";
 import { perfDelivered, perfError, perfLog, perfOpId } from "@/lib/perfLog";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
@@ -58,6 +58,32 @@ export function useChatterFolderAccess(accountId: string | null, enabled = true)
   });
 }
 
+/** Fetch EVERY vault-folder page. OF pages `/vault/lists` (relay caps limit
+ *  at 50/page) and built-in pseudo-lists count against the page too, so a
+ *  creator with many script folders overflows page 1 — the old single-page
+ *  fetch silently dropped everything past it. Walks offsets until hasMore
+ *  is false, with a hard page cap so a stuck hasMore can't loop forever.
+ *
+ *  Every reader/warmer of the ["vault-lists", aid] cache MUST go through
+ *  this — a single-page queryFn under the same key would repoison the
+ *  cache with a truncated folder list for its whole staleTime. */
+export async function fetchAllVaultLists(ctx: RelayContext): Promise<VaultListsResp> {
+  const LISTS_PAGE = 50;
+  const merged: VaultList[] = [];
+  let offset = 0;
+  for (let page = 0; page < 20; page++) {
+    const r = await relay.get<VaultListsResp>(
+      `/api/of/v2/vault/lists?view=main&limit=${LISTS_PAGE}&offset=${offset}`,
+      ctx,
+    );
+    const rows = r.list ?? [];
+    merged.push(...rows);
+    if (!r.hasMore || rows.length === 0) break;
+    offset += LISTS_PAGE;
+  }
+  return { list: merged, hasMore: false };
+}
+
 /** Vault folders / lists. The model can put items into custom folders;
  *  this drives the picker's folder filter dropdown. OF requires `view=main`. */
 export function useVaultLists(accountId: string | null, enabled = true) {
@@ -68,10 +94,7 @@ export function useVaultLists(accountId: string | null, enabled = true) {
       const opId = perfOpId("vault.lists");
       perfLog(opId, "vault.lists", "requested", { accountId });
       try {
-        const r = await relay.get<VaultListsResp>(
-          "/api/of/v2/vault/lists?view=main&limit=50",
-          { accountId: accountId ?? undefined },
-        );
+        const r = await fetchAllVaultLists({ accountId: accountId ?? undefined });
         perfDelivered(opId, "vault.lists", { count: (r.list ?? []).length });
         return r;
       } catch (err) {
