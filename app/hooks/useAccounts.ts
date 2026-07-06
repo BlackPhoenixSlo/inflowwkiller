@@ -47,7 +47,12 @@ export function useAccounts() {
     // yours"). Keying by user_id isolates it per principal.
     queryKey: ["accounts", user?.user_id ?? "anon"],
     queryFn: () => relay.get<AccountsResp>("/admin/accounts"),
-    staleTime: 3 * 24 * 60 * 60_000,
+    // Short staleTime on purpose: /admin/accounts is a relay-local
+    // registry read (no OF call), and a long window meant a model
+    // captured in another session stayed invisible until re-login —
+    // the persisted cache survives page reloads, so staleTime was the
+    // only expiry. 60s caps refetches at ~1/min per tab.
+    staleTime: 60_000,
     refetchOnWindowFocus: false,
     // Never fetch the owner list until the principal is known — an
     // /admin/accounts call fired while `user` is still null hits the

@@ -78,6 +78,16 @@ export default function ScopeSwitcher() {
     return () => window.removeEventListener("mousedown", onClick);
   }, [open]);
 
+  // Refetch the roster every time the picker opens, so a model captured
+  // in another session shows up the moment you look for it instead of
+  // waiting out staleTime (the persisted cache otherwise holds until
+  // then). Both principal keys, same as the recolor invalidation above.
+  useEffect(() => {
+    if (!open) return;
+    void qc.invalidateQueries({ queryKey: ["accounts"] });
+    void qc.invalidateQueries({ queryKey: ["chatter", "self", "accounts"] });
+  }, [open, qc]);
+
   const currentLabel =
     scope.kind === "all"
       ? "all models"
