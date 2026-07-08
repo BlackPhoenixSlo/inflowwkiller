@@ -48,6 +48,7 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import accounts as account_registry
+from attribution_backfill import attribute_orphans
 from db.engine import engine, get_session
 from db.models import (
     Chatter,
@@ -73,6 +74,9 @@ _PAGE_LIMIT = 100                       # OF max per request
 _BACKFILL_CONCURRENCY = 4               # synthesis review §4
 _PPV_LINK_LOOKBACK_DAYS = 30
 _FAILS_BEFORE_PAUSE = 3
+# Per-tick orphan-attribution sweep window (see attribution_backfill). Covers
+# a refresh scan's 7-day window plus slack for late-clearing pending rows.
+_ATTR_SWEEP_SINCE_DAYS = 14
 _STALE_INFLIGHT_S = 900                 # 15 min — escape valve for crashed ticks (see _tick_locks comment)
 
 # Gated dead code. Flip to True when Planner B's WS dispatcher PR starts
@@ -1014,6 +1018,29 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                 floor_reached=floor_reached,
             )
             finalized = True
+
+            # Auto-assign: credit the last-toucher (human OR Automation) for
+            # any sale this scan surfaced that still resolves to no employee,
+            # so the per-employee stats never leave revenue in "Unattributed".
+            # Best-effort — a failure here must never fail the scan. Scoped to
+            # this account + a recent window so the sweep stays cheap per tick;
+            # deep history is handled by the one-shot
+            # db.backfills.backfill_orphan_attribution.
+            try:
+                attr = await attribute_orphans(
+                    account_id=account_id,
+                    since=datetime.utcnow() - timedelta(days=_ATTR_SWEEP_SINCE_DAYS),
+                )
+                if attr["attributed"]:
+                    log.info(
+                        "ingest_tx_attr_sweep account=%s attributed=%d unresolved=%d",
+                        account_id, attr["attributed"], attr["unresolved"],
+                    )
+            except Exception:
+                log.warning(
+                    "ingest_tx_attr_sweep_failed account=%s", account_id,
+                    exc_info=True,
+                )
             dur_ms = int((time.monotonic() - t0) * 1000)
             log.info(
                 "ingest_tx_scan_end account=%s mode=%s pages=%d inserted=%d "
