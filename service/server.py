@@ -8206,6 +8206,134 @@ async def admin_ingest_tx_attribute(
     }
 
 
+@app.get("/admin/ingest/transactions/sales-needing-attribution")
+async def admin_sales_needing_attribution(
+    account_id: str | None = Query(None),
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+    include_assigned: bool = Query(False),
+    lookback_days: int = Query(7, ge=1, le=90),
+    limit: int = Query(200, ge=1, le=500),
+) -> dict[str, Any]:
+    """Confirmed sales (`cleared`+`pending`) currently in the per-employee view's
+    'Unattributed' bucket — BOTH standalone-tip orphans AND message-linked
+    orphans (a PPV whose scraped message carries no sender, e.g. duplicate-price
+    PPVs the auto-rule leaves ambiguous). Each row ships the CANDIDATE chatters
+    (distinct NON-MASS 1:1 senders to that fan within `lookback_days` before the
+    sale) so the operator can assign the right one via
+    POST /admin/ingest/transactions/{id}/attribute. `include_assigned=true` also
+    returns sales that already carry a manual override (to reassign / clear).
+
+    Mirrors attribution_backfill's orphan predicates; the 7-day NOT-EXISTS on the
+    standalone-tip branch matches the live view's own lookup so the two agree."""
+    from db.engine import get_session
+    from sqlalchemy import text as sql_text
+
+    orphan_cte = """
+      WITH orphans AS (
+        SELECT t.id, t.account_id, t.fan_id, t.amount_cents, t.occurred_at,
+               t.description, t.kind, t.status, t.attributed_employee_id
+          FROM transactions t
+          JOIN messages m ON m.account_id = t.account_id AND m.fan_id = t.fan_id
+                         AND m.message_id = t.message_id
+         WHERE t.message_id IS NOT NULL
+           AND t.kind IN ('ppv','ppv_message','ppv_post','ppv_stream',
+                          'tip','tip_post','tip_stream','custom')
+           AND t.status IN ('cleared','pending')
+           AND m.sent_by_employee_id IS NULL
+        UNION ALL
+        SELECT t.id, t.account_id, t.fan_id, t.amount_cents, t.occurred_at,
+               t.description, t.kind, t.status, t.attributed_employee_id
+          FROM transactions t
+         WHERE t.kind IN ('tip','tip_post','tip_stream')
+           AND t.message_id IS NULL
+           AND t.status IN ('cleared','pending')
+           AND t.fan_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM messages m
+              WHERE m.account_id = t.account_id AND m.fan_id = t.fan_id
+                AND m.direction = 'out' AND m.sent_by_employee_id IS NOT NULL
+                AND m.created_at <= t.occurred_at
+                AND m.created_at > datetime(t.occurred_at, '-7 days'))
+      )
+      SELECT o.id, o.account_id, o.fan_id, o.amount_cents, o.occurred_at,
+             o.description, o.kind, o.status, o.attributed_employee_id,
+             e.display_name AS attributed_employee_name
+        FROM orphans o
+        LEFT JOIN employees e ON e.id = o.attributed_employee_id
+       WHERE 1=1
+    """
+    params: dict[str, Any] = {"lim": limit}
+    if not include_assigned:
+        orphan_cte += " AND o.attributed_employee_id IS NULL"
+    if account_id:
+        orphan_cte += " AND o.account_id = :aid"
+        params["aid"] = account_id
+    if from_:
+        orphan_cte += " AND o.occurred_at >= :start"
+        params["start"] = from_
+    if to:
+        orphan_cte += " AND o.occurred_at <= :end"
+        params["end"] = f"{to} 23:59:59" if len(to) == 10 else to
+    orphan_cte += " ORDER BY o.occurred_at DESC LIMIT :lim"
+
+    # Distinct non-mass 1:1 senders to (account, fan) in the window before the
+    # sale — the assignment candidates. `mass_run_id IS NULL` keeps blasts out.
+    # lookback_days is a validated int (Query ge=1 le=90), safe to inline.
+    cand_sql = sql_text(
+        f"""
+        SELECT m.sent_by_employee_id AS eid, e.display_name AS name,
+               MAX(m.created_at) AS last_at
+          FROM messages m
+          LEFT JOIN employees e ON e.id = m.sent_by_employee_id
+         WHERE m.account_id = :aid AND m.fan_id = :fid AND m.direction = 'out'
+           AND m.sent_by_employee_id IS NOT NULL
+           AND m.mass_run_id IS NULL
+           AND m.created_at <= :occ
+           AND m.created_at > datetime(:occ, '-{int(lookback_days)} days')
+         GROUP BY m.sent_by_employee_id, e.display_name
+         ORDER BY last_at DESC
+        """
+    )
+
+    def _iso(v: Any) -> str | None:
+        if v is None:
+            return None
+        return v if isinstance(v, str) else (v.isoformat() if hasattr(v, "isoformat") else str(v))
+
+    async with get_session() as s:
+        rows = (await s.execute(sql_text(orphan_cte), params)).all()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            occ = _iso(r.occurred_at)
+            cands: list[dict[str, Any]] = []
+            if r.fan_id is not None and occ is not None:
+                crows = (await s.execute(cand_sql, {
+                    "aid": r.account_id, "fid": r.fan_id, "occ": occ,
+                })).all()
+                cands = [
+                    {"employee_id": int(c.eid), "name": c.name, "last_at": _iso(c.last_at)}
+                    for c in crows if c.eid is not None
+                ]
+            out.append({
+                "id": int(r.id),
+                "account_id": r.account_id,
+                "fan_id": int(r.fan_id) if r.fan_id is not None else None,
+                "kind": r.kind,
+                "status": r.status,
+                "amount_cents": int(r.amount_cents or 0),
+                "occurred_at": occ,
+                "description": r.description,
+                "attributed_employee_id": (
+                    int(r.attributed_employee_id)
+                    if r.attributed_employee_id is not None else None
+                ),
+                "attributed_employee_name": r.attributed_employee_name,
+                "candidate_chatters": cands,
+            })
+    return {"rows": out}
+
+
 # ── Static UI ──────────────────────────────────────────────────
 # Mounted AFTER all API routes so route precedence is correct.
 # StaticFiles(html=True) serves /ui/ → web/index.html automatically.

@@ -417,6 +417,53 @@ export function useAttributeTip() {
   });
 }
 
+// ── /admin/ingest/transactions/sales-needing-attribution ─────────────
+// Broader than orphan-tips: ALSO surfaces message-linked orphans (PPVs whose
+// scraped message has no sender — the duplicate-price cases the auto-rule
+// leaves ambiguous), each with the candidate 1:1 chatters to pick from.
+
+export interface CandidateChatter {
+  employee_id: number;
+  name: string | null;
+  last_at: string | null;
+}
+export interface SaleNeedingAttribution {
+  id: number;
+  account_id: string;
+  fan_id: number | null;
+  kind: string;
+  status: string;
+  amount_cents: number;
+  occurred_at: string | null;
+  description: string | null;
+  attributed_employee_id: number | null;
+  attributed_employee_name: string | null;
+  candidate_chatters: CandidateChatter[];
+}
+export interface SalesNeedingAttributionResp {
+  rows: SaleNeedingAttribution[];
+}
+
+export function useSalesNeedingAttribution(opts: OrphanTipsOpts) {
+  const { from, to, includeAssigned } = opts;
+  return useQuery<SalesNeedingAttributionResp>({
+    queryKey: ["stats", "sales-attr", from, to, includeAssigned] as const,
+    queryFn: () => {
+      const qs = new URLSearchParams({ limit: "200" });
+      if (from) qs.set("from", from);
+      if (to) qs.set("to", to);
+      if (includeAssigned) qs.set("include_assigned", "true");
+      return relay.get<SalesNeedingAttributionResp>(
+        `/admin/ingest/transactions/sales-needing-attribution?${qs.toString()}`,
+        BG_CTX,
+      );
+    },
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    placeholderData: keepPreviousData,
+  });
+}
+
 // ── Per-account OF profile (avatar + display name) ──────────────────
 //
 // /api/of/v2/users/me proxies to OF; takes X-Account-Id for scope.

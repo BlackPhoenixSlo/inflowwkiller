@@ -2,14 +2,15 @@
 confirmed sales that currently resolve to NO employee (the per-employee stats
 "Unattributed" bucket).
 
-Rule ("whoever chatted the fan 1:1 at the time of the sale", chosen by ops):
-credit the sender of the most recent NON-MASS outbound message — `mass_run_id
-IS NULL` (a mass broadcast is not "chatting"), `sent_by_employee_id` NOT NULL
-(a human chatter OR the `Automation` sentinel — an AI 1:1 close counts) — to the
-same `(account, fan)` at or before the sale, within `lookback_days` (7, matching
-the view's own tip window). No such 1:1 toucher → leave the sale Unattributed;
-we never force-credit. (The ~$20k of tips on fans with no 1:1 chatter — mostly
-mass/scraped — stay Unattributed by design.)
+Rule ("clear cases only", chosen by ops): auto-credit a sale ONLY when exactly
+ONE distinct non-mass sender (`mass_run_id IS NULL`; the `Automation` sentinel
+counts — an AI 1:1 close is fine) chatted the fan 1:1 in the `lookback_days`
+window (7, matching the view's own tip window). Zero senders → nobody chatted;
+two or more → AMBIGUOUS (a fan blasted the same offer by several chatters).
+Both are left Unattributed and surfaced in the 'Sales needing attribution' panel
+for MANUAL assignment — we never guess who among several chatters made the sale.
+(So the ~$20k of tips on fans with no 1:1 chatter, and the duplicate-PPV cases,
+stay Unattributed for a human to resolve.)
 
 The attribution view `per_employee_revenue_with_attribution` already credits:
   • message-linked ppv/tip/custom rows via the linked message's own sender;
@@ -70,24 +71,25 @@ DEFAULT_LOOKBACK_DAYS = 7
 _VIEW_TIP_LOOKBACK_DAYS = 7
 
 
-async def resolve_last_toucher(
+async def resolve_sole_chatter(
     s: Any,
     account_id: str,
     fan_id: int | None,
     occurred_at: datetime,
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
 ) -> int | None:
-    """Sender of the most recent NON-MASS 1:1 outbound message to `(account,
-    fan)` at/before `occurred_at`, within `lookback_days`. `mass_run_id IS NULL`
-    excludes broadcasts (a blast is not "chatting"); the Automation sentinel is a
-    valid sender (an AI 1:1 close counts). Returns the employee id, or None when
-    nobody chatted the fan 1:1 in the window — in which case the sale is left
-    Unattributed (no unbounded fallback, no invented credit)."""
+    """The SINGLE 1:1 chatter of `(account, fan)` in the `lookback_days` before
+    the sale, or None. "Clear case only": we auto-credit a sale only when exactly
+    ONE distinct non-mass sender (`mass_run_id IS NULL`; the Automation sentinel
+    counts) touched the fan 1:1 in the window. Zero senders → nobody chatted; two
+    or more distinct senders → AMBIGUOUS (e.g. a fan blasted the same $200 PPV by
+    several chatters) — both are left Unattributed for MANUAL assignment via the
+    'Sales needing attribution' panel, never guessed."""
     if fan_id is None:
         return None
 
     cutoff = occurred_at - timedelta(days=lookback_days)
-    row = (await s.execute(
+    rows = (await s.execute(
         select(Message.sent_by_employee_id)
         .where(
             Message.account_id == account_id,
@@ -98,10 +100,10 @@ async def resolve_last_toucher(
             Message.created_at <= occurred_at,
             Message.created_at > cutoff,
         )
-        .order_by(Message.created_at.desc())
-        .limit(1)
-    )).first()
-    return int(row[0]) if row is not None else None
+        .distinct()
+    )).all()
+    ids = {int(r[0]) for r in rows}
+    return next(iter(ids)) if len(ids) == 1 else None
 
 
 async def _orphan_message_linked(
@@ -208,7 +210,7 @@ async def attribute_orphans(
         stats["orphans_standalone_tip"] = len(tips)
 
         for tx_id, aid, fid, occ in [*linked, *tips]:
-            emp_id = await resolve_last_toucher(s, aid, fid, occ, lookback_days)
+            emp_id = await resolve_sole_chatter(s, aid, fid, occ, lookback_days)
             if emp_id is None:
                 stats["unresolved"] += 1
                 continue
