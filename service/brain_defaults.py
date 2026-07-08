@@ -28,12 +28,12 @@ BRAIN_DEFAULTS: dict[str, Any] = {
     "model": "deepseek-v4-flash",
     "model_by_purpose": {},
     "time_activities": {
-        "morning_1": "just woke up and made myself a coffee ☕ debating a beach walk before it gets busy lol",
-        "morning_2": "out for a morning yoga session — just rolling up my mat now 🧘‍♀️",
-        "afternoon_1": "just got back from the beach, sandy and happy honestly 😅",
-        "afternoon_2": "chilling at home with my cat after running errands all day 🐱",
-        "evening": "getting ready to head out for some live music tonight 🎶",
-        "night": "just got home and curling up under my blankets 🛏"
+        "morning_1": "just woke up and made myself a coffee",
+        "morning_2": "out for a morning yoga session",
+        "afternoon_1": "just got back from the beach",
+        "afternoon_2": "chilling at home with my cat",
+        "evening": "getting ready to head out",
+        "night": "just got home and gonna shower"
     },
     "time_images": {}
 }
