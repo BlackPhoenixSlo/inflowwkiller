@@ -56,7 +56,7 @@ async def run(*, apply: bool, lookback_days: int, account_id: str | None) -> dic
     log.info("")
     log.info("=== orphan attribution %s ===", "APPLIED" if apply else "DRY RUN")
     log.info("account:            %s", account_id or "ALL")
-    log.info("rule: last NON-MASS 1:1 chatter (incl. Automation) within %d days", lookback_days)
+    log.info("rule: SOLE non-mass 1:1 chatter (incl. Automation) within %d days (ambiguous → manual)", lookback_days)
     log.info("message-linked orphans: %d", stats["orphans_message_linked"])
     log.info("standalone-tip orphans: %d", stats["orphans_standalone_tip"])
     log.info("%s:  %d", verb, stats["attributed"])
