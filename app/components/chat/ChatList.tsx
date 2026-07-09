@@ -278,10 +278,16 @@ export function ChatList({
     const lm = c.lastMessage;
     return !!lm && lm.fromUser?.id != null && lm.fromUser.id !== myId;
   }, [scope]);
+  // Creators WE restricted on OF (relay stamps withUser.isRestricted off its
+  // durable of_restricted registry) never count as unread/owe-reply — we cut
+  // them off on purpose, their threads aren't backlog. Mirrors the server-side
+  // roster-badge fold exactly, so chips and badges can't disagree over them.
+  const notRestricted = useCallback(
+    (c: OFChatItem) => !c.withUser?.isRestricted, []);
   const rows = useMemo(() => {
     if (!oweReplyActive) return allRows;
-    return allRows.filter(isUnresponded);
-  }, [allRows, oweReplyActive, isUnresponded]);
+    return allRows.filter((c) => isUnresponded(c) && notRestricted(c));
+  }, [allRows, oweReplyActive, isUnresponded, notRestricted]);
 
   // True only when we're rendering local-DB seed in place of real data.
   // Used to (a) display seed rows in the list, and (b) prevent Work
@@ -324,16 +330,16 @@ export function ChatList({
     return out;
   }, [active, allRows, qc, allFilterKey]);
   const activeCount = useMemo(
-    () => rows.filter((c) => c.hasUnread || isUnresponded(c)).length,
-    [rows, isUnresponded],
+    () => rows.filter((c) => notRestricted(c) && (c.hasUnread || isUnresponded(c))).length,
+    [rows, isUnresponded, notRestricted],
   );
   const allCount = useMemo(
-    () => allChipBase.filter((c) => c.hasUnread || isUnresponded(c)).length,
-    [allChipBase, isUnresponded],
+    () => allChipBase.filter((c) => notRestricted(c) && (c.hasUnread || isUnresponded(c))).length,
+    [allChipBase, isUnresponded, notRestricted],
   );
   const oweReplyCount = useMemo(
-    () => allChipBase.filter(isUnresponded).length,
-    [allChipBase, isUnresponded],
+    () => allChipBase.filter((c) => notRestricted(c) && isUnresponded(c)).length,
+    [allChipBase, isUnresponded, notRestricted],
   );
 
   const inboxTabTitle = allCount > 0

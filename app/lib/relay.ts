@@ -363,6 +363,11 @@ export interface OFUserMini {
   displayName?: string | null;
   /** OF's private creator-side note on this fan (PUT with `{notice}`). */
   notice?: string | null;
+  /** Stamped by the relay on /chats rows when WE restricted this user on
+   *  OnlyFans (durable `of_restricted` registry) — the thin skip_users=all
+   *  rows never carry OF's own flag. Restricted creators are excluded from
+   *  every unread / owe-reply count (server badge fold + inbox chips). */
+  isRestricted?: boolean;
 }
 
 export interface OFMessage {

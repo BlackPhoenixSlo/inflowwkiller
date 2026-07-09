@@ -51,10 +51,11 @@ function hasImageMedia(m: MassMessageRow): boolean {
   return (m.mediaCount ?? 0) > 0;
 }
 
-/** Age threshold for the "free text-only" cleanup — mirrors the backend
- *  unsend_messages `policy.mass_text_hours` (a free, image-less blast has done
- *  its job after this long). */
-const FREE_TEXT_MAX_AGE_H = 4;
+/** Age gate for every TYPED bulk action (non-image / with-images / free text) —
+ *  mirrors the backend unsend_messages `policy.mass_text_hours` (a blast has
+ *  done its job after this long). "Unsend all" ignores it on purpose so
+ *  fresh sends can still be pulled. */
+const BULK_MIN_AGE_H = 4;
 
 function olderThanHours(m: MassMessageRow, hours: number): boolean {
   if (!m.date) return false; // unknown sent time → never auto-eligible
@@ -66,7 +67,7 @@ function olderThanHours(m: MassMessageRow, hours: number): boolean {
 /** Free (no price) + image-less + older than the threshold — the exact set the
  *  backend `policy.mass_text_hours` sweep targets. GIF-only counts as image-less. */
 function isFreeTextOld(m: MassMessageRow): boolean {
-  return !!m.isFree && !hasImageMedia(m) && olderThanHours(m, FREE_TEXT_MAX_AGE_H);
+  return !!m.isFree && !hasImageMedia(m) && olderThanHours(m, BULK_MIN_AGE_H);
 }
 
 /** Concurrency cap for bulk cancels. Each cancel is one OF request +
@@ -180,8 +181,12 @@ export default function MassMessagesTab() {
   // will do anything before the user clicks.
   const counts = useMemo(() => {
     const all = actionableRows.length;
-    const nonImage = actionableRows.filter((r) => !hasImageMedia(r)).length;
-    const withImage = actionableRows.filter(hasImageMedia).length;
+    const nonImage = actionableRows.filter(
+      (r) => !hasImageMedia(r) && olderThanHours(r, BULK_MIN_AGE_H),
+    ).length;
+    const withImage = actionableRows.filter(
+      (r) => hasImageMedia(r) && olderThanHours(r, BULK_MIN_AGE_H),
+    ).length;
     const freeTextOld = actionableRows.filter(isFreeTextOld).length;
     return { all, nonImage, withImage, freeTextOld };
   }, [actionableRows]);
@@ -306,14 +311,14 @@ export default function MassMessagesTab() {
             onClick={() =>
               bulkCancel(
                 "non-image",
-                "Unsend non-image broadcasts (text + GIF + empty)",
-                (r) => !hasImageMedia(r),
+                `Unsend non-image broadcasts (text + GIF + empty) older than ${BULK_MIN_AGE_H}h`,
+                (r) => !hasImageMedia(r) && olderThanHours(r, BULK_MIN_AGE_H),
               )
             }
           >
             {bulkRunning === "non-image"
               ? "Unsending…"
-              : `Unsend non-image (GIFs incl.) (${counts.nonImage})`}
+              : `Unsend non-image (GIFs incl.) >${BULK_MIN_AGE_H}h (${counts.nonImage})`}
           </Button>
           <Button
             size="sm"
@@ -322,18 +327,18 @@ export default function MassMessagesTab() {
             onClick={() =>
               bulkCancel(
                 "with-image",
-                "Unsend broadcasts that include images / videos",
-                hasImageMedia,
+                `Unsend broadcasts that include images / videos, older than ${BULK_MIN_AGE_H}h`,
+                (r) => hasImageMedia(r) && olderThanHours(r, BULK_MIN_AGE_H),
               )
             }
           >
             {bulkRunning === "with-image"
               ? "Unsending…"
-              : `Unsend with images (${counts.withImage})`}
+              : `Unsend with images >${BULK_MIN_AGE_H}h (${counts.withImage})`}
           </Button>
-          {/* The 8h free-text cleanup — same target set as the backend
+          {/* The free-text cleanup — same target set as the backend
            *  unsend_messages `policy.mass_text_hours` sweep: free (no price),
-           *  image-less, older than 8h. Keeps revenue (PPV/image) blasts. */}
+           *  image-less, past the age gate. Keeps revenue (PPV/image) blasts. */}
           <Button
             size="sm"
             variant="danger"
@@ -341,15 +346,15 @@ export default function MassMessagesTab() {
             onClick={() =>
               bulkCancel(
                 "free-text-old",
-                `Unsend FREE text-only broadcasts older than ${FREE_TEXT_MAX_AGE_H}h`,
+                `Unsend FREE text-only broadcasts older than ${BULK_MIN_AGE_H}h`,
                 isFreeTextOld,
               )
             }
-            title="Free (no price), no image, older than 8h — leaves PPV/image blasts alone"
+            title={`Free (no price), no image, older than ${BULK_MIN_AGE_H}h — leaves PPV/image blasts alone`}
           >
             {bulkRunning === "free-text-old"
               ? "Unsending…"
-              : `Unsend free text >${FREE_TEXT_MAX_AGE_H}h (${counts.freeTextOld})`}
+              : `Unsend free text >${BULK_MIN_AGE_H}h (${counts.freeTextOld})`}
           </Button>
         </div>
 
