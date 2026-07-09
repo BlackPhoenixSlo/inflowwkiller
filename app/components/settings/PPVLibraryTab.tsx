@@ -86,12 +86,17 @@ function newId(): string {
   return "ppv_" + Math.random().toString(36).slice(2, 8);
 }
 
-// OF rejects any priced message under $3.00 → floor at $3.99 (keeps .99 styling).
-const PRICE_FLOOR = 399;
-function roundTo99(cents: number): number {
+// OF rejects any priced message under $3.00 / over $200 — the HARD limits and the
+// defaults for the operator's Min/Max price limits (mirrors _PRICE_FLOOR_CENTS).
+const PRICE_FLOOR = 300;
+const PRICE_CEIL = 20000;
+// Round to X.99, then clamp into the operator's [min, max] — a clamped price sits
+// EXACTLY on the bound (mirrors backend round_to_99). Bounds are REQUIRED so no
+// call site can silently show an unclamped price.
+function roundTo99(cents: number, minC: number, maxC: number): number {
   const dollars = Math.round(cents / 100);
   const c = dollars < 1 ? 99 : dollars * 100 - 1;
-  return Math.max(PRICE_FLOOR, Math.min(c, 20000));
+  return Math.max(minC, Math.min(c, maxC));
 }
 
 function money(cents: number): string {
@@ -106,12 +111,12 @@ function anchor99(nowCents: number): number {
 }
 
 // Cheapest → priciest cell for a base price, straight off the live matrix.
-function priceRange(baseCents: number, matrix: PriceMatrix): [number, number] {
+function priceRange(baseCents: number, matrix: PriceMatrix, minC: number, maxC: number): [number, number] {
   let lo = Infinity;
   let hi = 0;
   for (const s of matrix.spend_bands) {
     for (const r of matrix.recency_bands) {
-      const c = roundTo99(baseCents * s.mult * r.mult);
+      const c = roundTo99(baseCents * s.mult * r.mult, minC, maxC);
       lo = Math.min(lo, c);
       hi = Math.max(hi, c);
     }
@@ -167,6 +172,9 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   const [reachAll, setReachAll] = useState(true);
   const [pauseOn, setPauseOn] = useState(false);
   const [pauseHours, setPauseHours] = useState(12);
+  // global price limits (DOLLARS in the UI, cents on the wire) — defaults $3/$200
+  const [priceMin, setPriceMin] = useState(3);
+  const [priceMax, setPriceMax] = useState(200);
   // which card's audience preview is showing
   const [previewFor, setPreviewFor] = useState<string | null>(null);
   // bulk one-liner import: which card's paste box is open + its text
@@ -217,6 +225,9 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     const ph = c.pause_hours ?? 0;
     setPauseOn(ph > 0);
     if (ph > 0) setPauseHours(ph);
+    // backend `defaults` blob doesn't carry these keys — fall back to 3/200 here
+    setPriceMin(Math.round((c.price_min_cents ?? PRICE_FLOOR) / 100));
+    setPriceMax(Math.round((c.price_max_cents ?? PRICE_CEIL) / 100));
   }, [cfgQ.data]);
 
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
@@ -308,6 +319,11 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     setImportText("");
   };
 
+  // Effective price limits in CENTS (ordered, hard-clamped) — shared by the save
+  // payload and every displayed price, so the grid always matches what would send.
+  const minCents = Math.max(PRICE_FLOOR, Math.min((priceMin || 3) * 100, PRICE_CEIL));
+  const maxCents = Math.max(minCents, Math.min((priceMax || 200) * 100, PRICE_CEIL));
+
   const buildConfig = () => ({
     enabled,
     reach_all: reachAll,
@@ -318,10 +334,14 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
       ...(capWeek > 0 ? { per_week: capWeek } : {}),
       ...(capMonth > 0 ? { per_month: capMonth } : {}),
     },
+    price_min_cents: minCents,
+    price_max_cents: maxCents,
     ppvs: ppvs.map((p) => ({
       ...p,
       name: (p.name ?? "").trim(),
-      base_price_cents: Math.max(PRICE_FLOOR, Math.min(p.base_price_cents || PRICE_FLOOR, 20000)),
+      // hard OF limits ONLY — the Min/Max above clamp at SEND time, never the
+      // authored base (a tightened max must not permanently rewrite prices)
+      base_price_cents: Math.max(PRICE_FLOOR, Math.min(p.base_price_cents || PRICE_FLOOR, PRICE_CEIL)),
       sends_per_week: Math.max(1, Math.min(p.sends_per_week || 1, 14)),
     })),
   });
@@ -351,6 +371,30 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
         />
         <span className="text-sm">{enabled ? "Library ON" : "Library OFF"}</span>
       </label>
+
+      {/* Global price limits: runtime clamp on every computed send/post price. */}
+      <div className="rounded-lg border border-border p-3 space-y-2">
+        <div className="text-xs font-medium text-fg">Price limits — every PPV &amp; post</div>
+        <div className="flex items-center gap-2 text-xs flex-wrap">
+          <span>Min $</span>
+          <input
+            type="number" min={3} max={200}
+            className={`${INPUT} w-20`} value={priceMin}
+            onChange={(e) => { markDirty(); setPriceMin(Math.max(0, Math.min(Number(e.target.value) || 0, 200))); }}
+          />
+          <span>Max $</span>
+          <input
+            type="number" min={3} max={200}
+            className={`${INPUT} w-20`} value={priceMax}
+            onChange={(e) => { markDirty(); setPriceMax(Math.max(0, Math.min(Number(e.target.value) || 0, 200))); }}
+          />
+        </div>
+        <div className="text-[11px] text-fg-dim/70">
+          Every price this library sends is kept between these — the per-group tier prices,
+          the everyone-broadcast, and feed posts. Your <b>Base prices stay as typed</b>; the
+          limits apply at send time ($3–$200 hard range, min ≤ max enforced on save).
+        </div>
+      </div>
 
       {/* Send to everyone: also broadcast to ALL subscribers at the default price. */}
       <div className="rounded-lg border border-border p-3 space-y-2">
@@ -590,12 +634,12 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                   <span className="text-xs text-fg-dim">$</span>
                   <input
                     type="number"
-                    min={4}
+                    min={3}
                     max={200}
                     className={`${INPUT} w-24`}
                     value={Math.round(p.base_price_cents / 100)}
                     onChange={(e) =>
-                      setPpv(i, { base_price_cents: Math.max(PRICE_FLOOR, Math.min((Number(e.target.value) || 0) * 100, 20000)) })
+                      setPpv(i, { base_price_cents: Math.max(PRICE_FLOOR, Math.min((Number(e.target.value) || 0) * 100, PRICE_CEIL)) })
                     }
                   />
                 </div>
@@ -642,7 +686,7 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
             {matrix && (
               <div className="text-[11px] text-fg-dim">
                 📣 Goes out <b>{cadenceLabel(p.sends_per_week).toLowerCase()}</b> · fans pay{" "}
-                <b>{money(priceRange(p.base_price_cents, matrix)[0])}–{money(priceRange(p.base_price_cents, matrix)[1])}</b>
+                <b>{money(priceRange(p.base_price_cents, matrix, minCents, maxCents)[0])}–{money(priceRange(p.base_price_cents, matrix, minCents, maxCents)[1])}</b>
                 {previewFor === p.id && previewM.data ? <> · ~{previewM.data.total_fans} fans</> : null}
               </div>
             )}
@@ -711,6 +755,8 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                     : (captionPools[p.caption_pool_key] ?? [])
                 }
                 baseCents={p.base_price_cents}
+                minCents={minCents}
+                maxCents={maxCents}
               />
             </div>
 
@@ -751,6 +797,8 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                   <CaptionPreview
                     lines={feedCaptionPools[p.feed_caption_pool_key as string] ?? []}
                     baseCents={p.base_price_cents}
+                    minCents={minCents}
+                    maxCents={maxCents}
                   />
                 )}
                 <div className="text-[11px] text-fg-dim/60">Or write your own feed captions (these win over the style):</div>
@@ -779,12 +827,12 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
               </div>
             </details>
 
-            {matrix && <PriceGrid baseCents={p.base_price_cents} matrix={matrix} />}
+            {matrix && <PriceGrid baseCents={p.base_price_cents} matrix={matrix} minCents={minCents} maxCents={maxCents} />}
 
             <div className="flex items-center gap-2 flex-wrap">
               <Button
                 size="sm" variant="secondary"
-                onClick={() => { setPreviewFor(p.id); previewM.mutate(p.base_price_cents); }}
+                onClick={() => { setPreviewFor(p.id); previewM.mutate({ basePriceCents: p.base_price_cents, priceMinCents: minCents, priceMaxCents: maxCents }); }}
                 disabled={previewM.isPending}
               >
                 {previewM.isPending && previewFor === p.id ? "Checking…" : "Preview audience"}
@@ -1093,10 +1141,11 @@ function FeedCandidateCard({
 
 /** Show the actual caption lines (custom or the chosen style pool) with the
  *  {now}/{was}/{off} discount tokens filled in, so the operator can preview wording. */
-function CaptionPreview({ lines, baseCents }: { lines: string[]; baseCents: number }) {
+function CaptionPreview({ lines, baseCents, minCents, maxCents }:
+  { lines: string[]; baseCents: number; minCents: number; maxCents: number }) {
   const [open, setOpen] = useState(false);
   const fill = (l: string) => {
-    const now = roundTo99(baseCents * 0.5 * 0.55); // cheapest-cell example
+    const now = roundTo99(baseCents * 0.5 * 0.55, minCents, maxCents); // cheapest-cell example
     const was = anchor99(now);
     const off = was > now ? Math.round((1 - now / was) * 100) : 0;
     return l
@@ -1131,7 +1180,8 @@ function CaptionPreview({ lines, baseCents }: { lines: string[]; baseCents: numb
 }
 
 /** Tiny preview of what each fan group pays for this PPV's base price. */
-function PriceGrid({ baseCents, matrix }: { baseCents: number; matrix: PriceMatrix }) {
+function PriceGrid({ baseCents, matrix, minCents, maxCents }:
+  { baseCents: number; matrix: PriceMatrix; minCents: number; maxCents: number }) {
   const spendLabel: Record<string, string> = { whale: "Whale", mid: "Medium", low: "Small", free: "Never-paid" };
   const recencyLabel: Record<string, string> = { hot: "Just bought", warm: "This week", cool: "Cooling", quiet: "Gone quiet" };
   return (
@@ -1151,7 +1201,7 @@ function PriceGrid({ baseCents, matrix }: { baseCents: number; matrix: PriceMatr
               <td className="text-fg-dim pr-2">{recencyLabel[r.name] ?? r.name}</td>
               {matrix.spend_bands.map((s) => (
                 <td key={s.name} className="px-2 text-center text-fg tabular-nums">
-                  {money(roundTo99(baseCents * s.mult * r.mult))}
+                  {money(roundTo99(baseCents * s.mult * r.mult, minCents, maxCents))}
                 </td>
               ))}
             </tr>
