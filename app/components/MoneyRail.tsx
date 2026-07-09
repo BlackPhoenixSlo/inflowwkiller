@@ -235,11 +235,29 @@ export function MoneyRail() {
   );
 }
 
+/** "Jim has purchased your message for $25.22!" → "$25.22". */
+function amountFrom(text: string): string | null {
+  const m = text.match(/\$\s?([\d,]+(?:\.\d{1,2})?)/);
+  return m ? `$${m[1]}` : null;
+}
+
+/** What was paid for — tips by typeKey, purchases split post/message/stream
+ *  by the notification wording. */
+function kindFrom(typeKey: NotifTypeKey, text: string): string {
+  if (typeKey === "tip") return "tip";
+  if (/\bpost\b/i.test(text)) return "post";
+  if (/\bstream\b/i.test(text)) return "stream";
+  return "message";
+}
+
 function Row({ m, accountLabel }: { m: MergedItem; accountLabel: string | null }) {
   const { n, accountId, typeKey } = m;
   const user = n.user || n.fromUser || {};
   const avatar = proxyImage(user.avatar ?? null, accountId);
   const text = renderText(n.text || n.description || "", n.replacePairs);
+  const amount = amountFrom(text);
+  const kind = kindFrom(typeKey, text);
+  const name = user.name || user.username || "?";
   const base = user.id
     ? `/chat/${encodeURIComponent(accountId)}/${user.id}`
     : user.username
@@ -252,20 +270,22 @@ function Row({ m, accountLabel }: { m: MergedItem; accountLabel: string | null }
         {avatar ? (
           <img src={avatar} alt="" loading="lazy" decoding="async" className="w-full h-full object-cover" />
         ) : (
-          <span className="text-[10px] text-fg-dim">
-            {(user.name || user.username || "?").slice(0, 1).toUpperCase()}
-          </span>
+          <span className="text-[10px] text-fg-dim">{name.slice(0, 1).toUpperCase()}</span>
         )}
         <span className="absolute -bottom-1 -right-1 text-[10px]" aria-hidden>
           {typeKey === "tip" ? "💸" : "💰"}
         </span>
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-[12px] text-fg leading-snug truncate">
-          {user.name && <span className="font-medium">{user.name} </span>}
-          <span className="text-fg-dim">{text}</span>
+        <div className="flex items-center gap-2 leading-snug">
+          <span className="text-[12px] font-medium text-fg truncate flex-1">{name}</span>
+          {amount && (
+            <span className="text-[12px] font-semibold text-ok shrink-0">{amount}</span>
+          )}
         </div>
         <div className="text-[10px] text-fg-dim mt-0.5 flex items-center gap-1.5">
+          <span>{kind}</span>
+          <span>·</span>
           <span>{fmtTime(n.createdAt)}</span>
           {accountLabel && (
             <>
@@ -280,12 +300,12 @@ function Row({ m, accountLabel }: { m: MergedItem; accountLabel: string | null }
   const cls = "px-3 py-2 border-b border-border/60 last:border-b-0 flex items-start gap-2.5 hover:bg-bg-elev-1/40";
   if (href) {
     return (
-      <a href={href} target="_blank" rel="noreferrer" className={cls}>
+      <a href={href} target="_blank" rel="noreferrer" className={cls} title={text}>
         {body}
       </a>
     );
   }
-  return <div className={cls}>{body}</div>;
+  return <div className={cls} title={text}>{body}</div>;
 }
 
 function renderText(raw: string, replacePairs?: Record<string, string>): string {
