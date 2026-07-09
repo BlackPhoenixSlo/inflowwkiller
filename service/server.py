@@ -3460,7 +3460,33 @@ async def list_chats(
                 reconcile_chats_from_of(aid, chats),
                 name=f"reconcile-chats-{aid}",
             )
-    return resp
+    return await _annotate_of_restricted(aid, resp)
+
+
+async def _annotate_of_restricted(aid: str, resp: dict[str, Any]) -> dict[str, Any]:
+    """Stamp `withUser.isRestricted: true` on /chats rows whose fan this account
+    has restricted on OF via our UI. The inbox list runs skip_users=all, whose
+    thin withUser is just {id, _view} — OF never sends the flag here — so the
+    durable skip_list registry is the only source, and the frontend chips need
+    the stamp to apply the SAME unread-count exclusion the badge fold applies
+    server-side. Serve-time and on a COPY: the cached window is shared with the
+    badge fold and other requests, so a stale stamp must never be baked into it."""
+    if not resp:
+        return resp
+    from automations._common import load_of_restricted_ids
+    restricted = await load_of_restricted_ids(aid)
+    if not restricted:
+        return resp
+    rows_key = "list" if "list" in resp else ("chats" if "chats" in resp else None)
+    if rows_key is None:
+        return resp
+    out_rows = []
+    for ch in resp.get(rows_key) or []:
+        wu = ch.get("withUser") or {}
+        if wu.get("id") in restricted:
+            ch = {**ch, "withUser": {**wu, "isRestricted": True}}
+        out_rows.append(ch)
+    return {**resp, rows_key: out_rows}
 
 
 @app.get("/api/of/v2/chats/folders")
@@ -5086,6 +5112,39 @@ async def of_automation_unrestrict_all(request: Request) -> dict:
         )
     return {"ok": True, "cleared": result.rowcount or 0}
 
+@app.get("/api/of/v2/of-restricted")
+async def of_restricted_list(request: Request) -> dict:
+    """Users this account has restricted ON ONLYFANS via our UI (newest first),
+    joined to identity for the Settings → Restrictions list. These are excluded
+    from the roster/inbox unread counts and hard-skipped by every automation.
+    Lift one with DELETE /api/of/v2/users/{fan_id}/restrict (un-restricts on OF
+    AND clears the durable row)."""
+    from db.engine import get_session
+    from db.models import Fan, SkipList
+    from automations._common import OF_RESTRICTED_REASON
+    from sqlalchemy import select
+    account_id = _resolve_account_id(request)
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(SkipList.fan_id, SkipList.added_at,
+                   Fan.of_username, Fan.of_display_name)
+            .join(Fan, (Fan.account_id == SkipList.account_id)
+                       & (Fan.fan_id == SkipList.fan_id), isouter=True)
+            .where(SkipList.account_id == str(account_id),
+                   SkipList.reason == OF_RESTRICTED_REASON)
+            .order_by(SkipList.added_at.desc())
+        )).all()
+    return {
+        "count": len(rows),
+        "list": [
+            {"fan_id": int(r.fan_id),
+             "of_username": r.of_username,
+             "of_display_name": r.of_display_name,
+             "added_at": (r.added_at.isoformat() + "Z") if r.added_at else None}
+            for r in rows
+        ],
+    }
+
 # ── Manual "Send reward" override (fire tip_reward on demand) ────────────────
 # The tip_reward automation auto-sends free vault images when a fan tips
 # (webhook_dispatch.on_inbound_tip → enqueue tip_reward). This is the HUMAN
@@ -5226,13 +5285,58 @@ def of_unblock_user(user_id: int):
     return _proxy(lambda: _get_client().unblock_user(user_id))
 
 @app.post("/api/of/v2/users/{user_id}/restrict")
-def of_restrict_user(user_id: int):
-    """Restrict a user (their content is hidden from your feed)."""
-    return _proxy(lambda: _get_client().restrict_user(user_id))
+async def of_restrict_user(user_id: int, request: Request, ack: bool = Query(True)) -> dict:
+    """Restrict a user on OnlyFans (their messages stop being delivered to us),
+    with the inbox left CLEAN — restricting is how operators silence promo-spam
+    peer creators, and the whole point is getting them out of the unread counts:
+
+      1. `ack` (default on): send one "." reply first, so OUR message is the
+         chat's lastMessage and the thread stops counting as owe-reply, then
+         mark the chat read so OF's unreadMessagesCount is 0. Both best-effort —
+         a creator we can't message anymore must still be restrictable.
+      2. Restrict on OF (the only step that must succeed).
+      3. Write the durable skip_list(reason='of_restricted') row — every
+         automation hard-skips them (HARD_SKIP_REASONS) and the roster badge /
+         inbox chips exclude them from the unread counts from now on, even if
+         OF ever flags the thread again.
+
+    The ack rides the normal send handler so it gets employee attribution, the
+    local outbound mirror and the cache busts for free. Skipped when the fan is
+    already in the durable registry (a second click must not send another dot)."""
+    from automations._common import load_of_restricted_ids, set_of_restricted_skip
+    account_id = _resolve_account_id(request)
+    acked = False
+    if ack and int(user_id) not in await load_of_restricted_ids(account_id):
+        try:
+            await send_message(request, user_id, SendMessageBody(text="."))
+            acked = True
+        except Exception:
+            log.warning("restrict ack send failed (account=%s fan=%s) — restricting anyway",
+                        account_id, user_id, exc_info=True)
+        try:
+            await of_mark_chat_read(user_id)
+        except Exception:
+            log.warning("restrict mark-read failed (account=%s fan=%s)",
+                        account_id, user_id, exc_info=True)
+    result = await asyncio.to_thread(_proxy, lambda: _get_client().restrict_user(user_id))
+    await set_of_restricted_skip(account_id, user_id, True)
+    # The counts derive from the cached window + this registry — drop both
+    # folds so the next badge/list read reflects the exclusion immediately.
+    relay_cache.invalidate("list_chats", account_id)
+    relay_cache.invalidate("roster_count", account_id)
+    return {"ok": True, "restricted": True, "acked": acked, "of": result}
 
 @app.delete("/api/of/v2/users/{user_id}/restrict")
-def of_unrestrict_user(user_id: int):
-    return _proxy(lambda: _get_client().unrestrict_user(user_id))
+async def of_unrestrict_user(user_id: int, request: Request) -> dict:
+    """Lift an OF restrict + remove the durable 'of_restricted' row (the fan
+    re-enters unread counts and automations may target them again)."""
+    from automations._common import set_of_restricted_skip
+    account_id = _resolve_account_id(request)
+    result = await asyncio.to_thread(_proxy, lambda: _get_client().unrestrict_user(user_id))
+    await set_of_restricted_skip(account_id, user_id, False)
+    relay_cache.invalidate("list_chats", account_id)
+    relay_cache.invalidate("roster_count", account_id)
+    return {"ok": True, "restricted": False, "of": result}
 
 @app.get("/api/of/v2/stories")
 def of_stories_feed():
@@ -6439,7 +6543,10 @@ def admin_accounts_list(response: Response) -> dict[str, Any]:
 _ROSTER_SCAN_MAX = 25
 
 
-def _roster_counts_from_rows(rows: list[dict[str, Any]], me: str) -> dict[str, int]:
+def _roster_counts_from_rows(
+    rows: list[dict[str, Any]], me: str,
+    exclude: frozenset[int] | set[int] = frozenset(),
+) -> dict[str, int]:
     """Pure fold of a /chats window into the two badge colors, exactly as the
     chat-list rows render them:
 
@@ -6450,16 +6557,25 @@ def _roster_counts_from_rows(rows: list[dict[str, Any]], me: str) -> dict[str, i
                            header's `isUnresponded` rule). Disjoint from blue so
                            the two pills don't double-count.
 
-    Deduped by fan id and capped at the badge window."""
+    Deduped by fan id and capped at the badge window. `exclude` is the account's
+    OF-restricted set (skip_list reason='of_restricted'): restricted creators
+    never count as unread/owe-reply — we deliberately cut them off, so their
+    threads are not backlog. They still occupy a window slot (the list shows
+    their row), which is what keeps the badge≡first-page parity intact — the
+    frontend chips apply the SAME exclusion off the rows' `withUser.isRestricted`
+    stamp (see the /chats serve-time annotation)."""
     blue = owe = 0
     seen: set[Any] = set()
     for ch in rows:
-        fid = (ch.get("withUser") or {}).get("id")
+        wu = ch.get("withUser") or {}
+        fid = wu.get("id")
         if fid is None or fid in seen:
             continue
         if len(seen) >= _ROSTER_SCAN_MAX:
             break
         seen.add(fid)
+        if fid in exclude or wu.get("isRestricted"):
+            continue
         if int(ch.get("unreadMessagesCount") or 0) > 0:
             blue += 1
             continue
@@ -6510,7 +6626,9 @@ async def _compute_roster_count_of(account_id: str, *, bypass: bool = False) -> 
         bypass=bypass,
     )
     rows = resp.get("list") or resp.get("chats") or []
-    return _roster_counts_from_rows(rows, str(client.user_id))
+    from automations._common import load_of_restricted_ids
+    exclude = await load_of_restricted_ids(account_id)
+    return _roster_counts_from_rows(rows, str(client.user_id), exclude)
 
 
 @app.get("/admin/accounts/roster-counts")

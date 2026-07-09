@@ -147,14 +147,22 @@ async def _skip_and_rest(account_id, fan_id, now) -> None:
 #       Written/cleared by the chat-scrape as the OF mute state flips.
 #   • 'manual_restrict' — a human hit "Restrict this fan from automations" in the
 #       chat ⋯ menu / Settings. Stays until they Unrestrict.
+#   • 'of_restricted'   — a human restricted this user ON ONLYFANS from our UI
+#       (chat ⋯ menu "Restrict on OnlyFans"). OF stops delivering their messages
+#       to us, so automations must never message them either — and the durable
+#       row is what lets the roster badge / inbox counts exclude them (the thin
+#       skip_users=all /chats rows carry no isRestricted flag to key off).
 # Senders that already gate on FULL skip_list membership (of_ai_chat,
-# send_followup, deep_convo[≠info], ai_chatter[≠graduation]) honour both for
-# free; the senders that DON'T (autoreply, tip_reward, send_welcome) and the
+# send_followup, deep_convo[≠info], ai_chatter[≠graduation]) honour all three
+# for free; the senders that DON'T (autoreply, tip_reward, send_welcome) and the
 # list-broadcasts (mass_nudge, online_blast) load `load_hard_skip_ids` and
 # exclude these explicitly.
 MUTED_CREATOR_REASON = "muted_creator"
 MANUAL_RESTRICT_REASON = "manual_restrict"
-HARD_SKIP_REASONS = frozenset({MUTED_CREATOR_REASON, MANUAL_RESTRICT_REASON})
+OF_RESTRICTED_REASON = "of_restricted"
+HARD_SKIP_REASONS = frozenset(
+    {MUTED_CREATOR_REASON, MANUAL_RESTRICT_REASON, OF_RESTRICTED_REASON}
+)
 
 
 # ── Self-healing fans.source classification ─────────────────────────────────
@@ -233,7 +241,10 @@ async def load_hard_skip_ids(account_id) -> set[int]:
 async def mark_muted_creator_skip(account_id, fan_id, *, now=None) -> None:
     """Durably skip-list a muted creator. Upserts reason='muted_creator' so the
     block is a HARD stop everywhere (it deliberately wins over a softer existing
-    reason such as 'info', which deep_convo would otherwise let through)."""
+    reason such as 'info', which deep_convo would otherwise let through) — but
+    never over 'of_restricted': that one is strictly stronger (it also drives
+    the unread-count exclusion) and the scrape must not demote it on the next
+    mute reconcile."""
     now = now or datetime.utcnow()
     async with get_session() as s:
         await s.execute(
@@ -243,6 +254,8 @@ async def mark_muted_creator_skip(account_id, fan_id, *, now=None) -> None:
             .on_conflict_do_update(
                 index_elements=["account_id", "fan_id"],
                 set_={"reason": MUTED_CREATOR_REASON, "added_at": now},
+                where=(SkipList.reason.is_(None)
+                       | (SkipList.reason != OF_RESTRICTED_REASON)),
             )
         )
 
@@ -278,6 +291,10 @@ async def set_automation_restrict(account_id, fan_id, restricted: bool, *, now=N
                 .on_conflict_do_update(
                     index_elements=["account_id", "fan_id"],
                     set_={"reason": MANUAL_RESTRICT_REASON, "added_at": now},
+                    # Never demote 'of_restricted' — it's a superset of this
+                    # block AND feeds the unread-count exclusion.
+                    where=(SkipList.reason.is_(None)
+                           | (SkipList.reason != OF_RESTRICTED_REASON)),
                 )
             )
         else:
@@ -288,6 +305,49 @@ async def set_automation_restrict(account_id, fan_id, restricted: bool, *, now=N
                     SkipList.reason == MANUAL_RESTRICT_REASON,
                 )
             )
+
+
+async def set_of_restricted_skip(account_id, fan_id, restricted: bool, *, now=None) -> None:
+    """Durable registry of users this account has restricted ON ONLYFANS via our
+    UI. restricted=True upserts skip_list(reason='of_restricted') — it wins over
+    any existing reason because it's the strongest block (OF itself stops
+    delivering their messages). restricted=False removes ONLY that row; a muted
+    creator gets its 'muted_creator' row back on the next scrape reconcile."""
+    from sqlalchemy import delete as sa_delete
+    now = now or datetime.utcnow()
+    async with get_session() as s:
+        if restricted:
+            await s.execute(
+                sqlite_insert(SkipList)
+                .values(account_id=str(account_id), fan_id=int(fan_id),
+                        reason=OF_RESTRICTED_REASON, added_at=now)
+                .on_conflict_do_update(
+                    index_elements=["account_id", "fan_id"],
+                    set_={"reason": OF_RESTRICTED_REASON, "added_at": now},
+                )
+            )
+        else:
+            await s.execute(
+                sa_delete(SkipList).where(
+                    SkipList.account_id == str(account_id),
+                    SkipList.fan_id == int(fan_id),
+                    SkipList.reason == OF_RESTRICTED_REASON,
+                )
+            )
+
+
+async def load_of_restricted_ids(account_id) -> set[int]:
+    """fan_ids this account has restricted on OF via our UI — the exclusion set
+    for the roster-badge fold and the /chats row annotation."""
+    from sqlalchemy import select
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(SkipList.fan_id).where(
+                SkipList.account_id == str(account_id),
+                SkipList.reason == OF_RESTRICTED_REASON,
+            )
+        )).all()
+    return {int(r[0]) for r in rows}
 
 
 async def automation_restrict_status(account_id, fan_id) -> dict:

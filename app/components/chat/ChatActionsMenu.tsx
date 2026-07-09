@@ -121,6 +121,12 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
   });
   const restrictReason = restrictQ.data?.reason ?? null;
   const autoMuted = restrictReason === "muted_creator";
+  // 'of_restricted' = this user is restricted ON ONLYFANS via our UI — a
+  // strictly stronger block (OF stops delivering their messages, automations
+  // hard-skip, unread counts exclude). Surface it read-only here like the
+  // muted case: flipping it to manual_restrict would silently drop the fan
+  // out of the count-exclusion registry. Lift it via the OF-restrict row below.
+  const ofRestrictSkip = restrictReason === "of_restricted";
   const [manualRestricted, setManualRestricted] = useState(false);
   useEffect(() => {
     setManualRestricted(restrictReason === "manual_restrict");
@@ -154,28 +160,43 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
   // above. That one is an internal skip_list (only stops OUR automations);
   // this is OF's own shadow-restrict: the fan can still type, but OF stops
   // delivering their messages to us (isRestricted→true, canReceiveChatMessage
-  // →false). The live state comes off the OF user object — the same query
-  // backs the "Add to list" submenu + the drawer, so React Query dedupes it.
+  // →false). Restricting through the relay also (1) sends one "." first +
+  // marks the chat read, so the thread leaves the unread/owe-reply state
+  // instead of sitting flagged forever, and (2) writes the durable
+  // `of_restricted` registry that keeps the creator OUT of the roster/inbox
+  // unread counts and hard-skipped by every automation. Live state comes off
+  // the OF user object OR the relay's row stamp (covers the thin /chats rows).
   const ofUser = useOFUser(accountId, fanId);
   // Warm the account's custom-list cache now so the "Add to list" submenu opens
   // instantly (shared query key with the submenu; 60s cached).
   useAllChatFolders(accountId);
-  const isRestricted = !!ofUser.data?.isRestricted;
-  const canRestrict = !!ofUser.data?.canRestrict;
+  const isRestricted =
+    !!ofUser.data?.isRestricted || !!chat.withUser?.isRestricted || ofRestrictSkip;
 
   const toggleOfRestrict = useMutation({
-    mutationFn: () =>
-      isRestricted
-        ? relay.delete(`/api/of/v2/users/${fanId}/restrict`, { accountId })
-        : relay.post(`/api/of/v2/users/${fanId}/restrict`, undefined, { accountId }),
-    onSuccess: () => {
+    mutationFn: async () => {
+      if (isRestricted) {
+        await relay.delete(`/api/of/v2/users/${fanId}/restrict`, { accountId });
+        return null;
+      }
+      return relay.post<{ acked?: boolean }>(
+        `/api/of/v2/users/${fanId}/restrict`, undefined, { accountId });
+    },
+    onSuccess: (data) => {
       // Refetch the OF user so the label flips to its true post-toggle state;
-      // refresh the inbox too since a restricted fan usually drops out of the
-      // active conversation set. Kept separate from `hide` so lifting the
-      // restrict never force-unhides the chat.
+      // refresh the inbox + badges + this thread too — the relay's ack flow
+      // just changed lastMessage/read-state and the count-exclusion registry.
       qc.invalidateQueries({ queryKey: ["of-user", accountId, fanId] });
       qc.invalidateQueries({ queryKey: ["chats"] });
-      flash(true, isRestricted ? "OnlyFans restrict lifted" : "Restricted on OnlyFans");
+      qc.invalidateQueries({ queryKey: ["roster-counts"] });
+      qc.invalidateQueries({ queryKey: ["messages", accountId, fanId] });
+      qc.invalidateQueries({ queryKey: ["automation-restrict"] });
+      qc.invalidateQueries({ queryKey: ["of-restricted-list", accountId] });
+      flash(true, isRestricted
+        ? "OnlyFans restrict lifted"
+        : data?.acked
+          ? "Sent “.” · restricted on OnlyFans"
+          : "Restricted on OnlyFans");
     },
     onError: (e: Error) => flash(false, e.message),
   });
@@ -199,9 +220,9 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
             onClick={() => toggleMute.mutate()}
             icon={muted ? "🔔" : "🔕"}
           />
-          {autoMuted ? (
+          {autoMuted || ofRestrictSkip ? (
             <Item
-              label="Auto-restricted (chat muted)"
+              label={autoMuted ? "Auto-restricted (chat muted)" : "Auto-restricted (OF restrict)"}
               disabled
               onClick={() => {}}
               icon="🔕"
@@ -242,14 +263,15 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
             }
             icon={dmExclude.isOn ? "✅" : "🚫"}
           />
-          {(isRestricted || canRestrict) && (
-            <Item
-              label={isRestricted ? "Lift OnlyFans restrict" : "Restrict on OnlyFans"}
-              disabled={toggleOfRestrict.isPending || ofUser.isLoading}
-              onClick={() => toggleOfRestrict.mutate()}
-              icon={isRestricted ? "🔓" : "🛑"}
-            />
-          )}
+          {/* Always offered (was gated on OF's canRestrict, which the thin
+              creator rows often omit — the one chat type this action is FOR).
+              OF itself rejects the rare user it truly can't restrict. */}
+          <Item
+            label={isRestricted ? "Lift OnlyFans restrict" : "Restrict on OnlyFans"}
+            disabled={toggleOfRestrict.isPending}
+            onClick={() => toggleOfRestrict.mutate()}
+            icon={isRestricted ? "🔓" : "🛑"}
+          />
           <Item
             label="Add to list ▸"
             onClick={() => setSubmenu("list")}
