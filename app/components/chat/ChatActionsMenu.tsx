@@ -102,10 +102,25 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
     onError: (e: Error) => flash(false, e.message),
   });
 
-  // NOTE: the OF "Hide chat" action was removed from this menu (#9) — hiding a
-  // chat on OF is not durable (the thread reappears on the next inbound), so the
-  // button just confused operators. The relay endpoint (POST/DELETE
-  // /api/of/v2/chats/{id}/hide) is left in place but is now unused from the UI.
+  // "Hide chat" — OF's native hide (POST /chats/{id}/hide). Deliberately NOT
+  // durable: the thread re-surfaces on the fan's next inbound message. That
+  // shelf life is the point — it clears a dead thread (typically a just-
+  // restricted non-friend creator) out of the inbox WITHOUT risking a missed
+  // real message. No unhide row needed: a hidden chat has no row to open this
+  // menu from, and it un-hides itself on the next inbound (restrict-lift also
+  // un-hides server-side).
+  const hideChat = useMutation({
+    mutationFn: () =>
+      relay.post(`/api/of/v2/chats/${fanId}/hide`, undefined, { accountId }),
+    onSuccess: () => {
+      // The row is gone from OF's /chats feed (relay busts its cache) — refetch
+      // the inbox + badges so it vanishes now rather than on the next poll.
+      qc.invalidateQueries({ queryKey: ["chats"] });
+      qc.invalidateQueries({ queryKey: ["roster-counts"] });
+      flash(true, "Chat hidden — returns on their next message");
+    },
+    onError: (e: Error) => flash(false, e.message),
+  });
 
   // "Restrict from automations" — a durable skip_list row in OUR DB (not OF), so
   // NO automation (welcome / AI chat / nudge / tip reward / …) ever messages this
@@ -162,9 +177,11 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
   // delivering their messages to us (isRestricted→true, canReceiveChatMessage
   // →false). Restricting through the relay also (1) sends one "." first +
   // marks the chat read, so the thread leaves the unread/owe-reply state
-  // instead of sitting flagged forever, and (2) writes the durable
+  // instead of sitting flagged forever, (2) writes the durable
   // `of_restricted` registry that keeps the creator OUT of the roster/inbox
-  // unread counts and hard-skipped by every automation. Live state comes off
+  // unread counts and hard-skipped by every automation, and (3) hides the
+  // chat on OF LAST (dot → restrict → hide), so the dead thread leaves the
+  // inbox entirely until the fan messages again. Live state comes off
   // the OF user object OR the relay's row stamp (covers the thin /chats rows).
   const ofUser = useOFUser(accountId, fanId);
   // Warm the account's custom-list cache now so the "Add to list" submenu opens
@@ -179,7 +196,7 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
         await relay.delete(`/api/of/v2/users/${fanId}/restrict`, { accountId });
         return null;
       }
-      return relay.post<{ acked?: boolean }>(
+      return relay.post<{ acked?: boolean; hidden?: boolean }>(
         `/api/of/v2/users/${fanId}/restrict`, undefined, { accountId });
     },
     onSuccess: (data) => {
@@ -192,11 +209,14 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
       qc.invalidateQueries({ queryKey: ["messages", accountId, fanId] });
       qc.invalidateQueries({ queryKey: ["automation-restrict"] });
       qc.invalidateQueries({ queryKey: ["of-restricted-list", accountId] });
-      flash(true, isRestricted
-        ? "OnlyFans restrict lifted"
-        : data?.acked
-          ? "Sent “.” · restricted on OnlyFans"
-          : "Restricted on OnlyFans");
+      if (isRestricted) {
+        flash(true, "OnlyFans restrict lifted");
+      } else {
+        const parts = ["restricted on OnlyFans"];
+        if (data?.acked) parts.unshift("Sent “.”");
+        if (data?.hidden) parts.push("chat hidden");
+        flash(true, parts.join(" · "));
+      }
     },
     onError: (e: Error) => flash(false, e.message),
   });
@@ -219,6 +239,12 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
             disabled={toggleMute.isPending}
             onClick={() => toggleMute.mutate()}
             icon={muted ? "🔔" : "🔕"}
+          />
+          <Item
+            label="Hide chat (until new message)"
+            disabled={hideChat.isPending}
+            onClick={() => hideChat.mutate()}
+            icon="🙈"
           />
           {autoMuted || ofRestrictSkip ? (
             <Item
