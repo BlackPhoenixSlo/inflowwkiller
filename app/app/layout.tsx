@@ -7,6 +7,7 @@ import EmployeePickerGate from "@/components/employees/EmployeePickerGate";
 import TopNav from "@/components/TopNav";
 import { ImpersonationBanner } from "@/components/ImpersonationBanner";
 import { NotificationToaster } from "@/components/NotificationToaster";
+import { MoneyRail } from "@/components/MoneyRail";
 
 import "./globals.css";
 
@@ -154,6 +155,7 @@ export default function RootLayout({
               <TopNav />
               {children}
               <NotificationToaster />
+              <MoneyRail />
             </EmployeePickerGate>
           </AuthGate>
         </Providers>

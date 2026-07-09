@@ -33,7 +33,9 @@ import {
   NOTIF_TYPES,
   dispatchNotifCleared,
   mapOfTypeToKey,
+  readNotifFilterId,
   readNotifHistory,
+  writeNotifFilterId,
   type CachedNotification,
   type NotifTypeKey,
 } from "@/lib/notifSettings";
@@ -97,7 +99,16 @@ export function NotificationBell() {
   const { accountId } = useScope();
   const activeAccounts = useActiveAccounts();
   const [open, setOpen] = useState(false);
-  const [filter, setFilter] = useState<Filter>(FILTERS[0]);
+  // Restore the last-used filter chip. Safe against hydration mismatch:
+  // the dropdown (the only place `filter` renders) is closed at SSR time.
+  const [filter, setFilter] = useState<Filter>(() => {
+    const id = readNotifFilterId();
+    return FILTERS.find((f) => f.id === id) ?? FILTERS[0];
+  });
+  const pickFilter = (f: Filter) => {
+    setFilter(f);
+    writeNotifFilterId(f.id);
+  };
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [osTestMsg, setOsTestMsg] = useState<string | null>(null);
   const [badge, setBadge] = useState(0);
@@ -257,7 +268,7 @@ export function NotificationBell() {
                     <button
                       key={f.id}
                       type="button"
-                      onClick={() => setFilter(f)}
+                      onClick={() => pickFilter(f)}
                       className={
                         "px-2 py-0.5 text-[11px] rounded-full border " +
                         (filter.id === f.id
