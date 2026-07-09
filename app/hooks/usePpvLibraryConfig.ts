@@ -45,6 +45,11 @@ export interface PpvLibraryConfig {
   reach_all?: boolean;
   /** Don't re-message a fan for N hours (contact guard). 0 = no pause. */
   pause_hours?: number;
+  /** Global price limits (cents): every COMPUTED send/post price — tier cells, the
+   *  everyone-broadcast, feed posts — is clamped into [min, max] at send time.
+   *  Defaults 300/20000 ($3–$200). Authored base prices are kept as typed. */
+  price_min_cents?: number;
+  price_max_cents?: number;
   ppvs?: PpvItem[];
 }
 
@@ -104,13 +109,23 @@ export function useSavePpvLibraryConfig(accountId: string | null) {
   });
 }
 
+export interface PpvPreviewArgs {
+  basePriceCents: number;
+  /** DRAFT price limits (cents) — unsaved UI state; the preview must show what a
+   *  save would send. Absent → the stored config's limits. */
+  priceMinCents?: number;
+  priceMaxCents?: number;
+}
+
 /** Dry-run: how the account's current fans split into price cells (no send). */
 export function usePpvPreview(accountId: string | null) {
-  return useMutation<PpvPreview, Error, number>({
-    mutationFn: (basePriceCents) =>
+  return useMutation<PpvPreview, Error, PpvPreviewArgs>({
+    mutationFn: ({ basePriceCents, priceMinCents, priceMaxCents }) =>
       relay.post(`/admin/ppv-library-config/preview`, {
         account_id: accountId,
         base_price_cents: basePriceCents,
+        ...(priceMinCents != null ? { price_min_cents: priceMinCents } : {}),
+        ...(priceMaxCents != null ? { price_max_cents: priceMaxCents } : {}),
       }),
   });
 }

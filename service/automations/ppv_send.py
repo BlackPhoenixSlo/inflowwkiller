@@ -82,9 +82,30 @@ RECENCY_BANDS: list[tuple[str, float, float]] = [
     ("quiet",  float("inf"),  0.55),   # gone quiet (also: never messaged)
 ]
 # OF rejects any priced message below $3.00 ("Minimum message price is $3.00",
-# verified live 2026-06-20). We floor at $3.99 to clear it AND keep the .99 styling.
-_PRICE_FLOOR_CENTS = 399
+# verified live 2026-06-20; exactly $3.00 assumed inclusive — untested live).
+# These are the HARD wire limits AND the defaults for the operator's per-account
+# price_min_cents/price_max_cents; a clamped price sits exactly on the bound.
+_PRICE_FLOOR_CENTS = 300
 _PRICE_CEIL_CENTS = 20_000     # OF PPV max ($200)
+
+
+def price_bounds(cfg: dict | None) -> tuple[int, int]:
+    """Operator price limits from the top-level library config — (min_cents,
+    max_cents), defaults $3/$200. Applied wherever a send/post price is COMPUTED
+    (per-cell, broadcast, feed) — never rewrites the authored base_price_cents.
+    min is held to OF's hard $3.00 floor; max is held into [min, $200]."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    try:
+        lo = int(cfg.get("price_min_cents") or _PRICE_FLOOR_CENTS)
+    except (TypeError, ValueError):
+        lo = _PRICE_FLOOR_CENTS
+    try:
+        hi = int(cfg.get("price_max_cents") or _PRICE_CEIL_CENTS)
+    except (TypeError, ValueError):
+        hi = _PRICE_CEIL_CENTS
+    lo = max(_PRICE_FLOOR_CENTS, min(lo, _PRICE_CEIL_CENTS))
+    hi = max(lo, min(hi, _PRICE_CEIL_CENTS))
+    return lo, hi
 
 _DEFAULTS = {"enabled": False, "ppvs": []}
 
@@ -251,12 +272,14 @@ PPV_FEED_CAPTION_POOLS: dict[str, list[str]] = {
 }
 
 
-def round_to_99(amount_cents: float) -> int:
-    """Round to the nearest whole dollar, then end in .99, floored at $0.99 and
-    capped at $200. e.g. 5750 → 5799 ($57.99); 4999 → 4999 ($49.99)."""
+def round_to_99(amount_cents: float, bounds: tuple[int, int] | None = None) -> int:
+    """Round to the nearest whole dollar, then end in .99, clamped into the
+    operator's [min, max] price bounds (default $3/$200). A clamped price sits
+    EXACTLY on the bound (no .99 restyle). e.g. 5750 → 5799 ($57.99)."""
+    lo, hi = bounds if bounds is not None else (_PRICE_FLOOR_CENTS, _PRICE_CEIL_CENTS)
     dollars = round(amount_cents / 100)
     cents = 99 if dollars < 1 else dollars * 100 - 1
-    return max(_PRICE_FLOOR_CENTS, min(cents, _PRICE_CEIL_CENTS))
+    return max(lo, min(cents, hi))
 
 
 def _spend_band(cents: int) -> tuple[str, float]:
@@ -340,7 +363,8 @@ def pick_feed_caption(ppv: dict, base_cents: int) -> tuple[str, bool]:
 async def post_to_feed(account_id: str, ppv: dict, *, employee_id: int | None = None,
                        caption: str | None = None,
                        media_files: list[int] | None = None,
-                       previews_override: list[int] | None = None) -> dict:
+                       previews_override: list[int] | None = None,
+                       bounds: tuple[int, int] | None = None) -> dict:
     """Post ONE PPV to the OF FEED as a paid post at its BASE price, with the ⭐ free
     previews (preview_options) shown as the teaser and a feed-voice caption. Records a
     Post row. SHARED by the manual post-now endpoint and the auto 'also post to feed
@@ -355,9 +379,12 @@ async def post_to_feed(account_id: str, ppv: dict, *, employee_id: int | None = 
     own media_ids (never post ids the PPV doesn't own; OF rejects strays). An empty /
     absent list falls back to the PPV's media_ids (never post an empty media set).
     `previews_override`, when provided, replaces the preview_options-based previews;
-    either way previews are filtered to a ⊆ subset of the media actually sent."""
+    either way previews are filtered to a ⊆ subset of the media actually sent.
+    `bounds` = the operator's (min_cents, max_cents) price limits (price_bounds(cfg));
+    None → the hard OF defaults. The posted price is clamped into them."""
     import automation_executor as ax
-    base_cents = max(_PRICE_FLOOR_CENTS, min(int(ppv.get("base_price_cents") or 0), _PRICE_CEIL_CENTS))
+    lo, hi = bounds if bounds is not None else (_PRICE_FLOOR_CENTS, _PRICE_CEIL_CENTS)
+    base_cents = max(lo, min(int(ppv.get("base_price_cents") or 0), hi))
     ppv_media = [int(x) for x in (ppv.get("media_ids") or []) if str(x).strip()]
     if not ppv_media:
         return {"status": "skipped", "reason": "no_media"}
@@ -568,9 +595,12 @@ def _cap_release(caps: dict, send_times: list, now: datetime):
     return (release is not None, release, which)
 
 
-async def _defer_capped(account_id: str, ppv_id: str, release_at: datetime, now: datetime):
+async def _defer_capped(account_id: str, ppv_id: str, release_at: datetime, now: datetime,
+                        *, is_resend: bool = False):
     """Re-enqueue a one-shot ppv_send for this ppv at the cap-free time, UNLESS one is
-    already pending (dedup → no pile-up across the rule's repeated fires)."""
+    already pending (dedup → no pile-up across the rule's repeated fires; keyed on
+    ppv_id ONLY — never on is_resend). is_resend must survive the defer, or a capped
+    monthly resend comes back as a non-resend and enqueues a SECOND monthly one-shot."""
     import automation_executor as ax
     async with get_session() as s:
         existing = (await s.execute(
@@ -584,23 +614,38 @@ async def _defer_capped(account_id: str, ppv_id: str, release_at: datetime, now:
         )).scalar_one_or_none()
     if existing is not None:
         return None
-    return await ax.enqueue_job(account_id, "ppv_send",
-                                payload={"account_id": account_id, "ppv_id": ppv_id},
+    payload = {"account_id": account_id, "ppv_id": ppv_id}
+    if is_resend:
+        payload["is_resend"] = True
+    return await ax.enqueue_job(account_id, "ppv_send", payload=payload,
                                 run_at=release_at)
 
 
-async def segment_preview(account_id: str, base_price_cents: int) -> dict:
+async def segment_preview(account_id: str, base_price_cents: int,
+                          bounds: tuple[int, int] | None = None) -> dict:
     """Per-cell recipient counts + prices for a base price — the UI dry-run. Surfaces
-    the 'everyone collapses into the cheap cell' case (thin data) BEFORE any send."""
+    the 'everyone collapses into the cheap cell' case (thin data) BEFORE any send.
+    `bounds` = the operator's (min, max) price limits; None → read them from the
+    account's stored library config (so old callers stay correct)."""
     now = datetime.utcnow()
+    if bounds is None:
+        async with get_session() as s:
+            row = await s.get(AccountAiConfig, account_id)
+        stored: dict = {}
+        if row is not None and row.ppv_library_config_json:
+            try:
+                stored = json.loads(row.ppv_library_config_json) or {}
+            except Exception:
+                stored = {}
+        bounds = price_bounds(stored)
     fan_rows, last_purchase = await _eligible_fans(account_id)
-    base = max(_PRICE_FLOOR_CENTS, min(int(base_price_cents or 0), _PRICE_CEIL_CENTS))
+    base = max(bounds[0], min(int(base_price_cents or 0), bounds[1]))
     cells = _segments(fan_rows, last_purchase, now)
     plan = [
         {
             "cell": key, "spend": c["spend"], "recency": c["recency"],
             "recipients": len(c["fan_ids"]),
-            "price": round_to_99(base * c["spend_mult"] * c["rec_mult"]) / 100,
+            "price": round_to_99(base * c["spend_mult"] * c["rec_mult"], bounds) / 100,
         }
         for key, c in sorted(cells.items())
     ]
@@ -656,6 +701,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     base_cents = int(ppv.get("base_price_cents") or 0)
     if base_cents <= 0:
         return {"status": "skipped", "reason": "no_base_price"}
+    # Operator price limits — every COMPUTED price (per-cell, broadcast, feed)
+    # is clamped into these; the authored base_price_cents is never rewritten.
+    bounds = price_bounds(cfg)
+    bcast_cents = max(bounds[0], min(base_cents, bounds[1]))
     media_ids = [int(x) for x in (ppv.get("media_ids") or []) if str(x).strip()]
     if not media_ids:
         return {"status": "skipped", "reason": "no_media"}
@@ -676,7 +725,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         capped, release_at, which = _cap_release(
             caps, await _recent_ppv_send_times(account_id, now), now)
         if capped:
-            job_id = await _defer_capped(account_id, ppv_id, release_at, now)
+            job_id = await _defer_capped(account_id, ppv_id, release_at, now,
+                                         is_resend=is_resend)
             log.info("ppv_send capped account=%s ppv=%s cap=%s release=%s defer_job=%s",
                      account_id, ppv_id, which, release_at, job_id)
             return {"status": "skipped", "reason": f"capped_{which}",
@@ -727,7 +777,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if dry_run:
         plan = []
         for key, cell in sorted(cells.items()):
-            price = round_to_99(base_cents * cell["spend_mult"] * cell["rec_mult"])
+            price = round_to_99(base_cents * cell["spend_mult"] * cell["rec_mult"], bounds)
             plan.append({
                 "cell": key, "recipients": len(cell["fan_ids"]),
                 "price": price / 100,
@@ -737,7 +787,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         return {"dry_run": True, "ppv_id": ppv_id, "is_resend": is_resend,
                 "cells": len(plan), "fans": len(fan_rows), "plan": plan, "sent": 0,
                 "broadcast_all": broadcasting,
-                "broadcast_price": (base_cents / 100) if broadcasting else None,
+                "broadcast_price": (bcast_cents / 100) if broadcasting else None,
                 "pause_hours": pause_hours}
 
     # ── send: one mass call per non-empty cell, matrix price + rotated preview
@@ -751,7 +801,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         fan_ids = cell["fan_ids"]
         if not fan_ids:
             continue
-        price = round_to_99(base_cents * cell["spend_mult"] * cell["rec_mult"])
+        price = round_to_99(base_cents * cell["spend_mult"] * cell["rec_mult"], bounds)
         send_payload = {
             # Text is intentionally NOT locked — fans see the teaser caption free,
             # only the media sits behind the price (locked_text defaults off).
@@ -794,10 +844,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if broadcasting:
         known_ids = await _all_fan_ids(account_id)
         broadcast_payload = {
-            "text": _pick_caption(ppv, base_cents),   # default-price caption
+            "text": _pick_caption(ppv, bcast_cents),  # default-price caption
             "media_files": media_ids,
             "previews": _rotate_preview(preview_pool, day_idx),
-            "price": base_cents / 100,                # the DEFAULT price
+            "price": bcast_cents / 100,               # the DEFAULT price, clamped
             "user_lists": ["fans"],                   # ALL active subscribers
             "excluded_users": known_ids,              # → Auto_Exclude (no double-send)
             "automation_kind": "ppv_send",
@@ -811,13 +861,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         account_id, ppv_id, e)
             send_errors += 1
             broadcast = "error"
-            results.append({"cell": "broadcast:all", "price": base_cents / 100,
+            results.append({"cell": "broadcast:all", "price": bcast_cents / 100,
                             "recipients": 0, "status": "error",
                             "error": repr(e)[:200],
                             "excluded_known": len(known_ids)})
         else:
             broadcast = res.get("status")
-            results.append({"cell": "broadcast:all", "price": base_cents / 100,
+            results.append({"cell": "broadcast:all", "price": bcast_cents / 100,
                             "recipients": res.get("recipients", 0), "status": broadcast,
                             "excluded_known": len(known_ids)})
             if broadcast not in ("skipped", "error"):
@@ -830,7 +880,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     feed_post = None
     if ppv.get("feed_enabled", True) and ppv.get("also_post_to_feed") and sent_cells:
         try:
-            feed_post = await post_to_feed(account_id, ppv)
+            feed_post = await post_to_feed(account_id, ppv, bounds=bounds)
         except Exception:
             log.exception("ppv_send also_post_to_feed failed account=%s ppv=%s", account_id, ppv_id)
             feed_post = {"status": "error", "reason": "exception"}

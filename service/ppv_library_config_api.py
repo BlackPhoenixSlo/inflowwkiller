@@ -36,6 +36,7 @@ from automations.ppv_send import (
     _PRICE_FLOOR_CENTS,
     pick_feed_caption,
     post_to_feed,
+    price_bounds,
 )
 
 log = logging.getLogger("of-relay.ppv_library_config_api")
@@ -178,6 +179,11 @@ def _validate(cfg: dict) -> dict:
                 clean_caps[k] = min(v, 10_000)
         if clean_caps:
             out["ppv_caps"] = clean_caps
+    # Global price limits: every COMPUTED send/post price (per-cell tier, the
+    # everyone-broadcast, feed posts) is clamped into [min, max] at RUNTIME —
+    # authored base prices are never rewritten. Always emitted (self-describing
+    # blob); price_bounds applies the defaults ($3/$200) + OF hard limits + order.
+    out["price_min_cents"], out["price_max_cents"] = price_bounds(cfg)
     raw = cfg.get("ppvs") or []
     if not isinstance(raw, (list, tuple)):
         raise HTTPException(422, "ppvs must be a list")
@@ -315,17 +321,28 @@ async def put_ppv_library_config(body: _ConfigBody = Body(...)) -> dict[str, Any
 class _PreviewBody(BaseModel):
     account_id: str
     base_price_cents: int = 2500
+    # Optional DRAFT price limits (unsaved UI state) — absent → the stored config's.
+    price_min_cents: int | None = None
+    price_max_cents: int | None = None
 
 
 @router.post("/admin/ppv-library-config/preview")
 async def preview_ppv_library(body: _PreviewBody = Body(...)) -> dict[str, Any]:
     """Dry-run: with the account's CURRENT fans, how many land in each spend×recency
     cell and what would they pay for this base price. No send, no state write — the
-    operator's safety net (surfaces a thin-data 'everyone is cheap' collapse)."""
+    operator's safety net (surfaces a thin-data 'everyone is cheap' collapse).
+    Draft price limits in the body win over the stored ones, so an UNSAVED Min/Max
+    edit previews exactly what a save would send."""
     assert_account_owned(body.account_id)
     from automations.ppv_send import segment_preview
-    base = max(_PRICE_FLOOR_CENTS, min(int(body.base_price_cents or 0), _PRICE_CEIL_CENTS))
-    return {"account_id": body.account_id, **await segment_preview(body.account_id, base)}
+    draft = dict(await _load_stored_config(body.account_id))
+    if body.price_min_cents is not None:
+        draft["price_min_cents"] = body.price_min_cents
+    if body.price_max_cents is not None:
+        draft["price_max_cents"] = body.price_max_cents
+    bounds = price_bounds(draft)
+    return {"account_id": body.account_id,
+            **await segment_preview(body.account_id, int(body.base_price_cents or 0), bounds)}
 
 
 async def _load_stored_config(account_id: str) -> dict:
@@ -404,14 +421,18 @@ async def post_ppv_to_feed(body: _PostNowBody = Body(...)) -> dict[str, Any]:
     # PPV's own media inside post_to_feed; absent/empty → the PPV's own media/previews).
     res = await post_to_feed(
         body.account_id, chosen, caption=body.caption,
-        media_files=body.media_files, previews_override=body.previews)
+        media_files=body.media_files, previews_override=body.previews,
+        bounds=price_bounds(stored))
     if res.get("status") != "ok":
         raise HTTPException(502, f"feed post failed: {res.get('reason') or 'unknown'}")
 
-    # Stamp skip-last back into the blob (best-effort; a UI Save resets it).
-    if stored:
-        stored["last_posted_ppv_id"] = str(chosen.get("id") or "")
-        blob = json.dumps(stored)
+    # Stamp skip-last onto the LATEST blob, RE-loaded after the (slow) OF post —
+    # stamping the pre-post snapshot would clobber a config save that landed
+    # mid-post (best-effort; a UI Save resets the marker).
+    latest = await _load_stored_config(body.account_id)
+    if latest:
+        latest["last_posted_ppv_id"] = str(chosen.get("id") or "")
+        blob = json.dumps(latest)
         now = datetime.utcnow()
         async with get_session() as s:
             await s.execute(
@@ -458,7 +479,8 @@ async def preview_ppv_to_feed(body: _PreviewPostBody = Body(...)) -> dict[str, A
     if not _int_list(chosen.get("media_ids"), _MAX_MEDIA):
         raise HTTPException(422, "this PPV has no content to post")
 
-    base_cents = max(_PRICE_FLOOR_CENTS, min(int(chosen.get("base_price_cents") or 0), _PRICE_CEIL_CENTS))
+    lo, hi = price_bounds(stored)
+    base_cents = max(lo, min(int(chosen.get("base_price_cents") or 0), hi))
     media_ids = _int_list(chosen.get("media_ids"), _MAX_MEDIA)
     media_set = set(media_ids)
     previews = [x for x in _int_list(chosen.get("preview_options"), _MAX_PREVIEWS) if x in media_set]
