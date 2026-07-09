@@ -5285,7 +5285,8 @@ def of_unblock_user(user_id: int):
     return _proxy(lambda: _get_client().unblock_user(user_id))
 
 @app.post("/api/of/v2/users/{user_id}/restrict")
-async def of_restrict_user(user_id: int, request: Request, ack: bool = Query(True)) -> dict:
+async def of_restrict_user(user_id: int, request: Request, ack: bool = Query(True),
+                           hide: bool = Query(True)) -> dict:
     """Restrict a user on OnlyFans (their messages stop being delivered to us),
     with the inbox left CLEAN — restricting is how operators silence promo-spam
     peer creators, and the whole point is getting them out of the unread counts:
@@ -5299,6 +5300,12 @@ async def of_restrict_user(user_id: int, request: Request, ack: bool = Query(Tru
          automation hard-skips them (HARD_SKIP_REASONS) and the roster badge /
          inbox chips exclude them from the unread counts from now on, even if
          OF ever flags the thread again.
+      4. `hide` (default on): hide the chat on OF, best-effort. OF's hide is
+         deliberately NOT durable — the thread re-surfaces on the next inbound
+         message — which is exactly the shelf life we want here: the restricted
+         creator's dead thread leaves the inbox now, but a genuine new message
+         still brings it back. Must run LAST: the "." send in step 1 would
+         re-surface a just-hidden chat.
 
     The ack rides the normal send handler so it gets employee attribution, the
     local outbound mirror and the cache busts for free. Skipped when the fan is
@@ -5320,20 +5327,36 @@ async def of_restrict_user(user_id: int, request: Request, ack: bool = Query(Tru
                         account_id, user_id, exc_info=True)
     result = await asyncio.to_thread(_proxy, lambda: _get_client().restrict_user(user_id))
     await set_of_restricted_skip(account_id, user_id, True)
+    hidden = False
+    if hide:
+        try:
+            await asyncio.to_thread(_proxy, lambda: _get_client().hide_chat(user_id))
+            hidden = True
+        except Exception:
+            log.warning("restrict hide-chat failed (account=%s fan=%s) — restricted anyway",
+                        account_id, user_id, exc_info=True)
     # The counts derive from the cached window + this registry — drop both
-    # folds so the next badge/list read reflects the exclusion immediately.
+    # folds so the next badge/list read reflects the exclusion (and the hidden
+    # row's disappearance) immediately.
     relay_cache.invalidate("list_chats", account_id)
     relay_cache.invalidate("roster_count", account_id)
-    return {"ok": True, "restricted": True, "acked": acked, "of": result}
+    return {"ok": True, "restricted": True, "acked": acked, "hidden": hidden, "of": result}
 
 @app.delete("/api/of/v2/users/{user_id}/restrict")
 async def of_unrestrict_user(user_id: int, request: Request) -> dict:
     """Lift an OF restrict + remove the durable 'of_restricted' row (the fan
-    re-enters unread counts and automations may target them again)."""
+    re-enters unread counts and automations may target them again). Also
+    un-hides the chat (best-effort, symmetric with the hide-on-restrict) so the
+    thread is visible again without waiting for the fan's next message."""
     from automations._common import set_of_restricted_skip
     account_id = _resolve_account_id(request)
     result = await asyncio.to_thread(_proxy, lambda: _get_client().unrestrict_user(user_id))
     await set_of_restricted_skip(account_id, user_id, False)
+    try:
+        await asyncio.to_thread(_proxy, lambda: _get_client().unhide_chat(user_id))
+    except Exception:
+        log.warning("unrestrict unhide-chat failed (account=%s fan=%s)",
+                    account_id, user_id, exc_info=True)
     relay_cache.invalidate("list_chats", account_id)
     relay_cache.invalidate("roster_count", account_id)
     return {"ok": True, "restricted": False, "of": result}
