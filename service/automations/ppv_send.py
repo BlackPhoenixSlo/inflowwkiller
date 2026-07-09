@@ -27,9 +27,19 @@ Per run it:
      a different rotated preview). Buyers drop out (exclude_buyers); non-buyers keep
      getting the same locked content re-pitched with a new teaser until they unlock.
 
-Idempotency: NONE of its own — it leans on send_mass_message's DEFAULT-ON contact
-guard (6h outbound / 2h inbound). A duplicate fire within 6h finds every recipient
-already messaged → empty audience → skipped. No state blob, no dedup table.
+Idempotency / duplicate-fire protection:
+  • duplicate-fire gate — skip when THIS ppv already sent (cells_sent>0) within
+    `min_send_gap_minutes` (account cfg, default 60; 0 = off). Kills the
+    executor's whole-job-retry double-blast seen live 2026-07-01/03: a proxy
+    error mid-batch failed the job AFTER some cells had broadcast, and the
+    retry re-sent them ~90s later.
+  • per-cell containment — a cell/broadcast send failure is RECORDED in the
+    stats (status 'error' per cell), never raised, so the executor NEVER
+    retries a partially-sent batch wholesale. A failed cell's fans catch the
+    next cadence fire instead.
+  • the contact guard (`pause_hours` > 0) and ppv_caps spacing still apply on
+    top when configured — but the default `pause_hours=0` turns the guard OFF,
+    so the gate above is the one that actually holds.
 
 Payload shape::
 
@@ -490,6 +500,30 @@ async def _owners_of_media(account_id: str, media_ids: list[int]) -> set[int]:
 # ── Per-account cap: max PPV sends per rolling day / week / month ────────────
 _CAP_WINDOWS = (("per_day", 86_400), ("per_week", 7 * 86_400), ("per_month", 30 * 86_400))
 
+# Duplicate-fire gate: minimum minutes between two ACTUAL sends of the SAME ppv.
+# Far below any real cadence (the rule sync's fastest is 604800/sends_per_week),
+# so it only ever catches pathological double-fires: the executor's job retry,
+# a double-enqueue, a manual fire landing on top of the rule's.
+_DUP_GAP_MIN_DEFAULT = 60.0
+
+
+async def _last_same_ppv_send(account_id: str, ppv_id: str, since: datetime) -> datetime | None:
+    """completed_at of the newest ppv_send run of THIS ppv that ACTUALLY sent
+    (cells_sent>0) since `since` — the duplicate-fire gate's ledger. Reads the
+    per-run stats blob, so a PARTIAL send counts too (a run that broadcast 2 of
+    3 cells before erroring is exactly the case the gate exists for)."""
+    async with get_session() as s:
+        return (await s.execute(
+            select(func.max(AutomationRun.completed_at)).where(
+                AutomationRun.account_id == account_id,
+                AutomationRun.kind == "ppv_send",
+                AutomationRun.completed_at.is_not(None),
+                AutomationRun.completed_at >= since,
+                func.json_extract(AutomationRun.stats_json, "$.ppv_id") == str(ppv_id),
+                func.json_extract(AutomationRun.stats_json, "$.cells_sent") > 0,
+            )
+        )).scalar_one_or_none()
+
 
 async def _recent_ppv_send_times(account_id: str, now: datetime) -> list[datetime]:
     """completed_at of this account's ppv_send fires that ACTUALLY sent (cells_sent>0)
@@ -648,6 +682,31 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             return {"status": "skipped", "reason": f"capped_{which}",
                     "retry_at": release_at.isoformat() + "Z", "defer_job_id": job_id}
 
+    # ── duplicate-fire gate: NEVER send the same ppv twice within the gap ─
+    # Guards against the executor retrying a partially-failed job, a
+    # double-enqueue, or a manual fire landing on the rule's — with the
+    # default pause_hours=0 the contact guard is OFF, so this ledger check is
+    # the real protection. Skipping is safe: a missed cycle self-heals at the
+    # next cadence fire; a double-blast doesn't. (Runs AFTER the cap check so
+    # a capped fire keeps its defer-to-slot semantics; a deferred job lands
+    # past the gap, so the two never fight.)
+    try:
+        dup_gap_min = float(cfg.get("min_send_gap_minutes")
+                            if cfg.get("min_send_gap_minutes") is not None
+                            else _DUP_GAP_MIN_DEFAULT)
+    except (TypeError, ValueError):
+        dup_gap_min = _DUP_GAP_MIN_DEFAULT
+    if not dry_run and not force_ids and dup_gap_min > 0:
+        last = await _last_same_ppv_send(
+            account_id, str(ppv_id), now - timedelta(minutes=dup_gap_min))
+        if last is not None:
+            log.warning("ppv_send duplicate-fire gate account=%s ppv=%s "
+                        "last_sent=%s gap_min=%s — skipping",
+                        account_id, ppv_id, last, dup_gap_min)
+            return {"status": "skipped", "reason": "duplicate_recent_send",
+                    "ppv_id": ppv_id, "last_sent_at": last.isoformat() + "Z",
+                    "gap_minutes": dup_gap_min}
+
     fan_rows, last_purchase = await _eligible_fans(account_id)
     if force_ids:
         # Explicit scope (live test) bypasses the buyer filter.
@@ -686,6 +745,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     sent_cells = 0
     total_recipients = 0
+    send_errors = 0
     results: list[dict] = []
     for key, cell in sorted(cells.items()):
         fan_ids = cell["fan_ids"]
@@ -706,7 +766,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "exclude_replied_hours": pause_hours,
             "exclude_inbound_hours": pause_hours,
         }
-        res = await send_mass_run(account_id, send_payload, run_id=run_id)
+        try:
+            res = await send_mass_run(account_id, send_payload, run_id=run_id)
+        except Exception as e:  # noqa: BLE001 — one cell must NOT fail the batch
+            # A raise here fails the WHOLE job and the executor retries it —
+            # re-broadcasting every cell that already went out (the live
+            # double-send of 2026-07-01/03). Contain it: record the error,
+            # move on; this cell's fans catch the next cadence fire.
+            log.warning("ppv_send cell send failed account=%s ppv=%s cell=%s: %r",
+                        account_id, ppv_id, key, e)
+            send_errors += 1
+            results.append({"cell": key, "price": price / 100,
+                            "recipients": len(fan_ids), "status": "error",
+                            "error": repr(e)[:200]})
+            continue
         results.append({"cell": key, "price": price / 100,
                         "recipients": len(fan_ids), "status": res.get("status")})
         if res.get("status") not in ("skipped", "error"):
@@ -731,13 +804,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "exclude_replied_hours": pause_hours,
             "exclude_inbound_hours": pause_hours,
         }
-        res = await send_mass_run(account_id, broadcast_payload, run_id=run_id)
-        broadcast = res.get("status")
-        results.append({"cell": "broadcast:all", "price": base_cents / 100,
-                        "recipients": res.get("recipients", 0), "status": broadcast,
-                        "excluded_known": len(known_ids)})
-        if broadcast not in ("skipped", "error"):
-            sent_cells += 1   # counts as a send for the cap + 'ok' status
+        try:
+            res = await send_mass_run(account_id, broadcast_payload, run_id=run_id)
+        except Exception as e:  # noqa: BLE001 — same containment as the cells
+            log.warning("ppv_send broadcast send failed account=%s ppv=%s: %r",
+                        account_id, ppv_id, e)
+            send_errors += 1
+            broadcast = "error"
+            results.append({"cell": "broadcast:all", "price": base_cents / 100,
+                            "recipients": 0, "status": "error",
+                            "error": repr(e)[:200],
+                            "excluded_known": len(known_ids)})
+        else:
+            broadcast = res.get("status")
+            results.append({"cell": "broadcast:all", "price": base_cents / 100,
+                            "recipients": res.get("recipients", 0), "status": broadcast,
+                            "excluded_known": len(known_ids)})
+            if broadcast not in ("skipped", "error"):
+                sent_cells += 1   # counts as a send for the cap + 'ok' status
 
     # ── also post to feed: opt-in ("auto post to feed with mass"). Fire ONCE per
     #    run, only when a send actually went out (don't post to the feed on an
@@ -761,14 +845,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             run_at=now + timedelta(days=30),
         )
 
-    log.info("ppv_send account=%s ppv=%s cells=%d recipients=%d broadcast=%s resend_job=%s feed=%s",
-             account_id, ppv_id, sent_cells, total_recipients, broadcast, resend_job_id,
-             (feed_post or {}).get("status"))
+    log.info("ppv_send account=%s ppv=%s cells=%d recipients=%d errors=%d broadcast=%s "
+             "resend_job=%s feed=%s",
+             account_id, ppv_id, sent_cells, total_recipients, send_errors, broadcast,
+             resend_job_id, (feed_post or {}).get("status"))
+    # NOTE: an all-failed run returns status 'error' in the STATS only — it must
+    # not raise, or the executor's job retry would re-broadcast any cell that
+    # did go out. The failed cells simply wait for the next cadence fire.
     return {
-        "status": "ok" if sent_cells else "skipped",
-        "reason": None if sent_cells else "all_cells_empty",
+        "status": "ok" if sent_cells else ("error" if send_errors else "skipped"),
+        "reason": None if sent_cells else
+                  ("all_sends_failed" if send_errors else "all_cells_empty"),
         "ppv_id": ppv_id, "is_resend": is_resend,
         "cells_sent": sent_cells, "recipients": total_recipients,
+        "send_errors": send_errors,
         "broadcast": broadcast, "pause_hours": pause_hours,
         "resend_job_id": resend_job_id, "feed_post": feed_post, "results": results,
     }
