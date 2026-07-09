@@ -98,6 +98,23 @@ export function writeNotifSettings(s: NotifSettings): void {
   } catch { /* ignore */ }
 }
 
+// ── last-used bell filter ─────────────────────────────────────────────
+//
+// The bell dropdown's active filter chip (All / Tips / Purchases / …).
+// Persisted so a chatter who lives on the Tips or Purchases view doesn't
+// have to re-click it after every reload / popout.
+
+const FILTER_KEY = "chatterly:notif-filter:v1";
+
+export function readNotifFilterId(): string | null {
+  if (typeof window === "undefined") return null;
+  try { return window.localStorage.getItem(FILTER_KEY); } catch { return null; }
+}
+
+export function writeNotifFilterId(id: string): void {
+  try { window.localStorage.setItem(FILTER_KEY, id); } catch { /* ignore */ }
+}
+
 /** Maps OF notification.type values into our internal NotifTypeKey set. */
 export function mapOfTypeToKey(rawType: string | undefined | null): NotifTypeKey | null {
   if (!rawType) return null;
