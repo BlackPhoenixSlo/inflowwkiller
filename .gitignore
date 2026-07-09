@@ -43,3 +43,6 @@ app/.turbo/
 
 # ---- graphify build cache (regenerable; graph.json + GRAPH_REPORT.md ARE committed) ----
 graphify-out/cache/
+
+# internal planning artifacts (never sync)
+.omc/
