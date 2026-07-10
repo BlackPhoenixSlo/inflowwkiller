@@ -76,6 +76,7 @@ from ppv_library_config_api import router as _ppv_library_config_router  # noqa:
 from scripts_api import router as _scripts_router  # noqa: E402
 from style_config_api import router as _style_config_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
+from settings_transfer_api import router as _settings_transfer_router  # noqa: E402
 from auth import (  # noqa: E402
     router as _auth_router,
     admin_router as _auth_admin_router,
@@ -178,6 +179,7 @@ app.include_router(_ppv_library_config_router)
 app.include_router(_scripts_router)
 app.include_router(_style_config_router)
 app.include_router(_account_config_router)
+app.include_router(_settings_transfer_router)
 app.include_router(_auth_router)
 app.include_router(_auth_admin_router)
 app.include_router(_auth_impersonate_router)

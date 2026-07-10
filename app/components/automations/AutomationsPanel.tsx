@@ -27,6 +27,7 @@ import RuleEditor from "@/components/automations/RuleEditor";
 import ReadyMadePanel from "@/components/automations/ReadyMadePanel";
 import BrainPanel from "@/components/automations/BrainPanel";
 import AutomationRunsCard from "@/components/stats/AutomationRunsCard";
+import SettingsTransfer from "@/components/settings/SettingsTransfer";
 
 function timeAgo(iso: string | null): string | null {
   if (!iso) return null;
@@ -130,7 +131,11 @@ export default function AutomationsPanel() {
               )}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <SettingsTransfer
+              accountId={accountId}
+              nickname={accounts.find((a) => a.id === accountId)?.nickname}
+            />
             <Button
               size="sm"
               variant="secondary"
