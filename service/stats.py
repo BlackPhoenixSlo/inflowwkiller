@@ -547,9 +547,10 @@ async def per_employee(
       • revenue_cents     — SUM(amount_cents) across all view rows (ppv + tip)
 
     Special bucket: when the view emits `sent_by_employee_id IS NULL` (a
-    standalone tip whose 7-day lookback found no outbound message), those
-    rows land in an "Unattributed" synthetic bucket so the revenue stays
-    visible in the per-employee total.
+    standalone tip whose 7-day lookback found no outbound message, or — since
+    view rev 0042 — an orphan PPV/custom sale with no message link and no
+    manual assignment), those rows land in an "Unattributed" synthetic bucket
+    so the revenue stays visible in the per-employee total.
 
     ``by_account=true`` adds a `per_account[]` breakdown per employee."""
     start = _parse_date(from_, field="from")
@@ -589,8 +590,21 @@ async def per_employee(
     tq_cols: list[Any] = [
         emp_col.label("employee_id"),
         func.coalesce(func.sum(amt_col), 0).label("revenue_cents"),
+        # Count the whole ppv family, matching the per-model KPI below.
+        # `kind='ppv'` alone is dead in practice — real unlocks arrive from the
+        # payouts ledger as ppv_message/ppv_post (the WS unlock event that
+        # writes bare 'ppv' has never been observed in production), so the old
+        # equality rendered this column ~0 for everyone.
         func.coalesce(
-            func.sum(case((kind_col == "ppv", 1), else_=0)), 0
+            func.sum(case(
+                (
+                    kind_col.in_((
+                        "ppv", "ppv_message", "ppv_post", "ppv_stream",
+                    )),
+                    1,
+                ),
+                else_=0,
+            )), 0
         ).label("ppv_conversions"),
     ]
     tq_group: list[Any] = [emp_col]
@@ -617,8 +631,9 @@ async def per_employee(
     #     view COALESCE picks them up; the old Q3 did not.
     # Reading from the view ensures Q3 matches Q2 exactly for revenue
     # totals and properly splits PPV vs Tip per the view's attribution.
-    # NULL employee rows are excluded so the "Unattributed" bucket keeps
-    # its {ppv:0,tip:0} defaults — orphan totals already flow via Q2.
+    # NULL employee rows are INCLUDED (since view rev 0042 the Unattributed
+    # bucket carries orphan PPV revenue too, not just tips) so the bucket
+    # gets a real {ppv, tip} split instead of {0, 0} placeholders.
     rev_kind_q = select(
         emp_col.label("employee_id"),
         acct_col.label("account_id"),
@@ -638,7 +653,7 @@ async def per_employee(
             ),
             else_=0,
         )), 0).label("tip_cents"),
-    ).where(emp_col.is_not(None))
+    )
     if account_ids is not None:
         rev_kind_q = rev_kind_q.where(acct_col.in_(account_ids))
     if start:
@@ -740,11 +755,11 @@ async def per_employee(
 
     # Q3 → revenue_by_kind. Rows here are always grouped (emp, acct);
     # we sum into the employee top-level always, and into per_account
-    # sub-rows when by_account=true. The Q3 filter excludes orphan tips,
-    # so the synthetic "Unattributed" bucket keeps its {ppv:0,tip:0}
-    # defaults — frontend doesn't need defensive coding.
+    # sub-rows when by_account=true. NULL-employee rows feed the synthetic
+    # "Unattributed" bucket its real ppv/tip split (orphan PPVs + orphan
+    # tips) — the frontend renders those cells like any other row's.
     for r in rev_kind_rows:
-        eid = int(r.employee_id)
+        eid = int(r.employee_id) if r.employee_id is not None else None
         emp_row = _bucket(eid)
         ppv_c = int(r.ppv_cents or 0)
         tip_c = int(r.tip_cents or 0)
