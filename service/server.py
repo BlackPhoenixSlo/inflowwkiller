@@ -37,6 +37,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import accounts as account_registry  # noqa: E402
+import account_health  # noqa: E402  # dead-session pause (see service/account_health.py)
 import proxies as proxy_registry  # noqa: E402
 import live_rev  # noqa: E402
 import secrets_store  # noqa: E402  # UI-writable key store (Setup → Keys)
@@ -448,6 +449,24 @@ async def _persist_unhandled_errors(request: Request, call_next):
             # Don't let the logger crash the response path on top of the
             # original error — just log and move on.
             log.exception("failed to persist server-side error to app_errors")
+        # OF's definite session-death signature ("Wrong user." — the creator
+        # got unlinked) pauses the account's automations right away and drops
+        # the pooled client, so a session re-captured on disk is picked up on
+        # the next request without a restart. See service/account_health.py.
+        try:
+            dead_reason = account_health.is_session_dead_error(exc)
+            aid = (request.headers.get("x-account-id")
+                   or request.query_params.get("account_id"))
+            if dead_reason and aid:
+                _invalidate_client(aid)
+                if await account_health.mark_session_dead(aid, dead_reason):
+                    log.warning(
+                        "account_session_dead account=%s via=%s — automations "
+                        "paused until the session recovers",
+                        aid, request.url.path,
+                    )
+        except Exception:
+            log.exception("failed to mark session-dead account")
         raise
 
 
@@ -985,6 +1004,33 @@ def _invalidate_client(account_id: str) -> None:
     """Drop a pooled OFClient so the next request reloads from disk.
     Used after re-bootstrap or proxy reassignment."""
     _clients.pop(account_id, None)
+
+
+def _kick_clear_session_dead(account_id: str) -> None:
+    """Fire-and-forget clear of the account's dead-session pause (see
+    service/account_health.py) — a fresh capture proves the session works, so
+    automations resume immediately instead of waiting for the next probe.
+    Trampolines to the main loop because sync handlers run in the threadpool
+    (same pattern as _kick_db_sync)."""
+    async def _clear() -> None:
+        try:
+            if await account_health.clear_session_dead(account_id):
+                log.info("account_session_recovered account=%s via=bootstrap "
+                         "— automations resume", account_id)
+        except Exception:
+            log.exception("failed to clear session-dead flag")
+
+    import asyncio as _aio
+    try:
+        loop = _aio.get_running_loop()
+    except RuntimeError:
+        if _main_loop is None:
+            return
+        _main_loop.call_soon_threadsafe(
+            lambda: _aio.create_task(_clear(), name=f"session-recover-{account_id}")
+        )
+        return
+    loop.create_task(_clear(), name=f"session-recover-{account_id}")
 
 
 def _link_account_to_request_user(account_id: str) -> None:
@@ -6460,6 +6506,7 @@ def bootstrap_session(body: _BootstrapBody = Body(...)) -> dict[str, Any]:
     # Resolve which account dir we ended up in (path = .../accounts/<id>/session_*.json)
     actual_aid = path.parent.name
     _invalidate_client(actual_aid)
+    _kick_clear_session_dead(actual_aid)
     c = _load_client(actual_aid)
     # Kick the WS pump too so the new cookies are used immediately.
     _restart_account_pump(actual_aid)
@@ -6518,7 +6565,7 @@ def wipe_fresh_browser_buckets() -> dict[str, Any]:
 # ── Multi-account admin ───────────────────────────────────────
 
 @app.get("/admin/accounts")
-def admin_accounts_list(response: Response) -> dict[str, Any]:
+async def admin_accounts_list(response: Response) -> dict[str, Any]:
     """List every account the signed-in user owns + the currently-active one
     (clamped to the user's set). The UI populates its switcher from this.
 
@@ -6538,6 +6585,15 @@ def admin_accounts_list(response: Response) -> dict[str, Any]:
     all_accounts = [
         a for a in account_registry.list_accounts() if a.get("id") in user.account_ids
     ]
+    # Dead-session accounts (automations paused — see account_health.py) are
+    # stamped so the switcher can badge "unlinked" instead of looking idle.
+    try:
+        dead = await account_health.dead_session_map()
+    except Exception:
+        log.exception("dead_session_map failed")
+        dead = {}
+    for a in all_accounts:
+        a["session_dead_at"] = dead.get(a.get("id"))
     active = account_registry.get_active_account_id()
     if active not in user.account_ids:
         active = all_accounts[0]["id"] if all_accounts else None

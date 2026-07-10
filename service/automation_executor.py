@@ -65,6 +65,7 @@ from db.models import (
 )
 from of_client import OFAPIError, OFClient
 from automation_registry import register, get_automation, load_automation_plugins
+import account_health
 
 log = logging.getLogger("of-relay.automation")
 
@@ -95,6 +96,10 @@ _FAN_COOLDOWN_S = 600          # 10 min — drip senders (welcome/followup) rest
                               # shorter _REPLY_COOLDOWN_S (45-90s) so convo flows.
 _MAX_JOB_ATTEMPTS = 3          # transient-failure retries before a job is parked 'error'
 _JOB_RETRY_BACKOFF_S = 60      # requeue delay after a failed attempt
+# A dead-session account (OF "Wrong user." — the creator got unlinked) pauses
+# ALL its automations; a fresh-from-disk client.me() probe runs this often per
+# flagged account and the first success resumes them. See account_health.py.
+_SESSION_PROBE_INTERVAL_S = 600
 
 # Send priority (W3): lower rank = higher priority. Used by the supervisor to
 # DISPATCH higher-priority kinds first within a tick, so on the rare fan overlap
@@ -1363,6 +1368,49 @@ async def _automation_scrape_chats(
 
 # ── The testable seam: run exactly one automation run ────────────────
 
+# ── Dead-session pause (see account_health.py) ──────────────────────
+
+# account_id → time.monotonic() of the last "paused" log line. The gate in
+# run_once fires every tick for every due (account, kind) pair, so without a
+# throttle a paused account would log twice a minute per kind.
+_session_skip_log_last: dict[str, float] = {}
+_session_probe_task: asyncio.Task | None = None
+
+
+def _log_session_dead_skip(account_id: str, kind: str) -> None:
+    now = time.monotonic()
+    last = _session_skip_log_last.get(account_id)
+    if last is not None and now - last < _SESSION_PROBE_INTERVAL_S:
+        return
+    _session_skip_log_last[account_id] = now
+    log.info(
+        "automation_paused_session_dead account=%s kind=%s — runs skipped "
+        "until the session probe (every %ss) or a re-capture clears it",
+        account_id, kind, _SESSION_PROBE_INTERVAL_S,
+    )
+
+
+async def _probe_dead_sessions() -> None:
+    """Recovery sweep: for each flagged account whose last probe is older than
+    _SESSION_PROBE_INTERVAL_S, try a fresh-from-disk `client.me()` (NOT a
+    pooled client — a re-captured session on disk must be picked up). The
+    first success clears the flag; its parked jobs run on the next tick."""
+    try:
+        aids = await account_health.due_probe_ids(_SESSION_PROBE_INTERVAL_S)
+        for aid in aids:
+            await account_health.stamp_probe(aid)
+            try:
+                client = _make_client(aid)
+                await asyncio.to_thread(client.me)
+            except Exception as e:
+                log.info("session_probe_still_dead account=%s err=%s", aid, repr(e)[:200])
+                continue
+            if await account_health.clear_session_dead(aid):
+                log.info("account_session_recovered account=%s — automations resume", aid)
+    except Exception:
+        log.warning("session_probe_sweep_failed", exc_info=True)
+
+
 async def run_once(
     account_id: str,
     kind: str,
@@ -1392,6 +1440,17 @@ async def run_once(
     lock = _run_locks[(account_id, kind)]
     if lock.locked():
         return {"status": "skipped", "reason": "in_flight"}
+
+    # Dead-session account (OF "Wrong user." — creator got unlinked): paused
+    # wholesale. Don't claim the job (it stays pending and simply runs on the
+    # first tick after the session recovers) and don't write a run row (one
+    # per 30s tick per kind would be pure noise). See account_health.py.
+    try:
+        if await account_health.is_session_dead(account_id):
+            _log_session_dead_skip(account_id, kind)
+            return {"status": "skipped", "reason": "session_unlinked"}
+    except Exception:
+        log.warning("session_dead_check_failed account=%s", account_id, exc_info=True)
 
     async with lock:
         if payload is None and job_id is None:
@@ -1429,6 +1488,17 @@ async def run_once(
                 "automation_run_failed account=%s kind=%s run_id=%s",
                 account_id, kind, run_id, exc_info=True,
             )
+            dead_reason = account_health.is_session_dead_error(e)
+            if dead_reason:
+                try:
+                    if await account_health.mark_session_dead(account_id, dead_reason):
+                        log.warning(
+                            "account_session_dead account=%s kind=%s reason=%s — "
+                            "pausing this account's automations until the session probe recovers",
+                            account_id, kind, dead_reason,
+                        )
+                except Exception:
+                    log.warning("mark_session_dead_failed account=%s", account_id, exc_info=True)
             await _finalize_run(run_id, "error", None, err)
             if job_id is not None:
                 await _mark_job_failure(job_id, err)
@@ -1479,6 +1549,13 @@ async def _drain_due_jobs_once() -> None:
         await _sweep_expired_leases()
     except Exception:
         log.warning("automation_lease_sweep_failed", exc_info=True)
+
+    # Dead-session recovery probe — detached so a slow OF round-trip can't
+    # stall dispatch; internally rate-limited per account, so spawning it
+    # every tick is a no-op between probe windows.
+    global _session_probe_task
+    if _session_probe_task is None or _session_probe_task.done():
+        _session_probe_task = asyncio.create_task(_probe_dead_sessions())
 
     pairs = await _due_job_pairs()
     if not pairs:
