@@ -34,19 +34,23 @@ log = logging.getLogger("of-relay.account-health")
 
 
 def is_session_dead_error(exc: BaseException) -> str | None:
-    """Classify `exc`: a short reason string when it is OF's definite
-    "this session no longer belongs to this user" rejection, else None.
+    """Classify `exc`: a short reason string when it definitely means "this
+    account has no working session", else None.
 
-    Deliberately STRICT — only the observed unlink signature (HTTP 400 +
-    `{"error":{"code":301,"message":"Wrong user."}}`) flags an account.
+    Deliberately STRICT — only two signatures flag an account:
+      • OF's unlink rejection: HTTP 400 +
+        `{"error":{"code":301,"message":"Wrong user."}}` → "wrong_user"
+      • `OFClient.from_account`'s FileNotFoundError ("has no captured
+        session") — the session dir is missing entirely, e.g. the account
+        was deleted or never captured on this host → "no_session"
     Transient 429s / 5xx / signing hiccups must never pause a healthy account;
     they already have retry paths of their own."""
     from of_client import OFAPIError  # lazy — keep this module import-light
 
-    if not isinstance(exc, OFAPIError):
-        return None
-    if "Wrong user" in str(exc):
+    if isinstance(exc, OFAPIError) and "Wrong user" in str(exc):
         return "wrong_user"
+    if isinstance(exc, FileNotFoundError) and "no captured session" in str(exc):
+        return "no_session"
     return None
 
 
