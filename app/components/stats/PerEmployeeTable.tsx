@@ -12,7 +12,7 @@
  *   • off            — show only the totals-per-employee row
  *
  * The synthetic "Unattributed" employee (employee_id=null) is rendered
- * with a muted highlight so revenue from orphan tips stays visible —
+ * with a muted highlight so orphan revenue (unlinked PPVs + tips) stays visible —
  * silently dropping it would make the totals not match per-model.
  */
 
@@ -31,11 +31,11 @@ interface Props {
   to: string | null;
 }
 
-// "Unattributed" rows (and any future bucket without per-kind data) get
-// {ppv:0,tip:0} from the backend — render "—" so chatters see "no data"
-// rather than "$0.00".
-function fmtKindCents(c: number, orphan: boolean): string {
-  if (orphan) return "—";
+// Since view rev 0042 the backend sends a real {ppv,tip} split for the
+// "Unattributed" bucket too (orphan PPVs + orphan tips), so every row's
+// kind cells render the same way. Note PPV+Tip can differ from Total by
+// `custom`-kind cents (rare) — Total is the authoritative column.
+function fmtKindCents(c: number): string {
   return fmtCentsBlankZero(c);
 }
 
@@ -205,7 +205,7 @@ export default function PerEmployeeTable({ from, to }: Props) {
                         </span>
                         {isOrphan && (
                           <span className="text-[10px] uppercase tracking-wide text-warn/80 ml-1">
-                            orphan tips
+                            unattributed
                           </span>
                         )}
                       </div>
@@ -217,7 +217,7 @@ export default function PerEmployeeTable({ from, to }: Props) {
                       {r.ppv_conversions.toLocaleString()}
                     </td>
                     <td className="px-4 py-2.5 text-right tabular-nums">
-                      {fmtKindCents(r.revenue_by_kind.ppv, isOrphan)}
+                      {fmtKindCents(r.revenue_by_kind.ppv)}
                     </td>
                     <td
                       className={cn(
@@ -225,7 +225,7 @@ export default function PerEmployeeTable({ from, to }: Props) {
                         !isOrphan && r.revenue_by_kind.tip > 0 && "text-ok font-medium",
                       )}
                     >
-                      {fmtKindCents(r.revenue_by_kind.tip, isOrphan)}
+                      {fmtKindCents(r.revenue_by_kind.tip)}
                     </td>
                     <td className="px-4 py-2.5 text-right tabular-nums font-medium">
                       {fmtCentsBlankZero(r.revenue_cents)}
@@ -251,12 +251,13 @@ export default function PerEmployeeTable({ from, to }: Props) {
                   {visible.reduce((s, r) => s + r.ppv_conversions, 0).toLocaleString()}
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums font-medium">
-                  {fmtCentsBlankZero(visible.reduce((s, r) => s + (r.employee_id == null ? 0 : r.revenue_by_kind.ppv), 0))}
+                  {fmtCentsBlankZero(visible.reduce((s, r) => s + r.revenue_by_kind.ppv, 0))}
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums font-medium">
-                  {/* Orphan rows have empty revenue_by_kind but carry tip revenue in
-                      revenue_cents — fold that in so PPV-Rev + Tip-Rev = Total. */}
-                  {fmtCentsBlankZero(visible.reduce((s, r) => s + (r.employee_id == null ? r.revenue_cents : r.revenue_by_kind.tip), 0))}
+                  {/* Every row (Unattributed included) carries a real by-kind
+                      split since view rev 0042 — fold uniformly. PPV+Tip may
+                      trail Total by `custom`-kind cents (rare). */}
+                  {fmtCentsBlankZero(visible.reduce((s, r) => s + r.revenue_by_kind.tip, 0))}
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums font-semibold">
                   {fmtCentsBlankZero(visible.reduce((s, r) => s + r.revenue_cents, 0))}
@@ -311,7 +312,7 @@ function SubRow({ sub, orphanParent }: { sub: PerEmployeeAccountRow; orphanParen
         {sub.ppv_conversions.toLocaleString()}
       </td>
       <td className="px-4 py-1.5 text-right tabular-nums text-xs text-fg-dim">
-        {fmtKindCents(sub.revenue_by_kind.ppv, orphanParent)}
+        {fmtKindCents(sub.revenue_by_kind.ppv)}
       </td>
       <td
         className={cn(
@@ -319,7 +320,7 @@ function SubRow({ sub, orphanParent }: { sub: PerEmployeeAccountRow; orphanParen
           !orphanParent && sub.revenue_by_kind.tip > 0 ? "text-ok" : "text-fg-dim",
         )}
       >
-        {fmtKindCents(sub.revenue_by_kind.tip, orphanParent)}
+        {fmtKindCents(sub.revenue_by_kind.tip)}
       </td>
       <td className="px-4 py-1.5 text-right tabular-nums text-xs text-fg-dim">
         {fmtCentsBlankZero(sub.revenue_cents)}

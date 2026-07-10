@@ -251,6 +251,12 @@ async def _fingerprint_lookup(s, account_id: str, parsed: dict) -> Transaction |
     return res.scalar_one_or_none()
 
 
+# Pathological-case guard for the linker's candidate fetch. A fan's same-price
+# outbound messages in a 30-day window are normally a handful; if we ever see
+# this many, the case is ambiguous by definition and we refuse to guess.
+_PPV_LINK_CANDIDATE_CAP = 50
+
+
 async def _link_ppv_message(
     s,
     *,
@@ -259,30 +265,99 @@ async def _link_ppv_message(
     amount_cents: int,
     occurred_at: datetime,
     tx: Transaction,
-) -> None:
-    """Heuristic: most-recent unpaid outbound PPV by this fan with matching
-    price, sent within _PPV_LINK_LOOKBACK_DAYS before the unlock. Refine
-    once we observe real ppv_message ledger rows."""
+    stamp_paid: bool = True,
+) -> bool:
+    """Attach a `ppv_message` ledger row to the outbound PPV it paid for — the
+    message whose `sent_by_employee_id` ("Sent by …") then credits the sale in
+    the per-employee view.
+
+    Candidates: same (account, fan), outbound, EXACT price match, sent within
+    _PPV_LINK_LOOKBACK_DAYS before the unlock, and not already claimed by
+    another transaction. The claim guard is kind-agnostic on purpose — it
+    mirrors the `uq_tx_msg` unique index, where a second claim of any kind is
+    a constraint violation.
+
+    Deliberately does NOT require the message to still be unpaid: the WS pump
+    flips `is_paid` within seconds of an unlock while this ledger tick runs
+    every ~5 minutes, so the purchased message is usually ALREADY paid by the
+    time the money shows up — the old unpaid filter orphaned exactly the
+    fastest buyers (or worse, matched a stale same-price message). Instead the
+    flip is a POSITIVE signal: it marks which message the fan actually opened.
+
+    Links ONLY when unambiguous: exactly one candidate, or exactly one
+    candidate carrying the is_paid flag. Anything murkier stays unlinked for
+    the Sales-needing-attribution panel (ops' "clear cases only" rule).
+    Sequential unlocks still auto-link — each prior unlock's message is
+    already claimed and excluded by the guard when the next tick fires.
+
+    `stamp_paid=False` (historical backfill) writes ONLY `tx.message_id` — no
+    message mutation, so bulk relinks have zero downstream side effects
+    (funnels / offer watcher / bought-media dedupe all read `is_paid`) and
+    reversal is a single UPDATE nulling the journaled message_ids.
+
+    Returns True iff a link was made.
+    """
+    msg, _reason = await _select_ppv_link_candidate(
+        s,
+        account_id=account_id,
+        fan_id=fan_id,
+        amount_cents=amount_cents,
+        occurred_at=occurred_at,
+    )
+    if msg is None:
+        return False
+    if stamp_paid:
+        msg.is_paid = True
+        msg.purchased_at = occurred_at
+    tx.message_id = msg.message_id
+    return True
+
+
+async def _select_ppv_link_candidate(
+    s,
+    *,
+    account_id: str,
+    fan_id: int,
+    amount_cents: int,
+    occurred_at: datetime,
+) -> tuple[Message | None, str]:
+    """Pure READ: pick the message a PPV payment belongs to, or refuse.
+    Returns (message, 'ok') on an unambiguous pick, else (None, reason) with
+    reason in {'no_candidate', 'ambiguous'}. Shared by the live linker and the
+    relink sweep's dry-run so the reported plan is exactly what apply would do.
+    """
     cutoff = occurred_at - timedelta(days=_PPV_LINK_LOOKBACK_DAYS)
+    already_claimed = (
+        select(Transaction.id)
+        .where(
+            Transaction.account_id == Message.account_id,
+            Transaction.fan_id == Message.fan_id,
+            Transaction.message_id == Message.message_id,
+        )
+        .exists()
+    )
     res = await s.execute(
         select(Message).where(
             Message.account_id == account_id,
             Message.fan_id == fan_id,
             Message.direction == "out",
             Message.price_cents == amount_cents,
-            ((Message.is_paid.is_(None)) | (Message.is_paid.is_(False))),
             Message.created_at >= cutoff,
             Message.created_at <= occurred_at,
+            ~already_claimed,
         )
         .order_by(Message.created_at.desc())
-        .limit(1)
+        .limit(_PPV_LINK_CANDIDATE_CAP)
     )
-    msg = res.scalar_one_or_none()
-    if msg is None:
-        return
-    msg.is_paid = True
-    msg.purchased_at = occurred_at
-    tx.message_id = msg.message_id
+    candidates = list(res.scalars().all())
+    if not candidates or len(candidates) >= _PPV_LINK_CANDIDATE_CAP:
+        return (None, "no_candidate" if not candidates else "ambiguous")
+    if len(candidates) == 1:
+        return (candidates[0], "ok")
+    paid = [m for m in candidates if m.is_paid]
+    if len(paid) != 1:
+        return (None, "ambiguous")  # leave for the manual panel
+    return (paid[0], "ok")
 
 
 # Synthetic message_id band for LEDGER-ingested chat tips the WS pump never saw
@@ -351,6 +426,140 @@ async def _synthesize_tip_message(
     await s.execute(stmt)
     log.info("ingest_tx_synth_tip_msg account=%s fan=%s tx=%s msg=%s cents=%d",
              account_id, fan_id, tx.id, synth_id, amount_cents or 0)
+
+
+async def relink_orphan_ppvs(
+    *,
+    account_id: str | None = None,
+    since: datetime | None = None,
+    dry_run: bool = False,
+    limit: int = 500,
+    newest_first: bool = True,
+    after: tuple[str, int] | None = None,
+    stamp_paid: bool = True,
+) -> dict[str, Any]:
+    """Retry the payment→message link for orphaned chat PPVs
+    (`kind='ppv_message'`, `message_id IS NULL`). Fill-only: enumerates only
+    message-NULL rows and never touches `attributed_employee_id`, so manual
+    assignments and existing links are untouchable by construction.
+
+    Two callers, two shapes:
+      • per-tick sweep (run_one_tick): account + recent `since` window,
+        `newest_first=True` + bounded `limit` — fresh linkable rows are always
+        reached even if the window holds permanently-ambiguous rows.
+      • one-shot backfill: `newest_first=False` with `after` as a keyset
+        cursor `(occurred_at_iso, id)` — chunked traversal of ALL history,
+        oldest first, `stamp_paid=False` (attribution only, zero message-state
+        side effects).
+
+    CONCURRENCY: each row gets its OWN session + immediate commit — write
+    locks stay short against the live WS pump/ticks and a failure loses one
+    row, not the batch. An IntegrityError (uq_tx_msg race with a live tick
+    claiming the same message) rolls back that row only → `conflict_skipped`.
+
+    DRY RUN is genuinely read-only: it runs the same candidate selector and
+    reports what apply WOULD do, tracking would-be claims in memory so two
+    orphans can't both "plan" the same message (such repeats count as
+    `conflict_skipped`).
+
+    Returns {examined, linked, ambiguous_skipped, no_candidate,
+    conflict_skipped, journal: [{tx_id, message_id}], next_after} —
+    `next_after` is the keyset cursor for the next chunk (None = exhausted).
+    """
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy import tuple_ as sa_tuple
+
+    stats: dict[str, Any] = {
+        "examined": 0, "linked": 0, "ambiguous_skipped": 0,
+        "no_candidate": 0, "conflict_skipped": 0,
+        "journal": [], "next_after": None, "dry_run": dry_run,
+    }
+
+    q = (
+        select(
+            Transaction.id, Transaction.account_id, Transaction.fan_id,
+            Transaction.amount_cents, Transaction.occurred_at,
+        )
+        .where(
+            Transaction.kind == "ppv_message",
+            Transaction.message_id.is_(None),
+            Transaction.fan_id.is_not(None),
+            Transaction.status.in_(("cleared", "pending")),
+        )
+    )
+    if account_id is not None:
+        q = q.where(Transaction.account_id == account_id)
+    if since is not None:
+        q = q.where(Transaction.occurred_at >= since)
+    if newest_first:
+        q = q.order_by(Transaction.occurred_at.desc(), Transaction.id.desc())
+    else:
+        q = q.order_by(Transaction.occurred_at.asc(), Transaction.id.asc())
+        if after is not None:
+            q = q.where(
+                sa_tuple(Transaction.occurred_at, Transaction.id)
+                > (datetime.fromisoformat(after[0]), after[1])
+            )
+    q = q.limit(limit)
+
+    async with get_session() as s:
+        rows = (await s.execute(q)).all()
+
+    dry_claimed: set[tuple[str, int, int]] = set()
+
+    for tx_id, aid, fid, cents, occ in rows:
+        stats["examined"] += 1
+        async with get_session() as s:
+            try:
+                tx = (await s.execute(
+                    select(Transaction).where(
+                        Transaction.id == tx_id,
+                        Transaction.message_id.is_(None),  # re-check: live tick may have won
+                    )
+                )).scalar_one_or_none()
+                if tx is None:
+                    stats["conflict_skipped"] += 1
+                    continue
+                msg, reason = await _select_ppv_link_candidate(
+                    s, account_id=aid, fan_id=int(fid),
+                    amount_cents=int(cents or 0), occurred_at=occ,
+                )
+                if msg is None:
+                    stats["ambiguous_skipped" if reason == "ambiguous"
+                          else "no_candidate"] += 1
+                    continue
+                claim_key = (str(aid), int(fid), int(msg.message_id))
+                if dry_run:
+                    if claim_key in dry_claimed:
+                        stats["conflict_skipped"] += 1
+                        continue
+                    dry_claimed.add(claim_key)
+                    stats["linked"] += 1
+                    stats["journal"].append(
+                        {"tx_id": int(tx_id), "message_id": int(msg.message_id)}
+                    )
+                    continue  # read-only: no mutation, session commits nothing
+                if stamp_paid:
+                    msg.is_paid = True
+                    msg.purchased_at = occ
+                tx.message_id = msg.message_id
+                await s.commit()
+                stats["linked"] += 1
+                stats["journal"].append(
+                    {"tx_id": int(tx_id), "message_id": int(msg.message_id)}
+                )
+                log.info(
+                    "relink_ppv_linked tx=%d account=%s fan=%s msg=%d cents=%d stamp_paid=%s",
+                    tx_id, aid, fid, int(msg.message_id), int(cents or 0), stamp_paid,
+                )
+            except IntegrityError:
+                await s.rollback()
+                stats["conflict_skipped"] += 1
+
+    if len(rows) == limit and not newest_first and rows:
+        last = rows[-1]
+        stats["next_after"] = (last.occurred_at.isoformat(), int(last.id))
+    return stats
 
 
 async def _bump_lifetime(s, account_id: str, fan_id: int, amount_cents: int) -> None:
@@ -1018,6 +1227,32 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                 floor_reached=floor_reached,
             )
             finalized = True
+
+            # Relink: retry the payment→message link for recent orphaned chat
+            # PPVs whose message row arrived AFTER the transaction did (scrape
+            # lag, WS gap). Runs BEFORE attribute_orphans so the linker gets
+            # first shot — a linked sale credits its sender directly and needs
+            # no last-toucher heuristic. newest-first + bounded limit so
+            # permanently-ambiguous rows in the window can't starve fresh
+            # linkable ones. Best-effort, same contract as the sweep below.
+            try:
+                rl = await relink_orphan_ppvs(
+                    account_id=account_id,
+                    since=datetime.utcnow() - timedelta(days=_ATTR_SWEEP_SINCE_DAYS),
+                    limit=200,
+                )
+                if rl["linked"] or rl["ambiguous_skipped"]:
+                    log.info(
+                        "ingest_tx_relink_sweep account=%s linked=%d ambiguous=%d "
+                        "no_candidate=%d conflicts=%d",
+                        account_id, rl["linked"], rl["ambiguous_skipped"],
+                        rl["no_candidate"], rl["conflict_skipped"],
+                    )
+            except Exception:
+                log.warning(
+                    "ingest_tx_relink_sweep_failed account=%s", account_id,
+                    exc_info=True,
+                )
 
             # Auto-assign: credit the last-toucher (human OR Automation) for
             # any sale this scan surfaced that still resolves to no employee,

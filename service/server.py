@@ -8413,16 +8413,21 @@ async def admin_sales_needing_attribution(
     limit: int = Query(200, ge=1, le=500),
 ) -> dict[str, Any]:
     """Confirmed sales (`cleared`+`pending`) currently in the per-employee view's
-    'Unattributed' bucket — BOTH standalone-tip orphans AND message-linked
-    orphans (a PPV whose scraped message carries no sender, e.g. duplicate-price
-    PPVs the auto-rule leaves ambiguous). Each row ships the CANDIDATE chatters
-    (distinct NON-MASS 1:1 senders to that fan within `lookback_days` before the
-    sale) so the operator can assign the right one via
+    'Unattributed' bucket — standalone-tip orphans, message-linked orphans (a
+    PPV whose scraped message carries no sender, e.g. duplicate-price PPVs the
+    auto-rule leaves ambiguous), AND unlinked PPV/custom orphans (`message_id`
+    NULL — the relinker found no unambiguous message; per ops' manual-only rule
+    these are never auto-credited, so THIS panel is their only path to a
+    chatter). Each row ships the CANDIDATE chatters (distinct NON-MASS 1:1
+    senders to that fan within `lookback_days` before the sale) so the operator
+    can assign the right one via
     POST /admin/ingest/transactions/{id}/attribute. `include_assigned=true` also
     returns sales that already carry a manual override (to reassign / clear).
 
     Mirrors attribution_backfill's orphan predicates; the 7-day NOT-EXISTS on the
-    standalone-tip branch matches the live view's own lookup so the two agree."""
+    standalone-tip branch matches the live view's own lookup so the two agree.
+    The unlinked-PPV branch has NO toucher exclusion — the view gives PPVs no
+    lookback, so every unlinked one is an orphan regardless of recent chat."""
     from db.engine import get_session
     from sqlalchemy import text as sql_text
 
@@ -8452,6 +8457,14 @@ async def admin_sales_needing_attribution(
                 AND m.direction = 'out' AND m.sent_by_employee_id IS NOT NULL
                 AND m.created_at <= t.occurred_at
                 AND m.created_at > datetime(t.occurred_at, '-7 days'))
+        UNION ALL
+        SELECT t.id, t.account_id, t.fan_id, t.amount_cents, t.occurred_at,
+               t.description, t.kind, t.status, t.attributed_employee_id
+          FROM transactions t
+         WHERE t.kind IN ('ppv','ppv_message','ppv_post','ppv_stream','custom')
+           AND t.message_id IS NULL
+           AND t.status IN ('cleared','pending')
+           AND t.fan_id IS NOT NULL
       )
       SELECT o.id, o.account_id, o.fan_id, o.amount_cents, o.occurred_at,
              o.description, o.kind, o.status, o.attributed_employee_id,
