@@ -141,6 +141,24 @@ class Session(Base):
     )
 
 
+class AccountHealth(Base):
+    """Per-account OF session health (see service/account_health.py).
+
+    `session_dead_at` set ⇒ OF rejected the stored session ("Wrong user." —
+    the creator got logged out / re-linked elsewhere). While set, the
+    automation executor skips EVERY run for the account; a periodic
+    `client.me()` probe (or a session re-capture) clears it. One row per
+    account, created on first flag. Soft reference to accounts.id — no FK,
+    matching `Account.proxy_label`: the accounts table is a mirror of the
+    sessions dir and may lag it."""
+    __tablename__ = "account_health"
+
+    account_id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_dead_at: Mapped[datetime | None] = mapped_column(DateTime)
+    session_dead_reason: Mapped[str | None] = mapped_column(String)
+    last_probe_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class Employee(Base):
     """Your team. No passwords — the picker reads display_name + color.
 
