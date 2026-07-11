@@ -69,6 +69,8 @@ _INT_KNOBS = {
     "post_purchase_minutes": (0, 1440),
     "offer_expiry_minutes": (0, 10_080),
     "nudge_after_minutes": (1, 1440),
+    # Old-fan engagement: ~one info question per this many replies.
+    "old_fan_question_every": (1, 100),
 }
 _MODES = ("backup", "always")
 _OFFER_MODES = ("tip", "ppv", "both")
@@ -91,6 +93,8 @@ def _validate_cfg(cfg: dict) -> dict:
         out["enabled"] = bool(cfg["enabled"])
     if "intent_only" in cfg:
         out["intent_only"] = bool(cfg["intent_only"])
+    if "engage_old_fans" in cfg:
+        out["engage_old_fans"] = bool(cfg["engage_old_fans"])
     if "pivot_on_escalation" in cfg:
         out["pivot_on_escalation"] = bool(cfg["pivot_on_escalation"])
     if "unsend_expired_offer" in cfg:

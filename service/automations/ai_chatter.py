@@ -100,6 +100,11 @@ _REPLY_COOLDOWN_S = 10           # live chat — same short rest as of_ai_chat
 # them while respecting every other skip (unreachable, old_fan_pre_ai, manual).
 _GRADUATION_SKIPS = frozenset({"spent", "too_long", "info"})
 
+# process_old_fans' flag: subscribers that predate the AI. Normally a hard skip
+# (human territory) — liftable per-account via cfg["engage_old_fans"], which
+# engages them in gentle mode (see old_fan_question_every in _DEFAULTS).
+_OLD_FAN_SKIP = "old_fan_pre_ai"
+
 # Built-in defaults — any key the account config omits. DISABLED until a creator
 # enables it. The offer_* knobs are read by the M3 offer engine.
 _DEFAULTS: dict = {
@@ -160,6 +165,15 @@ _DEFAULTS: dict = {
     # it is the only cadence piece that SENDS an unsolicited message.
     "nudge_enabled": False,
     "nudge_after_minutes": 15,
+
+    # ── Old-fan engagement — lifts process_old_fans' `old_fan_pre_ai` skip.
+    # OFF by default (flagged fans stay human territory). ON → ai_chatter also
+    # replies to them, but interviews GENTLY: the info-gather ask fires at most
+    # ~once every `old_fan_question_every` replies (1/N chance per message);
+    # the rest of the time it's pure convo — these are established fans, not
+    # fresh subs to onboard.
+    "engage_old_fans": False,
+    "old_fan_question_every": 10,
 }
 
 
@@ -1127,7 +1141,8 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     nonnative_on: bool = False,
                     sell_block: str = "",
                     content_ask: bool = False,
-                    escalation: bool = False) -> tuple[list[dict], list[str]]:
+                    escalation: bool = False,
+                    ask_every: int = 0) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — of_ai_chat's girly info-gather prompt
     with one structural difference: `sell_block`. Empty (M2) → the no-offers
     line stays, byte-equal behavior. Non-empty (M3) → the catalog/offer rules
@@ -1168,6 +1183,11 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     breather_p = 0.55 if len(presented) <= 2 else 0.33
 
     ask = bool(question_lines)
+    # Gentle mode (engaged old fans): an info question at most ~every
+    # `ask_every` replies — 1/N per message, everything else stays pure convo.
+    # The regular dice below still apply when the throttle lets an ask through.
+    if ask and ask_every > 1:
+        ask = random.random() < 1.0 / ask_every
     if ask:
         if ask_streak >= 3:
             ask = False
@@ -1354,7 +1374,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     nudge_min = int(cfg.get("nudge_after_minutes") or 0)
     session_gap_min = int(cfg.get("session_gap_minutes") or 0) if cadence_on else 0
 
+    # Old-fan engagement (opt-in): lift the `old_fan_pre_ai` flag and remember
+    # who it covered — those fans get the gentle ask cadence in the prompt.
+    engage_old = bool(cfg.get("engage_old_fans"))
+    old_q_every = max(1, int(cfg.get("old_fan_question_every") or 10))
+
     blacklist, skip_reasons = await _load_stop_lists(account_id)
+    old_fan_ids: set[int] = ({fid for fid, r in skip_reasons.items()
+                              if r == _OLD_FAN_SKIP} if engage_old else set())
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)
     by_fan = await _gather(account_id, only_fan_ids or None,
                            session_gap_min=session_gap_min)
@@ -1388,6 +1415,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     now = datetime.utcnow()
     candidates: list[_Cand] = []
+    old_fans_engaged = 0    # candidates admitted via the engage_old_fans lift
     skipped_listed = 0      # blacklist / non-graduation skip_list / paused
     skipped_not_turn = 0    # we (or nobody) spoke last
     skipped_spam = 0        # promo-spam: $0 + creator_we_follow
@@ -1402,7 +1430,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             skipped_listed += 1
             continue
         reason = skip_reasons.get(fan_id)
-        if reason is not None and reason not in _GRADUATION_SKIPS and not forced:
+        if (reason is not None and reason not in _GRADUATION_SKIPS and not forced
+                and fan_id not in old_fan_ids):
             skipped_listed += 1
             continue
         if fan_id in mid_funnel_fans and not forced:
@@ -1440,6 +1469,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 if c.last_in_at is None or c.last_in_at > now - timedelta(seconds=sla_s):
                     skipped_sla_fresh += 1
                     continue
+        if fan_id in old_fan_ids:
+            old_fans_engaged += 1
         candidates.append(c)
 
     # Longest-waiting fan first — backup mode is an SLA queue, not a popularity
@@ -1549,7 +1580,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                               nonnative_on=nonnative_on,
                                               sell_block=sell_block,
                                               content_ask=content_ask,
-                                              escalation=escalation)
+                                              escalation=escalation,
+                                              ask_every=(old_q_every
+                                                         if fan_id in old_fan_ids
+                                                         else 0))
             try:
                 res = await llm_client.chat(
                     model=model,
@@ -1786,6 +1820,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "would_offer": would_offer,
         "unbacked_stripped": unbacked_stripped,
         **offer_stats,
+        "old_fans_engaged": old_fans_engaged,
         "skipped_listed": skipped_listed,
         "skipped_not_turn": skipped_not_turn,
         "skipped_spam": skipped_spam,

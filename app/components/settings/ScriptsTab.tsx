@@ -664,6 +664,34 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
             </span>
           </label>
         </div>
+        <div className="rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-2 text-sm">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input type="checkbox" className="mt-0.5" checked={!!cfg.engage_old_fans}
+              onChange={(e) => set({ engage_old_fans: e.target.checked })} />
+            <span>
+              <span className="font-medium">Also chat with old (pre-AI) fans</span>
+              <span className="block text-fg-dim text-xs">
+                Fans flagged during old-fan onboarding (old_fan_pre_ai) are
+                normally left to your team. On, the AI replies to them too —
+                mostly just keeping the convo going, weaving in one
+                get-to-know question about every N replies instead of the
+                usual new-fan interview pace.
+              </span>
+            </span>
+          </label>
+          {!!cfg.engage_old_fans && (
+            <label className="flex items-center gap-2 text-xs text-fg-dim pl-6">
+              Info question about every
+              <input type="number" className={`${INPUT} w-16`} min={1} max={100}
+                value={cfg.old_fan_question_every ?? 10}
+                onChange={(e) => set({
+                  old_fan_question_every:
+                    Math.max(1, parseInt(e.target.value || "10", 10) || 10),
+                })} />
+              replies
+            </label>
+          )}
+        </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <label className="space-y-1">
             <div className="text-fg-dim text-xs">Mode</div>
