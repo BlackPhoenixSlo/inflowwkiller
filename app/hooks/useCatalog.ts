@@ -45,6 +45,10 @@ export interface AiChatterConfig {
   /** Closer mode: only reply to a fan who shows buying intent (or has an open
    *  offer); leave pure chit-chat to the team / Auto Convo. */
   intent_only?: boolean;
+  /** Also engage fans flagged `old_fan_pre_ai` (onboarded before the AI) —
+   *  mostly pure convo, with an info question ~every old_fan_question_every replies. */
+  engage_old_fans?: boolean;
+  old_fan_question_every?: number;
   sla_minutes?: number;
   max_lifetime_spend_cents?: number;
   offer_mode?: "tip" | "ppv" | "both";
