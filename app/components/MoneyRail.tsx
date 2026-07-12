@@ -4,18 +4,28 @@
  * MoneyRail — sticky bottom-right dock for money notifications (purchases
  * + tips) so chatters can jump straight to the fans who just paid.
  *
- * It fetches OF's /notifications?type=purchases|tip for each in-scope
- * account on mount — collapsed or not — so the rail is fresh on first page
- * load rather than only after the user expands it. Those rows are merged
- * with the localStorage notif-history mirror (which carries SSE arrivals
- * that OF hasn't listed yet). Uses the SAME ["notif-list", aid, type] query
- * keys as the bell, so the cache is shared and the toaster's invalidation
- * on SSE arrival refreshes this list too.
+ * It fetches OF's /notifications?type=purchases|tip on mount — collapsed or
+ * not — so the rail is fresh on first page load rather than only after the
+ * user expands it. Those rows are merged with the localStorage notif-history
+ * mirror (which carries SSE arrivals that OF hasn't listed yet). Uses the SAME
+ * ["notif-list", aid, type] query keys as the bell, so the cache is shared and
+ * the toaster's invalidation on SSE arrival refreshes this list too.
  *
- * Two states, both persisted in localStorage so a reload / popout comes
- * back exactly how you left it:
- *   • collapsed — compact card showing the last 3 money events.
- *   • expanded  — taller list (~8 rows visible, scroll for up to 50).
+ * WHICH MODELS: every active one by default, deliberately ignoring the
+ * ScopeContext the rest of the UI follows — money landing on the model you're
+ * NOT looking at is exactly what you don't want to miss. Narrow it in ⚙.
+ *
+ * Two sizes, and the marker (">" / "⌄") points where a click takes you.
+ * Collapsing SHRINKS THE WINDOW, it doesn't truncate the feed — every row
+ * stays mounted and scrolls, so "small" shows 1 row (configurable 1-4) with
+ * the rest a flick away, and "big" shows 6 (configurable 5-8).
+ *
+ * Draggable by its header. Position + the collapsed/expanded bit are persisted
+ * PER SURFACE (inbox / chat pop-out / group tab): the rail is mounted once in
+ * the root layout, but a corner that's out of the way in the inbox can cover a
+ * pane in the group tab, so each surface remembers its own. Row counts and the
+ * model pick are global — they're about the work, not this window's layout.
+ * Dragging over the header's buttons doesn't fire them.
  *
  * Sticky by design: it never closes on outside click or Escape — only
  * tapping the header toggles it. Rows deep-link to the fan's chat with
@@ -23,10 +33,10 @@
  * just moved money and the popout's persisted caches are stale by seconds.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 
-import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { relay, proxyImage, type OFChatItem } from "@/lib/relay";
 import { stripHtmlPreview } from "@/lib/htmlPreview";
@@ -42,29 +52,163 @@ import {
 
 const MONEY_TYPES = ["purchases", "tip"] as const;
 
-const STATE_KEY = "chatterly:money-rail:v1";
-const COLLAPSED_ROWS = 3;
 const MAX_ROWS = 50;
-/** How many rows deep we fetch chat detail (last text + seen state) while
- *  expanded. One OF roundtrip per fan, so we don't do it for all 50 —
- *  rows past this just render without the status line. */
-const DETAIL_ROWS = 12;
-/** Floor between two forced re-fetches of the same fan's chat detail. */
-const DETAIL_REFRESH_MIN_GAP_MS = 10_000;
+const PANEL_W = 290;
+/** One row's height. The body's max-height is rows × this, so "small = 1 row"
+ *  is a window onto the feed, not a truncation — the list still scrolls. */
+const ROW_H = 68;
+/** Non-scrolling chrome above the list, used to cap the body so an expand
+ *  can't run off the screen edge. Estimates, not measurements — measuring
+ *  would need a post-render pass feeding back into the height that caused it. */
+const HEADER_H = 38;
+const SETTINGS_H = 200;
+/** Breathing room kept between the panel and the far viewport edge. */
+const VIEWPORT_MARGIN = 12;
+/** The default (never-dragged) corner sits `bottom-3 right-3` = 12px in. */
+const DEFAULT_EDGE_GAP = 12;
 
-function readOpen(): boolean {
-  if (typeof window === "undefined") return false;
+// ── Settings (rows + which models) ───────────────────────────────────────
+// Deliberately NOT per-surface, unlike position: "watch 6 rows, for these
+// models" is a preference about the work, not about this window's layout.
+const SETTINGS_KEY = "chatterly:money-rail:settings:v1";
+const SMALL_ROW_CHOICES = [1, 2, 3, 4] as const;
+const BIG_ROW_CHOICES = [5, 6, 7, 8] as const;
+
+export interface RailSettings {
+  /** Rows visible while collapsed. */
+  smallRows: number;
+  /** Rows visible while expanded. */
+  bigRows: number;
+  /** Accounts to pull money notifications for. null = ALL active accounts —
+   *  which is the default ON PURPOSE, and independent of the ScopeContext the
+   *  rest of the UI follows: a chatter scoped to one model still wants to see
+   *  the money landing on the others. */
+  accounts: string[] | null;
+}
+
+const DEFAULT_SETTINGS: RailSettings = { smallRows: 1, bigRows: 6, accounts: null };
+
+function clampChoice(v: unknown, choices: readonly number[], fallback: number): number {
+  return typeof v === "number" && choices.includes(v) ? v : fallback;
+}
+
+export function readSettings(): RailSettings {
+  if (typeof window === "undefined") return DEFAULT_SETTINGS;
   try {
-    const raw = window.localStorage.getItem(STATE_KEY);
-    if (!raw) return false;
-    return (JSON.parse(raw) as { open?: boolean }).open === true;
+    const raw = window.localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return DEFAULT_SETTINGS;
+    const p = JSON.parse(raw) as Partial<RailSettings>;
+    return {
+      smallRows: clampChoice(p.smallRows, SMALL_ROW_CHOICES, DEFAULT_SETTINGS.smallRows),
+      bigRows: clampChoice(p.bigRows, BIG_ROW_CHOICES, DEFAULT_SETTINGS.bigRows),
+      // An EMPTY array would mean "no models", i.e. a permanently blank rail —
+      // never a thing the user meant. Treat it as "all", same as null.
+      accounts:
+        Array.isArray(p.accounts) && p.accounts.length > 0
+          ? p.accounts.filter((a): a is string => typeof a === "string")
+          : null,
+    };
   } catch {
-    return false;
+    return DEFAULT_SETTINGS;
   }
 }
 
-function writeOpen(open: boolean): void {
-  try { window.localStorage.setItem(STATE_KEY, JSON.stringify({ open })); } catch { /* ignore */ }
+export function writeSettings(s: RailSettings): void {
+  try { window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* quota */ }
+}
+
+/** Which accounts the rail actually queries. Defaults to every active account
+ *  (NOT the current scope); a saved pick is intersected with what's live, so a
+ *  removed model can't leave the rail permanently empty. */
+export function resolveRailAccounts(
+  settings: RailSettings,
+  active: readonly { id: string }[],
+): string[] {
+  const activeIds = active.map((a) => a.id);
+  if (!settings.accounts) return activeIds;
+  const picked = activeIds.filter((id) => settings.accounts!.includes(id));
+  return picked.length > 0 ? picked : activeIds;
+}
+/** How deep we fetch chat detail (last text + seen state): what's visible plus
+ *  a little lookahead, since the window scrolls. One OF roundtrip per fan, so
+ *  it's hard-capped — rows past it render without the status line. */
+const DETAIL_ROWS_LOOKAHEAD = 3;
+const DETAIL_ROWS_MAX = 12;
+/** Floor between two forced re-fetches of the same fan's chat detail. */
+const DETAIL_REFRESH_MIN_GAP_MS = 10_000;
+/** Pointer slop before a press on the header counts as a drag and not a click. */
+const DRAG_THRESHOLD_PX = 4;
+
+/** The rail is mounted once in the root layout, but the same dock in the inbox,
+ *  a chat pop-out and the group tab are three different working surfaces — a
+ *  spot that's out of the way on one covers something on another. So position
+ *  (and open/collapsed) is persisted per surface, not globally. */
+export type Surface = "inbox" | "popup" | "group";
+
+export function surfaceOf(pathname: string | null): Surface {
+  if (pathname?.startsWith("/group")) return "group";
+  if (pathname?.startsWith("/chat/")) return "popup";
+  return "inbox";
+}
+
+export interface DockState {
+  open: boolean;
+  /** Distance from the left edge. null (with y) = default bottom-right corner. */
+  x: number | null;
+  /** Distance from whichever edge `anchor` names. Growing the panel moves the
+   *  OTHER edge, so the anchored one stays put. */
+  y: number | null;
+  /** Which horizontal edge the panel is pinned to. Chosen from where it was
+   *  dropped: in the bottom half of the screen it pins to the BOTTOM, so
+   *  expanding grows upward instead of shoving the panel off-screen. In the
+   *  top half it pins to the top and grows downward. */
+  anchor: "top" | "bottom";
+}
+
+const DEFAULT_DOCK: DockState = { open: false, x: null, y: null, anchor: "bottom" };
+
+/** Which edge a panel occupying [top, top+height] should pin to: whichever the
+ *  panel's centre is nearer. */
+export function anchorFor(top: number, height: number, viewportH: number): "top" | "bottom" {
+  return top + height / 2 > viewportH / 2 ? "bottom" : "top";
+}
+
+function stateKey(surface: Surface): string {
+  return `chatterly:money-rail:v2:${surface}`;
+}
+
+export function readDock(surface: Surface): DockState {
+  if (typeof window === "undefined") return DEFAULT_DOCK;
+  try {
+    const raw = window.localStorage.getItem(stateKey(surface));
+    if (!raw) return DEFAULT_DOCK;
+    const p = JSON.parse(raw) as Partial<DockState>;
+    return {
+      open: p.open === true,
+      x: typeof p.x === "number" && Number.isFinite(p.x) ? p.x : null,
+      y: typeof p.y === "number" && Number.isFinite(p.y) ? p.y : null,
+      // Positions saved before the anchor existed were top-based.
+      anchor: p.anchor === "bottom" ? "bottom" : "top",
+    };
+  } catch {
+    return DEFAULT_DOCK;
+  }
+}
+
+export function writeDock(surface: Surface, s: DockState): void {
+  try { window.localStorage.setItem(stateKey(surface), JSON.stringify(s)); } catch { /* quota */ }
+}
+
+/** Keep the panel on screen — after a drag, a resize, or a restore into a
+ *  window smaller than the one the position was saved from. Always leaves the
+ *  header grabbable. */
+export function clampToViewport(x: number, y: number, panelH: number): { x: number; y: number } {
+  const maxX = Math.max(0, window.innerWidth - PANEL_W);
+  const maxY = Math.max(0, window.innerHeight - Math.min(panelH, 80));
+  return {
+    x: Math.min(Math.max(0, x), maxX),
+    y: Math.min(Math.max(0, y), maxY),
+  };
 }
 
 interface NotificationUser {
@@ -214,24 +358,160 @@ function parseList(raw: unknown): NotificationItem[] {
 }
 
 export function MoneyRail() {
-  const { accountId } = useScope();
   const activeAccounts = useActiveAccounts();
-  const [open, setOpen] = useState<boolean>(() => readOpen());
-  // Render nothing until after hydration — the collapsed list comes from
-  // localStorage, which the server can't see.
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => { setMounted(true); }, []);
+  const surface = surfaceOf(usePathname());
 
-  const toggle = () => {
-    setOpen((v) => {
-      writeOpen(!v);
-      return !v;
-    });
+  // Settings are global (not per-surface) and hydration-gated like the dock.
+  const [settings, setSettings] = useState<RailSettings>(DEFAULT_SETTINGS);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const commitSettings = useCallback((next: RailSettings) => {
+    setSettings(next);
+    writeSettings(next);
+  }, []);
+
+  // Dock state is per-surface, so it can't be read during the first render
+  // (the server doesn't know the surface OR localStorage). Hydration-gate the
+  // whole panel and load in an effect keyed by surface — a client-side nav
+  // between /inbox and /group re-reads the other surface's saved spot.
+  const [dock, setDock] = useState<DockState>(DEFAULT_DOCK);
+  const [mounted, setMounted] = useState(false);
+  // Needed to cap the body height against the viewport. Kept in state (not read
+  // during render) so SSR and the first client render agree.
+  const [viewportH, setViewportH] = useState(0);
+  useEffect(() => {
+    setDock(readDock(surface));
+    setSettings(readSettings());
+    setViewportH(window.innerHeight);
+    setMounted(true);
+  }, [surface]);
+
+  const open = dock.open;
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  const commitDock = useCallback((next: DockState) => {
+    setDock(next);
+    writeDock(surface, next);
+  }, [surface]);
+
+  // A press on the header is either a drag or a click; we can't know until the
+  // pointer moves. Track it, and swallow the click that a drag inevitably
+  // fires so releasing the pointer over the toggle doesn't also collapse it.
+  const dragRef = useRef<
+    { startX: number; startY: number; origX: number; origY: number; moved: boolean } | null
+  >(null);
+  const draggedRef = useRef(false);
+
+  // Drag is tracked on WINDOW listeners, never with setPointerCapture on the
+  // header. Capturing the pointer also retargets the compatibility mouse
+  // events — the subsequent `click` would be delivered to the capturing header
+  // instead of the button under the cursor, which silently kills every button
+  // in the header bar.
+  const onHeaderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const rect = panelRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    dragRef.current = {
+      startX: e.clientX, startY: e.clientY,
+      origX: rect.left, origY: rect.top,
+      moved: false,
+    };
+
+    // While dragging we position from the TOP — it follows the pointer 1:1 and
+    // needs no knowledge of the panel's height. The anchor is decided once, on
+    // drop, and the top offset is converted to a bottom offset if needed.
+    const onMove = (ev: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const dx = ev.clientX - d.startX;
+      const dy = ev.clientY - d.startY;
+      if (!d.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+      d.moved = true;
+      draggedRef.current = true;
+      const h = panelRef.current?.offsetHeight ?? ROW_H;
+      const { x, y } = clampToViewport(d.origX + dx, d.origY + dy, h);
+      setDock((cur) => ({ ...cur, x, y, anchor: "top" }));
+    };
+
+    const onUp = () => {
+      const d = dragRef.current;
+      dragRef.current = null;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      if (!d?.moved) return;
+      // The click that follows this pointerup (if we released over a button)
+      // must be swallowed. But a drag released over dead space fires NO click,
+      // and a `draggedRef` left armed would eat the user's next real click. A
+      // 0ms timer runs after click dispatch but before any later interaction.
+      window.setTimeout(() => { draggedRef.current = false; }, 0);
+
+      const rect = panelRef.current?.getBoundingClientRect();
+      setDock((cur) => {
+        let next = cur;
+        if (rect) {
+          const anchor = anchorFor(rect.top, rect.height, window.innerHeight);
+          next = {
+            ...cur,
+            anchor,
+            // Re-express the offset against the edge we just pinned to.
+            y: anchor === "bottom"
+              ? Math.max(0, window.innerHeight - rect.bottom)
+              : Math.max(0, rect.top),
+          };
+        }
+        writeDock(surface, next);
+        return next;
+      });
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
   };
 
+  const toggle = () => {
+    // The pointerup that ended a drag also lands here as a click. Eat it once.
+    if (draggedRef.current) {
+      draggedRef.current = false;
+      return;
+    }
+    commitDock({ ...dock, open: !dock.open });
+  };
+
+  // Restoring a saved spot into a smaller window (or resizing after a drag)
+  // could park the dock off-screen with no way to grab it back.
+  useEffect(() => {
+    if (!mounted) return;
+    const onResize = () => {
+      setViewportH(window.innerHeight);
+      setDock((cur) => {
+        if (cur.x == null || cur.y == null) return cur;
+        const h = panelRef.current?.offsetHeight ?? ROW_H;
+        // clampToViewport works in top-space, so a bottom-anchored offset has
+        // to be converted in and back out — clamping it directly would treat a
+        // distance-from-bottom as a distance-from-top.
+        const top = cur.anchor === "bottom" ? window.innerHeight - cur.y - h : cur.y;
+        const c = clampToViewport(cur.x, top, h);
+        const y = cur.anchor === "bottom"
+          ? Math.max(0, window.innerHeight - (c.y + h))
+          : c.y;
+        if (c.x === cur.x && y === cur.y) return cur;
+        const next = { ...cur, x: c.x, y };
+        writeDock(surface, next);
+        return next;
+      });
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [mounted, surface]);
+
+  // NOTE: no useScope() here, by design. The rail watches every active model
+  // by default even when the rest of the UI is scoped to one — money landing
+  // on another model is exactly what you don't want to miss. Narrow it in the
+  // rail's own settings if you really only care about a subset.
   const targetAccountIds = useMemo<string[]>(
-    () => (accountId ? [accountId] : activeAccounts.map((a) => a.id)),
-    [accountId, activeAccounts],
+    () => resolveRailAccounts(settings, activeAccounts),
+    [settings, activeAccounts],
   );
 
   // Re-render whenever the SSE toaster mirrors a new arrival into the
@@ -315,7 +595,10 @@ export function MoneyRail() {
   // the same pair the inbox uses for its ✓✓ / awaiting-reply markers.
   // Only for the rows we actually render, deduped by fan.
   const detailTargets = useMemo(() => {
-    const rows = merged.slice(0, open ? DETAIL_ROWS : COLLAPSED_ROWS);
+    // Fetch a little past what's visible (the window scrolls), but never for
+    // all 50 — each row is an OF roundtrip.
+    const want = (open ? settings.bigRows : settings.smallRows) + DETAIL_ROWS_LOOKAHEAD;
+    const rows = merged.slice(0, Math.min(want, DETAIL_ROWS_MAX));
     const out: { aid: string; fanId: number }[] = [];
     const seen = new Set<string>();
     for (const m of rows) {
@@ -451,46 +734,114 @@ export function MoneyRail() {
 
   if (!mounted || targetAccountIds.length === 0) return null;
 
-  const visible = open ? merged : merged.slice(0, COLLAPSED_ROWS);
+  // Collapsed no longer truncates the feed — it just shrinks the window onto
+  // it. Every row stays in the DOM and scrolls, so one row is visible but the
+  // rest are a flick away.
+  const placed = dock.x != null && dock.y != null;
+
+  // Expanding must not push the panel past the edge it's growing toward, so
+  // the body is capped by the room actually available on the free side. `y` is
+  // measured from the anchored edge, so the free side is the rest of the
+  // viewport either way. Chrome (header + the open ⚙ panel) is estimated
+  // rather than measured — measuring it would need a post-render pass that
+  // feeds back into the height that caused it.
+  const chromeH = HEADER_H + (settingsOpen ? SETTINGS_H : 0);
+  const edgeGap = placed ? dock.y! : DEFAULT_EDGE_GAP;
+  const room = viewportH - edgeGap - chromeH - VIEWPORT_MARGIN;
+  const wantH = (open ? settings.bigRows : settings.smallRows) * ROW_H;
+  // Never below one row: a cramped dock still beats an invisible one.
+  const bodyH = Math.max(ROW_H, Math.min(wantH, room));
+
+  const placedStyle: React.CSSProperties | undefined = placed
+    ? dock.anchor === "bottom"
+      ? { left: dock.x!, bottom: dock.y!, top: "auto", right: "auto" }
+      : { left: dock.x!, top: dock.y!, bottom: "auto", right: "auto" }
+    : undefined;
 
   return (
-    <div className="fixed bottom-3 right-3 z-40 hidden md:flex w-[290px] flex-col bg-panel border border-border rounded-lg shadow-xl overflow-hidden">
-      <div className="flex items-center gap-1 pr-2 bg-bg-elev-1/50 border-b border-border">
+    <div
+      ref={panelRef}
+      style={placedStyle}
+      className={cn(
+        "fixed z-40 hidden md:flex w-[290px] flex-col bg-panel border border-border rounded-lg shadow-xl overflow-hidden",
+        !placed && "bottom-3 right-3",
+      )}
+    >
+      <div
+        onPointerDown={onHeaderPointerDown}
+        title="Drag to move"
+        className="flex items-center gap-1 pr-2 bg-bg-elev-1/50 border-b border-border cursor-grab active:cursor-grabbing touch-none select-none"
+      >
         <button
           type="button"
           onClick={toggle}
-          className="flex items-center justify-between gap-2 flex-1 min-w-0 px-3 py-2 hover:bg-bg-elev-1 text-left"
+          className="flex items-center gap-2 flex-1 min-w-0 px-3 py-2 hover:bg-bg-elev-1 text-left"
           title={open ? "Collapse" : "Expand"}
           aria-expanded={open}
         >
-          <span className="text-[12px] font-medium text-fg flex items-center gap-1.5">
+          {/* ">" collapsed, "⌄" expanded — the marker points where a click
+           *  takes you. */}
+          <span className="text-[11px] text-fg-dim w-3 shrink-0" aria-hidden>
+            {open ? "⌄" : ">"}
+          </span>
+          <span className="text-[12px] font-medium text-fg flex items-center gap-1.5 truncate">
             <span aria-hidden>💰</span> Buys &amp; tips
           </span>
-          <span className="text-[11px] text-fg-dim">{open ? "▾ close" : "▴"}</span>
         </button>
         {/* Opens the /group tab on the newest payers. Clicking again while
          *  a group tab is alive RE-SEEDS that same tab with the current
          *  top 8 instead of spawning another. */}
         <button
           type="button"
-          onClick={() => { void openGroupTabWithSlots(groupSlots); }}
+          onClick={() => {
+            // Same drag-swallow as the toggle: a drag released over this
+            // button must not also open a group tab.
+            if (draggedRef.current) { draggedRef.current = false; return; }
+            void openGroupTabWithSlots(groupSlots);
+          }}
           disabled={groupSlots.length === 0}
           className="shrink-0 px-1.5 py-1 rounded text-[11px] text-fg-dim hover:text-fg hover:bg-bg-elev-1 disabled:opacity-40 disabled:hover:bg-transparent"
           title={`Open the last ${Math.min(groupSlots.length, GROUP_SLOT_CAP)} payers in the group tab (click again to refresh it)`}
         >
           <span aria-hidden>👥</span> {groupSlots.length}
         </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (draggedRef.current) { draggedRef.current = false; return; }
+            setSettingsOpen((v) => !v);
+          }}
+          className={cn(
+            "shrink-0 px-1.5 py-1 rounded text-[11px] hover:text-fg hover:bg-bg-elev-1",
+            settingsOpen ? "text-fg bg-bg-elev-1" : "text-fg-dim",
+          )}
+          title="Rail settings"
+          aria-expanded={settingsOpen}
+        >
+          <span aria-hidden>⚙</span>
+        </button>
       </div>
-      <div className={open ? "max-h-[420px] overflow-y-auto" : "overflow-hidden"}>
+
+      {settingsOpen && (
+        <SettingsPanel
+          settings={settings}
+          accounts={activeAccounts}
+          onChange={commitSettings}
+        />
+      )}
+      <div
+        style={{ maxHeight: bodyH }}
+        className="overflow-y-auto overscroll-contain"
+      >
         {anyLoading && merged.length === 0 && (
           <div className="px-3 py-2.5 text-[11px] text-fg-dim">Loading…</div>
         )}
-        {visible.length === 0 && !anyLoading && (
+        {merged.length === 0 && !anyLoading && (
           <div className="px-3 py-2.5 text-[11px] text-fg-dim">
             No recent purchases or tips.
           </div>
         )}
-        {visible.map((m, i) => {
+        {merged.map((m, i) => {
           const fanId = m.n.user?.id ?? m.n.fromUser?.id;
           return (
             <Row
@@ -586,6 +937,95 @@ function Row({
     );
   }
   return <div className={cls} title={text}>{body}</div>;
+}
+
+/** The ⚙ popover: how many rows each size shows, and which models feed the
+ *  rail. Writes straight through on every change — no Save button, the rail
+ *  re-renders under you so the effect IS the feedback. */
+function SettingsPanel({
+  settings,
+  accounts,
+  onChange,
+}: {
+  settings: RailSettings;
+  accounts: readonly { id: string; nickname?: string | null }[];
+  onChange: (s: RailSettings) => void;
+}) {
+  // null (= all) is rendered as every box ticked, so "all" and "everything
+  // picked" look the same — which is what a user means by them anyway.
+  const picked = settings.accounts;
+  const isOn = (id: string) => (picked ? picked.includes(id) : true);
+
+  const toggleAccount = (id: string) => {
+    const current = picked ?? accounts.map((a) => a.id);
+    const next = current.includes(id)
+      ? current.filter((x) => x !== id)
+      : [...current, id];
+    // Unticking the last model would blank the rail forever — read that as
+    // "back to all" rather than leaving a dead dock on screen.
+    if (next.length === 0 || next.length === accounts.length) {
+      onChange({ ...settings, accounts: null });
+      return;
+    }
+    onChange({ ...settings, accounts: next });
+  };
+
+  return (
+    <div className="px-3 py-2.5 border-b border-border bg-bg-elev-1/30 text-[11px] space-y-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <label htmlFor="rail-small" className="text-fg-dim">Rows when small</label>
+        <select
+          id="rail-small"
+          value={settings.smallRows}
+          onChange={(e) => onChange({ ...settings, smallRows: Number(e.target.value) })}
+          className="bg-panel border border-border rounded px-1.5 py-0.5 text-fg"
+        >
+          {SMALL_ROW_CHOICES.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <label htmlFor="rail-big" className="text-fg-dim">Rows when big</label>
+        <select
+          id="rail-big"
+          value={settings.bigRows}
+          onChange={(e) => onChange({ ...settings, bigRows: Number(e.target.value) })}
+          className="bg-panel border border-border rounded px-1.5 py-0.5 text-fg"
+        >
+          {BIG_ROW_CHOICES.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <span className="text-fg-dim">Models</span>
+          <span className="text-[10px] text-fg-dim">
+            {picked ? `${picked.length}/${accounts.length}` : `all ${accounts.length}`}
+          </span>
+        </div>
+        <div className="max-h-[104px] overflow-y-auto space-y-0.5 pr-1">
+          {accounts.map((a) => (
+            <label
+              key={a.id}
+              className="flex items-center gap-2 py-0.5 cursor-pointer hover:text-fg text-fg-dim"
+            >
+              <input
+                type="checkbox"
+                checked={isOn(a.id)}
+                onChange={() => toggleAccount(a.id)}
+                className="accent-info"
+              />
+              <span className="truncate">{a.nickname || a.id}</span>
+            </label>
+          ))}
+        </div>
+        <p className="text-[10px] text-fg-dim mt-1 leading-snug">
+          Independent of the model you&apos;re scoped to — the rail watches all
+          models unless you narrow it here.
+        </p>
+      </div>
+    </div>
+  );
 }
 
 /** Last message in the thread + where it stands.
