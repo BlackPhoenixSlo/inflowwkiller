@@ -19,6 +19,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { useAccountLabel } from "@/hooks/useAccounts";
 import { useChatMessages } from "@/hooks/useChatMessages";
 import { useSendMessage } from "@/hooks/useSendMessage";
 import {
@@ -165,6 +166,7 @@ export function GroupPane({
     `fan ${fanId}`,
   );
   const headerAvatar = proxyImage(userQ.data?.avatar ?? null, accountId);
+  const accountLabel = useAccountLabel(accountId);
 
   // Composer state — local, the parent doesn't care.
   const [text, setText] = useState("");
@@ -228,7 +230,7 @@ export function GroupPane({
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-xs font-medium truncate">{headerName}</div>
-            <div className="text-[10px] text-fg-dim truncate">acct {accountId}</div>
+            <div className="text-[10px] text-fg-dim truncate">{accountLabel}</div>
           </div>
         </a>
         <button

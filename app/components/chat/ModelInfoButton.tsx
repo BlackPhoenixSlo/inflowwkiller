@@ -25,6 +25,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useAccountConfig } from "@/hooks/useAccountConfig";
+import { useAccountLabel } from "@/hooks/useAccounts";
 
 interface Props {
   accountId: string;
@@ -105,6 +106,7 @@ export function ModelInfoButton({ accountId }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
 
   const q = useAccountConfig(everOpened ? accountId : null);
+  const accountLabel = useAccountLabel(accountId);
   const cfg = q.data?.config;
 
   useEffect(() => {
@@ -159,7 +161,7 @@ export function ModelInfoButton({ accountId }: Props) {
         >
           <div className="px-3 py-2 border-b border-border flex items-center justify-between">
             <span className="font-semibold text-fg">Persona</span>
-            <span className="text-[10px] text-fg-dim">acct {accountId}</span>
+            <span className="text-[10px] text-fg-dim">{accountLabel}</span>
           </div>
 
           <div className="px-3 py-2">

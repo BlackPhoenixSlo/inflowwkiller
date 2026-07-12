@@ -20,6 +20,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useFan } from "@/hooks/useFan";
+import { useAccountLabel } from "@/hooks/useAccounts";
 import { useOFUser } from "@/hooks/useOFUser";
 import { useMassExclude, type MassExcludeKind } from "@/hooks/useMassExclude";
 import { useFanActivity } from "@/hooks/useLastPurchases";
@@ -145,6 +146,7 @@ export function FanDrawer({
   onComposeWith?: (t: PickedTemplate) => void;
 }) {
   const { data: fan, isLoading, update } = useFan(accountId, fanId);
+  const accountLabel = useAccountLabel(accountId);
   const ofUserQ = useOFUser(accountId, fanId);
   // Wrapped in a stable single-element array so the underlying useQueries
   // sees the same identity unless accountId actually changes.
@@ -324,7 +326,7 @@ export function FanDrawer({
               @{chat.withUser.username || fan?.of_username || fanId}
             </div>
             <div className="text-[10px] text-fg-dim mt-0.5">
-              acct {accountId} · id {fanId}
+              {accountLabel} · id {fanId}
             </div>
             <AiSellerChip accountId={accountId} fanId={fanId} />
           </div>
