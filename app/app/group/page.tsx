@@ -34,8 +34,10 @@ import {
   GROUP_CHANNEL_NAME,
   GROUP_HEARTBEAT_MS,
   GROUP_HEARTBEAT_TTL_MS,
+  GROUP_REPLACE_EVENT,
   GROUP_SLOT_CAP,
   GROUP_WINDOW_NAME,
+  parseSlotsParam,
   readAllLiveGroupTabs,
   removeGroupTabRegistry,
   writeGroupTabRegistry,
@@ -78,26 +80,32 @@ function writeSlots(slots: Slot[]): void {
   }
 }
 
-/** Parse `?add=<acctId>:<fanId>&spawn=<token>` once and clear them from
- *  the URL so a refresh doesn't re-add or re-claim. Returns the seed
- *  (or null) and the spawn token (or null). */
-function takeAddParam(): { seed: Slot | null; spawnToken: string | null } {
-  if (typeof window === "undefined") return { seed: null, spawnToken: null };
+/** Parse the seed params once and clear them from the URL so a refresh
+ *  doesn't re-seed or re-claim:
+ *    ?add=<acctId>:<fanId>              — one fan (👥 from a chat header)
+ *    ?slots=<acctId>:<fanId>,...        — a whole list (money rail's last-8)
+ *    ?spawn=<token>                     — pairs us with the source tab
+ *  Returns the seeded slots (empty when this is a plain reload). */
+function takeSeedParams(): { seeds: Slot[]; spawnToken: string | null } {
+  if (typeof window === "undefined") return { seeds: [], spawnToken: null };
   const url = new URL(window.location.href);
-  const raw = url.searchParams.get("add");
+  const rawAdd = url.searchParams.get("add");
+  const rawSlots = url.searchParams.get("slots");
   const spawnToken = url.searchParams.get("spawn");
-  if (!raw && !spawnToken) return { seed: null, spawnToken: null };
+  if (!rawAdd && !rawSlots && !spawnToken) return { seeds: [], spawnToken: null };
   url.searchParams.delete("add");
+  url.searchParams.delete("slots");
   url.searchParams.delete("spawn");
   // replaceState — we don't want these to live in history.
   window.history.replaceState({}, "", url.pathname + (url.search ? url.search : "") + url.hash);
-  if (!raw) return { seed: null, spawnToken };
-  const idx = raw.lastIndexOf(":");
-  if (idx <= 0) return { seed: null, spawnToken };
-  const accountId = raw.slice(0, idx);
-  const fan = Number(raw.slice(idx + 1));
-  if (!accountId || !Number.isFinite(fan) || fan <= 0) return { seed: null, spawnToken };
-  return { seed: { accountId, fanId: fan }, spawnToken };
+  if (rawSlots) return { seeds: parseSlotsParam(rawSlots), spawnToken };
+  if (!rawAdd) return { seeds: [], spawnToken };
+  const idx = rawAdd.lastIndexOf(":");
+  if (idx <= 0) return { seeds: [], spawnToken };
+  const accountId = rawAdd.slice(0, idx);
+  const fan = Number(rawAdd.slice(idx + 1));
+  if (!accountId || !Number.isFinite(fan) || fan <= 0) return { seeds: [], spawnToken };
+  return { seeds: [{ accountId, fanId: fan }], spawnToken };
 }
 
 /** Stable per-tab id. Re-uses an existing one from sessionStorage so a
@@ -143,19 +151,19 @@ export default function GroupChatPage() {
   useEffect(() => {
     tabIdRef.current = resolveTabId();
     createdAtRef.current = Date.now();
-    const { seed, spawnToken } = takeAddParam();
+    const { seeds, spawnToken } = takeSeedParams();
     spawnTokenRef.current = spawnToken;
-    // ?add= is the marker that this is a FRESHLY-OPENED group tab
-    // (someone clicked 👥 group on a chat — either the cold path or
-    // the overflow path). In both cases the new tab should start
-    // clean with just the requested fan, even though some browsers
-    // copy sessionStorage to a window.open'd child (which would
-    // otherwise carry over the previous group session's slots).
+    // ?add= / ?slots= is the marker that this is a FRESHLY-OPENED group
+    // tab (someone clicked 👥 group on a chat, or "open last 8" on the
+    // money rail — the cold path or the overflow path). In every case
+    // the new tab should start clean with just the requested fans, even
+    // though some browsers copy sessionStorage to a window.open'd child
+    // (which would otherwise carry over the previous group session).
     //
-    // No ?add= means this is a reload of the SAME tab (or someone
+    // Neither param means this is a reload of the SAME tab (or someone
     // typed /group manually) — restore the slot list from
     // sessionStorage so refresh keeps the layout.
-    let initial: Slot[] = seed ? [seed] : readSlots();
+    let initial: Slot[] = seeds.length > 0 ? seeds : readSlots();
     // Reconcile-on-mount: drop slots that an OLDER live tab already
     // holds. Handles the residual case where two source tabs raced
     // to spawn and we both ended up with the same fan. Older wins.
@@ -191,6 +199,20 @@ export default function GroupChatPage() {
       if (cur.length >= GROUP_SLOT_CAP) return cur;
       return [...cur, { accountId: sel.accountId, fanId: sel.fanId }];
     });
+  }, []);
+
+  // Same-tab re-seed. The money rail lives in the root layout, so it also
+  // renders HERE — and a BroadcastChannel never delivers to its own sender,
+  // so clicking "open last 8" inside the group tab reaches us as a DOM
+  // event instead of a `replace` message.
+  useEffect(() => {
+    const onReplace = (e: Event) => {
+      const next = (e as CustomEvent<{ slots?: Slot[] }>).detail?.slots;
+      if (!Array.isArray(next) || next.length === 0) return;
+      setSlots(next.slice(0, GROUP_SLOT_CAP));
+    };
+    window.addEventListener(GROUP_REPLACE_EVENT, onReplace);
+    return () => window.removeEventListener(GROUP_REPLACE_EVENT, onReplace);
   }, []);
 
   // Heartbeat (registry refresh) + BroadcastChannel listener. The
@@ -234,8 +256,15 @@ export default function GroupChatPage() {
         // Address filter: ignore messages not meant for THIS tab.
         // Multiple group tabs are alive simultaneously and each scopes
         // its actions to its own tabId.
-        if (msg.type !== "add" && msg.type !== "focus") return;
+        if (msg.type !== "add" && msg.type !== "focus" && msg.type !== "replace") return;
         if (msg.tabId !== tabId) return;
+        if (msg.type === "replace") {
+          // Destructive re-seed from the money rail: this tab becomes the
+          // requested list (newest 8 buyers), dropping whatever it held.
+          const next = Array.isArray(msg.slots) ? msg.slots.slice(0, GROUP_SLOT_CAP) : [];
+          if (next.length > 0) setSlots(next);
+          try { ch.postMessage({ type: "add-ack", tabId, reqId: msg.reqId, ok: next.length > 0 }); } catch {}
+        }
         if (msg.type === "add") {
           if (typeof msg.accountId !== "string" || typeof msg.fanId !== "number") return;
           let accepted = false;

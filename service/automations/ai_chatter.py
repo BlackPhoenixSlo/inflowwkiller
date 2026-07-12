@@ -232,7 +232,11 @@ async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
                                     chatter is deliberately excluded — left to
                                     of_ai_chat / deep_convo / the team, matching the
                                     closer's own "pure chatter is left to Auto Convo"
-                                    rule in run().
+                                    rule in run(). PLUS, when engage_old_fans is on,
+                                    the `old_fan_pre_ai` roster: run() exempts those
+                                    from the intent gate (nobody else may chat them —
+                                    of_ai_chat/deep_convo hard-skip that reason), so
+                                    the closer owns them and this set must say so.
 
     The intent test mirrors run() exactly (open offer OR _CONTENT_ASK_RE OR
     ESCALATION_RE over the HTML-stripped latest inbound OR recent payer), so
@@ -245,10 +249,20 @@ async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
         return set()
     if not cfg.get("intent_only"):
         return set(fan_ids)
-    # Closer mode: open offers ∪ content-ask/escalation intent ∪ recent payers.
+    # Closer mode: open offers ∪ content-ask/escalation intent ∪ recent payers
+    # ∪ the engaged old-fan roster (run() chats those regardless of intent).
     owned = {int(o.fan_id) for o in await _open_offers(account_id)
              if int(o.fan_id) in fan_ids}
     owned |= await recent_payer_fans(account_id, fan_ids)
+    if cfg.get("engage_old_fans"):
+        async with get_session() as s:
+            rows = (await s.execute(
+                select(SkipList.fan_id).where(
+                    SkipList.account_id == str(account_id),
+                    SkipList.reason == _OLD_FAN_SKIP,
+                    SkipList.fan_id.in_(fan_ids))
+            )).all()
+        owned |= {int(r[0]) for r in rows}
     async with get_session() as s:
         rows = (await s.execute(
             select(Message.fan_id, Message.body)
@@ -1501,7 +1515,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # the cooldown/lease/LLM work so skipped fans cost nothing. Pure chatter
         # is left to the team / Auto Convo. A caller-flagged intent fan (e.g. one
         # who just sent us a PHOTO) counts as intent even with no text signal.
-        if intent_only and open_by_fan.get(fan_id) is None \
+        # An ENGAGED OLD FAN is exempt: engage_old_fans means "the AI works the
+        # pre-AI roster", and in closer mode nobody else can — of_ai_chat and
+        # deep_convo hard-skip `old_fan_pre_ai` (and process_old_fans marked them
+        # deep_convo 'done'), so gating them on buying intent would leave them
+        # silent forever. ai_chatter is also the only bot with NO graduation
+        # cutoff, so it can just keep the convo going. engaged_subset() mirrors
+        # this exemption, so no second bot voice lands on them either.
+        if intent_only and fan_id not in old_fan_ids \
+                and open_by_fan.get(fan_id) is None \
                 and fan_id not in recent_payers \
                 and fan_id not in intent_fan_ids \
                 and not _CONTENT_ASK_RE.search(c.last_body or "") \

@@ -26,6 +26,7 @@ import { useLikeMessage } from "@/hooks/useLikeMessage";
 import { useTogglePinMessage } from "@/hooks/useTogglePinMessage";
 import { useUnsendMessage } from "@/hooks/useUnsendMessage";
 import { useFan } from "@/hooks/useFan";
+import { useAccountLabel } from "@/hooks/useAccounts";
 import { useRosterCountActions } from "@/hooks/useRosterCounts";
 import { readFanDrawerDefault, useFanDrawerDefault } from "@/hooks/useFanDrawerDefault";
 import {
@@ -227,6 +228,7 @@ export function ChatSurface({
   // is cheap (one indexed sqlite lookup) and the data drives the
   // custom_nickname we want to show in the header.
   const fanQ = useFan(accountId, fanId);
+  const accountLabel = useAccountLabel(accountId);
 
   // Observe the per-fan profile cache that enrichWithUsers populates from
   // /users/list. ChatList already reads from this side channel so its rows
@@ -740,7 +742,7 @@ export function ChatSurface({
           <div className="flex-1 min-w-0">
             <div className="font-medium text-sm truncate">{headerName}</div>
             <div className="text-[11px] text-fg-dim truncate">
-              @{chat.withUser.username || profile?.username || fanQ.data?.of_username || chat.withUser.id} · acct {accountId}
+              @{chat.withUser.username || profile?.username || fanQ.data?.of_username || chat.withUser.id} · {accountLabel}
             </div>
           </div>
         </button>

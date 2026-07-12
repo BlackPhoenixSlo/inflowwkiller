@@ -107,6 +107,19 @@ export function useAccounts() {
   }, [isChatterOnly, chatterQ.status, chatterData, ownerQ]);
 }
 
+/** Human name for a model account — its nickname ("JadeFree") when the owner
+ *  set one, else the raw account id as a fallback. Reads the FULL account list
+ *  rather than useActiveAccounts() so a model whose session dropped still
+ *  renders by name instead of silently reverting to a number. */
+export function useAccountLabel(accountId?: string | null): string {
+  const q = useAccounts();
+  const all = q.data?.accounts;
+  return useMemo(() => {
+    if (!accountId) return "";
+    return (all ?? []).find((a) => a.id === accountId)?.nickname || accountId;
+  }, [all, accountId]);
+}
+
 /** Accounts that currently have a captured session — the only ones the
  *  relay can scope to. Used by the chat-list fan-out (no point querying
  *  /chats for an account with no session — it'll 503).

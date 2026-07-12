@@ -16,6 +16,7 @@ import { use, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 import { ChatSurface } from "@/components/chat/ChatSurface";
+import { useAccountLabel } from "@/hooks/useAccounts";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { relay, type OFChatItem, type OFMessage, type OFUserMini } from "@/lib/relay";
 
@@ -28,6 +29,7 @@ export default function ChatPopoutPage({
 }: { params: Promise<{ accountId: string; fanId: string }> }) {
   const { accountId, fanId: fanIdStr } = use(params);
   const fanId = Number(fanIdStr);
+  const accountLabel = useAccountLabel(accountId);
 
   // Fetch the fan profile so the header shows a name/avatar instead of
   // "fan 12345". Falls back gracefully if /users/list fails.
@@ -183,7 +185,7 @@ export default function ChatPopoutPage({
           <Link href="/inbox" className="hover:text-fg underline underline-offset-2">
             ← Back to inbox
           </Link>
-          <span className="opacity-60">popout · acct {accountId} · fan {fanId}</span>
+          <span className="opacity-60">popout · {accountLabel} · fan {fanId}</span>
         </div>
         <div className="flex-1 min-h-0">
           <ChatSurface

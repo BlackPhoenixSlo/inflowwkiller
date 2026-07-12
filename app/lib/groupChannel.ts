@@ -75,8 +75,19 @@ export interface GroupTabRegistry {
 export type GroupChannelMessage =
   | { type: "add"; tabId: string; reqId: string; accountId: string; fanId: number }
   | { type: "add-ack"; tabId: string; reqId: string; ok: boolean }
+  /** Replace the target tab's ENTIRE slot list (money rail's "open last 8
+   *  buyers"). Unlike `add`, this is destructive by design: clicking the
+   *  rail button again re-seeds the same tab with the newest 8 rather than
+   *  appending or spawning a second tab. Acked with `add-ack`. */
+  | { type: "replace"; tabId: string; reqId: string; slots: GroupSlot[] }
   | { type: "focus"; tabId: string }
   | { type: "claim"; tabId: string; spawnToken: string };
+
+/** Same-tab replace. BroadcastChannel does NOT deliver to the posting
+ *  context, so when the money rail is clicked from inside the /group tab
+ *  itself (the rail is in the root layout, so it renders there too) we hand
+ *  the slots over via a DOM event instead. */
+export const GROUP_REPLACE_EVENT = "chatterly:group-replace";
 
 /** Scan localStorage for all live /group tab registry entries (heartbeat
  *  within TTL). Stale or malformed entries are skipped. */
@@ -231,6 +242,69 @@ function spawnGroupTab(accountId: string, fanId: number, overflow: boolean): voi
     const win = window.open(url, GROUP_WINDOW_NAME);
     if (win) groupRef = { tabId: null, spawnToken, win };
   }
+}
+
+function encodeSlots(slots: GroupSlot[]): string {
+  return slots.map((s) => `${encodeURIComponent(s.accountId)}:${s.fanId}`).join(",");
+}
+
+/** Parse the `?slots=acct:fan,acct:fan` seed. Exported so /group and its
+ *  tests share one parser with the writer above. */
+export function parseSlotsParam(raw: string): GroupSlot[] {
+  const out: GroupSlot[] = [];
+  for (const part of raw.split(",")) {
+    const idx = part.lastIndexOf(":");
+    if (idx <= 0) continue;
+    const accountId = decodeURIComponent(part.slice(0, idx));
+    const fanId = Number(part.slice(idx + 1));
+    if (!accountId || !Number.isFinite(fanId) || fanId <= 0) continue;
+    if (out.some((s) => s.accountId === accountId && s.fanId === fanId)) continue;
+    out.push({ accountId, fanId });
+  }
+  return out.slice(0, GROUP_SLOT_CAP);
+}
+
+/**
+ * Open the group tab seeded with an exact slot list, replacing whatever
+ * it currently holds. Used by the money rail's "open the last 8 buyers"
+ * button, where the point is a snapshot of who just paid — so a second
+ * click must REFRESH the existing tab, not append to it or spawn another.
+ *
+ *   • A live group tab exists  → broadcast `replace` to the freshest one
+ *                                and focus it. On nack/timeout, spawn.
+ *   • We ARE the group tab     → hand the slots over via a DOM event
+ *                                (BroadcastChannel skips the sender).
+ *   • No live tab              → spawn one seeded with `?slots=`.
+ *
+ * Never navigates the calling tab.
+ */
+export async function openGroupTabWithSlots(slots: GroupSlot[]): Promise<OpenGroupResult> {
+  if (typeof window === "undefined") return { kind: "opened" };
+  const wanted = slots.slice(0, GROUP_SLOT_CAP);
+  if (wanted.length === 0) return { kind: "self" };
+
+  if (window.location?.pathname === "/group") {
+    window.dispatchEvent(new CustomEvent(GROUP_REPLACE_EVENT, { detail: { slots: wanted } }));
+    return { kind: "self" };
+  }
+
+  const live = readAllLiveGroupTabs().sort((a, b) => b.heartbeat - a.heartbeat);
+  const target = live[0];
+  if (target) {
+    const reqId = genReqId();
+    const ackPromise = waitForAddAck(reqId);
+    broadcast({ type: "replace", tabId: target.tabId, reqId, slots: wanted });
+    tryFocusGroupTab(target.tabId);
+    if (await ackPromise) return { kind: "broadcast" };
+    // Tab died between the heartbeat scan and the broadcast.
+  }
+
+  const spawnToken = genReqId();
+  ensureSourceChannel();
+  const url = `/group?slots=${encodeSlots(wanted)}&spawn=${encodeURIComponent(spawnToken)}`;
+  const win = window.open(url, GROUP_WINDOW_NAME);
+  if (win) groupRef = { tabId: null, spawnToken, win };
+  return { kind: "opened" };
 }
 
 /**
