@@ -3,6 +3,11 @@
 /**
  * AccountRosterIcon — single avatar circle in the inbox roster strip.
  *
+ * Each icon stacks avatar → name → counts. The name is truncated to the first
+ * few letters (ROSTER_LABEL_CHARS) so the strip stays narrow; the full one is
+ * on the tooltip. Without it, two models with similar avatars are only
+ * distinguishable by hovering.
+ *
  * Pulls the OF profile avatar via `useAccountAvatar(accountId)` so the
  * icon strip matches what each model looks like to fans. On miss
  * (no avatar yet, OF 404, broken session) we degrade to a colored
@@ -69,6 +74,26 @@ export function RosterCountBadge({ count }: { count?: RosterCount | null }) {
 /** Color used everywhere the UI represents the "all models" aggregate.
  *  Mirrors the ScopeSwitcher dot. */
 export const ALL_MODELS_COLOR = "#a78bfa";
+
+/** How much of the model's name fits under the avatar without widening the
+ *  strip. The full name is still on the button's tooltip. */
+export const ROSTER_LABEL_CHARS = 5;
+
+/** First few letters of a model's name — enough to tell JadePaid from JadeFree
+ *  at a glance without hovering. Falls back to the account id when a model has
+ *  no nickname (~ the avatar's initial does the same). */
+export function rosterLabel(name: string): string {
+  return name.trim().slice(0, ROSTER_LABEL_CHARS);
+}
+
+/** The name chip that sits between the avatar and the count pills. */
+function RosterLabel({ text }: { text: string }) {
+  return (
+    <span className="text-[9px] leading-none text-fg-dim group-hover:text-fg max-w-[42px] truncate tabular-nums">
+      {text}
+    </span>
+  );
+}
 
 export interface AccountRosterIconProps {
   account: AccountMeta;
@@ -148,6 +173,7 @@ export function AccountRosterIcon({
       <span className="inline-block rounded-full transition-transform group-hover:scale-105">
         <AccountAvatarSlot account={account} active={active} tierColor={tierColor} />
       </span>
+      <RosterLabel text={rosterLabel(account.nickname || account.id)} />
       <RosterCountBadge count={count} />
     </button>
   );
@@ -203,6 +229,9 @@ export function AllModelsRosterIcon({
       <span className="inline-block rounded-full transition-transform group-hover:scale-105">
         <AllModelsAvatarSlot active={active} />
       </span>
+      {/* Keeps this icon's avatar/label/badge rows on the same baselines as
+       *  the model icons beside it. */}
+      <RosterLabel text="All" />
       <RosterCountBadge count={count} />
     </button>
   );
