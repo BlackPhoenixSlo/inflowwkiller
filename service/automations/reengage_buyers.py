@@ -33,7 +33,10 @@ from audiences import contact_guard_excludes
 from automation_registry import register
 from db.engine import get_session
 from db.models import Blacklist, ContentOffer, Fan, FanProfile, Message, Transaction
-from ._common import load_hard_skip_ids, resolve_fan_name
+from ._common import (
+    hold_with_typing, load_hard_skip_ids, load_typing_indicator, load_typing_wpm,
+    resolve_fan_name, typing_delay_seconds,
+)
 
 log = logging.getLogger("of-relay.automation")
 
@@ -192,6 +195,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 "preview": [{"fan_id": fid, "name": resolve_fan_name(f) or "",
                              "opener": text} for fid, f, text in plans[:15]]}
 
+    # Human sending, same as the chatter: a realistic per-bubble typing delay (wpm)
+    # with the live "…is typing" indicator. The two opener lines go as TWO bubbles
+    # (type → greeting → type → his line), so it reads like she actually typed it.
+    typing_wpm = await load_typing_wpm(account_id)
+    typing_indicator = await load_typing_indicator(account_id)
+
     client = await asyncio.to_thread(ax._make_client, account_id)
     sent = 0
     errors = 0
@@ -199,17 +208,25 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if not await ax.acquire_fan_lease(account_id, fid, "reengage_buyers"):
             continue
         try:
-            result = await asyncio.to_thread(
-                lambda t=text: client.send_message(fid, t, media_files=[]))
-            msg_id = result.get("id") if isinstance(result, dict) else None
-            if msg_id:
-                await write_outbound_attribution(
-                    account_id=account_id, fan_id=int(fid), message_id=int(msg_id),
-                    sent_by_employee_id=None, automation_kind="reengage_buyers",
-                    body=str(result.get("text") or text), price_cents=0,
-                    created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
-                    emit_live=True,
-                )
+            bubbles = [b for b in text.split("\n") if b.strip()]
+            any_ok = False
+            for b in bubbles:
+                await hold_with_typing(account_id, fid,
+                                       typing_delay_seconds(b, typing_wpm),
+                                       typing_indicator=typing_indicator)
+                result = await asyncio.to_thread(
+                    lambda t=b: client.send_message(fid, t, media_files=[]))
+                msg_id = result.get("id") if isinstance(result, dict) else None
+                if msg_id:
+                    await write_outbound_attribution(
+                        account_id=account_id, fan_id=int(fid), message_id=int(msg_id),
+                        sent_by_employee_id=None, automation_kind="reengage_buyers",
+                        body=str(result.get("text") or b), price_cents=0,
+                        created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
+                        emit_live=True,
+                    )
+                    any_ok = True
+            if any_ok:
                 sent += 1
         except Exception:
             errors += 1
