@@ -378,7 +378,7 @@ class _Cand:
         # manual sends the cautious-resume guard yields to.
         self.last_out_at: datetime | None = None
         self.last_human_out_at: datetime | None = None
-        self.session_out_n = 0   # non-mass outbound in the CURRENT burst (item 21
+        self.session_out_n = 0   # HER OWN replies in the CURRENT burst (item 21
                                  # cap counter); only populated when _gather is
                                  # called with session_gap_min > 0
 
@@ -395,10 +395,18 @@ async def _gather(account_id: str,
     those fans IN SQL so reacting to one inbound DM never reads the whole
     account's message history. None/empty → the full-account sweep.
 
-    `session_gap_min > 0` additionally counts each fan's `session_out_n` — non-mass
-    outbound messages in the CURRENT burst, where a burst ends at any silence gap
+    `session_gap_min > 0` additionally counts each fan's `session_out_n` — HER OWN
+    (ai_chatter) replies in the CURRENT burst, where a burst ends at any silence gap
     longer than `session_gap_min`. The cadence caps (item 21) read this so they
-    bound a conversation, not a fan's lifetime."""
+    bound a conversation, not a fan's lifetime.
+
+    Only `automation_kind == _PURPOSE` counts. A human chatter's messages and other
+    automations' sends (autoreply, welcome, …) must NOT burn her burst budget: the
+    caps mean "how many times has SHE replied in this burst", and a teammate typing
+    7 messages would otherwise blow the no_signal cap (5) and silence her on a fan
+    who is owed an answer. Human presence already has its own purpose-built guards
+    (`resume_after_manual_hours` + the per-send manual yield) — counting a human's
+    messages here too was double jeopardy, and it stalled live threads."""
     out: dict[int, _Cand] = {}
     gap = timedelta(minutes=session_gap_min) if session_gap_min > 0 else None
     last_ts: dict[int, datetime] = {}
@@ -434,8 +442,9 @@ async def _gather(account_id: str,
             c.last_out_at = created_at
             if automation_kind is None and mass_run_id is None:
                 c.last_human_out_at = created_at
-            if gap is not None and mass_run_id is None:
-                c.session_out_n += 1   # conversational reply, not a mass blast
+            if (gap is not None and mass_run_id is None
+                    and automation_kind == _PURPOSE):
+                c.session_out_n += 1   # HER reply — not a human's, not another kind's
     return out
 
 
