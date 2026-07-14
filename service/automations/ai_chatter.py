@@ -2066,6 +2066,22 @@ async def _load_ladders(account_id: str, fan_ids) -> dict[int, LadderState]:
     return {int(r.fan_id): r for r in rows}
 
 
+async def _load_profiles(account_id: str, fan_ids) -> dict[int, FanProfile]:
+    """gen_info's rich per-fan profile (bio / bullet notes / teases) — the same data
+    the chatter's Lines picker + Notes panel show. Fed to the prompt so the AI is as
+    informed as a human chatter, not just tag-aware. One query; expunged (read-only)."""
+    ids = [int(x) for x in fan_ids]
+    if not ids:
+        return {}
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(FanProfile).where(FanProfile.account_id == str(account_id),
+                                     FanProfile.fan_id.in_(ids))
+        )).scalars().all()
+        s.expunge_all()
+    return {int(r.fan_id): r for r in rows}
+
+
 async def _save_ladder(account_id: str, fan_id: int, **vals) -> None:
     now = datetime.utcnow()
     async with get_session() as s:
@@ -2430,6 +2446,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     content_ask: bool = False,
                     escalation: bool = False,
                     bot_accused: bool = False,
+                    profile: "FanProfile | None" = None,
                     ask_every: int = 0) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — of_ai_chat's girly info-gather prompt
     with one structural difference: `sell_block`. Empty (M2) → the no-offers
@@ -2449,8 +2466,34 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                        ("occupation", f.occupation), ("fetishes", f.fetishes)):
         if _nonempty(val):
             facts.append(f"{label}: {str(val).strip()[:80]}")
+    # gen_info's rich profile — the bio + bullet notes a human chatter reads before
+    # replying. This is what makes a bubble land as "she remembers me", not generic.
+    teases: list[str] = []
+    if profile is not None:
+        if _nonempty(profile.short_bio):
+            facts.append(f"about him: {str(profile.short_bio).strip()[:400]}")
+        if _nonempty(profile.bullet_points):
+            bp = str(profile.bullet_points).strip().replace("\n", "; ")[:600]
+            facts.append(f"notes on him: {bp}")
+        teases = [str(t).strip()[:140]
+                  for t in (profile.tease1, profile.tease2, profile.tease3) if _nonempty(t)]
     facts_block = ("\n".join(f"- {x}" for x in facts)
                    if facts else "- (nothing on file yet)")
+    # A concrete nudge to WEAVE IN a specific detail — the difference between a bubble
+    # that reads as a form letter and one that reads as her, mid-conversation. Only
+    # added when there's something to reference (a bio/notes fact, a tease, or a
+    # recent thing he said), so a profile-less fan's prompt is unchanged.
+    personal_lines: list[str] = []
+    if profile is not None and (_nonempty(profile.short_bio) or _nonempty(profile.bullet_points)):
+        personal_lines.append(
+            "Work in ONE specific, natural detail from what you know about him above "
+            "(his job, a hobby, something going on in his life) — like you actually "
+            "remember him. Don't recite a list; drop one nugget the way a girlfriend would.")
+    if teases:
+        personal_lines.append(
+            "You may riff on one of these lines the team wrote for him — reword it in "
+            "your own voice, don't paste it verbatim: " + " | ".join(teases))
+    personal_block = ("\n" + "\n".join(personal_lines)) if personal_lines else ""
 
     history = c.messages[-history_tail:]
     convo = "\n".join(
@@ -2612,7 +2655,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
            "Your reply is ONLY the message text — no JSON, quotes, or metadata.")
     )
     user = (
-        f"What you know about him:\n{facts_block}\n\n"
+        f"What you know about him:\n{facts_block}{personal_block}\n\n"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Reply to his last message now, in the STYLE FOR THIS MESSAGE above."
     )
@@ -2752,6 +2795,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # the lanes are off (an off flag must cost nothing, not just change nothing).
     ladders = await _load_ladders(account_id, by_fan.keys()) if gate_on else {}
     rstates = await _load_rhythm(account_id, by_fan.keys()) if rhythm_on else {}
+    # gen_info profiles (bio / bullet notes / teases) → the prompt, so the AI knows
+    # his story, not just his tags. Always loaded (personalization is not gated).
+    profiles = await _load_profiles(account_id, by_fan.keys())
     asks_by_fan, acct_hour_asks, acct_day_asks = (
         await _ask_counters(account_id, datetime.utcnow()) if gate_on else ({}, 0, 0))
 
@@ -3360,6 +3406,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                               content_ask=content_ask,
                                               escalation=escalation,
                                               bot_accused=bot_accused_first,
+                                              profile=profiles.get(fan_id),
                                               ask_every=(old_q_every
                                                          if fan_id in old_fan_ids
                                                          else 0))
