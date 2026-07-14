@@ -26,6 +26,7 @@ import { useLikeMessage } from "@/hooks/useLikeMessage";
 import { useTogglePinMessage } from "@/hooks/useTogglePinMessage";
 import { useUnsendMessage } from "@/hooks/useUnsendMessage";
 import { useFan } from "@/hooks/useFan";
+import AiStatusStrip from "@/components/chat/AiStatusStrip";
 import { useAccountLabel } from "@/hooks/useAccounts";
 import { useRosterCountActions } from "@/hooks/useRosterCounts";
 import { readFanDrawerDefault, useFanDrawerDefault } from "@/hooks/useFanDrawerDefault";
@@ -744,6 +745,8 @@ export function ChatSurface({
             <div className="text-[11px] text-fg-dim truncate">
               @{chat.withUser.username || profile?.username || fanQ.data?.of_username || chat.withUser.id} · {accountLabel}
             </div>
+            {/* Why the AI is (or isn't) talking to this fan — see AiStatusStrip. */}
+            <AiStatusStrip accountId={accountId} fanId={fanId} />
           </div>
         </button>
         <ScheduledForChat accountId={accountId} fanId={fanId} />

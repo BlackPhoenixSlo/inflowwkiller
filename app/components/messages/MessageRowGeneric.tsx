@@ -42,6 +42,11 @@ const AUTOMATION_LABELS: Record<string, string> = {
   online_blast: "Online blast",
   nudge_online: "Online nudge",
   gen_info: "Profiler",
+  // Same engine, two labels: a reply that carries a priced offer is tagged
+  // ai_upseller so the seller is legible in the thread and in the per-automation
+  // stats. Anything else she says is ai_chatter.
+  ai_chatter: "AI Chatter",
+  ai_upseller: "AI Upseller",
 };
 
 export function automationLabel(kind?: string | null): string | null {

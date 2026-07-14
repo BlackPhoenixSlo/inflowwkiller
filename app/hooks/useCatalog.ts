@@ -91,6 +91,15 @@ export interface AiChatterConfig {
    *  seller ONLY — the same gate on the mass blast would delete the blast, whose
    *  whole job is reaching fans who are not mid-conversation. OFF by default. */
   qualification_gate_enabled?: boolean;
+  /** Attach the ask when the THREAD IS HOT (he's mid-scene and replying) and the model
+   *  wrote no offer marker. The offer is emitted by the MODEL, and mostly it declines —
+   *  184 replies produced 4 offers on sakai. Thread-heat is a 24.3x lift on the
+   *  purchase; the gate alone is ~1x. Rides the gate + all the brakes. OFF by default. */
+  force_ask?: boolean;
+  /** The FLOOR: after this many of HIS messages with no ask in front of him (ours or a
+   *  human chatter's), ask anyway — for the men who never turn the chat sexual and so
+   *  would otherwise be chatted to for free forever. 0 = off. Brakes still apply. */
+  ask_after_fan_msgs?: number;
   /** Content-derived price bands + the post-purchase ladder. Requires the gate
    *  above; the server forces it back off without it. OFF by default. */
   smart_pricing_enabled?: boolean;

@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -30,7 +30,9 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.engine import get_session
-from db.models import Account, Employee, Fan, FanProfile, Message, Transaction
+from db.models import (
+    Account, Employee, Fan, FanProfile, GrokCall, Message, ScheduledJob, Transaction,
+)
 from auth import assert_account_owned
 
 # Statuses that mean "this money is gone / never landed" — chargebacks,
@@ -374,6 +376,224 @@ async def get_fan(account_id: str, fan_id: int) -> dict[str, Any]:
             await s.commit()
             await s.refresh(f)
         return _row_to_dict(f)
+
+
+@router.get("/admin/fans/{account_id}/{fan_id}/ai-status")
+async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
+    """What is the AI doing with THIS fan right now — and if nothing, why, and until when.
+
+    Answering that used to mean SSH-ing into prod and reading four tables by hand
+    (fans / skip_list / rhythm_state / ladder_state), which is how a 23-minute rhythm
+    break on the hottest thread on the roster went unnoticed for an hour.
+
+    The gates are evaluated in the SAME ORDER `ai_chatter.run()` checks them and the
+    FIRST one that fires is returned, so the badge names the thing that actually stopped
+    her — not merely a thing that is true. It reads the engine's own state and helpers
+    (never a hand-rolled second copy of the logic): a status light that drifts from the
+    engine is worse than no status light.
+
+    Read-only. No sends, no writes, no OF calls.
+    """
+    assert_account_owned(account_id)
+    # Imported here, not at module import: fans.py is loaded by the relay on boot and
+    # ai_chatter pulls in the LLM client + the whole offer engine behind it.
+    from automations import ai_chatter as ac
+    from automations import upsell
+
+    now = datetime.utcnow()
+    cfg = await ac._load_config(account_id)
+    engine_on = bool(cfg.get("enabled"))
+    gate_on = bool(cfg.get("qualification_gate_enabled"))
+
+    async with get_session() as s:
+        fan = (await s.execute(select(Fan).where(
+            Fan.account_id == str(account_id), Fan.fan_id == int(fan_id)))).scalar_one_or_none()
+
+    blacklist, skip_reasons = await ac._load_stop_lists(account_id)
+    reason = skip_reasons.get(int(fan_id))
+    ladders = await ac._load_ladders(account_id, [int(fan_id)])
+    rstates = await ac._load_rhythm(account_id, [int(fan_id)])
+    lad = ladders.get(int(fan_id))
+    rst = rstates.get(int(fan_id))
+    human = (await ac._human_money_signals(account_id, [int(fan_id)], now)).get(
+        int(fan_id), (None, None))
+    open_offers = await ac._open_offers(account_id, int(fan_id))
+
+    def _iso(dt: datetime | None) -> str | None:
+        return dt.isoformat() + "Z" if dt is not None else None
+
+    # ── The gates, in run()'s order. First hit wins.
+    state, label, detail, until = "active", "Active", "She'll answer his next message", None
+    if not engine_on:
+        state, label = "off", "AI Upseller off"
+        detail = "The engine's master switch is off for this account."
+    elif int(fan_id) in blacklist:
+        state, label, detail = "blocked", "Blacklisted", "This fan is on the blacklist."
+    elif reason is not None and reason not in ac._GRADUATION_SKIPS:
+        state, label = "blocked", f"Skipped ({reason})"
+        detail = "A skip_list row closes the thread to the AI."
+    elif rst is not None and rst.wake_at is not None and rst.wake_at > now:
+        state, label, until = "paused", "On a break", _iso(rst.wake_at)
+        detail = ("Human Rhythm stepped her away to look human. She wakes on her own — "
+                  "a live ask or a recent purchase makes a thread break-proof.")
+    elif fan is not None and fan.automation_paused_until and fan.automation_paused_until > now:
+        state, label, until = "paused", "Cooling down", _iso(fan.automation_paused_until)
+        detail = "Per-fan cooldown after a send."
+    elif lad is not None and lad.companion_until and lad.companion_until > now:
+        state, label, until = "companion", "Talking, not selling", _iso(lad.companion_until)
+        detail = ("He said he's broke, asked to just talk, or called her a bot. The "
+                  "conversation stays on; no price goes in front of him.")
+    elif lad is not None and lad.cooldown_until and lad.cooldown_until > now:
+        state, label, until = "companion", "Talking, not selling", _iso(lad.cooldown_until)
+        detail = "Post-purchase ease-off — he just bought; she isn't charging again yet."
+
+    # The engine that owns this fan. A payer of_ai_chat graduated ('spent') belongs to
+    # the upseller — that's precisely the fan it exists for.
+    engine = "ai_chatter"
+    if not engine_on:
+        engine = "none"
+    elif open_offers or human[0] is not None or (
+            lad is not None and lad.status in (upsell.STATUS_OPEN, upsell.STATUS_HOT)):
+        engine = "ai_upseller"
+
+    # ── The reply budget. NOT the same thing as a break, and conflating them would be
+    # a lie: the CAP is deterministic (she goes quiet after N replies in a burst, until
+    # a session-gap of silence resets it or a buying signal upgrades her tier), while a
+    # BREAK is a random "she's a person" pause that only ever rolls on a COLD thread.
+    # A live ask or a recent purchase makes the thread break-proof outright.
+    cadence_on = bool(cfg.get("cadence_enabled"))
+    gap_min = int(cfg.get("session_gap_minutes") or 60)
+    cadence: dict[str, Any] = {"enabled": cadence_on}
+    if cadence_on:
+        cands = await ac._gather(account_id, {int(fan_id)}, session_gap_min=gap_min)
+        cand = cands.get(int(fan_id))
+        if cand is not None:
+            payers = await ac.recent_payer_fans(account_id, [int(fan_id)])
+            money = (await ac._last_money_at(account_id, [int(fan_id)])).get(int(fan_id))
+            stop, tier = ac._cadence_gate(
+                cand, pending=(open_offers[0] if open_offers else None),
+                recent_payer=int(fan_id) in payers, money_at=money,
+                pic=False, now=now, cad=cfg)
+            cap = int((cfg.get("msg_limits_by_signal") or {}).get(tier) or 0)
+            used = int(cand.session_out_n or 0)
+            cadence = {
+                "enabled": True,
+                "tier": tier,                 # baseline | buying_signal | no_signal | …
+                "used": used,                 # REPLIES this burst (3-5 bubbles = 1)
+                "cap": cap or None,           # None = uncapped (e.g. post_purchase)
+                "left": max(cap - used, 0) if cap else None,
+                "stopped": bool(stop),
+                # The burst resets after this much silence — that's what "continues
+                # back" means for a CAP (a break, by contrast, has a wake time).
+                "resets_after_minutes": gap_min,
+                "last_message_at": (cand.last_in_at or cand.last_out_at
+                                    ).isoformat() + "Z" if (cand.last_in_at or cand.last_out_at) else None,
+            }
+            if stop and state == "active":
+                state, label = "paused", f"Reply cap reached ({used}/{cap})"
+                detail = (f"She's made {used} replies in this burst ({tier} tier). She "
+                          f"resumes on a real buying signal, or after {gap_min} min of "
+                          f"silence starts a fresh burst.")
+
+    # Why she can't put a price in front of him even when she's talking.
+    caps_ok = await ac._offer_caps_ok(account_id, int(fan_id), cfg) if gate_on else None
+
+    # (1) The next thing already SCHEDULED for this fan — a deferred reply is pending
+    # work, not silence, and it looked exactly like silence until now.
+    async with get_session() as s:
+        job = (await s.execute(
+            select(ScheduledJob.kind, ScheduledJob.run_at)
+            .where(ScheduledJob.account_id == str(account_id),
+                   ScheduledJob.status.in_(("pending", "running")),
+                   ScheduledJob.payload_json.like(f"%{int(fan_id)}%"))
+            .order_by(ScheduledJob.run_at.asc()).limit(1))).first()
+    next_action = ({"kind": job[0], "at": _iso(job[1])} if job else None)
+
+    # (2) THE GATE — would she be allowed to put a price in front of him this turn, and
+    # if not, what refused. "She's talking but won't sell" had no answer before this.
+    gate: dict[str, Any] = {"enabled": gate_on}
+    if gate_on:
+        cand = (await ac._gather(account_id, {int(fan_id)})).get(int(fan_id))
+        if cand is not None:
+            ok, why = upsell.qualify(upsell.GateCtx(
+                fan_id=int(fan_id), last_inbound_text=cand.last_body,
+                last_inbound_at=cand.last_in_at, last_outbound_at=cand.last_out_at,
+                fan_spoke_last=(cand.last_dir == "in"),
+                status=(lad.status if lad is not None else upsell.STATUS_IDLE),
+                offers_paused_until=(lad.offers_paused_until if lad is not None else None),
+                last_ask_at=ac._newest(
+                    lad.last_ask_at if lad is not None else None, human[0]),
+            ), now)
+            gate = {"enabled": True, "ok": bool(ok), "why": (None if ok else why)}
+
+    # (3) The 7-day spend brake — past the cap he is not silenced, he stops being
+    # CHARGED (COMPANION for the window). Silent until you know to look for it.
+    cap7 = int(cfg.get("spend_velocity_cap_7d_cents") or upsell.SPEND_VELOCITY_CAP_7D)
+    paid7 = await ac._paid_cents_7d(account_id, int(fan_id), now) if gate_on else 0
+    spend_7d = {"paid_cents": int(paid7), "cap_cents": cap7 or None,
+                "capped": bool(cap7 and paid7 >= cap7)}
+
+    # (4) Is she even THINKING about him — the last LLM call on this fan.
+    # NB: grok_calls.cost_cents actually holds MILLICENTS (cents x100); stats.py
+    # relabels it. Divide, or every cost on this strip is 100x too big.
+    async with get_session() as s:
+        call = (await s.execute(
+            select(GrokCall.called_at, GrokCall.model, GrokCall.purpose,
+                   GrokCall.cost_cents)
+            .where(GrokCall.account_id == str(account_id),
+                   GrokCall.fan_id == int(fan_id))
+            .order_by(GrokCall.called_at.desc()).limit(1))).first()
+        spend_today = (await s.execute(
+            select(func.count(), func.coalesce(func.sum(GrokCall.cost_cents), 0))
+            .where(GrokCall.account_id == str(account_id),
+                   GrokCall.fan_id == int(fan_id),
+                   GrokCall.called_at >= now - timedelta(days=1)))).first()
+    llm = {
+        "last_at": _iso(call[0]) if call else None,
+        "model": call[1] if call else None,
+        "purpose": call[2] if call else None,
+        "calls_24h": int(spend_today[0] or 0) if spend_today else 0,
+        "cost_24h_cents": round(float(spend_today[1] or 0) / 100.0, 3) if spend_today else 0.0,
+    }
+
+    return {
+        "state": state,                     # active | paused | companion | blocked | off
+        "label": label,
+        "detail": detail,
+        "until": until,
+        "engine": engine,
+        "graduated": reason if reason in ac._GRADUATION_SKIPS else None,
+        "cadence": cadence,
+        "offer_caps_ok": caps_ok,
+        "next_action": next_action,
+        "gate": gate,
+        "spend_7d": spend_7d,
+        "llm": llm,
+        # An ask in the last _ASK_BREAKPROOF_WINDOW (30 min), or a purchase in the last
+        # hour, suppresses the random "she stepped away" roll — a ladder stranded
+        # mid-sell is the worst outcome in the system. Past 30 minutes she is allowed to
+        # be a person again. Computed with the ENGINE's own predicate so the badge can
+        # never drift from what she'll actually do.
+        "break_proof": bool(
+            ac._breakproof(ac._newest(
+                human[0], open_offers[0].offered_at if open_offers else None), now)
+            or (human[1] is not None and (now - human[1]).total_seconds() <= 3600)),
+        "ladder": {
+            "status": (lad.status if lad is not None else "idle"),
+            "rung": int(lad.rung_index or 0) if lad is not None else 0,
+        },
+        # A live ask he hasn't paid — OURS or a human chatter's. This is what makes the
+        # thread break-proof, and what the strip shows as "🔒 $45 ask open".
+        "open_ask": (
+            {"price_cents": int(open_offers[0].price_cents or 0),
+             "at": _iso(open_offers[0].offered_at), "by": "ai"}
+            if open_offers else
+            {"price_cents": None, "at": _iso(human[0]), "by": "human"}
+            if human[0] is not None else None
+        ),
+        "last_paid_at": _iso(human[1]),
+        "force_ask": bool(cfg.get("force_ask")) and gate_on,
+    }
 
 
 _LINE_SLOTS = ("q1", "q2", "q3", "tease1", "tease2", "tease3")

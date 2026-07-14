@@ -176,6 +176,15 @@ def _validate_cfg(cfg: dict) -> dict:
     # 1:1 offer engine + human pacing + the editable line pack (all ship OFF).
     if "qualification_gate_enabled" in cfg:
         out["qualification_gate_enabled"] = bool(cfg["qualification_gate_enabled"])
+    # force_ask: attach the ask when the THREAD IS HOT and the model wrote no offer
+    # marker. Inert without the gate (guarded at runtime), and it only ever fires on
+    # thread_heat — a 24.3x signal, vs the gate's ~1x.
+    if "force_ask" in cfg:
+        out["force_ask"] = bool(cfg["force_ask"])
+    # The floor: ask after this many of his messages with no ask on the table. 0 = off.
+    # Clamped — a 1 here would price a man on his first hello.
+    if "ask_after_fan_msgs" in cfg:
+        out["ask_after_fan_msgs"] = max(0, min(100, int(cfg["ask_after_fan_msgs"] or 0)))
     if "smart_pricing_enabled" in cfg:
         out["smart_pricing_enabled"] = bool(cfg["smart_pricing_enabled"])
     if "rhythm_enabled" in cfg:
