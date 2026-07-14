@@ -3,42 +3,33 @@
 /**
  * UpsellerTab — Automations → "💰 AI Upseller".
  *
- * The selling brain. Everything about turning a live conversation into money:
+ * The "sell harder" tuning layer over the SAME seller the 🤖 AI Chatter tab runs
+ * (one engine, one catalog). This tab does NOT hold the content — the live library
+ * (Scripts + Singles + Simulate + Monitor) lives on the AI Chatter tab, because the
+ * base chatter sells from it too. Here:
  *   • Enable Upseller — one click writes the recommended "sell hard + take over" set.
- *   • Takeover — once a fan is in an active sale, she drives his thread regardless of
- *     the base AI Chatter mode (backup/closer), then hands back when it winds down.
- *   • Sell in the chat (the gate) + Smart pricing (the hot-window ladder).
- *   • Ladder aggressiveness — how hard the price climbs after a buy.
- *   • Offer pacing, and the "after a buy" behaviors (post-buy follow-up, gift, win-back).
- *   • Content — PPV Library (price authority) + Scripts (ladders) + Singles (pool) +
- *     the Starter pack (prewritten sellable pieces, just add media) + Her lines.
- *   • Simulate + Live monitor.
+ *   • Takeover, the gate, smart pricing, the price ladder knobs, after-a-buy behaviors.
+ *   • Prewritten scaffolding: "Her lines" (the pitch pack) + Load-starter-pack templates.
  *
  * Shares ai_chatter_config_json with the AI Chatter tab via `useSellerConfig` — both
  * post the FULL sparse config, so neither clobbers the other.
  */
 
-import { useEffect, useState } from "react";
-import { Play, Plus, Save, Sparkles, X } from "lucide-react";
+import { useState } from "react";
+import { Save, Sparkles } from "lucide-react";
 
-import { Badge, Button, Card } from "@/components/ui/primitives";
+import { Button, Card } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
-import { MediaCacheProvider } from "@/hooks/useMediaCache";
 import { cn } from "@/lib/utils";
 import {
-  useAiChatterConfig, useAiChatterSessions, useCancelOffer, useCatalogScripts,
-  useSaveSingles, useSimulate, useUpsertScript,
+  useAiChatterConfig, useCatalogScripts, useSaveSingles,
   type AiChatterConfig, type CatalogItemT,
 } from "@/hooks/useCatalog";
 import {
-  GuideCard, INPUT, ItemsTable, NEW_ITEM, ScriptCard, ScriptPackCard, dollars,
-  useSellerConfig,
+  GuideCard, INPUT, NEW_ITEM, ScriptPackCard, dollars, useSellerConfig,
 } from "@/components/settings/sellerShared";
 
-/** The recommended "sell hard + take over" preset — written on "Enable Upseller".
- *  Matches the confirmed defaults: gate + smart pricing + full takeover + engage a
- *  silent buyer + free thank-you gift + one win-back discount; filming fiction stays
- *  OFF (chargeback-safe). `enabled` is set so the engine actually runs. */
+/** The recommended "sell hard + take over" preset — written on "Enable Upseller". */
 const RECOMMENDED: Partial<AiChatterConfig> = {
   enabled: true,
   qualification_gate_enabled: true,
@@ -54,10 +45,9 @@ const RECOMMENDED: Partial<AiChatterConfig> = {
   rhythm_no_sleep: true,
 };
 
-/** Prewritten sellable pieces. The pitches + suggested prices are written; the
- *  operator only attaches media (media_ids empty → "no media = not offerable", so an
- *  un-attached starter can never be sold by accident). Laddered low→high so the
- *  ladder has room to climb by unlocking pricier items. */
+/** Prewritten sellable pieces. Pitches + suggested prices are written; the operator
+ *  only attaches media (media empty → "not offerable", so nothing sells by accident).
+ *  Loading them appends to Singles, which is edited on the AI Chatter tab. */
 const STARTER_SINGLES: CatalogItemT[] = ([
   { label: "Ass tease", kind: "video",
     description_for_ai: "a short teasing clip of me turning around and playing with my ass for you",
@@ -94,41 +84,28 @@ const STARTER_SINGLES: CatalogItemT[] = ([
 export default function UpsellerTab({ accountId }: { accountId: string | null }) {
   const cfgQ = useAiChatterConfig(accountId);
   const { cfg, set, saveCfg, saveCfgM, shippedPack, packText, setPackText } = useSellerConfig(accountId);
-
   const scriptsQ = useCatalogScripts(accountId);
-  const upsertM = useUpsertScript(accountId);
   const saveSinglesM = useSaveSingles(accountId);
-  const simulateM = useSimulate(accountId);
-  const sessionsQ = useAiChatterSessions(accountId);
-  const cancelM = useCancelOffer(accountId);
-
-  const [singles, setSingles] = useState<CatalogItemT[]>([]);
-  useEffect(() => { setSingles(scriptsQ.data?.singles ?? []); }, [scriptsQ.data?.singles]);
-
-  const [fanSays, setFanSays] = useState("ngl im kinda in the mood.. u got anything for me? 🥵");
 
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
-  if (cfgQ.isLoading || scriptsQ.isLoading)
-    return <div className="text-sm text-fg-dim">Loading…</div>;
+  if (cfgQ.isLoading) return <div className="text-sm text-fg-dim">Loading…</div>;
 
   const gateOn = !!cfg.qualification_gate_enabled;
   const isRecommended =
     !!cfg.qualification_gate_enabled && !!cfg.smart_pricing_enabled &&
     !!cfg.upsell_takes_over && !!cfg.post_buy_rung_enabled && !!cfg.gift_enabled &&
     (cfg.stop_after_unpaid_rungs ?? 1) === 2;
-  const openOffers = (sessionsQ.data?.offers ?? []).filter((o) => o.status === "open");
 
-  /** Append the starter singles that aren't already present (by label). */
+  /** Append starter templates (skipping labels already present) to Singles and SAVE —
+   *  the Singles editor lives on the AI Chatter tab, so this writes straight through. */
   const loadStarter = () => {
-    const have = new Set(singles.map((s) => (s.label ?? "").trim().toLowerCase()));
-    const add = STARTER_SINGLES
-      .filter((s) => !have.has((s.label ?? "").trim().toLowerCase()))
-      .map((s) => ({ ...s }));
-    setSingles([...singles, ...add]);
+    const cur = scriptsQ.data?.singles ?? [];
+    const have = new Set(cur.map((s) => (s.label ?? "").trim().toLowerCase()));
+    const add = STARTER_SINGLES.filter((s) => !have.has((s.label ?? "").trim().toLowerCase()));
+    if (add.length) saveSinglesM.mutate([...cur, ...add.map((s) => ({ ...s }))]);
   };
 
   return (
-    <MediaCacheProvider accountId={accountId}>
     <div className="space-y-4">
       {/* ── enable + takeover ── */}
       <Card className="p-4 space-y-3">
@@ -138,6 +115,12 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
           <div className="flex-1" />
           <EditRawJsonButton surface="ai-chatter-config" accountId={accountId} />
         </div>
+
+        <p className="text-xs text-fg-dim">
+          Same seller as <b>🤖 AI Chatter</b>, turned up. Your content library (Scripts,
+          Singles, Simulate, Monitor) lives on that tab — this one is the sell-harder
+          tuning + the prewritten pitch lines.
+        </p>
 
         <div className="rounded-md border border-accent/40 bg-accent/5 px-3 py-3 space-y-2">
           <div className="flex items-center gap-3 flex-wrap">
@@ -235,10 +218,10 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
             </label>
           </div>
           <p className="text-[11px] text-fg-dim leading-relaxed">
-            Most of the climb comes from your <b>script order</b> (a $3 piece, then a $15
-            piece, then $80…) — these two just bound how fast a single item&apos;s price
-            can rise. The ceiling is the <b>&quot;to the moon&quot; lever</b>: raise it and
-            a whale can run, but{" "}
+            Most of the climb comes from your <b>content order</b> (a $8 piece, then $24,
+            then $50…) — these two just bound how fast a single item&apos;s price can rise.
+            The ceiling is the <b>&quot;to the moon&quot; lever</b>: raise it and a whale
+            can run, but{" "}
             <span className="text-amber-400">conversion drops past 3× his history (about
             52% → 31%)</span>, so push it only for a fan who keeps buying.
           </p>
@@ -363,63 +346,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         </div>
       </Card>
 
-      {/* ── content: PPV Library callout ── */}
-      <Card className="p-4 space-y-2">
-        <h3 className="text-sm font-medium">Content she sells from</h3>
-        <p className="text-xs text-fg-dim leading-relaxed">
-          She draws on three pools, all shown below plus the <b>💸 PPV Library</b> tab
-          (the price Min/Max there is the single price authority — smart pricing never
-          asks below the Min or above the Max):
-        </p>
-        <ul className="text-xs text-fg-dim list-disc pl-5 space-y-0.5">
-          <li><b>Scripts</b> — ordered ladders; the price climbs by unlocking pricier items in order.</li>
-          <li><b>Singles</b> — a flexible pool; she picks the piece that fits what he asked for.</li>
-          <li><b>Starter pack</b> — prewritten sellable pieces below; just attach your media.</li>
-        </ul>
-      </Card>
-
-      {/* ── scripts ── */}
-      <div className="flex items-center gap-2">
-        <h3 className="text-sm font-medium">Scripts (ordered sexting ladders)</h3>
-        <div className="flex-1" />
-        <Button size="sm" variant="ghost"
-          onClick={() => upsertM.mutate({ name: `script_${(scriptsQ.data?.scripts.length ?? 0) + 1}` })}>
-          <Plus size={14} className="mr-1" /> New script
-        </Button>
-      </div>
-      {(scriptsQ.data?.scripts ?? []).map((sc) => (
-        <ScriptCard key={sc.id} accountId={accountId} sc={sc} />
-      ))}
-
-      {/* ── singles + starter pack ── */}
-      <Card className="p-4 space-y-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <h3 className="text-sm font-medium">Singles &amp; starter pack (standalone pieces)</h3>
-          <div className="flex-1" />
-          <Button size="sm" variant="secondary" onClick={loadStarter}>
-            <Sparkles size={14} className="mr-1" /> Load starter pack
-          </Button>
-        </div>
-        <p className="text-xs text-fg-dim">
-          <b>Load starter pack</b> drops in {STARTER_SINGLES.length} prewritten pieces with
-          pitches and suggested prices — you just attach the media to each, then Save. A
-          piece with no media can&apos;t be offered, so nothing sells by accident.
-        </p>
-        <ItemsTable items={singles} setItems={setSingles} accountId={accountId} />
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="ghost"
-            onClick={() => setSingles([...singles, { ...NEW_ITEM }])}>
-            <Plus size={14} className="mr-1" /> Add single
-          </Button>
-          <Button size="sm" disabled={saveSinglesM.isPending}
-            onClick={() => saveSinglesM.mutate(singles)}>
-            <Save size={14} className="mr-1" /> Save singles ({singles.length})
-          </Button>
-          {saveSinglesM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
-        </div>
-      </Card>
-
-      {/* ── her lines ── */}
+      {/* ── prewritten scaffolding: her lines + starter pack ── */}
       <ScriptPackCard
         pack={shippedPack}
         text={packText}
@@ -429,98 +356,24 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         saved={saveCfgM.isSuccess}
       />
 
-      {/* ── simulate ── */}
-      <Card className="p-4 space-y-3">
-        <h3 className="text-sm font-medium">Simulate (dry run — nothing is sent)</h3>
-        <div className="flex gap-2">
-          <input className={`${INPUT} flex-1`} value={fanSays}
-            onChange={(e) => setFanSays(e.target.value)} />
-          <Button size="sm" disabled={simulateM.isPending}
-            onClick={() => simulateM.mutate(fanSays)}>
-            <Play size={14} className="mr-1" /> Run
+      <Card className="p-4 space-y-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <h3 className="text-sm font-medium">Starter pack — prewritten pieces</h3>
+          <div className="flex-1" />
+          <Button size="sm" variant="secondary" disabled={saveSinglesM.isPending} onClick={loadStarter}>
+            <Sparkles size={14} className="mr-1" /> Load starter pack
           </Button>
+          {saveSinglesM.isSuccess && <span className="text-xs text-green-400">added ✓</span>}
         </div>
-        {simulateM.data && (
-          <div className="space-y-2">
-            {!simulateM.data.manifest_present && (
-              <div className="text-xs text-amber-400">
-                ⚠ no sellable items reached the prompt (script enabled? items have media + prices?)
-              </div>
-            )}
-            <div className="space-y-1">
-              {simulateM.data.bubbles.map((b, i) => (
-                <div key={i}
-                  className="inline-block bg-accent/10 border border-accent/30 rounded-2xl px-3 py-1.5 text-sm mr-2">
-                  {b}
-                </div>
-              ))}
-            </div>
-            {simulateM.data.offer && (
-              <Badge className="bg-green-500/15 text-green-400">
-                would offer: {simulateM.data.offer.label ?? simulateM.data.offer.item_id}
-                {simulateM.data.offer.is_free_teaser
-                  ? " (free teaser)"
-                  : ` — tip $${dollars(simulateM.data.offer.tip_unlock_cents)} / ppv $${dollars(simulateM.data.offer.price_cents)}`}
-              </Badge>
-            )}
-          </div>
-        )}
-      </Card>
-
-      {/* ── monitor ── */}
-      <Card className="p-4 space-y-3">
-        <h3 className="text-sm font-medium">
-          Live monitor {openOffers.length > 0 && `— ${openOffers.length} open offer(s)`}
-        </h3>
-        <div className="grid md:grid-cols-2 gap-4">
-          <div>
-            <div className="text-xs text-fg-dim mb-1">Script pins</div>
-            {(sessionsQ.data?.progress ?? []).length === 0 && (
-              <div className="text-xs text-fg-dim">none yet</div>
-            )}
-            {(sessionsQ.data?.progress ?? []).map((p) => (
-              <div key={`${p.fan_id}-${p.script}`} className="text-sm py-0.5">
-                <span className="text-fg-dim">{p.fan_name || p.fan_id}</span>{" "}
-                🎬 {p.script} · item {p.position} ·{" "}
-                <Badge className={p.status === "active"
-                  ? "bg-green-500/15 text-green-400"
-                  : "bg-fg-dim/10 text-fg-dim"}>{p.status}</Badge>
-              </div>
-            ))}
-          </div>
-          <div>
-            <div className="text-xs text-fg-dim mb-1">Offers</div>
-            {(sessionsQ.data?.offers ?? []).slice(0, 20).map((o) => (
-              <div key={o.id} className="text-sm py-0.5 flex items-center gap-2">
-                <span className="text-fg-dim">{o.fan_name || o.fan_id}</span>
-                <span>{o.item_label}</span>
-                <Badge className={o.status === "open"
-                  ? "bg-amber-500/15 text-amber-400"
-                  : o.status === "delivered"
-                    ? "bg-green-500/15 text-green-400"
-                    : "bg-fg-dim/10 text-fg-dim"}>
-                  {o.status}{o.resolved_by ? ` (${o.resolved_by})` : ""}
-                </Badge>
-                {o.status === "open" && (
-                  <>
-                    <span className="text-xs text-fg-dim">
-                      ${dollars(o.tips_accum_cents)}/${dollars(o.tip_unlock_cents)} tipped
-                    </span>
-                    <button className="text-fg-dim hover:text-red-400"
-                      title="cancel offer (hand to a human)"
-                      onClick={() => cancelM.mutate(o.id)}>
-                      <X size={13} />
-                    </button>
-                  </>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
+        <p className="text-xs text-fg-dim leading-relaxed">
+          Drops {STARTER_SINGLES.length} prewritten pieces (pitches + suggested prices) into
+          your <b>Singles</b> — then attach media and edit them on the <b>🤖 AI Chatter</b>{" "}
+          tab. Skips any already there; a piece with no media can&apos;t be offered, so nothing
+          sells by accident. The price authority (Min/Max) is the <b>💸 PPV Library</b> tab.
+        </p>
       </Card>
 
       <GuideCard />
     </div>
-    </MediaCacheProvider>
   );
 }

@@ -3,24 +3,28 @@
 /**
  * ScriptsTab — Automations → "🤖 AI Chatter".
  *
- * The base conversation surface for the `ai_chatter` automation: WHO she talks to
- * and HOW she paces herself. The SELLING brain (the gate, smart pricing, the price
- * ladder, the content, simulate/monitor) lives in its own "💰 AI Upseller" tab
- * (UpsellerTab) — both edit the same ai_chatter_config_json via `useSellerConfig`,
- * which posts the FULL sparse config so neither tab clobbers the other's keys.
- *
- * Here: enable, Full/Closer engagement, old-fan engagement, backup-SLA vs always,
- * the whale gate, the Cadence controller (reply caps / back-off), Human Rhythm
- * (reply timing + sleep), and the texting-style opt-ins.
+ * The base seller + conversation surface for the `ai_chatter` automation: WHO she
+ * talks to, HOW she paces herself, AND her content library (Scripts, Singles,
+ * Simulate, Monitor) — because the base chatter sells from that catalog too. The
+ * "sell harder" TUNING (the gate, smart pricing, price ladder, after-a-buy) lives in
+ * the "💰 AI Upseller" tab (UpsellerTab). Both edit the same ai_chatter_config_json
+ * via `useSellerConfig`, which posts the FULL sparse config so neither tab clobbers
+ * the other's keys.
  */
 
-import { Bot, Save } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Bot, Play, Plus, Save, X } from "lucide-react";
 
-import { Button, Card } from "@/components/ui/primitives";
+import { Badge, Button, Card } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
-import { useAiChatterConfig } from "@/hooks/useCatalog";
+import { MediaCacheProvider } from "@/hooks/useMediaCache";
 import {
-  INPUT, RhythmSection, dollars, useSellerConfig, useSellerStyle,
+  useAiChatterConfig, useAiChatterSessions, useCancelOffer, useCatalogScripts,
+  useSaveSingles, useSimulate, useUpsertScript, type CatalogItemT,
+} from "@/hooks/useCatalog";
+import {
+  INPUT, ItemsTable, NEW_ITEM, RhythmSection, ScriptCard, dollars,
+  useSellerConfig, useSellerStyle,
 } from "@/components/settings/sellerShared";
 import type { AiChatterConfig } from "@/hooks/useCatalog";
 
@@ -29,8 +33,20 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
   const { cfg, set, tz, setTz, saveCfg, saveCfgM } = useSellerConfig(accountId);
   const style = useSellerStyle(accountId);
 
+  // Content library — the base chatter sells from this catalog (Upseller just tunes how).
+  const scriptsQ = useCatalogScripts(accountId);
+  const upsertM = useUpsertScript(accountId);
+  const saveSinglesM = useSaveSingles(accountId);
+  const simulateM = useSimulate(accountId);
+  const sessionsQ = useAiChatterSessions(accountId);
+  const cancelM = useCancelOffer(accountId);
+
+  const [singles, setSingles] = useState<CatalogItemT[]>([]);
+  useEffect(() => { setSingles(scriptsQ.data?.singles ?? []); }, [scriptsQ.data?.singles]);
+  const [fanSays, setFanSays] = useState("ngl im kinda in the mood.. u got anything for me? 🥵");
+
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
-  if (cfgQ.isLoading) return <div className="text-sm text-fg-dim">Loading…</div>;
+  if (cfgQ.isLoading || scriptsQ.isLoading) return <div className="text-sm text-fg-dim">Loading…</div>;
 
   // Nested tier cap: always write a COMPLETE object so the server's shallow merge
   // never drops a tier.
@@ -38,7 +54,10 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
     tier: "baseline" | "buying_signal" | "no_signal" | "pic_sent", n: number,
   ) => set({ msg_limits_by_signal: { ...(cfg.msg_limits_by_signal ?? {}), [tier]: n } });
 
+  const openOffers = (sessionsQ.data?.offers ?? []).filter((o) => o.status === "open");
+
   return (
+    <MediaCacheProvider accountId={accountId}>
     <div className="space-y-4">
       <Card className="p-4 space-y-3">
         <div className="flex items-center gap-2">
@@ -296,6 +315,129 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           )}
         </div>
       </Card>
+
+      {/* ── content library — she sells from this whether or not the Upseller is on.
+          Tune HOW she sells (pricing, escalation) on the 💰 AI Upseller tab. ── */}
+      <div className="flex items-center gap-2">
+        <h3 className="text-sm font-medium">Scripts (ordered sexting ladders)</h3>
+        <span className="text-xs text-fg-dim">walks in order, ignoring requests</span>
+        <div className="flex-1" />
+        <Button size="sm" variant="ghost"
+          onClick={() => upsertM.mutate({ name: `script_${(scriptsQ.data?.scripts.length ?? 0) + 1}` })}>
+          <Plus size={14} className="mr-1" /> New script
+        </Button>
+      </div>
+      {(scriptsQ.data?.scripts ?? []).map((sc) => (
+        <ScriptCard key={sc.id} accountId={accountId} sc={sc} />
+      ))}
+
+      {/* ── singles ── */}
+      <Card className="p-4 space-y-3">
+        <div className="flex items-baseline gap-2">
+          <h3 className="text-sm font-medium">Singles (standalone pieces)</h3>
+          <span className="text-xs text-fg-dim">
+            a flat pool — she picks what fits what he asks for. Grab prewritten ones from the 💰 AI Upseller tab.
+          </span>
+        </div>
+        <ItemsTable items={singles} setItems={setSingles} accountId={accountId} />
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="ghost"
+            onClick={() => setSingles([...singles, { ...NEW_ITEM }])}>
+            <Plus size={14} className="mr-1" /> Add single
+          </Button>
+          <Button size="sm" disabled={saveSinglesM.isPending}
+            onClick={() => saveSinglesM.mutate(singles)}>
+            <Save size={14} className="mr-1" /> Save singles ({singles.length})
+          </Button>
+          {saveSinglesM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
+        </div>
+      </Card>
+
+      {/* ── simulate ── */}
+      <Card className="p-4 space-y-3">
+        <h3 className="text-sm font-medium">Simulate (dry run — nothing is sent)</h3>
+        <div className="flex gap-2">
+          <input className={`${INPUT} flex-1`} value={fanSays}
+            onChange={(e) => setFanSays(e.target.value)} />
+          <Button size="sm" disabled={simulateM.isPending}
+            onClick={() => simulateM.mutate(fanSays)}>
+            <Play size={14} className="mr-1" /> Run
+          </Button>
+        </div>
+        {simulateM.data && (
+          <div className="space-y-2">
+            {!simulateM.data.manifest_present && (
+              <div className="text-xs text-amber-400">
+                ⚠ no sellable items reached the prompt (script enabled? items have media + prices?)
+              </div>
+            )}
+            <div className="space-y-1">
+              {simulateM.data.bubbles.map((b, i) => (
+                <div key={i}
+                  className="inline-block bg-accent/10 border border-accent/30 rounded-2xl px-3 py-1.5 text-sm mr-2">
+                  {b}
+                </div>
+              ))}
+            </div>
+            {simulateM.data.offer && (
+              <Badge className="bg-green-500/15 text-green-400">
+                would offer: {simulateM.data.offer.label ?? simulateM.data.offer.item_id}
+                {simulateM.data.offer.is_free_teaser
+                  ? " (free teaser)"
+                  : ` — tip $${dollars(simulateM.data.offer.tip_unlock_cents)} / ppv $${dollars(simulateM.data.offer.price_cents)}`}
+              </Badge>
+            )}
+          </div>
+        )}
+      </Card>
+
+      {/* ── monitor ── */}
+      <Card className="p-4 space-y-3">
+        <h3 className="text-sm font-medium">
+          Live monitor {openOffers.length > 0 && `— ${openOffers.length} open offer(s)`}
+        </h3>
+        <div className="grid md:grid-cols-2 gap-4">
+          <div>
+            <div className="text-xs text-fg-dim mb-1">Script pins</div>
+            {(sessionsQ.data?.progress ?? []).length === 0 && (
+              <div className="text-xs text-fg-dim">none yet</div>
+            )}
+            {(sessionsQ.data?.progress ?? []).map((p) => (
+              <div key={`${p.fan_id}-${p.script}`} className="text-sm py-0.5">
+                <span className="text-fg-dim">{p.fan_name || p.fan_id}</span>{" "}
+                🎬 {p.script} · item {p.position} ·{" "}
+                <Badge className={p.status === "active"
+                  ? "bg-green-500/15 text-green-400"
+                  : "bg-fg-dim/10 text-fg-dim"}>{p.status}</Badge>
+              </div>
+            ))}
+          </div>
+          <div>
+            <div className="text-xs text-fg-dim mb-1">Offers</div>
+            {(sessionsQ.data?.offers ?? []).slice(0, 20).map((o) => (
+              <div key={o.id} className="text-sm py-0.5 flex items-center gap-2">
+                <span className="text-fg-dim">{o.fan_name || o.fan_id}</span>
+                <span>{o.item_label}</span>
+                <Badge className={o.status === "open"
+                  ? "bg-amber-500/15 text-amber-400"
+                  : o.status === "delivered"
+                    ? "bg-green-500/15 text-green-400"
+                    : "bg-fg-dim/10 text-fg-dim"}>
+                  {o.status}{o.resolved_by ? ` (${o.resolved_by})` : ""}
+                </Badge>
+                {o.status === "open" && (
+                  <button className="text-fg-dim hover:text-red-400"
+                    title="cancel offer (hand to a human)"
+                    onClick={() => cancelM.mutate(o.id)}>
+                    <X size={13} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </Card>
     </div>
+    </MediaCacheProvider>
   );
 }
