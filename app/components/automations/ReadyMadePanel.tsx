@@ -47,8 +47,9 @@ import AutoreplyTab from "@/components/settings/AutoreplyTab";
 import TipRewardTab from "@/components/settings/TipRewardTab";
 import PPVLibraryTab from "@/components/settings/PPVLibraryTab";
 import ScriptsTab from "@/components/settings/ScriptsTab";
+import UpsellerTab from "@/components/settings/UpsellerTab";
 
-type Tab = "auto_posts" | "mass_premade" | "mass_funnels" | "nudge_online" | "mass_nudge" | "online_blast" | "instant_reply" | "autoreply" | "ai_seller" | "tip_reward" | "ppv_library" | "unsend" | "onboard";
+type Tab = "auto_posts" | "mass_premade" | "mass_funnels" | "nudge_online" | "mass_nudge" | "online_blast" | "instant_reply" | "autoreply" | "ai_seller" | "ai_upseller" | "tip_reward" | "ppv_library" | "unsend" | "onboard";
 /** The two tabs that map to an automation_rules kind (the others have their
  *  own self-contained surfaces). */
 type RuleKind = "auto_posts" | "mass_premade";
@@ -62,10 +63,10 @@ const TABS: Array<{ key: Tab; label: string }> = [
   { key: "online_blast", label: "📡 Blast Online" },
   { key: "instant_reply", label: "⚡ Reply Instant" },
   { key: "autoreply", label: "💬 Auto Convo" },
-  { key: "ai_seller", label: "🤖 AI Seller" },
+  { key: "ai_seller", label: "🤖 AI Chatter" },
+  { key: "ai_upseller", label: "💰 AI Upseller" },
   { key: "tip_reward", label: "🎁 Tip Reward" },
   { key: "ppv_library", label: "💸 PPV Library" },
-  { key: "unsend", label: "🧹 Unsend my chats" },
   { key: "onboard", label: "🆕 Onboard old fans" },
 ];
 
@@ -277,6 +278,7 @@ export default function ReadyMadePanel() {
       {tab === "instant_reply" && <WebhookDispatchTab accountId={accountId} />}
       {tab === "autoreply" && <AutoreplyTab accountId={accountId} />}
       {tab === "ai_seller" && <ScriptsTab accountId={accountId} />}
+      {tab === "ai_upseller" && <UpsellerTab accountId={accountId} />}
       {tab === "tip_reward" && <TipRewardTab accountId={accountId} />}
       {tab === "ppv_library" && <PPVLibraryTab accountId={accountId} />}
       {tab === "unsend" && <UnsendCard accountId={accountId} />}

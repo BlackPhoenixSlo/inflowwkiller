@@ -1,0 +1,568 @@
+"""
+service/automations/upsell.py — the Offer Engine: who we may sell to, and for how much.
+
+WHAT THE DATA ACTUALLY SAID (measured on this agency's own archive, not vibes):
+
+The seductive finding was "higher prices convert BETTER" — the marginal table says
+$0-9 pays 24%, $60-69 pays 43%, $200 pays 50%. Acting on that would have been the
+most expensive mistake in this file. It is Simpson's paradox. Controlling for the
+FAN (same fan, offers at several price levels, his own final tap-out dropped):
+
+    within-fan price quartile:  Q1 cheapest 43.3%  →  Q4 priciest 28.9%
+    mean within-fan effect of asking more:  -23.4pp
+    of 746 fans with >=2 price levels: 288 convert WORSE when asked more, 69 better
+
+The marginal gradient is composition: a chatter only quotes $200 to a fan who is
+already buying. Price was measuring the FAN, not causing the sale. On ordinary
+(non-top-revenue) threads the gradient actually INVERTS: $100+ converts at 9.7%.
+
+So the rule is:
+
+    ** QUALIFICATION drives the sale. PRICE drives the margin. **
+
+    cold (never bought):  16.8% @ $0-9 ... 24.0% @ $30-59 ... 16.4% @ $100+   ← elastic
+    warm (already bought): 43.6% ... 38.9% ... 44.3%                          ← FLAT
+
+Once a fan has paid once, his conversion is ~flat across price — THAT is the moment
+worth money, and it is why the ladder escalates only after a paid rung. And the
+timing is real: post-purchase re-offer conversion decays monotonically —
+    <5min 66.7% · 5-30min 57.8% · 30m-2h 48.2% · 2-24h 47.3% · >24h 45.0%
+so `strike while hot` is kept. What is NOT kept is the fantasy that we can raise
+price on a cold fan and get away with it.
+
+After an UNPAID rung, the corpus is unambiguous about the worst possible move:
+    repeat the same price → 6.8% paid   (the single worst action measured)
+    discount 0.75-0.9x    → 15.6%       ($5.43 EV — the best)
+    halve (<0.5x)         → 19.7%       (converts, but only $2.62 EV — we're giving it away)
+    raise                 → 11.1%
+So an unpaid rung is answered ONCE, with a discount, and then the ladder stops.
+
+Ships DISABLED. With `qualification_gate_enabled` false, ai_chatter/ppv_send behave
+exactly as they do today (the legacy SPEND_BANDS matrix stays live for mass sends).
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import math
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from random import Random
+
+log = logging.getLogger("of-relay.automation.upsell")
+
+# ── Price constants. These are SAFETY choices, owned as taste — NOT EV claims.
+# Every "optimal price" number anyone produced from this corpus was contaminated by
+# the selection effect above, so nothing here is justified by one.
+COLD_OPEN_POS = 0.35           # a first ask sits low in the item's band, but not TOO low:
+                               # the BEST-executed real sales (>=3 paid rungs) open at a
+                               # first paid rung of p25 $20 / p50 $25 / p75 $39 — a $10
+                               # open (the near-miss "john" thread) under-prices a whale.
+                               # 0.35 lands a typical band's cold open near $20-25.
+COLD_OPEN_CEILING_CENTS = 5_900  # a fan who has never paid is never asked more than this
+# The real conversion cliff on the escalation ratio is 3x, not 1.6x (≤1.6x→54.7%,
+# 1.6-3x→52.5%, >3x→31.3%). The 1.6x line had zero predictive power and froze a $5
+# fan below $7.50 forever. A plain constant — the operator has no basis to answer it.
+MAX_ASK_VS_HISTORY_MULT = 3.0   # never ask >3x the largest single PPV he has EVER paid
+ESCALATION_MULT = 1.75          # after a PAID rung. One constant, not a preset.
+DISCOUNT_BAND = (0.60, 0.90)    # of the price HE SAW. Depth buys nothing (flat 20-25%
+                                # from 0.40x-0.90x; EV peaks 0.60-0.90x). 0.60 is a hard
+                                # floor no LLM proposal may cross.
+OF_PRICE_FLOOR_CENTS = 300      # OF rejects priced messages under $3.00
+OF_PRICE_MAX_CENTS = 20_000     # ...and over $200. A HARD INVARIANT, enforced in
+                                # next_price's caps, in human_cents, AND re-clamped at
+                                # the send site. Nothing enforced it inside upsell before;
+                                # at 3.0x on a whale the wire max is now reachable.
+
+# Pacing / anti-abuse. Hard constants: the churn path is ASKS, and a fan who buys
+# nothing never trips a spend cap — so the caps are on asks, not on dollars alone.
+RUNG_GAP_S = 180                 # minimum seconds between two rungs
+RESEND_AFTER_M = 90              # unpaid this long ⇒ one discount resend
+STOP_AFTER_UNPAID_RUNGS = 1      # then the ladder taps out. No begging.
+MAX_ASKS_PER_FAN_PER_DAY = 8     # the hot window CANNOT lift this
+DAILY_ASK_CEILING_CENTS = 25_000
+LADDER_OFFERS_PER_HOUR_MAX = 20  # per ACCOUNT: burst shape is what flags an OF session
+LADDER_OFFERS_PER_DAY_MAX = 120
+SESSION_TTL_M = 90               # a ladder frozen at hot/rung-4 for 3 weeks must not
+SESSION_IDLE_M = 20              # fire "i cant resist anymore 🥵" into a dead thread
+# A tap-out is a PAUSE, not a life sentence. Nothing reset `tapped`, so ONE ignored PPV
+# barred a fan from every future 1:1 price FOREVER — in the 8-persona simulation, 7 of 8
+# fans (including a whale who had bought twice and was still asking for content) were
+# permanently un-sellable within 24h. He said "not now", not "never". A new day is a new
+# chance; a PURCHASE clears it instantly (he is hot again, by definition).
+TAPPED_TTL_H = 24
+HOT_WINDOW_M = 120               # strike-while-hot. Was 45; a fan who JUST paid got a
+                                 # 12-min liveness window while a cold fan got 24h — but
+                                 # buyer p75 reply latency is 908s (15min). A 12-min
+                                 # window on a proven buyer is indefensible.
+HOT_ESCALATE_TTL_S = 7200        # past the hot window, DON'T lock him out — downgrade to
+                                 # OPEN and re-price off band (not off last_paid×mult).
+ACTIVE_TTL_S = 12 * 60           # he must have spoken this recently for a HOT rung
+COLD_ACTIVE_TTL_S = 24 * 3600    # ...or this recently for a cold open
+AFTERCARE_SILENCE_M = 45         # a PAID rung gone silent this long → one free warm bubble
+SPEND_VELOCITY_CAP_7D = 30_000   # $300/7d paid ⇒ downgrade to companion (spend brake, not
+                                 # a buy-COUNT stop, which is dead). Operator-editable VALUE.
+MULTIBUY_COOLDOWN_H = (12, 18)   # after a session with >=3 paid rungs, ease off this long
+PENDING_OFFER_TTL_D = 14
+ARM_RATE = 0.20                  # 20% of QUOTES get an exploration multiplier
+ARM_MULTS = (0.7, 0.85, 1.0, 1.2, 1.4)
+
+STATUS_IDLE, STATUS_OPEN, STATUS_HOT = "idle", "open", "hot"
+STATUS_TAPPED, STATUS_STOPPED = "tapped", "stopped"
+# The safe state machine (Codex named its absence the biggest v1 gap): a fan who says
+# "I just want to talk" or who is out of money is neither sellable NOR silent. COMPANION
+# keeps the conversation on and the seller OFF.
+STATUS_COMPANION = "companion"
+STATUS_AFTERCARE = "aftercare"
+
+
+# ── Decline detection ────────────────────────────────────────────────────────
+# This is the most dangerous regex in the product, so it is THREE regexes with three
+# different consequences. A single broad _DECLINE_RE was scored against the real
+# inbound corpus and matched 4.05% of all inbounds — tapping out 37.9% OF ALL THREADS.
+# Its hits included "No problem!", "No way!!!!", "A hot shower, no overthinking, comfy
+# bed, hbu?" and "talk to you a lil bit later today beautiful 🥰". Wired to a shared
+# 72h pause it would have been a three-day, cross-automation, UI-invisible blackout on
+# more than a third of the book — and it would have passed every unit test, because
+# tests only ever feed it true declines.
+#
+# Measured hit rates on 86,051 real inbounds: HARD 0.03% · SOFT 0.09% · BARE-NO 0.16%.
+
+# HARD — he is angry or gone. Permanent stop, no more paid messages, ever.
+_HARD_STOP_RE = re.compile(
+    r"\b(charge ?back|refund|dispute (?:this|the charge)|report(?:ing)? you|scam(?:mer)?|"
+    r"unsubscrib\w*|stop messaging|blocked you|blocking you)\b", re.I)
+
+# SOFT — a poverty plea. Stop SELLING for 24h. KEEP TALKING. This is the highest-value
+# moment to be a person: he is still here, he is just broke this week.
+# `broke` must be the ADJECTIVE, never the past-tense verb: a bare \bbroke\b also eats
+# "i broke my phone screen", "we broke up last year", "you broke me lol" — all of which
+# are conversation, not refusal. So it is anchored to a copula.
+_SOFT_BROKE_RE = re.compile(
+    r"\b(?:(?:i'?m|im|am|is|are|feeling|going)\s+broke|"
+    r"can'?t afford|cant afford|no money|lost my job|out of (?:money|cash))\b", re.I)
+
+# BARE-NO — only when "no" is the WHOLE message. "no way babe 😈" is enthusiasm, not
+# refusal; "talk later babe" is scheduling, not refusal. Both are excluded on purpose:
+# `later` and `not now` are NOT in this regex at all.
+_BARE_NO_RE = re.compile(
+    r"^\W*(?:no|nope|no thanks?|no thank you|not interested|stop|no more|enough)\W*$", re.I)
+
+DECLINE_HARD, DECLINE_SOFT, DECLINE_BARE_NO = "hard", "soft", "bare_no"
+
+
+def classify_decline(text: str | None) -> str | None:
+    """None = he did not decline. Evaluated BEFORE any price-objection handling, so
+    "too expensive, i can't afford this" can never be routed into the haggle counter
+    and upsold at a fan who just told us he is broke."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    if _HARD_STOP_RE.search(t):
+        return DECLINE_HARD
+    if _SOFT_BROKE_RE.search(t):
+        return DECLINE_SOFT
+    if _BARE_NO_RE.match(t):
+        return DECLINE_BARE_NO
+    return None
+
+
+# ── SPEND_REGRET — the poverty brake that actually catches poverty ───────────
+# v1's _SOFT_BROKE_RE caught ~3 of 19 real distress lines, and the affordability path
+# routed them into a DISCOUNT (another priced ask at a man saying stop). This detector
+# is DELIBERATELY OVER-INCLUSIVE: a false stop costs one unsent ask; a false negative
+# charges a man who told us he's out of money. On a hit we ALWAYS soft-stop (talk, don't
+# sell) for 24h and he is NEVER discount-eligible. Red-line: ≥85% recall on the labelled
+# distress corpus before ship.
+_SPEND_REGRET_RE = re.compile(
+    r"\b(spent? (too much|all my|my last)|no more money|out of (money|cash|funds)|"
+    r"can'?t (spend|afford)( (any)?more)?|maxed( out)?|"
+    r"broke|skint|tapped out|that'?s (it|all|enough)( for)?( (now|today|tonight|me))?|"
+    r"no more (for )?(now|today|tonight)|"
+    r"(wait|till|until) (payday|friday|next week|i get paid)|"
+    r"(only|can only) afford \$?\d+|budget is \$?\d+|\$?\d+ is (a lot|too much) for me|"
+    r"not ready to (spend|send)( more)?|stop(ped)? (letting me|my card)|"
+    r"card (declined|stopped)|lost my job|between jobs|on a budget)\b", re.I)
+
+
+def detect_spend_regret(text: str | None) -> bool:
+    """He is signalling he is out of money / done spending. Over-inclusive by design.
+    A hit ⇒ unconditional 24h soft stop + COOLDOWN, never a discount. Distinct from a
+    bare haggle ("can you do $30"), which alone may reach the discount path."""
+    return bool(text) and bool(_SPEND_REGRET_RE.search(text))
+
+
+# ── COMPANION intent — he wants to talk, not to buy ──────────────────────────
+_COMPANION_RE = re.compile(
+    r"\b(just (wanna|want to|like) talk(ing)?|dont want (pics|nudes|content|to buy)|"
+    r"not here (to|for) (buy|content|sex)|lets just (talk|chat)|"
+    r"just (like|enjoy) (talking|chatting|our chats?)|"
+    r"can we just talk|dont need (pics|content))\b", re.I)
+
+
+def detect_companion_intent(text: str | None) -> bool:
+    """He declines content while asking to keep talking. Seller OFF, conversation ON."""
+    return bool(text) and bool(_COMPANION_RE.search(text))
+
+
+# ── STATED CAP — his WORDS, an advisory ceiling only ─────────────────────────
+# The one anchor we honour (the operator's "let's keep it at 30"). It is NOT price
+# personality (that is right-censoring, not a type) — it is a number he actually typed
+# inside a cap/counter-offer frame. The regex supplies the cents; there is NO LLM marker.
+_STATED_CAP_RE = re.compile(
+    r"(?:can you (?:do|make it)|could you do|would you do|how about|i can (?:do|pay|afford)|"
+    r"my (?:limit|budget|max) is|(?:keep|stay|leave) (?:it )?(?:at|to)|"
+    r"\bfor|i'?ll (?:pay|give you|do)|(?:no more than|max)|is (?:my )?(?:limit|budget|max))"
+    r"\s*\$?\s*(\d{1,3})(?!\d)", re.I)
+# A number in an escalation/enthusiasm frame is NOT a cap ("I'd pay 200 for the right one").
+_CAP_NEGATION_RE = re.compile(r"\b(no|not|isn'?t|too much|expensive)\b", re.I)
+
+
+def detect_stated_cap(text: str | None) -> int | None:
+    """The price HE named as his ceiling, in cents, or None. Advisory + one-directional:
+    it may only LOWER the ask, never raise the floor. Range-clamped and rate-limited by
+    the caller (a fan-writable price API must be defended). Evidence: next ask ≤1.6× the
+    cap → 52% buy; >1.6× → 6%."""
+    if not text:
+        return None
+    m = _STATED_CAP_RE.search(text)
+    if not m:
+        return None
+    # A cap stated inside a negation frame ("that's too much, not paying 50") is a
+    # complaint about a price, not a counter-offer — let the decline/discount path own it.
+    span_start = max(0, m.start() - 20)
+    if _CAP_NEGATION_RE.search(text[span_start:m.start()]):
+        return None
+    try:
+        dollars = int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+    if dollars < 3 or dollars > 200:       # outside OF's wire range — not a real cap
+        return None
+    return dollars * 100
+
+
+# ── Pricing ──────────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class FanState:
+    fan_id: int
+    max_single_paid_cents: int = 0     # the LARGEST single PPV he has ever actually paid
+    last_paid_cents: int | None = None  # the rung he just bought (None = never)
+    has_ever_paid: bool = False
+
+
+@dataclass(frozen=True)
+class Quote:
+    price_cents: int
+    base_cents: int
+    arm_mult: float
+    pre_clamp_cents: int
+    clamped_by: str | None
+    band_lo: int
+    band_hi: int
+
+
+def media_key(media_ids) -> str:
+    """Stable key for a media SET. Keyed on media, not catalog_item_id, because a fan
+    who bought a clip through a MASS blast has no content_offers row at all — a
+    catalog-keyed ownership check would cheerfully re-sell him what he already owns."""
+    if isinstance(media_ids, str):
+        try:
+            media_ids = json.loads(media_ids) or []
+        except Exception:
+            media_ids = []
+    ids = sorted(int(x) for x in (media_ids or []))
+    if not ids:
+        return ""
+    return hashlib.sha1(",".join(str(i) for i in ids).encode()).hexdigest()[:16]
+
+
+def stable_hash(*parts) -> int:
+    return int(hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:12], 16)
+
+
+def arm_mult(account_id: str, fan_id: int, rung_index: int, key: str) -> float:
+    """The price experiment randomises the QUOTE, not the FAN.
+
+    Assigning an arm per-fan (hash(account, fan) % 5) would make it a randomised *fan*
+    experiment with price as a nuisance variable: the armed fan's whole ladder history
+    shifts, which is exactly the ladder-position contamination the arm exists to escape.
+    Per-quote, the fan is his own control across rungs."""
+    r = Random(stable_hash(account_id, fan_id, rung_index, key))
+    if r.random() >= ARM_RATE:
+        return 1.0
+    return r.choice(ARM_MULTS)
+
+
+def human_cents(dollars_cents: float, account_id: str, rng: Random,
+                *, max_cents: int | None = None, min_cents: int = OF_PRICE_FLOOR_CENTS) -> int:
+    """Whole dollars + a human-looking cents tail, ALWAYS inside [min_cents, max_cents].
+
+    Humans in the archive priced at $35.20, $45.20, $50.20, $75.55 — never a uniform
+    ending. round_to_99()'s fixed `.99` on 100% of sends is a perfect bot fingerprint,
+    and so was the first proposal here (a 6-value alphabet at 100% frequency). The
+    tail is drawn from a per-account seeded distribution weighted toward the endings
+    the humans actually used, with support everywhere.
+
+    The bound is not decoration: the tail is added AFTER the price is clamped, so
+    without it a $200.00 quote becomes $200.99 — and OF rejects any priced message
+    over $200 outright. The ceiling wins over the disguise."""
+    cents = max(min_cents, int(round(dollars_cents)))
+    whole = max((cents // 100) * 100, (min_cents // 100) * 100)
+    seeded = Random(stable_hash("cents", account_id, rng.random()))
+    pool = [0, 20, 20, 50, 50, 55, 69, 99] + list(range(0, 100, 7))
+    out = whole + seeded.choice(pool)
+    if max_cents is not None and out > max_cents:
+        out = whole if whole <= max_cents else int(max_cents)   # drop the tail, keep the bound
+    return max(min_cents, out)
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(v, hi))
+
+
+def next_price(*, fan: FanState, band: tuple[int, int], last_paid_cents: int | None,
+               rung_index: int, key: str, account_id: str, rng: Random,
+               library_bounds: tuple[int, int],
+               stated_cap_cents: int | None = None,
+               escalation_mult: float | None = None,
+               max_ask_vs_history_mult: float | None = None) -> Quote | None:
+    """The price for the next rung — or None, meaning DO NOT OFFER THIS ITEM.
+
+    `return None` is the load-bearing line in this module. The obvious design applies
+    the fan-history cap AFTER the item's floor, which quotes a fan whose largest paid
+    PPV was $9 a flagship finish video at $13.50 — and then the ladder's monotonicity
+    freezes it there forever. Here, an item he cannot plausibly afford is simply not
+    offered, and the item selector picks a cheaper one instead. The ladder climbs by
+    UNLOCKING BETTER ITEMS, which produces a 9→19→39→59→79 shape structurally, rather
+    than by a multiplier fighting three caps."""
+    lo, hi = band
+    lo_b, hi_b = library_bounds
+    # Operator-tunable aggressiveness (Upsell tab). Both default to the data-backed
+    # constants; raising max_ask_vs_history_mult past 3.0 is the "to the moon" lever,
+    # but conversion halves past 3x his history (52%→31%) — the UI says so.
+    esc_mult = ESCALATION_MULT if escalation_mult is None else float(escalation_mult)
+    hist_mult = (MAX_ASK_VS_HISTORY_MULT if max_ask_vs_history_mult is None
+                 else float(max_ask_vs_history_mult))
+
+    # Ceiling first, floor last — so a floor that cannot survive the ceiling yields
+    # NO OFFER rather than a cheap one. Every candidate ceiling is named, and the
+    # BINDING one is recorded on the quote: a quote silently truncated at the library
+    # max would otherwise bias every estimate the price arm produces, for an unknown
+    # subset of fans.
+    caps: list[tuple[int, str]] = [
+        (int(hi * 1.5), "band"),
+        (int(hi_b), "library"),
+        (OF_PRICE_MAX_CENTS, "of_max"),     # HARD invariant — the $200 wire max, always
+    ]
+    if fan.max_single_paid_cents:
+        caps.append((int(fan.max_single_paid_cents * hist_mult), "history"))
+    if last_paid_cents is None and not fan.has_ever_paid:
+        caps.append((COLD_OPEN_CEILING_CENTS, "cold_ceiling"))
+    # His stated cap ("keep it at 30") is a CEILING only, never a floor. Applied at 1.6x
+    # (next ask ≤1.6x cap still converts at 52%). It may LOWER the ask / bias selection
+    # cheaper; it must NEVER raise the floor (that empties the catalog and freezes him).
+    if stated_cap_cents:
+        caps.append((int(stated_cap_cents * 1.6), "stated_cap"))
+    ceiling, ceiling_src = min(caps, key=lambda c: c[0])
+
+    floor = max(lo, lo_b, OF_PRICE_FLOOR_CENTS)
+    if ceiling < floor:
+        return None                      # not qualified for THIS item. Do not discount it.
+
+    if last_paid_cents:
+        want = last_paid_cents * esc_mult            # he just paid — strike while hot
+    else:
+        want = lo + (hi - lo) * COLD_OPEN_POS        # cold open: LOW in the band
+
+    base = _clamp(want, floor, ceiling)
+    arm = arm_mult(account_id, fan.fan_id, rung_index, key)
+    pre_clamp = want * arm                           # what the model wanted, unclamped
+    px = _clamp(pre_clamp, floor, ceiling)
+
+    # `clamped_by` names the bound that actually MOVED the price, or None if the quote
+    # is what the model wanted. This is the experiment's own instrument: a quote
+    # silently truncated at a ceiling, recorded as if it were free, biases every price
+    # estimate — so the clamp is measured against the UNCLAMPED intent, not against
+    # the already-clamped base.
+    clamped_by = None
+    if abs(px - pre_clamp) > 0.5:
+        clamped_by = ceiling_src if pre_clamp > ceiling else "floor"
+
+    return Quote(
+        price_cents=human_cents(px, account_id, rng,
+                                max_cents=int(ceiling), min_cents=int(floor)),
+        base_cents=int(base), arm_mult=arm, pre_clamp_cents=int(pre_clamp),
+        clamped_by=clamped_by, band_lo=lo, band_hi=hi)
+
+
+def discount_price(last_sent_cents: int, rng: Random, account_id: str) -> int:
+    """The one answer to an unpaid rung. Computed off the price HE ACTUALLY SAW (not a
+    pre-arm base he never saw), so a "discount" can never arrive ABOVE the original.
+    The arm is NOT re-applied here — one arm per (fan, media) event, ever."""
+    lo, hi = DISCOUNT_BAND
+    px = int(last_sent_cents * rng.uniform(lo, hi))
+    px = max(OF_PRICE_FLOOR_CENTS, min(px, last_sent_cents - 1))
+    return px
+
+
+@dataclass(frozen=True)
+class DiscountCtx:
+    """What may_discount needs. Assembled by ai_chatter."""
+    last_inbound_text: str = ""
+    objection_at: datetime | None = None   # when a price objection last arrived
+    last_inbound_at: datetime | None = None
+    discount_count_this_item: int = 0      # cuts already given on THIS media
+    cuts_last_30d: int = 0                 # the reinforcer governor numerator
+    asks_last_30d: int = 0
+    spend_regret: bool = False             # distress is NEVER a discount trigger
+
+
+def may_discount(ctx: DiscountCtx) -> tuple[bool, str]:
+    """He must WORK for a cut, and only a VOICED affordability objection earns one.
+
+    95.8% of our historical cuts were unprompted and converted at HALF the rate
+    (20.7% vs 42.9%). The operator's "they'll learn to haggle" fear is measurably
+    backwards (discounted fans later haggle LESS) — so we do NOT penalise a haggle;
+    we gate on an ask and rate-limit the REINFORCER, not the price."""
+    if ctx.spend_regret:
+        return False, "distress"           # a broke man is soft-stopped, never discounted
+    # 1. ASK REQUIRED — a voiced affordability objection (soft decline, stated cap, or a
+    #    haggle line). No voiced objection ⇒ no cut; the answer is a PIVOT to a cheaper item.
+    has_objection = bool(
+        classify_decline(ctx.last_inbound_text) == DECLINE_SOFT
+        or detect_stated_cap(ctx.last_inbound_text)
+        or ctx.objection_at is not None
+    )
+    if not has_objection:
+        return False, "unprompted"
+    # 2. THE BEAT — at least one fan turn since the objection. Never cut on the same
+    #    breath he asked. This IS "he must work for it"; the data says more earns nothing.
+    if ctx.objection_at is not None and ctx.last_inbound_at is not None \
+            and ctx.last_inbound_at <= ctx.objection_at:
+        return False, "same_turn"
+    # 3. ONE CUT PER ITEM.
+    if ctx.discount_count_this_item >= 1:
+        return False, "already_cut"
+    # 4. THE GOVERNOR — cap how RELIABLY an objection pays off (the reinforcer), without
+    #    a haggle penalty (which is backwards). >35% of asks ending in a cut ⇒ pivot.
+    if ctx.asks_last_30d >= 4 and ctx.cuts_last_30d / max(1, ctx.asks_last_30d) > 0.35:
+        return False, "governor"
+    return True, "ok"
+
+
+def derive_band(*, human_asks_cents: list[int], account_median_cents: int | None,
+                override: tuple[int, int] | None = None) -> tuple[tuple[int, int], str]:
+    """The item's plausible price range → ((lo, hi), source).
+
+    Content SHOULD constrain price (a 12-minute video is not a selfie) — but it cannot
+    be derived from duration, because `catalog_items.duration_sec` is populated on
+    0 of 9 rows in prod: a duration-derived tier taxonomy would classify the entire
+    vault by a NULL. So the band is derived EMPIRICALLY from what humans actually
+    charged for this exact media, and falls back to the account's own median ask."""
+    if override:
+        return (int(override[0]), int(override[1])), "override"
+    asks = sorted(int(x) for x in (human_asks_cents or []) if x)
+    if asks:
+        median = asks[len(asks) // 2]
+        return (int(median * 0.6), int(median * 1.4)), "empirical"
+    if account_median_cents:
+        return (int(account_median_cents * 0.6), int(account_median_cents * 1.4)), "account"
+    return (OF_PRICE_FLOOR_CENTS, 2_000), "fallback"
+
+
+# ── The gate — this IS the feature ───────────────────────────────────────────
+@dataclass(frozen=True)
+class GateCtx:
+    fan_id: int
+    last_inbound_text: str | None = None
+    last_inbound_at: datetime | None = None
+    last_outbound_at: datetime | None = None
+    fan_spoke_last: bool = False
+    status: str = STATUS_IDLE
+    offers_paused_until: datetime | None = None
+    last_ask_at: datetime | None = None
+    asks_today: int = 0
+    daily_ask_cents: int = 0
+    account_offers_last_hour: int = 0
+    account_offers_today: int = 0
+    ladder_may_open: bool = True     # rhythm: not within 30min of her bedtime
+    fan_pull: bool = False           # HE explicitly asked to buy this turn (content-ask /
+                                     # "send it" / named a price) — his own initiation
+
+
+def qualify(ctx: GateCtx, now: datetime) -> tuple[bool, str]:
+    """May we put a PRICE in front of this fan right now? (ok, reason).
+
+    Live conversational signal only — lifetime spend is NOT an input. Selling into
+    silence is the actual gap: it is what ppv_send does today (0.26% paid), and it is
+    the one claim that survived every review round."""
+    from ._common import is_qualifying_inbound
+
+    if ctx.status == STATUS_STOPPED:
+        return False, "hard_stop"
+    if ctx.status == STATUS_TAPPED:
+        return False, "tapped"
+    if ctx.offers_paused_until and ctx.offers_paused_until > now and not ctx.fan_pull:
+        # He said he's broke → we don't PUSH. But the "broke" line is real distress only
+        # ~85% of the time: measured, 11% of fans who say it still buy within 24h, 18%
+        # within 7d. The realness test is whether HE comes back PULLING — an explicit
+        # "send it" / content-ask / a named price. We never proactively re-offer during
+        # the pause, but if he initiates a buy himself, we honour it (that is not farming
+        # a broke man — that is a man telling us the "broke" wasn't final).
+        return False, "offers_paused"        # he said he's broke. Talk, don't sell.
+
+    if not ctx.fan_spoke_last:
+        return False, "we_spoke_last"        # never stack an offer on our own message
+    if not is_qualifying_inbound(ctx.last_inbound_text):
+        return False, "low_information"      # "k" / "ok" / "lol" is not a buying signal
+    if classify_decline(ctx.last_inbound_text):
+        return False, "declined"
+
+    if ctx.last_inbound_at is None:
+        return False, "no_inbound"
+    age = (now - ctx.last_inbound_at).total_seconds()
+    hot = ctx.status == STATUS_HOT
+    if age > (ACTIVE_TTL_S if hot else COLD_ACTIVE_TTL_S):
+        return False, "stale"
+
+    if ctx.last_ask_at and (now - ctx.last_ask_at).total_seconds() < RUNG_GAP_S:
+        return False, "rung_gap"
+    if ctx.asks_today >= MAX_ASKS_PER_FAN_PER_DAY:
+        return False, "fan_daily_asks"       # the hot window cannot lift this
+    if ctx.daily_ask_cents >= DAILY_ASK_CEILING_CENTS:
+        return False, "fan_daily_cents"
+    if ctx.account_offers_last_hour >= LADDER_OFFERS_PER_HOUR_MAX:
+        return False, "account_hourly"       # burst shape is what flags an OF session
+    if ctx.account_offers_today >= LADDER_OFFERS_PER_DAY_MAX:
+        return False, "account_daily"
+    if ctx.status != STATUS_HOT and not ctx.ladder_may_open:
+        return False, "near_bedtime"         # don't start what we can't finish
+
+    return True, "ok"
+
+
+def tap_expired(status: str, updated_at: datetime | None, now: datetime) -> bool:
+    """Has a tap-out served its time? A `tapped` fan is one who said "no" once, or let a
+    PPV go unopened. That is a mood, not a verdict — and it must decay, or the ladder is
+    a one-way door that silently retires every fan who ever ignored a message.
+
+    STOPPED does NOT decay: that fan threatened a chargeback. Only an operator clears him."""
+    if status != STATUS_TAPPED or updated_at is None:
+        return False
+    return (now - updated_at) >= timedelta(hours=TAPPED_TTL_H)
+
+
+def session_expired(status: str, last_ask_at: datetime | None,
+                    session_idle_at: datetime | None, now: datetime) -> bool:
+    """Enforced ON READ. A ladder left at hot/rung-4 three weeks ago must not wake up
+    and fire "i cant resist anymore 🥵" into a dead thread."""
+    if status not in (STATUS_OPEN, STATUS_HOT):
+        return False
+    if last_ask_at and (now - last_ask_at) > timedelta(minutes=SESSION_TTL_M):
+        return True
+    if session_idle_at and (now - session_idle_at) > timedelta(minutes=SESSION_IDLE_M):
+        return True
+    return False

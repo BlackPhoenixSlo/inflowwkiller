@@ -77,6 +77,10 @@ _DEFAULT_TEXT_HOURS = 9
 # Default age for the MASS free-text cleanup sweep (a free, image-less broadcast
 # is a low-value engagement blast — unsend it once it's done its job).
 _DEFAULT_MASS_TEXT_HOURS = 8
+# A priced PPV broadcast is NEVER auto-unsent before this many hours (prod: 47% of
+# mass-PPV revenue, 68% of it first-ever buys, lands >4h after send; the curve knees
+# at 24h). A backend floor for the price class, not merely a UI default.
+_MIN_MASS_PRICE_HOURS = 24
 # Safety ceiling so a misconfigured sweep can't unsend an entire account.
 _MAX_SWEEP = 200
 
@@ -244,9 +248,10 @@ async def _sweep_mass_targets(
     if media_hours is not None:
         classes.append(and_(
             MassBroadcastCache.media_count > 0,
+            MassBroadcastCache.is_free.is_(True),   # FREE images only — a PRICED image is
             MassBroadcastCache.sent_at <= now - timedelta(hours=media_hours),
-        ))
-    if price_hours is not None:
+        ))                                          # governed by the price class (24h floor),
+    if price_hours is not None:                     # so the media window can't unsend a PPV early
         classes.append(and_(
             MassBroadcastCache.is_free.is_(False),
             MassBroadcastCache.sent_at <= now - timedelta(hours=price_hours),
@@ -563,7 +568,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         m_text = _pos_hours(policy.get("mass_text_hours"),
                             _DEFAULT_MASS_TEXT_HOURS if policy.get("mass_text") else None)
         m_media = _pos_hours(policy.get("mass_media_hours"), None)
+        # PRICED PPV broadcasts get a HARD 24h floor, whatever the operator set. Measured
+        # on prod: 44% of mass-PPV PURCHASES and 47% of the REVENUE land >4h after send,
+        # and 68% of that late revenue is the fan's FIRST-ever purchase to the account —
+        # new money, not whale re-buys. The revenue curve knees at 24h (4h captures 53%,
+        # 24h captures 90%, 48h adds ~1pp). A sub-24h price-unsend deletes new-fan
+        # conversion; this floor makes that impossible even by misconfiguration.
         m_price = _pos_hours(policy.get("mass_price_hours"), None)
+        if m_price is not None and m_price < _MIN_MASS_PRICE_HOURS:
+            log.info("unsend mass_price_hours=%.1f floored to %d (a priced PPV lands 47%% "
+                     "of its revenue >4h after send)", m_price, _MIN_MASS_PRICE_HOURS)
+            m_price = float(_MIN_MASS_PRICE_HOURS)
         wants_mass = any(h is not None for h in (m_text, m_media, m_price))
         wants_per_chat = ("text_hours" in policy or "media_hours" in policy) or not wants_mass
         if wants_per_chat:

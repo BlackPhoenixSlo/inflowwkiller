@@ -81,7 +81,7 @@ _BACKUP_KEEP = 20
 # The 17 data columns of account_ai_config (PK + updated_at excluded). The
 # export test asserts this list against AccountAiConfig.__table__.columns so a
 # future column can't silently fall out of the export.
-CONFIG_SCALAR_COLS = ("persona", "welcome_rules", "utc_offset", "location",
+CONFIG_SCALAR_COLS = ("persona", "welcome_rules", "utc_offset", "timezone", "location",
                       "daily_cost_cap_cents", "model")
 CONFIG_JSON_COLS = ("time_activities_json", "time_images_json", "welcome_pinned_json",
                     "model_by_purpose", "nudge_config_json", "webhook_config_json",

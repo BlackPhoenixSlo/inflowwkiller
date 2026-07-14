@@ -25,7 +25,8 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from auth import assert_account_owned
 from db.engine import get_session
-from db.models import AccountAiConfig, AutomationRule
+from db.models import AccountAiConfig, AutomationRule, CatalogItem, Message
+from automations.upsell import derive_band, media_key
 from automations.ppv_send import (
     PPV_CAPTION_POOLS,
     PPV_FEED_CAPTION_POOLS,
@@ -256,6 +257,62 @@ async def _sync_rules(s, account_id: str, cfg: dict) -> dict[str, int]:
     return stats
 
 
+# The band derivation reads what HUMANS actually charged for each piece of media.
+# Bounded — the relay runs OF calls on the same thread pool, so an unbounded scan
+# here shows up as a 500 somewhere else entirely.
+_BAND_SCAN_LIMIT = 4000
+
+
+async def _content_band_max_cents(account_id: str, stored: dict) -> int:
+    """The top of the priciest piece of content's DERIVED band, in cents (0 = we
+    have no content / no evidence).
+
+    This is what backs the one-shot "your Max is below what some clips are worth"
+    warning: the Min/Max in this tab is the single price authority — `upsell.next_price`
+    clamps every 1:1 ladder quote into it (`library_bounds`), so a Max under the band
+    top silently truncates the ceiling on the account's best content, and the operator
+    would never see why. Bands come from `upsell.derive_band` (what humans actually
+    charged for that exact media, falling back to the account's median ask) — never
+    from duration, which is NULL on essentially every catalog row in prod."""
+    async with get_session() as s:
+        priced = (await s.execute(
+            select(Message.media_ids, Message.price_cents)
+            .where(Message.account_id == account_id,
+                   Message.direction == "out",
+                   Message.price_cents > 0)
+            .order_by(Message.created_at.desc())
+            .limit(_BAND_SCAN_LIMIT))).all()
+        catalog = (await s.execute(
+            select(CatalogItem.media_ids)
+            .where(CatalogItem.account_id == account_id,
+                   CatalogItem.enabled.is_(True)))).scalars().all()
+
+    asks_by_key: dict[str, list[int]] = {}
+    all_asks: list[int] = []
+    for media_ids, cents in priced:
+        c = int(cents or 0)
+        all_asks.append(c)
+        k = media_key(media_ids)
+        if k:
+            asks_by_key.setdefault(k, []).append(c)
+    median = sorted(all_asks)[len(all_asks) // 2] if all_asks else None
+
+    # Every sellable media SET the account owns: the 1:1 catalog + this library.
+    media_sets: list[Any] = list(catalog)
+    media_sets += [p.get("media_ids") for p in (stored.get("ppvs") or [])
+                   if isinstance(p, dict)]
+
+    best = 0
+    for ids in media_sets:
+        key = media_key(ids)
+        if not key:
+            continue
+        (_lo, hi), _src = derive_band(human_asks_cents=asks_by_key.get(key, []),
+                                      account_median_cents=median)
+        best = max(best, int(hi))
+    return min(best, _PRICE_CEIL_CENTS)
+
+
 def _matrix_view() -> dict:
     return {
         "spend_bands": [
@@ -284,6 +341,10 @@ async def get_ppv_library_config(account_id: str = Query(...)) -> dict[str, Any]
         "account_id": account_id,
         "config": stored,
         "defaults": dict(_DEFAULTS),
+        # Top of the priciest content's derived band — the UI warns ONCE when the
+        # operator's Max sits below it (his Max is the ceiling on 1:1 ladder quotes).
+        "content_band_max_cents": await _content_band_max_cents(account_id, stored),
+        "price_ceil_cents": _PRICE_CEIL_CENTS,
         "pools": sorted(PPV_CAPTION_POOLS),
         "caption_pools": PPV_CAPTION_POOLS,   # key → lines, for the UI caption preview
         "feed_pools": sorted(PPV_FEED_CAPTION_POOLS),

@@ -33,6 +33,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -1015,6 +1016,13 @@ class AccountAiConfig(Base):
     persona: Mapped[str | None] = mapped_column(Text)
     welcome_rules: Mapped[str | None] = mapped_column(Text)
     utc_offset: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # IANA zone ("America/New_York") for Human Rhythm's sleep window. DST-correct,
+    # unlike utc_offset — which stays the fallback when this is NULL, so an account
+    # that already set an offset doesn't have to re-answer. Neither set ⇒ rhythm
+    # stays disabled rather than defaulting to UTC: a UTC default would put a US
+    # creator to sleep through her peak earning window and nothing would explain
+    # the revenue drop. See service/automations/rhythm.py:local_now.
+    timezone: Mapped[str | None] = mapped_column(String)
     location: Mapped[str | None] = mapped_column(String)
     # JSON dict {morning_1, morning_2, afternoon_1, afternoon_2, evening, night}
     time_activities_json: Mapped[str | None] = mapped_column(Text)
@@ -1286,6 +1294,11 @@ class CatalogItem(Base):
     # Free teaser frames attached unlocked on a PPV send (OF `previews`).
     preview_media_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     duration_sec: Mapped[int | None] = mapped_column(Integer)
+    # v2 §4.2 — snapshot of the DERIVED price band per media, frozen at first quote
+    # and recomputed only from the human 1:1 PAID subset. Exists so the deflationary
+    # spiral (seller ingesting its own asks) can be watched/frozen; NULL until quoted.
+    band_lo: Mapped[int | None] = mapped_column(Integer)
+    band_hi: Mapped[int | None] = mapped_column(Integer)
     # Unlock terms. 0 disables that mode for this item; is_free_teaser items are
     # sent free to build momentum (initiation pics, item 1).
     price_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -2115,3 +2128,131 @@ class ChatterFolderAccess(Base):
     __table_args__ = (
         Index("ix_chatter_folder_access_chatter", "chatter_id"),
     )
+
+
+# ── Human Rhythm (0043) + Offer Engine (0044) ────────────────────────────────
+# Both ship DISABLED. With the flags off nothing below is ever written, and the
+# reply delay stays exactly typing_delay_seconds() (see service/automations/rhythm.py).
+
+class RhythmState(Base):
+    """Per (account, fan) reply-pacing state for the Human Rhythm sampler.
+
+    `wake_at` is the scheduler seam: a decided delay longer than INLINE_MAX_S is
+    NOT slept through (that would hold the fan lease and starve the executor's
+    global run slots — see MEMORY relay_threadpool_starvation_500s). Instead the
+    lease is released, a job is enqueued for `wake_at`, and the resume run sends
+    inline. `deferrals` hard-caps that hop at 1 so a re-rolled sample can never
+    livelock a fan into never being answered."""
+    __tablename__ = "rhythm_state"
+
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    fan_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    context: Mapped[str] = mapped_column(String, nullable=False, default="engaged")
+    wake_at: Mapped[datetime | None] = mapped_column(DateTime)
+    deferrals: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_cover_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # v2 §3.4: rolling last ~20 realized turns as JSON [{d,b,i}] (realized delay,
+    # bubble count, informal flag) — recorded at the SEND site, fed back into the
+    # next RhythmCtx (recent_realized_s / his_last_latency_s). Subsumes v1's
+    # recent_delays_json + the two style-share accumulators (one column, not three).
+    recent_turns_json: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (Index("ix_rhythm_state_wake_at", "wake_at"),)
+
+
+class LadderState(Base):
+    """Per (account, fan) selling state for the Offer Engine.
+
+    status: idle → open (a rung is out) → hot (he PAID; strike-while-hot window)
+            → tapped (bare "no" / two unpaid rungs) | stopped (hard stop).
+
+    `offers_paused_until` is the SOFT-decline ("i'm broke") brake. It is scoped to
+    this engine on purpose: fans.automation_paused_until is shared across EVERY
+    automation (automation_executor.py), so writing a decline into it would blank
+    the fan out of welcome/followup/mass too — a cross-automation blackout with no
+    UI. A poverty plea stops selling, never talking."""
+    __tablename__ = "ladder_state"
+
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    fan_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="idle")
+    rung_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_ask_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_paid_at: Mapped[datetime | None] = mapped_column(DateTime)
+    session_idle_at: Mapped[datetime | None] = mapped_column(DateTime)
+    offers_paused_until: Mapped[datetime | None] = mapped_column(DateTime)
+    daily_ask_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    daily_day: Mapped[str | None] = mapped_column(String)   # creator-local YYYY-MM-DD
+    hot_until: Mapped[datetime | None] = mapped_column(DateTime)
+    unpaid_rungs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # v2 safe-state machine (spec §5/§6/§10.2). All default-inert — with the lane
+    # flags off none of these is ever written. NEVER routed into
+    # fans.automation_paused_until (that column is shared across every automation).
+    objection_at: Mapped[datetime | None] = mapped_column(DateTime)   # last VOICED price objection (the discount "beat" clock, §5.1)
+    discount_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # cuts already given on the CURRENT media (one-per-item, §5.1)
+    bot_accused_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # §6.4 — 2nd strike ends selling
+    companion_until: Mapped[datetime | None] = mapped_column(DateTime)  # §6.3 seller OFF / conversation ON
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime)   # §6.2 post-multibuy ease-off (talk only)
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (Index("ix_ladder_state_status", "account_id", "status"),)
+
+
+class LadderQuote(Base):
+    """One row per price we QUOTED — the conversion log and the experiment's
+    instrument. `pre_clamp_cents` + `clamped_by` exist so a clamped quote can be
+    excluded from the price analysis: silently truncating an unknown subset of
+    quotes at the library ceiling would bias every estimate the arm produces.
+
+    `media_key` (sorted media-id hash) — not catalog_item_id — because a fan who
+    bought media through a MASS blast has no content_offers row at all, and a
+    catalog-keyed ownership check would happily re-sell him what he already owns."""
+    __tablename__ = "ladder_quote"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    fan_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    rung_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    media_key: Mapped[str] = mapped_column(String, nullable=False)
+    item_id: Mapped[int | None] = mapped_column(Integer)
+    band_lo: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    band_hi: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    base_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    arm_mult: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    price_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pre_clamp_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    clamped_by: Mapped[str | None] = mapped_column(String)  # library|history|cold_ceiling|band|none
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="rung")  # rung|discount
+    message_id: Mapped[int | None] = mapped_column(BigInteger)
+    sent_at: Mapped[datetime] = _ts_now()
+    paid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        Index("ix_ladder_quote_fan", "account_id", "fan_id"),
+        Index("ix_ladder_quote_media", "account_id", "fan_id", "media_key"),
+    )
+
+
+class PendingOffer(Base):
+    """An offer the gate BLOCKED (fan went quiet / low-information reply), parked
+    until his next qualifying inbound. A gate that can only DELETE sends cannot
+    beat its own revenue metric — the human corpus never sends cold either, but it
+    does eventually send. One open row per fan; TTL'd."""
+    __tablename__ = "pending_offer"
+
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    fan_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    media_key: Mapped[str | None] = mapped_column(String)
+    item_id: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = _ts_now()
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime)

@@ -160,8 +160,17 @@ async def _skip_and_rest(account_id, fan_id, now) -> None:
 MUTED_CREATOR_REASON = "muted_creator"
 MANUAL_RESTRICT_REASON = "manual_restrict"
 OF_RESTRICTED_REASON = "of_restricted"
+# The offer engine's HARD stop: he threatened a chargeback / called it a scam /
+# said he's reporting us. A fan who is one click from a dispute must never receive
+# another PRICED message from ANY sender — and a chargeback can take the whole OF
+# account down, so this is the one skip reason where being wrong is cheap and being
+# right is existential. It belongs in the hard set, not just in ai_chatter's own
+# gate: the mass PPV blast would otherwise keep quoting him (as a past payer he
+# lands in the HIGHEST spend band, i.e. the most expensive cell we have).
+LADDER_STOP_REASON = "ladder_stop"
 HARD_SKIP_REASONS = frozenset(
-    {MUTED_CREATOR_REASON, MANUAL_RESTRICT_REASON, OF_RESTRICTED_REASON}
+    {MUTED_CREATOR_REASON, MANUAL_RESTRICT_REASON, OF_RESTRICTED_REASON,
+     LADDER_STOP_REASON}
 )
 
 
@@ -505,20 +514,179 @@ def is_substantive_msg(text: str | None) -> bool:
     return bool(text) and any(ch.isalnum() for ch in _EMOJI_STRIP_RE.sub("", text))
 
 
+# A lone "k" / "ok" / "lol" / "?" is a real message turn (is_substantive_msg says so,
+# and its two callers NEED that convention) — but it is not a buying signal, and the
+# offer engine must not read it as one. Measured: 14,755 of 86,051 real inbounds
+# (17.1%) are low-information but pass is_substantive_msg. Hence a SECOND, stricter
+# predicate rather than an edit to the first: tightening is_substantive_msg would
+# silently change of_ai_chat's runaway cap and gen_info's staleness baseline.
+_LOW_INFO_TOKENS = frozenset({
+    "k", "kk", "ok", "okay", "lol", "lmao", "haha", "hi", "hey", "yo", "u", "yes",
+    "no", "sure", "nice", "cool", "thanks", "ty", "thx", "yeah", "yep", "ya", "hmm",
+})
+
+
+def is_qualifying_inbound(text: str | None) -> bool:
+    """True if an inbound is substantive enough to justify putting a PRICE in front
+    of him. Stricter than is_substantive_msg: real content, not an acknowledgement."""
+    if not is_substantive_msg(text):
+        return False
+    stripped = _EMOJI_STRIP_RE.sub("", text or "")
+    tokens = [t for t in re.findall(r"[a-z0-9']+", stripped.lower()) if t]
+    if not tokens:
+        return False
+    if len(tokens) == 1 and tokens[0] in _LOW_INFO_TOKENS:
+        return False
+    alnum = sum(len(t) for t in tokens)
+    return len(tokens) >= 3 or alnum >= 12
+
+
+# ── "Are you a bot?" accusation detector (§6.4) ───────────────────────
+# Built from the 74 REAL accusations in the paying-fan archive ("u a bot or
+# sumthing? lol", "Heyy are you real or a chatbot or ai", "Do you have a bot talking
+# for you or something", "Are you real?", "is this really you? or a bot?", "which
+# bot", "what bot do you use"). ai_chatter's §6.4 state machine keys its first-strike
+# suppression + second-strike COMPANION exit off this — so a FALSE positive silences a
+# live seller. Two tiers, deliberately:
+#   • HARD — the literal words 'bot' / 'chatbot' are an identity accusation FULL STOP,
+#     even if the same message also talks about a photo. Nothing else means 'bot'.
+#   • IDENTITY — softer tells ('are you real', 'real person', 'is this really you',
+#     'is this ai') that a fan ALSO uses to complain about an AI-GENERATED PHOTO. These
+#     fire only when the message is NOT about a pic/photo/image (the guard below).
+# 'real' is only ever a trigger when paired with you/u/person/or — never bare — so
+# "keeping it real" and the RELATIONSHIP sense "are you really into me" (\breal\b never
+# matches "really") can't arm it. Pure, no DB.
+_BOT_HARD_RE = re.compile(r"\b(?:chat\s?)?bots?\b", re.I)
+_BOT_IDENTITY_RE = re.compile(
+    r"\b(?:are|r)\s+(?:you|u)\s+(?:a\s+)?real\b"        # are you real / r u real
+    r"|\b(?:you|u|ur)\s+(?:a\s+)?real\b"               # u a real / you real
+    r"|\breal\s+person\b"                               # a real person
+    r"|\breal\s+or\b"                                   # real or (a bot/ai)
+    r"|\bfor\s+real\s+or\b"                             # for real or fake
+    r"|\bis\s+(?:this|it)\s+really\s+you\b"            # is this really you
+    r"|\bwho\s+is\s+this\s+really\b"                   # who is this really
+    r"|\b(?:are|r)\s+(?:you|u)\s+a\.?\s?i\.?\b"        # are you ai
+    r"|\bis\s+(?:this|it)\s+(?:a\s+)?a\.?\s?i\.?\b",   # is this ai / is this a ai
+    re.I,
+)
+# When ONLY the softer identity tell fires, a pic/photo/image word means he's talking
+# about the CONTENT looking AI-made, not accusing HER of being a bot — don't fire.
+_BOT_PHOTO_CTX_RE = re.compile(
+    r"\b(?:pic|pics|picture|pictures|photo|photos|image|images|selfie|selfies)\b", re.I)
+# Exposed union (hard | identity) for callers/tests that want the raw matcher; the
+# photo guard lives in detect_bot_accusation, not in the regex.
+BOT_ACCUSED_RE = re.compile(
+    _BOT_HARD_RE.pattern + "|" + _BOT_IDENTITY_RE.pattern, re.I)
+
+
+def detect_bot_accusation(text: str | None) -> bool:
+    """True when an inbound accuses HER of being a bot / not a real person (§6.4).
+    'bot'/'chatbot' always fire; the softer 'are you real'/'is this ai' tells fire
+    only when the message isn't about an AI-generated PHOTO. Never fires on the
+    relationship sense ('are you really into me'). Pure, no DB."""
+    if not text:
+        return False
+    if _BOT_HARD_RE.search(text):
+        return True                       # 'bot'/'chatbot' — identity, always
+    if _BOT_PHOTO_CTX_RE.search(text):
+        return False                      # 'this pic looks ai' / 'is that photo real'
+    return bool(_BOT_IDENTITY_RE.search(text))
+
+
+# ── "Filming it now" refusal guard (§3.7) ─────────────────────────────
+# The pre_ppv_stall fiction ("give me two secs im filming it rn") may only arm when
+# she's actually about to drop an offer — NEVER when a filming word rides inside a
+# REFUSAL frame. Real prod line: "I have no plans on filming sextapes, babe." Without
+# this, an outbound that DECLINES to film would still trip a naive "contains 'film'"
+# arming check and claim she's filming live. Fire on the refusal shapes: "no plans on
+# filming", "not filming", "dont/won't/can't film", "no customs", "not making/doing".
+_FILMING_REFUSAL_RE = re.compile(
+    r"\bno\s+plans?\s+(?:on|of|to|for)?\s*film"                    # no plans on filming
+    r"|\bnot\s+(?:gonna\s+|going\s+to\s+|be\s+)?film"             # not filming
+    r"|\b(?:don'?t|do\s+not|won'?t|will\s+not|can'?t|cannot|"
+    r"never|wont|cant|dont)\s+(?:be\s+|gonna\s+|going\s+to\s+)?film"  # dont/won't film
+    r"|\bno\s+film(?:ing|s)?\b"                                    # no filming / no films
+    r"|\bno\s+customs?\b"                                          # no customs
+    r"|\bnot\s+(?:making|doing)\b",                               # not making / not doing
+    re.I,
+)
+
+
+def is_filming_refusal(text: str | None) -> bool:
+    """True when a filming word sits inside a refusal frame ("no plans on filming",
+    "not filming", "no customs") — the caller must then NEVER arm the 'filming it
+    now' stall on this bubble. Pure, no DB."""
+    return bool(text) and bool(_FILMING_REFUSAL_RE.search(text))
+
+
+# ── Realism-flag default policy (TRI-STATE) ───────────────────────────
+# Historically all three style loaders defaulted every automation OFF: an absent
+# key meant "run the current prompt + 2-bubble cap byte-for-byte". The operator now
+# wants the four text-realism levers (casual voice / multi-bubble / typos / non-
+# native register) ON BY DEFAULT for ai_chatter SPECIFICALLY — "all those autoconvo
+# text style flags as option and ENABLED BY DEFAULT". So the absent-key default is
+# now PER-AUTOMATION rather than a flat False:
+#   • ai_chatter          → ON  when the operator has written NO explicit key
+#   • every other sender  → OFF (of_ai_chat / autoreply / deep_convo UNCHANGED)
+# An EXPLICIT stored value (True OR False) is ALWAYS honoured verbatim — a human who
+# unticked ai_chatter keeps it off; only the ABSENT-key case consults this map. This
+# is the whole tri-state: {explicit-true, explicit-false, absent→per-automation}.
+#
+# ⚠️ LIVE-BEHAVIOUR CHANGE: any account already running ai_chatter that has never
+# touched its style_config_json (no explicit ai_chatter / typos_ai_chatter /
+# nonnative_ai_chatter key) will START getting typos / multi-bubble / non-native on
+# its NEXT tick. That is the operator's explicit intent, but it is NOT a no-op —
+# unlike every prior style-flag change, this one moves live threads.
+_STYLE_DEFAULT_ON: dict[str, bool] = {"ai_chatter": True}
+
+# Env panic switch: setting STYLE_FORCE_OFF (to anything truthy) forces EVERY realism
+# flag False across every account and automation, regardless of stored config — a kill
+# switch for the whole realism stack if the default-on rollout misbehaves in prod.
+_STYLE_FORCE_OFF_ENV = "STYLE_FORCE_OFF"
+
+
+def _style_default(automation: str) -> bool:
+    """The absent-key default for one automation (ON only for ai_chatter)."""
+    return _STYLE_DEFAULT_ON.get(automation, False)
+
+
+def _parse_style_config(raw) -> dict:
+    """Parse a style_config_json blob to a dict, tolerating NULL / garbage → {}."""
+    if not raw:
+        return {}
+    try:
+        stored = json.loads(raw)
+    except Exception:
+        return {}
+    return stored if isinstance(stored, dict) else {}
+
+
+def _resolve_style_flag(stored: dict, automation: str, key: str) -> bool:
+    """One realism flag, applying the tri-state default: an EXPLICIT stored value
+    under `key` (True or False) wins verbatim; an ABSENT key falls back to the per-
+    automation default (_STYLE_DEFAULT_ON). `key` is the storage key (which differs
+    from `automation` for the typos_/nonnative_ layers) while the DEFAULT is keyed by
+    the automation."""
+    if key in stored:
+        return bool(stored.get(key))
+    return _style_default(automation)
+
+
 async def load_style_flags(account_id: str) -> dict[str, bool]:
-    """Read account_ai_config.style_config_json → {automation: bool}. Absent/NULL
-    or any parse error → all-OFF (the safe default: current behavior unchanged)."""
-    off = {k: False for k in STYLE_AUTOMATIONS}
+    """Read account_ai_config.style_config_json → {automation: bool} for the
+    humanizer / multi-bubble layer. TRI-STATE default (see policy note above): an
+    explicit stored True/False wins; an ABSENT key → _STYLE_DEFAULT_ON (ai_chatter
+    ON, all others OFF). Absent row / NULL json / parse error → the same absent-key
+    defaults (so a brand-new ai_chatter account is ON). STYLE_FORCE_OFF forces every
+    flag False regardless."""
+    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+        return {k: False for k in STYLE_AUTOMATIONS}
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, str(account_id))
-    raw = getattr(cfg, "style_config_json", None) if cfg else None
-    if not raw:
-        return off
-    try:
-        stored = json.loads(raw) or {}
-    except Exception:
-        return off
-    return {k: bool(stored.get(k)) for k in STYLE_AUTOMATIONS}
+    stored = _parse_style_config(getattr(cfg, "style_config_json", None) if cfg else None)
+    # the humanizer flag is stored under the bare automation name (the typos_/
+    # nonnative_ layers use a prefixed key — see their own loaders).
+    return {k: _resolve_style_flag(stored, k, k) for k in STYLE_AUTOMATIONS}
 
 
 async def load_strip_emojis(account_id: str) -> bool:
@@ -549,18 +717,15 @@ STYLE_TYPO_KEYS = tuple(typo_flag_key(k) for k in STYLE_AUTOMATIONS)
 async def load_typo_flags(account_id: str) -> dict[str, bool]:
     """Read account_ai_config.style_config_json → {automation: bool} for the
     thumb-typo injector, keyed by STYLE_AUTOMATIONS (reads the 'typos_<automation>'
-    keys). Absent/NULL/parse-error → all-OFF (current behavior unchanged)."""
-    off = {k: False for k in STYLE_AUTOMATIONS}
+    keys). TRI-STATE default (see policy note above load_style_flags): an explicit
+    'typos_<automation>' True/False wins; an ABSENT key → _STYLE_DEFAULT_ON
+    (ai_chatter ON, all others OFF). STYLE_FORCE_OFF forces every flag False."""
+    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+        return {k: False for k in STYLE_AUTOMATIONS}
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, str(account_id))
-    raw = getattr(cfg, "style_config_json", None) if cfg else None
-    if not raw:
-        return off
-    try:
-        stored = json.loads(raw) or {}
-    except Exception:
-        return off
-    return {k: bool(stored.get(typo_flag_key(k))) for k in STYLE_AUTOMATIONS}
+    stored = _parse_style_config(getattr(cfg, "style_config_json", None) if cfg else None)
+    return {k: _resolve_style_flag(stored, k, typo_flag_key(k)) for k in STYLE_AUTOMATIONS}
 
 
 # Casualize a scripted Q/Tease at SEND time (deep_convo) when the style flag is
@@ -669,19 +834,16 @@ STYLE_NONNATIVE_KEYS = tuple(nonnative_flag_key(k) for k in STYLE_AUTOMATIONS)
 
 async def load_nonnative_flags(account_id: str) -> dict[str, bool]:
     """Read account_ai_config.style_config_json → {automation: bool} for the
-    non-native layer (the 'nonnative_<automation>' keys). Absent/NULL/parse-error →
-    all-OFF (current behavior unchanged byte-for-byte)."""
-    off = {k: False for k in STYLE_AUTOMATIONS}
+    non-native layer (the 'nonnative_<automation>' keys). TRI-STATE default (see
+    policy note above load_style_flags): an explicit 'nonnative_<automation>'
+    True/False wins; an ABSENT key → _STYLE_DEFAULT_ON (ai_chatter ON, all others
+    OFF). STYLE_FORCE_OFF forces every flag False."""
+    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+        return {k: False for k in STYLE_AUTOMATIONS}
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, str(account_id))
-    raw = getattr(cfg, "style_config_json", None) if cfg else None
-    if not raw:
-        return off
-    try:
-        stored = json.loads(raw) or {}
-    except Exception:
-        return off
-    return {k: bool(stored.get(nonnative_flag_key(k))) for k in STYLE_AUTOMATIONS}
+    stored = _parse_style_config(getattr(cfg, "style_config_json", None) if cfg else None)
+    return {k: _resolve_style_flag(stored, k, nonnative_flag_key(k)) for k in STYLE_AUTOMATIONS}
 
 
 # ── "Hard" thumb-typo injector (opt-in, deterministic) ────────────────

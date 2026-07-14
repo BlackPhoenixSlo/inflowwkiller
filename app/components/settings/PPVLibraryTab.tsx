@@ -79,7 +79,7 @@ function cadenceLabel(spw: number): string {
 const TEMPLATES: Array<{ emoji: string; label: string; patch: Partial<PpvItem> }> = [
   { emoji: "🍑", label: "Weekly tease", patch: { name: "Weekly tease", caption_pool_key: "standard_active", base_price_cents: 1500, sends_per_week: 3, resend_monthly: false, exclude_buyers: true } },
   { emoji: "🐳", label: "Whale drop", patch: { name: "Whale drop", caption_pool_key: "vip_whale", base_price_cents: 6000, sends_per_week: 1, resend_monthly: false, exclude_buyers: true } },
-  { emoji: "💔", label: "Win-back", patch: { name: "Win-back", caption_pool_key: "winback_dormant", base_price_cents: 900, sends_per_week: 2, resend_monthly: false, exclude_buyers: false } },
+  { emoji: "💔", label: "Win-back", patch: { name: "Win-back", caption_pool_key: "winback_dormant", base_price_cents: 900, sends_per_week: 2, resend_monthly: false } },
 ];
 
 function newId(): string {
@@ -175,6 +175,10 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   // global price limits (DOLLARS in the UI, cents on the wire) — defaults $3/$200
   const [priceMin, setPriceMin] = useState(3);
   const [priceMax, setPriceMax] = useState(200);
+  // "your Max is below what your best content is worth" — shown ONCE per visit,
+  // then dismissed either way (raised or kept). Nagging on every render is how a
+  // warning gets trained out of an operator's eye.
+  const [bandDismissed, setBandDismissed] = useState(false);
   // which card's audience preview is showing
   const [previewFor, setPreviewFor] = useState<string | null>(null);
   // bulk one-liner import: which card's paste box is open + its text
@@ -197,6 +201,13 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     const raw = f?.thumb?.url || f?.squarePreview?.url || f?.preview?.url || null;
     return raw ? proxyImage(raw, accountId) : "";
   };
+
+  // Top of the priciest clip's derived band, in whole dollars, capped at OF's $200
+  // ceiling. 0 (no content / no evidence) ⇒ no warning.
+  const bandMaxDollars = Math.min(
+    Math.ceil((cfgQ.data?.content_band_max_cents ?? 0) / 100),
+    Math.round((cfgQ.data?.price_ceil_cents ?? PRICE_CEIL) / 100),
+  );
 
   const pools = cfgQ.data?.pools ?? Object.keys(POOL_LABELS);
   const captionPools = cfgQ.data?.caption_pools ?? {};
@@ -393,7 +404,35 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
           Every price this library sends is kept between these — the per-group tier prices,
           the everyone-broadcast, and feed posts. Your <b>Base prices stay as typed</b>; the
           limits apply at send time ($3–$200 hard range, min ≤ max enforced on save).
+          These are also the limits the AI Seller keeps to when it prices a clip in chat.
         </div>
+        {/* One-shot: the operator's Max is the ceiling on every 1:1 quote too
+            (upsell.next_price clamps into it), so a Max below what his best content
+            is worth truncates it silently. Say it once, offer the fix, then shut up. */}
+        {bandMaxDollars > priceMax && !bandDismissed && (
+          <div className="flex items-center gap-2 flex-wrap text-[11px] text-warn border border-warn/30 bg-warn/5 rounded-md px-2.5 py-2">
+            <span>
+              Your max is ${priceMax}, but some clips are worth more. Raise it?
+            </span>
+            <Button
+              size="sm" variant="secondary"
+              onClick={() => { markDirty(); setPriceMax(bandMaxDollars); setBandDismissed(true); }}
+            >
+              Yes, raise to ${bandMaxDollars}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setBandDismissed(true)}>
+              Keep ${priceMax}
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {/* How the 1:1 seller and the blast stay out of each other's way. Read-only —
+          there is no gate toggle here: the same qualification gate on a BROADCAST
+          would delete the broadcast (its job is reaching fans who aren't replying). */}
+      <div className="text-[11px] text-fg-dim/80 leading-relaxed rounded-lg border border-border p-3">
+        While she&apos;s selling to a fan 1:1, the mass PPV skips him — so he never gets
+        the same clip twice.
       </div>
 
       {/* Send to everyone: also broadcast to ALL subscribers at the default price. */}
@@ -670,16 +709,16 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                 />
                 Also resend monthly
               </label>
-              {/* skip already-bought */}
-              <label className="flex items-end gap-1.5 text-xs cursor-pointer pb-2">
-                <input
-                  type="checkbox"
-                  className="h-3.5 w-3.5 accent-[var(--accent)]"
-                  checked={p.exclude_buyers !== false}
-                  onChange={(e) => setPpv(i, { exclude_buyers: e.target.checked })}
-                />
-                Skip fans who already bought it
-              </label>
+              {/* Was a checkbox ("Skip fans who already bought it"). It is now a
+                  STATEMENT, because ownership is a fact about the fan, not a policy:
+                  the guard runs on every priced send and cannot be turned off. Turning
+                  it off re-charged fans for clips they already owned — 4 fans in prod,
+                  one of them $200 twice. A checkbox that no longer does anything is
+                  worse than no checkbox. */}
+              <div className="flex items-end gap-1.5 text-xs text-fg-dim pb-2">
+                <span aria-hidden>✓</span>
+                Never re-sold to a fan who already bought it
+              </div>
             </div>
 
             {/* plain-language summary of what this card will do */}

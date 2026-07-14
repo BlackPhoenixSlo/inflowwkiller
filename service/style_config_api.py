@@ -38,26 +38,48 @@ def _defaults() -> dict[str, bool]:
     Three independent toggle sets per automation: the humanizer (`<automation>`), the
     thumb-typo injector (`typos_<automation>`), and the non-native English layer
     (`nonnative_<automation>`)."""
-    out = {k: False for k in STYLE_AUTOMATIONS}
-    out.update({typo_flag_key(k): False for k in STYLE_AUTOMATIONS})
-    out.update({nonnative_flag_key(k): False for k in STYLE_AUTOMATIONS})
+    # Reflect the RUNTIME tri-state default (_common._STYLE_DEFAULT_ON), not a flat
+    # False: ai_chatter's humanizer/typo/non-native ship ON. If _defaults reported them
+    # off, the UI would render the boxes unchecked and an unrelated save would then
+    # stamp that (false) view as explicit — silently killing default-on realism.
+    from automations._common import _style_default
+    out = {k: _style_default(k) for k in STYLE_AUTOMATIONS}
+    out.update({typo_flag_key(k): _style_default(k) for k in STYLE_AUTOMATIONS})
+    out.update({nonnative_flag_key(k): _style_default(k) for k in STYLE_AUTOMATIONS})
     # Account-wide (not per-automation): strip every emoji at the send chokepoint.
     out["strip_emojis"] = False
     return out
 
 
-def _validate(cfg: dict) -> dict[str, bool]:
-    """Coerce to exactly the known boolean flags (humanizer + typo + non-native, per
-    automation); ignore anything else."""
+def _resolved_view(stored: dict) -> dict[str, bool]:
+    """The RENDERED view: each known flag as the loader would resolve it — the explicit
+    stored value if present, else the tri-state default. Used by GET so the UI shows
+    ai_chatter's realism checked-by-default, and so a save doesn't flip an implicit-ON
+    flag to explicit-OFF."""
+    from automations._common import _resolve_style_flag
+    if not isinstance(stored, dict):
+        stored = {}
+    out = {k: _resolve_style_flag(stored, k, k) for k in STYLE_AUTOMATIONS}
+    out.update({typo_flag_key(k): _resolve_style_flag(stored, k, typo_flag_key(k))
+                for k in STYLE_AUTOMATIONS})
+    out.update({nonnative_flag_key(k): _resolve_style_flag(stored, k, nonnative_flag_key(k))
+                for k in STYLE_AUTOMATIONS})
+    out["strip_emojis"] = bool(stored.get("strip_emojis"))
+    return out
+
+
+def _persist(cfg: dict) -> dict[str, bool]:
+    """What we WRITE back. ONLY the keys explicitly present in the merged config —
+    absent keys are LEFT ABSENT so they keep resolving to the tri-state default at load
+    time. Materializing every absent key to False (the old bug) stamped ai_chatter:false
+    on the first save and killed default-on realism for every UI-touched account."""
     if not isinstance(cfg, dict):
         cfg = {}
-    out = {k: bool(cfg.get(k)) for k in STYLE_AUTOMATIONS}
-    out.update({typo_flag_key(k): bool(cfg.get(typo_flag_key(k)))
-                for k in STYLE_AUTOMATIONS})
-    out.update({nonnative_flag_key(k): bool(cfg.get(nonnative_flag_key(k)))
-                for k in STYLE_AUTOMATIONS})
-    out["strip_emojis"] = bool(cfg.get("strip_emojis"))  # account-wide emoji strip
-    return out
+    known = set(STYLE_AUTOMATIONS) \
+        | {typo_flag_key(k) for k in STYLE_AUTOMATIONS} \
+        | {nonnative_flag_key(k) for k in STYLE_AUTOMATIONS} \
+        | {"strip_emojis"}
+    return {k: bool(v) for k, v in cfg.items() if k in known}
 
 
 @router.get("/admin/style-config")
@@ -71,7 +93,7 @@ async def get_style_config(account_id: str = Query(...)) -> dict[str, Any]:
             stored = json.loads(row.style_config_json) or {}
         except Exception:
             stored = {}
-    return {"account_id": account_id, "config": _validate(stored),
+    return {"account_id": account_id, "config": _resolved_view(stored),
             "defaults": _defaults()}
 
 
@@ -95,7 +117,9 @@ async def put_style_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
                 stored = json.loads(row.style_config_json) or {}
             except Exception:
                 stored = {}
-        clean = _validate({**stored, **(body.config or {})})
+        # Persist only explicitly-present keys (merged over what was already explicit),
+        # so an untouched ai_chatter realism flag stays ABSENT → default-ON at load time.
+        clean = _persist({**stored, **(body.config or {})})
         payload = json.dumps(clean)
         await s.execute(
             sqlite_insert(AccountAiConfig)
@@ -106,4 +130,6 @@ async def put_style_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
                 set_={"style_config_json": payload, "updated_at": now})
         )
     log.info("style_config_saved account=%s cfg=%s", body.account_id, clean)
-    return {"account_id": body.account_id, "config": clean}
+    # Return the RESOLVED view (default-aware), not the sparse persisted dict, so the UI
+    # renders ai_chatter's realism as checked-by-default right after a save.
+    return {"account_id": body.account_id, "config": _resolved_view(clean)}

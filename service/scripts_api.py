@@ -3,8 +3,13 @@
 Everything the Scripts UI needs, owner-gated, all under /admin (covered by the
 Next `/admin/:path*` rewrite — no next.config.ts change):
 
-  GET  /admin/ai-chatter-config?account_id=     → {config, defaults}
+  GET  /admin/ai-chatter-config?account_id=     → {config, defaults, timezone,
+                                                  utc_offset, tz_offset_minutes,
+                                                  derived_sleep_window,
+                                                  effective_sleep_window,
+                                                  script_pack}
   PUT  /admin/ai-chatter-config                 → validate + upsert the JSON
+                                                  (+ optional `timezone` column)
   GET  /admin/scripts?account_id=               → scripts(+items+stats) + singles
   POST /admin/scripts                           → create/rename a script
   DELETE /admin/scripts/{script_id}?account_id= → delete (items cascade)
@@ -41,8 +46,9 @@ from auth import assert_account_owned
 from db.engine import get_session
 from db.models import (
     AccountAiConfig, AutomationRule, CatalogItem, CatalogProgress, CatalogScript,
-    ContentOffer, Fan,
+    ContentOffer, Fan, Message,
 )
+from automations import rhythm, script_packs
 from automations.ai_chatter import (
     _CONTENT_ASK_RE,
     _DEFAULTS as _AI_CHATTER_DEFAULTS,
@@ -71,6 +77,16 @@ _INT_KNOBS = {
     "nudge_after_minutes": (1, 1440),
     # Old-fan engagement: ~one info question per this many replies.
     "old_fan_question_every": (1, 100),
+    # Upsell "after a buy" knobs.
+    "stop_after_unpaid_rungs": (1, 5),
+    "spend_velocity_cap_7d_cents": (0, 100_000_000),
+}
+
+# Float-valued knobs (ladder aggressiveness). Clamped to sane ranges: the ceiling
+# knob may exceed 3x (the "to the moon" lever), but not unbounded.
+_FLOAT_KNOBS = {
+    "escalation_mult": (1.0, 10.0),
+    "max_ask_history_mult": (1.0, 20.0),
 }
 _MODES = ("backup", "always")
 _OFFER_MODES = ("tip", "ppv", "both")
@@ -81,6 +97,60 @@ _MSG_LIMIT_DEFAULTS: dict = dict(_AI_CHATTER_DEFAULTS["msg_limits_by_signal"])
 _MSG_LIMIT_MAX = 500
 _MAX_ITEMS = 60
 _TXT = 2000
+
+# Editable line pack: bounds on what the UI may store per slot.
+_MAX_PACK_LINES = 30
+_PACK_LINE_MAX = 400
+# How many recent outbound rows the sleep-window derivation reads. The histogram
+# only needs a SHAPE, and derive_sleep_window ignores anything under 200 samples
+# anyway — an unbounded scan here would starve the relay's thread pool.
+_HOUR_HIST_LIMIT = 5000
+
+
+def _validate_sleep_window(raw: Any) -> list[str] | None:
+    """None ⇒ derive it from the account's own history. A 2-tuple of "HH:MM"
+    strings ⇒ the operator overrode it in Advanced."""
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        raise HTTPException(422, "sleep_window must be null or two HH:MM strings")
+    out: list[str] = []
+    for v in raw:
+        s = str(v or "").strip()
+        h, _, m = s.partition(":")
+        try:
+            hh, mm = int(h), int(m or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(422, f"bad sleep_window time: {s!r}")
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            raise HTTPException(422, f"bad sleep_window time: {s!r}")
+        out.append(f"{hh:02d}:{mm:02d}")
+    if out[0] == out[1]:
+        raise HTTPException(422, "sleep_window start and end can't be the same")
+    return out
+
+
+def _validate_pack_overrides(raw: Any) -> dict[str, list[str]]:
+    """{slot: [lines]} over the SHIPPED slots only. A slot whose lines are all
+    blank is DROPPED, not stored empty — script_packs.render falls back to the
+    shipped default for a missing slot, so an empty override can never turn into
+    an empty message."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise HTTPException(422, "script_pack_overrides must be an object")
+    known = set(script_packs.slots())
+    out: dict[str, list[str]] = {}
+    for slot, lines in raw.items():
+        if slot not in known:
+            continue                     # a renamed/removed slot is dropped, not an error
+        if not isinstance(lines, (list, tuple)):
+            raise HTTPException(422, f"script_pack_overrides.{slot} must be a list")
+        clean = [str(x).strip()[:_PACK_LINE_MAX]
+                 for x in lines[:_MAX_PACK_LINES] if str(x).strip()]
+        if clean:
+            out[slot] = clean
+    return out
 
 
 # ── ai_chatter config (mirrors tip_reward_config_api) ────────────────────────
@@ -103,6 +173,35 @@ def _validate_cfg(cfg: dict) -> dict:
         out["cadence_enabled"] = bool(cfg["cadence_enabled"])
     if "nudge_enabled" in cfg:
         out["nudge_enabled"] = bool(cfg["nudge_enabled"])
+    # 1:1 offer engine + human pacing + the editable line pack (all ship OFF).
+    if "qualification_gate_enabled" in cfg:
+        out["qualification_gate_enabled"] = bool(cfg["qualification_gate_enabled"])
+    if "smart_pricing_enabled" in cfg:
+        out["smart_pricing_enabled"] = bool(cfg["smart_pricing_enabled"])
+    if "rhythm_enabled" in cfg:
+        out["rhythm_enabled"] = bool(cfg["rhythm_enabled"])
+    if "rhythm_no_sleep" in cfg:
+        out["rhythm_no_sleep"] = bool(cfg["rhythm_no_sleep"])
+    # v2/v3 upsell lane — the hard takeover + the "after a buy" behaviors. All are
+    # gated by qualification_gate_enabled at RUNTIME, so storing True with the gate
+    # off is inert; we still persist the operator's choice.
+    if "upsell_takes_over" in cfg:
+        out["upsell_takes_over"] = bool(cfg["upsell_takes_over"])
+    if "post_buy_rung_enabled" in cfg:
+        out["post_buy_rung_enabled"] = bool(cfg["post_buy_rung_enabled"])
+    if "gift_enabled" in cfg:
+        out["gift_enabled"] = bool(cfg["gift_enabled"])
+    if "filming_stall_enabled" in cfg:
+        out["filming_stall_enabled"] = bool(cfg["filming_stall_enabled"])
+    # Smart pricing without the gate is meaningless (there is no ladder to price),
+    # and letting the pair drift apart would be a state the UI can't represent.
+    if out.get("smart_pricing_enabled") and not out.get(
+            "qualification_gate_enabled", cfg.get("qualification_gate_enabled")):
+        out["smart_pricing_enabled"] = False
+    if "sleep_window" in cfg:
+        out["sleep_window"] = _validate_sleep_window(cfg["sleep_window"])
+    if "script_pack_overrides" in cfg:
+        out["script_pack_overrides"] = _validate_pack_overrides(cfg["script_pack_overrides"])
     if "mode" in cfg and cfg["mode"] is not None:
         if cfg["mode"] not in _MODES:
             raise HTTPException(422, f"mode must be one of {_MODES}")
@@ -115,6 +214,12 @@ def _validate_cfg(cfg: dict) -> dict:
         if k in cfg and cfg[k] is not None:
             try:
                 out[k] = max(lo, min(int(cfg[k]), hi))
+            except (TypeError, ValueError):
+                raise HTTPException(422, f"{k} must be a number")
+    for k, (lo, hi) in _FLOAT_KNOBS.items():
+        if k in cfg and cfg[k] is not None:
+            try:
+                out[k] = max(lo, min(float(cfg[k]), hi))
             except (TypeError, ValueError):
                 raise HTTPException(422, f"{k} must be a number")
     ml = cfg.get("msg_limits_by_signal")
@@ -132,40 +237,109 @@ def _validate_cfg(cfg: dict) -> dict:
     return out
 
 
+async def _outbound_hour_histogram(account_id: str,
+                                   tz_offset_minutes: int | None) -> dict[int, int]:
+    """Hour-of-day histogram of our OWN outbound messages, in CREATOR-LOCAL hours.
+
+    Local, not UTC: a US creator's 3am dip sits at 08:00 UTC, and a window derived
+    in UTC would put her to sleep through her peak. Bounded scan (the derivation
+    only needs a shape, and it discards anything under 200 samples)."""
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.created_at)
+            .where(Message.account_id == account_id, Message.direction == "out")
+            .order_by(Message.created_at.desc())
+            .limit(_HOUR_HIST_LIMIT))).scalars().all()
+    counts: dict[int, int] = {h: 0 for h in range(24)}
+    for ts in rows:
+        if ts is None:
+            continue
+        counts[rhythm.local_now(ts, tz_offset_minutes).hour] += 1
+    return counts
+
+
+async def _rhythm_view(account_id: str, row: AccountAiConfig | None,
+                       stored: dict) -> dict[str, Any]:
+    """Everything the Human Rhythm UI needs, RESOLVED server-side — the operator is
+    never asked a question the data already answers."""
+    tz = getattr(row, "timezone", None) if row else None
+    utc_offset = int(getattr(row, "utc_offset", 0) or 0) if row else 0
+    tz_off = rhythm.tz_offset_for(tz, utc_offset)
+    derived = rhythm.derive_sleep_window(
+        await _outbound_hour_histogram(account_id, tz_off))
+    override = stored.get("sleep_window")
+    effective = list(override) if isinstance(override, (list, tuple)) and len(override) == 2 \
+        else list(derived)
+    return {
+        "timezone": tz,
+        "utc_offset": utc_offset,
+        # None ⇒ neither a timezone nor a non-zero utc_offset is set. Rhythm stays
+        # OFF for the account in that state (rhythm.tz_offset_for), so the UI blocks
+        # the checkbox instead of letting her sleep through her best hours.
+        "tz_offset_minutes": tz_off,
+        "derived_sleep_window": list(derived),
+        "effective_sleep_window": effective,
+        "default_sleep_window": list(rhythm.DEFAULT_SLEEP),
+    }
+
+
 @router.get("/admin/ai-chatter-config")
 async def get_ai_chatter_config(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     async with get_session() as s:
         row = await s.get(AccountAiConfig, account_id)
+        if row is not None:
+            s.expunge_all()
     stored: dict = {}
     if row is not None and row.ai_chatter_config_json:
         try:
             stored = json.loads(row.ai_chatter_config_json) or {}
         except Exception:
             stored = {}
-    return {"account_id": account_id, "config": stored,
-            "defaults": dict(_AI_CHATTER_DEFAULTS)}
+    return {
+        "account_id": account_id,
+        "config": stored,
+        "defaults": dict(_AI_CHATTER_DEFAULTS),
+        # The shipped lines, PRE-FILLED in the editor. An account with no config
+        # row at all still gets the full pack — that is the "plug in your content
+        # and go" surface: the words are already written.
+        "script_pack": {slot: list(lines) for slot, lines in script_packs.PACK.items()},
+        **await _rhythm_view(account_id, row, stored),
+    }
 
 
 class _ConfigBody(BaseModel):
     account_id: str
     config: dict
+    # The creator's IANA timezone — a COLUMN, not part of the config blob (rhythm,
+    # welcome and the daily rollover all read it). Absent ⇒ leave it alone; ""  ⇒
+    # clear it back to NULL.
+    timezone: str | None = None
 
 
 @router.put("/admin/ai-chatter-config")
 async def put_ai_chatter_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     assert_account_owned(body.account_id)
     clean = _validate_cfg(body.config)
+    tz: str | None = None
+    if body.timezone is not None:
+        tz = body.timezone.strip() or None
+        if tz:
+            try:
+                from zoneinfo import ZoneInfo
+                ZoneInfo(tz)
+            except Exception:
+                raise HTTPException(422, f"unknown timezone: {tz!r}")
     now = datetime.utcnow()
     payload = json.dumps(clean)
     async with get_session() as s:
+        values: dict[str, Any] = {"ai_chatter_config_json": payload, "updated_at": now}
+        if body.timezone is not None:
+            values["timezone"] = tz
         await s.execute(
             sqlite_insert(AccountAiConfig)
-            .values(account_id=body.account_id, utc_offset=0,
-                    ai_chatter_config_json=payload, updated_at=now)
-            .on_conflict_do_update(
-                index_elements=["account_id"],
-                set_={"ai_chatter_config_json": payload, "updated_at": now})
+            .values(account_id=body.account_id, utc_offset=0, **values)
+            .on_conflict_do_update(index_elements=["account_id"], set_=values)
         )
     if clean.get("enabled"):
         # Go-live safety: an enabled AI Seller with NO sweep rule is a silent
@@ -185,8 +359,14 @@ async def put_ai_chatter_config(body: _ConfigBody = Body(...)) -> dict[str, Any]
                     steps_json="{}", is_enabled=True,
                     created_at=datetime.utcnow()))
                 log.info("ai_chatter_sweep_rule_created account=%s", body.account_id)
-    log.info("ai_chatter_config_saved account=%s cfg=%s", body.account_id, clean)
-    return {"account_id": body.account_id, "config": clean}
+    log.info("ai_chatter_config_saved account=%s tz=%s cfg=%s",
+             body.account_id, tz, clean)
+    async with get_session() as s:
+        row = await s.get(AccountAiConfig, body.account_id)
+        if row is not None:
+            s.expunge_all()
+    return {"account_id": body.account_id, "config": clean,
+            **await _rhythm_view(body.account_id, row, clean)}
 
 
 # ── Catalog read (scripts + singles + per-item conversion stats) ─────────────
