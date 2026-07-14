@@ -51,6 +51,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from random import Random
 
+from ._common import norm_text
+
 log = logging.getLogger("of-relay.automation.upsell")
 
 # ── Price constants. These are SAFETY choices, owned as taste — NOT EV claims.
@@ -142,7 +144,20 @@ _HARD_STOP_RE = re.compile(
 # are conversation, not refusal. So it is anchored to a copula.
 _SOFT_BROKE_RE = re.compile(
     r"\b(?:(?:i'?m|im|am|is|are|feeling|going)\s+broke|"
-    r"can'?t afford|cant afford|no money|lost my job|out of (?:money|cash))\b", re.I)
+    r"can'?t afford|cant afford|no money|lost my job|out of (?:money|cash)|"
+    # ── Corpus-derived (2026-07-14). Every line below is a REAL refusal from prod that
+    # the pattern above let through — and letting one through means the seller answers a
+    # man who just said he is broke with a fresh price. Cody said BOTH of the first two
+    # and the AI would have re-priced him.
+    r"wallet is (?:tapping|tapped) out|wallet'?s (?:tapping|tapped) out|"
+    r"(?:have|got) bills(?: to pay)?|bills to pay|"
+    r"can'?t (?:do|swing|manage) (?:it|that|this)|"
+    r"can'?t (?:pay|tip|spend)(?: (?:more|any ?more|for|that|it))?|"
+    r"cant (?:pay|tip|spend)|"
+    r"too much money|that'?ll be too much|thats? too much|"
+    r"(?:waiting|wait) (?:for|til|till|until) pay ?day|"
+    r"only (?:getting|get) paid (?:end|at the end|on)|"
+    r"not (?:in )?the budget|money(?:'?s| is) tight)\b", re.I)
 
 # BARE-NO — only when "no" is the WHOLE message. "no way babe 😈" is enthusiasm, not
 # refusal; "talk later babe" is scheduling, not refusal. Both are excluded on purpose:
@@ -156,8 +171,12 @@ DECLINE_HARD, DECLINE_SOFT, DECLINE_BARE_NO = "hard", "soft", "bare_no"
 def classify_decline(text: str | None) -> str | None:
     """None = he did not decline. Evaluated BEFORE any price-objection handling, so
     "too expensive, i can't afford this" can never be routed into the haggle counter
-    and upsold at a fan who just told us he is broke."""
-    t = (text or "").strip()
+    and upsold at a fan who just told us he is broke.
+
+    norm_text FIRST: 14.4% of real inbound carries a curly apostrophe, and `can'?t` does
+    not match `can’t`. Without it this function answered None for "Sorry can’t afford to
+    buy content" — see the normalisation note in _common."""
+    t = norm_text(text).strip()
     if not t:
         return None
     if _HARD_STOP_RE.search(t):
@@ -179,19 +198,42 @@ def classify_decline(text: str | None) -> str | None:
 _SPEND_REGRET_RE = re.compile(
     r"\b(spent? (too much|all my|my last)|no more money|out of (money|cash|funds)|"
     r"can'?t (spend|afford)( (any)?more)?|maxed( out)?|"
-    r"broke|skint|tapped out|that'?s (it|all|enough)( for)?( (now|today|tonight|me))?|"
+    # `broke` MUST be the adjective, never the past-tense verb. A bare \bbroke\b also
+    # eats "i broke my phone screen" and "we broke up last year" — conversation, not
+    # refusal — and each one bought a 24h selling blackout on that fan. _SOFT_BROKE_RE
+    # got this right and warns about it; this pattern didn't, and shipped anyway.
+    r"(?:i'?m|im|am|is|are|feeling|going)\s+broke|"
+    r"skint|tapped out|that'?s (it|all|enough)( for)?( (now|today|tonight|me))?|"
     r"no more (for )?(now|today|tonight)|"
     r"(wait|till|until) (payday|friday|next week|i get paid)|"
     r"(only|can only) afford \$?\d+|budget is \$?\d+|\$?\d+ is (a lot|too much) for me|"
     r"not ready to (spend|send)( more)?|stop(ped)? (letting me|my card)|"
-    r"card (declined|stopped)|lost my job|between jobs|on a budget)\b", re.I)
+    r"card (declined|stopped)|lost my job|between jobs|on a budget|"
+    # ── Corpus-derived (2026-07-14). Real distress lines this brake used to let through.
+    # Cody said "my wallet is tapping out" and "I have bills to pay" — the pattern had
+    # `tapped out` (wrong word form) and nothing for bills at all, so with force_ask on
+    # the seller would have answered a broke man with a fresh price. Over-inclusive by
+    # design: a false stop costs one unsent ask; a false negative charges a man who told
+    # us to stop.
+    r"wallet is (tapping|tapped) out|wallet'?s (tapping|tapped) out|"
+    r"(have|got) bills( to pay)?|bills to pay|"
+    r"can'?t (do|swing|manage) (it|that|this)|"
+    r"can'?t (pay|tip)( (more|any ?more|for it|that))?|cant (pay|tip)|"
+    r"too much money|that'?ll be too much|that'?s too much|thats too much|"
+    r"(waiting|wait) (for|til|till|until) pay ?day|"
+    r"only (getting|get) paid (end|at the end|on)|"
+    r"money('?s| is) tight|not in the budget|"
+    r"hate tipping|dont like tipping|don'?t like tipping)\b", re.I)
 
 
 def detect_spend_regret(text: str | None) -> bool:
     """He is signalling he is out of money / done spending. Over-inclusive by design.
     A hit ⇒ unconditional 24h soft stop + COOLDOWN, never a discount. Distinct from a
-    bare haggle ("can you do $30"), which alone may reach the discount path."""
-    return bool(text) and bool(_SPEND_REGRET_RE.search(text))
+    bare haggle ("can you do $30"), which alone may reach the discount path.
+
+    norm_text FIRST — `can'?t` never matched the curly apostrophe a phone keyboard
+    produces, and 14.4% of real inbound has one."""
+    return bool(text) and bool(_SPEND_REGRET_RE.search(norm_text(text)))
 
 
 # ── COMPANION intent — he wants to talk, not to buy ──────────────────────────
@@ -204,7 +246,7 @@ _COMPANION_RE = re.compile(
 
 def detect_companion_intent(text: str | None) -> bool:
     """He declines content while asking to keep talking. Seller OFF, conversation ON."""
-    return bool(text) and bool(_COMPANION_RE.search(text))
+    return bool(text) and bool(_COMPANION_RE.search(norm_text(text)))
 
 
 # ── STATED CAP — his WORDS, an advisory ceiling only ─────────────────────────
@@ -227,6 +269,7 @@ def detect_stated_cap(text: str | None) -> int | None:
     cap → 52% buy; >1.6× → 6%."""
     if not text:
         return None
+    text = norm_text(text)
     m = _STATED_CAP_RE.search(text)
     if not m:
         return None

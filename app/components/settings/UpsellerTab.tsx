@@ -199,6 +199,53 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
           </span>
         </label>
 
+        {/* ── When she actually pulls the trigger ──────────────────────────────
+            The offer is written by the MODEL (an >>OFFER marker it may or may not
+            emit). Live on sakai that was 184 replies against 4 offers — the model,
+            not the gate, is what stops the selling. These two take the trigger back. */}
+        <div className={cn("rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-3",
+          gateOn ? "" : "opacity-50 pointer-events-none")}>
+          <div className="text-fg-dim text-xs">When she actually asks for the money</div>
+
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input type="checkbox" className="mt-0.5" checked={!!cfg.force_ask}
+              disabled={!gateOn}
+              onChange={(e) => set({ force_ask: e.target.checked })} />
+            <span className="text-sm">
+              <span className="font-medium">Always sell into a hot chat</span>
+              <span className="block text-fg-dim text-xs">
+                When he&apos;s mid-scene with her — actually sexting, actually replying —
+                she attaches the PPV instead of hoping the AI volunteers one. That moment
+                is <b>24× more likely to end in a sale</b> than an ordinary message, and
+                she was talking straight through it. She still won&apos;t price a man who
+                said he&apos;s broke, turned an offer down, or asked her to stop.
+              </span>
+            </span>
+          </label>
+
+          <label className="space-y-1 block">
+            <div className="text-fg-dim text-xs">
+              …and if he never gets there: ask after this many of his messages
+              <span className="ml-1 opacity-70">(0 = never)</span>
+            </div>
+            <input type="number" min={0} max={100} step={1}
+              className={`${INPUT} w-full md:w-40`}
+              disabled={!gateOn}
+              value={cfg.ask_after_fan_msgs ?? 0}
+              onChange={(e) => set({
+                ask_after_fan_msgs: Math.max(0, Math.min(100, parseInt(e.target.value || "0", 10) || 0)),
+              })} />
+            <div className="text-fg-dim text-xs">
+              Some men never turn the chat sexual — they&apos;re friendly, they&apos;re
+              chatting, and nobody ever asks them for a penny. After this many of{" "}
+              <b>his</b> messages with no offer in front of him (hers <i>or</i> a
+              chatter&apos;s), she puts one there anyway. 15 is a reasonable floor. The
+              brakes still apply — a fan who said he&apos;s broke is never asked, however
+              long he talks.
+            </div>
+          </label>
+        </div>
+
         {/* ladder aggressiveness */}
         <div className={cn("rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-3",
           cfg.smart_pricing_enabled ? "" : "opacity-50 pointer-events-none")}>

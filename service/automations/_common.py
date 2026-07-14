@@ -1619,6 +1619,35 @@ def guard_offplatform(text: str, rng) -> tuple[str, list[str]]:
 # as a tip message too, so it routes through the SAME on_inbound_tip → tip_reward
 # path (no new trigger needed) — and it doubles as a signal of what he's into.
 #
+# ── Text normalisation. READ THIS BEFORE TOUCHING ANY PATTERN BELOW. ─────────────
+#
+# Phone keyboards autocorrect ' into ’ (U+2019, RIGHT SINGLE QUOTATION MARK). 14.4% of
+# real inbound messages on prod carry one. Every pattern in this file and in upsell.py
+# spells contractions with a STRAIGHT apostrophe (`can'?t`, `i'?m`, `what'?s`), and a
+# curly one does not match it. So:
+#
+#     "Sorry can't afford to buy content"  → decline=soft, regret=True   ✅
+#     "Sorry can’t afford to buy content"  → decline=None, regret=False  ❌
+#
+# The second is what a man actually types. The poverty brake, the decline classifier and
+# the buying-signal detectors were all silently blind to him — which means the seller
+# would put a FRESH PRICE in front of a man who had just said he was broke. That is the
+# worst thing this system can do, and it was one character wide.
+#
+# Normalise at every detector entry point (defence in depth — these are pure functions
+# called from several places), never by asking each pattern to spell both forms.
+_SMART_PUNCT = str.maketrans({
+    "’": "'", "‘": "'", "‛": "'", "′": "'", "`": "'",  # ’ ‘ ‛ ′ `
+    "“": '"', "”": '"',                                          # “ ”
+    "–": "-", "—": "-",                                          # – —
+})
+
+
+def norm_text(text: str | None) -> str:
+    """Fold smart punctuation to ASCII so the detectors see what he meant to type."""
+    return (text or "").translate(_SMART_PUNCT)
+
+
 # CONTENT_ASK_RE is the canonical detector (hoisted from ai_chatter, which still
 # uses it for its PPV pitch). Code-side, not model judgment — when he's begging to
 # buy, the gather goal yields. Extended over the original to also catch the
@@ -1630,6 +1659,14 @@ CONTENT_ASK_RE = re.compile(
     r"what (else )?(do|did) (u|you) (have|got|film)|unlock|spoil (u|you)|"
     r"in the mood|what (u|you) got"
     r"|can i see|lemme see|let me see|wanna see|want to see"
+    # Real corpus (fans who then PAID $25-$45): the ask is rarely the tidy "wanna see".
+    # "I would like to see how you touch your pussy" and "Any videos of you getting
+    # fucked?" were both invisible to the patterns above.
+    r"|(would |i'?d )?(like|love) to see|dying to see|need to see|"
+    r"any (pics?|vids?|videos?|photos?|nudes?|content)|"
+    r"(send|show|do) (u|you) have|"
+    r"see (how|what|you|u|it)|"
+    r"i (want|need) (to see|you to)"
     r"|see (some |the |ur |your |more |any )?"
     r"(content|pics?|photos?|vids?|videos?|nudes?|something))",
     re.IGNORECASE)
@@ -1638,7 +1675,7 @@ CONTENT_ASK_RE = re.compile(
 def is_content_ask(text: str | None) -> bool:
     """True when the fan's message is explicitly asking to SEE content (the buying
     signal CONTENT_ASK_RE detects). Empty/None → False."""
-    return bool(text) and bool(CONTENT_ASK_RE.search(text))
+    return bool(text) and bool(CONTENT_ASK_RE.search(norm_text(text)))
 
 
 # ESCALATION_RE — closer-ONLY buying-adjacent signal. A fan getting physical /
@@ -1655,14 +1692,71 @@ ESCALATION_RE = re.compile(
     r"make me (?:cum|wet|hard)|get me off|"
     r"can i (?:touch|taste|feel|lick|kiss) (?:it|u|you|ur|your)|"
     r"wanna (?:touch|taste|feel|fuck) (?:it|u|you|ur|your)|"
-    r"f+u+c+k+ (?:you|u|me))",
+    r"f+u+c+k+ (?:you|u|me)|"
+    # ── Corpus-derived. He is DESCRIBING AN ACT HE WANTS. That — not arousal — is the
+    # signal, and per the converting threads it is the strongest one there is: it is his
+    # answer to "what would you do to me if i were there", which is the move every top
+    # closer opens with. Real men who then paid $25-$45 wrote:
+    #   "in doggy or missionary maybe even a blowjob"
+    #   "id love to bury face and cock in that pretty pussy"
+    #   "I want you gushing down my chin"
+    #   "I would like to see how you touch your pussy"
+    #
+    # A DESIRE FRAME next to an act — not a bare anatomy word. Matching bare anatomy was
+    # measured against prod and it fired on 13% of ALL inbound (vs 4% before), so recall
+    # went up but the LIFT over base rate collapsed from 2.5x to 1.3x: it had widened
+    # into noise. "nice tits" is arousal; "id love to bury my face in them" is intent.
+    # Pricing arousal is how she reads as a bot.
+    r"(?:i|id|i'?d|im|i'?m|u|you)\s*(?:want|wanna|need|love|would love|like|gonna|"
+    r"gon|wish|hope|plan|dream)\b[^.!?]{0,45}?\b(?:cum|cock|dick|pussy|clit|tits?|"
+    r"titties|boobs|nipples|ass|blowjob|bj|suck|lick|eat|finger|stroke|jerk|gush|"
+    r"squirt|throb|grind|ride|riding|bury|inside|deep|tongue|naked|nude|strip|"
+    r"touch|taste|kiss|spread|fuck)\b|"
+    # Bare ACT NOUNS — these have no innocent reading and are how he answers the probe.
+    r"\b(?:blowjob|bj|doggy ?style|doggy|missionary|cowgirl|69|deepthroat|"
+    r"handjob|titfuck|creampie)\b|"
+    # Imperatives aimed at HER body — a request, not a compliment.
+    r"\b(?:show|spread|touch|rub|play with|finger|ride|bounce)\s+"
+    r"(?:me |it |that )?(?:ur|your|that|them|those)\b)",
     re.IGNORECASE)
 
 
 def is_escalation(text: str | None) -> bool:
     """True when the fan's latest message is sexual/physical ESCALATION — the
     closer-only hot-moment signal ESCALATION_RE detects. Empty/None → False."""
-    return bool(text) and bool(ESCALATION_RE.search(text))
+    return bool(text) and bool(ESCALATION_RE.search(norm_text(text)))
+
+
+# ── THREAD HEAT — the signal that actually predicts a sale ───────────────────────
+# Measured on prod (2026-07-14), last fan line before a 1:1 chatter's PPV:
+#
+#   signal                                        BOUGHT   UNPAID   lift
+#   last-message regex (is_escalation/ask)         10.7%     9.0%   1.19x   ← useless
+#   THREAD HEAT (below)                            14.6%     0.6%  24.32x   ← the signal
+#
+# The engine was asking "was his LAST LINE dirty?". That question barely beats a coin
+# flip, because a man types one dirty line in threads that go nowhere all day long. The
+# question that predicts money is "is this a LIVE SEXUAL CONVERSATION HE IS IN?" — he
+# said something sexual recently AND he is actually replying, not being talked at.
+#
+# It matches what the top closers do: they don't sell to a dirty sentence, they build a
+# scene, make him describe what he wants, and sell him THAT. A bought PPV lands after
+# ~3.6 fan messages and 0.82 sexual lines from her; an unbought one after 1.0 and 0.14.
+_HEAT_WINDOW = 6          # messages, both directions — the current exchange
+_HEAT_MIN_HIS_MSGS = 2    # he is IN it, not being monologued at
+
+
+def thread_heat(messages: "list[tuple[str, str]]", window: int = _HEAT_WINDOW) -> bool:
+    """Is this thread a live sexual conversation the fan is participating in?
+
+    `messages` is the recent history as (direction, text), oldest→newest — exactly what
+    ai_chatter's _Cand.messages holds. Returns True on the moment worth selling into.
+    """
+    recent = list(messages)[-window:]
+    his = [t for d, t in recent if d == "in"]
+    if len(his) < _HEAT_MIN_HIS_MSGS:
+        return False          # he isn't in the conversation — this is a monologue
+    return any(is_escalation(t) or is_content_ask(t) for t in his)
 
 
 # A fan who just put money down — a tip received, or a PPV unlock — is a HOT

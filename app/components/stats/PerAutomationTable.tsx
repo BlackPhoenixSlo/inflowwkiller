@@ -37,6 +37,11 @@ const LABELS: Record<string, string> = {
   online_blast: "Online blast",
   nudge_online: "Online nudge",
   gen_info: "Profiler",
+  // ai_chatter and ai_upseller are ONE engine — the split is by what the reply
+  // carried (a priced offer or not), so the revenue column finally attributes the
+  // sell turns separately from the chat turns.
+  ai_chatter: "AI Chatter",
+  ai_upseller: "AI Upseller",
 };
 const label = (k: string): string => LABELS[k] ?? k;
 
