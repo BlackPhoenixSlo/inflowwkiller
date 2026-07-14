@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta
 from random import Random
 
@@ -57,16 +58,29 @@ _FALLBACK_TAILS = [
 ]
 
 
+_PET_DEFAULT = "babe"
+
+
 def _nz(s) -> str:
     return str(s).strip() if s and str(s).strip() else ""
 
 
+def clean_name(raw: str) -> str:
+    """The first token IF it looks like a real given name; else '' (→ pet name).
+    OnlyFans often stores a location / tag / handle where a name should be
+    ("Hawaii,USA/Spender"), and "heyy Hawaii,USA 🙈" reads like a bot — so anything
+    that isn't a plain single alphabetic word is dropped."""
+    first = (raw or "").split("/")[0].strip()
+    return first if re.fullmatch(r"[A-Za-z][A-Za-z'’\-]{1,19}", first) else ""
+
+
 def compose_opener(f: Fan, p: FanProfile | None, tone: str, rng: Random) -> str:
-    """A warm re-connection frame + one of HIS stored lines (a gen_info tease or
-    question). Flirty leans on teases, soft on questions; either falls back to the
-    other, then to a generic tail. `{name}` is filled from the resolved fan name."""
-    raw = resolve_fan_name(f) or ""
-    name = raw.split("/")[0].strip()[:40] or "babe"
+    """TWO lines: a warm re-connection greeting, then one of HIS stored lines (a
+    gen_info tease or question) underneath — so it reads as two bubbles, not one
+    run-on. Flirty leans on teases, soft on questions; either falls back to the
+    other, then to a generic tail. Name → a real given name if we have one, else
+    a pet name ('babe') — never a raw location/tag."""
+    name = clean_name(resolve_fan_name(f) or "") or _PET_DEFAULT
 
     teases = [_nz(x) for x in ((p.tease1, p.tease2, p.tease3) if p else ()) if _nz(x)]
     quests = [_nz(x) for x in ((p.q1, p.q2, p.q3) if p else ()) if _nz(x)]
@@ -78,9 +92,8 @@ def compose_opener(f: Fan, p: FanProfile | None, tone: str, rng: Random) -> str:
     line = rng.choice(first) if first else (rng.choice(second) if second else "")
     if not line:
         line = rng.choice(_FALLBACK_TAILS)
-    # The stored lines are written with the fan's name baked in sometimes; leave them.
-    sep = " " if line[:1] in "?." or line[:1].islower() else "… "
-    return f"{frame}{sep}{line}".strip()
+    # Greeting on line 1, his line on line 2 (two bubbles).
+    return f"{frame}\n{line}".strip()
 
 
 async def _select_cold_buyers(account_id: str, lookback_days: int, cold_hours: int,

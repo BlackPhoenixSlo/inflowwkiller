@@ -150,7 +150,7 @@ export default function ReengageBuyersTab({ accountId }: { accountId: string | n
               {preview.preview.map((r) => (
                 <li key={r.fan_id} className="text-sm">
                   <span className="text-fg-dim text-xs">{r.name || r.fan_id}: </span>
-                  <span className="bg-accent/10 border border-accent/30 rounded-2xl px-3 py-1 inline-block">
+                  <span className="bg-accent/10 border border-accent/30 rounded-2xl px-3 py-1 inline-block whitespace-pre-line align-top">
                     {r.opener}
                   </span>
                 </li>
