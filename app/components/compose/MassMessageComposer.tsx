@@ -352,7 +352,6 @@ export function MassMessageComposer({
     () => activeAccounts.filter((a) => isIncluded(a.id)),
     [activeAccounts, isIncluded],
   );
-  const allAccountIds = useMemo(() => activeAccounts.map((a) => a.id), [activeAccounts]);
 
   // Build the mass-send body from the current form. Shared by the live send
   // path (submitOne → POST) and the return-payload path (buildComposePayload).
@@ -677,7 +676,7 @@ export function MassMessageComposer({
                     <button
                       key={a.id}
                       type="button"
-                      onClick={() => toggleAllModelsInclude(a.id, allAccountIds)}
+                      onClick={() => toggleAllModelsInclude(a.id)}
                       title={inc ? "Click to exclude from broadcast" : "Click to include"}
                       className={
                         "flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] border transition-colors " +

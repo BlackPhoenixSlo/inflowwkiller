@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
 export default function ScopeSwitcher() {
   const { scope, setScope } = useScope();
   const accounts = useActiveAccounts();
-  const { isIncluded, toggle } = useAllModelsInclude();
+  const { isIncluded, toggle, includeAll, excludeAll } = useAllModelsInclude();
   const { user } = useUser();
   const { chatter, accounts: chatterAccounts } = useChatter();
   // Owner-grouping mode: only fires when a chatter principal is driving
@@ -88,6 +88,11 @@ export default function ScopeSwitcher() {
     void qc.invalidateQueries({ queryKey: ["chatter", "self", "accounts"] });
   }, [open, qc]);
 
+  // Master-checkbox state for the "All models" row: checked when every
+  // listed model is in the aggregate, indeterminate when only some are.
+  const allIncluded = accounts.every((a) => isIncluded(a.id));
+  const noneIncluded = accounts.length > 0 && accounts.every((a) => !isIncluded(a.id));
+
   const currentLabel =
     scope.kind === "all"
       ? "all models"
@@ -96,8 +101,6 @@ export default function ScopeSwitcher() {
     scope.kind === "all"
       ? "#a78bfa"
       : accounts.find((a) => a.id === scope.accountId)?.color || "#666";
-
-  const allAccountIds = accounts.map((a) => a.id);
 
   return (
     <div ref={wrapRef} className="relative shrink-0">
@@ -114,20 +117,46 @@ export default function ScopeSwitcher() {
       </button>
       {open && (
         <div className="absolute top-full right-0 mt-1 w-64 bg-panel border border-border rounded-lg shadow-lg overflow-hidden z-40">
-          {/* "All models" toggle — no checkbox column; clicking swaps scope. */}
-          <button
-            type="button"
-            onClick={() => { setScope({ kind: "all" }); setOpen(false); }}
+          {/* "All models" row — master checkbox checks/unchecks every model
+              at once (indeterminate when the aggregate is partial); the name
+              area swaps scope, same two-target layout as the per-model rows. */}
+          <div
             className={cn(
-              "w-full px-3 py-2 flex items-center gap-2 text-left text-sm hover:bg-bg-elev-1",
+              "w-full flex items-center gap-2 text-sm hover:bg-bg-elev-1",
               scope.kind === "all" && "bg-bg-elev-1/60",
             )}
           >
-            <span className="w-4" aria-hidden />
-            <span className="w-2 h-2 rounded-full" style={{ background: "#a78bfa" }} />
-            <span className="truncate flex-1">All models</span>
-            {scope.kind === "all" && <span className="text-[10px] text-fg-dim">●</span>}
-          </button>
+            <label
+              className="pl-3 py-2 flex items-center cursor-pointer select-none"
+              title={
+                allIncluded
+                  ? "Uncheck to exclude every model from the aggregate"
+                  : "Check to include every model in the aggregate"
+              }
+            >
+              <input
+                type="checkbox"
+                checked={allIncluded}
+                ref={(el) => {
+                  if (el) el.indeterminate = !allIncluded && !noneIncluded;
+                }}
+                onChange={() =>
+                  allIncluded ? excludeAll(accounts.map((a) => a.id)) : includeAll()
+                }
+                className="w-3.5 h-3.5 cursor-pointer"
+                aria-label="Include all models"
+              />
+            </label>
+            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "#a78bfa" }} />
+            <button
+              type="button"
+              onClick={() => { setScope({ kind: "all" }); setOpen(false); }}
+              className="flex-1 pr-3 py-2 flex items-center gap-2 text-left"
+            >
+              <span className="truncate flex-1">All models</span>
+              {scope.kind === "all" && <span className="text-[10px] text-fg-dim">●</span>}
+            </button>
+          </div>
           <div className="h-px bg-border" />
           {accounts.map((a, idx) => {
             const active = scope.kind === "model" && scope.accountId === a.id;
@@ -165,7 +194,7 @@ export default function ScopeSwitcher() {
                   <input
                     type="checkbox"
                     checked={included}
-                    onChange={() => toggle(a.id, allAccountIds)}
+                    onChange={() => toggle(a.id)}
                     className="w-3.5 h-3.5 cursor-pointer"
                   />
                 </label>

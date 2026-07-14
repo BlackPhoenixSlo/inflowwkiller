@@ -295,7 +295,6 @@ export function PremadeForm({
   const [allModels, setAllModels] = useState(false);
   const activeAccounts = useActiveAccounts();
   const { isIncluded, toggle: toggleAllModelsInclude } = useAllModelsInclude();
-  const allAccountIds = useMemo(() => activeAccounts.map((a) => a.id), [activeAccounts]);
   const broadcastAccounts = useMemo(
     () => activeAccounts.filter((a) => isIncluded(a.id)),
     [activeAccounts, isIncluded],
@@ -615,7 +614,7 @@ export function PremadeForm({
                 <button
                   key={a.id}
                   type="button"
-                  onClick={() => toggleAllModelsInclude(a.id, allAccountIds)}
+                  onClick={() => toggleAllModelsInclude(a.id)}
                   title={inc ? "Click to exclude from broadcast" : "Click to include"}
                   className={
                     "flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] border transition-colors " +
