@@ -72,6 +72,31 @@ async def automation_preview(body: _PreviewBody = Body(...)) -> dict[str, Any]:
     return {"account_id": body.account_id, "kind": body.kind, **res}
 
 
+# ── Re-engage buyers — dry-run preview (the openers she WOULD send) ────────
+
+class _ReengageBody(BaseModel):
+    account_id: str
+    lookback_days: int = 3
+    cold_hours: int = 24
+    max_per_run: int = 25
+    guard_hours: int = 12
+    tone: str = "soft"
+
+
+@router.post("/admin/reengage-preview")
+async def reengage_preview(body: _ReengageBody = Body(...)) -> dict[str, Any]:
+    """Run reengage_buyers in DRY-RUN and return the cold buyers + the exact personal
+    openers she'd send (no send, no state write). The 'Send now' button uses the
+    normal /admin/automation/enqueue path with dry_run:false."""
+    assert_account_owned(body.account_id)
+    from automations.reengage_buyers import run as _run
+    return await _run(body.account_id, {
+        "lookback_days": body.lookback_days, "cold_hours": body.cold_hours,
+        "max_per_run": body.max_per_run, "guard_hours": body.guard_hours,
+        "tone": body.tone, "dry_run": True,
+    }, run_id=0)
+
+
 # ── Welcome line PIN — "reroll until I like one, then send THAT" ──────────
 
 class _PinBody(BaseModel):
