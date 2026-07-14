@@ -26,6 +26,7 @@ import {
   INPUT, ItemsTable, NEW_ITEM, RhythmSection, ScriptCard, dollars,
   useSellerConfig, useSellerStyle,
 } from "@/components/settings/sellerShared";
+import ReengageBuyersTab from "@/components/settings/ReengageBuyersTab";
 import type { AiChatterConfig } from "@/hooks/useCatalog";
 
 export default function ScriptsTab({ accountId }: { accountId: string | null }) {
@@ -437,6 +438,12 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           </div>
         </div>
       </Card>
+
+      {/* ── re-engage cold buyers — a personal 1:1 win-back she runs, so it lives
+          with the chatter (not the mass broadcasts). ── */}
+      <div className="border-t border-border pt-4">
+        <ReengageBuyersTab accountId={accountId} />
+      </div>
     </div>
     </MediaCacheProvider>
   );

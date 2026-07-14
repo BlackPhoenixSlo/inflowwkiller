@@ -68,17 +68,35 @@ export default function ReengageBuyersTab({ accountId }: { accountId: string | n
 
   async function sendNow() {
     if (!accountId) { setError("Pick an account first."); return; }
-    const n = preview?.would_send ?? maxPerRun;
+    setError(null); setOkMsg(null);
+    // Always know the REAL count before confirming — run a fresh dry-run if the
+    // operator didn't Preview first, so the confirm never shows a misleading cap.
+    setBusy("send");
+    let n: number;
+    try {
+      const pv = await relay.post<PreviewResp>(
+        "/admin/reengage-preview", { account_id: accountId, ...settings },
+        { accountId, employeeId: employee?.id });
+      setPreview(pv);
+      n = pv.would_send ?? 0;
+    } catch (e) {
+      setBusy(""); setError((e as Error)?.message || "Couldn't check who's cold"); return;
+    }
+    if (n === 0) {
+      setBusy(""); setOkMsg("No cold buyers on this account right now — nothing sent.");
+      return;
+    }
     if (!window.confirm(
-      `Send a personal re-engage message to up to ${n} cold buyer(s) on this account now?` +
-      `\n\nThis sends real DMs. Preview first if you haven't.`)) return;
-    setError(null); setOkMsg(null); setBusy("send");
+      `Send a personal re-engage message to ${n} cold buyer(s) on this account now?` +
+      `\n\nThis sends real DMs (${tone} tone). Cancel to review the preview first.`)) {
+      setBusy(""); return;
+    }
     try {
       const resp = await relay.post<{ enqueued_job_id: number }>(
         "/admin/automation/enqueue",
         { account_id: accountId, kind: "reengage_buyers", payload: { ...settings } },
         { accountId, employeeId: employee?.id });
-      setOkMsg(`Queued (job #${resp.enqueued_job_id}) — sends within ~30s. Refresh the inbox to watch.`);
+      setOkMsg(`Queued (job #${resp.enqueued_job_id}) for ${n} fan(s) — sends within ~30s. Refresh the inbox to watch.`);
     } catch (e) {
       setError((e as Error)?.message || "Send failed");
     } finally { setBusy(""); }
