@@ -80,6 +80,12 @@ interface PpvLibraryConfigResponse {
   feed_pools: string[];
   feed_caption_pools: Record<string, string[]>;
   matrix: PriceMatrix;
+  /** Top of the priciest piece of content's DERIVED price band (cents; 0 = no
+   *  content / no evidence yet). The Max below it silently caps what the 1:1
+   *  seller may ever ask for that clip, so the tab warns once. */
+  content_band_max_cents: number;
+  /** OF's hard ceiling on a priced message ($200) — the highest a Max can go. */
+  price_ceil_cents: number;
 }
 
 export function usePpvLibraryConfig(accountId: string | null) {
