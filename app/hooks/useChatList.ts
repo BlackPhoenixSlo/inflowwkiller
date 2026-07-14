@@ -15,7 +15,7 @@
  * cheaper between-poll invalidations (Phase B.2).
  */
 
-import { useCallback, useRef } from "react";
+import { useCallback, useDeferredValue, useRef } from "react";
 import { keepPreviousData, useInfiniteQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { useScope } from "@/contexts/ScopeContext";
@@ -345,15 +345,26 @@ export function prefetchModelChatList(
 export function useChatList(params: ChatListParams = {}) {
   const { scope } = useScope();
   const allAccounts = useActiveAccounts();
-  const { isIncluded } = useAllModelsInclude();
+  const { excluded } = useAllModelsInclude();
   const qc = useQueryClient();
   const { filter, listId, query, limit = PAGE_SIZE } = params;
 
-  // In "all" scope, the user's include set drops accounts from the fan-out.
+  // In "all" scope, the user's exclude set drops accounts from the fan-out.
   // We filter BEFORE computing accountKey so the query key re-keys on
-  // include-set change; TanStack returns prior data only if cached.
+  // exclude-set change; TanStack returns prior data only if cached.
+  //
+  // Deferred on purpose: re-keying tears down the whole unified list and
+  // fires a page-0 fetch per included account, all batched into the same
+  // render as the ScopeSwitcher checkbox the user just clicked — which is
+  // why toggling felt laggy. Deferring lets the urgent render paint the
+  // checkbox against the old key, then applies the re-key in a background
+  // render; rapid successive toggles coalesce (interrupted background
+  // renders restart with the newest set) instead of fanning out per click.
+  const deferredExcluded = useDeferredValue(excluded);
   const accounts =
-    scope.kind === "all" ? allAccounts.filter((a) => isIncluded(a.id)) : allAccounts;
+    scope.kind === "all"
+      ? allAccounts.filter((a) => !deferredExcluded.has(a.id))
+      : allAccounts;
 
   // Stable query key: unified mode fans out across all session-bearing
   // accounts, so cache invalidation depends on the *set* of ids.
