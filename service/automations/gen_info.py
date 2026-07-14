@@ -559,9 +559,14 @@ async def _gather_candidates(
         if qualified:
             qualifying.append(c)
 
-    # Stable, deterministic order; cap the sweep so a tick stays bounded.
-    qualifying.sort(key=lambda x: (-x.spend_cents, -x.fan_msg_n, x.fan_id))
-    return qualifying[:limit]
+    # Stable, deterministic order; cap the sweep so a tick stays bounded. Forced ids
+    # sort FIRST so they always survive the `[:limit]` slice: the rest of the order is
+    # spend-desc, so a $0 fan on a big roster ranks below the cap and would otherwise be
+    # truncated away — an explicit force (the composer's "Generate new batch") must never
+    # be silently dropped just because the fan is poor.
+    qualifying.sort(
+        key=lambda x: (x.fan_id not in force_ids, -x.spend_cents, -x.fan_msg_n, x.fan_id))
+    return qualifying[:max(limit, len(force_ids))]
 
 
 def _trim_messages(messages: list[tuple[str, str]], spender: bool = False) -> str:
