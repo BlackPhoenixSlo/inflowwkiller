@@ -104,6 +104,11 @@ _PURPOSE = "ai_chatter"          # model_by_purpose key + fan lease + enqueue ki
 # indistinguishable from the chatter in the thread and in the per-automation stats,
 # and nobody could tell whether the upseller had ever actually sold anything.
 _KIND_UPSELL = "ai_upseller"
+# Most forced asks (force_ask / floor) one run() may fire across the whole account.
+# _offer_caps_ok does not pace a fan's first-ever offer, so without this the tick a
+# trigger is enabled would blast every never-offered fan at once. A few per run drips
+# the roster in over many ticks instead — well under LADDER_OFFERS_PER_HOUR_MAX (20).
+_MAX_FORCED_ASKS_PER_TICK = 3
 # Every automation_kind THIS engine stamps. Any "is this row one of hers?" test must
 # accept the whole set: match on _PURPOSE alone and her offer turns stop counting as
 # hers, which silently un-caps the cadence counter (it would read an offer as someone
@@ -1269,6 +1274,20 @@ async def _maybe_discount_resend(client, account_id: str, cfg: dict,
     # SPEND_REGRET is never eligible (a broke man met with a cheaper offer is the one
     # move upsell.py's docstring forbids); detect_spend_regret gates it out.
     last_text, last_in_at = await _last_inbound(account_id, fan_id)
+    # A DECLINE kills the resend outright. This path only ever consulted
+    # detect_spend_regret, which does NOT see a hard stop or a bare no:
+    #     "im disputing this charge and reporting you" -> classify=hard,   regret=False
+    #     "not interested" / "no thanks"               -> classify=bare_no, regret=False
+    # It relied on the reply loop having already written STOPPED/TAPPED to the ladder —
+    # but this resend runs from _resolve_open_offers, BEFORE the brakes, and on every
+    # tick. The reply loop can be hours behind him: rhythm deferral, fan cooldown, lease
+    # contention, the daily LLM cap. So the 90-minute timer fires, the ladder still says
+    # `open`, and a cheaper PPV is pushed at a man whose last words were "not interested"
+    # — or at one threatening a chargeback. Read the message, don't trust the state.
+    if upsell.classify_decline(last_text):
+        log.info("ai_chatter discount resend BLOCKED — he declined account=%s fan=%s",
+                 account_id, fan_id)
+        return False
     cuts30, asks30 = await _cuts_asks_last_30d(account_id, fan_id, now)
     ok_disc, why_disc = upsell.may_discount(upsell.DiscountCtx(
         last_inbound_text=last_text or "",
@@ -3105,6 +3124,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # The floor: after this many of his messages with no ask on the table, ask anyway.
     # Rides the gate too — a broke man is never asked, however long he talks.
     ask_after_n = int(cfg.get("ask_after_fan_msgs") or 0) if gate_on else 0
+    # Hot-thread teaser: when thread_heat is HOT and no priced offer is going out this
+    # turn, attach a few unseen vault items to the reply (free warm-up for a $0 fan, a
+    # priced tease PPV for a proven buyer). Configured in the TIP REWARD tab (the vault-
+    # media home) and read here — None ⇒ off, don't even look per fan. Does NOT ride the
+    # gate: the images ARE the lead-up, so they warm even an account with no catalog. The
+    # spend brakes below still apply (a broke/declined/companion fan never reaches it).
+    from automations import tip_reward as _tip_reward
+    teaser_cfg = await _tip_reward.hot_teaser_config(account_id)
+    # Conversational teaser ladder — NOT gated on heat; fires during ordinary chat
+    # every N of his messages, climbing free → $10 → $50. None ⇒ off.
+    convo_teaser_cfg = await _tip_reward.convo_teaser_config(account_id)
     scripts, catalog_items = await _load_catalog(account_id)
     offer_stats = await _resolve_open_offers(account_id, client, cfg,
                                              dry_run=dry_run,
@@ -3265,7 +3295,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     offers_made_on_escalation = 0   # offers triggered by the lean-in pivot
     offers_forced = 0        # force_ask: gate said yes, model wrote no marker, we sold
     offers_forced_stale = 0  # …of those, fired by the FLOOR (he'd talked N msgs, no ask)
+    forced_this_tick = 0     # account budget on forced asks this run (_MAX_FORCED_ASKS…)
     teasers_sent = 0
+    hot_teasers_sent = 0     # hot-thread vault teasers attached to a reply (free + paid)
+    hot_teaser_paid_tick = 0 # per-run budget on PAID hot teasers (shares _MAX_FORCED…)
     would_offer = 0          # dry-run: offers that would have been recorded
     unbacked_stripped = 0    # price-talk bubbles dropped (no offer behind them)
     skipped_locked = 0
@@ -3843,11 +3876,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             #                  anything. The floor.
             _trigger = ("hot" if (force_ask and hot_thread) else
                         "stale" if stale_ask else None)
+            # Per-TICK account budget on forced asks. _offer_caps_ok does NOT pace a
+            # fan's FIRST offer (its min-msgs branch is skipped when he has no prior
+            # ContentOffer), so on the tick force_ask/floor is first enabled, EVERY
+            # long-standing never-offered fan trips at once — ~1,283 fans on this roster.
+            # That is a burst of priced sends in one minute, exactly the OF-session shape
+            # the per-hour cap exists to prevent, and the per-run snapshot of that cap
+            # can't see it. This bounds the blast: the floor drips instead of flooding.
             if (_trigger and gate_ok and not seller_off
-                    and offer_item is None and offerable):
+                    and offer_item is None and offerable
+                    and forced_this_tick < _MAX_FORCED_ASKS_PER_TICK):
                 offer_item = _force_pick(offerable, quotes)
                 if offer_item is not None:
                     offers_forced += 1
+                    forced_this_tick += 1
                     if _trigger == "stale":
                         offers_forced_stale += 1
                     log.info("ai_chatter FORCED ask (%s; model wrote no marker) "
@@ -3860,6 +3902,67 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 offer_item = None  # a guarded reply must not carry a paid attach
                 log.info("ai_chatter off-platform leak guarded account=%s fan=%s reasons=%s",
                          account_id, fan_id, _leak)
+            # Hot-thread teaser — the thread is HOT, nothing priced is going out this
+            # turn, and he is not braked: attach a few unseen vault items to the reply
+            # she is already sending (free warm-up for a $0 fan, a priced tease PPV for a
+            # proven buyer). Not an extra message, not gated on a catalog offer — the
+            # images are the lead-up a hot thread otherwise never gets. Guarded on the
+            # SAME brakes as a priced ask (seller_off / offers-paused / a leaked reply),
+            # so a broke or declined man is never sent a paid tease.
+            teaser: dict | None = None
+            if (teaser_cfg is not None and hot_thread and not dry_run
+                    and offer_item is None and not _leak and pending is None
+                    and not seller_off
+                    and not (fan_ladder is not None and fan_ladder.offers_paused_until
+                             and fan_ladder.offers_paused_until > now)):
+                try:
+                    teaser = await _tip_reward.pick_hot_teaser(
+                        client, account_id, fan_id,
+                        lifetime_spend_cents=int(getattr(f, "lifetime_spend_cents", 0) or 0),
+                        tcfg=teaser_cfg, now=now)
+                except Exception:
+                    log.debug("ai_chatter hot_teaser pick failed account=%s fan=%s",
+                              account_id, fan_id, exc_info=True)
+                # A PAID teaser is a priced send — bound them per run exactly like forced
+                # asks, so flipping the flag can't blast every hot thread on the account
+                # in one minute. Free teasers are per-fan capped + on cooldown already.
+                if (teaser is not None and teaser["price_cents"] > 0
+                        and hot_teaser_paid_tick >= _MAX_FORCED_ASKS_PER_TICK):
+                    teaser = None
+            # Conversational ladder — the NON-hot path. If the hot teaser didn't fire and
+            # he's chatted `after` messages since his last tease, drop the next rung
+            # (free → $10 → $50). Same brakes: never on a bot-accused/companion turn
+            # (seller_off), and a PAID rung never reaches an offers-paused (broke/declined)
+            # fan — a FREE rung still may, to keep an ordinary chat warm.
+            if (teaser is None and convo_teaser_cfg is not None and not dry_run
+                    and not _leak and pending is None and not seller_off):
+                _tstate = _tip_reward.teaser_state(f)
+                _since = None
+                if _tstate.get("at"):
+                    try:
+                        _since = datetime.fromisoformat(str(_tstate["at"]))
+                    except Exception:
+                        _since = None
+                try:
+                    _msgs_since = await _fan_msgs_since(account_id, fan_id, _since)
+                    teaser = await _tip_reward.pick_convo_teaser(
+                        client, account_id, fan_id, tcfg=convo_teaser_cfg,
+                        msgs_since_last=_msgs_since, rung=int(_tstate.get("rung") or 0),
+                        now=now)
+                except Exception:
+                    log.debug("ai_chatter convo_teaser pick failed account=%s fan=%s",
+                              account_id, fan_id, exc_info=True)
+                if teaser is not None and teaser["price_cents"] > 0:
+                    # A priced rung obeys the broke/declined brake. `ladders` is only
+                    # loaded under the gate (§3152), so on a gate-off account fan_ladder
+                    # is None here — read the pause AUTHORITATIVELY (one query, only for a
+                    # paid rung) so a broke man is never sent a $10/$50 tease.
+                    _lad = (fan_ladder if fan_ladder is not None
+                            else (await _load_ladders(account_id, [fan_id])).get(fan_id))
+                    _paused = (_lad is not None and _lad.offers_paused_until
+                               and _lad.offers_paused_until > now)
+                    if _paused or hot_teaser_paid_tick >= _MAX_FORCED_ASKS_PER_TICK:
+                        teaser = None      # brake + the per-tick paid cap
             if not dry_run:
                 await _bump_attempt(account_id, fan_id, now)
             parts = [apply_word_restriction(p)[:_REPLY_MAX_CHARS]
@@ -4024,6 +4127,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 cover_lines_sent += 1
 
             offer_msg_id: int | None = None
+            teaser_msg_id: int | None = None
             send_failed = False
             first_no_id = False
             for idx, part in enumerate(parts):
@@ -4060,6 +4164,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         previews = _item_previews(offer_item)
                         if previews:
                             kwargs["previews"] = previews
+                elif teaser is not None and idx == len(parts) - 1:
+                    # Hot-thread teaser rides the last bubble, mutually exclusive with
+                    # an offer_item (only reachable when offer_item is None). Free →
+                    # media at price 0; paid → a locked tease PPV (same RE-CLAMP to
+                    # OF's wire range as a priced offer, from the same floor/ceiling).
+                    if teaser["price_cents"] > 0:
+                        px = max(upsell.OF_PRICE_FLOOR_CENTS,
+                                 min(int(teaser["price_cents"]), upsell.OF_PRICE_MAX_CENTS))
+                        kwargs = {"price": px / 100, "locked_text": False,
+                                  "media_files": teaser["media_ids"]}
+                    else:
+                        kwargs = {"media_files": teaser["media_ids"], "price": 0}
                 # Bubble 0 carries the rhythm delay (which already INCLUDES its wpm
                 # typing time); every later bubble keeps its own typing hold, exactly
                 # as before. rhythm off ⇒ first_delay is None ⇒ nothing changes.
@@ -4127,9 +4243,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         # offer rides on it, every bubble is 'ai_upseller'. Tagging
                         # only the bubble holding the attach would split one reply
                         # across two kinds and make the per-automation stats lie about
-                        # both. _OUR_KINDS keeps the cadence counter whole.
-                        automation_kind=(_KIND_UPSELL if offer_item is not None
-                                         else _PURPOSE),
+                        # both. _OUR_KINDS keeps the cadence counter whole. A PAID hot
+                        # teaser is a priced send too → ai_upseller; a FREE one is just
+                        # warm-up media on a chat reply → ai_chatter.
+                        automation_kind=(
+                            _KIND_UPSELL if (offer_item is not None
+                                             or (teaser is not None
+                                                 and teaser["price_cents"] > 0))
+                            else _PURPOSE),
                         body=str(result.get("text") or part),
                         price_cents=ax._to_cents(kwargs.get("price", 0)),
                         created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
@@ -4138,6 +4259,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     sent_ok = True
                     if offer_item is not None and idx == len(parts) - 1:
                         offer_msg_id = int(msg_id)  # the unlock watcher's anchor
+                    if teaser is not None and idx == len(parts) - 1:
+                        teaser_msg_id = int(msg_id)
                 elif idx == 0:
                     first_no_id = True
                     break
@@ -4243,11 +4366,40 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                          account_id, fan_id, offer_item.id,
                          "free" if offer_item.is_free_teaser else offer_mode_eff,
                          offer_msg_id)
+            # Hot-thread teaser landed (mutually exclusive with offer_item): VaultSend
+            # rows so the unseen filter never re-attaches these, and the per-fan cooldown
+            # + free-counter bump. Recorded ONLY after the media actually confirmed on the
+            # wire, so a dropped/failed reply never burns a fan's free allowance.
+            if teaser is not None and sent_ok and teaser_msg_id:
+                # A convo-ladder teaser climbs to its next rung; a hot teaser leaves the
+                # rung alone (set_rung=None).
+                await _tip_reward.record_hot_teaser(
+                    account_id, fan_id, media_ids=teaser["media_ids"],
+                    message_id=teaser_msg_id, price_cents=teaser["price_cents"],
+                    is_free=teaser["is_free"], set_rung=teaser.get("next_rung"))
+                hot_teasers_sent += 1
+                if teaser["price_cents"] > 0:
+                    hot_teaser_paid_tick += 1
+                log.info("ai_chatter %s teaser account=%s fan=%s kind=%s items=%d "
+                         "price=%d rung=%s msg=%s",
+                         "convo" if teaser.get("convo") else "hot",
+                         account_id, fan_id,
+                         "free" if teaser["is_free"] else "paid",
+                         len(teaser["media_ids"]), teaser["price_cents"],
+                         teaser.get("rung"), teaser_msg_id)
             try:
                 await asyncio.to_thread(client.mark_chat_read, fan_id)
             except Exception:
                 log.warning("ai_chatter mark_chat_read failed account=%s fan=%s",
                             account_id, fan_id, exc_info=True)
+        except Exception:
+            # One fan must not abort the whole tick. The per-fan body has many awaits
+            # (DB + OF), and this try had ONLY a finally — so a transient DB error on any
+            # of them propagated out of the loop and skipped every remaining candidate
+            # that run. Log, count, and move on; `finally` still releases the lease.
+            errors += 1
+            log.warning("ai_chatter per-fan loop errored account=%s fan=%s — skipping him, "
+                        "continuing the tick", account_id, fan_id, exc_info=True)
         finally:
             # W3 (live-chat variant): confirmed reply → short cooldown, then
             # release; cooldown failure keeps the lease as the fallback guard.
@@ -4274,6 +4426,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "offers_forced_stale": offers_forced_stale,
         "paid_state_refreshed": paid_state_refreshed,
         "teasers_sent": teasers_sent,
+        "hot_teasers_sent": hot_teasers_sent,
         "would_offer": would_offer,
         "unbacked_stripped": unbacked_stripped,
         **offer_stats,

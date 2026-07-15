@@ -37,6 +37,22 @@ export interface TipRewardConfig {
   image_reply_basis_cents?: number; // tier basis for the freebie (default 999 = "under $10")
   image_reply_cooldown_hours?: number; // per-fan throttle (also dedups webhook replays)
   image_reply_caption?: string; // optional caption ('' → media-only)
+  // Hot-thread proactive teaser — SELECTED here (vault-media home), SENT by
+  // ai_chatter when thread_heat says the thread is HOT and no priced offer is going
+  // out. Free warm-up for a $0 fan (capped), a priced tease PPV for a proven buyer.
+  hot_teaser_enabled?: boolean;
+  hot_teaser_count?: number; // vault items per teaser
+  hot_teaser_cooldown_hours?: number; // per-fan throttle (both branches)
+  hot_teaser_free_folder?: string; // vault folder for $0 fans (sent FREE)
+  hot_teaser_free_max?: number; // hard cap on FREE teasers a fan ever gets
+  hot_teaser_paid_folder?: string; // vault folder for proven buyers (priced PPV)
+  hot_teaser_price_cents?: number; // price of the paid tease PPV
+  // Conversational teaser LADDER (read by ai_chatter) — not hot-gated. Every N of his
+  // messages, send the next rung; the price climbs free → $10 → $50 as the chat goes.
+  teaser_convo_enabled?: boolean;
+  teaser_convo_after_fan_msgs?: number; // his messages between rungs
+  teaser_convo_count?: number; // vault items per tease
+  teaser_convo_rungs?: { folder: string; price_cents: number }[];
   // Item 42 — "tip request" follow-up: a fan buys a MASS PPV and goes quiet →
   // send one free teaser image + a "send me a tip?" caption. Its own automation
   // (`tip_request`), nested here because it shares this config column.
