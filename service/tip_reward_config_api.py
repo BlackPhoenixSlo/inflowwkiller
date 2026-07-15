@@ -42,7 +42,17 @@ _INT_KNOBS = {
     "image_reply_count": (1, 10),
     "image_reply_basis_cents": (0, 1_000_000),
     "image_reply_cooldown_hours": (0, 8760),
+    # Hot-thread teaser knobs (SELECTED by tip_reward, SENT by ai_chatter). The price
+    # is re-clamped to OF's wire range at the send site; this cap just stops a typo.
+    "hot_teaser_count": (1, 50),
+    "hot_teaser_cooldown_hours": (0, 8760),
+    "hot_teaser_free_max": (0, 1000),
+    "hot_teaser_price_cents": (0, 100_000),
+    # Conversational teaser ladder (the rungs list is validated separately below).
+    "teaser_convo_after_fan_msgs": (1, 1000),
+    "teaser_convo_count": (1, 50),
 }
+_MAX_TEASER_RUNGS = 10
 _MAX_TIERS = 10
 _MAX_FOLDERS_PER_TIER = 25
 _CAPTION_MAX = 500
@@ -125,6 +135,31 @@ def _validate(cfg: dict) -> dict:
         out["image_reply_enabled"] = bool(cfg["image_reply_enabled"])
     if "image_closer_enabled" in cfg:
         out["image_closer_enabled"] = bool(cfg["image_closer_enabled"])
+    # Hot-thread proactive teaser (read by ai_chatter). Master flag + the two vault
+    # folders; the numeric knobs are clamped in the _INT_KNOBS loop below.
+    if "hot_teaser_enabled" in cfg:
+        out["hot_teaser_enabled"] = bool(cfg["hot_teaser_enabled"])
+    for _k in ("hot_teaser_free_folder", "hot_teaser_paid_folder"):
+        if _k in cfg:
+            out[_k] = str(cfg[_k] or "").strip()[:40]
+    # Conversational teaser ladder — enable flag + the rungs list ({folder, price_cents}).
+    if "teaser_convo_enabled" in cfg:
+        out["teaser_convo_enabled"] = bool(cfg["teaser_convo_enabled"])
+    if "teaser_convo_rungs" in cfg:
+        rungs = cfg["teaser_convo_rungs"]
+        if not isinstance(rungs, (list, tuple)):
+            raise HTTPException(422, "teaser_convo_rungs must be a list")
+        clean_rungs = []
+        for r in rungs[:_MAX_TEASER_RUNGS]:
+            if not isinstance(r, dict):
+                raise HTTPException(422, "each teaser rung must be an object")
+            try:
+                price = max(0, min(int(r.get("price_cents") or 0), 100_000))
+            except (TypeError, ValueError):
+                raise HTTPException(422, "teaser rung price_cents must be a number")
+            clean_rungs.append({"folder": str(r.get("folder") or "").strip()[:40],
+                                "price_cents": price})
+        out["teaser_convo_rungs"] = clean_rungs
     # The content-ask tip-ask toggle (ASK side). Independent of `enabled` (the
     # delivery side) — the ask can be on while reward delivery is off, or vice versa.
     if "ask_enabled" in cfg:

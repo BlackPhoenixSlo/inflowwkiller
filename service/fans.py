@@ -463,10 +463,17 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
     # A live ask or a recent purchase makes the thread break-proof outright.
     cadence_on = bool(cfg.get("cadence_enabled"))
     gap_min = int(cfg.get("session_gap_minutes") or 60)
+    # ONE gather for the whole endpoint. It was called twice (cadence + gate), and
+    # _gather is a full-thread scan with no LIMIT — two of them per 15s poll, per open
+    # chat, on the same to_thread pool that serves live OF sends (see the relay
+    # threadpool-starvation note). `session_gap_min` only populates session_out_n; every
+    # field the gate reads is identical, so the cadence gather is a strict superset.
+    cand = None
+    if cadence_on or gate_on:
+        cand = (await ac._gather(
+            account_id, {int(fan_id)}, session_gap_min=gap_min)).get(int(fan_id))
     cadence: dict[str, Any] = {"enabled": cadence_on}
     if cadence_on:
-        cands = await ac._gather(account_id, {int(fan_id)}, session_gap_min=gap_min)
-        cand = cands.get(int(fan_id))
         if cand is not None:
             payers = await ac.recent_payer_fans(account_id, [int(fan_id)])
             money = (await ac._last_money_at(account_id, [int(fan_id)])).get(int(fan_id))
@@ -500,21 +507,64 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
 
     # (1) The next thing already SCHEDULED for this fan — a deferred reply is pending
     # work, not silence, and it looked exactly like silence until now.
+    #
+    # The LIKE is only a PREFILTER, and it must never be trusted as the answer: payloads
+    # carry other numbers (`post_id: 2592062075`, `account_id: "25166249"`), so a bare
+    # `%{fan_id}%` substring match hands you a job belonging to a different fan whenever
+    # his id happens to appear inside one of them. Prefilter in SQL, then PARSE the JSON
+    # and confirm the id sits in a fan-scoped field. A status badge that confidently
+    # reports another fan's job is worse than one that reports nothing.
+    _FAN_KEYS = ("only_fan_ids", "force_ids", "refill_ids", "fan_ids", "nudge_fan_ids")
+    # Only jobs that CAN be fan-scoped — a bulk sweep (auto_stories, scrape_chats without
+    # ids, mass sends) is never "this fan's next action" even if his id appears somewhere
+    # in its payload. Combined with the JSON parse below, this is what stops another
+    # fan's job showing up on his strip. (tip_reward IS fan-scoped — on_inbound_tip.)
+    _FAN_KINDS = ("ai_chatter", "of_ai_chat", "send_welcome", "send_followup",
+                  "deep_convo", "autoreply", "gen_info", "tip_reward")
+
+    def _has_fan(p: dict, fid: int) -> bool:
+        # EVERY coercion is guarded — a hand-inserted / legacy payload with a string id
+        # or a scalar where a list is expected must not 500 the drawer's 15s poll.
+        try:
+            if int(p.get("fan_id") or 0) == fid:
+                return True
+        except (TypeError, ValueError):
+            pass
+        for k in _FAN_KEYS:
+            v = p.get(k)
+            if not isinstance(v, (list, tuple)):
+                continue
+            for x in v:
+                try:
+                    if int(x) == fid:
+                        return True
+                except (TypeError, ValueError):
+                    continue
+        return False
+
     async with get_session() as s:
-        job = (await s.execute(
-            select(ScheduledJob.kind, ScheduledJob.run_at)
+        rows = (await s.execute(
+            select(ScheduledJob.kind, ScheduledJob.run_at, ScheduledJob.payload_json)
             .where(ScheduledJob.account_id == str(account_id),
                    ScheduledJob.status.in_(("pending", "running")),
+                   ScheduledJob.kind.in_(_FAN_KINDS),
                    ScheduledJob.payload_json.like(f"%{int(fan_id)}%"))
-            .order_by(ScheduledJob.run_at.asc()).limit(1))).first()
-    next_action = ({"kind": job[0], "at": _iso(job[1])} if job else None)
+            .order_by(ScheduledJob.run_at.asc()).limit(25))).all()
+    next_action = None
+    for kind, run_at, payload in rows:
+        try:
+            p = json.loads(payload or "{}")
+        except Exception:
+            continue
+        if isinstance(p, dict) and _has_fan(p, int(fan_id)):
+            next_action = {"kind": kind, "at": _iso(run_at)}
+            break
 
     # (2) THE GATE — would she be allowed to put a price in front of him this turn, and
     # if not, what refused. "She's talking but won't sell" had no answer before this.
     gate: dict[str, Any] = {"enabled": gate_on}
     if gate_on:
-        cand = (await ac._gather(account_id, {int(fan_id)})).get(int(fan_id))
-        if cand is not None:
+        if cand is not None:  # reused from the single gather above
             ok, why = upsell.qualify(upsell.GateCtx(
                 fan_id=int(fan_id), last_inbound_text=cand.last_body,
                 last_inbound_at=cand.last_in_at, last_outbound_at=cand.last_out_at,

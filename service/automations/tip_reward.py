@@ -92,6 +92,37 @@ _DEFAULTS: dict = {
                                        # doesn't drain a folder; also dedups webhook
                                        # replays. 0 → every inbound image (replay risk).
     "image_reply_caption": "",         # optional caption ('' → media-only)
+    # ── Hot-thread proactive teaser (SELECTED here, SENT by ai_chatter) ───────
+    # When ai_chatter's thread_heat says the thread is HOT and no priced offer is
+    # already going out this turn, attach a few UNSEEN vault items to the reply she
+    # is already sending — FREE to warm a fan up, or a priced tease PPV for a proven
+    # buyer. The images ARE the lead-up: a hot thread that only ever gets words is
+    # the exact gap this closes. NOT an extra message — it rides her reply, so it
+    # spends no extra cadence. Spend-gated: lifetime_spend == 0 → free branch (hard-
+    # capped per fan so a $0 fan can't farm content); lifetime_spend > 0 → paid PPV.
+    # Default OFF; inert until at least one folder is filled. See ai_chatter.
+    "hot_teaser_enabled": False,
+    "hot_teaser_count": 3,                 # vault items per teaser
+    "hot_teaser_cooldown_hours": 6,        # per-fan throttle (BOTH branches)
+    "hot_teaser_free_folder": "",          # vault folder for $0 fans (sent FREE)
+    "hot_teaser_free_max": 3,              # hard cap on FREE teasers a fan ever gets
+    "hot_teaser_paid_folder": "",          # vault folder for proven buyers (priced)
+    "hot_teaser_price_cents": 1500,        # price of the paid tease PPV ($15)
+    # ── Conversational teaser LADDER (SELECTED here, SENT by ai_chatter) ──────
+    # Not gated on thread_heat — fires during ORDINARY chat. After every
+    # `teaser_convo_after_fan_msgs` of HIS messages (counted since the last teaser),
+    # send the next RUNG: rung 0 is usually a free tease, rung 1 the $10 one, rung 2
+    # the $50 one — the price CLIMBS as the conversation goes. The rung advances one
+    # step each time a convo teaser lands (and holds at the top). Default OFF; inert
+    # until rungs have folders. Shares the hot-teaser's per-fan state + brakes.
+    "teaser_convo_enabled": False,
+    "teaser_convo_after_fan_msgs": 20,     # HIS messages between rungs
+    "teaser_convo_count": 1,               # vault items per tease (a single tease)
+    "teaser_convo_rungs": [
+        {"folder": "", "price_cents": 0},      # rung 0 — free tease
+        {"folder": "", "price_cents": 1000},   # rung 1 — $10
+        {"folder": "", "price_cents": 5000},   # rung 2 — $50
+    ],
     "tiers": [
         {"name": "basic",   "min_basis_cents": 0,      "folders": []},
         {"name": "mid",     "min_basis_cents": 1000,   "folders": []},   # ≥ $10
@@ -441,6 +472,168 @@ async def _run_image_reply(account_id: str, payload: dict, cfg: dict, *,
              account_id, fan_id, tier_name, len(media_ids), reward_message_id)
     return {**base, "status": "ok", "images_sent": len(media_ids),
             "media_ids": media_ids, "reward_message_id": reward_message_id}
+
+
+# ── Hot-thread proactive teaser ──────────────────────────────────────────────
+# ai_chatter owns the trigger (thread_heat) and the SEND (it attaches the media to
+# the reply it is already composing). These three helpers are the only tip_reward
+# surface it touches: a cheap enabled-gate, a pure SELECTION (no send), and a
+# post-send record. State lives in fans.custom_fields['_hot_teaser'] = {'at': iso,
+# 'free_sent': N} — same AI-owned JSON column, leading-"_" namespace, no migration,
+# mirroring the '_image_reply' cooldown above.
+_HOT_TEASER_STATE_KEY = "_hot_teaser"
+
+
+async def hot_teaser_config(account_id: str) -> dict | None:
+    """The hot-teaser knobs iff enabled, else None — one config read for ai_chatter's
+    per-run setup (None ⇒ don't even look per fan). Independent of the tip `enabled`
+    master switch: warming a hot thread with vault media has nothing to do with
+    rewarding tips."""
+    cfg = await _load_config(account_id)
+    if not cfg.get("hot_teaser_enabled"):
+        return None
+    return {
+        "count": max(1, int(cfg.get("hot_teaser_count") or 1)),
+        "cooldown_hours": max(0, int(cfg.get("hot_teaser_cooldown_hours") or 0)),
+        "free_folder": str(cfg.get("hot_teaser_free_folder") or "").strip(),
+        "free_max": max(0, int(cfg.get("hot_teaser_free_max") or 0)),
+        "paid_folder": str(cfg.get("hot_teaser_paid_folder") or "").strip(),
+        "price_cents": max(0, int(cfg.get("hot_teaser_price_cents") or 0)),
+    }
+
+
+async def pick_hot_teaser(client, account_id: str, fan_id: int, *,
+                          lifetime_spend_cents: int, tcfg: dict,
+                          now: datetime | None = None) -> dict | None:
+    """Pure SELECTION for ai_chatter's hot-thread teaser — resolves the spend branch,
+    the per-fan cooldown/free-cap, and the unseen vault items. Returns
+    {media_ids, price_cents, is_free, folder} or None (throttled / capped / no folder /
+    nothing unseen left). Sends NOTHING and writes NOTHING: ai_chatter attaches the
+    media to its reply and calls `record_hot_teaser` only once the send confirms — so a
+    dropped/failed reply never burns the cooldown or the fan's free allowance."""
+    now = now or datetime.utcnow()
+    async with get_session() as s:
+        fan = await s.get(Fan, (str(account_id), int(fan_id)))
+    state = _load_custom_fields(fan).get(_HOT_TEASER_STATE_KEY) or {}
+    state = state if isinstance(state, dict) else {}
+
+    cd = int(tcfg.get("cooldown_hours") or 0)
+    if cd > 0 and state.get("at"):
+        try:
+            if (now - datetime.fromisoformat(str(state["at"]))) < timedelta(hours=cd):
+                return None
+        except Exception:
+            pass  # unparseable stamp → treat as no cooldown, re-stamp on this send
+
+    # Spend branch. A fan who has PAID (lifetime > 0) is a proven buyer → priced tease
+    # PPV. A $0 fan gets a FREE warm-up, but only `free_max` of them across his life so
+    # a perpetual free-loader can't drain the folder one hot thread at a time.
+    is_free = int(lifetime_spend_cents or 0) <= 0
+    if is_free:
+        if int(state.get("free_sent") or 0) >= int(tcfg.get("free_max") or 0):
+            return None
+        folder = str(tcfg.get("free_folder") or "").strip()
+        price_cents = 0
+    else:
+        folder = str(tcfg.get("paid_folder") or "").strip()
+        price_cents = int(tcfg.get("price_cents") or 0)
+    if not folder:
+        return None
+
+    count = max(1, int(tcfg.get("count") or 1))
+    by_name = await asyncio.to_thread(_resolve_folders, client, [folder])
+    seen = await _seen_media(account_id, fan_id)
+    media_ids = await asyncio.to_thread(_gather_unseen, client, [folder], by_name, seen, count)
+    if not media_ids:
+        return None
+    return {"media_ids": media_ids, "price_cents": int(price_cents),
+            "is_free": is_free, "folder": folder}
+
+
+async def record_hot_teaser(account_id: str, fan_id: int, *, media_ids: list[int],
+                            message_id: int | None, price_cents: int, is_free: bool,
+                            set_rung: int | None = None,
+                            now: datetime | None = None) -> None:
+    """After the teaser media actually went out on ai_chatter's reply: one VaultSend
+    per item (so the unseen filter never re-attaches it) and the per-fan cooldown +
+    free-counter bump, in ONE transaction (a crash between them would let the unseen
+    filter re-attach OR the cap re-trip). Mirrors `_run_image_reply`'s batching.
+    `set_rung` (convo ladder) stamps the fan's NEXT rung so the price climbs."""
+    now = now or datetime.utcnow()
+    async with get_session() as s:
+        for mid in media_ids:
+            s.add(VaultSend(account_id=str(account_id), fan_id=int(fan_id),
+                            media_id=int(mid),
+                            message_id=int(message_id) if message_id else None,
+                            price_cents=int(price_cents or 0), sent_at=now))
+        fan = await s.get(Fan, (str(account_id), int(fan_id)))
+        if fan is not None:
+            cf = _load_custom_fields(fan)
+            st = cf.get(_HOT_TEASER_STATE_KEY)
+            st = st if isinstance(st, dict) else {}
+            st["at"] = now.isoformat()
+            if is_free:
+                st["free_sent"] = int(st.get("free_sent") or 0) + 1
+            if set_rung is not None:
+                st["rung"] = int(set_rung)
+            cf[_HOT_TEASER_STATE_KEY] = st
+            fan.custom_fields = json.dumps(cf)
+
+
+def teaser_state(fan: Fan | None) -> dict:
+    """The fan's teaser state ({at, free_sent, rung}) parsed off the Fan row ai_chatter
+    already has in hand — no extra DB read. `at` (iso) is the last teaser, `rung` the
+    convo-ladder position."""
+    st = _load_custom_fields(fan).get(_HOT_TEASER_STATE_KEY)
+    return st if isinstance(st, dict) else {}
+
+
+async def convo_teaser_config(account_id: str) -> dict | None:
+    """The conversational-ladder knobs iff enabled, else None — one config read for
+    ai_chatter's per-run setup. Each rung is {folder, price_cents}; a rung with no
+    folder is a dead step (skipped at selection)."""
+    cfg = await _load_config(account_id)
+    if not cfg.get("teaser_convo_enabled"):
+        return None
+    rungs = []
+    for r in (cfg.get("teaser_convo_rungs") or []):
+        if not isinstance(r, dict):
+            continue
+        rungs.append({"folder": str(r.get("folder") or "").strip(),
+                      "price_cents": max(0, int(r.get("price_cents") or 0))})
+    return {
+        "after": max(1, int(cfg.get("teaser_convo_after_fan_msgs") or 20)),
+        "count": max(1, int(cfg.get("teaser_convo_count") or 1)),
+        "rungs": rungs,
+    }
+
+
+async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
+                            msgs_since_last: int, rung: int,
+                            now: datetime | None = None) -> dict | None:
+    """Pure SELECTION for the conversational ladder. Fires only once he has sent
+    `after` messages since his last teaser; picks the CURRENT rung's folder + price
+    (climbing is done by `record_hot_teaser(set_rung=…)` after the send). Returns
+    {media_ids, price_cents, is_free, folder, rung, next_rung, convo:True} or None
+    (not enough messages / no rungs / current rung has no folder / nothing unseen)."""
+    rungs = tcfg.get("rungs") or []
+    if not rungs or msgs_since_last < int(tcfg.get("after") or 0):
+        return None
+    idx = max(0, min(int(rung or 0), len(rungs) - 1))
+    r = rungs[idx]
+    folder = str(r.get("folder") or "").strip()
+    price_cents = max(0, int(r.get("price_cents") or 0))
+    if not folder:
+        return None
+    count = max(1, int(tcfg.get("count") or 1))
+    by_name = await asyncio.to_thread(_resolve_folders, client, [folder])
+    seen = await _seen_media(account_id, fan_id)
+    media_ids = await asyncio.to_thread(_gather_unseen, client, [folder], by_name, seen, count)
+    if not media_ids:
+        return None
+    return {"media_ids": media_ids, "price_cents": int(price_cents),
+            "is_free": price_cents == 0, "folder": folder, "rung": idx,
+            "next_rung": min(idx + 1, len(rungs) - 1), "convo": True}
 
 
 @register("tip_reward")

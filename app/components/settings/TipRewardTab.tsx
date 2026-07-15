@@ -80,6 +80,23 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   const [imageReplyCooldown, setImageReplyCooldown] = useState(6);
   const [imageReplyCaption, setImageReplyCaption] = useState("");
 
+  // Hot-thread teaser (sent by the AI Seller when a thread goes hot).
+  const [htEnabled, setHtEnabled] = useState(false);
+  const [htCount, setHtCount] = useState(3);
+  const [htCooldown, setHtCooldown] = useState(6);
+  const [htFreeFolder, setHtFreeFolder] = useState("");
+  const [htFreeMax, setHtFreeMax] = useState(3);
+  const [htPaidFolder, setHtPaidFolder] = useState("");
+  const [htPrice, setHtPrice] = useState(15); // dollars in the form; cents on the wire
+  const [htPicker, setHtPicker] = useState<null | "free" | "paid">(null);
+
+  // Conversational teaser ladder — climbs free → $10 → $50 during ordinary chat.
+  const [cvEnabled, setCvEnabled] = useState(false);
+  const [cvAfter, setCvAfter] = useState(20);
+  const [cvCount, setCvCount] = useState(1);
+  const [cvRungs, setCvRungs] = useState<{ folder: string; price: number }[]>([]);
+  const [cvPicker, setCvPicker] = useState<number | null>(null); // which rung's folder
+
   // Item 42 — tip-request follow-up (nested tip_request config).
   const [trEnabled, setTrEnabled] = useState(false);
   const [trMediaId, setTrMediaId] = useState<string>(""); // "" = unset
@@ -104,6 +121,22 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setImageCloserEnabled(!!eff.image_closer_enabled);
     setImageReplyCooldown(eff.image_reply_cooldown_hours ?? 6);
     setImageReplyCaption(eff.image_reply_caption ?? "");
+    setHtEnabled(!!eff.hot_teaser_enabled);
+    setHtCount(eff.hot_teaser_count ?? 3);
+    setHtCooldown(eff.hot_teaser_cooldown_hours ?? 6);
+    setHtFreeFolder(eff.hot_teaser_free_folder ?? "");
+    setHtFreeMax(eff.hot_teaser_free_max ?? 3);
+    setHtPaidFolder(eff.hot_teaser_paid_folder ?? "");
+    setHtPrice(Math.max(0, Math.round((eff.hot_teaser_price_cents ?? 1500) / 100)));
+    setCvEnabled(!!eff.teaser_convo_enabled);
+    setCvAfter(eff.teaser_convo_after_fan_msgs ?? 20);
+    setCvCount(eff.teaser_convo_count ?? 1);
+    setCvRungs(
+      (eff.teaser_convo_rungs ?? []).map((r) => ({
+        folder: r.folder ?? "",
+        price: Math.max(0, Math.round((r.price_cents ?? 0) / 100)),
+      })),
+    );
     const tr = eff.tip_request ?? {};
     setTrEnabled(!!tr.enabled);
     setTrMediaId(tr.media_id == null ? "" : String(tr.media_id));
@@ -135,6 +168,19 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setTiers((ts) => ts.filter((_, j) => j !== i));
   };
 
+  const setCvRung = (i: number, patch: Partial<{ folder: string; price: number }>) => {
+    markDirty();
+    setCvRungs((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  };
+  const addCvRung = () => {
+    markDirty();
+    setCvRungs((rs) => [...rs, { folder: "", price: 0 }]);
+  };
+  const removeCvRung = (i: number) => {
+    markDirty();
+    setCvRungs((rs) => rs.filter((_, j) => j !== i));
+  };
+
   function buildConfig(): TipRewardConfig {
     const askAmtTrim = askAmount.trim();
     return {
@@ -154,6 +200,22 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       image_closer_enabled: imageCloserEnabled,
       image_reply_cooldown_hours: imageReplyCooldown,
       image_reply_caption: imageReplyCaption.trim(),
+      // Hot-thread teaser — form holds the price in DOLLARS; the wire is cents.
+      hot_teaser_enabled: htEnabled,
+      hot_teaser_count: htCount,
+      hot_teaser_cooldown_hours: htCooldown,
+      hot_teaser_free_folder: htFreeFolder.trim(),
+      hot_teaser_free_max: htFreeMax,
+      hot_teaser_paid_folder: htPaidFolder.trim(),
+      hot_teaser_price_cents: Math.max(0, Math.round(htPrice * 100)),
+      // Conversational teaser ladder — rungs climb free → $10 → $50 as the chat goes.
+      teaser_convo_enabled: cvEnabled,
+      teaser_convo_after_fan_msgs: cvAfter,
+      teaser_convo_count: cvCount,
+      teaser_convo_rungs: cvRungs.map((r) => ({
+        folder: r.folder.trim(),
+        price_cents: Math.max(0, Math.round(r.price * 100)),
+      })),
       // Item 42 — tip-request follow-up. media_id "" → null (stays disabled).
       tip_request: {
         enabled: trEnabled,
@@ -474,6 +536,177 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
         )}
       </Section>
 
+      {/* ── HOT-THREAD TEASER ──────────────────────────────────────────────
+          The AI Seller attaches vault media to her reply when a thread goes hot —
+          free warm-up for a $0 fan, a priced tease PPV for a proven buyer. */}
+      <Section
+        icon={<Flame size={15} />}
+        title="Send pics when a chat gets hot"
+        subtitle="When a conversation turns sexual and nothing’s being sold, the AI Seller attaches a few unseen vault pics to her next reply — free to warm up a fan who’s never paid (capped), or a priced tease PPV for a proven buyer. The pics ARE the lead-up."
+        toggle={
+          <Toggle
+            checked={htEnabled}
+            onChange={(v) => {
+              markDirty();
+              setHtEnabled(v);
+            }}
+          />
+        }
+      >
+        {htEnabled && (
+          <div className="space-y-5">
+            <div className="flex flex-wrap gap-4">
+              <NumField
+                label="Pics per send" hint="unseen vault items each time"
+                value={htCount} min={1} max={50}
+                onChange={(n) => { markDirty(); setHtCount(n); }}
+              />
+              <NumField
+                label="Cooldown (h)" hint="min hours between teasers to one fan"
+                value={htCooldown} min={0} max={8760}
+                onChange={(n) => { markDirty(); setHtCooldown(n); }}
+              />
+            </div>
+
+            {/* FREE branch — $0 fans */}
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-fg">Free warm-up — fans who’ve never paid</div>
+              <p className="text-[11px] text-fg-dim/80 leading-relaxed">
+                A fan with $0 lifetime spend gets these <b>free</b> — the images build
+                the heat that makes the sale land. Hard-capped so a freeloader can’t
+                drain the folder.
+              </p>
+              <FolderRow
+                label="Free folder"
+                folder={htFreeFolder}
+                onPick={() => setHtPicker("free")}
+                onClear={() => { markDirty(); setHtFreeFolder(""); }}
+              />
+              <NumField
+                label="Free cap per fan" hint="most free teasers one $0 fan ever gets"
+                value={htFreeMax} min={0} max={1000}
+                onChange={(n) => { markDirty(); setHtFreeMax(n); }}
+              />
+            </div>
+
+            {/* PAID branch — proven buyers */}
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-fg">Paid tease — proven buyers</div>
+              <p className="text-[11px] text-fg-dim/80 leading-relaxed">
+                A fan who has paid before gets a locked tease PPV in the hot moment
+                instead of a freebie.
+              </p>
+              <FolderRow
+                label="Paid folder"
+                folder={htPaidFolder}
+                onPick={() => setHtPicker("paid")}
+                onClear={() => { markDirty(); setHtPaidFolder(""); }}
+              />
+              <NumField
+                label="PPV price" hint="price of the locked tease" suffix="$"
+                value={htPrice} min={0} max={1000}
+                onChange={(n) => { markDirty(); setHtPrice(n); }}
+              />
+            </div>
+
+            <p className="text-[11px] text-fg-dim/70 leading-relaxed">
+              Requires <b>AI Seller</b> (ai_chatter) enabled — the teaser rides her
+              reply, so it never sends an extra message and never fires on a fan who
+              said he’s broke.
+            </p>
+          </div>
+        )}
+      </Section>
+
+      {/* ── CONVERSATIONAL TEASER LADDER ───────────────────────────────────
+          Not hot-gated — climbs free → $10 → $50 during ordinary chat. */}
+      <Section
+        icon={<Flame size={15} />}
+        title="Escalating teases during normal chat"
+        subtitle="Even when it isn’t sexual yet: after every N of his messages, drop the next rung — a free tease first, then the $10 one, then the $50 one. The price climbs as the conversation goes. Rides her reply, so it’s never an extra message."
+        toggle={
+          <Toggle
+            checked={cvEnabled}
+            onChange={(v) => {
+              markDirty();
+              setCvEnabled(v);
+            }}
+          />
+        }
+      >
+        {cvEnabled && (
+          <div className="space-y-5">
+            <div className="flex flex-wrap gap-4">
+              <NumField
+                label="Every N of his messages" hint="messages between rungs"
+                value={cvAfter} min={1} max={1000}
+                onChange={(n) => { markDirty(); setCvAfter(n); }}
+              />
+              <NumField
+                label="Pics per tease" hint="unseen vault items each rung"
+                value={cvCount} min={1} max={50}
+                onChange={(n) => { markDirty(); setCvCount(n); }}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-fg">Rungs (climb in order)</div>
+              <p className="text-[11px] text-fg-dim/80 leading-relaxed">
+                Rung 1 fires first, then rung 2 the next time, and so on — holding at the
+                last one. Price 0 = a free tease. A rung with no folder is skipped.
+              </p>
+              <div className="space-y-2">
+                {cvRungs.map((r, i) => (
+                  <div
+                    key={i}
+                    className="rounded-lg border border-border bg-bg-elev-1 p-3 space-y-2"
+                  >
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs text-fg-dim">Rung {i + 1}</span>
+                      <span className="text-xs text-fg-dim ml-1">$</span>
+                      <input
+                        type="number" min={0} max={1000}
+                        className={`${INPUT} w-24`}
+                        value={r.price}
+                        onChange={(e) =>
+                          setCvRung(i, { price: Math.max(0, Number(e.target.value) || 0) })
+                        }
+                      />
+                      <span className="text-[11px] text-fg-dim/70">
+                        {r.price === 0 ? "free tease" : "priced PPV"}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => removeCvRung(i)}
+                        className="ml-auto text-fg-dim hover:text-err text-sm px-1"
+                        title="Remove rung"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <FolderRow
+                      label="Folder"
+                      folder={r.folder}
+                      onPick={() => setCvPicker(i)}
+                      onClear={() => setCvRung(i, { folder: "" })}
+                    />
+                  </div>
+                ))}
+              </div>
+              <Button size="sm" variant="secondary" onClick={addCvRung}>
+                + Add rung
+              </Button>
+            </div>
+
+            <p className="text-[11px] text-fg-dim/70 leading-relaxed">
+              Requires <b>AI Seller</b> (ai_chatter) enabled. A free rung keeps an
+              ordinary chat warm; a priced rung is still an offer — it won’t go to a fan
+              who said he’s broke or turned one down.
+            </p>
+          </div>
+        )}
+      </Section>
+
       {/* ── TIP REQUEST (item 42) ──────────────────────────────────────────
           A fan buys a MASS PPV and goes quiet → send one free teaser + ask for
           a tip. Its own automation (tip_request); needs a schedule rule to fire. */}
@@ -578,7 +811,73 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
           onConfirm={(folders) => setTier(pickerTier, { folders })}
         />
       )}
+
+      {/* Single-folder picker for the hot-teaser free / paid branch. */}
+      {htPicker !== null && (
+        <VaultFolderPicker
+          open
+          accountId={accountId}
+          initialSelected={
+            htPicker === "free"
+              ? htFreeFolder ? [htFreeFolder] : []
+              : htPaidFolder ? [htPaidFolder] : []
+          }
+          onClose={() => setHtPicker(null)}
+          onConfirm={(folders) => {
+            markDirty();
+            const f = folders[0] ?? ""; // one folder per branch — take the first
+            if (htPicker === "free") setHtFreeFolder(f);
+            else setHtPaidFolder(f);
+          }}
+        />
+      )}
+
+      {/* Single-folder picker for a convo-ladder rung. */}
+      {cvPicker !== null && (
+        <VaultFolderPicker
+          open
+          accountId={accountId}
+          initialSelected={cvRungs[cvPicker]?.folder ? [cvRungs[cvPicker].folder] : []}
+          onClose={() => setCvPicker(null)}
+          onConfirm={(folders) => setCvRung(cvPicker, { folder: folders[0] ?? "" })}
+        />
+      )}
     </Card>
+  );
+}
+
+/** One vault folder as a removable chip + a "Pick from vault" button. The
+ *  hot-teaser branches each hold a SINGLE folder, unlike the multi-folder tiers. */
+function FolderRow({
+  label, folder, onPick, onClear,
+}: {
+  label: string;
+  folder: string;
+  onPick: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-xs text-fg-dim w-20 shrink-0">{label}</span>
+      {folder ? (
+        <span className="inline-flex items-center gap-1 text-xs bg-bg-elev-1 border border-border rounded-full px-2 py-0.5">
+          {folder}
+          <button
+            type="button"
+            onClick={onClear}
+            className="text-fg-dim hover:text-err leading-none"
+            title="Remove folder"
+          >
+            ×
+          </button>
+        </span>
+      ) : (
+        <span className="text-[11px] text-fg-dim italic">No folder yet.</span>
+      )}
+      <Button size="sm" variant="secondary" onClick={onPick}>
+        <FolderOpen size={13} /> Pick from vault
+      </Button>
+    </div>
   );
 }
 

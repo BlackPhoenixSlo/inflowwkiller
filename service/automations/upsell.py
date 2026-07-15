@@ -134,7 +134,11 @@ STATUS_AFTERCARE = "aftercare"
 
 # HARD — he is angry or gone. Permanent stop, no more paid messages, ever.
 _HARD_STOP_RE = re.compile(
-    r"\b(charge ?back|refund|dispute (?:this|the charge)|report(?:ing)? you|scam(?:mer)?|"
+    # `disput(e|ing)` — the pattern had only `dispute`, so "im disputing this charge"
+    # (present participle: how a man actually types it while doing it) was invisible.
+    # Same word-form bug as `tapped out` vs "wallet is tapping out".
+    r"\b(charge ?back|refund|disput(?:e|ing) (?:this|the charge|it)|"
+    r"report(?:ing)? you|scam(?:mer)?|"
     r"unsubscrib\w*|stop messaging|blocked you|blocking you)\b", re.I)
 
 # SOFT — a poverty plea. Stop SELLING for 24h. KEEP TALKING. This is the highest-value
@@ -143,18 +147,26 @@ _HARD_STOP_RE = re.compile(
 # "i broke my phone screen", "we broke up last year", "you broke me lol" — all of which
 # are conversation, not refusal. So it is anchored to a copula.
 _SOFT_BROKE_RE = re.compile(
-    r"\b(?:(?:i'?m|im|am|is|are|feeling|going)\s+broke|"
+    # FIRST PERSON only. `is|are` matched "my brother is broke" and "the printer is
+    # broke" (dialectal "is broken") — each one a 24h selling blackout on a fan who
+    # said nothing about his own wallet.
+    r"\b(?:(?:i'?m|im|i am|feeling)\s+broke|"
     r"can'?t afford|cant afford|no money|lost my job|out of (?:money|cash)|"
     # ── Corpus-derived (2026-07-14). Every line below is a REAL refusal from prod that
     # the pattern above let through — and letting one through means the seller answers a
     # man who just said he is broke with a fresh price. Cody said BOTH of the first two
     # and the AI would have re-priced him.
-    r"wallet is (?:tapping|tapped) out|wallet'?s (?:tapping|tapped) out|"
-    r"(?:have|got) bills(?: to pay)?|bills to pay|"
-    r"can'?t (?:do|swing|manage) (?:it|that|this)|"
-    r"can'?t (?:pay|tip|spend)(?: (?:more|any ?more|for|that|it))?|"
-    r"cant (?:pay|tip|spend)|"
-    r"too much money|that'?ll be too much|thats? too much|"
+    # Anchored the same way as _SPEND_REGRET_RE — see the warning above it. Unanchored,
+    # these matched "got bills paid off finally, feeling generous" and "that's too much
+    # for me to handle 😈" and blacked out the fan for a day.
+    r"wallet(?:'?s| is) (?:tapping|tapped) out|"
+    r"i (?:have|got) bills to (?:pay|cover)|bills to pay|"
+    r"i can'?t (?:pay|tip|spend)(?: (?:more|any ?more|for|that|it))?|"
+    r"i cant (?:pay|tip|spend)|"
+    # Same lookahead as _SPEND_REGRET_RE — "that's too much for me to handle 😈" is dirty
+    # talk, not a refusal, and without this it blacked the fan out for a day.
+    r"(?:that'?s|thats|that'?ll be|thatll be) too much(?! for me to (?:handle|take))"
+    r"(?= ?(?:money|for me|for my|,|\.|!|$))|"
     r"(?:waiting|wait) (?:for|til|till|until) pay ?day|"
     r"only (?:getting|get) paid (?:end|at the end|on)|"
     r"not (?:in )?the budget|money(?:'?s| is) tight)\b", re.I)
@@ -195,35 +207,67 @@ def classify_decline(text: str | None) -> str | None:
 # charges a man who told us he's out of money. On a hit we ALWAYS soft-stop (talk, don't
 # sell) for 24h and he is NEVER discount-eligible. Red-line: ≥85% recall on the labelled
 # distress corpus before ship.
+# ⚠️ "Over-inclusive by design" is NOT a licence to match ordinary English. A false stop
+# is not free: it is a 24h selling blackout, and the review found this pattern blacking
+# out the exact men we most want to sell to —
+#     "that's enough teasing, show me"              → a man BEGGING to buy
+#     "i have too much money and nothing to spend"  → a whale opening his wallet
+#     "got bills paid off finally, feeling generous"→ the opposite of broke
+#     "that's too much for me to handle 😈"          → dirty talk
+#     "i hate tipping culture in restaurants"       → small talk
+#     "the printer is broke again"                  → a broken printer
+# Every clause below is now anchored to a FIRST-PERSON subject and a MONEY context.
 _SPEND_REGRET_RE = re.compile(
     r"\b(spent? (too much|all my|my last)|no more money|out of (money|cash|funds)|"
-    r"can'?t (spend|afford)( (any)?more)?|maxed( out)?|"
-    # `broke` MUST be the adjective, never the past-tense verb. A bare \bbroke\b also
-    # eats "i broke my phone screen" and "we broke up last year" — conversation, not
-    # refusal — and each one bought a 24h selling blackout on that fan. _SOFT_BROKE_RE
-    # got this right and warns about it; this pattern didn't, and shipped anyway.
-    r"(?:i'?m|im|am|is|are|feeling|going)\s+broke|"
-    r"skint|tapped out|that'?s (it|all|enough)( for)?( (now|today|tonight|me))?|"
+    r"can'?t (spend|afford)( (any)?more)?|"
+    # `maxed out` — not "i'm maxed out at the gym".
+    r"maxed out (my |on )?(card|credit)|i'?m maxed out(?! at)|"
+    # `broke` must be the adjective AND first person. `is|are` caught broke relatives and
+    # broken appliances ("the printer is broke again" — dialectal for "is broken").
+    r"(?:i'?m|im|i am|feeling)\s+broke|"
+    # Copula-less intensifier form: "broke af", "broke rn", "broke as hell". Common, and
+    # the intensifier is what keeps it off "the printer is broke again".
+    r"\bbroke (af|rn|as hell|as fuck|atm|right now)\b|"
+    r"skint|"
+    # Recall (2026-07-15 audit): real poverty lines the anchors were one notch too tight
+    # to catch. Each still names money / a pay-deferral, so none reopens a named FP.
+    r"no cash\b|short on cash|(?:i'?m|im|a bit|a little) short (this|till|until|for)|"
+    r"not got the (money|funds|cash)|haven'?t got the (money|funds|cash)|"
+    r"(gotta|got to|have to|need to) (pay|cover) (rent|bills|my rent)|"
+    r"(next|til|till|until|wait for|after) (my )?(pay ?check|paycheque|payday)|"
+    r"can'?t (swing|justify|afford) (that|this|it|spending)|"
+    # "too expensive FOR ME" is a refusal; bare "its too expensive" is a haggle that
+    # belongs on the discount path, not a 24h blackout — deliberately NOT matched here.
+    # `much` is excluded — "too much for me" is handled by the lookahead clause below so
+    # it doesn't eat "too much for me to handle 😈".
+    r"too (expensive|pricey) for me\b|too (rich|pricey) for my|"
+    # `that's it/all/enough` is a universal discourse marker. Only a refusal WITH its
+    # money/finality suffix counts; bare "that's enough" is how he says "stop teasing".
+    r"that'?s (it|all|enough) for (now|today|tonight|me)|"
     r"no more (for )?(now|today|tonight)|"
-    r"(wait|till|until) (payday|friday|next week|i get paid)|"
+    r"(wait|till|until) (payday|i get paid|my next (pay ?check|paycheque))|"
     r"(only|can only) afford \$?\d+|budget is \$?\d+|\$?\d+ is (a lot|too much) for me|"
     r"not ready to (spend|send)( more)?|stop(ped)? (letting me|my card)|"
-    r"card (declined|stopped)|lost my job|between jobs|on a budget|"
-    # ── Corpus-derived (2026-07-14). Real distress lines this brake used to let through.
-    # Cody said "my wallet is tapping out" and "I have bills to pay" — the pattern had
-    # `tapped out` (wrong word form) and nothing for bills at all, so with force_ask on
-    # the seller would have answered a broke man with a fresh price. Over-inclusive by
-    # design: a false stop costs one unsent ask; a false negative charges a man who told
-    # us to stop.
-    r"wallet is (tapping|tapped) out|wallet'?s (tapping|tapped) out|"
-    r"(have|got) bills( to pay)?|bills to pay|"
-    r"can'?t (do|swing|manage) (it|that|this)|"
-    r"can'?t (pay|tip)( (more|any ?more|for it|that))?|cant (pay|tip)|"
-    r"too much money|that'?ll be too much|that'?s too much|thats too much|"
+    r"card (declined|stopped)|lost my job|between jobs|"
+    r"i'?m on a (tight )?budget(?! ?(flight|trip|airline|hotel))|"
+    # ── Corpus-derived (2026-07-14). Real distress lines this brake let through: Cody
+    # said "my wallet is tapping out" and "I have bills to pay" and was invisible to it.
+    r"wallet('?s| is) (tapping|tapped) out|tapped out\b(?! ass)|"
+    r"i (have|got) bills to (pay|cover)|bills to pay|"
+    # "can't do it" alone is mid-sext ambiguous ("i can't do it without cumming"), so it
+    # is NOT here — Cody's line is caught by "bills to pay" in the same sentence.
+    r"i can'?t (pay|tip)( (more|any ?more|for it|that))?|i cant (pay|tip)|"
+    # A refusal is about the PRICE. "that's too much for me to handle 😈" and "you're too
+    # much babe" are dirty talk — the lookahead is what separates them, and without it a
+    # man mid-scene got a 24h selling blackout.
+    r"(that'?s|thats|that'?ll be|thatll be) too much(?! for me to (handle|take))"
+    r"(?= ?(money|for me|for my|,|\.|!|$))|"
+    r"too (much|expensive) for me right now|"
     r"(waiting|wait) (for|til|till|until) pay ?day|"
     r"only (getting|get) paid (end|at the end|on)|"
     r"money('?s| is) tight|not in the budget|"
-    r"hate tipping|dont like tipping|don'?t like tipping)\b", re.I)
+    # He hates tipping ON HERE — not tipping culture in restaurants.
+    r"(hate|dont like|don'?t like) tipping (on|in) (here|this|of|onlyfans))\b", re.I)
 
 
 def detect_spend_regret(text: str | None) -> bool:
@@ -253,10 +297,20 @@ def detect_companion_intent(text: str | None) -> bool:
 # The one anchor we honour (the operator's "let's keep it at 30"). It is NOT price
 # personality (that is right-censoring, not a type) — it is a number he actually typed
 # inside a cap/counter-offer frame. The regex supplies the cents; there is NO LLM marker.
+#
+# ⚠️ THE BARE `\bfor` WAS A LOADED GUN. It read a "stated cap" out of any "for <digits>":
+#     "been up for 18 hours babe im exhausted"  -> cap = $18
+#     "i worked for 12 hours today"             -> cap = $12
+# And detect_stated_cap feeds _fan_pull(), which in qualify() is the ONE thing that lifts
+# `offers_paused_until` — the 24h pause the POVERTY BRAKE writes. So: he says "my wallet
+# is tapped out" at 14:00 (pause written, correctly), mentions at 14:20 that he's been up
+# for 18 hours, and the gate re-opens and prices him. The single worst thing this system
+# can do, reachable from a man saying he's tired.
+# `for` now requires a currency marker; the bare-number frames must name a cap explicitly.
 _STATED_CAP_RE = re.compile(
     r"(?:can you (?:do|make it)|could you do|would you do|how about|i can (?:do|pay|afford)|"
     r"my (?:limit|budget|max) is|(?:keep|stay|leave) (?:it )?(?:at|to)|"
-    r"\bfor|i'?ll (?:pay|give you|do)|(?:no more than|max)|is (?:my )?(?:limit|budget|max))"
+    r"\bfor \$|i'?ll (?:pay|give you|do)|(?:no more than|max)|is (?:my )?(?:limit|budget|max))"
     r"\s*\$?\s*(\d{1,3})(?!\d)", re.I)
 # A number in an escalation/enthusiasm frame is NOT a cap ("I'd pay 200 for the right one").
 _CAP_NEGATION_RE = re.compile(r"\b(no|not|isn'?t|too much|expensive)\b", re.I)

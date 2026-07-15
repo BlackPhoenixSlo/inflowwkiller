@@ -1637,9 +1637,14 @@ def guard_offplatform(text: str, rng) -> tuple[str, list[str]]:
 # Normalise at every detector entry point (defence in depth — these are pure functions
 # called from several places), never by asking each pattern to spell both forms.
 _SMART_PUNCT = str.maketrans({
-    "’": "'", "‘": "'", "‛": "'", "′": "'", "`": "'",  # ’ ‘ ‛ ′ `
-    "“": '"', "”": '"',                                          # “ ”
-    "–": "-", "—": "-",                                          # – —
+    "’": "'", "‘": "'", "‛": "'", "′": "'", "`": "'",
+    # ʼ U+02BC (several Android keyboards + copy-paste from non-English sources) and
+    # ＇ U+FF07 (fullwidth/CJK IMEs) reproduce the SAME failure as U+2019: "can ʼ t
+    # afford" matched nothing, so a broke man got re-priced. Fold every apostrophe
+    # variant a phone can emit, not just the famous one.
+    "ʼ": "'", "＇": "'", "՚": "'", "ꞌ": "'", "᾿": "'",
+    "“": '"', "”": '"',
+    "–": "-", "—": "-",
 })
 
 
@@ -1665,7 +1670,16 @@ CONTENT_ASK_RE = re.compile(
     r"|(would |i'?d )?(like|love) to see|dying to see|need to see|"
     r"any (pics?|vids?|videos?|photos?|nudes?|content)|"
     r"(send|show|do) (u|you) have|"
-    r"see (how|what|you|u|it)|"
+    # Recall (2026-07-15 audit): "send nudes" / "i want nudes" — the most iconic buy
+    # signal on the platform — matched neither branch. `nudes` has no innocent reading.
+    r"(send|want|get|gimme|got any) (me |some |ur |your )?nudes?\b|"
+    r"send (me |ur |your |some )?(pics?|vids?|videos?|content)\b|"
+    # NOT a bare `see (how|what|you|u|it)`. That matched "see you later babe" — the most
+    # common sign-off on the platform — plus "i see what you mean" and "see you
+    # tomorrow". Two goodbyes in a 6-message window were enough to make thread_heat()
+    # return True, so with force_ask on a fan would have been sent a PPV for saying
+    # goodnight. It added no recall the branches above don't already have: "i would like
+    # to see how you touch your pussy" is caught by `(would |i'?d )?(like|love) to see`.
     r"i (want|need) (to see|you to)"
     r"|see (some |the |ur |your |more |any )?"
     r"(content|pics?|photos?|vids?|videos?|nudes?|something))",
@@ -1707,17 +1721,34 @@ ESCALATION_RE = re.compile(
     # went up but the LIFT over base rate collapsed from 2.5x to 1.3x: it had widened
     # into noise. "nice tits" is arousal; "id love to bury my face in them" is intent.
     # Pricing arousal is how she reads as a bot.
-    r"(?:i|id|i'?d|im|i'?m|u|you)\s*(?:want|wanna|need|love|would love|like|gonna|"
-    r"gon|wish|hope|plan|dream)\b[^.!?]{0,45}?\b(?:cum|cock|dick|pussy|clit|tits?|"
-    r"titties|boobs|nipples|ass|blowjob|bj|suck|lick|eat|finger|stroke|jerk|gush|"
-    r"squirt|throb|grind|ride|riding|bury|inside|deep|tongue|naked|nude|strip|"
-    r"touch|taste|kiss|spread|fuck)\b|"
-    # Bare ACT NOUNS — these have no innocent reading and are how he answers the probe.
-    r"\b(?:blowjob|bj|doggy ?style|doggy|missionary|cowgirl|69|deepthroat|"
-    r"handjob|titfuck|creampie)\b|"
-    # Imperatives aimed at HER body — a request, not a compliment.
-    r"\b(?:show|spread|touch|rub|play with|finger|ride|bounce)\s+"
-    r"(?:me |it |that )?(?:ur|your|that|them|those)\b)",
+    # A DESIRE FRAME near an UNAMBIGUOUS sexual token. The token list used to include
+    # bare English verbs (eat / deep / touch / ride / strip / inside / ass), which made
+    # ALL of these "escalation": "i need to eat dinner", "i want a deep conversation",
+    # "i like riding motorcycles", "i need to touch base with my boss". With force_ask
+    # on, that is a PPV for talking about dinner. Soft verbs now require a body object.
+    # Subject pronoun is OPTIONAL (recall audit): fans drop the "I" constantly — "wanna
+    # suck your tits", "gonna make you cum". The downstream requirement (an unambiguous
+    # token, OR a soft verb + body object) is what keeps it off ordinary talk even
+    # without the pronoun. A bare desire verb alone matches nothing.
+    r"(?:(?:i|id|i'?d|im|i'?m|u|you)\s+)?(?:want|wanna|need|love|would love|like|"
+    r"gonna|gon|wish|hope|plan|dream|dying)\b[^.!?]{0,45}?"
+    r"(?:\b(?:cum|cumming|cock|dick|pussy|clit|tits?|titties|nipples|blowjob|bj|"
+    r"jerk|gush|squirt|throb|deepthroat|handjob|creampie|"
+    r"naked|nude|horny)\b"                      # unambiguous on their own
+    r"|\b(?:suck|lick|eat|finger|stroke|touch|taste|kiss|spread|fuck|bury|ride|grind)"
+    r"\s+(?:on |it |that )?(?:u|you|ur|your|me|them|those)\b)|"  # soft verb + body object
+    # Pronoun + penetration/act verb DIRECTLY (no desire verb): "id bury my face in your
+    # pussy", "id slide inside you". Anchored to a body part downstream so it can't fire
+    # on "id touch base with my boss".
+    r"(?:i|id|i'?d|im|i'?m)\s+(?:bury|shove|slide|slip|stick|ram|pound|eat|lick|suck)"
+    r"\b[^.!?]{0,30}?\b(?:pussy|ass|cock|dick|clit|tits?|mouth|throat|face|hole)\b|"
+    # Bare ACT NOUNS with no innocent reading. `doggy` and `69` were here and are NOT
+    # innocent-free: "my doggy is so cute", "i love 69 degree weather".
+    r"\b(?:blowjob|bj|doggy ?style|deepthroat|handjob|titfuck|creampie)\b|"
+    # Imperatives aimed at HER body — a request, not a compliment. Added eat/suck/lick/
+    # kiss and `me` to the object set: "eat me out", "ride me babe", "suck my dick".
+    r"\b(?:show|spread|touch|rub|play with|finger|ride|bounce|eat|suck|lick|kiss)\s+"
+    r"(?:me |it |that )?(?:ur|your|that|them|those|me)\b)",
     re.IGNORECASE)
 
 
