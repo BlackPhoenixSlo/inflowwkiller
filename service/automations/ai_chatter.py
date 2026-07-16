@@ -177,15 +177,15 @@ _DEFAULTS: dict = {
     # NOT lifetime, so a long-term fan is never permanently silenced.
     # These are REPLIES, not bubbles (the humanizer types one reply out as 3-5 rows —
     # counting rows made a single answer cost 5 units of a cap of 5, see _BUBBLE_WINDOW).
-    # Raised 2026-07-14: the old numbers were written when a "reply" meant a row, so they
-    # were effectively 5x tighter than they read, and a real conversation died in the
-    # middle. A cap is here to stop PESTERING a man who has gone quiet — not to cut off
-    # one who is still typing back.
+    # Raised 2026-07-14 when a "reply" stopped meaning a row, then halved 2026-07-16 by
+    # operator call: with bubbles counted right, the doubled runway read as pestering.
+    # A cap is here to stop PESTERING a man who has gone quiet — not to cut off one who
+    # is still typing back.
     "msg_limits_by_signal": {
-        "baseline": 20,          # normal chatter — stop pestering after ~20
-        "buying_signal": 40,     # content-ask / escalation / fresh offer / recent buy
-        "no_signal": 10,         # offered but stalled (no buy, gone cold) — short leash
-        "pic_sent": 50,          # he sent US a photo — hottest lead, longest runway
+        "baseline": 10,          # normal chatter — stop pestering after ~10
+        "buying_signal": 20,     # content-ask / escalation / fresh offer / recent buy
+        "no_signal": 5,          # offered but stalled (no buy, gone cold) — short leash
+        "pic_sent": 25,          # he sent US a photo — hottest lead, longest runway
     },
     "session_gap_minutes": 60,           # gap that starts a fresh burst for the caps
     # Item 17 — post-purchase talk window: keep chatting a just-paid fan this long
