@@ -192,7 +192,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
                 <label className="space-y-1">
                   <div className="text-fg-dim text-xs">Buying signal</div>
                   <input type="number" className={`${INPUT} w-full`} min={0}
-                    value={cfg.msg_limits_by_signal?.buying_signal ?? 30}
+                    value={cfg.msg_limits_by_signal?.buying_signal ?? 20}
                     onChange={(e) => setLimit("buying_signal", parseInt(e.target.value || "0", 10))} />
                 </label>
                 <label className="space-y-1">
@@ -204,7 +204,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
                 <label className="space-y-1">
                   <div className="text-fg-dim text-xs">He sent a pic</div>
                   <input type="number" className={`${INPUT} w-full`} min={0}
-                    value={cfg.msg_limits_by_signal?.pic_sent ?? 40}
+                    value={cfg.msg_limits_by_signal?.pic_sent ?? 25}
                     onChange={(e) => setLimit("pic_sent", parseInt(e.target.value || "0", 10))} />
                 </label>
               </div>
