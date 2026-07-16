@@ -7,9 +7,15 @@ service/.session_secret
 service/.chatter_secret
 .session_secret
 .chatter_secret
+# NOTE: dockerignore patterns are ROOTED (unlike gitignore) — a bare `*.db`
+# matches only files at the context root. The `**/` twins are the ones that
+# actually exclude DB files at depth (service/), keeping the COPY layer small.
 *.db
 *.db-*
 *.db.*
+**/*.db
+**/*.db-*
+**/*.db.*
 .env
 .claude/
 .run_public/
