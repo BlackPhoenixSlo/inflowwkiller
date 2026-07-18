@@ -1448,10 +1448,14 @@ async def _resolve_open_offers(account_id: str, client, cfg: dict,
                                   offer.offer_message_id, exc_info=True)
                 await _resolve_offer(int(offer.id), status="expired", resolved_by=None)
                 if gate_on:
-                    # The rung died on the vine — the ladder dies with it. Leaving it
-                    # 'open' would let a stale rung_index escalate the NEXT ask off a
-                    # price he never paid.
-                    await _close_ladder(account_id, fan_id, upsell.STATUS_TAPPED)
+                    # The rung died on the vine — close the ladder to IDLE, NOT tapped.
+                    # A PPV that merely aged out unopened is not a "no": measured, plenty
+                    # of proven payers ignore one message and buy the next. Tapping them
+                    # for 24h retired money-in-hand fans (e.g. a $45 payer went dark after
+                    # one unopened PPV). IDLE still resets rung_index (via _close_ladder),
+                    # so the next ask re-prices off the band, never off a price he never
+                    # paid — but he stays sellable right away.
+                    await _close_ladder(account_id, fan_id, upsell.STATUS_IDLE)
             stats["offers_expired"] += 1
             continue
 
@@ -3910,8 +3914,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # SAME brakes as a priced ask (seller_off / offers-paused / a leaked reply),
             # so a broke or declined man is never sent a paid tease.
             teaser: dict | None = None
+            # NOTE: no `pending is None` guard — a hot teaser RIDES ALONGSIDE an open
+            # PPV. The old guard meant an unopened offer suppressed every teaser for the
+            # full stall_ttl (6h), which is exactly the window the thread is hottest; the
+            # images never landed while he was warm. The teaser attaches media to the
+            # reply and records only a VaultSend (no ContentOffer), so it never creates a
+            # second pending that would block the next one. `offer_item is None` still
+            # stops us stacking a teaser on a FRESH ask fired this same turn.
             if (teaser_cfg is not None and hot_thread and not dry_run
-                    and offer_item is None and not _leak and pending is None
+                    and offer_item is None and not _leak
                     and not seller_off
                     and not (fan_ladder is not None and fan_ladder.offers_paused_until
                              and fan_ladder.offers_paused_until > now)):
@@ -3934,8 +3945,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # (free → $10 → $50). Same brakes: never on a bot-accused/companion turn
             # (seller_off), and a PAID rung never reaches an offers-paused (broke/declined)
             # fan — a FREE rung still may, to keep an ordinary chat warm.
+            # No `pending is None` guard here either — the convo ladder likewise rides
+            # alongside an open PPV (see the hot-teaser note above). A PAID rung still
+            # obeys the broke/declined pause brake below.
             if (teaser is None and convo_teaser_cfg is not None and not dry_run
-                    and not _leak and pending is None and not seller_off):
+                    and not _leak and not seller_off):
                 _tstate = _tip_reward.teaser_state(f)
                 _since = None
                 if _tstate.get("at"):
