@@ -657,28 +657,75 @@ def _questions_still_needed(f: Fan, asked: set[str]) -> list[tuple[str, str]]:
     return q
 
 
+# Colorful, job-specific riffs for the grounded occupation example (flavor B):
+# keyed on a lowercased occupation, generic fallback otherwise. Every riff rides
+# on his REAL job — nothing invented — so "a chef? bet u cook fire" only ever
+# reaches a fan we actually know is a chef.
+_JOB_RIFFS = {
+    "chef": "bet u cook fire, fave dish?",
+    "cook": "bet u cook fire, fave dish?",
+    "nurse": "bet u take good care of everyone",
+    "teacher": "bet the class has a crush on u",
+    "pilot": "bet uve got the best stories",
+    "cop": "ooh someone who likes bein in charge",
+    "police": "ooh someone who likes bein in charge",
+    "firefighter": "so u run into fires huh, brave",
+    "lawyer": "bet u always win the argument",
+    "engineer": "brains huh, i like that",
+    "doctor": "bet u know exactly what ur doin",
+    "trucker": "all those miles alone, bet u get bored",
+    "driver": "all those miles, bet u get bored",
+}
+
+
 def _good_examples(f: Fan, asked: set[str], have_durable_name: bool) -> str:
-    """The "- GOOD:" line adapts to what we DON'T know yet, so the prompt never
-    DEMONSTRATES asking for info we already hold — the bug that made the model
-    copy "what should i call u?" to a fan whose name we knew. The name example is
-    gated on the DURABLE signal (custom_nickname OR real_name), matching the
-    sticky-name guard — NOT `_questions_still_needed` (which only checks
-    real_name, so it still 'needs' the name for a fan we have a nickname for)."""
+    """The "- GOOD:" few-shot is tailored to THIS fan, two flavors combined:
+
+    (A) FACT-FREE asks for info we still NEED — generic phrasings that plant no
+        specific answer, so the model can't leak an invented detail (the "a chef?"
+        bug: it demonstrated a job he never mentioned, priming the model to guess
+        it). Name-ask gated on the durable signal (custom_nickname OR real_name),
+        matching the sticky-name guard.
+    (B) GROUNDED riffs built from facts we ALREADY hold — the same flirty
+        guess-and-riff style, but every detail is TRUE (his real job/city/age/
+        hobby), so even copied verbatim it invents nothing.
+
+    Lead with what we know (B), then ask for what's missing (A)."""
     needed = {k for k, _ in _questions_still_needed(f, asked)}
-    ex: list[str] = []
+
+    # (A) fact-free asks for what's MISSING
+    ask_ex: list[str] = []
     if not have_durable_name and "name" in needed:
-        ex.append('"haha thanks what should i call u?"')
+        ask_ex.append('"haha thanks what should i call u?"')
     if "age" in needed:
-        ex.append('"aww how old are ya"')
+        ask_ex.append('"aww how old are ya"')
     if "job" in needed:
-        ex.append('"a chef? bet u cook fire, fave dish?"')
+        ask_ex.append('"so what do u do for work?"')
     if needed & {"location", "city", "country_from_city"}:
-        ex.append('"where u textin me from"')
+        ask_ex.append('"where u textin me from"')
+
+    # (B) riffs grounded in real facts — never invents anything (clip guards a
+    # runaway free-text field from bloating the prompt).
+    def _clip(v) -> str:
+        return str(v).strip()[:30]
+    known_ex: list[str] = []
+    if _nonempty(f.occupation):
+        _job = _clip(f.occupation).lower()
+        known_ex.append(f'"a {_job}? {_JOB_RIFFS.get(_job, "bet that keeps u busy")}"')
+    if _nonempty(f.home_city):
+        known_ex.append(f'"{_clip(f.home_city)}? ive always wanted to go there"')
+    if _nonempty(f.his_age):
+        known_ex.append(f'"{_clip(f.his_age)} and still trouble huh"')
+    if _nonempty(f.hobbies):
+        known_ex.append(f'"still into {_clip(f.hobbies).lower()}? love that about u"')
+
+    # Mix: up to 2 grounded riffs THEN up to 2 asks — the model sees both flavors.
+    ex = known_ex[:2] + ask_ex[:2]
     # Never empty, and never demonstrate asking something we already know.
     if not ex:
         ex = ['"mmm tell me more"', '"u always know what to say"',
-              '"ok that\'s actually hot"']
-    return "- GOOD: " + " / ".join(ex[:3]) + "\n"
+              '"ok thats actually hot"']
+    return "- GOOD: " + " / ".join(ex[:4]) + "\n"
 
 
 # Canonical ask priority (the order the model naturally fixates on a gap — name
