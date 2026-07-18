@@ -604,7 +604,10 @@ def _questions_still_needed(f: Fan, asked: set[str]) -> list[tuple[str, str]]:
     what we already know: each gap becomes ONE natural question, ordered by
     priority, skipping any topic already in `asked` so the bot never nags. The
     'save' side is gen_info (it extracts these same fields from the convo)."""
-    name = _nonempty(f.real_name)
+    # A durable name is real_name OR a team/generated custom_nickname — either one
+    # means we already know what to call him, so the name gap is CLOSED (keeps this
+    # in step with the sticky-name guard, which uses the same OR).
+    name = _nonempty(f.real_name) or _nonempty(f.custom_nickname)
     age = _nonempty(f.his_age)
     country = _nonempty(f.home_country)
     city = _nonempty(f.home_city)
@@ -652,6 +655,30 @@ def _questions_still_needed(f: Fan, asked: set[str]) -> list[tuple[str, str]]:
     # within each group (boobs still last among the un-asked).
     q.sort(key=lambda kv: kv[0] in asked)
     return q
+
+
+def _good_examples(f: Fan, asked: set[str], have_durable_name: bool) -> str:
+    """The "- GOOD:" line adapts to what we DON'T know yet, so the prompt never
+    DEMONSTRATES asking for info we already hold — the bug that made the model
+    copy "what should i call u?" to a fan whose name we knew. The name example is
+    gated on the DURABLE signal (custom_nickname OR real_name), matching the
+    sticky-name guard — NOT `_questions_still_needed` (which only checks
+    real_name, so it still 'needs' the name for a fan we have a nickname for)."""
+    needed = {k for k, _ in _questions_still_needed(f, asked)}
+    ex: list[str] = []
+    if not have_durable_name and "name" in needed:
+        ex.append('"haha thanks what should i call u?"')
+    if "age" in needed:
+        ex.append('"aww how old are ya"')
+    if "job" in needed:
+        ex.append('"a chef? bet u cook fire, fave dish?"')
+    if needed & {"location", "city", "country_from_city"}:
+        ex.append('"where u textin me from"')
+    # Never empty, and never demonstrate asking something we already know.
+    if not ex:
+        ex = ['"mmm tell me more"', '"u always know what to say"',
+              '"ok that\'s actually hot"']
+    return "- GOOD: " + " / ".join(ex[:3]) + "\n"
 
 
 # Canonical ask priority (the order the model naturally fixates on a gap — name
@@ -734,6 +761,11 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
 
     facts = []
     name = resolve_fan_name(f)
+    # A DURABLE name (team nickname OR extracted real_name) — either one is enough;
+    # drives the GOOD-examples gate so we never demonstrate a name-ask for a fan we
+    # already have a name for.
+    have_durable_name = bool(name) and (_nonempty(f.custom_nickname)
+                                        or _nonempty(f.real_name))
     if name:
         facts.append(f"name/nickname: {name.split('/')[0][:40]}")
     for label, val in (("age", f.his_age), ("city", f.home_city),
@@ -869,8 +901,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "vague, ask a quick follow-up instead of re-asking). Don't narrate, no "
         "paragraphs.\n"
         f"{nudes_rule}"
-        "- GOOD: \"haha thanks 😏 what should i call u?\" / \"aww how old are ya\" / "
-        "\"a chef? bet u cook fire, fave dish?\"\n\n"
+        f"{_good_examples(f, asked, have_durable_name)}\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
         f"{LIVE_PROOF_GUARDRAIL}"
         f"{humanizer}{nonnative}\n\n"

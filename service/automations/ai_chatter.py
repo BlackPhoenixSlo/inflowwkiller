@@ -90,7 +90,8 @@ from .of_ai_chat import (
     _BREATHER_VARIANTS, _EXTRACT_HISTORY_TAIL, _HISTORY_TAIL, _MSG_CLIP,
     _NOID_PAUSE, _REPLY_MAX_CHARS, _REPLY_TEMPERATURE, _STYLE_VARIANTS,
     _bump_attempt, _dedupe_lead_reaction, _extract_and_fill, _load_mid_funnel_fans,
-    _load_persona, _looks_like_echo, _mark_question_asked, _mark_reply_sent,
+    _good_examples, _load_persona, _looks_like_echo, _mark_question_asked,
+    _mark_reply_sent,
     _maybe_push_nickname, _maybe_refresh_profile, _nonempty, _pause_fan,
     _primary_ask_target, _questions_still_needed, _recent_ask_pattern,
     _strip_html, split_for_bubbles,
@@ -2985,8 +2986,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         "- If he gets explicit early: don't go along with it — playfully tease and "
         "slow it down, then steer back to getting to know him. Warm and flirty, "
         "never cold or preachy.\n"
-        "- GOOD: \"haha thanks 😏 what should i call u?\" / \"aww how old are ya\" / "
-        "\"a chef? bet u cook fire, fave dish?\"\n\n"
+        f"{_good_examples(f, asked, have_durable_name)}\n"
         f"{ONPLATFORM_GUARDRAIL}"
         f"{humanizer}{nonnative}"
         f"{sell_section}"
