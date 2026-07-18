@@ -718,6 +718,18 @@ def _good_examples(f: Fan, asked: set[str], have_durable_name: bool) -> str:
         known_ex.append(f'"{_clip(f.his_age)} and still trouble huh"')
     if _nonempty(f.hobbies):
         known_ex.append(f'"still into {_clip(f.hobbies).lower()}? love that about u"')
+    if _nonempty(f.recent_events):
+        known_ex.append(f'"hows {_clip(f.recent_events).lower()} going btw"')
+    # Spicy prefs go LAST (same as _questions_still_needed: boobs/ass after all the
+    # get-to-know facts), so known_ex[:2] fills with rapport before turning it up.
+    if _nonempty(f.fetishes):
+        known_ex.append(f'"mmm {_clip(f.fetishes).lower()}? had a feeling about u"')
+    if f.likes_ass and f.likes_boobs:
+        known_ex.append('"so u like it all huh, greedy"')
+    elif f.likes_ass:
+        known_ex.append('"an ass man huh, noted"')
+    elif f.likes_boobs:
+        known_ex.append('"a boobs guy huh, good to know"')
 
     # Mix: up to 2 grounded riffs THEN up to 2 asks — the model sees both flavors.
     ex = known_ex[:2] + ask_ex[:2]
