@@ -37,7 +37,7 @@ _MAX_DELAY_S = 600
 def _defaults() -> dict:
     """The built-in OFF state — what the UI shows before anything is saved."""
     return {"enabled": False, "delay_seconds": 0, "jitter_seconds": 0,
-            "manual_yield_minutes": 1, "typing_wpm": 60, "typing_indicator": True}
+            "manual_yield_minutes": 1, "typing_wpm": 38, "typing_indicator": True}
 
 
 def _validate_config(cfg: dict) -> dict:

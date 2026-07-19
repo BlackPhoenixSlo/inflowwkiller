@@ -2,7 +2,7 @@
 service/automations/rhythm.py — Human Rhythm: how long she waits before replying.
 
 Today the ONLY delay before a bubble is `typing_delay_seconds(text, wpm)` — a pure
-function of message length (~60 wpm). Every reply therefore lands in a few seconds,
+function of message length (~38 wpm). Every reply therefore lands in a few seconds,
 with no variance and no gaps, which is the single loudest bot tell in the product.
 
 Real chatters (measured on this account's own archive: inbound → human reply gap)
