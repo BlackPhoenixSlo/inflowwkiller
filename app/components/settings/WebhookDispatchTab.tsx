@@ -57,7 +57,7 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
   const lo = delay;
   const hi = delay + jitter;
   const manualYield = form.manual_yield_minutes ?? 1;
-  const typingWpm = form.typing_wpm ?? 60;
+  const typingWpm = form.typing_wpm ?? 38;
   const typingIndicator = form.typing_indicator ?? true;  // ON by default
 
   return (

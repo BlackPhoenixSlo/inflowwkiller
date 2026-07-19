@@ -1086,8 +1086,8 @@ async def apply_typo_throttle(account_id, fan_id, parts, rng, *, protect=(),
 # Each bubble is held back for the time a real person would take to TYPE it, so
 # replies don't pop instantly (and a 2-bubble reply has a believable gap). Speed
 # is words-per-minute, configured per-account in webhook_config_json.typing_wpm
-# (the "⚡ Instant reply" tab); default 60 wpm. Clamped so a long line can't hang.
-_DEFAULT_TYPING_WPM = 60.0
+# (the "⚡ Instant reply" tab); default 38 wpm. Clamped so a long line can't hang.
+_DEFAULT_TYPING_WPM = 38.0
 _MAX_TYPING_DELAY_S = 60.0  # a single bubble never waits more than 1 min to "type"
 
 
@@ -1100,7 +1100,7 @@ def typing_delay_seconds(text: str, wpm: float) -> float:
 
 
 async def load_typing_wpm(account_id: str) -> float:
-    """Per-account typing speed from webhook_config_json.typing_wpm (default 60).
+    """Per-account typing speed from webhook_config_json.typing_wpm (default 38).
     Read regardless of whether webhook dispatch is enabled — it's a send-pacing
     knob, not a dispatch gate. 0 disables the typing delay."""
     if os.environ.get("CHATTERLY_TEST_MODE"):
