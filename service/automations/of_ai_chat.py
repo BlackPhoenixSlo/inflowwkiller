@@ -72,12 +72,13 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from ._common import (
-    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, guard_offplatform,
+    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING, guard_offplatform,
     STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style, apply_word_restriction,
     build_facts_note, build_structured_nickname, build_tip_ask_block, coerce_ids,
     facts_from_fan, hold_with_typing, apply_typo_throttle, is_content_ask,
     is_substantive_msg,
+    load_factground_flag,
     load_nonnative_flags, load_strip_emojis, load_style_flags, load_tip_ask_config,
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
@@ -801,7 +802,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
                     style_on: bool = False,
                     nonnative_on: bool = False,
                     content_ask: bool = False,
-                    tip_ask_block: str = "") -> tuple[list[dict], list[str]]:
+                    tip_ask_block: str = "",
+                    profile: "FanProfile | None" = None) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — a faithful port of V1
     prompts.create_chat_response: a short, GIRLY, 100%-human reply that flirts
     WHILE gathering the one piece of info we still need. The 'still need' block is
@@ -832,8 +834,35 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
                        ("occupation", f.occupation), ("fetishes", f.fetishes)):
         if _nonempty(val):
             facts.append(f"{label}: {str(val).strip()[:80]}")
+    # Fact-grounding layer (load_factground_flag; default ON). gen_info's rich profile —
+    # the bio + bullet notes + team-written teases a human chatter reads before replying —
+    # ported verbatim from ai_chatter. `profile is None` (flag off, or no profile on file)
+    # leaves the facts block byte-identical to before, so a profile-less fan is unchanged.
+    teases: list[str] = []
+    if profile is not None:
+        if _nonempty(profile.short_bio):
+            facts.append(f"about him: {str(profile.short_bio).strip()[:400]}")
+        if _nonempty(profile.bullet_points):
+            bp = str(profile.bullet_points).strip().replace("\n", "; ")[:600]
+            facts.append(f"notes on him: {bp}")
+        teases = [str(t).strip()[:140]
+                  for t in (profile.tease1, profile.tease2, profile.tease3) if _nonempty(t)]
     facts_block = ("\n".join(f"- {x}" for x in facts)
                    if facts else "- (nothing on file yet)")
+    # A concrete nudge to WEAVE IN one specific detail — the difference between a bubble
+    # that reads as a form letter and one that reads as her, mid-conversation. Only added
+    # when there's something to reference, so a profile-less fan's prompt is unchanged.
+    personal_lines: list[str] = []
+    if profile is not None and (_nonempty(profile.short_bio) or _nonempty(profile.bullet_points)):
+        personal_lines.append(
+            "Work in ONE specific, natural detail from what you know about him above "
+            "(his job, a hobby, something going on in his life) — like you actually "
+            "remember him. Don't recite a list; drop one nugget the way a girlfriend would.")
+    if teases:
+        personal_lines.append(
+            "You may riff on one of these lines the team wrote for him — reword it in "
+            "your own voice, don't paste it verbatim: " + " | ".join(teases))
+    personal_block = ("\n" + "\n".join(personal_lines)) if personal_lines else ""
 
     history = c.messages[-history_tail:]
     convo = "\n".join(
@@ -949,6 +978,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "— never sound like a bot or an assistant. Use only what you've learned "
         f"about him; don't share your own info unless he asks; {offer_clause}he may "
         "send several texts in a row — read them all, reply to the latest.\n\n"
+        f"{PAINFUL_TEXTING}\n\n"
         f"{need_block}{dodge_note}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         "HOW YOU TEXT (a real 22yo girl, not an assistant):\n"
@@ -967,7 +997,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
     )
     user = (
-        f"What you know about him:\n{facts_block}\n\n"
+        f"What you know about him:\n{facts_block}{personal_block}\n\n"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Reply to his last message now, in the STYLE FOR THIS MESSAGE above."
     )
@@ -1180,6 +1210,23 @@ async def _bump_attempt(account_id: str, fan_id: int, now: datetime) -> None:
         )
 
 
+async def _load_profiles(account_id: str, fan_ids) -> dict[int, FanProfile]:
+    """gen_info's rich per-fan profile (bio / bullet notes / teases) — the same data the
+    chatter's Lines picker + Notes panel show, fed to the reply prompt so Auto Convo is as
+    informed as a human chatter. One query; expunged (read-only). Mirror of
+    ai_chatter._load_profiles. Only called when load_factground_flag is on."""
+    ids = [int(x) for x in fan_ids]
+    if not ids:
+        return {}
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(FanProfile).where(FanProfile.account_id == str(account_id),
+                                     FanProfile.fan_id.in_(ids))
+        )).scalars().all()
+        s.expunge_all()
+    return {int(r.fan_id): r for r in rows}
+
+
 async def _mark_reply_sent(account_id: str, fan_id: int, now: datetime) -> None:
     """Stamp last_message_sent_at on a CONFIRMED send. The turn itself was already
     counted by _bump_attempt when the reply was generated."""
@@ -1296,6 +1343,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
+    factground_on = await load_factground_flag(account_id)  # rich-profile grounding (default ON)
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     # Content-ask tip-ask: when a fan asks to SEE content, swap the gather question
@@ -1420,6 +1468,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     candidates.sort(key=lambda x: (-x.fan_msg_n, x.fan_id))
     candidates = candidates[:limit]
 
+    # Fact-grounding (default ON): one batch query for the final candidate set's rich
+    # profiles, fed to _build_messages so a bubble reads as "she remembers me". Off →
+    # empty map → profile=None → prompt byte-identical to before.
+    profiles: dict[int, FanProfile] = (
+        await _load_profiles(account_id, [c.fan_id for c in candidates])
+        if factground_on else {})
+
     sent = 0
     skipped_locked = 0
     skipped_cooldown = 0
@@ -1478,7 +1533,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             msgs, presented = _build_messages(
                 persona, f, c, asked, history_tail,
                 style_on=style_on, nonnative_on=nonnative_on,
-                content_ask=is_content_ask(c.last_body), tip_ask_block=tip_ask_block)
+                content_ask=is_content_ask(c.last_body), tip_ask_block=tip_ask_block,
+                profile=profiles.get(fan_id))
             try:
                 res = await llm_client.chat(
                     model=model,
