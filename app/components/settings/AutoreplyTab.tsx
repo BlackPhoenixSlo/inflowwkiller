@@ -96,6 +96,21 @@ function StyleSection({ accountId }: { accountId: string | null }) {
           </span>
         </span>
       </label>
+      <label className="flex items-start gap-2.5 cursor-pointer rounded-lg border border-border bg-bg-elev-1 px-3 py-2.5">
+        <input type="checkbox" className="h-4 w-4 mt-0.5 accent-[var(--accent)] cursor-pointer"
+          checked={form.painful_texting ?? true}
+          onChange={(e) => set({ painful_texting: e.target.checked })} />
+        <span className="space-y-0.5">
+          <span className="block text-sm">Painful texting (brevity + emotion)</span>
+          <span className="block text-[11px] text-fg-dim/70">
+            Frames every chat reply like a real girl half-glued to her phone: write the
+            fewest words that still land — short lines that punch the feeling, spend more
+            only to stir him up or answer what he actually said, never a dead one-word
+            filler. Applies to Auto Convo, AI Chatter, keep-warm and deep convo. On by
+            default; untick to A/B it off.
+          </span>
+        </span>
+      </label>
       <div className="space-y-2">
         <div className="flex items-center gap-3 text-[11px] text-fg-dim/70 pl-0">
           <span className="w-28">Automation</span>

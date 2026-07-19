@@ -27,7 +27,8 @@ from auth import assert_account_owned
 from db.engine import get_session
 from db.models import AccountAiConfig
 from automations._common import (
-    STYLE_AUTOMATIONS, typo_flag_key, nonnative_flag_key, FACTGROUND_KEY)
+    STYLE_AUTOMATIONS, typo_flag_key, nonnative_flag_key, FACTGROUND_KEY,
+    PAINFUL_TEXTING_KEY)
 
 log = logging.getLogger("of-relay.style_config_api")
 
@@ -51,6 +52,8 @@ def _defaults() -> dict[str, bool]:
     out["strip_emojis"] = False
     # Auto Convo (of_ai_chat) rich-profile grounding — DEFAULT ON (see load_factground_flag).
     out[FACTGROUND_KEY] = True
+    # Account-wide brevity/emotion framing — DEFAULT ON (see load_painful_texting_flag).
+    out[PAINFUL_TEXTING_KEY] = True
     return out
 
 
@@ -71,6 +74,9 @@ def _resolved_view(stored: dict) -> dict[str, bool]:
     # DEFAULT ON: an absent key resolves True (matches load_factground_flag), so the box
     # renders checked and a save doesn't flip an implicit-ON flag to explicit-OFF.
     out[FACTGROUND_KEY] = bool(stored.get(FACTGROUND_KEY, True))
+    # DEFAULT ON (matches load_painful_texting_flag): absent → True, so the box renders
+    # checked and a save never flips the implicit-ON to explicit-OFF.
+    out[PAINFUL_TEXTING_KEY] = bool(stored.get(PAINFUL_TEXTING_KEY, True))
     return out
 
 
@@ -84,7 +90,7 @@ def _persist(cfg: dict) -> dict[str, bool]:
     known = set(STYLE_AUTOMATIONS) \
         | {typo_flag_key(k) for k in STYLE_AUTOMATIONS} \
         | {nonnative_flag_key(k) for k in STYLE_AUTOMATIONS} \
-        | {"strip_emojis", FACTGROUND_KEY}
+        | {"strip_emojis", FACTGROUND_KEY, PAINFUL_TEXTING_KEY}
     return {k: bool(v) for k, v in cfg.items() if k in known}
 
 

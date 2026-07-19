@@ -463,10 +463,29 @@ PAINFUL_TEXTING = (
     "phone. so you write the LEAST you can while still saying what you actually "
     "mean. dont labor over the perfect tiny line — if a slightly longer line "
     "comes out easier than agonizing, thats fine, but usually short just works. "
-    "the ONLY reasons to spend more than the bare minimum: it amuses YOU to, or "
-    "a longer line lands the emotion harder. otherwise every extra word is effort "
-    "you skip. a short line that PUNCHES the feeling beats a long one that "
-    "explains — every single time."
+    "the reasons worth spending more than the bare minimum: it amuses YOU to, a "
+    "longer line lands the emotion harder, or you get to make HIM feel something "
+    "(stirring him up, making him grin, turning him on) — enriching his emotion "
+    "is its own little pleasure, so those words arent wasted. otherwise every "
+    "extra word is effort you skip. a short line that PUNCHES the feeling beats a "
+    "long one that explains — every single time.\n"
+    # (#2) a floor so 'short' never collapses into a dead one-word filler / echo,
+    # (tuned) but the floor MUST NOT become a licence to ramble — fewest words wins
+    "but short NEVER means dead or dodgy: even a tiny reply has to carry heat, a "
+    "tease, or warmth AND actually engage what mattered in his message — never a "
+    "flat 'ok'/'lol'/'nice'/'haha' anyone could've sent, never just his own words "
+    "parroted back, and never a cute one-liner that sidesteps his real point. the "
+    "target is the FEWEST words that land the feeling AND address him: almost "
+    "always ONE line, occasionally two, basically never more — dont pile on extra "
+    "bubbles, dont explain yourself, dont pad it.\n"
+    # (#3) brevity doesn't get to dodge a real question he asked — but stay tight
+    "if he actually ASKED you something, answer it — but in as few words as it "
+    "takes and then STOP; dont let 'answering him' balloon into a paragraph.\n"
+    "the get-to-know-you question is a JUDGEMENT CALL, not a habit: sometimes "
+    "slipping in a little backend-info question is exactly what the moment wants, "
+    "sometimes dropping the question entirely and just reacting hits harder, and "
+    "sometimes keeping the question you had in mind is right. read the moment — "
+    "dont ask on autopilot and dont drop it on autopilot either."
 )
 
 # ── On-platform guardrail (ALWAYS ON — not gated on any opt-in) ───────
@@ -711,6 +730,27 @@ async def load_style_flags(account_id: str) -> dict[str, bool]:
     return {k: _resolve_style_flag(stored, k, k) for k in STYLE_AUTOMATIONS}
 
 
+async def load_painful_texting_flag(account_id: str) -> bool:
+    """Account-wide toggle for the PAINFUL_TEXTING framing block (brevity + emotion
+    economy) injected at the top of the conversational prompts. Reads the
+    'painful_texting' key of account_ai_config.style_config_json. DEFAULT ON
+    (absent/NULL/parse-error → True) so it stays live where it's already shipping;
+    set the key to false to A/B it off per account. STYLE_FORCE_OFF forces it off."""
+    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+        return False
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    raw = getattr(cfg, "style_config_json", None) if cfg else None
+    if not raw:
+        return True
+    try:
+        stored = json.loads(raw) or {}
+    except Exception:
+        return True
+    val = stored.get(PAINFUL_TEXTING_KEY)
+    return True if val is None else bool(val)
+
+
 async def load_strip_emojis(account_id: str) -> bool:
     """Read account_ai_config.style_config_json → the account-wide 'strip_emojis'
     bool. Absent/NULL/parse-error → False (the safe default: emojis kept, current
@@ -876,6 +916,8 @@ async def load_nonnative_flags(account_id: str) -> dict[str, bool]:
 # unaffected (the block only appears when there's something to reference), so turning
 # it on can never blank or break a reply.
 FACTGROUND_KEY = "factground_of_ai_chat"
+# Account-wide toggle key (style_config_json) for the PAINFUL_TEXTING framing block.
+PAINFUL_TEXTING_KEY = "painful_texting"
 
 
 async def load_factground_flag(account_id: str) -> bool:
@@ -911,6 +953,11 @@ _TYPO_SENTENCE_RATE = 0.2        # ~1 typo per 5 sentences (capped at 1 / reply)
 # garble gets fixed more often, the way a real person notices the bad ones.
 _TYPO_FIX_P_BASE = 0.25          # subtle slip → usually leave it
 _TYPO_FIX_P_UGLY = 0.55          # obviously-wrong slip → more likely to "*fix"
+# Don't bother "*fix"-ing a SHORT word: a slip in a <6-char word (lol, ur, gonna,
+# hey, babe) is instantly guessable, so a real person wouldn't correct it — and a
+# "*lol" correction on something that obvious reads like a bot. The thumb-slip
+# itself still rides; only the follow-up correction bubble is suppressed.
+_TYPO_FIX_MIN_WORD_LEN = 6
 _WORD_RE = re.compile(r"[A-Za-z]+")
 _VOWELS = frozenset("aeiou")
 _SENT_RE = re.compile(r"[.!?]+")
@@ -1049,7 +1096,11 @@ def _humanize_typos_impl(parts: list[str], rng, *, protect=(),
     # draw order is unchanged.
     fix_p = _TYPO_FIX_P_UGLY if _slip_is_ugly(word, slipped) else _TYPO_FIX_P_BASE
     emitted = False
-    if allow_correction and len(out) < max_bubbles and rng.random() < fix_p:
+    # NOTE: the `rng.random() < fix_p` draw stays FIRST so seeded callers keep their
+    # exact draw order; the short-word guard is an extra AND after it (short-circuit
+    # only suppresses the emit, never skips the draw) — see _TYPO_FIX_MIN_WORD_LEN.
+    if (allow_correction and len(out) < max_bubbles and rng.random() < fix_p
+            and len(word) >= _TYPO_FIX_MIN_WORD_LEN):
         out.append(_correction_bubble(word, rng))
         emitted = True
     return out, emitted

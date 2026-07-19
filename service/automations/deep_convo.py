@@ -83,11 +83,12 @@ from db.engine import get_session
 from db.models import AccountAiConfig, Blacklist, Fan, FanProfile, Message, SkipList
 from llm_client import LLMCapExceeded
 from ._common import (
-    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, guard_offplatform,
+    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING, guard_offplatform,
     STYLE_HUMANIZER, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style,
     apply_word_restriction, build_facts_note,
     build_structured_nickname, casualize_qtease, coerce_ids, facts_from_fan,
-    hold_with_typing, apply_typo_throttle, load_nonnative_flags, load_style_flags,
+    hold_with_typing, apply_typo_throttle, load_nonnative_flags,
+    load_painful_texting_flag, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
     strip_emojis,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
@@ -306,7 +307,8 @@ async def _gather_messages(account_id: str, fan_ids: set[int]) -> dict[int, _Can
 
 
 def _build_messages(persona: str, f: Fan, c: _Candidate,
-                    style_on: bool = False, nonnative_on: bool = False) -> list[dict]:
+                    style_on: bool = False, nonnative_on: bool = False,
+                    painful_on: bool = True) -> list[dict]:
     """Compose the (system, user) pair for an in-between reply during the drill
     (the Q + Tease themselves are sent verbatim from the profile — not generated)."""
     facts = []
@@ -334,6 +336,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "start. Keep it short, 1 question max, max 2 verbs. Never sound like a bot — "
         "you are 100% human, girly, warm. Don't offer pics or videos. Do NOT use any "
         "emojis in this reply.\n\n"
+        f"{PAINFUL_TEXTING + chr(10) + chr(10) if painful_on else ''}"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
         f"{LIVE_PROOF_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
@@ -499,6 +502,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
+    painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
     typing_wpm = await load_typing_wpm(account_id)            # per-bubble pacing
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     persona = await _load_persona(account_id)
@@ -687,7 +691,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
             elif state == _S_Q_SENT:
                 reply = await _generate(model, persona, f, c, account_id, fan_id,
-                                       style_on=style_on, nonnative_on=nonnative_on)
+                                       style_on=style_on, nonnative_on=nonnative_on,
+                                       painful_on=painful_on)
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -708,7 +713,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
             elif state == _S_CHATTED_1:
                 reply = await _generate(model, persona, f, c, account_id, fan_id,
-                                       style_on=style_on, nonnative_on=nonnative_on)
+                                       style_on=style_on, nonnative_on=nonnative_on,
+                                       painful_on=painful_on)
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -807,14 +813,15 @@ _CAP = object()
 
 async def _generate(model: str, persona: str, f: Fan, c: _Candidate,
                     account_id: str, fan_id: int,
-                    style_on: bool = False, nonnative_on: bool = False) -> str | object:
+                    style_on: bool = False, nonnative_on: bool = False,
+                    painful_on: bool = True) -> str | object:
     """Generate ONE in-between reply. Returns the text, '' on a generation error,
     or the _CAP sentinel when the daily LLM cap is hit (caller stops the run)."""
     try:
         res = await llm_client.chat(
             model=model,
             messages=_build_messages(persona, f, c, style_on=style_on,
-                                     nonnative_on=nonnative_on),
+                                     nonnative_on=nonnative_on, painful_on=painful_on),
             purpose=_PURPOSE,
             account_id=account_id,
             fan_id=fan_id,
