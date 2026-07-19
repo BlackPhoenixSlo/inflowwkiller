@@ -48,6 +48,7 @@ Only the prompt builder is forked — it adds the M3 sell-block seam.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import random
@@ -143,6 +144,9 @@ _OLD_FAN_SKIP = "old_fan_pre_ai"
 # enables it. The offer_* knobs are read by the M3 offer engine.
 _DEFAULTS: dict = {
     "enabled": False,
+    "hotsell_trinity_enabled": False,    # hot-lead tip→tip→PPV ladder (S2→S1→S3).
+                                         # Ships DARK: default off, zero behavior
+                                         # change until an account opts in.
     "mode": "backup",                    # "backup" | "always"
     "intent_only": False,                # closer mode: only engage a fan whose
                                          # latest message shows buying intent
@@ -251,6 +255,13 @@ _DEFAULTS: dict = {
     # accused) and the offer caps all still apply, so a man who said he's out of money is
     # never asked no matter how long he talks. 0 = off.
     "ask_after_fan_msgs": 0,
+    # Up to this many UNPAID PPVs may ride at once (a 2nd "here's another / here's it
+    # cheaper" is a normal close). Floored at 2 in code — never below.
+    "max_open_offers": 2,
+    # When he haggles on the pending piece, re-price it this fraction cheaper (0.10 = 10%).
+    "haggle_discount_pct": 0.10,
+    # Resend a balked-on priced TEASER up to this fraction cheaper (capped at 0.20 = 20%).
+    "teaser_discount_pct": 0.20,
     # Content-derived price bands + the post-purchase (hot-window) ladder.
     # Meaningless without the gate — the UI keeps it disabled until the gate is on.
     "smart_pricing_enabled": False,
@@ -576,6 +587,48 @@ _PRICE_TALK_RE = re.compile(r"\$\s*\d")
 _SPECIFICS_RE = re.compile(
     r"\b\d+\s*(pics?|photos?|vids?|videos?|clips?|sets?|min(?:ute)?s?|sec(?:ond)?s?)\b",
     re.IGNORECASE)
+# Delivery narration — "sending it now", "check your dms", "i already sent it",
+# "unlocking it now", "on its way". If NO media actually attaches this turn (no
+# priced offer, no teaser) AND there's no unpaid PPV already on the table to point
+# him at, a bubble like this is a PHANTOM send: she promises content and delivers
+# nothing (a broken promise the fan can see, and a bot tell). Stripped the same way
+# unbacked price talk is. When a PPV IS pending, "go unlock it babe" is literally
+# true, so these are kept (see the _phantom guard at the call site).
+_DELIVERY_TALK_RE = re.compile(
+    r"(?:send(?:ing|in)?\s+(?:it|that|this|them|u|you|ya)?\s*(?:now|over|rn|your\s+way)"
+    r"|(?:i(?:'?ll)?\s+)?send\s+(?:it|that|this)\s+now"
+    r"|unlock(?:ing|in)?\s+(?:it|that|this)?\s*now"
+    r"|(?:already|just|i)\s+sent\s+(?:it|that|them|you|ya)?"
+    r"|check\s+(?:your|ur)\s+(?:dms?|messages?|msgs?|inbox|notifs?|notifications?)"
+    r"|go\s+check"
+    r"|in\s+(?:your|ur)\s+(?:dms?|inbox)"
+    r"|on\s+(?:its?|it'?s|the)\s+way)",
+    re.IGNORECASE)
+
+
+_GENERIC_NAMES = {"babe", "baby", "hey", "hun", "honey", "boo", "love", "daddy"}
+
+
+def _merge_lone_name_bubbles(parts: list[str], name: str) -> list[str]:
+    """A bubble that is JUST his name — "jack", "jack?", "jack 😏" — reads as robotic
+    filler as its own message. Fold it into the neighbouring bubble so the name still
+    lands appended ("...huh jack?") but never ships alone. Generic pet names are left
+    be (they're fine standalone)."""
+    _toks = (name or "").strip().split()
+    nm = _toks[0].lower() if _toks else ""
+    if len(nm) < 2 or nm in _GENERIC_NAMES or len(parts) < 2:
+        return parts
+    lone = re.compile(rf"^{re.escape(nm)}[^\w]*$", re.IGNORECASE)
+    out: list[str] = []
+    for p in parts:
+        if out and lone.match(p.strip()):
+            out[-1] = f"{out[-1]} {p.strip()}"      # append the name to the prior bubble
+        else:
+            out.append(p)
+    if len(out) >= 2 and lone.match(out[0].strip()):  # a lead lone-name → fold forward
+        out[1] = f"{out[0].strip()} {out[1]}"
+        out = out[1:]
+    return out
 
 
 def _unbacked_talk(p: str) -> bool:
@@ -700,6 +753,36 @@ async def _seen_media(account_id: str, fan_id: int) -> set[int]:
     return {int(x) for x in ids}
 
 
+async def _owned_or_seen_media(account_id: str, fan_id: int) -> set[int]:
+    """Media we must NOT re-offer this fan: only what he actually OWNS — a tip/PPV
+    unlock (VaultSend.was_purchased) or a paid Message whose media JSON overlaps.
+    Deliberately EXCLUDES anything merely SENT: a free teaser AND an offered-but-
+    UNBOUGHT PPV (whose VaultSend carries price_cents>0 as the ASKED price, not proof
+    of purchase) can both ride again in a future offer. (Product rule: dedup bought,
+    never sent-that-can-be-resent.)"""
+    out: set[int] = set()
+    async with get_session() as s:
+        seen_ids = (await s.execute(
+            select(VaultSend.media_id).where(
+                VaultSend.account_id == str(account_id),
+                VaultSend.fan_id == int(fan_id),
+                VaultSend.was_purchased.is_(True))
+        )).scalars().all()
+        paid_rows = (await s.execute(
+            select(Message.media_ids).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.is_paid.is_(True))
+        )).all()
+    out |= {int(x) for x in seen_ids}
+    for (mids_json,) in paid_rows:
+        try:
+            out |= {int(x) for x in json.loads(mids_json or "[]")}
+        except Exception:
+            continue
+    return out
+
+
 async def _open_offers(account_id: str, fan_id: int | None = None) -> list[ContentOffer]:
     async with get_session() as s:
         q = select(ContentOffer).where(ContentOffer.account_id == str(account_id),
@@ -717,8 +800,12 @@ async def _offerable_for_fan(account_id: str, fan_id: int, cfg_mode: str,
     """What this fan may be offered RIGHT NOW: unseen singles + the NEXT item of
     a script (position pinning preserves the escalation without a state
     machine). One active script at a time: once a progress row is active, other
-    scripts' openers drop out of the manifest."""
-    seen = await _seen_media(account_id, fan_id)
+    scripts' openers drop out of the manifest.
+
+    Dedup is BOUGHT-or-SEEN only (see `_owned_or_seen_media`): a piece he merely
+    received as a free teaser/preview is NOT filtered out — it can be re-offered as
+    part of a real PPV."""
+    seen = await _owned_or_seen_media(account_id, fan_id)
     async with get_session() as s:
         prog_rows = (await s.execute(
             select(CatalogProgress).where(
@@ -859,6 +946,92 @@ def _pending_block(offer: ContentOffer, item: CatalogItem | None) -> str:
     )
 
 
+# The fan may end up with at most this many UNPAID offers open at once. Default 2:
+# one already on the table + one "here's another / here's it cheaper" is a normal
+# human close; a third unpaid PPV in a row is pushy spam and stops (→ _pending_block).
+# Configurable per account via cfg["max_open_offers"] (floored at 2 — never below).
+_MAX_OPEN_OFFERS = 2
+
+# When he balks on price ("a lil lower?"), the re-tease of the pending piece is priced
+# this much cheaper — a light, believable nudge, not a fire sale. cfg["haggle_discount_pct"].
+_HAGGLE_DISCOUNT_PCT = 0.10
+
+# If he balks on a priced TEASER he hasn't unlocked, we may RESEND that same media a bit
+# cheaper (up to this much off). cfg["teaser_discount_pct"].
+_TEASER_DISCOUNT_PCT = 0.20
+
+# Price haggling — "too expensive", "cheaper", "discount", a lowball counter. When a
+# fan balks like this on the pending piece, the SECOND offer may re-send it cheaper.
+# NOTE: "broke" / "can't afford" are deliberately NOT here — those are OUT-of-money
+# signals that must hit the broke PAUSE (stop selling), not a cheaper re-offer. This
+# is strictly "make it cheaper for THIS piece" haggling.
+_HAGGLE_RE = re.compile(
+    r"\b(too\s+(?:much|expensive|pricey|steep)|expensive|pricey|cheaper|cheap|"
+    r"discount|deal|lower(?:\s+price)?|less|"
+    r"how\s+about\s+\$?\d|\$?\d+\s*(?:instead|max|tops)|any\s+cheaper)\b",
+    re.IGNORECASE)
+
+
+async def _open_offer_count(account_id: str, fan_id: int) -> int:
+    return len(await _open_offers(account_id, fan_id))
+
+
+async def _last_unpaid_teaser(account_id: str, fan_id: int) -> dict | None:
+    """The most recent PRICED teaser we sent this fan that he has NOT unlocked, as
+    {media_ids, price_cents, message_id} — or None. Lets a haggle ("cheaper?") resend
+    the same media a little cheaper instead of stonewalling."""
+    async with get_session() as s:
+        latest = (await s.execute(
+            select(VaultSend.message_id, VaultSend.price_cents).where(
+                VaultSend.account_id == str(account_id),
+                VaultSend.fan_id == int(fan_id),
+                VaultSend.price_cents > 0,
+                VaultSend.message_id.is_not(None))
+            .order_by(VaultSend.sent_at.desc()).limit(1))).first()
+        if not latest or latest.message_id is None:
+            return None
+        mid, price = int(latest.message_id), int(latest.price_cents or 0)
+        paid = (await s.execute(
+            select(Message.is_paid).where(
+                Message.account_id == str(account_id),
+                Message.message_id == mid))).scalar_one_or_none()
+        if paid:                        # already unlocked → nothing to resell cheaper
+            return None
+        media = (await s.execute(
+            select(VaultSend.media_id).where(
+                VaultSend.account_id == str(account_id),
+                VaultSend.fan_id == int(fan_id),
+                VaultSend.message_id == mid))).scalars().all()
+    media_ids = [int(m) for m in media]
+    if not media_ids or price <= 0:
+        return None
+    return {"media_ids": media_ids, "price_cents": price, "message_id": mid}
+
+
+def _second_offer_block(pending: ContentOffer, pend_item: CatalogItem | None,
+                        offerable: dict[int, CatalogItem],
+                        scripts: dict[int, CatalogScript], cfg_mode: str,
+                        quotes: dict[int, upsell.Quote] | None) -> str:
+    """He has ONE unpaid PPV on the table and you may send a SECOND (and FINAL) one:
+    a DIFFERENT piece, or the SAME piece re-priced lower if he's balking on price.
+    After this second one there are two unpaid offers open, so the pitch stops."""
+    plabel = (pend_item.label if pend_item else None) or "it"
+    pprice = int(pending.price_cents or pending.tip_unlock_cents or 0) // 100
+    return (
+        _manifest_block(offerable, scripts, cfg_mode, quotes=quotes or None)
+        + "\n\nSECOND OFFER — you already sent him "
+        f"'{plabel}' for ${pprice} and he hasn't unlocked it yet. You MAY send ONE "
+        "more piece THIS message (your second and last unpaid offer):\n"
+        "- If he wants something different, pitch a DIFFERENT piece from the list "
+        "and end with its >>OFFER line.\n"
+        f"- If he's balking on PRICE, re-tease '{plabel}' at the lower price shown "
+        "for it above and end with its >>OFFER line (a genuine drop, framed as a "
+        "one-time thing for him — never beg).\n"
+        "- If neither fits, DON'T pitch — just keep chatting; never write >>OFFER.\n"
+        "- Do NOT stack a THIRD: only one new offer this message."
+    )
+
+
 def _parse_offer_marker(raw: str) -> tuple[str, int | None]:
     """Extract the FIRST well-formed >>OFFER id, then strip EVERY marker-ish
     line (malformed ones too — a fan must never see the protocol)."""
@@ -928,14 +1101,19 @@ async def _record_offer(account_id: str, fan_id: int, item: CatalogItem,
 
 
 async def _record_vault_sends(account_id: str, fan_id: int, media: list[int],
-                              message_id: int | None, price_cents: int) -> None:
+                              message_id: int | None, price_cents: int,
+                              was_purchased: bool = False) -> None:
+    # price_cents is the price we ASKED (offer-time), NOT proof of purchase — an
+    # offered-but-unbought PPV records price_cents>0 here. Only `was_purchased` (or a
+    # paid Message) means he actually owns it; the dedup relies on that, not on price.
     now = datetime.utcnow()
     async with get_session() as s:
         for mid in media:
             s.add(VaultSend(account_id=str(account_id), fan_id=int(fan_id),
                             media_id=int(mid),
                             message_id=int(message_id) if message_id else None,
-                            price_cents=int(price_cents), sent_at=now))
+                            price_cents=int(price_cents), was_purchased=bool(was_purchased),
+                            sent_at=now))
 
 
 async def _ensure_progress(account_id: str, fan_id: int, item: CatalogItem) -> None:
@@ -1148,8 +1326,11 @@ async def _deliver_unlocked(client, account_id: str, offer: ContentOffer,
             created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
             emit_live=True)
         if by == "tip":
+            # A tip UNLOCK delivered the media free-of-box — he owns it now. Stamp
+            # was_purchased so the dedup never re-offers a tip-bought piece (its
+            # VaultSend price is 0, so price alone would miss it).
             await _record_vault_sends(account_id, int(offer.fan_id), media,
-                                      int(msg_id), 0)
+                                      int(msg_id), 0, was_purchased=True)
     return int(msg_id) if msg_id else None
 
 
@@ -3008,6 +3189,85 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
              {"role": "user", "content": user}], presented)
 
 
+# ── Hot-lead TRINITY (S2→S1→S3) ──────────────────────────────────────────────
+# The operator's main flow for a HOT lead (he's demanding content): escalate and
+# ask for a TIP (S2); if he doesn't tip within a rung gap, ONE direct tip nudge
+# (S1); if still no tip, hand off to the real OFFER engine — a locked PPV with
+# preview + price (S3), NOT a free-text price beg. Gated on hotsell_trinity_enabled
+# (default OFF). Per-fan stage lives in fans.custom_fields[_HOTSELL_KEY] (JSON,
+# no migration), mirroring the _typo_fix throttle's storage.
+_HOTSELL_KEY = "_hotsell"
+_HOTSELL_GAP_S = upsell.RUNG_GAP_S  # min seconds in a stage before advancing (180)
+
+# S2/S1 inject a tip-ask directive as the ai_chatter sell_block. S3 emits NO
+# directive here — the caller lets the normal offer manifest ride so the model can
+# write a real ">>OFFER <id>" (the engine then sends the locked PPV + preview).
+_HOTSELL_S2 = (
+    "HE ASKED TO SEE CONTENT and he's HOT. do NOT slow him down or say 'earn it'. "
+    "MATCH his heat and escalate in ONE short filthy-teasing line, then tell him to "
+    "send you a lil tip right here n you'll send him something — teasing, never "
+    "needy, never the bare word 'tip'.")
+_HOTSELL_S1 = (
+    "he hasn't tipped yet but he's still into it. nudge him ONCE more, direct but "
+    "playful: ONE short line making it easy — send a lil something right here n "
+    "you'll spoil him. NEVER beg, NEVER scold, NEVER shame him for not paying, keep "
+    "it hot.")
+
+
+def _hotsell_advance(stage: str | None, entered_iso: str | None,
+                     tipped_since_cents: int, now: datetime,
+                     gap_s: int = _HOTSELL_GAP_S) -> tuple[str, str | None]:
+    """Pure stage machine → (action, directive). Actions:
+      'paid' → he tipped since entering the stage; exit (clear state).
+      'S2'/'S1' → (re)emit that tip-ask rung's directive; caller persists the stage.
+      'wait' → in a stage but the rung gap hasn't elapsed; hold, don't re-ask.
+      'S3' → gap elapsed after S1 with no tip; hand to the offer engine (no directive).
+    Pure + seedless so it unit-tests without a DB."""
+    if tipped_since_cents > 0:
+        return "paid", None
+    if stage is None:
+        return "S2", _HOTSELL_S2           # first touch: open with escalate+tip-ask
+    try:
+        entered = datetime.fromisoformat(entered_iso) if entered_iso else now
+    except Exception:
+        entered = now
+    if (now - entered).total_seconds() < gap_s:
+        return "wait", None                # too soon to escalate the ask
+    if stage == "S2":
+        return "S1", _HOTSELL_S1           # no tip after the gap → direct nudge
+    return "S3", None                      # S1 (or later) exhausted → real PPV
+
+
+async def _hotsell_load(account_id: str, fan_id: int) -> tuple[str | None, str | None]:
+    """(stage, entered_iso) for this fan, or (None, None)."""
+    async with get_session() as s:
+        fan = (await s.execute(select(Fan).where(
+            Fan.account_id == str(account_id), Fan.fan_id == int(fan_id)))).scalar_one_or_none()
+        cf = json.loads(fan.custom_fields) if fan and fan.custom_fields else {}
+    st = cf.get(_HOTSELL_KEY) or {}
+    return st.get("stage"), st.get("at")
+
+
+async def _hotsell_save(account_id: str, fan_id: int,
+                        stage: str | None, at_iso: str | None) -> None:
+    """Persist (or clear, when stage is None) the fan's hot-sell stage."""
+    async with get_session() as s:
+        fan = (await s.execute(select(Fan).where(
+            Fan.account_id == str(account_id), Fan.fan_id == int(fan_id)))).scalar_one_or_none()
+        if fan is None:
+            return
+        try:
+            cf = json.loads(fan.custom_fields) if fan.custom_fields else {}
+        except Exception:
+            cf = {}
+        if stage is None:
+            cf.pop(_HOTSELL_KEY, None)
+        else:
+            cf[_HOTSELL_KEY] = {"stage": stage, "at": at_iso}
+        fan.custom_fields = json.dumps(cf)
+        await s.commit()
+
+
 # ── The automation ───────────────────────────────────────────────────────────
 
 @register("ai_chatter")
@@ -3129,6 +3389,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # gate never runs, so there is nothing to ride. Guarded here (not just at the call
     # site) so a config with force_ask on and the gate off can't look armed.
     force_ask = bool(cfg.get("force_ask")) and gate_on
+    # Max unpaid PPVs he may hold at once — configurable, but never below the default 2
+    # (the whole point is that a second offer in a row is allowed).
+    max_open_offers = max(_MAX_OPEN_OFFERS, int(cfg.get("max_open_offers") or 0))
+    # How much cheaper the pending piece is re-priced when he haggles (0.10 = 10% off).
+    haggle_pct = float(cfg.get("haggle_discount_pct") or _HAGGLE_DISCOUNT_PCT)
+    # How much off a priced TEASER we RESEND when he balks on it (up to 0.20 = 20%).
+    teaser_disc_pct = min(0.20, float(cfg.get("teaser_discount_pct") or _TEASER_DISCOUNT_PCT))
     # The floor: after this many of his messages with no ask on the table, ask anyway.
     # Rides the gate too — a broke man is never asked, however long he talks.
     ask_after_n = int(cfg.get("ask_after_fan_msgs") or 0) if gate_on else 0
@@ -3606,6 +3873,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Only meaningful with gate_on; it is what `force_ask` rides on, so a
             # forced ask can never reach a fan the gate would have refused.
             gate_ok = False
+            # He EXPLICITLY asked to see/unlock content this turn ("send it", "show me",
+            # "i'll unlock it"). Computed independent of `offerable` because it decides
+            # whether an offer SURVIVES a gate deferral (see the gate-override below) —
+            # it must be known before offerable is (maybe) emptied.
+            explicit_ask = bool(_CONTENT_ASK_RE.search(c.last_body or ""))
+            ask_override = False   # gate deferred but he directly asked → force anyway
             # IS THIS THREAD HOT — a live sexual conversation HE is in? Measured on prod
             # this is a 24.3x lift on the purchase (14.6% of bought PPVs vs 0.6% of
             # unbought), against 1.19x for "was his last line dirty". It is the moment
@@ -3684,12 +3957,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     and fan_ladder.last_paid_at is not None):
                 caps_cfg = {**cfg, "min_fan_msgs_between_offers": 1}
 
+            # He may hold up to _MAX_OPEN_OFFERS unpaid PPVs at once. With exactly one
+            # pending, this turn may send a SECOND (different piece, or the pending one
+            # re-priced if he's balking) — so a fan asking for something else, or
+            # haggling, gets a real answer instead of a stonewall. A 2nd offer rides
+            # close on the 1st's heels, so relax the between-offers spacing for it.
+            open_count = await _open_offer_count(account_id, fan_id) if pending is not None else 0
+            second_offer = pending is not None and open_count < max_open_offers
+            haggling = bool(_HAGGLE_RE.search(c.last_body or ""))
+            if second_offer:
+                caps_cfg = {**caps_cfg, "min_fan_msgs_between_offers": 1}
+
             # seller_off (spec §6): COMPANION / cooldown window live, or bot-accused
             # this turn — the conversation stays ON but NO priced ask, no pending
             # re-tease, no post_buy. The LLM reply below still runs (she talks).
             if seller_off:
                 pass
-            elif pending is not None:
+            elif pending is not None and open_count >= max_open_offers:
+                # Max unpaid PPVs already on the table — stop pitching, just chat.
                 sell_block = _pending_block(pending, await _get_item(int(pending.item_id)))
             elif catalog_items and await _offer_caps_ok(account_id, fan_id, caps_cfg):
                 offerable = await _offerable_for_fan(account_id, fan_id,
@@ -3763,17 +4048,36 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     ), now)
                     if not ok:
                         gate_blocked += 1
-                        # A DECISION (he stopped / tapped out / declined) is final.
-                        # A TIMING problem is not: park the offer so the gate can
-                        # defer revenue instead of only deleting it.
-                        if why in ("low_information", "we_spoke_last", "stale"):
-                            first = (sorted(offerable.items())[0][1]
-                                     if offerable else None)
-                            await _park_pending_offer(account_id, fan_id, first, now)
-                            offers_parked += 1
-                        offerable = {}
-                        log.debug("ai_chatter gate blocked account=%s fan=%s why=%s",
-                                  account_id, fan_id, why)
+                        # EXPLICIT-ASK OVERRIDE: he DIRECTLY asked to see/unlock content
+                        # and he isn't braked (seller_off already caught the broke/
+                        # declined/companion fan, and the 7d spend cap above sets it too).
+                        # The gate's deferral is for thin/quiet threads; on a direct ask,
+                        # sending nothing is the worst outcome. Keep the inventory so the
+                        # ask-trigger forces a REAL PPV — still ownership-checked so we
+                        # never re-sell what he already owns.
+                        if explicit_ask and not seller_off and offerable:
+                            ask_override = True
+                            owned_ov: dict[int, CatalogItem] = {}
+                            for iid, it in offerable.items():
+                                if fan_id in await _owners_of_media(
+                                        account_id, _item_media(it)):
+                                    owned_ov[iid] = it
+                            for iid in owned_ov:
+                                offerable.pop(iid, None)
+                            log.info("ai_chatter explicit-ask gate override "
+                                     "account=%s fan=%s why=%s", account_id, fan_id, why)
+                        else:
+                            # A DECISION (he stopped / tapped out / declined) is final.
+                            # A TIMING problem is not: park the offer so the gate can
+                            # defer revenue instead of only deleting it.
+                            if why in ("low_information", "we_spoke_last", "stale"):
+                                first = (sorted(offerable.items())[0][1]
+                                         if offerable else None)
+                                await _park_pending_offer(account_id, fan_id, first, now)
+                                offers_parked += 1
+                            offerable = {}
+                            log.debug("ai_chatter gate blocked account=%s fan=%s why=%s",
+                                      account_id, fan_id, why)
                     else:
                         gate_ok = True
                         # He qualified — a parked offer (if any) fires NOW, on the
@@ -3811,9 +4115,29 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         quotes[iid] = q
                         priced[iid] = it
                     offerable = priced
+                # SECOND OFFER + he's balking on PRICE → re-price the PENDING piece a
+                # light `haggle_pct` cheaper (default 10%) for the re-tease. A believable
+                # nudge off the number he already saw — never below the $3 OF floor and
+                # always at least $1 under the original — so "a lil lower?" gets a real,
+                # modest discount rather than the same cold quote again.
+                if (second_offer and haggling and pricing_on
+                        and int(pending.item_id) in offerable
+                        and int(pending.item_id) in quotes):
+                    orig = int(pending.price_cents or pending.tip_unlock_cents or 0)
+                    disc = int(round(orig * (1.0 - haggle_pct)))
+                    disc = max(upsell.OF_PRICE_FLOOR_CENTS, min(disc, orig - 1))
+                    if disc > 0:
+                        quotes[int(pending.item_id)] = dataclasses.replace(
+                            quotes[int(pending.item_id)],
+                            price_cents=int(disc), clamped_by="discount")
                 if offerable:
-                    sell_block = _manifest_block(offerable, scripts, cfg_offer_mode,
-                                                 quotes=quotes or None)
+                    if second_offer:
+                        sell_block = _second_offer_block(
+                            pending, await _get_item(int(pending.item_id)),
+                            offerable, scripts, cfg_offer_mode, quotes or None)
+                    else:
+                        sell_block = _manifest_block(offerable, scripts, cfg_offer_mode,
+                                                     quotes=quotes or None)
 
             content_ask = bool(offerable) and bool(
                 _CONTENT_ASK_RE.search(c.last_body or ""))
@@ -3881,9 +4205,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Two independent triggers, both riding the gate and both respecting
             # seller_off — so neither can ever price a man who said he is broke:
             #   • force_ask  — the thread is HOT (24.3x on the purchase). The moment.
+            #   • ask        — he EXPLICITLY asked to see/unlock content this turn and the
+            #                  gate cleared him. Sending nothing (or narrating a phantom
+            #                  "sending it now") on a direct ask is the worst outcome; the
+            #                  ask regex bounds it (not every message), gate_ok means he
+            #                  qualified, and the block below still respects seller_off /
+            #                  the broke-declined pause. Real content beats silence.
             #   • stale_ask  — he has talked this long and nobody has ever asked him for
             #                  anything. The floor.
             _trigger = ("hot" if (force_ask and hot_thread) else
+                        "ask" if (force_ask and content_ask
+                                  and (gate_ok or ask_override)) else
                         "stale" if stale_ask else None)
             # Per-TICK account budget on forced asks. _offer_caps_ok does NOT pace a
             # fan's FIRST offer (its min-msgs branch is skipped when he has no prior
@@ -3892,7 +4224,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # That is a burst of priced sends in one minute, exactly the OF-session shape
             # the per-hour cap exists to prevent, and the per-run snapshot of that cap
             # can't see it. This bounds the blast: the floor drips instead of flooding.
-            if (_trigger and gate_ok and not seller_off
+            if (_trigger and (gate_ok or (_trigger == "ask" and ask_override))
+                    and not seller_off
                     and offer_item is None and offerable
                     and forced_this_tick < _MAX_FORCED_ASKS_PER_TICK):
                 offer_item = _force_pick(offerable, quotes)
@@ -3953,8 +4286,47 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # No `pending is None` guard here either — the convo ladder likewise rides
             # alongside an open PPV (see the hot-teaser note above). A PAID rung still
             # obeys the broke/declined pause brake below.
+            #
+            # TEASER RESEND: he balked on a priced teaser he hasn't unlocked ("cheaper?")
+            # → resend that SAME media up to `teaser_disc_pct` off (max 20%). A believable
+            # one-time drop, not a fresh rung; the rung doesn't climb. Skipped for a broke/
+            # declined fan (seller_off / _leak) exactly like a paid rung.
+            if (teaser is None and haggling and not dry_run and not _leak
+                    and not seller_off and offer_item is None):
+                _prev = await _last_unpaid_teaser(account_id, fan_id)
+                # A resend is a PAID send — obey the broke/declined pause brake, same as
+                # any priced rung, so a man who said he's out is never re-pitched.
+                _lad2 = (fan_ladder if fan_ladder is not None
+                         else (await _load_ladders(account_id, [fan_id])).get(fan_id))
+                _paused2 = (_lad2 is not None and _lad2.offers_paused_until
+                            and _lad2.offers_paused_until > now)
+                # ONLY resend an ORIGINAL teaser rung ($10/$30/$50). A resend's price is
+                # NOT a rung price, so a second haggle can't re-discount it — no spiral.
+                # Hard-sell PPVs (non-rung prices) are re-priced by the offer haggle path,
+                # not here.
+                _rung_prices = {int(r.get("price_cents") or 0)
+                                for r in (convo_teaser_cfg or {}).get("rungs", [])}
+                if (_prev and not _paused2
+                        and _prev["price_cents"] in _rung_prices):
+                    _dp = int(round(_prev["price_cents"] * (1.0 - teaser_disc_pct)))
+                    _dp = max(upsell.OF_PRICE_FLOOR_CENTS,
+                              min(_dp, _prev["price_cents"] - 1))
+                    if 0 < _dp < _prev["price_cents"]:   # strictly cheaper, else stop
+                        _tstate = _tip_reward.teaser_state(f)
+                        _rg = int(_tstate.get("rung") or 0)
+                        teaser = {"media_ids": _prev["media_ids"], "price_cents": _dp,
+                                  "is_free": False, "convo": True, "rung": _rg,
+                                  "next_rung": _rg, "resend": True}
             if (teaser is None and convo_teaser_cfg is not None and not dry_run
                     and not _leak and not seller_off):
+                # Adaptive cadence: if nobody is selling him a PPV (none pending, none
+                # going out this turn), the convo-teaser is his ONLY offer — fire it
+                # SOONER (after ~10 of his msgs). If a PPV is already in play, keep the
+                # configured spacing (20) so we don't pile a teaser on top of a live ask.
+                _tcfg = convo_teaser_cfg
+                if pending is None and offer_item is None:
+                    _tcfg = {**convo_teaser_cfg,
+                             "after": min(int(convo_teaser_cfg.get("after") or 20), 10)}
                 _tstate = _tip_reward.teaser_state(f)
                 _since = None
                 if _tstate.get("at"):
@@ -3965,7 +4337,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 try:
                     _msgs_since = await _fan_msgs_since(account_id, fan_id, _since)
                     teaser = await _tip_reward.pick_convo_teaser(
-                        client, account_id, fan_id, tcfg=convo_teaser_cfg,
+                        client, account_id, fan_id, tcfg=_tcfg,
                         msgs_since_last=_msgs_since, rung=int(_tstate.get("rung") or 0),
                         now=now)
                 except Exception:
@@ -3992,6 +4364,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if style_on and parts:
                 recent_out = [b for d, b in c.messages if d == "out"]
                 parts = _dedupe_lead_reaction(parts, recent_out)
+            # Don't ship his name as a standalone bubble — fold it into a neighbour.
+            parts = _merge_lone_name_bubbles(
+                parts, (resolve_fan_name(f) or "").split("/")[0] if f else "")
             # §6.4 first strike — brush it off in ONE line. A multi-bubble "no really
             # i'm real" reads as protesting-too-much; a single breezy line does not.
             if bot_accused_first and parts:
@@ -4005,14 +4380,26 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # behind it never reaches a fan on a selling account. Strip those
             # bubbles; if nothing survives, skip the reply entirely (silence
             # beats a promise we can't deliver).
+            #
+            # Delivery narration ("sending it now" / "check your dms" / "sent it")
+            # is ALSO a phantom send when nothing actually attaches this turn — she
+            # tells him to go look and there's nothing there. Strip it too, UNLESS
+            # real media rides (a teaser) or an unpaid PPV is already pending (then
+            # "go unlock the one i sent" is true, not a phantom). offer_item is None
+            # here, so a fresh priced PPV never reaches this branch.
             if catalog_items and offer_item is None:
-                priced = [p for p in parts if _unbacked_talk(p)]
+                _phantom = teaser is None and pending is None
+
+                def _bad(p: str) -> bool:
+                    return _unbacked_talk(p) or (_phantom
+                                                 and bool(_DELIVERY_TALK_RE.search(p)))
+                priced = [p for p in parts if _bad(p)]
                 if priced:
                     unbacked_stripped += 1
-                    log.warning("ai_chatter unbacked price/specifics talk stripped "
+                    log.warning("ai_chatter unbacked price/delivery talk stripped "
                                 "account=%s fan=%s bubbles=%r",
                                 account_id, fan_id, priced)
-                    parts = [p for p in parts if not _unbacked_talk(p)]
+                    parts = [p for p in parts if not _bad(p)]
                     if not parts:
                         continue
             # The price THIS fan is quoted for THIS piece. Smart pricing off (or a

@@ -599,8 +599,11 @@ async def convo_teaser_config(account_id: str) -> dict | None:
     for r in (cfg.get("teaser_convo_rungs") or []):
         if not isinstance(r, dict):
             continue
+        # Per-rung image `count` (e.g. $10→1, $30→3, $50→5). 0/absent → fall back to
+        # the ladder-wide teaser_convo_count.
         rungs.append({"folder": str(r.get("folder") or "").strip(),
-                      "price_cents": max(0, int(r.get("price_cents") or 0))})
+                      "price_cents": max(0, int(r.get("price_cents") or 0)),
+                      "count": max(0, int(r.get("count") or 0))})
     return {
         "after": max(1, int(cfg.get("teaser_convo_after_fan_msgs") or 20)),
         "count": max(1, int(cfg.get("teaser_convo_count") or 1)),
@@ -625,7 +628,8 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
     price_cents = max(0, int(r.get("price_cents") or 0))
     if not folder:
         return None
-    count = max(1, int(tcfg.get("count") or 1))
+    # Per-rung image count wins ($10→1, $30→3, $50→5); else the ladder-wide count.
+    count = max(1, int(r.get("count") or 0) or int(tcfg.get("count") or 1))
     by_name = await asyncio.to_thread(_resolve_folders, client, [folder])
     seen = await _seen_media(account_id, fan_id)
     media_ids = await asyncio.to_thread(_gather_unseen, client, [folder], by_name, seen, count)
