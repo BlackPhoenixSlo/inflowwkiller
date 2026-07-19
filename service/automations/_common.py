@@ -447,6 +447,28 @@ STYLE_BRIEF = (
     "things out."
 )
 
+# ── The felt cost of texting (governs everything below it) ────────────
+# Operator's framing, verbatim source intent:
+#   "texting is painful — we write as few words as possible while still saying
+#    all we can. we dont overthink shortening: if typing a little longer is
+#    easier than agonizing over the perfect short line, do that. usually short
+#    works perfectly. writing a little longer JUST to amuse ourselves is worth
+#    it. but if a short text punches the emotion, we take the short one. in
+#    short: typing is painful UNLESS we get positive emotion out of it."
+# Injected at the TOP of the conversational system prompt (of_ai_chat /
+# ai_chatter) as the governing feel, above the mechanical HOW-YOU-TEXT rules.
+PAINFUL_TEXTING = (
+    "THE FEEL OF TEXTING (read first — this governs everything below):\n"
+    "texting is a chore, a little painful, like a real girl half-glued to her "
+    "phone. so you write the LEAST you can while still saying what you actually "
+    "mean. dont labor over the perfect tiny line — if a slightly longer line "
+    "comes out easier than agonizing, thats fine, but usually short just works. "
+    "the ONLY reasons to spend more than the bare minimum: it amuses YOU to, or "
+    "a longer line lands the emotion harder. otherwise every extra word is effort "
+    "you skip. a short line that PUNCHES the feeling beats a long one that "
+    "explains — every single time."
+)
+
 # ── On-platform guardrail (ALWAYS ON — not gated on any opt-in) ───────
 # OF auto-flags any text that arranges off-platform meetings or swaps contact
 # info ("Content referring to off-platform meetings between creators and fans").
@@ -844,6 +866,32 @@ async def load_nonnative_flags(account_id: str) -> dict[str, bool]:
         cfg = await s.get(AccountAiConfig, str(account_id))
     stored = _parse_style_config(getattr(cfg, "style_config_json", None) if cfg else None)
     return {k: _resolve_style_flag(stored, k, nonnative_flag_key(k)) for k in STYLE_AUTOMATIONS}
+
+
+# ── "Fact-grounding" personalization layer (Auto Convo / of_ai_chat) ──
+# When on, of_ai_chat's reply prompt is fed gen_info's rich profile — the short_bio +
+# bullet notes + the team-written teases — plus a "work in ONE specific detail" nudge,
+# the same personalization ai_chatter already carries. Makes a bubble land as "she
+# remembers me" instead of generic. DEFAULT ON: a fan with no profile on file yet is
+# unaffected (the block only appears when there's something to reference), so turning
+# it on can never blank or break a reply.
+FACTGROUND_KEY = "factground_of_ai_chat"
+
+
+async def load_factground_flag(account_id: str) -> bool:
+    """Read account_ai_config.style_config_json → the 'factground_of_ai_chat' bool for
+    Auto Convo's rich-profile personalization. Absent/NULL/parse-error → True (default
+    ON); only an EXPLICIT stored False turns it off."""
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    raw = getattr(cfg, "style_config_json", None) if cfg else None
+    if not raw:
+        return True
+    try:
+        stored = json.loads(raw) or {}
+    except Exception:
+        return True
+    return bool(stored.get(FACTGROUND_KEY, True))
 
 
 # ── "Hard" thumb-typo injector (opt-in, deterministic) ────────────────

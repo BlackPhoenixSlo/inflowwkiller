@@ -82,6 +82,20 @@ function StyleSection({ accountId }: { accountId: string | null }) {
           </span>
         </span>
       </label>
+      <label className="flex items-start gap-2.5 cursor-pointer rounded-lg border border-border bg-bg-elev-1 px-3 py-2.5">
+        <input type="checkbox" className="h-4 w-4 mt-0.5 accent-[var(--accent)] cursor-pointer"
+          checked={form.factground_of_ai_chat ?? true}
+          onChange={(e) => set({ factground_of_ai_chat: e.target.checked })} />
+        <span className="space-y-0.5">
+          <span className="block text-sm">Fact-grounding (Auto Convo)</span>
+          <span className="block text-[11px] text-fg-dim/70">
+            Feeds the info-gather reply his full gen_info profile — bio, notes and the
+            team-written teases — plus a nudge to work in one specific detail, so a reply
+            lands as “she remembers me” instead of generic. On by default; a fan with no
+            profile yet is unaffected.
+          </span>
+        </span>
+      </label>
       <div className="space-y-2">
         <div className="flex items-center gap-3 text-[11px] text-fg-dim/70 pl-0">
           <span className="w-28">Automation</span>

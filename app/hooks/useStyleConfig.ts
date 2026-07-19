@@ -24,6 +24,8 @@ export interface StyleConfig {
   ai_chatter?: boolean;
   // account-wide (not per-automation): strip every emoji at send time
   strip_emojis?: boolean;
+  // Auto Convo (of_ai_chat) rich-profile grounding — default ON
+  factground_of_ai_chat?: boolean;
   // independent thumb-typo injector toggle, per automation
   typos_of_ai_chat?: boolean;
   typos_autoreply?: boolean;
