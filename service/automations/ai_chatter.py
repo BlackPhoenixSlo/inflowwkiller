@@ -76,10 +76,11 @@ from . import rhythm, script_packs, upsell
 from .ppv_send import _owners_of_media, price_bounds
 from ._common import (
     CONTENT_ASK_RE, ESCALATION_RE, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER,
-    ONPLATFORM_GUARDRAIL, STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER,
+    ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING, STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER,
     STYLE_MAX_BUBBLES,
     apply_nonnative_style, apply_word_restriction, coerce_ids, guard_offplatform,
-    hold_with_typing, apply_typo_throttle, load_nonnative_flags, load_style_flags,
+    hold_with_typing, apply_typo_throttle, load_nonnative_flags,
+    load_painful_texting_flag, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags,
     quarantine_if_undeliverable, recent_payer_fans, resolve_fan_name, resolve_model,
     should_skip_muted_creator, skip_unreachable_fan, thread_heat, typing_delay_seconds,
@@ -2745,6 +2746,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     escalation: bool = False,
                     hot_thread: bool = False,
                     bot_accused: bool = False,
+                    painful_on: bool = True,
                     profile: "FanProfile | None" = None,
                     ask_every: int = 0) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — of_ai_chat's girly info-gather prompt
@@ -2973,6 +2975,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         f"{offers_line} "
         "He may send several texts in a row — read them all, reply to "
         "the latest.\n\n"
+        f"{PAINFUL_TEXTING + chr(10) + chr(10) if painful_on else ''}"
         f"{need_block}{dodge_note}{call_him}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         "HOW YOU TEXT (a real 22yo girl, not an assistant):\n"
@@ -3056,6 +3059,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     style_on = (await load_style_flags(account_id))[_PURPOSE]
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]
+    painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     persona = await _load_persona(account_id)
 
@@ -3828,6 +3832,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                               escalation=escalation,
                                               hot_thread=hot_thread,
                                               bot_accused=bot_accused_first,
+                                              painful_on=painful_on,
                                               profile=profiles.get(fan_id),
                                               ask_every=(old_q_every
                                                          if fan_id in old_fan_ids

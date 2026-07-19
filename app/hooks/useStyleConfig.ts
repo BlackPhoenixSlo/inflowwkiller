@@ -26,6 +26,8 @@ export interface StyleConfig {
   strip_emojis?: boolean;
   // Auto Convo (of_ai_chat) rich-profile grounding — default ON
   factground_of_ai_chat?: boolean;
+  // account-wide brevity/emotion framing ("painful texting") — default ON
+  painful_texting?: boolean;
   // independent thumb-typo injector toggle, per automation
   typos_of_ai_chat?: boolean;
   typos_autoreply?: boolean;

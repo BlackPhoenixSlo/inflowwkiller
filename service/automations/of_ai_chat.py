@@ -78,7 +78,7 @@ from ._common import (
     build_facts_note, build_structured_nickname, build_tip_ask_block, coerce_ids,
     facts_from_fan, hold_with_typing, apply_typo_throttle, is_content_ask,
     is_substantive_msg,
-    load_factground_flag,
+    load_factground_flag, load_painful_texting_flag,
     load_nonnative_flags, load_strip_emojis, load_style_flags, load_tip_ask_config,
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
@@ -803,6 +803,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
                     nonnative_on: bool = False,
                     content_ask: bool = False,
                     tip_ask_block: str = "",
+                    painful_on: bool = True,
                     profile: "FanProfile | None" = None) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — a faithful port of V1
     prompts.create_chat_response: a short, GIRLY, 100%-human reply that flirts
@@ -978,7 +979,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "— never sound like a bot or an assistant. Use only what you've learned "
         f"about him; don't share your own info unless he asks; {offer_clause}he may "
         "send several texts in a row — read them all, reply to the latest.\n\n"
-        f"{PAINFUL_TEXTING}\n\n"
+        f"{PAINFUL_TEXTING + chr(10) + chr(10) if painful_on else ''}"
         f"{need_block}{dodge_note}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         "HOW YOU TEXT (a real 22yo girl, not an assistant):\n"
@@ -1344,6 +1345,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
     factground_on = await load_factground_flag(account_id)  # rich-profile grounding (default ON)
+    painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     # Content-ask tip-ask: when a fan asks to SEE content, swap the gather question
@@ -1534,6 +1536,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 persona, f, c, asked, history_tail,
                 style_on=style_on, nonnative_on=nonnative_on,
                 content_ask=is_content_ask(c.last_body), tip_ask_block=tip_ask_block,
+                painful_on=painful_on,
                 profile=profiles.get(fan_id))
             try:
                 res = await llm_client.chat(

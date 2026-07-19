@@ -52,11 +52,12 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from ._common import (
-    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, guard_offplatform,
+    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING, guard_offplatform,
     STYLE_3LINE, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style, apply_word_restriction,
     build_tip_ask_block, hold_with_typing, apply_typo_throttle, is_content_ask,
-    load_nonnative_flags, load_strip_emojis, load_style_flags, load_tip_ask_config,
+    load_nonnative_flags, load_painful_texting_flag,
+    load_strip_emojis, load_style_flags, load_tip_ask_config,
     load_typing_indicator, load_typing_wpm, load_typo_flags, load_hard_skip_ids,
     recent_payer_fans, resolve_fan_name, resolve_model, should_skip_muted_creator,
     skip_unreachable_fan, strip_emojis, typing_delay_seconds,
@@ -145,7 +146,8 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
                     style: str, style_on: bool = False,
                     nonnative_on: bool = False,
                     content_ask: bool = False,
-                    tip_ask_block: str = "") -> list[dict]:
+                    tip_ask_block: str = "",
+                    painful_on: bool = True) -> list[dict]:
     facts = []
     nm = resolve_fan_name(f)
     if nm:
@@ -196,6 +198,7 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         "A fan you've already been chatting with MESSAGED YOU and is waiting for a "
         "reply — keep the conversation going naturally. Reply to his last message "
         "like you just got back to your phone. You are 100% human, never a bot.\n\n"
+        f"{PAINFUL_TEXTING + chr(10) + chr(10) if painful_on else ''}"
         f"{directive}\n\n"
         f"{hard_rules}\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
@@ -376,6 +379,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
+    painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     style_pool = _STYLE_VARIANTS + ((STYLE_3LINE,) if style_on else ())
@@ -506,7 +510,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         content_ask = (not ai_chatter_owns) and is_content_ask(last_in)
         msgs = _build_messages(persona, f, history, style, style_on=style_on,
                                nonnative_on=nonnative_on,
-                               content_ask=content_ask, tip_ask_block=tip_ask_block)
+                               content_ask=content_ask, tip_ask_block=tip_ask_block,
+                               painful_on=painful_on)
         try:
             res = await llm_client.chat(model=model, messages=msgs, purpose=_PURPOSE,
                                         account_id=account_id, fan_id=fid,
