@@ -1296,6 +1296,94 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                 await _mark_interrupted(account_id)
 
 
+# ── Fast freshness poll (30s) ────────────────────────────────────────
+# Layered ON TOP of the 5-min supervisor: one tiny request per online account
+# fetching just the most recent _FAST_PAGE_LIMIT rows, so a PPV unlock / tip
+# lands in the transactions table within ~30s instead of up to 5min. That is
+# what lets ai_chatter's offer watcher clear "waiting on tip" the tick after
+# the fan pays. The supervisor still owns the authoritative 7-day window,
+# relink sweep, orphan attribution, and backfill — this adds none of that.
+_FAST_TICK_INTERVAL_S = 30
+_FAST_PAGE_LIMIT = 10
+
+
+async def run_fast_tick(account_id: str) -> dict:
+    """One freshness poll for one account: fetch the newest _FAST_PAGE_LIMIT
+    transactions (single request, no window, no pagination) and write them
+    idempotently.
+
+    Fully idempotent WITH the 5-min supervisor: _write_one dedups on
+    provider_id (Step 1), so both loops writing the same rows converge and
+    never double-count. The write phase runs under the SAME per-account
+    _tick_locks lock the supervisor uses, so a fast tick and a supervisor tick
+    can't both INSERT the same provider_id concurrently — the second sees the
+    first's committed row and patches instead. The OF fetch happens OUTSIDE the
+    lock so a long backfill holding the lock only delays this account's writes,
+    never the fetch of others."""
+    client = _client_for(account_id)
+    if client is None:
+        return {"rows_inserted": 0, "rows_patched": 0, "error": "no_session"}
+    try:
+        resp = await asyncio.to_thread(
+            client.transactions, limit=_FAST_PAGE_LIMIT, offset=0)
+    except Exception as e:
+        log.debug("ingest_tx_fast_fetch_failed account=%s", account_id, exc_info=True)
+        return {"rows_inserted": 0, "rows_patched": 0, "error": repr(e)}
+    rows = resp.get("list") or []
+    inserted = patched = 0
+    lock = _tick_locks[account_id]
+    async with lock:
+        for raw in rows:
+            try:
+                ins, pat = await _write_one(account_id, raw)
+            except Exception:
+                log.warning("ingest_tx_fast_write_failed account=%s provider=%s",
+                            account_id, raw.get("id"), exc_info=True)
+                continue
+            inserted += ins
+            patched += pat
+    if inserted or patched:
+        log.info("ingest_tx_fast account=%s inserted=%d patched=%d",
+                 account_id, inserted, patched)
+    return {"rows_inserted": inserted, "rows_patched": patched, "error": None}
+
+
+async def start_fast_poll() -> None:
+    """30s freshness loop — see run_fast_tick. Same online-gate and pause
+    respect as the main supervisor (idle dashboards ⇒ no proxy burn; an account
+    the supervisor backed off after 3 fails stays skipped). Sequential per
+    cycle — SQLite WAL serializes writes and we want bounded concurrent OF
+    load. Sleep AT END so the gap is _FAST_TICK_INTERVAL_S regardless of cycle
+    duration."""
+    log.info("ingest_tx_fast_poll_started tick=%ds limit=%d",
+             _FAST_TICK_INTERVAL_S, _FAST_PAGE_LIMIT)
+    while True:
+        try:
+            cycle_started = time.monotonic()
+            account_ids = [
+                m["id"] for m in account_registry.list_accounts()
+                if m.get("has_session")
+            ]
+            online = await _online_account_ids()
+            account_ids = [aid for aid in account_ids if aid in online]
+            for aid in account_ids:
+                if await _is_paused(aid):
+                    continue
+                try:
+                    await run_fast_tick(aid)
+                except Exception:
+                    log.debug(
+                        "ingest_tx_fast_cycle_account_failed account=%s",
+                        aid, exc_info=True)
+            elapsed = time.monotonic() - cycle_started
+            await asyncio.sleep(max(0.0, _FAST_TICK_INTERVAL_S - elapsed))
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.warning("ingest_tx_fast_poll cycle failed", exc_info=True)
+            await asyncio.sleep(_FAST_TICK_INTERVAL_S)
+
+
 async def _online_account_ids() -> set[str]:
     """Union of OF accounts visible to any principal active within the last
     _ONLINE_WINDOW_S seconds.

@@ -19,7 +19,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { mergeOlderPage, mergeTopPage, selectMessages, useChatMessages } from "@/hooks/useChatMessages";
+import { mergeOlderPage, mergeTopPage, orderThread, selectMessages, useChatMessages } from "@/hooks/useChatMessages";
 import type { OFMessage } from "@/lib/relay";
 
 // The hook talks to the relay + an SSE event bus + a perf logger. Stub them all
@@ -202,15 +202,68 @@ describe("mergeOlderPage", () => {
       .toEqual(["1", "2", "3"]);
   });
 
-  it("synthetic rows (optimistic, placeholder, tip) keep their tail position", () => {
+  it("optimistic + mass-placeholder rows keep their tail position", () => {
     const prev = [
       msg(1),
       msg(100),
-      msg(6_000_000_000_000_042, { isTip: true }),
+      msg(5_000_000_000_000_042), // mass placeholder — tail-pinned
       msg(-1, { _tempId: -1, _pending: true }),
     ];
     expect(ids(mergeOlderPage(prev, [msg(50)])))
-      .toEqual(["1", "50", "100", "6000000000000042", "-1"]);
+      .toEqual(["1", "50", "100", "5000000000000042", "-1"]);
+  });
+
+  it("a tip row slots by created_at among the loaded history, not the tail", () => {
+    // A tip dated between msg(1) and msg(100) belongs in the middle — its 6e15
+    // id must not exile it to the bottom (the bug that hid sales on scroll).
+    const prev = [
+      msg(1, { createdAt: "2026-06-01T09:00:00.000Z" }),
+      msg(100, { createdAt: "2026-06-03T09:00:00.000Z" }),
+      msg(-1, { _tempId: -1, _pending: true, createdAt: "2026-06-04T09:00:00.000Z" }),
+    ];
+    const tip = msg(6_000_000_000_000_042, {
+      isTip: true, createdAt: "2026-06-02T09:00:00.000Z",
+    });
+    expect(ids(mergeOlderPage(prev, [tip])))
+      .toEqual(["1", "6000000000000042", "100", "-1"]);
+  });
+});
+
+// orderThread is the canonical ordering primitive both merges delegate to:
+// real rows + ledger tips (6e15) by created_at (id tie-break), optimistic and
+// mass placeholders pinned at the tail.
+describe("orderThread", () => {
+  it("sorts real rows by created_at, id-tie-break on equal timestamps", () => {
+    // Equal timestamps → id order (== time order for real OF rows).
+    const out = orderThread([msg(7), msg(3), msg(5)]);
+    expect(ids(out)).toEqual(["3", "5", "7"]);
+  });
+
+  it("returns the SAME reference when already ordered (structural sharing)", () => {
+    const rows = [msg(3), msg(5), msg(7)];
+    expect(orderThread(rows)).toBe(rows);
+  });
+
+  it("slots a tip into time position and tail-pins optimistic + placeholders", () => {
+    const rows = [
+      msg(10, { createdAt: "2026-06-01T00:00:00.000Z" }),
+      msg(30, { createdAt: "2026-06-03T00:00:00.000Z" }),
+      msg(6_000_000_000_000_001, { createdAt: "2026-06-02T00:00:00.000Z", isTip: true }),
+      msg(5_000_000_000_000_001), // mass placeholder → tail
+      msg(-1, { _tempId: -1 }),   // optimistic → tail
+    ];
+    expect(ids(orderThread(rows))).toEqual([
+      "10", "6000000000000001", "30", "5000000000000001", "-1",
+    ]);
+  });
+
+  it("naive-UTC (zone-less) tip timestamps normalize before comparing", () => {
+    const rows = [
+      msg(20, { createdAt: "2026-06-02T00:00:00.000Z" }),
+      msg(6_000_000_000_000_009, { createdAt: "2026-06-01 00:00:00", isTip: true }),
+    ];
+    // The tip (Jun 1, naive) precedes the Jun 2 real row.
+    expect(ids(orderThread(rows))).toEqual(["6000000000000009", "20"]);
   });
 });
 
@@ -359,13 +412,41 @@ describe("mergeTopPage — mass placeholder band", () => {
     // transaction_ingest._TIP_MSG_ID_BASE synthesizes inline tip bubbles at
     // 6e15+tx.id. They're months-old by design, OF can never corroborate
     // them, and the DB seed is their only render path — both staleness rules
-    // (fresh-covers-later-time AND the 1h ceiling) must leave them alone.
+    // (fresh-covers-later-time AND the 1h ceiling) must leave them alone. And
+    // because the tip predates the fresh page, orderThread slots it BEFORE the
+    // fresh row by created_at (not pinned to the id-sorted tail, which is what
+    // hid March tips below today's chat and made them vanish on scroll-up).
     const oldTip = msg(6_000_000_000_000_042, {
       createdAt: "2026-04-01T09:00:00.000Z", isTip: true,
     });
     const fresh = [msg(60, { createdAt: "2026-07-02T10:00:00.000Z" })];
     expect(ids(mergeTopPage([oldTip], fresh, NOW)))
-      .toEqual(["60", "6000000000000042"]);
+      .toEqual(["6000000000000042", "60"]);
+  });
+
+  it("a tip newer than the fresh page slots AFTER it (time order, not id-tail)", () => {
+    // A tip that arrived after the newest real row belongs at the bottom — but
+    // by TIME, not because its 6e15 id happens to be huge. Prove the position
+    // is driven by created_at: same setup, tip now dated past the fresh row.
+    const newTip = msg(6_000_000_000_000_099, {
+      createdAt: "2026-07-02T10:05:00.000Z", isTip: true,
+    });
+    const fresh = [msg(60, { createdAt: "2026-07-02T10:00:00.000Z" })];
+    expect(ids(mergeTopPage([newTip], fresh, NOW)))
+      .toEqual(["60", "6000000000000099"]);
+  });
+
+  it("a tip BETWEEN two real rows lands in its chronological slot", () => {
+    const tip = msg(6_000_000_000_000_050, {
+      createdAt: "2026-07-02T09:30:00.000Z", isTip: true,
+    });
+    const fresh = [
+      msg(40, { createdAt: "2026-07-02T09:00:00.000Z" }),
+      msg(60, { createdAt: "2026-07-02T10:00:00.000Z" }),
+    ];
+    // Tip sits between the 09:00 and 10:00 messages.
+    expect(ids(mergeTopPage([tip], fresh, NOW)))
+      .toEqual(["40", "6000000000000050", "60"]);
   });
 });
 

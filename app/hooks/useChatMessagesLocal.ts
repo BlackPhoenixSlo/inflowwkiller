@@ -30,7 +30,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { MASS_PLACEHOLDER_END, MASS_PLACEHOLDER_MIN } from "@/hooks/useChatMessages";
+import { MASS_PLACEHOLDER_END, MASS_PLACEHOLDER_MIN, orderThread } from "@/hooks/useChatMessages";
 import { toUtcIso } from "@/hooks/useInboxRealtime";
 import { relay, type OFMessage } from "@/lib/relay";
 
@@ -52,6 +52,7 @@ interface LocalMessageRow {
   media_count: number | null;
   price_cents: number | null;
   is_tip: boolean | null;
+  is_paid: boolean | null;
   is_unsent: boolean | null;
   purchased_at: string | null;
   created_at: string | null;
@@ -105,16 +106,24 @@ export function useChatMessagesLocal(opts: {
  *     richer/authoritative, so we keep them and only PREPEND seed rows the
  *     cache is missing, deduped by id. The seed is older-or-equal history,
  *     so prepending preserves oldest→newest order.
- *  Returns the SAME `prev` reference when nothing is missing, so a no-op
- *  hydration never notifies observers (never fights the patcher). */
+ *  Returns the SAME `prev` reference when nothing is missing AND the existing
+ *  order is already canonical, so a no-op hydration never notifies observers
+ *  (never fights the patcher).
+ *
+ *  Ordering is delegated to orderThread rather than a blind prepend: a seed
+ *  carries ledger-tip rows (6e15 band) whose synthetic id says nothing about
+ *  time, so prepending them stacked every tip at the TOP of the thread. Routing
+ *  through orderThread slots each tip into its true created_at position — and
+ *  also heals a persisted cache that already held the tips at the wrong spot
+ *  (nothing missing, but the order still gets corrected). */
 export function mergeSeedIntoMessages(
   prev: OFMessage[] | undefined,
   seed: OFMessage[],
 ): OFMessage[] {
-  if (!prev || prev.length === 0) return seed;
+  if (!prev || prev.length === 0) return orderThread(seed);
   const have = new Set(prev.map((m) => String(m.id)));
   const missing = seed.filter((m) => !have.has(String(m.id)));
-  return missing.length > 0 ? [...missing, ...prev] : prev;
+  return orderThread(missing.length > 0 ? [...missing, ...prev] : prev);
 }
 
 export function mapRows(
@@ -162,6 +171,10 @@ export function mapRows(
       mediaCount: r.media_count ?? 0,
       price: (r.price_cents ?? 0) / 100,
       isTip: !!r.is_tip,
+      // Ledger-confirmed purchase → render the PPV bubble unlocked without
+      // waiting on OF's `isOpened` (the payouts/ledger tick stamps is_paid
+      // minutes before a fresh OF fetch would echo the unlock).
+      isPaid: !!r.is_paid,
       _side: isOut ? "right" : "left",
     };
     out.push(row);

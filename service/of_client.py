@@ -893,6 +893,54 @@ class OFClient:
             params={"view": view, "limit": limit, "offset": offset},
         )
 
+    def create_vault_list(self, name: str) -> dict:
+        """POST /api2/v2/vault/lists — create a custom vault folder.
+        CONFIRMED wire shape (captured live 2026-07-20): body {"name": <str>} →
+        {id, type:"custom", name, canUpdate, canDelete, ...counts, medias:[]}."""
+        return self.post_json(f"{API_BASE}/vault/lists", json_body={"name": name})
+
+    def add_media_to_vault_list(self, list_id: int, media_ids: list[int]) -> dict:
+        """POST /api2/v2/vault/lists/{id}/media — add media to a folder.
+        CONFIRMED (captured live): body {"mediaIds": [<int>,...]} → updated
+        folder dict with new counts + medias."""
+        return self.post_json(
+            f"{API_BASE}/vault/lists/{int(list_id)}/media",
+            json_body={"mediaIds": [int(m) for m in media_ids]},
+        )
+
+    def rename_vault_list(self, list_id: int, name: str) -> dict:
+        """PATCH /api2/v2/vault/lists/{id} — rename a folder.
+        CONFIRMED (captured live 2026-07-20): body {"name": <str>} → updated dict."""
+        return self.request_json(
+            "PATCH", f"{API_BASE}/vault/lists/{int(list_id)}",
+            json_body={"name": name},
+        )
+
+    def delete_vault_list(self, list_id: int, clear_media: bool = False) -> dict:
+        """DELETE /api2/v2/vault/lists/{id} — delete a folder. CONFIRMED:
+        body {"clearMedia": <bool>} → {"success": true}. `clear_media=False`
+        keeps the media in the vault (only removes the folder)."""
+        return self.delete_json(
+            f"{API_BASE}/vault/lists/{int(list_id)}",
+            json_body={"clearMedia": bool(clear_media)},
+        )
+
+    def sort_vault_lists(self, sort: str = "recent", order: str = "desc") -> dict:
+        """POST /api2/v2/vault/lists/sort — set the folder-list ordering.
+        CONFIRMED: {"sort": "name|recent|media|custom|default", "order": "asc|desc"}."""
+        return self.post_json(
+            f"{API_BASE}/vault/lists/sort",
+            json_body={"sort": sort, "order": order},
+        )
+
+    def set_vault_lists_custom_order(self, list_ids: list[int]) -> dict:
+        """POST /api2/v2/vault/lists/sort — set a manual folder order (drag).
+        CONFIRMED: {"customOrder": [<list_id>,...], "sort": "custom"}."""
+        return self.post_json(
+            f"{API_BASE}/vault/lists/sort",
+            json_body={"customOrder": [int(i) for i in list_ids], "sort": "custom"},
+        )
+
     # ── Payouts: balance + eligibility ─────────────────────────
 
     def payout_balances(self) -> dict:

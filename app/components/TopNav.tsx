@@ -59,6 +59,7 @@ const LINKS: NavLink[] = [
   { href: "/messages",  label: "Messages" },
   { href: "/stats",       label: "Stats"    },
   { href: "/automations", label: "Automations", chatterHidden: true },
+  { href: "/vault",       label: "Vault",       chatterHidden: true },
   { href: "/setup",       label: "Setup",    chatterHidden: true },
   { href: "/settings",    label: "Settings" },
 ];

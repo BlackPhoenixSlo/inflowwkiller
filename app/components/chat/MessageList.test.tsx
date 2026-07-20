@@ -108,3 +108,36 @@ describe("MessageList bubble alignment", () => {
     expect(bubbleBox(container, 20).className).toContain("bg-bg-elev-1");
   });
 });
+
+// The PPV lock pill unlocks on EITHER OF's `isOpened` OR our ledger's
+// `isPaid`. is_paid lands minutes before OF's isOpened echoes on a fresh
+// fetch, so a purchased PPV must not linger "locked" on a cached bubble.
+describe("MessageList PPV unlock (isOpened || isPaid)", () => {
+  function ppv(over: Partial<SeedMsg>): OFMessage {
+    // Inbound so the lock pill + 🔒 tile render (outgoing owns the content).
+    return msg({ id: 30, text: "", price: 29.99, _side: "left",
+      fromUser: { id: 42 }, ...over });
+  }
+
+  it("locked when neither isOpened nor isPaid is set", () => {
+    const { container } = renderWithProviders(
+      <MessageList {...baseProps} messages={[ppv({ isOpened: false, isPaid: false })]} ownerUserId={555} />,
+    );
+    expect(container.textContent).toContain("locked");
+    expect(container.textContent).not.toContain("unlocked");
+  });
+
+  it("unlocks on the ledger's isPaid alone, even when OF still reports isOpened=false", () => {
+    const { container } = renderWithProviders(
+      <MessageList {...baseProps} messages={[ppv({ isOpened: false, isPaid: true })]} ownerUserId={555} />,
+    );
+    expect(container.textContent).toContain("unlocked");
+  });
+
+  it("unlocks on OF's isOpened alone (the pre-existing path still works)", () => {
+    const { container } = renderWithProviders(
+      <MessageList {...baseProps} messages={[ppv({ isOpened: true })]} ownerUserId={555} />,
+    );
+    expect(container.textContent).toContain("unlocked");
+  });
+});

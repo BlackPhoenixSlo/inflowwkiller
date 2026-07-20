@@ -46,7 +46,9 @@ from automations._common import (
     DEFAULT_TIP_ASK_ENABLED, apply_word_restriction, load_hard_skip_ids,
     should_skip_muted_creator,
 )
+import random
 from db.engine import get_session
+from automations import tip_ladder
 from db.models import AccountAiConfig, Fan, TipRewardLog, Transaction, VaultSend
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -108,6 +110,15 @@ _DEFAULTS: dict = {
     "hot_teaser_free_max": 3,              # hard cap on FREE teasers a fan ever gets
     "hot_teaser_paid_folder": "",          # vault folder for proven buyers (priced)
     "hot_teaser_price_cents": 1500,        # price of the paid tease PPV ($15)
+    # ── Price-scaled photo bundle (workstream 3) ─────────────────────────────
+    # When on, a PAID teaser's photo count SCALES with its price by the weight-
+    # budget model (tip_ladder.bundle_plan): budget = price / $10 photos, which
+    # auto-satisfies ≥3-over-$30 / ≥5-over-$50. The free branch sends
+    # `bundle_free_count`. Default OFF → legacy fixed hot_teaser_count unchanged.
+    "bundle_scaling_enabled": False,
+    "bundle_free_count": 1,                # free-branch taste (0 = none)
+    "bundle_cents_per_weight": 1000,       # $10 of ask → 1 weight/photo of budget
+    "bundle_hard_cap": 12,                 # never drain a folder in one send
     # ── Conversational teaser LADDER (SELECTED here, SENT by ai_chatter) ──────
     # Not gated on thread_heat — fires during ORDINARY chat. After every
     # `teaser_convo_after_fan_msgs` of HIS messages (counted since the last teaser),
@@ -117,12 +128,28 @@ _DEFAULTS: dict = {
     # until rungs have folders. Shares the hot-teaser's per-fan state + brakes.
     "teaser_convo_enabled": False,
     "teaser_convo_after_fan_msgs": 20,     # HIS messages between rungs
-    "teaser_convo_count": 1,               # vault items per tease (a single tease)
+    "teaser_convo_count": 1,               # vault items per tease (legacy single-folder)
     "teaser_convo_rungs": [
-        {"folder": "", "price_cents": 0},      # rung 0 — free tease
-        {"folder": "", "price_cents": 1000},   # rung 1 — $10
-        {"folder": "", "price_cents": 5000},   # rung 2 — $50
+        {"folder": "", "price_cents": 0},       # rung 0 — free tease
+        {"folder": "", "price_cents": 1000},    # $10
+        {"folder": "", "price_cents": 4000},    # $40
+        {"folder": "", "price_cents": 8000},    # $80
+        {"folder": "", "price_cents": 12000},   # $120
+        {"folder": "", "price_cents": 16000},   # $160
+        {"folder": "", "price_cents": 20000},   # $200
     ],
+    # ── ADAPTIVE convo teaser (opt-in; ships OFF like the ladder itself) ──────
+    # When on, the ladder climbs ONLY when the teaser she sent actually SELLS
+    # (her own teaser unlock — NEVER an ai_chatter catalog buy), and on a no-buy
+    # it SOFTENS the ask to 65–73% of the last price (floored at 0 → down to a
+    # free tease), holding the rung. Photos come from a price-scaled WEIGHTED
+    # BUNDLE (bundle_plan → the same premium/normal/free tiers the hot teaser
+    # uses) instead of a single folder. Legacy behavior (climb-every-send, single
+    # folder) stays intact when this is off.
+    "teaser_convo_adaptive": False,
+    "teaser_convo_cut_lo": 0.65,           # no-buy soften keeps 65–73% of last ask
+    "teaser_convo_cut_hi": 0.73,
+    "teaser_convo_floor_cents": 0,         # soften floor ($0 → eases to a free tease)
     "tiers": [
         {"name": "basic",   "min_basis_cents": 0,      "folders": []},
         {"name": "mid",     "min_basis_cents": 1000,   "folders": []},   # ≥ $10
@@ -499,7 +526,59 @@ async def hot_teaser_config(account_id: str) -> dict | None:
         "free_max": max(0, int(cfg.get("hot_teaser_free_max") or 0)),
         "paid_folder": str(cfg.get("hot_teaser_paid_folder") or "").strip(),
         "price_cents": max(0, int(cfg.get("hot_teaser_price_cents") or 0)),
+        # Price-scaled bundle knobs (default-off; pick_hot_teaser reads them).
+        "bundle_scaling_enabled": bool(cfg.get("bundle_scaling_enabled")),
+        "bundle_free_count": max(0, int(cfg.get("bundle_free_count") or 0)),
+        "bundle_cents_per_weight": max(1, int(cfg.get("bundle_cents_per_weight") or 1000)),
+        "bundle_hard_cap": max(1, int(cfg.get("bundle_hard_cap") or 12)),
+        # Tier→folder mapping for the composed bundle (reuse the tiers config):
+        # premium = the 'premium' tier's folders, normal = basic+mid, free = the
+        # hot-teaser free folder. Empty lists → that tier contributes nothing.
+        "bundle_premium_folders": _tier_folders(cfg, "premium"),
+        "bundle_normal_folders": _tier_folders(cfg, "basic") + _tier_folders(cfg, "mid"),
+        "bundle_free_folders": [f for f in [str(cfg.get("hot_teaser_free_folder") or "").strip()] if f],
     }
+
+
+def _tier_folders(cfg: dict, tier_name: str) -> list[str]:
+    """The non-empty folder names for the named tier in the `tiers` config."""
+    for t in cfg.get("tiers") or []:
+        if isinstance(t, dict) and str(t.get("name") or "").strip().lower() == tier_name:
+            return [str(f).strip() for f in (t.get("folders") or []) if str(f).strip()]
+    return []
+
+
+def _compose_bundle_ids(client, plan, seen: set[int],
+                        premium_folders: list[str], normal_folders: list[str],
+                        free_folders: list[str]) -> tuple[list[int], dict]:
+    """Pull the plan's premium/normal/free photo ids from their tier folders,
+    deduping across tiers and against `seen`. If a tier is short (empty/exhausted
+    folder), backfill the shortfall from ANY tier so the bundle still reaches
+    plan.total where the vault allows. Returns (media_ids, breakdown). Sync (OF
+    folder reads) — call via to_thread."""
+    taken = set(seen)
+    out: list[int] = []
+
+    def pull(folders: list[str], n: int) -> int:
+        folders = [f for f in (folders or []) if str(f).strip()]
+        if n <= 0 or not folders:
+            return 0
+        by_name = _resolve_folders(client, folders)
+        ids = _gather_unseen(client, folders, by_name, taken, n)
+        for mid in ids:
+            taken.add(mid)
+            out.append(mid)
+        return len(ids)
+
+    gp = pull(premium_folders, plan.premium)
+    gn = pull(normal_folders, plan.normal)
+    gf = pull(free_folders, plan.free)
+    short = plan.total - len(out)
+    if short > 0:
+        pull(list(premium_folders) + list(normal_folders) + list(free_folders), short)
+    weight = gp * tip_ladder.WEIGHT_PREMIUM + gn * tip_ladder.WEIGHT_STANDARD
+    return out, {"premium": gp, "normal": gn, "free": gf,
+                 "total": len(out), "weight": weight}
 
 
 async def pick_hot_teaser(client, account_id: str, fan_id: int, *,
@@ -537,12 +616,44 @@ async def pick_hot_teaser(client, account_id: str, fan_id: int, *,
     else:
         folder = str(tcfg.get("paid_folder") or "").strip()
         price_cents = int(tcfg.get("price_cents") or 0)
+
+    seen = await _seen_media(account_id, fan_id)
+    scaling = bool(tcfg.get("bundle_scaling_enabled"))
+    plan = tip_ladder.bundle_plan(
+        price_cents,
+        cents_per_weight=int(tcfg.get("bundle_cents_per_weight") or 1000),
+        free_count=int(tcfg.get("bundle_free_count") or 0),
+        hard_cap=int(tcfg.get("bundle_hard_cap") or 12),
+    ) if scaling else None
+
+    # PAID + scaling: compose premium/normal/free from the tier folders (a
+    # full-looking set whose value is concentrated in the premium shots). Does
+    # NOT require the single paid_folder — the tiers config supplies the media.
+    if scaling and not is_free:
+        if plan.total <= 0:
+            return None
+        media_ids, breakdown = await asyncio.to_thread(
+            _compose_bundle_ids, client, plan, seen,
+            list(tcfg.get("bundle_premium_folders") or []),
+            list(tcfg.get("bundle_normal_folders") or []),
+            list(tcfg.get("bundle_free_folders") or []),
+        )
+        if not media_ids:
+            return None
+        return {"media_ids": media_ids, "price_cents": int(price_cents),
+                "is_free": False, "folder": "composed", "bundle": breakdown}
+
+    # Otherwise a single-folder pull. Count is the legacy fixed value, or the
+    # bundle TOTAL when scaling is on (the free branch has no tiers to compose).
     if not folder:
         return None
-
-    count = max(1, int(tcfg.get("count") or 1))
+    if scaling:
+        count = plan.total
+        if count <= 0:  # free_count=0 → nothing to send
+            return None
+    else:
+        count = max(1, int(tcfg.get("count") or 1))
     by_name = await asyncio.to_thread(_resolve_folders, client, [folder])
-    seen = await _seen_media(account_id, fan_id)
     media_ids = await asyncio.to_thread(_gather_unseen, client, [folder], by_name, seen, count)
     if not media_ids:
         return None
@@ -576,6 +687,12 @@ async def record_hot_teaser(account_id: str, fan_id: int, *, media_ids: list[int
                 st["free_sent"] = int(st.get("free_sent") or 0) + 1
             if set_rung is not None:
                 st["rung"] = int(set_rung)
+            # Adaptive convo-teaser buy-detection: remember the exact ask + its
+            # message so next turn can ask "did THIS teaser sell?" (Message.is_paid
+            # on this id) — scoped to her own teaser, never an ai_chatter catalog buy.
+            st["last_price"] = int(price_cents or 0)
+            st["last_msg"] = int(message_id) if message_id else None
+            st["last_free"] = bool(is_free)
             cf[_HOT_TEASER_STATE_KEY] = st
             fan.custom_fields = json.dumps(cf)
 
@@ -608,36 +725,107 @@ async def convo_teaser_config(account_id: str) -> dict | None:
         "after": max(1, int(cfg.get("teaser_convo_after_fan_msgs") or 20)),
         "count": max(1, int(cfg.get("teaser_convo_count") or 1)),
         "rungs": rungs,
+        # Adaptive (buy-aware climb / soften) + the weighted-bundle knobs it shares
+        # with the hot teaser. All inert unless teaser_convo_adaptive is on.
+        "adaptive": bool(cfg.get("teaser_convo_adaptive")),
+        "cut_lo": float(cfg.get("teaser_convo_cut_lo") or 0.65),
+        "cut_hi": float(cfg.get("teaser_convo_cut_hi") or 0.73),
+        "floor_cents": max(0, int(cfg.get("teaser_convo_floor_cents") or 0)),
+        "bundle_cents_per_weight": max(1, int(cfg.get("bundle_cents_per_weight") or 1000)),
+        "bundle_free_count": max(0, int(cfg.get("bundle_free_count") or 0)),
+        "bundle_hard_cap": max(1, int(cfg.get("bundle_hard_cap") or 12)),
+        "bundle_premium_folders": _tier_folders(cfg, "premium"),
+        "bundle_normal_folders": _tier_folders(cfg, "basic") + _tier_folders(cfg, "mid"),
+        "bundle_free_folders": [f for f in [str(cfg.get("hot_teaser_free_folder") or "").strip()] if f],
     }
 
 
 async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
                             msgs_since_last: int, rung: int,
+                            last_price_cents: int = 0, last_sold: bool = False,
+                            last_was_free: bool = False, rand: float | None = None,
                             now: datetime | None = None) -> dict | None:
-    """Pure SELECTION for the conversational ladder. Fires only once he has sent
-    `after` messages since his last teaser; picks the CURRENT rung's folder + price
-    (climbing is done by `record_hot_teaser(set_rung=…)` after the send). Returns
-    {media_ids, price_cents, is_free, folder, rung, next_rung, convo:True} or None
-    (not enough messages / no rungs / current rung has no folder / nothing unseen)."""
+    """SELECTION for the conversational ladder. Fires only once he has sent `after`
+    messages since his last teaser.
+
+    LEGACY (tcfg['adaptive'] falsy): picks the CURRENT rung's single folder + price;
+    climbs one rung every send. Byte-for-byte the old behavior.
+
+    ADAPTIVE (tcfg['adaptive'] on): the ladder ($0/$10/$40/$80/$120/$160/$200)
+    moves on WHAT HAPPENED to the last teaser — climb one rung if it SOLD (or was a
+    free tease he received), else SOFTEN to 65–73% of the last ask (floored at
+    floor_cents, holding the rung). Photos come from a price-scaled WEIGHTED BUNDLE
+    (bundle_plan → premium/normal/free tier folders), free rung → a free taste.
+    `last_sold`/`last_price_cents`/`last_was_free` are supplied by the caller from
+    HER OWN teaser's sold state; `rand` is injectable for deterministic tests.
+
+    Returns {media_ids, price_cents, is_free, folder, rung, next_rung, convo:True
+    (+softened/bundle in adaptive)} or None."""
     rungs = tcfg.get("rungs") or []
     if not rungs or msgs_since_last < int(tcfg.get("after") or 0):
         return None
+
+    if not tcfg.get("adaptive"):
+        idx = max(0, min(int(rung or 0), len(rungs) - 1))
+        r = rungs[idx]
+        folder = str(r.get("folder") or "").strip()
+        price_cents = max(0, int(r.get("price_cents") or 0))
+        if not folder:
+            return None
+        # Per-rung image count wins ($10→1, $30→3, $50→5); else the ladder-wide count.
+        count = max(1, int(r.get("count") or 0) or int(tcfg.get("count") or 1))
+        by_name = await asyncio.to_thread(_resolve_folders, client, [folder])
+        seen = await _seen_media(account_id, fan_id)
+        media_ids = await asyncio.to_thread(_gather_unseen, client, [folder], by_name, seen, count)
+        if not media_ids:
+            return None
+        return {"media_ids": media_ids, "price_cents": int(price_cents),
+                "is_free": price_cents == 0, "folder": folder, "rung": idx,
+                "next_rung": min(idx + 1, len(rungs) - 1), "convo": True}
+
+    # ── ADAPTIVE: buy-aware climb / soften, price-scaled weighted bundle ──
     idx = max(0, min(int(rung or 0), len(rungs) - 1))
-    r = rungs[idx]
-    folder = str(r.get("folder") or "").strip()
-    price_cents = max(0, int(r.get("price_cents") or 0))
-    if not folder:
+    prices = [max(0, int((r or {}).get("price_cents") or 0)) for r in rungs]
+    last_px = max(0, int(last_price_cents or 0))
+    first_ever = last_px <= 0 and idx == 0 and not last_sold and not last_was_free
+    softened = False
+    if first_ever:
+        new_idx, price = 0, prices[0]
+    elif last_sold or last_was_free:                 # it landed → climb a rung
+        new_idx = min(idx + 1, len(rungs) - 1)
+        price = prices[new_idx]
+    else:                                            # no buy → soften, hold the rung
+        lo = float(tcfg.get("cut_lo") or 0.65)
+        hi = float(tcfg.get("cut_hi") or 0.73)
+        if lo > hi:
+            lo, hi = hi, lo
+        rv = random.random() if rand is None else float(rand)
+        frac = lo + (hi - lo) * max(0.0, min(1.0, rv))
+        floor = max(0, int(tcfg.get("floor_cents") or 0))
+        price = max(floor, int(round(last_px * frac)))
+        new_idx, softened = idx, True
+
+    if price <= 0:
+        plan = tip_ladder.bundle_plan(0, free_count=max(1, int(tcfg.get("bundle_free_count") or 1)))
+    else:
+        plan = tip_ladder.bundle_plan(
+            price, cents_per_weight=int(tcfg.get("bundle_cents_per_weight") or 1000),
+            free_count=int(tcfg.get("bundle_free_count") or 0),
+            hard_cap=int(tcfg.get("bundle_hard_cap") or 12))
+    if plan.total <= 0:
         return None
-    # Per-rung image count wins ($10→1, $30→3, $50→5); else the ladder-wide count.
-    count = max(1, int(r.get("count") or 0) or int(tcfg.get("count") or 1))
-    by_name = await asyncio.to_thread(_resolve_folders, client, [folder])
     seen = await _seen_media(account_id, fan_id)
-    media_ids = await asyncio.to_thread(_gather_unseen, client, [folder], by_name, seen, count)
+    media_ids, breakdown = await asyncio.to_thread(
+        _compose_bundle_ids, client, plan, seen,
+        list(tcfg.get("bundle_premium_folders") or []),
+        list(tcfg.get("bundle_normal_folders") or []),
+        list(tcfg.get("bundle_free_folders") or []))
     if not media_ids:
         return None
-    return {"media_ids": media_ids, "price_cents": int(price_cents),
-            "is_free": price_cents == 0, "folder": folder, "rung": idx,
-            "next_rung": min(idx + 1, len(rungs) - 1), "convo": True}
+    return {"media_ids": media_ids, "price_cents": int(price),
+            "is_free": price <= 0, "folder": "composed", "rung": new_idx,
+            "next_rung": new_idx, "convo": True, "softened": softened,
+            "bundle": breakdown}
 
 
 @register("tip_reward")

@@ -190,8 +190,16 @@ export function ChatSurface({
   // while `handle` has no data; once OF (or the patcher) populates the
   // real cache it's disabled and never read for rendering again — the
   // hydration effect below copies it across instead.
+  // Always enabled — NOT gated on `handle.isPending`. The `"messages"` cache is
+  // persisted to localStorage (see providers.tsx), so on a popout / repeat-open
+  // isPending is already false and a pending-gated seed would never run — which
+  // is exactly how ledger-synthesized TIP rows (their ONLY render path is this
+  // seed) went missing from the thread. It's one cheap indexed sqlite query
+  // (5-min staleTime, no refetch-on-mount/focus), and the one-time hydration
+  // below only ADDS rows the cache is missing, so the OF fetch / SSE patcher
+  // stay authoritative.
   const seedQ = useChatMessagesLocal({
-    enabled: handle.isPending,
+    enabled: true,
     accountId,
     fanId,
   });

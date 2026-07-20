@@ -86,7 +86,7 @@ export async function fetchAllVaultLists(ctx: RelayContext): Promise<VaultListsR
 
 /** Vault folders / lists. The model can put items into custom folders;
  *  this drives the picker's folder filter dropdown. OF requires `view=main`. */
-export function useVaultLists(accountId: string | null, enabled = true) {
+export function useVaultLists(accountId: string | null, enabled = true, includeEmpty = false) {
   return useQuery<VaultListsResp>({
     queryKey: ["vault-lists", accountId],
     enabled: enabled && !!accountId,
@@ -108,7 +108,11 @@ export function useVaultLists(accountId: string | null, enabled = true) {
       // Only show custom folders — the built-in pseudo-lists like Posts/Stories
       // are useless for picking media to send. media_stickers (Uploads) is
       // built-in too but we leave it; it's where freshly-uploaded items land.
-      list: (d.list ?? []).filter((l: VaultList) => l.type === "custom" && l.hasMedia),
+      // includeEmpty=true keeps empty custom folders too — the manage UI needs
+      // them (rename/delete/add-media), the picker doesn't (can't pick nothing).
+      list: (d.list ?? []).filter(
+        (l: VaultList) => l.type === "custom" && (includeEmpty || l.hasMedia),
+      ),
     }),
   });
 }

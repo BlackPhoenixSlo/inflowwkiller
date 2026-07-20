@@ -21,7 +21,10 @@ import { Library } from "lucide-react";
 import { Button } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
+import { useQueryClient } from "@tanstack/react-query";
+
 import { useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
+import { searchOf, useMirrorItems, useVaultCacheSummary } from "@/hooks/useVaultCache";
 import { useFanVaultHistory, type FanVaultEntry } from "@/hooks/useFanVaultHistory";
 import { useWallMedia } from "@/hooks/useWallMedia";
 import { useBlurMode, blurImageClass } from "@/hooks/useBlurMode";
@@ -239,7 +242,6 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
     () => new Map(),
   );
 
-  const vault = useVaultMedia({ accountId, type, listId, sort, query, enabled: open });
   const listsQ = useVaultLists(accountId, open);
   // Chatter Access (folders): for a RESTRICTED chatter session this is the
   // authoritative folder menu (DA-3). Owners get `restricted: false` (the
@@ -248,6 +250,61 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
   // this only shapes the picker's folder UI so it opens to a usable folder.
   const folderAccessQ = useChatterFolderAccess(accountId, open);
   const restricted = !!folderAccessQ.data?.restricted;
+
+  // ── Cache-first vault source (ADDITION — normal live search is preserved) ──
+  // Once an OWNER has "Collect"-ed this account's vault into the local mirror,
+  // serve the grid + search straight from it: instant open, infinite-scroll
+  // FROM CACHE, and local (of_terms-aware) search. Falls back to the normal
+  // live-OF path when there's no cache — or for a restricted chatter, whose
+  // /admin/vault-ai/* endpoints are owner-gated anyway (so the summary 403s →
+  // cachedCount 0 → live path). Both hooks always mount; only the enabled one
+  // fetches, so this adds a fast path without touching the live one.
+  const qc = useQueryClient();
+  const cacheSummary = useVaultCacheSummary(open ? accountId : null);
+  const cachedCount = cacheSummary.data?.count ?? 0;
+  const useLocalVault = open && !restricted && cachedCount > 0;
+  const vaultLive = useVaultMedia({
+    accountId, type, listId, sort, query,
+    // Fire the live OF path immediately whenever we're NOT on the cache path.
+    // (Deliberately NOT gated on the summary call: under relay load a slow
+    // summary would leave the live query disabled → items:[] → a false
+    // "No media in this filter". For a cached account useLocalVault flips true
+    // within a few ms and the mirror — 8ms — wins the race anyway, so the
+    // worst case is one throwaway OF fetch on the very first cold open.)
+    enabled: open && !useLocalVault,
+  });
+  const vaultMirror = useMirrorItems({
+    accountId, type, query, sort, ofFolderId: listId, enabled: useLocalVault,
+  });
+  const vault = useLocalVault
+    ? ({
+        items: vaultMirror.items,
+        hasMore: vaultMirror.hasMore,
+        isLoading: cacheSummary.isLoading || vaultMirror.isLoading,
+        isFetching: vaultMirror.isFetching,
+        isFetchingNextPage: vaultMirror.isFetching,
+        isPlaceholderData: false,
+        error: null,
+        loadMore: vaultMirror.loadMore,
+        refresh: vaultMirror.refetch,
+      } as typeof vaultLive)
+    : vaultLive;
+
+  // Harvest OF's own vault search for the current query and fold it into the
+  // mirror index (of_terms) so cache search ⊇ OF search — same as the manager.
+  useEffect(() => {
+    if (!useLocalVault || !accountId || !query) return;
+    let cancelled = false;
+    searchOf(accountId, query)
+      .then(() => {
+        if (!cancelled) qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [useLocalVault, query, accountId, qc]);
+
   const allowedFolders = useMemo(
     () => folderAccessQ.data?.folders ?? [],
     [folderAccessQ.data],
@@ -418,6 +475,19 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
   // server can scope cancellation to THIS hover session — a delayed
   // cancel from a previous hover of the same video can't reach into a
   // freshly-started build for the same hash. Empty string when no hover.
+  // Grace before falling back to OF poster frames — see showPosterPreview.
+  // A warm cached storyboard reveals in ~3ms (well under this), so posters
+  // never fetch; a cold one shows them after the grace to cover the build.
+  const [posterGrace, setPosterGrace] = useState(false);
+  useEffect(() => {
+    if (hoveredVideoId == null) {
+      setPosterGrace(false);
+      return;
+    }
+    setPosterGrace(false);
+    const id = window.setTimeout(() => setPosterGrace(true), 250);
+    return () => window.clearTimeout(id);
+  }, [hoveredVideoId]);
   const hoverSessionId = useMemo<string>(() => {
     if (hoveredVideoId == null) return "";
     // crypto.randomUUID is available in every browser we target. Fall
@@ -521,7 +591,23 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
   // cost (~1-3s of ffmpeg on first hit) when the user actually commits.
   const HOVER_DELAY_MS = 400;
   const hoverTimerRef = useRef<number | null>(null);
-  const startHoverIntent = (id: number, duration: number, rawUrl: string | null) => {
+  const startHoverIntent = (
+    id: number,
+    duration: number,
+    rawUrl: string | null,
+    posterUrls?: string[],
+  ) => {
+    // Kick the first poster frame(s) fetch IMMEDIATELY, in parallel with the
+    // dwell — so by the time the preview commits (HOVER_DELAY_MS later) the
+    // frame is already warm in the browser + relay /img cache instead of
+    // paying a ~0.85s cold OF fetch ON TOP of the dwell (the "2s wait").
+    if (posterUrls && typeof Image !== "undefined") {
+      for (const u of posterUrls.slice(0, 2)) {
+        const pre = new Image();
+        pre.decoding = "async";
+        pre.src = u;
+      }
+    }
     if (hoverTimerRef.current != null) window.clearTimeout(hoverTimerRef.current);
     hoverTimerRef.current = window.setTimeout(() => {
       hoverTimerRef.current = null;
@@ -805,6 +891,14 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
             <h2 className="text-base font-semibold inline-flex items-center gap-1.5">
               <Library size={16} aria-hidden />
               Vault
+              {useLocalVault && (
+                <span
+                  className="text-[10px] font-medium text-emerald-400 inline-flex items-center gap-0.5"
+                  title="Served instantly from the local cache (Collect in the Vault manager)"
+                >
+                  ⚡ cached
+                </span>
+              )}
             </h2>
             <p className="text-[11px] text-fg-dim">Click to select · double-click to attach.</p>
           </div>
@@ -986,7 +1080,12 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                 m.files?.squarePreview?.url ||
                 m.files?.preview?.url ||
                 null;
-              const thumb = proxyImage(rawThumb, accountId);
+              // Prefer the relay's PERMANENT cached 300px thumb (present on
+              // mirror/cache-path items as `_thumb`) over the expiring OF CDN
+              // url — instant, signature-free, and no re-fetch/re-cache. Falls
+              // back to the proxied raw url on the live (uncached) path.
+              const cachedThumb = (m as unknown as { _thumb?: string })._thumb;
+              const thumb = cachedThumb || proxyImage(rawThumb, accountId);
               // The playable mp4 — null for DRM-only videos. We do NOT fall
               // back to files.preview.url here: that's a static poster JPEG,
               // and feeding it to <video>/`/img/scrub` is exactly what made
@@ -1011,17 +1110,39 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
               const canScrub =
                 m.type === "video" && isHovering && !!rawVideoSrc && !!accountId;
               // Show poster frames while hovering and either: it's a DRM video
-              // (no ffmpeg possible) OR ffmpeg hasn't finished building yet.
+              // (no ffmpeg possible — posters are the only preview) OR the cached
+              // storyboard hasn't revealed within a short GRACE window. A warm
+              // storyboard flips scrubReady in ~3ms (before the grace), so posters
+              // never fetch — the ~0.7s cold OF poster fetch that made hover feel
+              // like 2s is skipped entirely. A COLD storyboard (uncollected acct,
+              // ffmpeg still building) shows posters after the grace to cover the
+              // build. Decoupled from cache-path detection (that gate mis-fired).
               const showPosterPreview =
-                isHovering && hasPosters && !!accountId && (drmOnly || !scrubReady);
+                isHovering && hasPosters && !!accountId &&
+                (drmOnly || (!scrubReady && posterGrace));
               // Spread the N available poster frames EVENLY across the 12-slot
               // cursor instead of `% N` (which repeats/stutters when N≠12 — e.g.
               // 9 frames replay 0,1,2 on beats 9-11). Maps beat→frame so a
               // 5-frame clip holds each frame ~2-3 beats and a 9-frame clip
               // ~1-2, matching the eventual 12-frame ffmpeg pacing.
+              // Skip poster frame 0 — it's ~the static thumbnail already on the
+              // tile; start the preview on the SECOND frame so hover reveals
+              // something new immediately. Cursor maps into [posterStart..N-1].
+              const posterStart = posterFrames.length > 1 ? 1 : 0;
               const posterIdx = hasPosters
-                ? evenFrameIndex(scrubFrameIdx, posterFrames.length)
+                ? posterStart + evenFrameIndex(scrubFrameIdx, posterFrames.length - posterStart)
                 : 0;
+              // DRM videos serve poster frames from the relay's PERMANENT on-disk
+              // cache (media-id keyed, signature-free). It self-heals: on a miss
+              // it fetches the OF url we pass (`u`) and stores it — so hovering a
+              // DRM video caches its posters even on an UN-collected account (the
+              // cache fills as you browse; Collect just pre-warms everything). Not
+              // gated on cache-mode — works on any owned account.
+              const useCachedPoster = drmOnly && !!accountId;
+              const posterSrcFor = (u: string, idx: number) =>
+                useCachedPoster
+                  ? `/admin/vault-ai/poster?account_id=${encodeURIComponent(accountId!)}&media_id=${m.id}&i=${idx}&u=${encodeURIComponent(u)}`
+                  : proxyImage(u, accountId);
               // Mount the ffmpeg <img>s (hidden) as soon as we hover a
               // progressive video so the background build kicks off — even
               // while posters are the visible layer. The HD frames take over
@@ -1049,7 +1170,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                   onClick={() => toggle(m)}
                   onDoubleClick={() => confirmWith(m)}
                   title="Click to select · double-click to attach"
-                  onMouseEnter={m.type === "video" ? () => startHoverIntent(m.id, m.duration ?? 0, rawVideoSrc) : undefined}
+                  onMouseEnter={m.type === "video" ? () => startHoverIntent(m.id, m.duration ?? 0, rawVideoSrc, drmOnly ? posterFrames.map((u, idx) => posterSrcFor(u, idx)).slice(posterStart) : undefined) : undefined}
                   onMouseLeave={m.type === "video" ? () => cancelHoverIntent(m.id) : undefined}
                   className={cn(
                     "relative aspect-square rounded-md overflow-hidden bg-bg-elev-1",
@@ -1077,6 +1198,10 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                           src={thumb}
                           alt=""
                           aria-hidden
+                          // Cache path = permanent on-disk thumbs → load ALL at
+                          // once, paint as each arrives. Live path stays lazy so
+                          // we don't flood OF with off-screen fetches.
+                          loading={useLocalVault ? "eager" : "lazy"}
                           decoding="async"
                           className={cn(
                             "absolute inset-0 w-full h-full object-cover",
@@ -1092,9 +1217,11 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                        *  is ready. Layered + opacity-toggled so ticking the
                        *  cursor never cancels an in-flight load. */}
                       {showPosterPreview && posterFrames.map((u, idx) => (
+                        // Don't render/fetch frame 0 (the thumbnail-like frame).
+                        idx < posterStart ? null : (
                         <img
                           key={`${m.id}-pf-${idx}`}
-                          src={proxyImage(u, accountId)}
+                          src={posterSrcFor(u, idx)}
                           alt=""
                           aria-hidden={idx !== posterIdx}
                           decoding="async"
@@ -1104,12 +1231,23 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                           onLoad={() => {
                             if (hoveredVideoIdRef.current === m.id) setPosterLoaded(true);
                           }}
+                          onError={useCachedPoster ? (e) => {
+                            // If the cached-poster endpoint isn't up yet (relay
+                            // pre-restart) fall back once to the direct OF url so
+                            // DRM tiles never break — just aren't cached yet.
+                            const img = e.currentTarget;
+                            if (!img.dataset.fellback) {
+                              img.dataset.fellback = "1";
+                              img.src = proxyImage(u, accountId);
+                            }
+                          } : undefined}
                           style={{ opacity: idx === posterIdx ? 1 : 0 }}
                           className={cn(
                             "absolute inset-0 w-full h-full object-cover transition-opacity duration-200",
                             blurCls,
                           )}
                         />
+                        )
                       ))}
                       {/* Gray-state countdown — fine decimal (2.3 → 2.2 → 2.1)
                        *  painted over the thumb base until OF's first poster
@@ -1117,7 +1255,11 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                        *  so it stays up while the slideshow spin starts, then
                        *  commits/unmounts. Distinct from the whole-second HD
                        *  pill (the ffmpeg-upgrade ETA). */}
-                      {showPosterPreview && !posterCommitted && (
+                      {showPosterPreview && !posterLoaded && (
+                        // Only while the FIRST poster frame is genuinely still
+                        // loading — NOT held 500ms past load (posterCommitted),
+                        // which made an already-loaded/cached poster still show a
+                        // "2.5s" countdown for half a second and read as a 2s wait.
                         <div
                           aria-hidden
                           className="absolute inset-0 grid place-items-center pointer-events-none"
@@ -1190,7 +1332,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                     <img
                       src={thumb}
                       alt=""
-                      loading="lazy"
+                      loading={useLocalVault ? "eager" : "lazy"}
                       decoding="async"
                       className={cn("w-full h-full object-cover", blurCls)}
                     />

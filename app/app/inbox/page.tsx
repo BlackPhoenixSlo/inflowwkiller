@@ -73,6 +73,19 @@ export default function InboxPage() {
     let cancelled = false;
     const BG = { priority: "background" as const };
 
+    // Only warm the account you're actually viewing. Warming EVERY account on
+    // Inbox mount fanned a burst of live-OF vault calls (lists + media + wall)
+    // across the whole roster into the relay's shared thread pool. When the
+    // proxy is flaky (OF calls hang to their timeout), that burst starves the
+    // pool and the foreground chat fetches queue behind it — the app-wide lag.
+    // In unified ("all") scope we skip the mount warm entirely and let the
+    // VaultPicker warm lazily on first open, so nothing blocks user actions.
+    const warmTargets =
+      scope.kind === "model"
+        ? accounts.filter((a) => a.id === scope.accountId)
+        : [];
+    if (warmTargets.length === 0) return;
+
     // Cheap idle gate so a quick bounce through Inbox doesn't fire the
     // warmup at all. requestIdleCallback (or rAF fallback) waits for the
     // route to actually be settled before scheduling the first wave —
@@ -142,7 +155,7 @@ export default function InboxPage() {
       if (cancelled) return;
       r1 = ric(() => {
         if (cancelled) return;
-        void Promise.all(accounts.map((a) => warmAccount(a.id)));
+        void Promise.all(warmTargets.map((a) => warmAccount(a.id)));
       });
     }, 1500);
 
@@ -150,7 +163,7 @@ export default function InboxPage() {
       if (cancelled) return;
       r2 = ric(() => {
         if (cancelled) return;
-        void Promise.all(accounts.map((a) => warmWallMedia(a.id)));
+        void Promise.all(warmTargets.map((a) => warmWallMedia(a.id)));
       });
     }, 15_000);
 
@@ -161,7 +174,7 @@ export default function InboxPage() {
       if (r1 != null) cic(r1);
       if (r2 != null) cic(r2);
     };
-  }, [accounts, qc]);
+  }, [accounts, qc, scope]);
 
   // Below lg (1024px): single-pane flow. The AccountRoster is hidden
   // (scope switching is reachable from TopNav), and the chat list ↔ chat

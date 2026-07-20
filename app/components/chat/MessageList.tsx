@@ -593,7 +593,11 @@ function Bubble({
   // price tag + lock-state for both sides — outbound so the chatter
   // can see what they sent, inbound (rare; only on tip-back) for parity.
   const isPPV = !!msg.price && msg.price > 0;
-  const unlocked = isPPV && !!msg.isOpened;
+  // Unlocked when EITHER OF reports it opened OR our ledger confirmed the
+  // purchase (is_paid). The ledger stamp lands minutes before OF's isOpened
+  // echoes back on a fresh fetch, so this makes a paid PPV unlock on the spot
+  // instead of lingering "locked" on a cached bubble.
+  const unlocked = isPPV && (!!msg.isOpened || !!msg.isPaid);
   // Outgoing PPV: we (the sender) own the content, so show thumbnails
   // even when the fan hasn't paid. Only incoming locked PPV shows the 🔒 tile.
   const locked = isPPV && !unlocked && !(isOutgoing || isOptimisticOutgoing);

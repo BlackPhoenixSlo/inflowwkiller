@@ -379,6 +379,12 @@ export interface OFMessage {
   changedAt?: string;
   isFree?: boolean;
   isOpened?: boolean;
+  /** Ledger-confirmed purchase, stamped by our transaction ingest onto the
+   *  local `messages` row (`is_paid`). A second unlock signal ALONGSIDE OF's
+   *  `isOpened`: the payouts ledger flips this minutes before a fresh OF fetch
+   *  would echo `isOpened`, so the PPV bubble can render unlocked immediately.
+   *  Carried by the DB seed (/admin/messages); OF's live payload omits it. */
+  isPaid?: boolean;
   /** OF echoes a heart-react on chat messages via `isLiked`. We toggle
    *  it locally for optimistic feedback; the next message-list refetch
    *  reconciles with truth. */
