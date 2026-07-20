@@ -331,6 +331,55 @@ export function selectMessages(list: OFMessage[], now: number = Date.now()): OFM
   return changed ? out : list;
 }
 
+/** Canonical thread order: everything a real timestamp can place (real OF
+ *  rows AND ledger-synthesized tip rows, 6e15 band) sorted oldest→newest by
+ *  created_at; rows that represent "just now" or an in-flight bridge —
+ *  optimistic sends (id ≤ 0) and mass placeholders (5e15 band) — stay pinned
+ *  at the tail in their existing relative order.
+ *
+ *  Why a time sort and not id order: OF ids are time-ordered for REAL rows,
+ *  but tip rows carry a SYNTHETIC id (6e15 + tx.id) that encodes nothing about
+ *  time — id-ordering pinned every tip to the bottom of the thread, so a $50
+ *  tip from March rendered below today's chat and vanished on scroll-up. The
+ *  SSE patcher already positions live rows by created_at (insertByCreatedAt);
+ *  this makes the HTTP fetch/merge path agree instead of fighting it.
+ *
+ *  The sort is STABLE on the input's existing order (arrival index tie-break),
+ *  so real rows fed in id-order keep that order on a created_at tie — the
+ *  common case is a no-op reorder. Returns the SAME array reference when
+ *  nothing moved, so React Query's structural sharing sees no spurious change. */
+export function orderThread(rows: OFMessage[]): OFMessage[] {
+  const timed: OFMessage[] = [];
+  const tail: OFMessage[] = [];
+  for (const m of rows) {
+    const id = Number(m.id);
+    // Time-positioned: real OF rows (0 < id < 5e15) and ledger tips (≥ 6e15).
+    // Tail-pinned: optimistic (id ≤ 0) and mass placeholders (5e15..6e15).
+    const timePositioned =
+      (Number.isFinite(id) && id > 0 && id < MASS_PLACEHOLDER_MIN) ||
+      id >= MASS_PLACEHOLDER_END;
+    (timePositioned ? timed : tail).push(m);
+  }
+  // Sort by created_at; tie-break by numeric id so rows sharing a timestamp
+  // fall in id order (for real rows that IS time order — this reproduces the
+  // old id-ordering exactly whenever timestamps collide, e.g. same-second
+  // bursts — and drops a same-second tip just after the messages it followed).
+  timed.sort((a, b) => {
+    const ta = Date.parse(toUtcIso(a.createdAt));
+    const tb = Date.parse(toUtcIso(b.createdAt));
+    const da = Number.isFinite(ta) ? ta : 0;
+    const db = Number.isFinite(tb) ? tb : 0;
+    return da !== db ? da - db : Number(a.id) - Number(b.id);
+  });
+  const out = [...timed, ...tail];
+  // Same-reference fast path: bail if the sort left everything where it was.
+  let moved = out.length !== rows.length;
+  for (let i = 0; !moved && i < out.length; i++) {
+    if (out[i] !== rows[i]) moved = true;
+  }
+  return moved ? out : rows;
+}
+
 /** Merge a freshly-fetched top page (newest `PAGE_SIZE`, oldest→newest) into
  *  the existing cache without discarding load-older pages or in-flight
  *  optimistic rows. `fresh` wins for any overlapping id. A cached row not in
@@ -399,8 +448,10 @@ export function mergeTopPage(
     if (id > 0 && id <= maxFreshId) continue;  // deleted/unsent on OF → drop
     tail.push(m);  // newer-than-page race row, or optimistic (id ≤ 0)
   }
-  if (older.length === 0 && tail.length === 0) return fresh;
-  return [...older, ...fresh, ...tail];
+  // orderThread pulls any tip rows (6e15 band) out of the `tail` bucket into
+  // their chronological slot; real rows and the just-now tail keep their order.
+  if (older.length === 0 && tail.length === 0) return orderThread(fresh);
+  return orderThread([...older, ...fresh, ...tail]);
 }
 
 /** Merge a load-older page into the cache, keeping oldest→newest order even
@@ -409,25 +460,17 @@ export function mergeTopPage(
  *  The old blind-prepend assumed every fetched-older row predated the whole
  *  cache, which scrambled order the moment the cursor walked a gap.
  *
- *  Real OF ids are time-ordered, so real rows (0 < id < placeholder band) are
- *  sorted by id. Synthetic rows — optimistic sends (id ≤ 0), mass placeholders
- *  (5e15 band), ledger tips (6e15 band) — keep their existing tail position in
- *  original relative order; their ids don't encode time, so id-sorting them
- *  would teleport them. For the common no-gap case the sort is a no-op
- *  reorder-wise. Returns `prev` unchanged when the page brings nothing new. */
+ *  Ordering is delegated to orderThread: real rows + ledger tips (6e15 band)
+ *  sort by created_at (with an id tie-break that reproduces id-ordering for
+ *  same-timestamp real rows), while optimistic sends (id ≤ 0) and mass
+ *  placeholders (5e15 band) keep their tail position. For the common no-gap
+ *  case the sort is a no-op reorder-wise. Returns `prev` unchanged when the
+ *  page brings nothing new. */
 export function mergeOlderPage(prev: OFMessage[], older: OFMessage[]): OFMessage[] {
   const have = new Set(prev.map((m) => String(m.id)));
   const dedup = older.filter((m) => !have.has(String(m.id)));
   if (dedup.length === 0) return prev;
-  const real: OFMessage[] = [];
-  const synthetic: OFMessage[] = [];
-  for (const m of [...prev, ...dedup]) {
-    const id = Number(m.id);
-    if (Number.isFinite(id) && id > 0 && id < MASS_PLACEHOLDER_MIN) real.push(m);
-    else synthetic.push(m);
-  }
-  real.sort((a, b) => Number(a.id) - Number(b.id));
-  return [...real, ...synthetic];
+  return orderThread([...prev, ...dedup]);
 }
 
 /** Merge optimistic media's `files` into a server response — OF's CDN

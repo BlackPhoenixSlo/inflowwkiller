@@ -1,48 +1,82 @@
-# ---- secrets (NEVER commit) ----
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
 .env
-service/.env
-.session_secret
-.chatter_secret
-service/.session_secret
-service/.chatter_secret
+
+# OS
+.DS_Store
+
+# Node
+node_modules/
+.next/
+dist/
+
+# Local state — anything containing real session data, account data, or secrets
+service/proxies.json
+service/secrets.json
+service/chatterly.db
+service/chatterly.db-journal
+service/chatterly.db-wal
+service/chatterly.db-shm
+service/chatterly.db.bak*
+service/chatterly.db.devbak*
+*.devbak.*
+service/sessions/
+service/storyboard_cache/
+.run_public/
+onlystackAPP/
+
+# Secrets / one-off captures
+# Google Sheets OAuth client + cached token for the push_to_sheets automation
+# (A04). credentials.json holds a client_secret; token.json a live refresh/access
+# token — never commit either, from repo root or service/.
 credentials.json
 token.json
 service/credentials.json
 service/token.json
-
-# ---- local DB + state (lives on the host / VPS, not in git) ----
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
-*.db.*
-*.sqlite
-service/sessions/
-service/proxies.json
-service/secrets.json
-service/storyboard_cache/
-
-# ---- build / deps ----
+claudflaretoken
+my_Curl_session.example
+of_calls_tail.txt
+errors
+bookmark_error_curl
 __pycache__/
-*.pyc
-*.pyo
-.venv/
-venv/
-node_modules/
-app/node_modules/
-app/.next/
-app/.turbo/
 
-# ---- editor / OS ----
-.DS_Store
-.idea/
-.vscode/
+# Large local DB / session snapshots — never commit (100s of MB, contain live data)
+*.bak
+service/*.pre_*
+service/sessions.*.tar.gz
+chatterly.db.pre_*
 
-# ---- network captures / dumps (contain live cookies/PII) ----
+# HAR network captures — large + contain live session cookies/tokens/PII
 *.har
 
-# ---- graphify build cache (regenerable; graph.json + GRAPH_REPORT.md ARE committed) ----
-graphify-out/cache/
+# Legacy reference dump (336MB, includes credentials.json) — local-only
+OF_AUTOMATIONV1/
 
-# internal planning artifacts (never sync)
-.omc/
+# Local Claude Code config (machine-specific settings + skills)
+.claude/
+
+# graphify build cache (regenerable; graph.json + GRAPH_REPORT.md ARE committed)
+service/graphify-out/cache/
+
+# Settings export/import backups (local dev preimages — contain account settings; never commit)
+service/data/settings_backups/
+# Forge runtime DBs (state, not code; .omc/plans/*.md ARE committed)
+.omc/forge.db
+.omc/forge.db-*
+
+# Local sim/scratch harnesses + prod-data replays (never commit — throwaway)
+service/chatterly.sandbox.db
+service/_sim_*.py
+service/_live_*.py
+service/_probe_*.py
+service/_verify_*.py
+service/_apply_*.py
+service/_dirk*.txt
+service/_dirk*.out
+service/_dirk_full_section.md
+CONVO_RUNS.md
+DIRK_FULL_CONVO.md
+wholeDIRKCHAT

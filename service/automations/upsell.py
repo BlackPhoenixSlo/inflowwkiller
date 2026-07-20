@@ -425,7 +425,8 @@ def next_price(*, fan: FanState, band: tuple[int, int], last_paid_cents: int | N
                library_bounds: tuple[int, int],
                stated_cap_cents: int | None = None,
                escalation_mult: float | None = None,
-               max_ask_vs_history_mult: float | None = None) -> Quote | None:
+               max_ask_vs_history_mult: float | None = None,
+               proven_floor_cents: int = 0) -> Quote | None:
     """The price for the next rung — or None, meaning DO NOT OFFER THIS ITEM.
 
     `return None` is the load-bearing line in this module. The obvious design applies
@@ -465,7 +466,14 @@ def next_price(*, fan: FanState, band: tuple[int, int], last_paid_cents: int | N
         caps.append((int(stated_cap_cents * 1.6), "stated_cap"))
     ceiling, ceiling_src = min(caps, key=lambda c: c[0])
 
-    floor = max(lo, lo_b, OF_PRICE_FLOOR_CENTS)
+    # PROVEN-SPEND FLOOR: a fan who has already paid $X should not be re-offered a
+    # CHEAPER item — the ladder climbs by unlocking BETTER items, so an item priced
+    # below what he proved he'll pay yields NO OFFER here and the selector moves up
+    # a tier (a $50 buyer gets the $60 video, not the $24 set re-run at cold-open
+    # lows). Unlike the stated cap, this floor is INTENTIONAL and only ever raises
+    # the floor for a PROVEN buyer; it's opt-in (default 0 → old behavior). If it
+    # can't survive the ceiling the item is simply skipped, never discounted.
+    floor = max(lo, lo_b, OF_PRICE_FLOOR_CENTS, int(proven_floor_cents or 0))
     if ceiling < floor:
         return None                      # not qualified for THIS item. Do not discount it.
 

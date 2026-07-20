@@ -659,10 +659,139 @@ class VaultItem(Base):
     raw_json: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
+    # ── Vault-AI mirror + describe layer (added 0046) ──────────────
+    # All nullable so init_db's boot ADD-COLUMN catch-up applies them on a
+    # create_all-built DB whose alembic_version lags (house convention).
+    #
+    # Cache/mirror bookkeeping. `search_text` is the denormalised, lower-cased
+    # blob (tags + description + video_description + notes) we LIKE-scan for
+    # instant LOCAL search once the vault is collected. `of_folder_ids` is a
+    # JSON int array of the OF vault-list ids this item belongs to (filled by
+    # the per-folder pass) so folder filtering is local too. `updated_at_of`
+    # holds OF's own updatedAt when present; `last_seen_run_id` is bumped every
+    # collect sweep so a vanished item can be soft-deleted after two clean runs.
+    search_text: Mapped[str | None] = mapped_column(Text)
+    # OF-search terms this item matched (harvested from OF's own vault search so
+    # our local search is a superset of OF's). Folded into search_text too.
+    of_terms: Mapped[str | None] = mapped_column(Text)
+    of_folder_ids: Mapped[str | None] = mapped_column(Text)
+    content_hash: Mapped[str | None] = mapped_column(String)
+    content_hash_kind: Mapped[str | None] = mapped_column(String)
+    updated_at_of: Mapped[str | None] = mapped_column(String)
+    last_seen_run_id: Mapped[int | None] = mapped_column(BigInteger)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    # Per-folder manual ordering. Signed: 0 = absolute first, 1,2,3… pinned
+    # from the front, -1 = absolute last, -2,-3… from the back; NULL = normal
+    # sort. Toggled per folder in the UI.
+    manual_order: Mapped[int | None] = mapped_column(Integer)
+
+    # AI describe output (Qwen3-VL). Effective value = locked override >
+    # override > AI field > legacy column; operator edits win and lock.
+    video_description: Mapped[str | None] = mapped_column(Text)
+    explicitness_tier: Mapped[str | None] = mapped_column(String)
+    story_suitable: Mapped[bool | None] = mapped_column(Boolean)
+    tip_vault_flag: Mapped[bool | None] = mapped_column(Boolean)
+    suggested_caption: Mapped[str | None] = mapped_column(Text)
+    suggested_script: Mapped[str | None] = mapped_column(Text)
+    describe_status: Mapped[str | None] = mapped_column(String)
+    describe_generated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    describe_model: Mapped[str | None] = mapped_column(String)
+    describe_call_id: Mapped[int | None] = mapped_column(BigInteger)
+    frames_sampled: Mapped[int | None] = mapped_column(Integer)
+    ai_fields_json: Mapped[str | None] = mapped_column(Text)
+    operator_overrides_json: Mapped[str | None] = mapped_column(Text)
+    locked_fields_json: Mapped[str | None] = mapped_column(Text)
+    review_state: Mapped[str | None] = mapped_column(String)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    reviewed_by: Mapped[str | None] = mapped_column(String)
+
     __table_args__ = (
         Index("ix_vault_account_created", "account_id", "created_at"),
         Index("ix_vault_account_send", "account_id", "send_count"),
+        Index("ix_vault_account_seen", "account_id", "last_seen_run_id"),
+        Index("ix_vault_account_describe", "account_id", "describe_status"),
     )
+
+
+class VaultCacheRun(Base):
+    """One "Collect all" sweep of the OF vault into the `vault_items` mirror.
+
+    Drives the button's progress UI and gives soft-delete the "two clean
+    sweeps agreed" guard (trap 4): only items whose `last_seen_run_id` lags
+    two completed runs are candidates for removal, so a mid-upload page shift
+    can't false-delete. `status` ∈ running|done|error|canceled.
+    """
+    __tablename__ = "vault_cache_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, default="running")
+    phase: Mapped[str | None] = mapped_column(String)
+    total_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    upserted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pages_done: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = _ts_now()
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (Index("ix_vault_cache_runs_account", "account_id", "started_at"),)
+
+
+class VaultFolder(Base):
+    """An INTERNAL vault folder (our own, not OF's vault-list). Lets the
+    operator organize the mirror — new folder, select media, add to folder,
+    reorder — with zero OF writes (OF-mirror is a separate, later concern).
+    `of_list_id` is NULL until/unless the folder is mirrored to OF.
+    """
+    __tablename__ = "vault_folders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    of_list_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_by: Mapped[str] = mapped_column(String, nullable=False, default="operator")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (Index("ix_vault_folders_account", "account_id", "deleted_at"),)
+
+
+class VaultFolderItem(Base):
+    """Membership of a media item in an INTERNAL vault folder, with a
+    per-folder `manual_order` (0 = first, 1,2,3… from front, -1 = last,
+    -2,-3… from back, NULL = normal order) so videos can be ordered inside a
+    folder independently of the global vault order."""
+    __tablename__ = "vault_folder_items"
+
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    folder_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    media_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    manual_order: Mapped[int | None] = mapped_column(Integer)
+    added_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (Index("ix_vault_folder_items_folder", "account_id", "folder_id"),)
+
+
+class VaultOfQueryLog(Base):
+    """Which OF vault-search queries we've already harvested (so we don't re-hit
+    OF every keystroke). TTL'd; on a fresh hit the terms already live in each
+    matched item's `of_terms`/`search_text`, so the local search is instant."""
+    __tablename__ = "vault_of_query_log"
+
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    query: Mapped[str] = mapped_column(String, primary_key=True)
+    match_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fetched_at: Mapped[datetime] = _ts_now()
 
 
 class VaultResponseCache(Base):

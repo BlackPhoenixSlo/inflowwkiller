@@ -69,7 +69,7 @@ from db.models import (
     RhythmState, ScheduledJob, SkipList, Transaction, VaultSend,
 )
 from llm_client import LLMCapExceeded
-from . import rhythm, script_packs, upsell
+from . import rhythm, script_packs, tip_ladder, upsell
 # ppv_send owns the ONE price authority (`price_bounds`) and the ONE ownership
 # check (`_owners_of_media`, keyed on MEDIA — a fan who bought a clip in a mass
 # blast has no content_offers row at all). Importing them rather than growing a
@@ -157,6 +157,34 @@ _DEFAULTS: dict = {
     "sla_minutes": 10,                   # backup: how slow is "slow"
     "max_lifetime_spend_cents": 100_000, # the whale gate ($1000)
     "offer_mode": "both",                # M3: "tip" | "ppv" | "both"
+    # Tip ladder (workstream 3): TIP-ONLY offers get an INDEPENDENT adaptive ask
+    # (escalate when he unlocked his last tip, soften 40–60% when he didn't,
+    # floored at his biggest-ever tip) instead of riding the PPV quote. Needs
+    # smart_pricing_enabled on (that's what builds the quote it overrides).
+    # Ships DARK: default off, zero behavior change until an account opts in.
+    "tip_ladder_enabled": False,
+    "tip_ladder_base_cents": 1000,       # opening ask for a fan with no tip history
+    "tip_ladder_step": 2.0,              # escalation ×2 after he tips (10→20→40→80…)
+    # No-bite haircut keeps ~65–73% of the last ask (a gentle step DOWN, not a
+    # collapse): $120 → ~$78–88, so he's re-offered lower but still premium. The
+    # image bundle follows the softened price (price/$10 → ~9 photos at $88).
+    "tip_ladder_cut_lo": 0.65,
+    "tip_ladder_cut_hi": 0.73,
+    "tip_ladder_floor_cents": 500,       # never ask below this ($5)
+    # Cap: the account's PPV-library MAX, hard-limited to $200 (OF wire max). The
+    # effective cap is computed per-run from the library bounds; this static value
+    # is only the fallback when no library is configured.
+    "tip_ladder_cap_cents": 20000,
+    # Proven-spend price floor (workstream 3 / Dirk fix): a fan who already PAID
+    # $X is never re-offered a cheaper item — the ladder climbs to the next tier
+    # (a $50 buyer gets the $60 video, not the $24 set re-run at cold-open lows).
+    # Ships DARK: default off, zero behavior change until an account opts in.
+    "proven_spend_floor_enabled": False,
+    "proven_spend_floor_mult": 0.38,     # floor = biggest single paid × this.
+                                         # 0.38 skips the cheapest sets (Dirk: no
+                                         # more $24 ask → cheapest ≈ $30) WITHOUT
+                                         # clamping every ask up to his ceiling —
+                                         # keeps mid-tier room to convert.
     "max_offers_per_fan_per_day": 2,     # M3
     "min_fan_msgs_between_offers": 4,    # M3
     "pivot_on_escalation": True,         # closer pivots tease→offer when the fan
@@ -1202,6 +1230,50 @@ async def _message_is_paid(account_id: str, message_id: int) -> bool:
     return bool(v)
 
 
+async def _ppv_txn_since(account_id: str, fan_id: int, since: datetime,
+                         price_cents: int) -> bool:
+    """True when a `ppv_message` transaction for this fan landed since `since`
+    at (about) `price_cents` — the ledger-side unlock signal that survives the
+    payment→message linker REFUSING to link. That linker (transaction_ingest.
+    _select_ppv_link_candidate) demands an unambiguous same-priced message and
+    bails 'ambiguous' whenever the fan has >1 unpaid PPV at that price, so it
+    never flips messages.is_paid and `_message_is_paid` stays False forever.
+    Here the offer's own offered_at scopes the window, so the price equality
+    that is ambiguous GLOBALLY (which of his same-priced PPVs?) is decisive for
+    THIS offer. Tolerance mirrors the ingest fingerprint (max(10c, 1%)) for OF
+    fee/VAT rounding."""
+    if price_cents <= 0:
+        return False
+    tol = max(10, price_cents // 100)
+    async with get_session() as s:
+        row = (await s.execute(
+            select(Transaction.id).where(
+                Transaction.account_id == str(account_id),
+                Transaction.fan_id == int(fan_id),
+                Transaction.kind == "ppv_message",
+                Transaction.status.in_(("cleared", "pending")),
+                Transaction.occurred_at >= since,
+                Transaction.amount_cents >= price_cents - tol,
+                Transaction.amount_cents <= price_cents + tol).limit(1)
+        )).first()
+    return row is not None
+
+
+async def _flip_message_paid(account_id: str, message_id: int) -> None:
+    """Mark one outbound PPV paid (idempotent). Mirrors the flip inside
+    `_fastpath_check_opened`; used when the ledger-txn path resolves an offer the
+    global linker left unlinked, so bought-media dedup and every other is_paid
+    reader converge on the truth instead of re-offering a piece he already owns."""
+    now = datetime.utcnow()
+    async with get_session() as s:
+        await s.execute(update(Message).where(
+            Message.account_id == str(account_id),
+            Message.message_id == int(message_id),
+            or_(Message.is_paid.is_(False), Message.is_paid.is_(None)))
+            .values(is_paid=True, purchased_at=now))
+        await s.commit()
+
+
 async def _fan_active_recently(account_id: str, fan_id: int, minutes: int) -> bool:
     since = datetime.utcnow() - timedelta(minutes=minutes)
     async with get_session() as s:
@@ -1646,6 +1718,17 @@ async def _resolve_open_offers(account_id: str, client, cfg: dict,
         if offer.mode in ("ppv", "both") and offer.offer_message_id:
             if await _message_is_paid(account_id, int(offer.offer_message_id)):
                 paid_by = "ppv_ledger"
+            elif offer.offered_at and await _ppv_txn_since(
+                    account_id, fan_id, offer.offered_at, int(offer.price_cents or 0)):
+                # The money is in the ledger but the global payment→message linker
+                # bailed 'ambiguous' (this fan has >1 same-priced PPV) so is_paid
+                # never flipped and `_message_is_paid` above missed it. Scoped by
+                # THIS offer's offered_at the price match is unambiguous — flip
+                # is_paid so bought-media dedup is correct, then resolve. Cheaper
+                # than the fastpath (DB read, no OF call) so it runs before it.
+                if not dry_run:
+                    await _flip_message_paid(account_id, int(offer.offer_message_id))
+                paid_by = "ppv_txn"
             elif (not dry_run and await _fan_active_recently(
                     account_id, fan_id, _FASTPATH_ACTIVE_WINDOW_MIN)):
                 if await _fastpath_check_opened(client, account_id, fan_id,
@@ -1913,6 +1996,20 @@ async def _fan_msgs_since(account_id: str, fan_id: int, since: datetime | None) 
             where.append(Message.created_at > since)
         return int((await s.execute(
             select(func.count()).select_from(Message).where(*where))).scalar_one() or 0)
+
+
+async def _teaser_sold(account_id: str, fan_id: int, message_id: int) -> bool:
+    """Did HER teaser at this message id actually get unlocked? Reads is_paid on that
+    one outbound message — the adaptive convo ladder's climb/soften signal. Scoped to
+    her own teaser sale by construction (a specific teaser message), never conflated
+    with an ai_chatter catalog PPV purchase."""
+    async with get_session() as s:
+        paid = (await s.execute(
+            select(Message.is_paid).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.message_id == int(message_id)))).scalar_one_or_none()
+    return bool(paid)
 
 
 def _breakproof(ask_at: datetime | None, now: datetime) -> bool:
@@ -2201,6 +2298,7 @@ async def _fire_post_buy_rung(client, account_id: str, cfg: dict, fan_id: int,
         cfg_row = await _load_cfg_row(account_id)
         media_asks, acct_median, lib_bounds = await _price_context(account_id, cfg_row)
         fstate = await _fan_ladder_state(account_id, fan_id, f, lad)
+        pfloor = _proven_floor_cents(fstate, cfg)
         best = None
         for it in offerable.values():
             if it.is_free_teaser:
@@ -2208,7 +2306,8 @@ async def _fire_post_buy_rung(client, account_id: str, cfg: dict, fan_id: int,
             q = _quote_item(account_id, fstate, it, rung_index=rung_index,
                             media_asks=media_asks, median=acct_median, bounds=lib_bounds,
                             escalation_mult=cfg.get("escalation_mult"),
-                            max_ask_vs_history_mult=cfg.get("max_ask_history_mult"))
+                            max_ask_vs_history_mult=cfg.get("max_ask_history_mult"),
+                            proven_floor_cents=pfloor)
             if q is not None and (best is None or q.price_cents < best[1].price_cents):
                 best = (it, q)
         if best is None:
@@ -2680,6 +2779,102 @@ async def _fan_ladder_state(account_id: str, fan_id: int, f: Fan | None,
                            last_paid_cents=last_paid, has_ever_paid=ever)
 
 
+async def _next_tip_ask_cents(account_id: str, fan_id: int,
+                              item: CatalogItem, cfg: dict,
+                              cap_cents: int | None = None) -> int:
+    """The adaptive tip-ask amount (cents) for a TIP-mode offer to this fan.
+
+    Escalates when he UNLOCKED his last tip offer (status 'delivered'), softens
+    40–60% when he didn't, floored at his biggest-ever tip. Reads prior tip
+    offers + the tip ledger — no new per-fan state column. Consistency is the
+    whole point: the caller writes this ONE value onto the item's quote, so the
+    manifest the model sees, the recorded tip threshold, and the unlock watcher
+    all agree (a mismatch would show the fan one price and unlock at another).
+
+    `cap_cents` (the account's PPV-library max, ≤ $200) overrides the static
+    config cap when the caller has the library bounds — so a tip never climbs
+    above what the account actually sells (Aria tops out at $100)."""
+    base = int(item.tip_unlock_cents or 0) or int(cfg.get("tip_ladder_base_cents") or 1000)
+    cap = int(cap_cents if cap_cents else (cfg.get("tip_ladder_cap_cents") or 20000))
+    cap = min(cap, upsell.OF_PRICE_MAX_CENTS)
+    async with get_session() as s:
+        last = (await s.execute(
+            select(ContentOffer.tip_unlock_cents, ContentOffer.status)
+            .where(ContentOffer.account_id == str(account_id),
+                   ContentOffer.fan_id == int(fan_id),
+                   ContentOffer.mode.in_(("tip", "both")),
+                   ContentOffer.tip_unlock_cents > 0)
+            .order_by(ContentOffer.offered_at.desc(), ContentOffer.id.desc())
+            .limit(1))).first()
+        biggest = (await s.execute(
+            select(func.max(Transaction.amount_cents)).where(
+                Transaction.account_id == str(account_id),
+                Transaction.fan_id == int(fan_id),
+                Transaction.kind.in_(_TIP_KINDS),
+                Transaction.status.in_(("cleared", "pending"))))).scalar_one_or_none()
+    last_ask = int(last[0]) if last else 0
+    paid_last = bool(last and last[1] == "delivered")
+    return tip_ladder.next_tip_ask(
+        last_ask_cents=last_ask, biggest_tip_cents=int(biggest or 0),
+        paid_last=paid_last, base_cents=base,
+        step_mult=float(cfg.get("tip_ladder_step") or 1.5),
+        cut_lo=float(cfg.get("tip_ladder_cut_lo") or 0.40),
+        cut_hi=float(cfg.get("tip_ladder_cut_hi") or 0.60),
+        floor_cents=int(cfg.get("tip_ladder_floor_cents") or 500),
+        cap_cents=cap,
+        rand=random.random())
+
+
+async def _buyer_facts(account_id: str, fan_id: int) -> list[str]:
+    """His spend history as buyer CONTEXT for the shared prompt — so BOTH the
+    chatter and the seller (one engine) know what he has already bought AND
+    tipped, reference it warmly, and never talk to a proven spender like a
+    stranger. This is the "know the tip stuff were bought and vice versa" seam:
+    the manifest already hides owned MEDIA from being re-offered; this adds the
+    positive awareness the model can lean on.
+
+    Tips come from the transactions ledger (the same source _tip_sum_since
+    trusts), PPV buys from paid messages. Read-only. It deliberately does NOT
+    feed the price ladder — the PPV ceiling stays PPV-only by design (a tipper
+    is not a proven big-PPV buyer, see _fan_ladder_state); this is context, not
+    pricing. Returns [] for a fan with no spend so the prompt stays byte-equal."""
+    async with get_session() as s:
+        tip_rows = (await s.execute(
+            select(Transaction.amount_cents).where(
+                Transaction.account_id == str(account_id),
+                Transaction.fan_id == int(fan_id),
+                Transaction.kind.in_(_TIP_KINDS),
+                Transaction.status.in_(("cleared", "pending")))
+        )).scalars().all()
+        ppv = (await s.execute(
+            select(func.count(Message.message_id),
+                   func.coalesce(func.sum(Message.price_cents), 0),
+                   func.coalesce(func.max(Message.price_cents), 0)).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.is_paid.is_(True),
+                Message.price_cents > 0)
+        )).one()
+    tip_total = sum(int(x or 0) for x in tip_rows)
+    tip_n = sum(1 for x in tip_rows if int(x or 0) > 0)
+    ppv_n, ppv_total, ppv_max = int(ppv[0] or 0), int(ppv[1] or 0), int(ppv[2] or 0)
+    if tip_total <= 0 and ppv_n <= 0:
+        return []
+    parts: list[str] = []
+    if ppv_n > 0:
+        parts.append(f"unlocked {ppv_n} PPV{'s' if ppv_n != 1 else ''} "
+                     f"(${ppv_total // 100} total, biggest ${ppv_max // 100})")
+    if tip_total > 0:
+        parts.append(f"tipped ${tip_total // 100} across "
+                     f"{tip_n} tip{'s' if tip_n != 1 else ''}")
+    return [
+        "money he's already spent with you: " + " and ".join(parts)
+        + ". He's a PROVEN spender — when it fits, reference what he bought/tipped "
+        "like you remember it, stay warm and familiar, and never talk to him like "
+        "he's never paid you."
+    ]
+
+
 # ── v2 safe-state derived facts (spec §5/§6/§7). ALL of these are DERIVED (no new
 # column) — read from PAID messages / ladder_quote, exactly as §10.2 requires. They
 # are only ever computed when the gate lane is on, so an off flag costs nothing.
@@ -2812,6 +3007,20 @@ async def _price_context(account_id: str,
     return asks, median, price_bounds(lib if isinstance(lib, dict) else {})
 
 
+def _proven_floor_cents(fstate: upsell.FanState, cfg: dict) -> int:
+    """The proven-spend price floor (cents) for this fan, or 0 when off / no
+    history. Opt-in via `proven_spend_floor_enabled`; the floor is his biggest
+    single paid PPV × `proven_spend_floor_mult` (default 1.0 → at least what he
+    already paid). Fed to _quote_item so cheaper items are skipped and he climbs
+    a tier — a $50 buyer gets the $60 video, never the $24 set again."""
+    if not cfg.get("proven_spend_floor_enabled"):
+        return 0
+    mx = int(getattr(fstate, "max_single_paid_cents", 0) or 0)
+    if mx <= 0:
+        return 0
+    return int(mx * float(cfg.get("proven_spend_floor_mult") or 1.0))
+
+
 def _quote_item(account_id: str, fan: upsell.FanState, item: CatalogItem, *,
                 rung_index: int, media_asks: dict[int, list[int]],
                 median: int | None, bounds: tuple[int, int],
@@ -2820,10 +3029,13 @@ def _quote_item(account_id: str, fan: upsell.FanState, item: CatalogItem, *,
                 # here once silently defeated the knobs on the main sell path — a
                 # missing arg must be a loud TypeError, not a quiet fallback to 1.75/3.0.
                 escalation_mult: float | None,
-                max_ask_vs_history_mult: float | None) -> upsell.Quote | None:
+                max_ask_vs_history_mult: float | None,
+                proven_floor_cents: int = 0) -> upsell.Quote | None:
     """The price for ONE item — or None, meaning DO NOT OFFER THIS ITEM (the item
     selector then simply picks a cheaper one). The ladder climbs by UNLOCKING BETTER
-    ITEMS, not by a multiplier fighting three caps."""
+    ITEMS, not by a multiplier fighting three caps. `proven_floor_cents` (opt-in)
+    skips any item priced below what he already paid, so a proven buyer climbs a
+    tier instead of getting the cheap set re-run at cold-open lows."""
     media = _item_media(item)
     key = upsell.media_key(media)
     human = [p for m in media for p in media_asks.get(m, [])]
@@ -2836,7 +3048,8 @@ def _quote_item(account_id: str, fan: upsell.FanState, item: CatalogItem, *,
                              account_id=str(account_id), rng=rng,
                              library_bounds=bounds,
                              escalation_mult=escalation_mult,
-                             max_ask_vs_history_mult=max_ask_vs_history_mult)
+                             max_ask_vs_history_mult=max_ask_vs_history_mult,
+                             proven_floor_cents=proven_floor_cents)
 
 
 async def _record_quote(account_id: str, fan_id: int, item: CatalogItem | None,
@@ -2929,7 +3142,8 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     bot_accused: bool = False,
                     painful_on: bool = True,
                     profile: "FanProfile | None" = None,
-                    ask_every: int = 0) -> tuple[list[dict], list[str]]:
+                    ask_every: int = 0,
+                    buyer_facts: list[str] | None = None) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — of_ai_chat's girly info-gather prompt
     with one structural difference: `sell_block`. Empty (M2) → the no-offers
     line stays, byte-equal behavior. Non-empty (M3) → the catalog/offer rules
@@ -2959,6 +3173,11 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
             facts.append(f"notes on him: {bp}")
         teases = [str(t).strip()[:140]
                   for t in (profile.tease1, profile.tease2, profile.tease3) if _nonempty(t)]
+    # Spend/tip history (computed async at the call site) — proven-spender context
+    # shared by the chatter and the seller. Empty for a non-spender → prompt
+    # stays byte-equal.
+    if buyer_facts:
+        facts.extend(buyer_facts)
     facts_block = ("\n".join(f"- {x}" for x in facts)
                    if facts else "- (nothing on file yet)")
     # A concrete nudge to WEAVE IN a specific detail — the difference between a bubble
@@ -4098,6 +4317,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             offerable.pop(iid, None)
                 if pricing_on and offerable:
                     fstate = await _fan_ladder_state(account_id, fan_id, f, fan_ladder)
+                    pfloor = _proven_floor_cents(fstate, cfg)
                     priced: dict[int, CatalogItem] = {}
                     for iid, it in offerable.items():
                         if it.is_free_teaser:
@@ -4107,7 +4327,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                         media_asks=media_asks, median=acct_median,
                                         bounds=lib_bounds,
                                         escalation_mult=cfg.get("escalation_mult"),
-                                        max_ask_vs_history_mult=cfg.get("max_ask_history_mult"))
+                                        max_ask_vs_history_mult=cfg.get("max_ask_history_mult"),
+                                        proven_floor_cents=pfloor)
                         if q is None:
                             continue    # he cannot plausibly afford THIS item — the
                                         # selector picks a cheaper one. Never discount
@@ -4130,6 +4351,22 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         quotes[int(pending.item_id)] = dataclasses.replace(
                             quotes[int(pending.item_id)],
                             price_cents=int(disc), clamped_by="discount")
+                # Tip ladder (workstream 3): for TIP-ONLY items, replace the PPV
+                # quote with the INDEPENDENT adaptive tip ask. Overriding the
+                # quote (not just the record) keeps the manifest the model asks
+                # from, ask_cents, and the recorded tip threshold all in lockstep.
+                if cfg.get("tip_ladder_enabled") and pricing_on and offerable:
+                    for iid, it in list(offerable.items()):
+                        if it.is_free_teaser or iid not in quotes:
+                            continue
+                        if _effective_mode(it, cfg_offer_mode) != "tip":
+                            continue
+                        # Cap the tip climb at the account's PPV-library MAX (≤$200).
+                        tip_cap = min(int(lib_bounds[1] or upsell.OF_PRICE_MAX_CENTS),
+                                      upsell.OF_PRICE_MAX_CENTS)
+                        amt = await _next_tip_ask_cents(account_id, fan_id, it, cfg,
+                                                        cap_cents=tip_cap)
+                        quotes[iid] = dataclasses.replace(quotes[iid], price_cents=int(amt))
                 if offerable:
                     if second_offer:
                         sell_block = _second_offer_block(
@@ -4148,6 +4385,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             escalation = (bool(offerable) and pivot_on_escalation and not content_ask
                           and c.fan_msg_n >= esc_min_msgs
                           and bool(ESCALATION_RE.search(c.last_body or "")))
+            buyer_facts = await _buyer_facts(account_id, fan_id)
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
                                               style_on=style_on,
                                               nonnative_on=nonnative_on,
@@ -4160,7 +4398,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                               profile=profiles.get(fan_id),
                                               ask_every=(old_q_every
                                                          if fan_id in old_fan_ids
-                                                         else 0))
+                                                         else 0),
+                                              buyer_facts=buyer_facts)
             try:
                 res = await llm_client.chat(
                     model=model,
@@ -4334,12 +4573,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         _since = datetime.fromisoformat(str(_tstate["at"]))
                     except Exception:
                         _since = None
+                # Adaptive ladder climb/soften signal: did HER last teaser sell? Only
+                # her own teaser unlock counts (Message.is_paid on that id) — an
+                # ai_chatter catalog buy never moves this ladder. Queried only in
+                # adaptive mode, only when the last teaser was priced.
+                _t_last_price = int(_tstate.get("last_price") or 0)
+                _t_last_free = bool(_tstate.get("last_free"))
+                _t_sold = False
+                if (_tcfg.get("adaptive") and _t_last_price > 0
+                        and _tstate.get("last_msg")):
+                    _t_sold = await _teaser_sold(account_id, fan_id,
+                                                 int(_tstate["last_msg"]))
                 try:
                     _msgs_since = await _fan_msgs_since(account_id, fan_id, _since)
                     teaser = await _tip_reward.pick_convo_teaser(
                         client, account_id, fan_id, tcfg=_tcfg,
                         msgs_since_last=_msgs_since, rung=int(_tstate.get("rung") or 0),
-                        now=now)
+                        last_price_cents=_t_last_price, last_sold=_t_sold,
+                        last_was_free=_t_last_free, now=now)
                 except Exception:
                     log.debug("ai_chatter convo_teaser pick failed account=%s fan=%s",
                               account_id, fan_id, exc_info=True)

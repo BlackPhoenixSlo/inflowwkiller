@@ -73,6 +73,7 @@ from webhook_config_api import router as _webhook_config_router  # noqa: E402
 from autoreply_config_api import router as _autoreply_config_router  # noqa: E402
 from tip_reward_config_api import router as _tip_reward_config_router  # noqa: E402
 from ppv_library_config_api import router as _ppv_library_config_router  # noqa: E402
+from vault_ai_api import router as _vault_ai_router  # noqa: E402
 from scripts_api import router as _scripts_router  # noqa: E402
 from style_config_api import router as _style_config_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
@@ -176,6 +177,7 @@ app.include_router(_webhook_config_router)
 app.include_router(_autoreply_config_router)
 app.include_router(_tip_reward_config_router)
 app.include_router(_ppv_library_config_router)
+app.include_router(_vault_ai_router)
 app.include_router(_scripts_router)
 app.include_router(_style_config_router)
 app.include_router(_account_config_router)
@@ -587,6 +589,7 @@ async def _post_webhook(url: str, event: dict) -> None:
 _account_pumps: dict[str, asyncio.Task] = {}
 _supervisor_task: asyncio.Task | None = None
 _tx_ingest_task: asyncio.Task | None = None
+_tx_fast_task: asyncio.Task | None = None
 # Automation executor supervisor (service/automation_executor.py) — consumes
 # scheduled_jobs / automation_rules and runs the 12 automations. Cancelled in
 # _stop_event_pumps alongside _tx_ingest_task.
@@ -724,7 +727,7 @@ async def _pump_supervisor() -> None:
 
 @app.on_event("startup")
 async def _start_event_pumps() -> None:
-    global _supervisor_task, _tx_ingest_task, _automation_exec_task, _main_loop
+    global _supervisor_task, _tx_ingest_task, _tx_fast_task, _automation_exec_task, _main_loop
     _main_loop = asyncio.get_running_loop()
     _event_stats["started_at"] = __import__("time").time()
 
@@ -837,8 +840,17 @@ async def _start_event_pumps() -> None:
     # stats include subs / tips / PPV unlocks / paid posts. 10-min ticks,
     # sequential per-account refresh, parallel backfill (sem=4). See
     # service/transaction_ingest.py docstring.
-    from transaction_ingest import start_supervisor as _start_tx_ingest
+    from transaction_ingest import (
+        start_supervisor as _start_tx_ingest,
+        start_fast_poll as _start_tx_fast,
+    )
     _tx_ingest_task = asyncio.create_task(_start_tx_ingest(), name="tx-ingest-supervisor")
+    # 30s freshness poll layered on the 5-min supervisor: fetches just the last
+    # 10 transactions per online account so a PPV unlock / tip lands in the
+    # ledger within ~30s and the ai_chatter offer watcher clears "waiting on
+    # tip" the next tick. Idempotent with the supervisor (shared per-account
+    # lock + provider_id dedup). Cancelled in _stop_event_pumps.
+    _tx_fast_task = asyncio.create_task(_start_tx_fast(), name="tx-ingest-fast-poll")
 
     # P3 — automation executor: consumes scheduled_jobs / automation_rules and
     # runs the 12 automations (scrape_chats ships as the reference). Mirrors the
@@ -894,6 +906,10 @@ async def _stop_event_pumps() -> None:
         _tx_ingest_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await _tx_ingest_task
+    if _tx_fast_task and not _tx_fast_task.done():
+        _tx_fast_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await _tx_fast_task
     if _automation_exec_task and not _automation_exec_task.done():
         _automation_exec_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):

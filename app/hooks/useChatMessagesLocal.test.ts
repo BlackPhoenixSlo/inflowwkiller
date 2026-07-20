@@ -59,7 +59,9 @@ describe("mergeSeedIntoMessages", () => {
     const existingTwo = msg({ id: 2, mediaCount: 5 }); // richer copy already cached
     const seed = [msg({ id: 1 }), msg({ id: 2, mediaCount: 0 }), msg({ id: 3 })];
     const merged = mergeSeedIntoMessages([existingTwo], seed);
-    expect(ids(merged)).toEqual(["1", "3", "2"]);
+    // orderThread sorts the fold oldest→newest by id (== time for real rows),
+    // so the missing 1/3 land in their true slots around the cached 2.
+    expect(ids(merged)).toEqual(["1", "2", "3"]);
     // id 2 resolves to the authoritative cached row, not the seed's copy.
     expect(merged.find((m) => String(m.id) === "2")).toBe(existingTwo);
   });
@@ -69,7 +71,21 @@ describe("mergeSeedIntoMessages", () => {
     const seed = [msg({ id: "5" }), msg({ id: 6 })]; // string id collides with 5
     const merged = mergeSeedIntoMessages([existing], seed);
     // Only id 6 is genuinely missing; "5"/5 are the same message.
-    expect(ids(merged)).toEqual(["6", "5"]);
+    expect(ids(merged)).toEqual(["5", "6"]);
+  });
+
+  it("a seed tip lands in its created_at slot, not prepended to the top", () => {
+    // The bug: mergeSeedIntoMessages blind-prepended, so a recent tip (6e15 id)
+    // stacked at the TOP of the thread. orderThread slots it by time instead.
+    const cache = [
+      msg({ id: 10, createdAt: "2026-06-01T00:00:00.000Z" }),
+      msg({ id: 30, createdAt: "2026-06-03T00:00:00.000Z" }),
+    ];
+    const seed = [
+      msg({ id: 6_000_000_000_000_007, isTip: true, createdAt: "2026-06-02T00:00:00.000Z" }),
+    ];
+    expect(ids(mergeSeedIntoMessages(cache, seed)))
+      .toEqual(["10", "6000000000000007", "30"]);
   });
 });
 
@@ -93,6 +109,7 @@ describe("mapRows — mass placeholder staleness", () => {
       media_count: 0,
       price_cents: 0,
       is_tip: null,
+      is_paid: null,
       is_unsent: null,
       purchased_at: null,
       created_at: "2026-07-02T11:59:00",
@@ -137,12 +154,39 @@ describe("mapRows — ledger-tip band is exempt from the cutoff", () => {
         account_id: "acct1", fan_id: 42,
         message_id: 6_000_000_000_000_042,
         direction: "in" as const, sender_name: null, body: "tipped you",
-        media_count: 0, price_cents: 0, is_tip: true, is_unsent: null,
+        media_count: 0, price_cents: 0, is_tip: true, is_paid: null, is_unsent: null,
         purchased_at: null, created_at: "2026-04-01T09:00:00",
       }],
       "acct1", 42, NOW,
     );
     expect(rows.map((m) => String(m.id))).toEqual(["6000000000000042"]);
     expect(rows[0].isTip).toBe(true);
+  });
+});
+
+// The seed carries the ledger's is_paid so a purchased PPV renders unlocked
+// immediately (MessageList reads msg.isPaid alongside OF's isOpened), instead
+// of lingering "locked" on the cached bubble until a fresh OF fetch echoes it.
+describe("mapRows — is_paid → isPaid unlock signal", () => {
+  const NOW = Date.parse("2026-07-02T12:00:00.000Z");
+
+  function ppvRow(over: Record<string, unknown>) {
+    return {
+      account_id: "acct1", fan_id: 42, message_id: 2000,
+      direction: "out" as const, sender_name: null, body: "unlock me",
+      media_count: 1, price_cents: 2999, is_tip: null, is_paid: null, is_unsent: null,
+      purchased_at: null, created_at: "2026-07-02T11:00:00", ...over,
+    };
+  }
+
+  it("maps a paid PPV to isPaid=true", () => {
+    const rows = mapRows([ppvRow({ is_paid: true })], "acct1", 42, NOW);
+    expect(rows[0].isPaid).toBe(true);
+    expect(rows[0].price).toBe(29.99);
+  });
+
+  it("maps an unpaid / null-paid PPV to isPaid=false", () => {
+    expect(mapRows([ppvRow({ is_paid: null })], "acct1", 42, NOW)[0].isPaid).toBe(false);
+    expect(mapRows([ppvRow({ is_paid: false })], "acct1", 42, NOW)[0].isPaid).toBe(false);
   });
 });

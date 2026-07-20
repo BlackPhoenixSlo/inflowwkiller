@@ -445,6 +445,11 @@ export function useInboxRealtime() {
       const allowed = allowedRef.current;
       if (allowed.size > 0 && !allowed.has(accountId)) return;
       invalidateFanRevenue(qc, accountId, fanId);
+      // A ppv_message ledger row means a PPV just unlocked. Force the thread's
+      // head page to refetch so OF's now-true `isOpened` lands on the bubble
+      // (our is_paid stamp already flips it via the DB seed, but an already-
+      // open thread renders off the OF `["messages"]` cache, not the seed).
+      void qc.invalidateQueries({ queryKey: ["messages", accountId, fanId] });
     });
 
     // Note: we used to invalidate ["chats"] on every "chat_messages" event,

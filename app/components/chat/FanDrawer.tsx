@@ -52,9 +52,11 @@ function AiSellerChip({ accountId, fanId }: { accountId: string; fanId: number }
       {offer && (
         <span>
           {pin ? "· " : ""}waiting on{" "}
-          {offer.tip_unlock_cents > 0
-            ? `$${Math.round(offer.tip_unlock_cents / 100)} tip`
-            : `$${Math.round(offer.price_cents / 100)} unlock`}
+          {offer.mode === "both"
+            ? `$${Math.round((offer.tip_unlock_cents || offer.price_cents) / 100)} unlock/tip`
+            : offer.mode === "tip"
+              ? `$${Math.round(offer.tip_unlock_cents / 100)} tip`
+              : `$${Math.round(offer.price_cents / 100)} unlock`}
           {offer.tips_accum_cents > 0 &&
             ` (${Math.round(offer.tips_accum_cents / 100)} in)`}
         </span>

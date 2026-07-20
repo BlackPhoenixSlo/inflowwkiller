@@ -102,6 +102,8 @@ class LLMModel:
 PROVIDERS: dict[str, LLMProvider] = {
     "grok":     LLMProvider("grok",     "https://api.x.ai/v1",      "GROK_API_KEY"),
     "deepseek": LLMProvider("deepseek", "https://api.deepseek.com", "DEEPSEEK_API_KEY"),
+    # DeepInfra hosts the Qwen3-VL vision models (OpenAI-compatible, NSFW-permissive).
+    "deepinfra": LLMProvider("deepinfra", "https://api.deepinfra.com/v1/openai", "DEEPINFRA_API_KEY"),
 }
 
 # Prices are cents per 1k tokens (small, real-as-of-2026-06 seeds — enough to
@@ -131,6 +133,16 @@ MODELS: dict[str, LLMModel] = {
         "deepseek-v4-pro", "deepseek", api_model="deepseek-reasoner",
         input_per_1k_cents=0.0435, input_cache_hit_per_1k_cents=0.0003625,
         output_per_1k_cents=0.087, thinking=True,
+    ),
+    # Qwen3-VL vision (DeepInfra). Cheap MoE primary + big escalation. Seed prices
+    # ~ DeepInfra published rates (cents per 1k = $/1M ÷ 10); the cap is what matters.
+    "qwen3-vl-30b": LLMModel(
+        "qwen3-vl-30b", "deepinfra", api_model="Qwen/Qwen3-VL-30B-A3B-Instruct",
+        input_per_1k_cents=0.01, output_per_1k_cents=0.04,
+    ),
+    "qwen3-vl-235b": LLMModel(
+        "qwen3-vl-235b", "deepinfra", api_model="Qwen/Qwen3-VL-235B-A22B-Instruct",
+        input_per_1k_cents=0.03, output_per_1k_cents=0.12,
     ),
 }
 
@@ -253,12 +265,33 @@ def _resolve(model: str) -> tuple[LLMModel, LLMProvider, str]:
     return mdl, prov, key
 
 
+# Vision: a single image consumes hundreds–thousands of tokens, NOT the ~10
+# the URL/base64 string length implies. Reserve a conservative flat estimate per
+# image so the daily-cap reservation can't be blown wide open by a describe pass
+# (the "Auto-complete all" silent-overrun bug). Actual usage is reconciled from
+# the provider's usage block after the call; this only governs the pre-flight.
+_IMAGE_TOKENS = 1200
+
+
 def _estimate_input_tokens(messages: list[dict]) -> int:
     chars = 0
+    image_tokens = 0
     for m in messages:
         c = m.get("content", "")
-        chars += len(c) if isinstance(c, str) else len(json.dumps(c, default=str))
-    return chars // _CHARS_PER_TOKEN + 1
+        if isinstance(c, str):
+            chars += len(c)
+        elif isinstance(c, list):
+            # OpenAI multimodal content: list of {type: text|image_url, ...} parts.
+            for part in c:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    image_tokens += _IMAGE_TOKENS
+                elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                    chars += len(part["text"])
+                else:
+                    chars += len(json.dumps(part, default=str))
+        else:
+            chars += len(json.dumps(c, default=str))
+    return chars // _CHARS_PER_TOKEN + image_tokens + 1
 
 
 def _cost_millicents(model: str, tokens_in: int, tokens_out: int,
