@@ -48,12 +48,13 @@ services:
       # llm_client recovers the real value from that file when the env is blank.
       GROK_API_KEY: "${GROK_API_KEY:-}"
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
-      # Auth/chatter cookie signing keys. Set these in the server's .env so the
-      # secret lives ONLY on the host — env beats the on-disk .session_secret /
-      # .chatter_secret fallback, which this repo deliberately does NOT ship.
-      # Generate each with: openssl rand -hex 32
-      SESSION_SECRET: "${SESSION_SECRET:-}"
-      CHATTER_SESSION_SECRET: "${CHATTER_SESSION_SECRET:-}"
+      # Vision (Qwen3-VL 30B/235B) for the vault describe pass. Missing this is
+      # NOT a visible error: every describe call raises LLMError, the sweep
+      # counts the item as "done", and the vault ends up 100% undescribed with a
+      # green progress bar. Note a key pasted into Setup → Keys lands in
+      # service/secrets.json, which is NOT bind-mounted — it dies on the next
+      # rebuild. The env is the durable place for it.
+      DEEPINFRA_API_KEY: "${DEEPINFRA_API_KEY:-}"
     volumes:
       # File bind-mount for the SQLite event store. WAL + SHM sidecars
       # are created in /app/service/ inside the container; on `docker

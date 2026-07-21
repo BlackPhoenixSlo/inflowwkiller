@@ -113,15 +113,44 @@ FLAG_KEYS: tuple[str, ...] = ("underwear_visible", *VIS_REGIONS)
 # judging exposure — and it is answered correctly on photos where the state
 # question is not. It then overrules the state: name something, and the region
 # is covered. Optional by nature, so NOT part of `flags_known`.
-OVER_KEYS: dict[str, str] = {"breasts_vis": "over_breasts", "vulva_vis": "over_vulva"}
+OVER_KEYS: dict[str, str] = {"breasts_vis": "over_breasts",
+                             "vulva_vis": "over_vulva",
+                             "anus_vis": "over_anus"}
+
+
+# Garments that cannot cover a given region. The model sometimes fills every
+# `over_` slot with the one garment it can see — "pink thong" over her breasts
+# on a still whose own description reads "fully nude except for pink underwear",
+# i.e. topless. A bodysuit legitimately covers both; a thong does not, and that
+# copy put a topless still in the mass-safe folder. Checked per region rather
+# than by trying to detect duplication, because duplication is correct for
+# one-piece garments.
+_IMPOSSIBLE_OVER: dict[str, frozenset[str]] = {
+    "breasts_vis": frozenset({"thong", "panties", "panty", "knickers", "briefs",
+                              "g-string", "gstring", "shorts", "skirt",
+                              "stockings", "socks", "boots", "heels"}),
+    "vulva_vis": frozenset({"bra", "bralette", "top", "tank", "t-shirt",
+                            "tshirt", "blouse", "shirt", "necklace", "choker"}),
+}
 
 
 def garment_over(fields: dict[str, Any] | None, region: str) -> str:
-    """What is over this region, in the model's words, or ""."""
+    """What is over this region, in the model's words, or "".
+
+    Returns "" when the named garment could not physically be there, so the
+    caller falls back to "covered by something unnamed" — which every lane
+    already treats as not knowing. A wrong name is worse than no name: it is
+    what marks an exposed region decently covered.
+    """
     if not isinstance(fields, dict):
         return ""
     v = fields.get(OVER_KEYS.get(region, ""))
-    return v.strip() if isinstance(v, str) else ""
+    if not isinstance(v, str):
+        return ""
+    name = v.strip()
+    impossible = _IMPOSSIBLE_OVER.get(region, frozenset())
+    words = {w for w in re.split(r"[\s,./-]+", name.lower()) if w}
+    return "" if words & impossible else name
 
 
 # Things that cover without being clothing. She is still NUDE behind her own

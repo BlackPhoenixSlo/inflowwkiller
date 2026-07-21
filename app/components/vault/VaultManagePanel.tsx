@@ -20,6 +20,7 @@ import {
   VaultVideoPreview,
 } from "@/components/chat/VaultPicker";
 import VaultAiFoldersModal from "@/components/vault/VaultAiFoldersModal";
+import VaultDisputesModal from "@/components/vault/VaultDisputesModal";
 import VaultDuplicatesModal from "@/components/vault/VaultDuplicatesModal";
 import VaultTile from "@/components/vault/VaultTile";
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -114,6 +115,7 @@ export default function VaultManagePanel() {
   const [selectMode, setSelectMode] = useState(false);
   const [showDupes, setShowDupes] = useState(false);
   const [showAiFolders, setShowAiFolders] = useState(false);
+  const [showDisputes, setShowDisputes] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState<string>("");
   const [describeAll, setDescribeAll] = useState<string>("");
@@ -615,6 +617,15 @@ export default function VaultManagePanel() {
           >
             Build AI folders
           </button>
+          <button
+            type="button"
+            onClick={() => setShowDisputes(true)}
+            disabled={cachedCount === 0}
+            className="px-3 py-1.5 rounded-lg text-sm border border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 disabled:opacity-50"
+            title="Items where the two vision passes disagree — pick the reading that matches the picture. Your choice is locked against re-runs."
+          >
+            Fix disagreements
+          </button>
         </div>
       </div>
 
@@ -953,6 +964,10 @@ export default function VaultManagePanel() {
       {showDupes && accountId && (
         <VaultDuplicatesModal accountId={accountId} onClose={() => setShowDupes(false)} />
       )}
+      {showDisputes && accountId && (
+        <VaultDisputesModal accountId={accountId} onClose={() => setShowDisputes(false)} />
+      )}
+
       {showAiFolders && accountId && (
         <VaultAiFoldersModal accountId={accountId} onClose={() => setShowAiFolders(false)} />
       )}

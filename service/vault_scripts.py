@@ -880,32 +880,46 @@ def _lane_covered_explicit(why: dict, fields: dict, kind: str) -> bool:
         return False
     if why["tier"] not in _PAID_TIERS:
         return False
-    if vault_ai_brief.is_bare(fields, "anus_vis"):
+    if vault_ai_brief.any_bare(fields):
         return False
-    return all(_decently_covered(fields, r) for r in ("vulva_vis", "breasts_vis"))
+    return _decently_covered(fields)
 
 
-def _decently_covered(fields: dict, region: str) -> bool:
-    """Nothing on show there, AND the reason is clothing or being out of shot.
+def _decently_covered(fields: dict) -> bool:
+    """Nothing on show, and not merely because a hand happens to be in the way.
 
     `covered` deliberately lumps fabric together with a hand, a thigh and the
-    bedsheet, because for "how much skin is on show" they are the same. For
-    THIS lane they are not. A woman lying fully nude with her hands over her
-    breasts has nothing technically exposed and is still a nude — putting her
-    in a mass send is exactly the mistake this folder exists to prevent. A
-    woman in a bodysuit is not, and a woman shot from behind is not.
+    bedsheet, because for "how much skin is on show" those are the same thing.
+    For THIS lane they are not. Each region has to be out of shot, or behind
+    something we can NAME as clothing.
 
-    So: out of frame is fine, clothing over it is fine, a hand over it is not.
-    Covered by something the model declined to NAME is also not — this is the
-    one lane where "we could not tell you what is covering her" has to read as
-    a no.
+    Two rules were tried and rejected against her actual vault, both of which
+    read plausibly and both of which shipped topless material to a mass send:
+
+      * "nothing bare" alone — admitted a fully-nude still whose only cover was
+        her own hands.
+      * "nothing bare AND she is wearing something" — admitted six stills of
+        her topless with her hands over her breasts and a thong on. A thong is
+        not what makes a topless shot decent, and `_is_nude` says nothing about
+        which HALF of her is dressed.
+
+    This rule under-includes on purpose: a shot of her face down in a thong,
+    breasts behind her own arm, is genuinely safe and is excluded because the
+    only thing over her breasts is an arm. That costs a smaller folder. The
+    permissive versions cost a topless mass send, and those are not the same
+    kind of mistake. If the folder needs those back, the flags pass has to be
+    able to say she is turned AWAY — which it cannot, and which no rule over
+    the current fields can infer.
     """
-    state = vault_ai_brief.vis(fields, region)
-    if state == "not_in_frame":
-        return True
-    if state != "covered":
-        return False
-    return vault_ai_brief.is_clothing(vault_ai_brief.garment_over(fields, region))
+    for region in ("vulva_vis", "breasts_vis"):
+        state = vault_ai_brief.vis(fields, region)
+        if state == "not_in_frame":
+            continue
+        if state != "covered":
+            return False
+        if not vault_ai_brief.is_clothing(vault_ai_brief.garment_over(fields, region)):
+            return False
+    return True
 
 
 def _lane_tease_10(why: dict, fields: dict, kind: str) -> bool:
@@ -942,6 +956,13 @@ def _lane_tease_50(why: dict, fields: dict, kind: str) -> bool:
     if vault_ai_brief.vis(fields, "vulva_vis") == "covered":
         return False          # something over her vulva is never the full reveal
     if _norm(fields.get("clothing_state")) == "lingerie_on" and not _is_nude(fields):
+        return False
+    # Something has to be ON SHOW. Being nude is not by itself a reveal: a
+    # fully-nude shot taken from behind exposes nothing, belongs in the
+    # mass-safe lane, and has nothing in it to charge $50 for. Before this,
+    # `_is_nude` alone admitted it and the same item was simultaneously free
+    # and the most expensive thing in the vault.
+    if not vault_ai_brief.any_bare(fields):
         return False
     return (_shows_genitals(fields)
             or "full_body" in _focus(fields)

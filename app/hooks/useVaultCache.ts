@@ -289,6 +289,52 @@ export async function applyAiFolders(
   );
 }
 
+/** One item where the describe pass and the flags pass contradict each other.
+ *  Both readings are carried, plus the two literal field-writes that would
+ *  settle it — which pass is wrong differs item by item, so the operator picks
+ *  and nothing is decided for them. */
+export interface VaultDispute {
+  media_id: number;
+  kind: string;
+  codes: string[];
+  reasons: string[];
+  description: string;
+  clothing_state: string;
+  explicitness: string;
+  underwear_visible: boolean | null;
+  regions: Record<string, string>;
+  over: Record<string, string>;
+  /** Fields already corrected by hand and locked against re-runs. */
+  resolved: string[];
+  propose: { flags: Record<string, unknown>; describe: Record<string, unknown> };
+}
+
+export function useVaultDisputes(accountId: string | null, enabled = false) {
+  return useQuery<{ checked: number; count: number; disputes: VaultDispute[] }>({
+    queryKey: ["vault-disputes", accountId],
+    enabled: !!accountId && enabled,
+    queryFn: () =>
+      relay.get(`/admin/vault-ai/disputes?account_id=${encodeURIComponent(accountId!)}`),
+    staleTime: 15_000,
+  });
+}
+
+/** Apply ONE operator correction. Written into the AI fields (so every reader
+ *  sees it), recorded as an override, and LOCKED — a forced re-flag refreshes
+ *  everything except this, because a correction a re-run reverts is worse than
+ *  no correction at all. */
+export async function resolveDispute(
+  accountId: string,
+  mediaId: number,
+  values: Record<string, unknown>,
+): Promise<{ ok: boolean; applied: Record<string, unknown>; still_disagrees: string[] }> {
+  return relay.post(
+    `/admin/vault-ai/disputes/resolve`,
+    { account_id: accountId, media_id: mediaId, values },
+    { accountId },
+  );
+}
+
 /** Harvest OF's own vault search for `query` and fold it into our index, so
  *  local search becomes a superset of OF's. Cached server-side after first run. */
 export async function searchOf(
