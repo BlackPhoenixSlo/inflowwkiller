@@ -434,9 +434,18 @@ export async function fetchHarvestStatus(
   return relay.get(`/admin/vault-ai/harvest-keywords/status?account_id=${encodeURIComponent(accountId)}`);
 }
 
-export async function fetchDescribeAllStatus(
-  accountId: string,
-): Promise<{ running: boolean; progress: { total: number; done: number; capped: boolean } | null }> {
+export async function fetchDescribeAllStatus(accountId: string): Promise<{
+  running: boolean;
+  progress: {
+    total: number;
+    done: number;
+    capped: boolean;
+    /** Set once the sweep finishes: how many of the freshly-described items
+     *  the system wants a human to look at. Describe now runs the flags pass
+     *  in the same breath, so this is available the moment it lands. */
+    needs_review?: number;
+  } | null;
+}> {
   return relay.get(`/admin/vault-ai/describe-all/status?account_id=${encodeURIComponent(accountId)}`);
 }
 

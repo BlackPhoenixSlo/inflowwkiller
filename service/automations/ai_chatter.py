@@ -263,7 +263,7 @@ _DEFAULTS: dict = {
     # force_ask: the OFFER is emitted by the MODEL (an offer marker it may or may not
     # write). So a fan the gate has already cleared, with a priced manifest in front
     # of the model, still gets pure chat whenever the model declines to sell — which
-    # is most turns. Live on sakai: 184 replies, 4 offers, and the gate blocked only 8
+    # is most turns. Live on one account: 184 replies, 4 offers, and the gate blocked only 8
     # of them. The model, not the gate, is what stops the selling.
     #
     # With this on, a turn where the gate said YES and the model wrote no marker
@@ -1931,7 +1931,7 @@ async def _human_money_signals(
 
     The offer engine only ever knew about asks IT made (`content_offers`) and ladders IT
     opened. Every PPV a teammate sends by hand is invisible to it. The consequences all
-    landed on the same fan (Cody, sakai, 2026-07-14):
+    landed on the same fan, on one account, on a single day:
 
       • rhythm scored a thread with a live $45 ask and a $25 purchase in it as a COLD,
         sale-less chat and rolled a 23-minute coffee break — on the hottest thread on
@@ -2793,7 +2793,7 @@ async def _next_tip_ask_cents(account_id: str, fan_id: int,
 
     `cap_cents` (the account's PPV-library max, ≤ $200) overrides the static
     config cap when the caller has the library bounds — so a tip never climbs
-    above what the account actually sells (Aria tops out at $100)."""
+    above what the account actually sells (the graded vault tops out at $100)."""
     base = int(item.tip_unlock_cents or 0) or int(cfg.get("tip_ladder_base_cents") or 1000)
     cap = int(cap_cents if cap_cents else (cfg.get("tip_ladder_cap_cents") or 20000))
     cap = min(cap, upsell.OF_PRICE_MAX_CENTS)
