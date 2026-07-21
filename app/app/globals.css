@@ -174,3 +174,22 @@ html, body {
  * like `height: 100vh; height: 100dvh;` — bit us once already). PC is
  * unaffected because vvh ≈ 100dvh when no keyboard is up.              */
 .h-chat { height: calc(var(--vvh) - 3.5rem); }
+
+/* `.vault-video` — the vault preview player.
+ * Chrome's native control bar is near-black, which on dark media made the
+ * timeline almost invisible and scrubbing to a time a guessing game. Lighten
+ * the panel, fatten the timeline, and give the time readouts a shadow so they
+ * survive a bright frame. WebKit/Blink pseudo-elements only; other engines
+ * keep their stock controls, so this is purely additive.                     */
+.vault-video::-webkit-media-controls-panel {
+  background: linear-gradient(to top, rgb(0 0 0 / 0.78), rgb(0 0 0 / 0.10));
+}
+.vault-video::-webkit-media-controls-timeline {
+  height: 6px;
+  margin: 0 10px;
+}
+.vault-video::-webkit-media-controls-current-time-display,
+.vault-video::-webkit-media-controls-time-remaining-display {
+  color: #fff;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.85);
+}

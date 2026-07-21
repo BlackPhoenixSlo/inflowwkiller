@@ -81,7 +81,7 @@ _MAX_CONCURRENT_RUNS = 4       # concurrent REAL-TIME / sender runs (own lane)
 # pacing + different accounts/sessions).
 _MAX_CONCURRENT_BULK = 2
 _BULK_KINDS: frozenset[str] = frozenset({
-    "scrape_chats", "push_to_sheets", "process_old_fans",
+    "scrape_chats", "push_to_sheets", "process_old_fans", "describe_media",
 })
 # Fan-lease TTL (W3): held for the WHOLE send, NOT released on success (let it
 # expire) — only released on not-sent/error. So the TTL must clear the worst-case

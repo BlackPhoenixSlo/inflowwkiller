@@ -124,6 +124,41 @@ export interface PpvPreviewArgs {
 }
 
 /** Dry-run: how the account's current fans split into price cells (no send). */
+/** Per-row vault reasoning that rides ALONGSIDE a suggestion (kept out of the
+ *  PpvItem so those stay exactly config-shaped). */
+export interface PpvSuggestionNote {
+  why: string;
+  note: string;
+  thin: boolean;
+  /** Nothing in the bundle may legally be shown free and no tame frame was
+   *  available to attach — it would ship as a locked box. */
+  preview_unsafe: boolean;
+  photos: number;
+  videos: number;
+  closers: number;
+  reused: number;
+  tiers: Record<string, number>;
+}
+
+export interface PpvSuggestions {
+  ppvs: PpvItem[];
+  notes: Record<string, PpvSuggestionNote>;
+  summary: Record<string, number>;
+  lanes: Record<string, number>;
+}
+
+/** Propose a week of bundles from the vault. Read-only, free (no LLM, no OF).
+ *  Every row arrives `enabled: false` / `feed_enabled: false`, so accepting a
+ *  suggestion can never start a send — arming stays a separate, deliberate act. */
+export function useSuggestPpvs(accountId: string | null) {
+  return useMutation<PpvSuggestions, Error, void>({
+    mutationFn: () =>
+      relay.get<PpvSuggestions>(
+        `/admin/ppv-library-config/suggest?account_id=${encodeURIComponent(accountId!)}`,
+      ),
+  });
+}
+
 export function usePpvPreview(accountId: string | null) {
   return useMutation<PpvPreview, Error, PpvPreviewArgs>({
     mutationFn: ({ basePriceCents, priceMinCents, priceMaxCents }) =>

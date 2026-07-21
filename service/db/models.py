@@ -26,12 +26,13 @@ flavors against the same `metadata` so Alembic sees the whole schema.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -692,7 +693,12 @@ class VaultItem(Base):
     video_description: Mapped[str | None] = mapped_column(Text)
     explicitness_tier: Mapped[str | None] = mapped_column(String)
     story_suitable: Mapped[bool | None] = mapped_column(Boolean)
+    # AI rank 0-100 pairing story_suitable (feat 6); NULL until vault_ai_service
+    # scores it. Effective value still flows through operator override/lock.
+    story_score: Mapped[int | None] = mapped_column(Integer)
     tip_vault_flag: Mapped[bool | None] = mapped_column(Boolean)
+    # AI rank 0-100 pairing tip_vault_flag (feat 5); NULL until scored.
+    tip_vault_score: Mapped[int | None] = mapped_column(Integer)
     suggested_caption: Mapped[str | None] = mapped_column(Text)
     suggested_script: Mapped[str | None] = mapped_column(Text)
     describe_status: Mapped[str | None] = mapped_column(String)
@@ -707,11 +713,24 @@ class VaultItem(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime)
     reviewed_by: Mapped[str | None] = mapped_column(String)
 
+    # ── Script recovery (service/vault_scripts.py) ────────────────
+    # A shoot is uploaded as one burst and escalates clothed→nude→masturbation,
+    # but phone galleries hand the picker newest-first so the burst often lands
+    # REVERSED. `script_id` is the batch (= its earliest media_id), `script_seq`
+    # is 1..n in canonical escalating order, and `script_reversed` records that
+    # we flipped upload order to get there. Sorting a folder is then ORDER BY
+    # script_id, script_seq. `script_score` is the 0-100 ladder rung.
+    script_id: Mapped[int | None] = mapped_column(BigInteger)
+    script_seq: Mapped[int | None] = mapped_column(Integer)
+    script_score: Mapped[int | None] = mapped_column(Integer)
+    script_reversed: Mapped[bool | None] = mapped_column(Boolean)
+
     __table_args__ = (
         Index("ix_vault_account_created", "account_id", "created_at"),
         Index("ix_vault_account_send", "account_id", "send_count"),
         Index("ix_vault_account_seen", "account_id", "last_seen_run_id"),
         Index("ix_vault_account_describe", "account_id", "describe_status"),
+        Index("ix_vault_account_script", "account_id", "script_id", "script_seq"),
     )
 
 
@@ -792,6 +811,63 @@ class VaultOfQueryLog(Base):
     query: Mapped[str] = mapped_column(String, primary_key=True)
     match_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     fetched_at: Mapped[datetime] = _ts_now()
+
+
+class VaultAiReviewItem(Base):
+    """A pending AI-proposed ACTION awaiting operator approval (suggest-only).
+
+    ACTIONS ONLY — folder assignment, PPV draft, daily-reminder send. Media
+    *descriptions* auto-apply and are NEVER queued here: routing the first-run
+    hundreds of descriptions through review would be worse than manual
+    (VAULT_AI_PLAN §0 / correction #4).
+
+    `status` lifecycle: pending → approved (operator OK'd, but nothing has hit
+    OF yet — approval ≠ mutation, correction #2) → applied (a consumer acted on
+    it) | rejected. `baseline_json` snapshots the inputs the proposal was built
+    from (media hash / overrides / folder / config) so a consumer can flag the
+    approval `stale` if the world changed underneath it before it was applied.
+    """
+    __tablename__ = "vault_ai_review_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String, nullable=False)  # folder|ppv|reminder
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    baseline_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _ts_now()
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        Index("ix_vault_ai_review_account_status", "account_id", "status"),
+        Index("ix_vault_ai_review_account_kind", "account_id", "kind", "status"),
+    )
+
+
+class VaultDailyUsage(Base):
+    """ACCOUNT-level daily image-rotation history for the daily-reminder card.
+
+    Distinct from `VaultSend` (fan-scoped, tip_reward): this backs the GLOBAL
+    "N unseen images/day" pool so the daily reminder never repeats a media
+    across the account within the rotation window. Record ONLY after an approved
+    send SUCCEEDS (select-then-record, mirroring pick_hot_teaser), so a
+    failed/rejected proposal never burns a media out of the pool. Composite PK
+    (account_id, media_id, sent_on) makes the record idempotent per day.
+    """
+    __tablename__ = "vault_daily_usage"
+
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    media_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    sent_on: Mapped[date] = mapped_column(Date, primary_key=True)
+    created_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        Index("ix_vault_daily_usage_account_day", "account_id", "sent_on"),
+    )
 
 
 class VaultResponseCache(Base):
@@ -1225,6 +1301,15 @@ class AccountAiConfig(Base):
     # 604800/sends_per_week). Absent/NULL → DISABLED, empty library. Own column to
     # avoid the nudge/webhook shallow-merge collision.
     ppv_library_config_json: Mapped[str | None] = mapped_column(Text)
+    # Vault-AI actions layer: per-account config for describe cadence, tier→price
+    # bands, folder taxonomy, and the daily-reminder card. JSON shape is frozen in
+    # plans/VAULT_AI_ACTIONS_CONTRACT.md — {enabled, suggest_only, models{},
+    # describe{cadence_hours, describe_all_cap_percent, ...}, pricing{bands by
+    # explicitness_tier}, folders{taxonomy}, daily_reminder{folder, lines,
+    # per_fan_cooldown_hours, ...}}. Absent/NULL → built-in defaults (DISABLED —
+    # master off, suggest-only; nothing describes/sends until a creator enables
+    # it). Own column to avoid the nudge/webhook shallow-merge collision.
+    vault_ai_config_json: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = _ts_now()
 
 

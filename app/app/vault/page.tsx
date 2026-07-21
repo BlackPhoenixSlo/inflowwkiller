@@ -12,6 +12,7 @@
  */
 
 import VaultManagePanel from "@/components/vault/VaultManagePanel";
+import VaultReviewTab from "@/components/vault/VaultReviewTab";
 
 export default function VaultPage() {
   return (
@@ -26,6 +27,7 @@ export default function VaultPage() {
       </header>
 
       <VaultManagePanel />
+      <VaultReviewTab />
     </div>
   );
 }

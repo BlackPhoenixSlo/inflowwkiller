@@ -25,6 +25,8 @@ import { proxyImage } from "@/lib/relay";
 import {
   usePpvLibraryConfig,
   useSavePpvLibraryConfig,
+  useSuggestPpvs,
+  type PpvSuggestions,
   usePpvPreview,
   usePostPpvToFeed,
   usePreviewPpvToFeed,
@@ -156,6 +158,11 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
 
   const [enabled, setEnabled] = useState(false);
   const [ppvs, setPpvs] = useState<PpvItem[]>([]);
+  const suggestM = useSuggestPpvs(accountId);
+  // Generated-but-not-yet-added proposals, and which of them are ticked.
+  const [suggested, setSuggested] = useState<PpvSuggestions | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [suggestNote, setSuggestNote] = useState("");
   // which card's vault picker is open (idx) — one picker now; previews are ⭐ taps
   const [picker, setPicker] = useState<number | null>(null);
   // thumbnails captured at pick time so the ⭐ grid shows real images this session
@@ -259,6 +266,54 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     markDirty();
     setPpvs((ps) => [...ps, { ...blankPpv(), ...patch }]);
   };
+  // Build a week of bundles from the vault. THREE steps, deliberately: the
+  // button only GENERATES (into `suggested`, nothing touched), the operator
+  // ticks which bundles they want, and only "Add" writes them into the editor —
+  // where they still have to be Saved, and then armed one by one. Suggestions
+  // are drafts (enabled:false, feed_enabled:false) at every stage, so no path
+  // through this can start a send.
+  const buildFromVault = () => {
+    setSuggested(null);
+    suggestM.mutate(undefined, {
+      onSuccess: (res) => {
+        setSuggested(res);
+        // Everything ticked by default except the thin ones — those are the
+        // bundles the vault could not fill, and they are the ones worth a look
+        // before they go in.
+        setPicked(new Set(res.ppvs.filter((p) => !res.notes[p.id]?.thin).map((p) => p.id)));
+      },
+    });
+  };
+
+  // Commit the ticked bundles. Re-running REPLACES a previous suggestion rather
+  // than duplicating it: ids are derived from the slot, and `_sync_rules`
+  // matches each PPV to its AutomationRule by that id.
+  const addSuggested = () => {
+    if (!suggested) return;
+    const take = suggested.ppvs.filter((p) => picked.has(p.id));
+    if (!take.length) return;
+    markDirty();
+    setPpvs((ps) => {
+      const incoming = new Map(take.map((p) => [p.id, p]));
+      const kept = ps.map((p) => {
+        const fresh = incoming.get(p.id);
+        if (!fresh) return p;
+        incoming.delete(p.id);
+        // Keep whatever the operator already tuned on this row (price, cadence,
+        // captions); refresh only the content. Never re-arm a row.
+        return { ...p, media_ids: fresh.media_ids,
+                 preview_options: fresh.preview_options };
+      });
+      return [...kept, ...[...incoming.values()].map((p) => ({ ...blankPpv(), ...p }))];
+    });
+    setSuggestNote(
+      `Added ${take.length} bundle${take.length === 1 ? "" : "s"}, all switched OFF. ` +
+      "Review the content, press Save, then turn on the ones you want.",
+    );
+    setSuggested(null);
+    setPicked(new Set());
+  };
+
   const dupPpv = (i: number) => {
     markDirty();
     setPpvs((ps) => {
@@ -278,6 +333,20 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
       if (j !== i) return p;
       const cur = p.preview_options ?? [];
       return { ...p, preview_options: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id] };
+    }));
+  };
+  // ✕ drop one piece of content from this set. It must come out of
+  // preview_options too: OF requires previews ⊆ media_files and rejects the send
+  // with "Wrong preview" otherwise, so removing a starred teaser has to unstar it.
+  const removeMedia = (i: number, id: number) => {
+    markDirty();
+    setPpvs((ps) => ps.map((p, j) => {
+      if (j !== i) return p;
+      return {
+        ...p,
+        media_ids: p.media_ids.filter((x) => x !== id),
+        preview_options: (p.preview_options ?? []).filter((x) => x !== id),
+      };
     }));
   };
   // each caption is its own box (a box can be one line OR a long multi-line caption)
@@ -518,6 +587,22 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
         </div>
       </div>
 
+      {/* Deliberately OUTSIDE the disabled fieldset below: a disabled <fieldset>
+          disables every control inside it, so keeping this here would mean the
+          operator had to ARM the library just to populate it. Building is
+          read-only and every suggestion is a draft, so it is safe with the
+          master switch off — which is exactly when you'd want it. */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <Button size="sm" variant="secondary" disabled={suggestM.isPending}
+          title="Read the described vault and propose a week of bundles — content, ⭐ teasers, price, cadence and caption style. Proposes only; you pick what to add, and everything arrives switched OFF."
+          onClick={buildFromVault}>
+          ✨ {suggestM.isPending ? "Building…" : "Build a week from vault"}
+        </Button>
+        <span className="text-[11px] text-fg-dim">
+          proposes bundles from your vault — nothing is added or sent until you say so
+        </span>
+      </div>
+
       <fieldset disabled={!enabled} className="space-y-4" style={{ opacity: enabled ? 1 : 0.5 }}>
         {ppvs.length === 0 && (
           <div className="text-xs text-fg-dim italic">No PPVs yet — add your first below.</div>
@@ -623,26 +708,41 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                     const isPrev = (p.preview_options ?? []).includes(id);
                     const thumb = thumbFor(id);
                     return (
-                      <button
+                      <div
                         key={id}
-                        type="button"
-                        onClick={() => togglePreview(i, id)}
-                        title={isPrev ? "Free teaser — tap to lock" : "Locked — tap to show free"}
                         className={cn(
-                          "relative w-14 h-14 rounded-md overflow-hidden border-2 bg-bg",
+                          "group relative w-14 h-14 rounded-md overflow-hidden border-2 bg-bg",
                           isPrev ? "border-accent" : "border-border",
                         )}
                       >
-                        {thumb ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={thumb} alt="" className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full grid place-items-center text-[10px] text-fg-dim">#{mi + 1}</div>
-                        )}
-                        <span className="absolute top-0.5 right-0.5 text-[12px] drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
-                          {isPrev ? "⭐" : "☆"}
-                        </span>
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => togglePreview(i, id)}
+                          title={isPrev ? "Free teaser — tap to lock" : "Locked — tap to show free"}
+                          className="block w-full h-full"
+                        >
+                          {thumb ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={thumb} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full grid place-items-center text-[10px] text-fg-dim">#{mi + 1}</div>
+                          )}
+                          <span className="absolute top-0.5 right-0.5 text-[12px] drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
+                            {isPrev ? "⭐" : "☆"}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeMedia(i, id)}
+                          title="Remove this from the set"
+                          aria-label="Remove this from the set"
+                          className="absolute top-0 left-0 w-4 h-4 grid place-items-center rounded-br-md
+                                     bg-black/60 text-white text-[10px] leading-none
+                                     opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-red-600"
+                        >
+                          ✕
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -904,12 +1004,71 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
         </div>
       </fieldset>
 
+      {suggestM.isError && (
+        <div className="text-[11px] text-warn">Couldn&apos;t build: {suggestM.error.message}</div>
+      )}
+      {suggestNote && <div className="text-[11px] text-fg-dim">{suggestNote}</div>}
+
+      {suggested && (
+        <fieldset className="rounded-lg border border-border p-3 space-y-2">
+          <legend className="px-1 text-sm font-medium">
+            Proposed week — nothing added yet
+          </legend>
+          <div className="text-[11px] text-fg-dim">
+            {suggested.summary.media_bound} vault items across {suggested.ppvs.length} bundles
+            {" · "}{suggested.summary.pools_used} caption styles
+            {" · "}{suggested.summary.sends_per_week} sends/week if you enable them all.
+            Tick what you want, then Add. Everything arrives switched OFF.
+          </div>
+          {suggested.ppvs.map((p) => {
+            const n = suggested.notes[p.id];
+            const on = picked.has(p.id);
+            return (
+              <label key={p.id}
+                className="flex items-start gap-2 rounded border border-border p-2 cursor-pointer">
+                <input type="checkbox" checked={on} className="mt-1"
+                  onChange={() => setPicked((cur) => {
+                    const next = new Set(cur);
+                    if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+                    return next;
+                  })} />
+                <span className="min-w-0">
+                  <span className="text-sm">
+                    {p.name} <span className="text-fg-dim">— {money(p.base_price_cents)}</span>
+                    {" "}<span className="text-fg-dim">· {p.sends_per_week}×/wk</span>
+                  </span>
+                  <span className="block text-[11px] text-fg-dim">
+                    {p.media_ids.length} media ({n?.photos ?? 0} photo / {n?.videos ?? 0} video)
+                    {" · "}{p.preview_options.length} free teaser
+                    {" · style "}{p.caption_pool_key}
+                    {n?.preview_unsafe ? " · ⛔ no free teaser possible — add a tame photo" : ""}
+                    {n?.thin ? " · ⚠️ under 10 — the vault is thin here" : ""}
+                    {n?.reused ? ` · ${n.reused} reused from another bundle` : ""}
+                  </span>
+                  {n?.why && <span className="block text-[11px] text-fg-dim">{n.why}</span>}
+                </span>
+              </label>
+            );
+          })}
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={addSuggested} disabled={picked.size === 0}>
+              Add {picked.size} to library
+            </Button>
+            <Button size="sm" variant="ghost"
+              onClick={() => { setSuggested(null); setPicked(new Set()); }}>
+              Discard
+            </Button>
+          </div>
+        </fieldset>
+      )}
+
       {/* What it all means */}
       <details className="rounded-lg border border-border p-3 text-xs text-fg-dim leading-relaxed">
         <summary className="cursor-pointer text-fg font-medium">What do these settings mean?</summary>
         <ul className="mt-2 space-y-1.5 list-disc pl-4">
           <li><b>+ Add PPV / templates / Duplicate</b> — start blank, start from a ready preset, or copy a PPV you already built (to make 20 fast).</li>
-          <li><b>Content + ⭐ teaser</b> — pick the photos/video the fan pays to unlock. Then tap ⭐ on any of them to show that one FREE as a teaser (rotates daily so resends look fresh). No star = fully locked.</li>
+          <li><b>✨ Build a week from vault</b> — reads your described vault and proposes a week of bundles: content, ⭐ teasers, price, cadence and caption style, each on the style written for its job. It only <b>proposes</b> — you tick what you want, press <b>Add</b>, then <b>Save</b>. Everything arrives <b>switched OFF</b>, so nothing can send until you turn it on. Running it again refreshes the content of bundles it made before instead of duplicating them, and keeps any price/caption you changed.</li>
+          <li><b>Content + ⭐ teaser</b> — pick the photos/video the fan pays to unlock. Then tap ⭐ on any of them to show that one FREE as a teaser (rotates daily so resends look fresh). No star = fully locked. Hover a thumbnail and hit the <b>✕</b> in its top-left corner to drop that one piece from the set (if it was the starred teaser, it un-stars too).</li>
           <li><b>Caption style</b> — a ready-made wording group; one is random-picked each send. Styles range from short &amp; sweet to long multi-paragraph (&quot;big bundle&quot;, &quot;exclusive list&quot;). <b>Your own captions</b> override it — <b>one box = one caption</b>, <b>+ Discount caption</b> drops in a price-token example, <b>Paste many</b> turns a pasted list into one caption each. Hit <b>Preview captions</b> to read them.</li>
           <li><b>Price words in captions</b> — type <span className="font-mono">{"{now}"}</span> for what that fan pays, <span className="font-mono">{"{was}"}</span> for an old price (auto ≈4× higher, so it always looks like a deal), and <span className="font-mono">{"{off}"}</span> for the % off. They fill in by themselves per fan group.</li>
           <li><b>Base price</b> — your starting price. Each fan group then pays base × their multiplier (whales more, quiet/never-paid less). The line above each card shows the range.</li>

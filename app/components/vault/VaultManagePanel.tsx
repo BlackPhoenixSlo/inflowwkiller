@@ -14,6 +14,13 @@ import { type DragEvent as ReactDragEvent, useEffect, useMemo, useRef, useState 
 import { useQueryClient } from "@tanstack/react-query";
 
 import { AccountChips } from "@/components/automations/ReadyMadePanel";
+import {
+  isDrmOnlyVideo,
+  progressiveVideoSrc,
+  VaultVideoPreview,
+} from "@/components/chat/VaultPicker";
+import VaultAiFoldersModal from "@/components/vault/VaultAiFoldersModal";
+import VaultDuplicatesModal from "@/components/vault/VaultDuplicatesModal";
 import VaultTile from "@/components/vault/VaultTile";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
@@ -32,14 +39,44 @@ import {
   sortOfFolders,
   startCollect,
   startDescribeAll,
+  useDescribePlan,
   startHarvestKeywords,
   useMirrorItems,
   useVaultCacheSummary,
 } from "@/hooks/useVaultCache";
-import { type VaultList, type VaultMedia } from "@/lib/relay";
+import { proxyImage, relay, type VaultList, type VaultMedia } from "@/lib/relay";
 
 type MediaType = "all" | "photo" | "video" | "gif" | "audio";
 type Tile = VaultMedia & { _ai?: Record<string, unknown> };
+
+// explicitness tiers the pricing bands key off (contract §1 bands_by_tier).
+const TIER_OPTIONS = ["safe", "suggestive", "explicit", "graphic", "unknown"];
+
+/** PATCH /admin/vault-ai/items/{id} — override + lock the operator-edited fields
+ *  (contract §6c). `fields` carries only the changed keys so only those lock. */
+async function saveVaultItem(
+  accountId: string,
+  mediaId: number,
+  fields: Record<string, unknown>,
+): Promise<{ item: Record<string, unknown>; locked: string[] }> {
+  return relay.patch(
+    `/admin/vault-ai/items/${mediaId}`,
+    { account_id: accountId, fields },
+    { accountId },
+  );
+}
+
+/** POST /admin/vault-ai/items/{id}/hide — OF's own "Remove from vault" (the same
+ *  call the duplicates sweep uses). The media is HIDDEN on OF, not destroyed, so
+ *  already-sent PPVs and live posts keep working — but OF exposes no unhide,
+ *  which is why the UI confirms first. */
+async function hideVaultItem(accountId: string, mediaId: number): Promise<void> {
+  await relay.post(
+    `/admin/vault-ai/items/${mediaId}/hide`,
+    { account_id: accountId },
+    { accountId },
+  );
+}
 
 const TYPE_TABS: { key: MediaType; label: string }[] = [
   { key: "all", label: "All" },
@@ -72,11 +109,17 @@ export default function VaultManagePanel() {
   const [searchRaw, setSearchRaw] = useState("");
   const [query, setQuery] = useState("");
   const [preview, setPreview] = useState<Tile | null>(null);
+  // Full-screen playback target — hands off to the picker's VaultVideoPreview.
+  const [playMedia, setPlayMedia] = useState<VaultMedia | null>(null);
   const [selectMode, setSelectMode] = useState(false);
+  const [showDupes, setShowDupes] = useState(false);
+  const [showAiFolders, setShowAiFolders] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState<string>("");
   const [describeAll, setDescribeAll] = useState<string>("");
   const [harvest, setHarvest] = useState<string>("");
+  const [promptVersion, setPromptVersion] = useState<"v1" | "v2">("v2");
+  const drawerRef = useRef<HTMLElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const loadMoreRef = useRef<() => void>(() => {});
@@ -89,6 +132,33 @@ export default function VaultManagePanel() {
     const t = setTimeout(() => setQuery(searchRaw.trim()), 250);
     return () => clearTimeout(t);
   }, [searchRaw]);
+
+  // Esc closes the full-screen player first, then the details drawer.
+  useEffect(() => {
+    if (!preview && !playMedia) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (playMedia) setPlayMedia(null);
+      else setPreview(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [preview, playMedia]);
+
+  // Clicking anywhere outside the drawer closes it, same as the ✕. Tile clicks
+  // still read as a SWAP rather than a close: this fires first, then the tile's
+  // own onClick sets the new preview in the same React batch. Skipped while the
+  // full-screen player is up, so clicking the player can't close the drawer
+  // underneath it.
+  useEffect(() => {
+    if (!preview || selectMode || playMedia) return;
+    const onDown = (e: MouseEvent) => {
+      const el = drawerRef.current;
+      if (el && !el.contains(e.target as Node)) setPreview(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [preview, selectMode, playMedia]);
 
   // On a search, harvest OF's own results in the BACKGROUND and merge them in.
   useEffect(() => {
@@ -105,6 +175,7 @@ export default function VaultManagePanel() {
   }, [query, accountId, qc]);
 
   const summary = useVaultCacheSummary(accountId);
+  const plan = useDescribePlan(accountId, promptVersion);
   const cachedCount = summary.data?.count ?? 0;
   const isCollecting = !!summary.data?.running;
   const run = summary.data?.last_run;
@@ -174,8 +245,13 @@ export default function VaultManagePanel() {
   // source is fetching — never flash an empty state during the swap.
   const showLoading = summary.isLoading || src.isLoading;
   const items = src.items as Tile[];
+  const pageFetching = src.isFetchingNextPage;
+  const pageError = !!src.error && !pageFetching;
   loadMoreRef.current = src.loadMore;
-  canLoadRef.current = src.hasMore && !src.isFetching;
+  // Gate on isFetchingNextPage, NOT isFetching: any background refetch of the
+  // pages we already hold (invalidate after a describe/edit, stale revalidate)
+  // flips isFetching, and gating on it wedges the trigger permanently.
+  canLoadRef.current = src.hasMore && !pageFetching;
 
   useEffect(() => {
     const el = sentinelRef.current;
@@ -184,6 +260,13 @@ export default function VaultManagePanel() {
     // the grid is its own scroll container now. `items.length` in the deps
     // re-attaches the observer once the sentinel mounts after the first load
     // (it doesn't exist while isLoading), otherwise nothing fires at the bottom.
+    //
+    // `pageFetching` is a dep too, so the observer is RE-ARMED every time a page
+    // fetch settles. Without it, a user already parked at the bottom sees the
+    // sentinel stay continuously intersecting: the callback fired once (or fired
+    // while a fetch was in flight, or the fetch failed and items.length never
+    // moved) and IO never fires again without a state change. Re-observing
+    // re-delivers the current intersection, so loading resumes on its own.
     const obs = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting && canLoadRef.current) loadMoreRef.current();
@@ -192,7 +275,18 @@ export default function VaultManagePanel() {
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [accountId, ofFolderId, type, query, sort, items.length]);
+  }, [accountId, ofFolderId, type, query, sort, items.length, pageFetching]);
+
+  // Belt-and-braces: a plain scroll listener on the pane. The observer covers
+  // the normal case, but it is one silent failure (root not yet mounted, a
+  // dropped page) away from stranding the grid — and the user is then stuck
+  // with no way to ask for more. This never wedges: it re-evaluates on every
+  // scroll event.
+  function onGridScroll() {
+    const el = scrollRef.current;
+    if (!el || !canLoadRef.current) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) loadMoreRef.current();
+  }
 
   const activeFolder = folders.find((f) => f.id === ofFolderId);
   const headerTitle = activeFolder?.name ?? "All media";
@@ -222,11 +316,27 @@ export default function VaultManagePanel() {
     }
   }
 
-  async function onDescribeAll() {
+  async function onDescribeAll(mode: "new" | "restage" | "force" = "new") {
     if (!accountId || describeAll) return;
+    if (mode !== "new") {
+      const n = mode === "force" ? (plan.data?.total ?? 0) : (plan.data?.restage ?? 0);
+      const est = ((promptVersion === "v2" ? 0.045 : 0.011) * n) / 100;
+      const what =
+        mode === "force"
+          ? `Re-describe ALL ${n} items`
+          : `Re-scan ${n} items still on the other prompt`;
+      if (!window.confirm(`${what} with prompt ${promptVersion.toUpperCase()}?\n\n` +
+          `Estimated ~$${est.toFixed(2)} of LLM spend against today's cap.`)) {
+        return;
+      }
+    }
     setDescribeAll("starting");
     try {
-      await startDescribeAll(accountId, false);
+      await startDescribeAll(accountId, {
+        force: mode === "force",
+        restage: mode === "restage",
+        promptVersion,
+      });
     } catch {
       setDescribeAll("");
       return;
@@ -241,6 +351,7 @@ export default function VaultManagePanel() {
     }
     setDescribeAll("");
     qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
+    qc.invalidateQueries({ queryKey: ["vault-describe-plan", accountId] });
   }
 
   async function onHarvest() {
@@ -322,6 +433,14 @@ export default function VaultManagePanel() {
     } finally {
       setBusy("");
     }
+  }
+
+  // After an edit save, merge the returned (effective-value) fields back into the
+  // open preview so the editor reflects the override immediately, and refresh the
+  // grid so the S9 overlay picks up the new description/tags.
+  function onSavedItem(updated: Record<string, unknown>) {
+    setPreview((prev) => (prev ? { ...prev, _ai: { ...(prev._ai ?? {}), ...updated } } : prev));
+    qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
   }
 
   async function setOrder(m: VaultMedia, value: number | null) {
@@ -436,13 +555,39 @@ export default function VaultManagePanel() {
           </button>
           <button
             type="button"
-            onClick={onDescribeAll}
+            onClick={() => onDescribeAll("new")}
             disabled={!!describeAll || cachedCount === 0}
             className="px-3 py-1.5 rounded-lg text-sm border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
-            title="Describe every un-described item (background, cheap)"
+            title="Describe every un-described item (background)"
           >
-            {describeAll ? `Describing ${describeAll}` : "Describe all"}
+            {describeAll
+              ? `Describing ${describeAll}`
+              : `Describe all${plan.data?.undescribed ? ` (${plan.data.undescribed})` : ""}`}
           </button>
+          {/* Which bake-off prompt the sweep runs. B is the default and the only
+              one that emits the structured taxonomy auto-foldering needs; A is
+              ~4× cheaper for a rough first pass over a huge vault. */}
+          <select
+            value={promptVersion}
+            onChange={(e) => setPromptVersion(e.target.value as "v1" | "v2")}
+            disabled={!!describeAll}
+            title="Describe prompt variant"
+            className="px-2 py-1.5 rounded-lg text-sm bg-bg-elev-1 border border-border text-fg-dim"
+          >
+            <option value="v2">B · rich</option>
+            <option value="v1">A · fast</option>
+          </select>
+          {!!plan.data?.restage && !describeAll && (
+            <button
+              type="button"
+              onClick={() => onDescribeAll("restage")}
+              disabled={cachedCount === 0}
+              className="px-3 py-1.5 rounded-lg text-sm border border-amber-500/50 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 disabled:opacity-50"
+              title="Re-describe items that were described with the OTHER prompt version. Resumable — already-current rows are skipped."
+            >
+              Re-scan old ({plan.data.restage})
+            </button>
+          )}
           <button
             type="button"
             onClick={onHarvest}
@@ -451,6 +596,24 @@ export default function VaultManagePanel() {
             title="Run OF's own search across ~50 selling keywords and fold into local search"
           >
             {harvest ? `Harvesting ${harvest}` : "Harvest OF (50)"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowDupes(true)}
+            disabled={cachedCount === 0}
+            className="px-3 py-1.5 rounded-lg text-sm border border-rose-500/50 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 disabled:opacity-50"
+            title="Find re-uploaded copies and remove them from the OF vault (review + confirm first)"
+          >
+            Duplicates
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowAiFolders(true)}
+            disabled={cachedCount === 0}
+            className="px-3 py-1.5 rounded-lg text-sm border border-violet-500/50 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 disabled:opacity-50"
+            title="Group the vault into shoots and send lanes — preview first, nothing is created until you confirm"
+          >
+            Build AI folders
           </button>
         </div>
       </div>
@@ -662,7 +825,7 @@ export default function VaultManagePanel() {
             ))}
           </div>
 
-          <div ref={scrollRef} className="p-3 flex-1 min-h-0 overflow-y-auto">
+          <div ref={scrollRef} onScroll={onGridScroll} className="p-3 flex-1 min-h-0 overflow-y-auto">
             {showLoading ? (
               <div className="text-sm text-fg-dim py-10 text-center">Loading…</div>
             ) : items.length === 0 ? (
@@ -678,6 +841,7 @@ export default function VaultManagePanel() {
                       media={m}
                       accountId={accountId}
                       onClick={setPreview}
+                      onPlay={setPlayMedia}
                       selected={preview?.id === m.id}
                       selectMode={selectMode}
                       checked={selected.has(m.id)}
@@ -688,8 +852,22 @@ export default function VaultManagePanel() {
                   ))}
                 </div>
                 <div ref={sentinelRef} className="h-8" />
-                <div className="text-center text-xs text-fg-dim pt-1">
-                  {src.isFetching ? "Loading…" : `${items.length} shown${src.hasMore ? " · scroll for more" : ""}`}
+                <div className="text-center text-xs text-fg-dim pt-1 pb-2">
+                  {pageFetching ? (
+                    "Loading…"
+                  ) : src.hasMore ? (
+                    // Always clickable — auto-load is the happy path, but the
+                    // user must never be stranded staring at a dead hint line.
+                    <button
+                      type="button"
+                      onClick={() => src.loadMore()}
+                      className="px-3 py-1.5 rounded-lg border border-border bg-bg-elev-1 text-fg-dim hover:text-fg hover:border-fg-dim transition-colors"
+                    >
+                      {pageError ? "Couldn’t load more · retry" : `${items.length} shown · load more`}
+                    </button>
+                  ) : (
+                    `${items.length} shown`
+                  )}
                 </div>
               </>
             )}
@@ -697,59 +875,533 @@ export default function VaultManagePanel() {
         </section>
       </div>
 
-      {preview && !selectMode && (
-        <div className="rounded-lg border border-border bg-bg-elev-1/40 p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-medium">
+      {preview && !selectMode && accountId && (
+        // Right-side slide-over, deliberately WITHOUT a dimming backdrop so the
+        // grid stays visible AND clickable behind it — click another tile and the
+        // drawer just swaps to that item.
+        <aside
+          ref={drawerRef}
+          className="fixed right-0 top-0 z-40 h-full w-[min(430px,92vw)] flex flex-col border-l border-border bg-panel/95 backdrop-blur-sm shadow-2xl"
+        >
+          <header className="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
+            <div className="text-sm font-medium truncate">
               #{preview.id} · {preview.type}
               {preview.duration ? ` · ${Math.round(preview.duration)}s` : ""}
             </div>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => describeOne(preview)}
+                disabled={!!busy}
+                className="px-2.5 py-1 rounded-md text-xs border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
+              >
+                {busy === "describing"
+                  ? "Describing…"
+                  : (preview._ai as { describe_status?: string } | undefined)?.describe_status === "described"
+                  ? "Re-describe"
+                  : "Describe"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPreview(null)}
+                aria-label="Close details"
+                title="Close (Esc)"
+                className="w-7 h-7 grid place-items-center rounded-md border border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1"
+              >
+                ✕
+              </button>
+            </div>
+          </header>
+          {/* The editor owns the order — action bar (sticky) → media → the
+              fields you act on → the rest below the fold. */}
+          <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
+            <VaultItemEditor
+              key={preview.id}
+              media={preview}
+              accountId={accountId}
+              onSaved={onSavedItem}
+              mediaSlot={
+                <VaultPreviewMedia
+                  key={`pv-${preview.id}`}
+                  media={preview}
+                  accountId={accountId}
+                  onExpand={() => setPlayMedia(preview)}
+                />
+              }
+              deleteSlot={
+                <VaultDeleteButton
+                  key={`del-${preview.id}`}
+                  media={preview}
+                  accountId={accountId}
+                  onDeleted={() => {
+                    setPreview(null);
+                    qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
+                  }}
+                />
+              }
+            />
+          </div>
+        </aside>
+      )}
+      {playMedia && (
+        <VaultVideoPreview
+          media={playMedia}
+          accountId={accountId}
+          onClose={() => setPlayMedia(null)}
+        />
+      )}
+      {showDupes && accountId && (
+        <VaultDuplicatesModal accountId={accountId} onClose={() => setShowDupes(false)} />
+      )}
+      {showAiFolders && accountId && (
+        <VaultAiFoldersModal accountId={accountId} onClose={() => setShowAiFolders(false)} />
+      )}
+    </div>
+  );
+}
+
+/** Media block in the details drawer.
+ *
+ *  A selected video plays INLINE with native controls (same `.vault-video`
+ *  styling the full-screen player uses), so watching a clip never leaves the
+ *  grid. The ⤢ button hands off to the picker's `VaultVideoPreview` for
+ *  full-screen. DRM videos have no progressive mp4 to play, so they fall back to
+ *  the still + a ▶ that opens VaultVideoPreview's poster-frame lightbox — the
+ *  same behaviour as the picker. Photos just render. */
+function VaultPreviewMedia({
+  media: m,
+  accountId,
+  onExpand,
+}: {
+  media: VaultMedia;
+  accountId: string;
+  onExpand: () => void;
+}) {
+  const isVideo = m.type === "video";
+  const rawSrc = isVideo ? progressiveVideoSrc(m) : null;
+  const drmOnly = isVideo && isDrmOnlyVideo(m);
+  const playable = isVideo && !!rawSrc && !drmOnly;
+  const still =
+    (m as unknown as { _thumb?: string })._thumb ||
+    proxyImage(
+      m.files?.full?.url || m.files?.preview?.url || m.files?.thumb?.url,
+      accountId,
+    );
+
+  return (
+    <div className="relative w-full rounded-lg overflow-hidden bg-black">
+      {playable ? (
+        <video
+          src={proxyImage(rawSrc, accountId)}
+          poster={still || undefined}
+          controls
+          loop
+          playsInline
+          className="vault-video w-full max-h-[30vh] object-contain bg-black"
+        />
+      ) : (
+        <>
+          {still && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={still}
+              alt=""
+              aria-hidden
+              className="w-full max-h-[30vh] object-contain"
+            />
+          )}
+          {isVideo && (
             <button
               type="button"
-              onClick={() => describeOne(preview)}
-              disabled={!!busy}
-              className="px-3 py-1 rounded-md text-xs border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
+              onClick={onExpand}
+              title={drmOnly ? "DRM — show preview frames" : "Preview video"}
+              aria-label="Preview video"
+              className="absolute inset-0 grid place-items-center group"
             >
-              {busy === "describing"
-                ? "Describing…"
-                : (preview._ai as { describe_status?: string } | undefined)?.describe_status === "described"
-                ? "Re-describe"
-                : "Describe"}
+              <span className="w-14 h-14 rounded-full bg-black/60 border border-white/70 grid place-items-center text-white text-xl pl-1 transition-colors group-hover:bg-black/85">
+                ▶
+              </span>
             </button>
+          )}
+        </>
+      )}
+      <button
+        type="button"
+        onClick={onExpand}
+        title="Full screen"
+        aria-label="Full screen"
+        className="absolute top-1 right-1 px-1.5 py-0.5 rounded bg-black/60 hover:bg-black/85 text-white text-xs leading-none"
+      >
+        ⤢
+      </button>
+    </div>
+  );
+}
+
+/** Remove-from-vault control. Two-step by design: this calls OF's own "Remove
+ *  from vault", and OF exposes NO unhide — so a stray click must never be able
+ *  to take media off the vault. The copy says exactly what happens (hidden, not
+ *  destroyed; sent PPVs keep working) so the confirm is an informed one. */
+function VaultDeleteButton({
+  media,
+  accountId,
+  onDeleted,
+}: {
+  media: VaultMedia;
+  accountId: string;
+  onDeleted: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function doDelete() {
+    setBusy(true);
+    setErr("");
+    try {
+      await hideVaultItem(accountId, media.id);
+      onDeleted();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "remove failed");
+      setBusy(false);
+    }
+  }
+
+  if (!confirming) {
+    return (
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        className="px-3 py-1.5 rounded-md text-sm border border-rose-500/50 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20"
+      >
+        Remove from vault
+      </button>
+    );
+  }
+  return (
+    <div className="w-full rounded-md border border-rose-500/50 bg-rose-500/10 p-2.5 space-y-2">
+      <div className="text-xs text-rose-200 leading-snug">
+        Remove <b>#{media.id}</b> from the OnlyFans vault? This uses OF&rsquo;s own
+        “Remove from vault”, so it is <b>hidden, not destroyed</b> — already-sent
+        PPVs and live posts keep working. <b>OnlyFans offers no undo.</b>
+      </div>
+      {err && <div className="text-xs text-rose-300">{err}</div>}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={doDelete}
+          className="flex-1 px-3 py-1.5 rounded-md text-sm border border-rose-500/60 bg-rose-500/20 text-rose-200 hover:bg-rose-500/30 disabled:opacity-50"
+        >
+          {busy ? "Removing…" : "Yes, remove"}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setConfirming(false)}
+          className="px-3 py-1.5 rounded-md text-sm border border-border hover:bg-bg-elev-1 disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Click-to-edit detail/editor for one tile: the FULL description, short tags,
+ *  explicitness tier, and suggested caption/script — all editable. Save writes
+ *  ONLY the changed fields through the override+lock endpoint (contract §6c), so
+ *  a later Describe rerun can't clobber what the operator touched. */
+/** Read-only view of the V2 describe taxonomy (`_ai.fields`, projected straight
+ *  from `ai_fields_json`). These 20-odd fields have always been STORED — acts,
+ *  clothing_state, beats, primary_folder, penetration, camera, confidence — but
+ *  until now nothing rendered them, so a described item looked like it only had
+ *  a sentence and some tags. `beats` is the clip's ordered progression and is
+ *  the reason a long video is worth describing at all, so it leads.
+ *
+ *  Not editable: the editable, lockable fields are the real columns above. This
+ *  is the raw AI read-out, shown so you can see what the model actually found. */
+// What the model found, ranked by what an operator actually acts on. PRIMARY is
+// shown expanded; everything else sits below the fold behind a toggle. `beats`
+// leads because it's the clip's ordered progression — the whole reason a long
+// video is worth describing.
+const AI_PRIMARY = [
+  "acts",
+  "clothing_state",
+  "penetration",
+  "position",
+  "primary_folder",
+  "explicitness",
+] as const;
+// Internal bookkeeping stamps, not model output.
+const AI_HIDE = new Set(["beats", "description", "tags", "_prompt_version", "_frames"]);
+
+function fmtAi(v: unknown): string {
+  if (Array.isArray(v)) return v.map(String).join(", ");
+  if (v === true) return "yes";
+  if (v === false) return "no";
+  return String(v);
+}
+
+function AiRows({ entries }: { entries: [string, unknown][] }) {
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[12px] m-0">
+      {entries.map(([k, v]) => (
+        <div key={k} className="contents">
+          <dt className="text-fg-dim whitespace-nowrap">{k.replace(/_/g, " ")}</dt>
+          <dd className="m-0 text-fg break-words">{fmtAi(v)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/** The V2 describe taxonomy (`_ai.fields`, projected from `ai_fields_json`).
+ *  These ~20 fields have always been STORED; until now nothing rendered them,
+ *  so a described item looked like it only had a sentence and some tags.
+ *  Read-only — the editable, lockable fields are the real columns. */
+function AiFieldsPanel({ fields }: { fields?: Record<string, unknown> }) {
+  const [open, setOpen] = useState(false);
+  if (!fields || Object.keys(fields).length === 0) return null;
+
+  const beats = Array.isArray(fields.beats) ? (fields.beats as unknown[]) : [];
+  const live = Object.entries(fields).filter(
+    ([k, v]) =>
+      !AI_HIDE.has(k) && v !== null && v !== "" && v !== "none" &&
+      !(Array.isArray(v) && v.length === 0),
+  );
+  const primary = live.filter(([k]) => (AI_PRIMARY as readonly string[]).includes(k));
+  const rest = live.filter(([k]) => !(AI_PRIMARY as readonly string[]).includes(k));
+
+  return (
+    <div className="space-y-2">
+      {beats.length > 0 && (
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-fg-dim mb-1">
+            What happens ({beats.length} steps)
           </div>
-          <AiDetail ai={preview._ai as Record<string, unknown> | undefined} />
+          <ol className="list-decimal pl-4 text-[12.5px] text-fg space-y-0.5 m-0">
+            {beats.map((b, i) => (
+              <li key={i}>{String(b)}</li>
+            ))}
+          </ol>
+        </div>
+      )}
+      {primary.length > 0 && <AiRows entries={primary} />}
+      {rest.length > 0 && (
+        <div className="rounded-lg border border-border bg-bg-elev-1/40">
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[11px] uppercase tracking-wide text-fg-dim hover:text-fg"
+          >
+            <span>{open ? "▾" : "▸"}</span>
+            <span>More AI detail</span>
+            <span className="text-fg-dim/70 normal-case tracking-normal">
+              {rest.length} fields
+            </span>
+          </button>
+          {open && (
+            <div className="px-2.5 pb-2.5">
+              <AiRows entries={rest} />
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function AiDetail({ ai }: { ai?: Record<string, unknown> }) {
-  if (!ai || (!ai.description && !ai.video_description && !(ai.tags as unknown[])?.length)) {
-    return <div className="text-xs text-fg-dim">Not described yet — click Describe.</div>;
+function VaultItemEditor({
+  media,
+  accountId,
+  onSaved,
+  mediaSlot,
+  deleteSlot,
+}: {
+  media: Tile;
+  accountId: string;
+  onSaved: (updated: Record<string, unknown>) => void;
+  /** The preview image/player. Rendered BELOW the action bar so Save and Remove
+   *  are reachable without scrolling past a tall video. */
+  mediaSlot?: React.ReactNode;
+  deleteSlot?: React.ReactNode;
+}) {
+  const ai = (media._ai ?? {}) as Record<string, unknown>;
+  const described =
+    !!ai.description || !!ai.video_description || !!(ai.tags as unknown[] | undefined)?.length;
+
+  const priceCents = ai.suggested_price_cents as number | undefined;
+
+  const init = {
+    desc: (ai.description || ai.video_description || "") as string,
+    tags: (((ai.tags as string[] | undefined) ?? []) as string[]).join(", "),
+    tier: (ai.explicitness_tier as string | undefined) ?? "",
+    cap: (ai.suggested_caption as string | undefined) ?? "",
+    script: (ai.suggested_script as string | undefined) ?? "",
+    price: typeof priceCents === "number" ? (priceCents / 100).toFixed(2) : "",
+  };
+
+  const [desc, setDesc] = useState(init.desc);
+  const [tags, setTags] = useState(init.tags);
+  const [tier, setTier] = useState(init.tier);
+  const [cap, setCap] = useState(init.cap);
+  const [script, setScript] = useState(init.script);
+  const [priceStr, setPriceStr] = useState(init.price);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState<string[] | null>(null);
+  const [err, setErr] = useState("");
+  const [locked, setLocked] = useState<Set<string>>(new Set());
+
+  // Only fields whose value actually changed are sent (and thus locked).
+  const changed: Record<string, unknown> = {};
+  if (desc !== init.desc) changed.description = desc;
+  if (tags !== init.tags) changed.tags = tags;
+  if (tier !== init.tier) changed.explicitness_tier = tier;
+  if (cap !== init.cap) changed.suggested_caption = cap;
+  if (script !== init.script) changed.suggested_script = script;
+  // Dollars in the input → cents on the wire. Blank clears the price; garbage is
+  // simply not sent, so a typo can't wipe a real price.
+  const priceTrimmed = priceStr.trim();
+  if (priceTrimmed !== init.price) {
+    if (priceTrimmed === "") {
+      changed.suggested_price_cents = null;
+    } else {
+      const n = Number(priceTrimmed.replace(/[^0-9.]/g, ""));
+      if (Number.isFinite(n)) changed.suggested_price_cents = Math.round(n * 100);
+    }
   }
-  const desc = (ai.description || ai.video_description || "") as string;
-  const tags = (ai.tags as string[] | undefined) ?? [];
-  const tier = ai.explicitness_tier as string | undefined;
-  const cap = ai.suggested_caption as string | undefined;
-  const price = ai.suggested_price_cents as number | undefined;
+  const dirty = Object.keys(changed).length > 0;
+
+  async function onSave() {
+    if (!dirty || saving) return;
+    setSaving(true);
+    setErr("");
+    setSaved(null);
+    try {
+      const res = await saveVaultItem(accountId, media.id, changed);
+      setLocked(new Set(res.locked ?? []));
+      setSaved(Object.keys(changed));
+      onSaved(res.item ?? {});
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const lockBadge = (field: string) =>
+    locked.has(field) ? <span className="ml-1 text-[10px] text-amber-400" title="Locked — a Describe rerun won't overwrite this">🔒</span> : null;
+
+  const label = "text-[11px] uppercase tracking-wide text-fg-dim";
+  const inputCls =
+    "w-full px-2 py-1.5 rounded-md text-sm bg-bg-elev-1 border border-border focus:border-accent outline-none";
+
   return (
-    <div className="space-y-1.5 text-sm">
-      {desc && <div className="text-fg">{desc}</div>}
-      {tags.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {tags.map((t) => (
-            <span key={t} className="px-1.5 py-0.5 rounded bg-bg-elev-1 border border-border text-[11px] text-fg-dim">
-              {t}
+    <div className="space-y-2.5">
+      {/* Actions first, and sticky: Save and Remove stay reachable no matter how
+          far down the fields you've scrolled, and you never have to scroll PAST
+          a tall video to reach them. */}
+      <div className="sticky top-0 z-10 -mx-3 px-3 py-2 bg-panel/95 backdrop-blur-sm border-b border-border flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={!dirty || saving}
+          className="px-3 py-1.5 rounded-lg text-sm border border-accent bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-40"
+        >
+          {saving ? "Saving…" : "Save & lock"}
+        </button>
+        {deleteSlot}
+        <span className="ml-auto text-right">
+          {saved && !err && (
+            <span className="text-xs text-emerald-400">
+              Saved — locked {saved.length} field{saved.length === 1 ? "" : "s"}
             </span>
-          ))}
-        </div>
-      )}
-      <div className="flex gap-3 text-[11px] text-fg-dim">
-        {tier && <span>tier: {tier}</span>}
-        {cap && <span>caption: “{cap}”</span>}
-        {typeof price === "number" && <span>${(price / 100).toFixed(2)}</span>}
+          )}
+          {err && <span className="text-xs text-red-400">{err}</span>}
+        </span>
       </div>
+      {mediaSlot}
+      {!described && (
+        <div className="text-xs text-fg-dim">Not described yet — click Describe, or write fields below.</div>
+      )}
+      <div>
+        <div className={label}>Description{lockBadge("description")}</div>
+        <textarea
+          value={desc}
+          onChange={(e) => setDesc(e.target.value)}
+          rows={3}
+          placeholder="Full description…"
+          className={cx(inputCls, "mt-1 resize-y")}
+        />
+      </div>
+      {/* The AI read-out sits directly under the description — it's what you
+          check the description against, and it drives foldering. */}
+      <AiFieldsPanel fields={ai.fields as Record<string, unknown> | undefined} />
+      <div>
+        <div className={label}>Tags{lockBadge("tags")}</div>
+        <input
+          value={tags}
+          onChange={(e) => setTags(e.target.value)}
+          placeholder="comma, separated, tags"
+          className={cx(inputCls, "mt-1")}
+        />
+      </div>
+      <div className="flex gap-2">
+        <div className="flex-1">
+          <div className={label}>Tier{lockBadge("explicitness_tier")}</div>
+          <select
+            value={TIER_OPTIONS.includes(tier) ? tier : ""}
+            onChange={(e) => setTier(e.target.value)}
+            className={cx(inputCls, "mt-1")}
+          >
+            <option value="">—</option>
+            {TIER_OPTIONS.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex-1">
+          <div className={label}>Price{lockBadge("suggested_price_cents")}</div>
+          <div className="relative mt-1">
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-sm text-fg-dim pointer-events-none">
+              $
+            </span>
+            <input
+              value={priceStr}
+              onChange={(e) => setPriceStr(e.target.value)}
+              inputMode="decimal"
+              placeholder="—"
+              title="Your price for this media. Attaching media in chat prices the message at the HIGHEST price among the selected items."
+              className={cx(inputCls, "pl-5")}
+            />
+          </div>
+        </div>
+      </div>
+      <div>
+        <div className={label}>Suggested caption{lockBadge("suggested_caption")}</div>
+        <input
+          value={cap}
+          onChange={(e) => setCap(e.target.value)}
+          placeholder="One-line PPV/DM caption…"
+          className={cx(inputCls, "mt-1")}
+        />
+      </div>
+      <div>
+        <div className={label}>Suggested script{lockBadge("suggested_script")}</div>
+        <textarea
+          value={script}
+          onChange={(e) => setScript(e.target.value)}
+          rows={2}
+          placeholder="Longer sell copy the AI Chatter can send…"
+          className={cx(inputCls, "mt-1 resize-y")}
+        />
+      </div>
+      {!dirty && !saved && !err && (
+        <div className="text-xs text-fg-dim pt-0.5">Edit a field to enable save.</div>
+      )}
     </div>
   );
 }

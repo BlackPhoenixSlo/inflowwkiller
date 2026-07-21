@@ -15,6 +15,9 @@ import {
   videoPosterFrames,
   isDrmOnlyVideo,
   evenFrameIndex,
+  aiCaptionFor,
+  useCaptionOverlay,
+  VaultAiCaptionOverlay,
 } from "@/components/chat/VaultPicker";
 import { proxyImage, proxyScrubFrame, type VaultMedia } from "@/lib/relay";
 
@@ -42,31 +45,45 @@ function fmtDuration(sec?: number): string | null {
 interface AiMeta {
   describe_status?: string | null;
   manual_order?: number | null;
+  description?: string | null;
+  video_description?: string | null;
+  tags?: string[] | null;
 }
 
 export interface VaultTileProps {
   media: VaultMedia & { _ai?: AiMeta };
   accountId: string | null;
   onClick?: (m: VaultMedia) => void;
+  /** When set, the duration pill becomes a play button that opens the picker's
+   *  full-screen VaultVideoPreview (one click, same as the chat picker). */
+  onPlay?: (m: VaultMedia) => void;
   selected?: boolean;
   selectMode?: boolean;
   checked?: boolean;
   onCheck?: (m: VaultMedia) => void;
   showOrder?: boolean;
   onOrder?: (m: VaultMedia, value: number | null) => void;
+  /** Force the AI caption overlay on/off. When omitted, follows the persisted
+   *  manager toggle (default ON). */
+  aiCaption?: boolean;
 }
 
 export default function VaultTile({
   media: m,
   accountId,
   onClick,
+  onPlay,
   selected,
   selectMode,
   checked,
   onCheck,
   showOrder,
   onOrder,
+  aiCaption,
 }: VaultTileProps) {
+  const [managerCaptionOn] = useCaptionOverlay("manager");
+  const captionOn = aiCaption ?? managerCaptionOn;
+  const caption = captionOn ? aiCaptionFor(m) : null;
   const [hovering, setHovering] = useState(false);
   const [scrubIdx, setScrubIdx] = useState(0);
   const [scrubReady, setScrubReady] = useState(false);
@@ -208,6 +225,8 @@ export default function VaultTile({
           />
         ))}
 
+      {caption && <VaultAiCaptionOverlay caption={caption} />}
+
       {/* selection checkbox */}
       {selectMode && (
         <div
@@ -239,9 +258,38 @@ export default function VaultTile({
         <div className="absolute top-1 left-1 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-1 ring-black/40" title="described" />
       )}
 
-      {(isVideo || m.type === "gif") && (
+      {/* The duration pill IS the play affordance, same as the picker. A nested
+       *  <button> isn't legal HTML inside the clickable tile, so role="button" +
+       *  stopPropagation keeps tile-click = open detail and pill-click = play. */}
+      {isVideo && onPlay && (
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(e) => {
+            e.stopPropagation();
+            onPlay(m);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              onPlay(m);
+            }
+          }}
+          title="Preview video"
+          className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/60 hover:bg-black/85 text-white text-[10px] leading-none cursor-pointer select-none"
+        >
+          ▶ {dur ?? ""}
+        </span>
+      )}
+      {isVideo && !onPlay && (
         <div className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px] leading-none pointer-events-none">
-          {isVideo ? dur ?? "▶" : "GIF"}
+          {dur ?? "▶"}
+        </div>
+      )}
+      {m.type === "gif" && (
+        <div className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px] leading-none pointer-events-none">
+          GIF
         </div>
       )}
       {drmOnly && (

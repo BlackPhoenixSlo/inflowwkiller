@@ -884,6 +884,35 @@ class OFClient:
         returned full media for freshly-picked items, never the saved ids."""
         return self.get_json(f"{API_BASE}/vault/media/{int(media_id)}")
 
+    def vault_media_posts(self, media_id: int, **params: Any) -> dict:
+        """GET /api2/v2/vault/media/{id}/posts — posts this media is attached to.
+        Used as the pre-flight guard before hiding a duplicate: a copy that is
+        carrying a live post is not a safe thing to pull out of the vault."""
+        return self.get_json(
+            f"{API_BASE}/vault/media/{int(media_id)}/posts", params=params or None
+        )
+
+    def hide_vault_media(self, media_ids: list[int]) -> dict:
+        """PUT /api2/v2/vault/media/hidden — OF's own "Remove from vault".
+
+        This IS what the OF web app does when you select vault items and click
+        Remove: `deleteMedias()` → confirm dialog → `hideMedia()` →
+        `hideMediaVaultByIds()` → this endpoint with {"mediaIds": [...]}, after
+        which the store sets `hidden = true` on each item (read out of OF's own
+        bundle, `041_46939.js`).
+
+        There is NO hard-delete for vault media in OF's API — the only vault
+        DELETEs are on `vault/lists` (folders). So this hides the media from the
+        vault for real, on OnlyFans, WITHOUT destroying it: anything already
+        attached to a sent PPV or a live post keeps working. No unhide call
+        exists in OF's bundle either, so treat it as one-way.
+        """
+        ids = [int(m) for m in media_ids]
+        if not ids:
+            return {"success": True, "hidden": 0}
+        return self.put_json(f"{API_BASE}/vault/media/hidden",
+                             json_body={"mediaIds": ids})
+
     def vault_lists(self, *, view: str = "main", limit: int = 10, offset: int = 0) -> dict:
         """GET /api2/v2/vault/lists — vault folders / lists.
         The mandatory `view` value is **`main`** (captured from OF's web app
