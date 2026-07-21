@@ -36,7 +36,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
 from sqlalchemy import select, update
 
 from db.engine import get_session
@@ -69,10 +68,19 @@ def band_of(distance: int) -> str:
 
 
 # ── Hashing ─────────────────────────────────────────────────────────
+#
+# Pillow is imported lazily, INSIDE the functions that need it. It is a
+# capture-host dep that requirements.txt deliberately keeps out of the relay
+# image, and a module-level `from PIL import Image` here crash-looped the whole
+# relay on deploy — every send down because a duplicate-finder could not load an
+# image library. A vault helper must never be able to do that: if Pillow is
+# absent, `fingerprint_file` returns None and only dupe detection goes quiet.
 
-def dhash(img: Image.Image) -> int:
+
+def dhash(img: "Image.Image") -> int:
     """64-bit gradient hash: each bit = "is this pixel darker than its right
     neighbour". Insensitive to the brightness/contrast shift a re-encode adds."""
+    from PIL import Image
     g = img.convert("L").resize((9, 8), Image.LANCZOS)
     px = list(g.getdata())
     bits = 0
@@ -83,8 +91,9 @@ def dhash(img: Image.Image) -> int:
     return bits
 
 
-def ahash(img: Image.Image) -> int:
+def ahash(img: "Image.Image") -> int:
     """64-bit mean hash: each bit = "is this pixel above the image mean"."""
+    from PIL import Image
     g = img.convert("L").resize((8, 8), Image.LANCZOS)
     px = list(g.getdata())
     avg = sum(px) / 64.0
@@ -120,6 +129,7 @@ def fingerprint_file(path: Path) -> tuple[str, int, int] | None:
     """(md5, dhash, ahash) for a cached thumb. None if missing/unreadable — a
     truncated cache file must not take down a whole scan."""
     try:
+        from PIL import Image
         raw = path.read_bytes()
         with Image.open(path) as im:
             im.load()

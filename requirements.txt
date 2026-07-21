@@ -1,18 +1,15 @@
 # Runtime deps for the relay (Docker). Pinned to the versions that this
 # project was developed against — bump deliberately.
 #
-# Capture-only deps (Playwright, Incogniton automation, Pillow for image
-# hashing during upload tests) are intentionally NOT here. They live on the
-# host where the browser does, and the Docker container only ever runs the
-# server / paste-curl bootstrap / WebSocket pump.
+# Capture-only deps (Playwright, Incogniton automation) are intentionally NOT
+# here. They live on the host where the browser does, and the Docker container
+# only ever runs the server / paste-curl bootstrap / WebSocket pump.
 
 fastapi==0.136.1
 uvicorn[standard]==0.47.0
 curl_cffi==0.15.0
 pydantic==2.13.4
 python-multipart==0.0.29
-# HTTP client for the LLM provider calls (service/llm_client.py — DeepSeek/Grok).
-httpx==0.28.1
 websockets==16.0
 # DB layer (phase A) — SQLAlchemy 2.x async + SQLModel for typed rows + Alembic
 # for versioned migrations. aiosqlite is the async SQLite driver; swap to
@@ -40,3 +37,9 @@ google-api-python-client==2.197.0
 google-auth==2.53.0
 google-auth-oauthlib==1.4.0
 google-auth-httplib2==0.4.0
+# Perceptual hashing for vault duplicate detection (service/vault_dupes.py) and
+# frame downscaling before a vision call (vault_ai_api). Previously host-only —
+# it now runs IN the relay, so the image needs it. vault_dupes still imports it
+# lazily: a missing image library must degrade dupe detection, not boot the
+# relay into a crash loop.
+Pillow==12.2.0
