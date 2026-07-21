@@ -2575,21 +2575,25 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
     #
     #   * the exposure flags. A described item came back with no `_flags_v` at
     #     all, the gated lanes emptied, and the flags pass had to be run again.
-    #   * every operator correction. `locked_fields_json` protected the four
-    #     COLUMNS below and nothing inside this blob, so a dispute the operator
-    #     had settled reverted to the model's answer on the next re-scan — the
-    #     opposite of what locking it promised.
+    #   * the dispute corrections. There are TWO override mechanisms and they
+    #     differ: `edit_item` leaves this blob as the model's raw answer and
+    #     wins at READ time through `effective_value` (which is why the fresh
+    #     description below is expected to land here), while `vault_ai_fix`
+    #     writes INTO the blob — its readers, the lanes and `contradictions`,
+    #     go straight to `ai_fields_json` and never call `effective_value`. So
+    #     only the `FIXABLE` half is restored here; carrying the rest would
+    #     overwrite the model's answer with the operator's and erase the
+    #     evidence that a re-run happened at all.
     #
-    # Both are carried forward here. The flags are a different reading of the
-    # SAME image, so they stay valid across a re-describe; a locked override
-    # outranks everything, model or carried.
+    # The flags are a different reading of the SAME image, so they stay valid
+    # across a re-describe. A locked dispute fix outranks model and carried alike.
     prev = _load_json(item.ai_fields_json, {}) or {}
     for key in (*vault_ai_brief.FLAG_KEYS, *vault_ai_brief.OVER_KEYS.values(),
                 "_flags_v", "_flags_model", "_flags_frames", "_flags_arc"):
         if key in prev:
             data[key] = prev[key]
     for key, val in (_load_json(item.operator_overrides_json, {}) or {}).items():
-        if key not in locked:
+        if key not in locked or key not in vault_ai_fix.FIXABLE:
             continue
         if val is None:
             data.pop(key, None)
