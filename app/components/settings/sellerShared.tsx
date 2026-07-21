@@ -23,6 +23,7 @@ import { VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { MediaPreviewModal } from "@/components/settings/MediaPreviewModal";
 import { useMediaCache } from "@/hooks/useMediaCache";
+import { mirrorThumbSrc } from "@/hooks/useVaultCache";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { useSaveStyleConfig, useStyleConfig } from "@/hooks/useStyleConfig";
@@ -124,11 +125,26 @@ export function MediaThumb({ id, accountId, size = 36, dim, selected, onClick, o
 }) {
   const cache = useMediaCache();
   const media = cache.get(id);
-  const url = thumbUrl(media, accountId);
   const isVideo = media?.type === "video";
   const style = { width: size, height: size };
   const ring = selected ? "ring-2 ring-accent border-accent" : "border-border";
-  const inner = !url ? (
+
+  // Source chain, tried in order until one loads:
+  //   1. the vault thumb CACHE (`/admin/vault-ai/thumb`) — permanent, on-disk,
+  //      signature-free. The reason "not all images load": the OF CDN url is
+  //      IP+time-signed and 403s once it expires (the broken-tile bug), and it
+  //      also needs the media METADATA in the browser cache, which isn't always
+  //      primed. The cache endpoint needs only the id and never expires.
+  //   2. the live OF CDN url via the image proxy — the fallback for a media id
+  //      that isn't in the vault mirror (so the cache 404s).
+  // On the last error we drop to the id placeholder rather than a broken tile.
+  const cacheSrc = accountId ? mirrorThumbSrc(accountId, id) : null;
+  const cdnSrc = thumbUrl(media, accountId);
+  const chain = [cacheSrc, cdnSrc].filter(Boolean) as string[];
+  const [errIdx, setErrIdx] = useState(0);
+  const src = chain[errIdx] ?? null;   // null once every candidate has failed
+
+  const inner = !src ? (
     <button type="button" style={style} title={`vault ${id}`}
       onClick={() => onClick?.(media)}
       className={cn("grid place-items-center rounded border bg-bg-elev-1 text-[8px] text-fg-dim overflow-hidden",
@@ -140,7 +156,8 @@ export function MediaThumb({ id, accountId, size = 36, dim, selected, onClick, o
       onClick={() => onClick?.(media)}
       className={cn("relative rounded overflow-hidden border hover:border-accent",
         ring, dim && "opacity-40")}>
-      <img src={url} alt="" className="w-full h-full object-cover" />
+      <img src={src} alt="" className="w-full h-full object-cover"
+        onError={() => setErrIdx((n) => n + 1)} />
       {isVideo && (
         <span className="absolute inset-0 grid place-items-center bg-black/25 text-white text-[10px]">▶</span>
       )}
