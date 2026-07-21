@@ -44,9 +44,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 
 from automation_registry import register
 from db.engine import get_session
@@ -55,6 +56,7 @@ import llm_client
 import vault_ai_brief
 from llm_client import LLMCapExceeded, LLMError
 from vault_ai_api import _describe_one as _vault_describe_one
+from vault_ai_api import _DRM_RETRY_AFTER  # shared DRM re-attempt cooldown
 from vault_ai_effective import is_locked
 
 log = logging.getLogger("of-relay.automation.describe_media")
@@ -200,6 +202,20 @@ async def _describe_candidates(account_id: str, kinds: list[str], limit: int) ->
             .where(
                 (VaultItem.describe_status.is_(None))
                 | (VaultItem.describe_status != "described")
+            )
+            # blocked_drm is a retry candidate (poster-frame fallback may now
+            # work) but not on EVERY 6h sweep — a truly un-renderable clip
+            # re-settles to blocked_drm each pass and costs an OF poster-fetch for
+            # nothing (cost-audit finding). Cool a freshly-blocked DRM item off for
+            # _DRM_RETRY_AFTER; a manual force/restage still revisits it.
+            .where(
+                or_(
+                    VaultItem.describe_status.is_(None),
+                    VaultItem.describe_status != "blocked_drm",
+                    VaultItem.describe_generated_at.is_(None),
+                    VaultItem.describe_generated_at
+                    < datetime.utcnow() - _DRM_RETRY_AFTER,
+                )
             )
             .order_by(VaultItem.created_at.asc())
             .limit(limit)
