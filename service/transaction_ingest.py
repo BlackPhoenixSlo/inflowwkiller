@@ -63,6 +63,7 @@ from db.models import (
     UserAccount,
 )
 from of_client import OFClient
+import purchase_notifications
 
 log = logging.getLogger("of-relay.ingest_tx")
 
@@ -1325,6 +1326,15 @@ async def run_fast_tick(account_id: str) -> dict:
     client = _client_for(account_id)
     if client is None:
         return {"rows_inserted": 0, "rows_patched": 0, "error": "no_session"}
+    # Purchase notifications FIRST, and independently of the ledger fetch below.
+    # The ledger is the money record but it lands hours late (measured 209/560/628
+    # min), so it is useless for "did he just buy?". OF's purchases notification
+    # names the exact message id the moment it is paid — flipping is_paid off it
+    # lets ai_chatter._resolve_open_offers close the offer on its next tick via the
+    # path it already uses. Writes NO money: the ledger stays the sole revenue
+    # writer, so nothing here can double-count. Never raises.
+    await purchase_notifications.poll_purchases(
+        account_id, client, limit=_FAST_PAGE_LIMIT)
     try:
         resp = await asyncio.to_thread(
             client.transactions, limit=_FAST_PAGE_LIMIT, offset=0)

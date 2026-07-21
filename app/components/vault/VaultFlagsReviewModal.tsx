@@ -159,8 +159,14 @@ function Card({
           #{item.media_id} · {item.kind} · {item.explicitness} · {item.clothing_state}
           {item.lanes.length > 0 && ` · ${item.lanes.join(", ")}`}
         </p>
-        {item.codes.length > 0 && (
-          <p className="text-[10.5px] text-rose-400">⚠ the two passes disagree here</p>
+        {item.iffy_why.length > 0 && (
+          <ul className="space-y-0.5">
+            {item.iffy_why.map((w) => (
+              <li key={w} className="text-[10.5px] text-amber-400/90 leading-snug">
+                ⚠ {w}
+              </li>
+            ))}
+          </ul>
         )}
 
         <input
@@ -200,7 +206,8 @@ export default function VaultFlagsReviewModal({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const { data, isLoading, error } = useFlagsReview(accountId, true);
+  const [onlyIffy, setOnlyIffy] = useState(false);
+  const { data, isLoading, error } = useFlagsReview(accountId, true, onlyIffy);
   const { data: acc } = useFlagsAccuracy(accountId, true);
   const [done, setDone] = useState<Map<number, number>>(new Map());
 
@@ -261,6 +268,16 @@ export default function VaultFlagsReviewModal({
             {data?.total ?? "…"}
           </span>
           <span>prompt v{data?.prompt_version ?? "?"}</span>
+          <button
+            type="button"
+            onClick={() => setOnlyIffy((v) => !v)}
+            className="underline underline-offset-2 hover:text-fg"
+            title="Measured on AriaFree: the badges flag 40 items to catch 11 of the 24 actually wrong — 28% precision, 46% recall. Good enough to sort by, NOT good enough to hide behind, which is why the full list is the default."
+          >
+            {onlyIffy
+              ? `only the ${data?.iffy ?? "…"} flagged — show all ${data?.total ?? ""}`
+              : `all ${data?.total ?? ""}, flagged first (${data?.iffy ?? "…"} flagged) — narrow`}
+          </button>
           {corrected > 0 && <span className="text-amber-300">{corrected} fixed just now</span>}
           {!!acc?.graded_other_versions && (
             <span title="Graded against an older prompt — not counted, because a score across two prompts measures neither.">
@@ -278,7 +295,9 @@ export default function VaultFlagsReviewModal({
           )}
           {data && open.length === 0 && (
             <p className="text-[12px] text-emerald-400">
-              Nothing left in this batch — close and reopen for the next one.
+              {onlyIffy
+                ? "Nothing left worth checking. Switch to “show all” for a full pass."
+                : "Nothing left in this batch — close and reopen for the next one."}
             </p>
           )}
           <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3">

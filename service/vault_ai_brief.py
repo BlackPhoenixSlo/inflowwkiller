@@ -131,6 +131,12 @@ _IMPOSSIBLE_OVER: dict[str, frozenset[str]] = {
                               "stockings", "socks", "boots", "heels"}),
     "vulva_vis": frozenset({"bra", "bralette", "top", "tank", "t-shirt",
                             "tshirt", "blouse", "shirt", "necklace", "choker"}),
+    # Same top-garment list as the vulva. Omitting it let "pink string bra"
+    # stand as the thing covering her anus on six real rows — the model fills
+    # every slot with the one garment it can see, and a region with no
+    # impossible-list is the one where that always survives.
+    "anus_vis": frozenset({"bra", "bralette", "top", "tank", "t-shirt",
+                           "tshirt", "blouse", "shirt", "necklace", "choker"}),
 }
 
 

@@ -1537,16 +1537,26 @@ async def resolve_dispute(payload: dict = Body(...)) -> dict[str, Any]:
 
 
 @router.get("/admin/vault-ai/flags-review")
-async def flags_review_queue(account_id: str = "", limit: int = 60) -> dict[str, Any]:
+async def flags_review_queue(account_id: str = "", limit: int = 120,
+                             only_iffy: bool = False) -> dict[str, Any]:
     """Items for the operator to check, most valuable first.
 
     The flags pass has been wrong in a different direction after every prompt
     change, and each reversal was invisible to every automatic check and
     obvious to a human in seconds. So looking is part of the product.
+
+    Returns EVERYTHING by default, suspects first. `only_iffy` narrows to the
+    nominated ones, and is off by default because the nomination was measured
+    and is not good enough to hide things behind: on AriaFree it flags 40 items
+    to catch 11 of the 24 that are actually wrong — 28% precision, 46% recall.
+    Filtering on that would quietly hide thirteen real errors, which is worse
+    than a longer list. The reasons are a SORT ORDER and a set of badges; they
+    are not a substitute for looking.
     """
     assert_account_owned(account_id)
     return await vault_ai_fix.review_queue(account_id, limit=limit,
-                                           version=_FLAGS_VERSION)
+                                           version=_FLAGS_VERSION,
+                                           only_iffy=only_iffy)
 
 
 @router.post("/admin/vault-ai/flags-review/grade")
@@ -3027,6 +3037,14 @@ from vault_ai_effective import effective_value, locked_fields as _locked_fields 
 # every other field is free text.
 _EDITABLE_FIELDS = (
     "description", "tags", "explicitness_tier", "suggested_caption", "suggested_script",
+    # The exposure flags, editable wherever an item is editable rather than
+    # only inside the review modal. They decide the folder, the price and
+    # whether something may be mass-sent, so an operator who spots a wrong one
+    # while doing something else should be able to fix it there and then. Same
+    # override+lock contract as `description`: the edit wins at read time and a
+    # forced re-flag skips it.
+    *vault_ai_brief.VIS_REGIONS,
+    *vault_ai_brief.OVER_KEYS.values(),
     # Operator-set PPV price for this media, in CENTS. The AI never writes this
     # (vision classifies explicitness_tier instead — PLAN correction #3); it is
     # purely an operator choice, and the Composer prices an attachment set at the
@@ -3106,6 +3124,7 @@ async def edit_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
         locked = set(_load_json(item.locked_fields_json, []) or [])
         # compat-column projection per field (same-named legacy column).
         col_vals: dict[str, Any] = {}
+        flag_edits: dict[str, Any] = {}
         for field, raw in edits.items():
             if field == "tags":
                 ov: Any = _normalize_tags(raw)
@@ -3123,6 +3142,20 @@ async def edit_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
                             detail={"error": "bad_price", "field": field},
                         )
                 col_vals[field] = ov
+            elif field in vault_ai_brief.VIS_REGIONS:
+                # Enum-constrained, and stored in `ai_fields_json` rather than
+                # a column of its own — so it is written through the same path
+                # the review modal uses instead of being projected here.
+                if raw not in vault_ai_brief.VIS_STATES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={"error": "bad_region_state", "field": field,
+                                "allowed": list(vault_ai_brief.VIS_STATES)})
+                ov = raw
+                flag_edits[field] = raw
+            elif field in vault_ai_brief.OVER_KEYS.values():
+                ov = str(raw).strip()[:60] if raw else None
+                flag_edits[field] = ov
             elif raw is None:
                 ov = None
                 col_vals[field] = None
@@ -3131,6 +3164,15 @@ async def edit_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
                 col_vals[field] = ov
             overrides[field] = ov       # operator override (locked or not — read-time wins)
             locked.add(field)            # lock: a describe rerun's is_locked() skips it
+        if flag_edits:
+            merged = _load_json(item.ai_fields_json, {}) or {}
+            for k, v in flag_edits.items():
+                if v is None:
+                    merged.pop(k, None)
+                else:
+                    merged[k] = v
+            col_vals["ai_fields_json"] = json.dumps(merged, ensure_ascii=False,
+                                                    default=str)
         col_vals["operator_overrides_json"] = json.dumps(overrides, ensure_ascii=False)
         col_vals["locked_fields_json"] = json.dumps(sorted(locked))
         await s.execute(
