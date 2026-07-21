@@ -802,12 +802,32 @@ async def _owned_or_seen_media(account_id: str, fan_id: int) -> set[int]:
                 Message.fan_id == int(fan_id),
                 Message.is_paid.is_(True))
         )).all()
+        # A NON-FREE delivered content_offer is durable item-level proof of purchase — it survives a
+        # missed/crashed was_purchased flip and covers gate-off accounts (which write no ladder_quote).
+        # EXCLUDE resolved_by='free': a free teaser is ALSO a delivered offer, and a teaser is
+        # "sent, can be resent", NOT owned — unioning it would make paid items that reuse that media
+        # unsellable (product rule above: dedup BOUGHT, never sent-that-can-be-resent).
+        delivered_items = (await s.execute(
+            select(ContentOffer.item_id).where(
+                ContentOffer.account_id == str(account_id),
+                ContentOffer.fan_id == int(fan_id),
+                ContentOffer.status == "delivered",
+                ContentOffer.resolved_by.in_(
+                    ("tip", "ppv_ledger", "ppv_txn", "ppv_fastpath", "manual")))
+        )).scalars().all()
+        owned_items = (await s.execute(
+            select(CatalogItem).where(
+                CatalogItem.id.in_([int(i) for i in delivered_items])))
+        ).scalars().all() if delivered_items else []
+        s.expunge_all()
     out |= {int(x) for x in seen_ids}
     for (mids_json,) in paid_rows:
         try:
             out |= {int(x) for x in json.loads(mids_json or "[]")}
         except Exception:
             continue
+    for it in owned_items:
+        out |= set(_item_media(it))
     return out
 
 
@@ -1142,6 +1162,25 @@ async def _record_vault_sends(account_id: str, fan_id: int, media: list[int],
                             message_id=int(message_id) if message_id else None,
                             price_cents=int(price_cents), was_purchased=bool(was_purchased),
                             sent_at=now))
+
+
+async def _mark_media_purchased(account_id: str, fan_id: int, media: list[int]) -> None:
+    """Paid truth, item-level, idempotent. Flip was_purchased=True on the VaultSend rows the
+    offer-send already wrote (was_purchased=False) for this item's media, so BOTH dedup readers
+    (_owned_or_seen_media here, ppv_send._owners_of_media) treat a PPV/tip buy as OWNED and no
+    ladder path can re-pick it. The PPV media rides inside the locked box (Message.media_ids='[]')
+    and the tip-only flip in _deliver_unlocked never covers it, so a ladder reset re-sold a bought
+    item (incident: fan sold item 215 twice). UPDATE only — VaultSend has no unique key, so an
+    INSERT here dups rows on a re-run."""
+    ids = [int(m) for m in media]
+    if not ids:
+        return
+    async with get_session() as s:
+        await s.execute(update(VaultSend).where(
+            VaultSend.account_id == str(account_id),
+            VaultSend.fan_id == int(fan_id),
+            VaultSend.media_id.in_(ids),
+        ).values(was_purchased=True))
 
 
 async def _ensure_progress(account_id: str, fan_id: int, item: CatalogItem) -> None:
@@ -1687,32 +1726,42 @@ async def _resolve_open_offers(account_id: str, client, cfg: dict,
         if only_fan_ids and fan_id not in only_fan_ids:
             continue
         if ttl_h and offer.offered_at and offer.offered_at < now - timedelta(hours=ttl_h):
-            if not dry_run:
-                # Pull the unpurchased offer message FIRST (best-effort; per-chat
-                # unsend only works inside OF's 24h window, and stall_ttl is well
-                # under it), then mark the offer expired.
-                if unsend_expired and offer.offer_message_id:
-                    try:
-                        await asyncio.to_thread(
-                            client.unsend_message,
-                            int(offer.offer_message_id), fan_id)
-                        stats["offers_unsent"] += 1
-                    except Exception:
-                        log.debug("ai_chatter expired-offer unsend failed account=%s "
-                                  "fan=%s msg=%s", account_id, fan_id,
-                                  offer.offer_message_id, exc_info=True)
-                await _resolve_offer(int(offer.id), status="expired", resolved_by=None)
-                if gate_on:
-                    # The rung died on the vine — close the ladder to IDLE, NOT tapped.
-                    # A PPV that merely aged out unopened is not a "no": measured, plenty
-                    # of proven payers ignore one message and buy the next. Tapping them
-                    # for 24h retired money-in-hand fans (e.g. a $45 payer went dark after
-                    # one unopened PPV). IDLE still resets rung_index (via _close_ladder),
-                    # so the next ask re-prices off the band, never off a price he never
-                    # paid — but he stays sellable right away.
-                    await _close_ladder(account_id, fan_id, upsell.STATUS_IDLE)
-            stats["offers_expired"] += 1
-            continue
+            # Don't expire a PPV that was actually PAID but whose ledger landed AFTER the TTL — a
+            # SILENT buyer (no reply, so the fastpath never fired). Expiring it drops the ownership
+            # stamp and the ladder re-charges him next session (same class as the incident). If the
+            # money is in, fall THROUGH to the paid path below (delivers + _mark_media_purchased).
+            paid_late = bool(
+                offer.mode in ("ppv", "both") and offer.offer_message_id
+                and (await _message_is_paid(account_id, int(offer.offer_message_id))
+                     or (offer.offered_at and await _ppv_txn_since(
+                         account_id, fan_id, offer.offered_at, int(offer.price_cents or 0)))))
+            if not paid_late:
+                if not dry_run:
+                    # Pull the unpurchased offer message FIRST (best-effort; per-chat
+                    # unsend only works inside OF's 24h window, and stall_ttl is well
+                    # under it), then mark the offer expired.
+                    if unsend_expired and offer.offer_message_id:
+                        try:
+                            await asyncio.to_thread(
+                                client.unsend_message,
+                                int(offer.offer_message_id), fan_id)
+                            stats["offers_unsent"] += 1
+                        except Exception:
+                            log.debug("ai_chatter expired-offer unsend failed account=%s "
+                                      "fan=%s msg=%s", account_id, fan_id,
+                                      offer.offer_message_id, exc_info=True)
+                    await _resolve_offer(int(offer.id), status="expired", resolved_by=None)
+                    if gate_on:
+                        # The rung died on the vine — close the ladder to IDLE, NOT tapped.
+                        # A PPV that merely aged out unopened is not a "no": measured, plenty
+                        # of proven payers ignore one message and buy the next. Tapping them
+                        # for 24h retired money-in-hand fans (e.g. a $45 payer went dark after
+                        # one unopened PPV). IDLE still resets rung_index (via _close_ladder),
+                        # so the next ask re-prices off the band, never off a price he never
+                        # paid — but he stays sellable right away.
+                        await _close_ladder(account_id, fan_id, upsell.STATUS_IDLE)
+                stats["offers_expired"] += 1
+                continue
 
         paid_by: str | None = None
         if offer.mode in ("ppv", "both") and offer.offer_message_id:
@@ -1772,6 +1821,11 @@ async def _resolve_open_offers(account_id: str, client, cfg: dict,
             await _resolve_offer(int(offer.id), status="delivered",
                                  resolved_by=paid_by, delivery_message_id=msg_id,
                                  tips_accum_cents=tips if paid_by == "tip" else None)
+            # Ownership stamp — the moment the money is real. UNCONDITIONAL (tip AND ppv),
+            # independent of the reaction-send msg_id (a PPV whose reaction send failed still
+            # resolves 'delivered' above), and OUTSIDE the gate_on block below (gate-off
+            # accounts need dedup too). This is what stops a ladder reset re-selling the item.
+            await _mark_media_purchased(account_id, fan_id, _item_media(item))
             await _advance_progress(account_id, fan_id, item)
             stats["unlocked_tip" if paid_by == "tip" else "unlocked_ppv"] += 1
             if gate_on:
@@ -3049,7 +3103,12 @@ def _quote_item(account_id: str, fan: upsell.FanState, item: CatalogItem, *,
                              library_bounds=bounds,
                              escalation_mult=escalation_mult,
                              max_ask_vs_history_mult=max_ask_vs_history_mult,
-                             proven_floor_cents=proven_floor_cents)
+                             proven_floor_cents=proven_floor_cents,
+                             # The item's own operator-set price is a floor: the
+                             # upseller must never quote a single below the price
+                             # the base chatter sells it at. Above it, smart
+                             # pricing is free to climb.
+                             catalog_floor_cents=int(item.price_cents or 0))
 
 
 async def _record_quote(account_id: str, fan_id: int, item: CatalogItem | None,

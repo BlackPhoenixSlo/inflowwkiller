@@ -441,7 +441,8 @@ def next_price(*, fan: FanState, band: tuple[int, int], last_paid_cents: int | N
                stated_cap_cents: int | None = None,
                escalation_mult: float | None = None,
                max_ask_vs_history_mult: float | None = None,
-               proven_floor_cents: int = 0) -> Quote | None:
+               proven_floor_cents: int = 0,
+               catalog_floor_cents: int = 0) -> Quote | None:
     """The price for the next rung — or None, meaning DO NOT OFFER THIS ITEM.
 
     `return None` is the load-bearing line in this module. The obvious design applies
@@ -488,7 +489,17 @@ def next_price(*, fan: FanState, band: tuple[int, int], last_paid_cents: int | N
     # lows). Unlike the stated cap, this floor is INTENTIONAL and only ever raises
     # the floor for a PROVEN buyer; it's opt-in (default 0 → old behavior). If it
     # can't survive the ceiling the item is simply skipped, never discounted.
-    floor = max(lo, lo_b, OF_PRICE_FLOOR_CENTS, int(proven_floor_cents or 0))
+    #
+    # CATALOG (SOLO) FLOOR: the same rule for the item's OWN sticker. The base 1:1
+    # chatter sells a single at the price the operator set on it (`price_cents`);
+    # smart pricing derives a band from PAST ASKS and the account median, which for
+    # a cold fan lands LOW in that band and could quote the single BELOW its
+    # sticker — i.e. the upseller undercutting the chatter's own solo price. Making
+    # the sticker a floor means smart pricing may only ever price a single AT or
+    # ABOVE what it's set to; a fan who can't clear that at his ceiling is offered a
+    # cheaper single instead, never this one at a discount.
+    floor = max(lo, lo_b, OF_PRICE_FLOOR_CENTS,
+                int(proven_floor_cents or 0), int(catalog_floor_cents or 0))
     if ceiling < floor:
         return None                      # not qualified for THIS item. Do not discount it.
 
