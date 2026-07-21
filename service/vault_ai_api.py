@@ -887,6 +887,7 @@ import vault_cache  # noqa: E402
 import vault_dupes  # noqa: E402
 import vault_ai_brief  # noqa: E402  (canonical FLAG_KEYS + flags_known)
 import vault_scripts  # noqa: E402
+import vault_ai_fix  # noqa: E402  (operator resolution of describe/flags disputes)
 
 # Blast-radius guard: one HTTP request can only ever remove this many. Bigger
 # selections are batched by the client (a 2.3k-item vault yields ~700 copies),
@@ -1222,7 +1223,7 @@ def _ground_in_named_garment(answer: dict[str, Any]) -> dict[str, Any]:
     be named on a body part that is genuinely out of shot.
     """
     out = dict(answer)
-    for region, over in (("breasts_vis", "over_breasts"), ("vulva_vis", "over_vulva")):
+    for region, over in vault_ai_brief.OVER_KEYS.items():
         if out.get(region) == "bare" and _garment_over(out, over):
             out[region] = "covered"
     return out
@@ -1337,15 +1338,23 @@ async def _flags_one(account_id: str, media_id: int,
     data = _fold_clip_flags(per_frame)
 
     fields = _load_json(item.ai_fields_json, {}) or {}
+    # An operator correction outranks the model, and must survive a forced
+    # re-run — otherwise the next `flags-all --force` silently reverts it and
+    # the operator has no reason to look at the item again. Same override+lock
+    # contract `vault_ai_effective` defines for `description`; `vault_ai_fix`
+    # writes the lock.
+    locked = set(_load_json(item.locked_fields_json, []) or [])
     for key in _FLAG_KEYS:
-        if key in data:
+        if key in data and key not in locked:
             fields[key] = data[key]
     # Persisted, not merely used and discarded. Two jobs: when a region says
     # `covered` this is WHY in the model's own words (a wrong flag is far
     # cheaper to diagnose from "white tank top" than from "covered"), and
     # `vault_scripts._is_nude` reads it as the direct evidence that she is
     # dressed. Taken from the FIRST frame, which is where a clip starts out.
-    for over in ("over_breasts", "over_vulva"):
+    for over in vault_ai_brief.OVER_KEYS.values():
+        if over in locked:
+            continue
         named = _garment_over(per_frame[0], over)
         if named:
             fields[over] = named[:60]
@@ -1426,6 +1435,40 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
                 break
     return {"account_id": account_id, "candidates": len(todo),
             "flagged": done, "failed": failed, "cost_millicents": cost}
+
+
+@router.get("/admin/vault-ai/disputes")
+async def list_disputes(account_id: str = "") -> dict[str, Any]:
+    """Items where the describe pass and the flags pass contradict each other.
+
+    Read-only. Each row carries BOTH readings and the two field-writes that
+    would settle it, because which pass is wrong differs item by item and
+    picking automatically is the mistake this whole review exists to avoid.
+    """
+    assert_account_owned(account_id)
+    return await vault_ai_fix.list_disputes(account_id)
+
+
+@router.post("/admin/vault-ai/disputes/resolve")
+async def resolve_dispute(payload: dict = Body(...)) -> dict[str, Any]:
+    """Apply ONE operator correction, locked against future re-runs.
+
+    Body: `{account_id, media_id, values:{field: value}}` — normally one of the
+    two branches `list_disputes` proposed, optionally hand-edited. Writes to
+    `ai_fields_json` (so every existing reader sees it), to
+    `operator_overrides_json`, and adds the field to `locked_fields_json`.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    try:
+        media_id = int(payload.get("media_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail={"error": "media_id_required"})
+    res = await vault_ai_fix.apply_fix(account_id, media_id,
+                                       payload.get("values") or {})
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res)
+    return res
 
 
 @router.post("/admin/vault-ai/scripts/collect")
@@ -1962,9 +2005,11 @@ _FLAGS_PROMPT = (
     "then decide the states from them:\n"
     '{"over_breasts": "<what is over her chest, or null>",\n'
     ' "over_vulva":   "<what is over her crotch, or null>",\n'
+    ' "over_anus":    "<what is over her backside, or null>",\n'
     ' "breasts_vis": "...", "vulva_vis": "...", "anus_vis": "...",\n'
     ' "underwear_visible": true|false}\n\n'
-    "over_breasts / over_vulva — NAME the thing, in two or three words: "
+    "over_breasts / over_vulva / over_anus — NAME the thing, in two or three "
+    "words: "
     '"white tank top", "black lace bra", "her right hand", "the bedsheet". Use '
     "null ONLY when there is genuinely nothing there and you are looking at "
     "skin, or when that part of her is not in the photo. Naming it first is the "
@@ -1998,8 +2043,10 @@ _FLAGS_PROMPT = (
     '"covered", and so is an arm folded across them. If she is photographed '
     'from behind or lying face down, answer "not_in_frame". "bare" needs '
     "actual bare breast, at minimum an exposed nipple or an uncovered breast.\n"
-    'anus_vis — her anus specifically. A bare backside with the anus not on '
-    'show is "covered", NOT "bare".\n\n'
+    'anus_vis — her anus specifically, NOT her backside. Bare buttocks with '
+    'the anus itself not on show is "covered", never "bare". A thong between '
+    'her cheeks is "covered". Lying face down on a bed is "covered". Answer '
+    '"bare" only when the anus itself is genuinely visible.\n\n'
     "underwear_visible — is ANY garment visible anywhere on her body, worn or "
     "pushed aside or pulled down, however small? A waistband, a strap, a thong "
     "string, a band of lace at the hip or at the very bottom edge of the "
@@ -2179,8 +2226,22 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
                 temperature=0.1,
             )
         except LLMCapExceeded as e:
+            # Deliberately leaves describe_status alone: "capped" means try again
+            # later, and stamping a status would make the retry sweep skip it.
             return {"media_id": media_id, "ok": False, "status": "capped", "detail": str(e)}
         except LLMError as e:
+            # RECORD the failure. Leaving the status NULL made a failed item
+            # indistinguishable from one never attempted — a missing
+            # DEEPINFRA_API_KEY failed all 327 items of a vault while the UI
+            # reported "done 327/327" and the row stayed blank.
+            async with get_session() as s:
+                await s.execute(
+                    update(VaultItem)
+                    .where(VaultItem.account_id == account_id, VaultItem.media_id == media_id)
+                    .values(describe_status="failed", describe_model=attempt_model,
+                            describe_generated_at=datetime.utcnow())
+                )
+                await s.commit()
             return {"media_id": media_id, "ok": False, "status": "error", "detail": str(e)[:300]}
         used_model = attempt_model
         if not _is_refusal(result.content):
@@ -2337,8 +2398,11 @@ async def _run_describe_all(account_id: str, force: bool,
         _describe_progress[account_id] = {"total": total, "done": 0, "capped": False}
         sem = asyncio.Semaphore(_DESCRIBE_CONCURRENCY)
 
+        failed = 0
+        first_error = ""
+
         async def _one(mid: int) -> None:
-            nonlocal done, capped
+            nonlocal done, capped, failed, first_error
             async with sem:
                 if capped:
                     return
@@ -2346,15 +2410,29 @@ async def _run_describe_all(account_id: str, force: bool,
                                           prompt_version=prompt_version)
                 if res.get("status") == "capped":
                     capped = True
+                # `done` means "visited", not "described". Track failures
+                # separately: a whole vault can fail (bad/missing provider key)
+                # and still report done=N/N, which reads as success.
+                if not res.get("ok"):
+                    failed += 1
+                    if not first_error and res.get("detail"):
+                        first_error = str(res["detail"])[:200]
                 done += 1
-                _describe_progress[account_id] = {"total": total, "done": done, "capped": capped}
+                _describe_progress[account_id] = {
+                    "total": total, "done": done, "capped": capped,
+                    "failed": failed, "error": first_error,
+                }
 
         # Run in bounded chunks so a giant vault doesn't spawn thousands of tasks.
         for i in range(0, len(ids), 50):
             if capped:
                 break
             await asyncio.gather(*(_one(m) for m in ids[i:i + 50]))
-        log.info("describe_all done account=%s done=%s/%s capped=%s", account_id, done, total, capped)
+        if failed:
+            log.warning("describe_all account=%s done=%s/%s FAILED=%s capped=%s first_error=%s",
+                        account_id, done, total, failed, capped, first_error)
+        else:
+            log.info("describe_all done account=%s done=%s/%s capped=%s", account_id, done, total, capped)
     except Exception:  # noqa: BLE001
         log.exception("describe_all failed account=%s", account_id)
     finally:
