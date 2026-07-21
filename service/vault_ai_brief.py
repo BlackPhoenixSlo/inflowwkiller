@@ -276,6 +276,28 @@ CONTRADICTIONS: dict[str, str] = {
     "penetration_offscreen": "penetration recorded, yet neither vulva nor anus is in frame",
 }
 
+# The `acts` values that assert something is inside her, and the `penetration`
+# values that assert nothing is. Module-level because the dispute RESOLVER has to
+# clear exactly what the detector fires on — while the set lived inline, settling
+# a dispute cleared the field, left the act, and the item came straight back.
+PENETRATING_ACTS: frozenset[str] = frozenset({
+    "fingering", "toy_insertion", "riding_toy", "sex_missionary",
+    "sex_doggy", "sex_riding",
+})
+# "none" and "unclear" are ANSWERS, not findings. Truthiness alone read them as
+# penetration, so an item the model had explicitly cleared still disputed — and
+# writing "none" to settle it changed nothing.
+_NO_PENETRATION: frozenset[str] = frozenset({"", "none", "unclear"})
+
+
+def penetration_claimed(fields: dict[str, Any] | None) -> bool:
+    """Do these fields assert penetration, from either source?"""
+    if not isinstance(fields, dict):
+        return False
+    if _scalar(fields, "penetration").lower().strip() not in _NO_PENETRATION:
+        return True
+    return bool({a.lower() for a in _clean(fields.get("acts"))} & PENETRATING_ACTS)
+
 
 def contradictions(fields: dict[str, Any] | None) -> list[str]:
     """Which stored facts about this item cannot all be true at once.
@@ -301,12 +323,8 @@ def contradictions(fields: dict[str, Any] | None) -> list[str]:
     if cl == "lingerie_on" and garment is False:
         out.append("lingerie_but_nothing_on")
 
-    acts = {a.lower() for a in _clean(fields.get("acts"))}
-    penetrating = bool(_scalar(fields, "penetration")) or bool(acts & {
-        "fingering", "toy_insertion", "riding_toy", "sex_missionary",
-        "sex_doggy", "sex_riding",
-    })
-    if penetrating and vis(fields, "vulva_vis") == "not_in_frame" \
+    if penetration_claimed(fields) \
+            and vis(fields, "vulva_vis") == "not_in_frame" \
             and vis(fields, "anus_vis") == "not_in_frame":
         out.append("penetration_offscreen")
     return out

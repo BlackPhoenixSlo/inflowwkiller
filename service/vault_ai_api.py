@@ -2568,6 +2568,33 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
     # v2 re-scan, and without the stamp "already described" is ambiguous.
     data = {**data, "_prompt_version": ("v1" if str(prompt_version) == "v1" else "v2"),
             "_frames": len(images)}
+
+    # `ai_fields_json` is written whole from `data`, which holds ONLY what the
+    # describe prompt answers — so re-describing an item used to silently drop
+    # everything the OTHER passes had put in the same column:
+    #
+    #   * the exposure flags. A described item came back with no `_flags_v` at
+    #     all, the gated lanes emptied, and the flags pass had to be run again.
+    #   * every operator correction. `locked_fields_json` protected the four
+    #     COLUMNS below and nothing inside this blob, so a dispute the operator
+    #     had settled reverted to the model's answer on the next re-scan — the
+    #     opposite of what locking it promised.
+    #
+    # Both are carried forward here. The flags are a different reading of the
+    # SAME image, so they stay valid across a re-describe; a locked override
+    # outranks everything, model or carried.
+    prev = _load_json(item.ai_fields_json, {}) or {}
+    for key in (*vault_ai_brief.FLAG_KEYS, *vault_ai_brief.OVER_KEYS.values(),
+                "_flags_v", "_flags_model", "_flags_frames", "_flags_arc"):
+        if key in prev:
+            data[key] = prev[key]
+    for key, val in (_load_json(item.operator_overrides_json, {}) or {}).items():
+        if key not in locked:
+            continue
+        if val is None:
+            data.pop(key, None)
+        else:
+            data[key] = val
     vals: dict[str, Any] = {
         "describe_status": "described",
         "describe_model": used_model,
@@ -2617,11 +2644,20 @@ async def describe_one(payload: dict = Body(...)) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         raise HTTPException(status_code=400, detail={"error": "media_id_required"})
     model = str(payload.get("model") or "qwen3-vl-30b")
-    return await _describe_one(
+    res = await _describe_one(
         account_id, media_id, model=model,
         prompt_version=str(payload.get("prompt_version") or "v2"),
         frames=payload.get("frames"),
     )
+    # Flag it in the same breath, exactly as the sweep does. Describing ONE item
+    # from the UI otherwise left it as the only row in the vault the gated lanes
+    # could not read, and nothing on screen said so.
+    if res.get("ok"):
+        try:
+            await _flags_one(account_id, media_id)
+        except Exception:  # noqa: BLE001
+            log.exception("flags after describe failed media=%s", media_id)
+    return res
 
 
 # ── Describe ALL (background sweep, gen_info-style) ─────────────────
