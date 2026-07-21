@@ -969,6 +969,23 @@ def _lane_tease_50(why: dict, fields: dict, kind: str) -> bool:
             or _is_nude(fields))
 
 
+def _lane_clips(why: dict, fields: dict, kind: str) -> bool:
+    """Every explicit or hardcore CLIP.
+
+    The two price lanes above are images-only on purpose — a clip is priced by
+    what happens in it and how long it runs, not by how much is on show in a
+    single frame — but nothing then picked the clips up, so an explicit video
+    could match no lane at all. On her vault that was 21 clips, including the
+    payoff ones: the most valuable material in the account was the material the
+    folder system could not see.
+
+    Deliberately wide. This is the pool a 1:1 PPV is chosen FROM, not a claim
+    about price or about being safe to send to everyone — `safe explicit` is the
+    only lane that asserts the latter, and it still applies its own tests.
+    """
+    return kind == "video" and why["tier"] in _PAID_TIERS
+
+
 # (slug, display name, what it is for, predicate(why, fields, kind)). Lanes
 # deliberately OVERLAP — a single item can serve several and holds an
 # independent position in each.
@@ -990,7 +1007,25 @@ PURPOSE_LANES: tuple[tuple[str, str, str, Any], ...] = (
     ("tease_50", "tease 50",
      "images — fully nude or pussy visible, never with lingerie still on",
      _lane_tease_50),
+    ("clips", "clips",
+     "explicit clips — the pool a 1:1 PPV is picked from", _lane_clips),
 )
+
+# Paid-tier items that matched NO lane above get their own. The five original
+# lanes each answer a specific question ("is this safe to post", "is this a $50
+# reveal"), and an item that answers no to all of them was simply dropped — 55
+# of her 327, every one of them explicit or hardcore, i.e. the material worth
+# selling. The commonest case is an explicit still that is nonetheless fully
+# covered: `safe explicit` refuses it because something IS happening in it, and
+# neither price lane wants it because there is no reveal to charge for.
+#
+# So it is not a dumping ground, it is a real category: explicit material to
+# sell one-to-one rather than post or price off a shelf. Naming it also keeps
+# the preview honest — "198 of 327 sorted" reads as a broken sorter, and the
+# operator has no way to see which items fell through or why.
+_RESIDUAL_LANE = ("explicit_rest", "explicit 1:1",
+                  "explicit, but not mass-safe and not a clean $10/$50 reveal — "
+                  "sell these in conversation")
 
 
 async def collect_purpose_folders(
@@ -1011,7 +1046,26 @@ async def collect_purpose_folders(
 
     enriched = [{**r, "why": send_order_reason(r.get("fields") or {})} for r in rows]
 
+    def _folder(slug: str, name: str, purpose: str,
+                picked: list[dict[str, Any]]) -> dict[str, Any]:
+        picked.sort(key=lambda r: send_sort_key(
+            r["fields"], script_id=r.get("script_id"),
+            script_seq=r.get("script_seq"), media_id=r["media_id"]))
+        kinds: dict[str, int] = {}
+        tier_counts: dict[str, int] = {}
+        for r in picked:
+            kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
+            tier_counts[r["why"]["tier"]] = tier_counts.get(r["why"]["tier"], 0) + 1
+        return {
+            "lane": slug, "name": ai_folder_name(name), "purpose": purpose,
+            "size": len(picked), "kinds": kinds, "tiers": tier_counts,
+            "closes_on_own": sum(1 for r in picked if r["why"]["closes"]),
+            "items": [{**r, "manual_order": i + 1}
+                      for i, r in enumerate(picked)],
+        }
+
     out: list[dict[str, Any]] = []
+    claimed: set[int] = set()
     for slug, name, purpose, matches in PURPOSE_LANES:
         picked = [r for r in enriched
                   if matches(r["why"], r.get("fields") or {}, r["kind"])]
@@ -1021,21 +1075,15 @@ async def collect_purpose_folders(
         # material the operator can post.
         if not picked:
             continue
-        picked.sort(key=lambda r: send_sort_key(
-            r["fields"], script_id=r.get("script_id"),
-            script_seq=r.get("script_seq"), media_id=r["media_id"]))
-        kinds: dict[str, int] = {}
-        tier_counts: dict[str, int] = {}
-        for r in picked:
-            kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
-            tier_counts[r["why"]["tier"]] = tier_counts.get(r["why"]["tier"], 0) + 1
-        out.append({
-            "lane": slug, "name": ai_folder_name(name), "purpose": purpose,
-            "size": len(picked), "kinds": kinds, "tiers": tier_counts,
-            "closes_on_own": sum(1 for r in picked if r["why"]["closes"]),
-            "items": [{**r, "manual_order": i + 1}
-                      for i, r in enumerate(picked)],
-        })
+        claimed.update(r["media_id"] for r in picked)
+        out.append(_folder(slug, name, purpose, picked))
+
+    # Nothing paid falls through. `stories` already takes every sfw/suggestive
+    # item, so an orphan is always paid-tier — see `_RESIDUAL_LANE`.
+    rest = [r for r in enriched
+            if r["media_id"] not in claimed and r["why"]["tier"] in _PAID_TIERS]
+    if rest:
+        out.append(_folder(*_RESIDUAL_LANE, rest))
     return out
 
 
