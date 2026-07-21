@@ -22,7 +22,7 @@
  * No OF writes: these are internal folders. Nothing here sends anything.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -30,6 +30,7 @@ import {
   mirrorThumbSrc,
   runVaultFlags,
   useAiFolderPlan,
+  useVaultFlagsStatus,
   type AiFolder,
   type ApplyAiFoldersResult,
 } from "@/hooks/useVaultCache";
@@ -181,16 +182,34 @@ export default function VaultAiFoldersModal({
   // the button rather than warn beside it.
   const flagsMissing = !!flags && !flags.ready;
 
+  // A whole-vault sweep runs for minutes in the background, so this watches it
+  // rather than holding a request open. Polling starts on the click AND on open
+  // when a sweep is already going (started from another tab, or before a reload).
+  // `since` is when we last asked to watch. Comparing it against the query's
+  // own timestamp is what stops the click from reading the PREVIOUS poll's
+  // `running: false` and cancelling itself before the first real answer lands.
+  const [since, setSince] = useState(() => Date.now());
+  const flagsStatus = useVaultFlagsStatus(accountId, since > 0);
+  const sweep = flagsStatus.data;
+  const sweeping = !!sweep?.running;
+
+  useEffect(() => {
+    // Stop polling once it finishes, and re-plan on the fresh flags: the three
+    // lanes that need them (safe explicit, $10, $50) were starved until now.
+    if (since > 0 && flagsStatus.dataUpdatedAt > since && !sweep?.running) {
+      setSince(0);
+      plan.refetch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sweep?.running, flagsStatus.dataUpdatedAt, since]);
+
   async function onRunFlags() {
-    setBusy(true);
     setError(null);
     try {
       await runVaultFlags(accountId);
-      await plan.refetch();
+      setSince(Date.now());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -215,16 +234,35 @@ export default function VaultAiFoldersModal({
                   stills have not been checked for what is actually on show, so the $10
                   and $50 tiers would fall back to <code>clothing_state</code> — measured
                   wrong on roughly 1 in 3 of the stills those tiers are built from. Takes
-                  ~3s per still and costs about $0.001 per 100.
+                  ~3s per still and costs about $0.001 per 100. Anything described from
+                  now on is flagged in the same pass — this is a one-off catch-up on
+                  media described before that.
                 </p>
-                <button
-                  type="button"
-                  onClick={onRunFlags}
-                  disabled={busy}
-                  className="mt-2 px-2.5 py-1 rounded-md text-[11px] font-medium border border-amber-500/60 text-amber-200 hover:bg-amber-500/20 disabled:opacity-40"
-                >
-                  {busy ? "Checking…" : `Check ${flags!.missing} stills`}
-                </button>
+                {sweeping ? (
+                  <p className="mt-2 text-[11px] text-amber-200 tabular-nums">
+                    Checking… {sweep?.progress?.done ?? 0} of{" "}
+                    {sweep?.progress?.total ?? flags!.missing} done
+                    {!!sweep?.progress?.failed && ` · ${sweep.progress.failed} failed`}
+                    {" · "}
+                    <span className="text-amber-400/80">
+                      keeps running if you close this
+                    </span>
+                  </p>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={onRunFlags}
+                    disabled={busy}
+                    className="mt-2 px-2.5 py-1 rounded-md text-[11px] font-medium border border-amber-500/60 text-amber-200 hover:bg-amber-500/20 disabled:opacity-40"
+                  >
+                    Check {flags!.missing} stills
+                  </button>
+                )}
+                {!sweeping && !!sweep?.progress?.error && (
+                  <p className="mt-1 text-[11px] text-rose-300">
+                    Last run stopped: {sweep.progress.error}
+                  </p>
+                )}
               </div>
             )}
           </div>

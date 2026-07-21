@@ -201,7 +201,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
 
         {/* ── When she actually pulls the trigger ──────────────────────────────
             The offer is written by the MODEL (an >>OFFER marker it may or may not
-            emit). Live on sakai that was 184 replies against 4 offers — the model,
+            emit). Live on one account that was 184 replies against 4 offers — the model,
             not the gate, is what stops the selling. These two take the trigger back. */}
         <div className={cn("rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-3",
           gateOn ? "" : "opacity-50 pointer-events-none")}>

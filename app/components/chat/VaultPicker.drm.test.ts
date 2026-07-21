@@ -1,5 +1,5 @@
 // Source-resolution rules for vault videos, locked against the real OF
-// shapes captured from Ava's vault (account 987654321, 2026-06-04):
+// shapes captured from one account's vault (account ACCOUNT_ID, 2026-06-04):
 //   • Old uploads ship a progressive mp4 under videoSources/files.full.
 //   • Newer uploads are DRM-only (FairPlay): videoSources null,
 //     files.full.sources [], real video behind files.drm — and the ONLY

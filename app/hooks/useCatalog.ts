@@ -93,7 +93,7 @@ export interface AiChatterConfig {
   qualification_gate_enabled?: boolean;
   /** Attach the ask when the THREAD IS HOT (he's mid-scene and replying) and the model
    *  wrote no offer marker. The offer is emitted by the MODEL, and mostly it declines —
-   *  184 replies produced 4 offers on sakai. Thread-heat is a 24.3x lift on the
+   *  184 replies produced 4 offers on one account. Thread-heat is a 24.3x lift on the
    *  purchase; the gate alone is ~1x. Rides the gate + all the brakes. OFF by default. */
   force_ask?: boolean;
   /** The FLOOR: after this many of HIS messages with no ask in front of him (ours or a

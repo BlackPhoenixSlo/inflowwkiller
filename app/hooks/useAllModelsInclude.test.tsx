@@ -63,8 +63,8 @@ describe("useAllModelsInclude exclude-list semantics", () => {
     window.localStorage.setItem(LEGACY_KEY, JSON.stringify(["the graded vault"]));
     const useAllModelsInclude = await freshHook();
     const { result } = renderHook(() => useAllModelsInclude());
-    // Under legacy semantics the graded vault (absent from the list) was hidden.
-    expect(result.current.isIncluded("the graded vault")).toBe(true);
+    // Under legacy semantics one account (absent from the list) was hidden.
+    expect(result.current.isIncluded("one account")).toBe(true);
     expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull();
   });
 
