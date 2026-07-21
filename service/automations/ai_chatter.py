@@ -1169,8 +1169,8 @@ async def _mark_media_purchased(account_id: str, fan_id: int, media: list[int]) 
     offer-send already wrote (was_purchased=False) for this item's media, so BOTH dedup readers
     (_owned_or_seen_media here, ppv_send._owners_of_media) treat a PPV/tip buy as OWNED and no
     ladder path can re-pick it. The PPV media rides inside the locked box (Message.media_ids='[]')
-    and the tip-only flip in _deliver_unlocked never covers it, so a ladder reset re-sold a bought
-    item (incident: fan sold item 215 twice). UPDATE only — VaultSend has no unique key, so an
+    and the tip-only flip in _deliver_unlocked never covers it, so a ladder reset would re-sell a
+    bought single that was never recorded as owned. UPDATE only — VaultSend has no unique key, so an
     INSERT here dups rows on a re-run."""
     ids = [int(m) for m in media]
     if not ids:
@@ -1728,8 +1728,8 @@ async def _resolve_open_offers(account_id: str, client, cfg: dict,
         if ttl_h and offer.offered_at and offer.offered_at < now - timedelta(hours=ttl_h):
             # Don't expire a PPV that was actually PAID but whose ledger landed AFTER the TTL — a
             # SILENT buyer (no reply, so the fastpath never fired). Expiring it drops the ownership
-            # stamp and the ladder re-charges him next session (same class as the incident). If the
-            # money is in, fall THROUGH to the paid path below (delivers + _mark_media_purchased).
+            # stamp and the ladder re-charges him next session (the re-sale class this fix prevents).
+            # If the money is in, fall THROUGH to the paid path below (delivers + _mark_media_purchased).
             paid_late = bool(
                 offer.mode in ("ppv", "both") and offer.offer_message_id
                 and (await _message_is_paid(account_id, int(offer.offer_message_id))

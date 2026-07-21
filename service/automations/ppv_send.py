@@ -72,8 +72,8 @@ import vault_ai_to_chatter
 from automation_registry import register
 from db.engine import get_session
 from db.models import (
-    AccountAiConfig, AutomationRun, Blacklist, Fan, LadderState, Message, Post,
-    ScheduledJob, Transaction,
+    AccountAiConfig, AutomationRun, Blacklist, CatalogItem, ContentOffer, Fan,
+    LadderState, Message, Post, ScheduledJob, Transaction, VaultSend,
 )
 from ._common import load_hard_skip_ids
 
@@ -579,10 +579,25 @@ async def _all_fan_ids(account_id: str) -> list[int]:
     return [int(x) for x in rows]
 
 
+def _item_media(item) -> list[int]:
+    """Media ids bound to a CatalogItem. Local mirror of ai_chatter._item_media, kept here to avoid
+    a circular import (ai_chatter imports _owners_of_media FROM this module)."""
+    try:
+        return [int(m) for m in json.loads(item.media_ids or "[]")]
+    except Exception:
+        return []
+
+
 async def _owners_of_media(account_id: str, media_ids: list[int]) -> set[int]:
-    """Fan ids who ALREADY unlocked any of this PPV's media (a paid Message whose
-    media overlaps). Used to skip re-pitching content a fan already owns. Reads
-    `Message.is_paid is True` (True = unlocked) + the per-message `media_ids` JSON."""
+    """Fan ids who ALREADY own any of this media — so we never re-pitch/re-sell content a fan holds.
+    THREE signals:
+      1. a `VaultSend.was_purchased is True` row (a tip/PPV unlock in ANY lane — the reliable,
+         lane-independent signal; this is what makes an ai_chatter LADDER buy visible to THIS mass
+         lane and to the discount-resend guard at ai_chatter.py);
+      2. a NON-FREE delivered `content_offer` whose item media overlaps (durable item-level proof;
+         `resolved_by='free'` teasers are EXCLUDED — a teaser is resendable, not owned);
+      3. a paid `Message` whose per-message `media_ids` JSON overlaps (kept for inbound/real-id rows;
+         inert for pipeline PPVs, which store `media_ids='[]'`)."""
     target = {int(x) for x in media_ids}
     if not target:
         return set()
@@ -594,6 +609,29 @@ async def _owners_of_media(account_id: str, media_ids: list[int]) -> set[int]:
                 Message.is_paid.is_(True),
             )
         )).all()
+        vs = (await s.execute(
+            select(VaultSend.fan_id).where(
+                VaultSend.account_id == str(account_id),
+                VaultSend.was_purchased.is_(True),
+                VaultSend.media_id.in_(list(target)),
+            )
+        )).scalars().all()
+        owners |= {int(x) for x in vs if x is not None}
+        co = (await s.execute(
+            select(ContentOffer.fan_id, ContentOffer.item_id).where(
+                ContentOffer.account_id == str(account_id),
+                ContentOffer.status == "delivered",
+                ContentOffer.resolved_by.in_(
+                    ("tip", "ppv_ledger", "ppv_txn", "ppv_fastpath", "manual")),
+            )
+        )).all()
+        item_media: dict[int, set[int]] = {}
+        if co:
+            for ci in (await s.execute(
+                select(CatalogItem).where(CatalogItem.id.in_(
+                    [int(i) for _, i in co if i is not None])))
+            ).scalars().all():
+                item_media[int(ci.id)] = set(_item_media(ci))
     for fid, mids_json in rows:
         if fid is None:
             continue
@@ -602,6 +640,9 @@ async def _owners_of_media(account_id: str, media_ids: list[int]) -> set[int]:
         except Exception:
             continue
         if mids & target:
+            owners.add(int(fid))
+    for fid, iid in co:
+        if fid is not None and iid is not None and item_media.get(int(iid), set()) & target:
             owners.add(int(fid))
     return owners
 
