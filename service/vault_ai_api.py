@@ -1976,10 +1976,10 @@ _FLAGS_PROMPT = (
     "that part of her body is in the photo:\n"
     '  "bare"         — nothing at all is over it. You are seeing skin.\n'
     '  "covered"      — it is in the photo but something is over it: any '
-    "clothing at all, her hand, her arm, her thigh, bedding, an object, or the "
-    "way she is turned.\n"
-    '  "not_in_frame" — it is not in this photo, or is too far out of shot to '
-    "tell.\n\n"
+    "clothing at all, her hand, her arm, her thigh, bedding, or an object.\n"
+    '  "not_in_frame" — it is not in this photo. This includes her being '
+    "turned away, shot from behind or lying face down, so that side of her "
+    "body is simply not what the camera is looking at.\n\n"
     "THE MISTAKE TO AVOID: clothing that shows the SHAPE of her body is still "
     'clothing. A tank top, t-shirt, bra, bodysuit or swimsuit is "covered" no '
     "matter how tight it is, how much cleavage there is, how sheer it looks, or "
@@ -1995,7 +1995,8 @@ _FLAGS_PROMPT = (
     '"covered". Pulled aside so the skin is exposed is "bare". Only her thighs '
     'or stomach in shot is "not_in_frame".\n'
     'breasts_vis — her breasts. A bra, top, bodysuit or bikini over them is '
-    '"covered", and so is lying face down or an arm across them. "bare" needs '
+    '"covered", and so is an arm folded across them. If she is photographed '
+    'from behind or lying face down, answer "not_in_frame". "bare" needs '
     "actual bare breast, at minimum an exposed nipple or an uncovered breast.\n"
     'anus_vis — her anus specifically. A bare backside with the anus not on '
     'show is "covered", NOT "bare".\n\n'
