@@ -1059,6 +1059,24 @@ def _extract_messages(f: Fan, c: _Candidate,
             {"role": "user", "content": user}]
 
 
+def _extract_worthwhile(f: Fan) -> bool:
+    """Is a fact-extract call worth its money for this fan right now?
+
+    The extract is FILL-EMPTY-ONLY (`_extract_and_fill` never overwrites a field
+    that already carries signal), so once every target it can write is populated a
+    re-extract is a GUARANTEED no-op — the pure-waste call the cost audit flagged
+    (~43% of the ai_chatter lane). Keep extracting while any field he might still
+    volunteer is empty; once the profile is saturated, skip it. Net effect: a fan
+    whose profile is already complete costs exactly ONE LLM call per reply, and the
+    extract only fires on the early turns when it can actually learn something. (The
+    only thing forgone at saturation is a late likes_boobs/likes_ass flip — a minor
+    body-focus hint, not worth a full call every turn.)"""
+    for col in _EXTRACT_FIELDS:
+        if not _nonempty(getattr(f, col, None)):
+            return True
+    return not _nonempty(getattr(f, "recent_events", None))
+
+
 async def _extract_and_fill(account_id: str, fan_id: int, f: Fan,
                             c: _Candidate, model: str,
                             history_tail: int = _EXTRACT_HISTORY_TAIL,
@@ -1068,6 +1086,11 @@ async def _extract_and_fill(account_id: str, fan_id: int, f: Fan,
     reply + question list see the fresh facts. Raises LLMCapExceeded (caller stops);
     any other failure is swallowed and leaves `f` unchanged. `purpose` tags the
     grok_calls audit row — ai_chatter passes its own so cost audits stay honest."""
+    # Skip the call entirely when the profile is already saturated — a fill-empty
+    # -only extract can't add anything, so this is the reply's second LLM call
+    # eliminated in steady state (see _extract_worthwhile).
+    if not _extract_worthwhile(f):
+        return f
     res = await llm_client.chat(
         model=model, messages=_extract_messages(f, c, history_tail), purpose=purpose,
         account_id=account_id, fan_id=fan_id, temperature=0.2,

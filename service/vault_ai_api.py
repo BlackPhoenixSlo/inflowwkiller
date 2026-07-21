@@ -20,13 +20,13 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client seam (same one automations use)
@@ -58,6 +58,14 @@ _THUMB_DIR = Path(os.environ.get("VAULT_THUMB_DIR", "/tmp/of-relay-vault-thumbs"
 # pre-extracted poster frames are the only hover preview — cached here so a DRM
 # hover is instant from disk instead of a ~0.7s cold OF fetch.
 _POSTER_DIR = Path(os.environ.get("VAULT_POSTER_DIR", "/tmp/of-relay-vault-posters"))
+# Full-FRAME image cache. The thumb above is a 300x300 CENTRE-CROP of a 3:4
+# portrait, so the top and bottom of the picture are simply gone — which is why
+# an operator correcting a flag could not see a waistband or genitalia sitting at
+# the frame edge (the same crop that made the vision model over-report
+# `fully_nude`, fixed for the MODEL via `_describe_image_of`). This serves the
+# aspect-preserving `preview` (960x1280), permanent + on-disk, for the review UI.
+_IMAGE_DIR = Path(os.environ.get("VAULT_IMAGE_DIR", "/tmp/of-relay-vault-images"))
+
 
 
 def _thumb_path(account_id: str, media_id: int) -> Path:
@@ -66,6 +74,10 @@ def _thumb_path(account_id: str, media_id: int) -> Path:
 
 def _poster_path(account_id: str, media_id: int, idx: int) -> Path:
     return _POSTER_DIR / account_id / f"{media_id}_{idx}.jpg"
+
+
+def _image_path(account_id: str, media_id: int) -> Path:
+    return _IMAGE_DIR / account_id / f"{media_id}.jpg"
 
 
 def _fetch_thumb_sync(client: Any, url: str) -> bytes | None:
@@ -471,6 +483,46 @@ async def vault_thumb(account_id: str = Query(...), media_id: int = Query(...)):
     url = _thumb_of(files) or item.thumb_url
     if not url:
         raise HTTPException(status_code=404, detail="no_thumb")
+    client = await asyncio.to_thread(ax._make_client, account_id)
+    data = await asyncio.to_thread(_fetch_thumb_sync, client, url)
+    if not data:
+        raise HTTPException(status_code=404, detail="fetch_failed")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+    except Exception:  # noqa: BLE001
+        pass
+    return Response(content=data, media_type="image/jpeg", headers=headers)
+
+
+@router.get("/admin/vault-ai/image")
+async def vault_image(account_id: str = Query(...), media_id: int = Query(...)):
+    """Serve the FULL-FRAME image (aspect-preserving `preview`, ~960x1280),
+    permanent + on-disk — the review UI shows THIS, never the /thumb crop.
+
+    /thumb is a 300x300 centre-crop of a 3:4 portrait: its top and bottom are
+    gone, so a waistband or genitalia at the frame edge is invisible in it. That
+    crop is exactly what made the vision model over-report `fully_nude`, and an
+    operator judging the square would make the same mistake — they'd be
+    correcting a flag against less of the picture than the model that set it saw.
+    `_describe_image_of` picks the same variant the model was given, so the
+    reviewer sees precisely the frame the reading was made on."""
+    assert_account_owned(account_id)
+    p = _image_path(account_id, media_id)
+    headers = {"Cache-Control": "public, max-age=604800"}
+    if p.is_file():
+        return FileResponse(p, media_type="image/jpeg", headers=headers)
+    async with get_session() as s:
+        item = await s.get(VaultItem, (account_id, media_id))
+    if item is None:
+        raise HTTPException(status_code=404, detail="not_in_mirror")
+    raw = _load_json(item.raw_json, {}) or {}
+    files = raw.get("files") if isinstance(raw.get("files"), dict) else {}
+    # Aspect-preserving preview → full → …; falls back to the square only if the
+    # media exposes nothing else. `item.thumb_url` is the last resort.
+    url = _describe_image_of(files) or item.thumb_url
+    if not url:
+        raise HTTPException(status_code=404, detail="no_image")
     client = await asyncio.to_thread(ax._make_client, account_id)
     data = await asyncio.to_thread(_fetch_thumb_sync, client, url)
     if not data:
@@ -1489,7 +1541,7 @@ async def _run_flags_all(account_id: str, todo: list[int]) -> None:
 
         async def _one(mid: int) -> None:
             nonlocal done, failed, cost, capped, first_error
-            async with sem:
+            async with sem, _vision_gate():  # per-sweep bound + process-wide gate
                 if capped:
                     return
                 res = await _flags_one(account_id, mid)
@@ -2669,6 +2721,33 @@ _describe_running: set[str] = set()
 _describe_progress: dict[str, dict[str, Any]] = {}
 _DESCRIBE_CONCURRENCY = 4
 
+# Process-wide ceiling on concurrent vision work across ALL accounts and BOTH
+# sweeps (describe + flags). The per-sweep _DESCRIBE_CONCURRENCY/_FLAGS_CONCURRENCY
+# bound ONE sweep; without a shared gate, kicking "Describe all" on 16 accounts
+# fans out to 16×4 = 64 concurrent DeepInfra calls plus their ffmpeg/OF frame
+# fetches and starves the relay threadpool (cost-audit finding: ReadTimeouts +
+# 500s while sweeps run). Lazily created so it binds to the running event loop,
+# not import time.
+_VISION_GLOBAL_CONCURRENCY = 8
+_vision_sema: "asyncio.Semaphore | None" = None
+
+
+def _vision_gate() -> "asyncio.Semaphore":
+    """The process-wide vision-concurrency gate (see _VISION_GLOBAL_CONCURRENCY).
+    Every describe/flags sweep acquires this IN ADDITION to its per-sweep bound, so
+    total concurrent vision work is capped no matter how many accounts sweep at once."""
+    global _vision_sema
+    if _vision_sema is None:  # single-threaded asyncio: check→set is atomic (no await)
+        _vision_sema = asyncio.Semaphore(_VISION_GLOBAL_CONCURRENCY)
+    return _vision_sema
+
+# A blocked_drm item IS retried by a normal sweep (OF poster-frame fallback may
+# start working) — but not on EVERY sweep. Once it re-settles to blocked_drm we
+# cool it off this long before the next attempt, so a truly un-renderable clip
+# stops costing an OF poster-fetch every pass (cost-audit finding). A force or
+# restage sweep ignores the cooldown and revisits it regardless.
+_DRM_RETRY_AFTER = timedelta(days=7)
+
 
 async def _run_describe_all(account_id: str, force: bool,
                             prompt_version: str = "v2",
@@ -2707,8 +2786,19 @@ async def _run_describe_all(account_id: str, force: bool,
                 # Skip only items already successfully described. blocked_drm is
                 # NO LONGER terminal — poster-frame fallback can now describe DRM
                 # clips — so a normal "Describe all" retries them (and refused/
-                # failed). Truly un-renderable clips just re-settle to blocked_drm.
-                stmt = stmt.where(VaultItem.describe_status.isnot("described"))
+                # failed). But an un-renderable clip re-settles to blocked_drm on
+                # EVERY sweep, costing an OF poster-fetch each pass for nothing
+                # (cost-audit finding). Cool a freshly-blocked DRM item off for
+                # _DRM_RETRY_AFTER before retrying; force/restage still revisit it.
+                drm_cutoff = datetime.utcnow() - _DRM_RETRY_AFTER
+                stmt = stmt.where(
+                    VaultItem.describe_status.isnot("described"),
+                    or_(
+                        VaultItem.describe_status.isnot("blocked_drm"),
+                        VaultItem.describe_generated_at.is_(None),
+                        VaultItem.describe_generated_at < drm_cutoff,
+                    ),
+                )
             ids = [r[0] for r in (await s.execute(stmt)).all()]
         total = len(ids)
         done = 0
@@ -2721,7 +2811,7 @@ async def _run_describe_all(account_id: str, force: bool,
 
         async def _one(mid: int) -> None:
             nonlocal done, capped, failed, first_error
-            async with sem:
+            async with sem, _vision_gate():  # per-sweep bound + process-wide gate
                 if capped:
                     return
                 res = await _describe_one(account_id, mid, model=model,

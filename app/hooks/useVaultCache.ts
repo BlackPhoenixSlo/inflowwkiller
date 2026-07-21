@@ -711,7 +711,16 @@ export async function hideDuplicates(
   return agg;
 }
 
-/** Relay-served cached thumb (permanent, signature-free) for a mirrored item. */
+/** Relay-served cached thumb (permanent, signature-free) for a mirrored item.
+ *  300x300 CENTRE-CROP — fine for a grid tile, wrong for judging exposure. */
 export function mirrorThumbSrc(accountId: string, mediaId: number): string {
   return `/admin/vault-ai/thumb?account_id=${encodeURIComponent(accountId)}&media_id=${mediaId}`;
+}
+
+/** The FULL-FRAME image (aspect-preserving preview), permanent + signature-free.
+ *  Use this anywhere an operator judges what is actually on show — the square
+ *  thumb crops the top and bottom off a 3:4 portrait, hiding an edge-of-frame
+ *  waistband or genitalia (the exact crop that misled the vision model). */
+export function mirrorFullSrc(accountId: string, mediaId: number): string {
+  return `/admin/vault-ai/image?account_id=${encodeURIComponent(accountId)}&media_id=${mediaId}`;
 }

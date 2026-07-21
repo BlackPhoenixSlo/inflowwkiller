@@ -40,11 +40,12 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import {
   gradeFlags,
-  mirrorThumbSrc,
+  mirrorFullSrc,
   useFlagsAccuracy,
   useFlagsReview,
   type FlagsReviewItem,
 } from "@/hooks/useVaultCache";
+import ImageLightbox from "@/components/vault/ImageLightbox";
 
 const REGIONS = ["breasts_vis", "vulva_vis", "anus_vis"] as const;
 const STATES = ["bare", "covered", "not_in_frame"] as const;
@@ -80,6 +81,7 @@ function Card({
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(false);
 
   /** What the model said, unless the operator has tapped something else. */
   const shown = (region: string) => picked[region] ?? item.regions[region] ?? "";
@@ -108,11 +110,19 @@ function Card({
         changed.length ? "border-amber-500/60" : "border-border"
       }`}
     >
+      {/* Full FRAME, letterboxed — the square crop is where an edge-of-frame
+          waistband or genitalia disappears, i.e. exactly what the reviewer is
+          here to check. Click to enlarge. */}
       <img
-        src={mirrorThumbSrc(accountId, item.media_id)}
+        src={mirrorFullSrc(accountId, item.media_id)}
         alt=""
-        className="w-full h-60 object-cover bg-black/40"
+        onClick={() => setZoom(true)}
+        title="Click to view full size"
+        className="w-full h-60 object-contain bg-black/70 cursor-zoom-in"
       />
+      {zoom && (
+        <ImageLightbox accountId={accountId} mediaId={item.media_id} onClose={() => setZoom(false)} />
+      )}
       <div className="p-2.5 space-y-2 flex-1 flex flex-col">
         {REGIONS.map((region) => {
           const locked = item.locked.includes(region);

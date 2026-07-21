@@ -45,8 +45,10 @@ import {
   startHarvestKeywords,
   useMirrorItems,
   useVaultCacheSummary,
+  mirrorFullSrc,
 } from "@/hooks/useVaultCache";
 import { proxyImage, relay, type VaultList, type VaultMedia } from "@/lib/relay";
+import ImageLightbox from "@/components/vault/ImageLightbox";
 
 type MediaType = "all" | "photo" | "video" | "gif" | "audio";
 type Tile = VaultMedia & { _ai?: Record<string, unknown> };
@@ -1058,7 +1060,15 @@ function VaultPreviewMedia({
   const rawSrc = isVideo ? progressiveVideoSrc(m) : null;
   const drmOnly = isVideo && isDrmOnlyVideo(m);
   const playable = isVideo && !!rawSrc && !drmOnly;
+  const idNum = Number(m.id);
+  const [zoom, setZoom] = useState(false);
+  // A PHOTO shows the FULL FRAME from the permanent cache — not `_thumb`, which
+  // is a 300x300 centre-crop that lops the top and bottom off a 3:4 portrait and
+  // hides edge-of-frame detail. A VIDEO keeps its poster (the square is fine as a
+  // play affordance; ⤢ opens the real player).
+  const photoFull = !isVideo && Number.isFinite(idNum) ? mirrorFullSrc(accountId, idNum) : null;
   const still =
+    photoFull ||
     (m as unknown as { _thumb?: string })._thumb ||
     proxyImage(
       m.files?.full?.url || m.files?.preview?.url || m.files?.thumb?.url,
@@ -1083,8 +1093,10 @@ function VaultPreviewMedia({
             <img
               src={still}
               alt=""
-              aria-hidden
-              className="w-full max-h-[30vh] object-contain"
+              aria-hidden={isVideo}
+              onClick={isVideo ? undefined : () => setZoom(true)}
+              title={isVideo ? undefined : "Click to view full size"}
+              className={`w-full max-h-[30vh] object-contain${isVideo ? "" : " cursor-zoom-in"}`}
             />
           )}
           {isVideo && (
@@ -1104,13 +1116,16 @@ function VaultPreviewMedia({
       )}
       <button
         type="button"
-        onClick={onExpand}
+        onClick={isVideo ? onExpand : () => setZoom(true)}
         title="Full screen"
         aria-label="Full screen"
         className="absolute top-1 right-1 px-1.5 py-0.5 rounded bg-black/60 hover:bg-black/85 text-white text-xs leading-none"
       >
         ⤢
       </button>
+      {zoom && Number.isFinite(idNum) && (
+        <ImageLightbox accountId={accountId} mediaId={idNum} onClose={() => setZoom(false)} />
+      )}
     </div>
   );
 }

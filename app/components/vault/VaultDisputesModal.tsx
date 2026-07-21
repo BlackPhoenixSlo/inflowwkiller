@@ -28,11 +28,12 @@ import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
-  mirrorThumbSrc,
+  mirrorFullSrc,
   resolveDispute,
   useVaultDisputes,
   type VaultDispute,
 } from "@/hooks/useVaultCache";
+import ImageLightbox from "@/components/vault/ImageLightbox";
 
 const REGION_LABEL: Record<string, string> = {
   vulva_vis: "vulva",
@@ -75,6 +76,7 @@ function DisputeCard({
 }) {
   const [busy, setBusy] = useState<"flags" | "describe" | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(false);
 
   async function pick(side: "flags" | "describe") {
     setBusy(side);
@@ -94,11 +96,19 @@ function DisputeCard({
 
   return (
     <div className="rounded-lg border border-border bg-bg-soft overflow-hidden flex flex-col">
+      {/* Full FRAME, letterboxed — never the square crop. The whole point of a
+          correction is to judge what is on show, and the square hides the top
+          and bottom of a 3:4 portrait. Click to enlarge for detail. */}
       <img
-        src={mirrorThumbSrc(accountId, d.media_id)}
+        src={mirrorFullSrc(accountId, d.media_id)}
         alt=""
-        className="w-full h-56 object-cover bg-black/40"
+        onClick={() => setZoom(true)}
+        title="Click to view full size"
+        className="w-full h-56 object-contain bg-black/70 cursor-zoom-in"
       />
+      {zoom && (
+        <ImageLightbox accountId={accountId} mediaId={d.media_id} onClose={() => setZoom(false)} />
+      )}
       <div className="p-3 space-y-2 flex-1 flex flex-col">
         <div className="flex flex-wrap gap-1">
           {Object.entries(d.regions).map(([r, state]) => (
