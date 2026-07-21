@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from sqlalchemy import select, update
@@ -262,7 +263,8 @@ def grade_of(fields: dict[str, Any] | None) -> dict[str, Any]:
     return g if isinstance(g, dict) else {}
 
 
-def _priority(fields: dict[str, Any], lanes: list[str], version: int) -> tuple:
+def _priority(fields: dict[str, Any], lanes: list[str], version: int,
+              reasons: list[str] | None = None) -> tuple:
     """Grading order. Never-graded first, then whatever costs most to get wrong.
 
     Two rounds of tuning were scored entirely on items that had already been
@@ -271,15 +273,23 @@ def _priority(fields: dict[str, Any], lanes: list[str], version: int) -> tuple:
     lead — and within them, the ones that gate money or a mass send.
     """
     g = grade_of(fields)
+    reasons = reasons or []
     graded_this_version = int(g.get("v") or 0) >= version
     paid = any(ln in ("tease 10", "tease 50", "safe explicit") for ln in lanes)
-    return (graded_this_version, not vault_ai_brief.contradictions(fields),
+    return (graded_this_version, -len(reasons),
+            not vault_ai_brief.contradictions(fields),
             not paid, not vault_ai_brief.any_bare(fields))
 
 
 async def review_queue(account_id: str, *, limit: int = 60,
-                       version: int = 0) -> dict[str, Any]:
-    """Items for the operator to grade, most valuable first."""
+                       version: int = 0, only_iffy: bool = False) -> dict[str, Any]:
+    """Items for the operator to grade, most valuable first.
+
+    `only_iffy` narrows to the ones the system itself nominates (see
+    `IFFY_REASONS`). That is the difference between asking for ten minutes and
+    asking for an afternoon, and the suspects are where every real defect has
+    landed — so the short list is not merely cheaper, it is better targeted.
+    """
     import vault_scripts
 
     async with get_session() as s:
@@ -310,8 +320,14 @@ async def review_queue(account_id: str, *, limit: int = 60,
             locked = set(json.loads(lj) if isinstance(lj, str) else (lj or []))
         except (TypeError, ValueError):
             locked = set()
+        why = iffy_reasons(fields, lanes.get(int(mid), []),
+                           locked & set(vault_ai_brief.VIS_REGIONS))
+        if only_iffy and not why:
+            continue
         out.append({
             "media_id": int(mid), "kind": kind,
+            "iffy": why,
+            "iffy_why": [IFFY_REASONS[r] for r in why],
             "lanes": lanes.get(int(mid), []),
             "regions": {r: vault_ai_brief.vis(fields, r)
                         for r in vault_ai_brief.VIS_REGIONS},
@@ -323,7 +339,7 @@ async def review_queue(account_id: str, *, limit: int = 60,
             "codes": vault_ai_brief.contradictions(fields),
             "locked": sorted(locked & set(vault_ai_brief.VIS_REGIONS)),
             "graded": g,
-            "_sort": _priority(fields, lanes.get(int(mid), []), version),
+            "_sort": _priority(fields, lanes.get(int(mid), []), version, why),
         })
 
     out.sort(key=lambda r: r["_sort"])
@@ -331,6 +347,8 @@ async def review_queue(account_id: str, *, limit: int = 60,
         r.pop("_sort")
     return {"account_id": account_id, "prompt_version": version,
             "total": len(out), "graded": graded,
+            "iffy": sum(1 for r in out if r["iffy"]),
+            "only_iffy": bool(only_iffy),
             "items": out[:max(1, int(limit))]}
 
 
@@ -416,3 +434,139 @@ async def flags_accuracy(account_id: str, version: int = 0) -> dict[str, Any]:
             "per_region": per,
             "accuracy": round(tot_ok / tot_n, 4) if tot_n else None,
             "answers": tot_n}
+
+
+# ── Which items deserve an eye ──────────────────────────────────────
+#
+# Checking a whole vault is expensive and mostly wasted: the model is right
+# about the great majority of items and the operator's time is the scarce
+# thing. But "check a random sample" misses the failures that matter, because
+# they are not randomly distributed — every real defect this system has had
+# clustered on the same few shapes.
+#
+# So the system nominates its own suspects. Each reason below is a specific
+# failure that HAPPENED, not a hypothetical:
+#
+#   unexplained_cover  a region called `covered` with nothing named as covering
+#                      it. The naming step is what makes `covered` trustworthy;
+#                      without it the answer is a bare assertion, and this is
+#                      how a topless still reached the mass-safe folder.
+#   act_vs_covered     an insertion act recorded, yet the region reads covered.
+#                      Fingers do not go through a thong; four of these were
+#                      priced at nothing.
+#   passes_disagree    describe and flags contradict each other, so one is
+#                      provably wrong.
+#   blind              every region `not_in_frame` on explicit material. Might
+#                      be true; is also what a punt looks like.
+#   prose_vs_flags     the DESCRIPTION says one thing and the flags another.
+#                      "stroke her exposed clitoris" alongside `vulva_vis:
+#                      not_in_frame` is the same picture described twice, and
+#                      one of the two is wrong.
+#
+# What is deliberately NOT a reason:
+#
+#   · being in a paid tier, or going out to a whole list. Those say the item
+#     MATTERS, not that the answer is doubtful — and every item matters
+#     somewhere, so using importance as suspicion flagged 87 of 102 and told
+#     the operator nothing. Importance belongs in the sort order, which is
+#     where it now lives.
+#   · never having been checked. Same reason: new is not suspicious.
+IFFY_REASONS: dict[str, str] = {
+    "unexplained_cover": "says covered but cannot say what is covering her",
+    "act_vs_covered": "something is inside her, yet the region reads covered",
+    "passes_disagree": "the describe pass and the flags pass contradict",
+    "prose_vs_flags": "the written description does not match the flags",
+    "blind": "explicit, but nothing at all is in frame",
+}
+
+# Words the describe pass uses for a region, and for skin being on show. The
+# prose is written by the SAME model that answers the flags, about the same
+# picture — so where the two disagree, one of them is provably wrong, and it
+# costs nothing to notice. This caught "using her right hand to stroke her
+# exposed clitoris" sitting next to `vulva_vis: not_in_frame`.
+_PROSE_REGION: dict[str, tuple[str, ...]] = {
+    "vulva_vis": ("pussy", "vulva", "clit", "clitoris", "vagina", "labia"),
+    "breasts_vis": ("breast", "breasts", "tits", "boobs", "nipple", "nipples"),
+    "anus_vis": ("anus", "asshole", "butthole"),
+}
+_PROSE_BARE = ("exposed", "bare", "uncovered", "on show", "visible", "spread open")
+
+
+def _prose_says_bare(text: str, region: str) -> bool:
+    """Does the description explicitly call this region exposed?
+
+    Proximity, not sentiment: the exposure word has to sit within a few words
+    of the body part, so "her exposed clitoris" counts and "exposed brick wall
+    behind her" next to an unrelated mention of her breasts does not.
+    """
+    low = text.lower()
+    for part in _PROSE_REGION.get(region, ()):
+        for m in re.finditer(r"\b" + re.escape(part) + r"\b", low):
+            window = low[max(0, m.start() - 40):m.end() + 40]
+            if any(w in window for w in _PROSE_BARE):
+                return True
+    return False
+
+_PAID_LANES = ("tease 10", "tease 50")
+_PUBLIC_LANES = ("mass", "stories", "safe explicit")
+
+# Garments that cover ONE place. A bodysuit legitimately shows up over her
+# chest and her crotch; a thong cannot. Naming the same one-part garment twice
+# is the slot-copying tell — "white thong" over the breasts of a topless still.
+# Without this distinction the reason fired on 35 of 102 items, most of them
+# women in bodysuits, which is not a suspicion but a description of her vault.
+_ONE_PART = frozenset({
+    "thong", "panties", "panty", "knickers", "briefs", "g-string", "gstring",
+    "bra", "bralette", "top", "shorts", "skirt",
+})
+
+
+def _is_one_part(name: str) -> bool:
+    return bool({w for w in re.split(r"[\s,./-]+", name.lower()) if w} & _ONE_PART)
+
+
+def iffy_reasons(fields: dict[str, Any], lanes: list[str],
+                 locked: set[str] | None = None) -> list[str]:
+    """Why this item is worth a human look. Empty = leave it alone."""
+    locked = locked or set()
+    out: list[str] = []
+
+    named: list[str] = []
+    for region in vault_ai_brief.VIS_REGIONS:
+        if region in locked:
+            continue                      # already settled by hand
+        state = vault_ai_brief.vis(fields, region)
+        over = vault_ai_brief.garment_over(fields, region)
+        if state == "covered" and not over:
+            out.append("unexplained_cover")
+        if over:
+            named.append(over.strip().lower())
+
+    acts = {str(a).strip().lower() for a in (fields.get("acts") or [])}
+    pen = _s(fields.get("penetration"))
+    if (acts & {"fingering", "toy_insertion", "riding_toy"}
+            or pen in ("fingers", "toy", "penis")):
+        if any(vault_ai_brief.vis(fields, r) == "covered"
+               for r in ("vulva_vis", "anus_vis")):
+            out.append("act_vs_covered")
+
+    if vault_ai_brief.contradictions(fields):
+        out.append("passes_disagree")
+
+    if _s(fields.get("explicitness")) in ("explicit", "hardcore") and all(
+            vault_ai_brief.vis(fields, r) == "not_in_frame"
+            for r in vault_ai_brief.VIS_REGIONS):
+        out.append("blind")
+
+    text = str(fields.get("description") or "")
+    if text:
+        for region in vault_ai_brief.VIS_REGIONS:
+            if region in locked:
+                continue
+            if (_prose_says_bare(text, region)
+                    and vault_ai_brief.vis(fields, region) != "bare"):
+                out.append("prose_vs_flags")
+                break
+
+    seen: set[str] = set()
+    return [r for r in out if not (r in seen or seen.add(r))]

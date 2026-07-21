@@ -340,6 +340,9 @@ export async function resolveDispute(
 export interface FlagsReviewItem {
   media_id: number;
   kind: string;
+  /** Why the system nominated this for a human look; empty = it did not. */
+  iffy: string[];
+  iffy_why: string[];
   lanes: string[];
   regions: Record<string, string>;
   over: Record<string, string>;
@@ -352,18 +355,26 @@ export interface FlagsReviewItem {
   graded: { v?: number; corrected?: string[]; note?: string };
 }
 
-export function useFlagsReview(accountId: string | null, enabled = false, limit = 60) {
+export function useFlagsReview(
+  accountId: string | null,
+  enabled = false,
+  onlyIffy = false,
+  limit = 200,
+) {
   return useQuery<{
     prompt_version: number;
     total: number;
     graded: number;
+    iffy: number;
+    only_iffy: boolean;
     items: FlagsReviewItem[];
   }>({
-    queryKey: ["vault-flags-review", accountId, limit],
+    queryKey: ["vault-flags-review", accountId, limit, onlyIffy],
     enabled: !!accountId && enabled,
     queryFn: () =>
       relay.get(
-        `/admin/vault-ai/flags-review?account_id=${encodeURIComponent(accountId!)}&limit=${limit}`,
+        `/admin/vault-ai/flags-review?account_id=${encodeURIComponent(accountId!)}` +
+          `&limit=${limit}&only_iffy=${onlyIffy}`,
       ),
     staleTime: 15_000,
   });
