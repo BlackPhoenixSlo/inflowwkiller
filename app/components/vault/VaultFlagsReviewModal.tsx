@@ -272,7 +272,7 @@ export default function VaultFlagsReviewModal({
             type="button"
             onClick={() => setOnlyIffy((v) => !v)}
             className="underline underline-offset-2 hover:text-fg"
-            title="Measured on AriaFree: the badges flag 40 items to catch 11 of the 24 actually wrong — 28% precision, 46% recall. Good enough to sort by, NOT good enough to hide behind, which is why the full list is the default."
+            title="Measured on the graded vault: the badges flag 40 items to catch 11 of the 24 actually wrong — 28% precision, 46% recall. Good enough to sort by, NOT good enough to hide behind, which is why the full list is the default."
           >
             {onlyIffy
               ? `only the ${data?.iffy ?? "…"} flagged — show all ${data?.total ?? ""}`

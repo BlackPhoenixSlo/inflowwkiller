@@ -18,13 +18,13 @@ Three rules, each of which exists because of an observed production defect:
   1. **A rung stays EMPTY rather than take wrong content.** The caption is a
      promise — "me and him, the whole scene 🔥" on a solo clip is a refund, and
      worse than silence. An item with no media is never offered (verified on
-     prod), so an empty rung is safe; a mis-bound one is not. AriaFree has no
+     prod), so an empty rung is safe; a mis-bound one is not. the graded vault has no
      partner content at all, so her collab rung is seeded empty on purpose.
-  2. **No media id appears in two rungs.** On prod AriaFree has 26 ids bound to
+  2. **No media id appears in two rungs.** On prod the graded vault has 26 ids bound to
      more than one rung — "Long solo finish" ($200) shares 6 of its 9 with
      cheaper rungs, so a fan who climbs the ladder is re-sold what he owns.
      Allocation here is exclusive.
-  3. **Scarcest rung first.** Payoff content is rare (19 of AriaFree's 103 items
+  3. **Scarcest rung first.** Payoff content is rare (19 of the graded vault's 103 items
      can close a sale at all). Filling the $8 rung first would eat the material
      the $200 rung needs, so rungs are allocated in order of how few candidates
      they have, not in price order.
@@ -51,7 +51,7 @@ log = logging.getLogger("of-relay.vault_catalog_seed")
 
 
 # An `acts` array this long is the model echoing the ACTS *menu* back instead of
-# choosing from it. Measured over both Aria accounts: real rows carry 0-4 acts
+# choosing from it. Measured over both test accounts: real rows carry 0-4 acts
 # (99/68/22/6/2 at counts 0-4) and exactly ONE row carried 25 — the entire
 # vocabulary verbatim, `none` included. That row is a lingerie tease clip, and
 # the phantom `sex_missionary`/`toy_insertion` in it were enough to win the $200
@@ -61,7 +61,7 @@ _MENU_ECHO_MIN_ACTS = 8
 
 # Where the taxonomy and the prose disagree, believe the PROSE. The V2 prompt
 # asks for 2-4 literal sentences and gets them right far more often than it gets
-# the closed fields right — measured on AriaFree: 3 items are tagged
+# the closed fields right — measured on the graded vault: 3 items are tagged
 # `clothing_state=fully_nude` while their own description says "wearing black
 # lace bodysuit", and the vault's ONE dildo clip ("using a pink dildo on
 # herself") carries an EMPTY `toys` list. Trusting the field alone put a
@@ -82,7 +82,7 @@ _TOY_RE = re.compile(r"\b(dildo|vibrator|toy|wand|plug)\b", re.I)
 #
 # A video rung therefore needs a companion STILL. Batches are kind-pure (photos
 # and videos upload in separate bursts) so `script_id` cannot link them, and on
-# AriaFree the photo batches (06-30 → 07-01) barely overlap the video batches
+# the graded vault the photo batches (06-30 → 07-01) barely overlap the video batches
 # (07-01 → 07-02) — so "same shoot" is NOT provable and is not claimed here.
 # What is claimed is OUTFIT COHERENCE: the fan sees a black-lace still and
 # unlocks a black-lace clip, which reads consistent however far apart they were
@@ -273,7 +273,7 @@ _FLOOR_PARTIAL_REVEAL = 1000
 
 # A floor only answers "is this row too CHEAP", and it cannot catch the defect
 # an operator actually sees, because every piece of content clears a floor of
-# $0. Measured on AriaFree: "Custom / exclusive" ($200 — "one of one, nobody
+# $0. Measured on the graded vault: "Custom / exclusive" ($200 — "one of one, nobody
 # else ever sees this") went out over a 26-second lingerie tease, and "Body rate
 # video" ($90) over two suggestive clips she is fully dressed in. Both cleared
 # their floor.
@@ -348,7 +348,7 @@ def item_band(row: dict[str, Any]) -> tuple[int, int | None]:
         if vault_scripts._is_nude(f) or vault_scripts._shows_genitals(f):
             return (_FLOOR_NUDE_IMAGE, _CEILING_NUDE_IMAGE)
         # The middle tier the old binary could not express: breasts out, but
-        # still covered below. On AriaFree the two flags disagree on 31 of 81
+        # still covered below. On the graded vault the two flags disagree on 31 of 81
         # stills, and this is where those 31 live — a real reveal, worth more
         # than a peek and less than the full one.
         if vault_scripts._shows_breasts_bare(f):
@@ -891,7 +891,7 @@ async def _existing_labels(account_id: str) -> set[str]:
 
 # A row only carries the closed taxonomy if it was described with the V2
 # prompt. V1 rows have prose and free tags but NO `clothing_state`/`acts`, so
-# every clothing- or act-gated rung matches nothing — on Lexi's 1,361-item vault
+# every clothing- or act-gated rung matches nothing — on a 1,361-item vault
 # that produced a shot-list telling the operator to film content she already
 # owns. Coverage is reported so the answer is "describe this vault", never a
 # false "you don't have this".

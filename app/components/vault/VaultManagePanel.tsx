@@ -52,6 +52,11 @@ type MediaType = "all" | "photo" | "video" | "gif" | "audio";
 type Tile = VaultMedia & { _ai?: Record<string, unknown> };
 
 // explicitness tiers the pricing bands key off (contract §1 bands_by_tier).
+/** The three answers the flags pass gives per region. Must match
+ *  `vault_ai_brief.VIS_STATES` — the server rejects anything else with a 400
+ *  rather than storing a value no lane knows how to read. */
+const VIS_OPTIONS = ["bare", "covered", "not_in_frame"];
+
 const TIER_OPTIONS = ["safe", "suggestive", "explicit", "graphic", "unknown"];
 
 /** PATCH /admin/vault-ai/items/{id} — override + lock the operator-edited fields
@@ -118,6 +123,7 @@ export default function VaultManagePanel() {
   const [showAiFolders, setShowAiFolders] = useState(false);
   const [showDisputes, setShowDisputes] = useState(false);
   const [showFlagsReview, setShowFlagsReview] = useState(false);
+  const [needsReview, setNeedsReview] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState<string>("");
   const [describeAll, setDescribeAll] = useState<string>("");
@@ -359,6 +365,16 @@ export default function VaultManagePanel() {
     setDescribeAll("");
     qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
     qc.invalidateQueries({ queryKey: ["vault-describe-plan", accountId] });
+    for (const k of ["vault-flags-review", "vault-flags-accuracy", "vault-ai-folder-plan"]) {
+      qc.invalidateQueries({ queryKey: [k] });
+    }
+    // Offer the manual pass rather than relying on anyone remembering it
+    // exists. Describing writes what the model BELIEVES; every wrong answer
+    // this system has had was invisible to every automatic check and obvious
+    // to a human in seconds, so the end of a sweep is exactly when to ask.
+    const fin = await fetchDescribeAllStatus(accountId).catch(() => null);
+    const n = fin?.progress?.needs_review ?? 0;
+    if (n > 0) setNeedsReview(n);
   }
 
   async function onHarvest() {
@@ -977,6 +993,32 @@ export default function VaultManagePanel() {
       {showDupes && accountId && (
         <VaultDuplicatesModal accountId={accountId} onClose={() => setShowDupes(false)} />
       )}
+      {needsReview > 0 && !showFlagsReview && (
+        <div className="mx-4 mb-2 rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 flex items-center justify-between gap-3">
+          <p className="text-[11px] text-emerald-200">
+            Described and flagged. <b>{needsReview}</b>{" "}
+            {needsReview === 1 ? "item looks" : "items look"} worth your eye — the
+            model disagrees with itself on them, or cannot say what is covering her.
+          </p>
+          <div className="flex gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowFlagsReview(true)}
+              className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-emerald-500/60 text-emerald-200 hover:bg-emerald-500/20"
+            >
+              Check them
+            </button>
+            <button
+              type="button"
+              onClick={() => setNeedsReview(0)}
+              className="px-2 py-1 rounded-md text-[11px] text-fg-dim hover:text-fg"
+            >
+              Later
+            </button>
+          </div>
+        </div>
+      )}
+
       {showFlagsReview && accountId && (
         <VaultFlagsReviewModal
           accountId={accountId}
@@ -1275,6 +1317,13 @@ function VaultItemEditor({
     cap: (ai.suggested_caption as string | undefined) ?? "",
     script: (ai.suggested_script as string | undefined) ?? "",
     price: typeof priceCents === "number" ? (priceCents / 100).toFixed(2) : "",
+    // The exposure flags. They decide the folder, the price band and whether
+    // an item may be mass-sent, so an operator who spots a wrong one while
+    // editing a caption should be able to fix it here rather than hunting for
+    // the review modal.
+    breasts: (ai.breasts_vis as string | undefined) ?? "",
+    vulva: (ai.vulva_vis as string | undefined) ?? "",
+    anus: (ai.anus_vis as string | undefined) ?? "",
   };
 
   const [desc, setDesc] = useState(init.desc);
@@ -1283,6 +1332,9 @@ function VaultItemEditor({
   const [cap, setCap] = useState(init.cap);
   const [script, setScript] = useState(init.script);
   const [priceStr, setPriceStr] = useState(init.price);
+  const [breasts, setBreasts] = useState(init.breasts);
+  const [vulva, setVulva] = useState(init.vulva);
+  const [anus, setAnus] = useState(init.anus);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string[] | null>(null);
   const [err, setErr] = useState("");
@@ -1297,6 +1349,9 @@ function VaultItemEditor({
   if (script !== init.script) changed.suggested_script = script;
   // Dollars in the input → cents on the wire. Blank clears the price; garbage is
   // simply not sent, so a typo can't wipe a real price.
+  if (breasts !== init.breasts) changed.breasts_vis = breasts;
+  if (vulva !== init.vulva) changed.vulva_vis = vulva;
+  if (anus !== init.anus) changed.anus_vis = anus;
   const priceTrimmed = priceStr.trim();
   if (priceTrimmed !== init.price) {
     if (priceTrimmed === "") {
@@ -1381,6 +1436,40 @@ function VaultItemEditor({
           placeholder="comma, separated, tags"
           className={cx(inputCls, "mt-1")}
         />
+      </div>
+      <div>
+        <div className={label}>
+          What is on show — decides the folder, the price and whether it can be
+          mass-sent
+        </div>
+        <div className="flex gap-2 mt-1">
+          {(
+            [
+              ["breasts", breasts, setBreasts, "breasts_vis"],
+              ["vulva", vulva, setVulva, "vulva_vis"],
+              ["anus", anus, setAnus, "anus_vis"],
+            ] as const
+          ).map(([name, val, set, field]) => (
+            <div key={name} className="flex-1">
+              <div className="text-[10px] text-fg-dim">
+                {name}
+                {lockBadge(field)}
+              </div>
+              <select
+                value={VIS_OPTIONS.includes(val) ? val : ""}
+                onChange={(e) => set(e.target.value)}
+                className={cx(inputCls, "mt-0.5")}
+              >
+                <option value="">—</option>
+                {VIS_OPTIONS.map((v) => (
+                  <option key={v} value={v}>
+                    {v === "not_in_frame" ? "not in frame" : v}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ))}
+        </div>
       </div>
       <div className="flex gap-2">
         <div className="flex-1">

@@ -76,7 +76,7 @@ def _group_key(row: dict[str, Any]) -> tuple[str, str, bool] | None:
 
     # PRIMARY colour only — material and secondary colours are deliberately
     # dropped. Keying on colour+material split pink into "pink" and "pink lace",
-    # and AriaFree ended up with three near-identical $25 rows ("Pink lace
+    # and the graded vault ended up with three near-identical $25 rows ("Pink lace
     # tease", "Pink tease buildup", "Pink tease build-up") competing for one
     # pool: the first two took every pink still and the third was left with
     # nothing to fill. One outfit should produce one line.

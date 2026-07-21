@@ -71,7 +71,7 @@ _PAYOFF_ACTS = {
 #     clip and a dildo clip in the folder whose entire job is to be safe. It
 #     was patched twice; both patches were crutches on `body_focus`, a field
 #     that is frequently absent and was never an exposure signal.
-#   * `breasts_covered` came back `false` on 94 of 103 AriaFree items,
+#   * `breasts_covered` came back `false` on 94 of 103 the graded vault items,
 #     including 14 tagged `dressed` or `sfw`. A flag that is ~91% constant and
 #     contradicts the describe pass on clothed stills carries no information.
 #     The double-negative phrasing ("are her bare breasts KEPT FROM VIEW")
@@ -251,7 +251,7 @@ def fold_vis(states: list[str]) -> str:
     was never in shot. Taking the max is the conservative direction for a
     safety gate, and — unlike the old `all()` over booleans — a frame that
     simply could not see the region no longer reads as an exposed one. That
-    conflation is why 20 of 21 AriaFree clips folded to "uncovered".
+    conflation is why 20 of 21 the graded vault clips folded to "uncovered".
     """
     ranked = [_VIS_RANK[s] for s in states if s in _VIS_RANK]
     return VIS_STATES[max(ranked)] if ranked else ""
@@ -266,7 +266,7 @@ def fold_vis(states: list[str]) -> str:
 #
 # That turns "does the new prompt work better" from a matter of taste into a
 # number that can be run before and after any change. The v1 flags scored 14
-# contradictions on 103 AriaFree items (13.6%); anything that replaces them has
+# contradictions on 103 the graded vault items (13.6%); anything that replaces them has
 # to beat that.
 CONTRADICTIONS: dict[str, str] = {
     "dressed_but_bare": "clothing_state=dressed, yet a bare region is visible",

@@ -10,7 +10,7 @@
  * hand labels needed.
  *
  * WHICH one is wrong differs item by item, so this asks rather than decides.
- * On AriaFree every current dispute is `clothing_state: fully_nude` on a still
+ * On the graded vault every current dispute is `clothing_state: fully_nude` on a still
  * where the flags name a thong, and the flags are right; the mirror-image case
  * is equally real, and guessing it wrong is what sells a fan something that is
  * not in the media.

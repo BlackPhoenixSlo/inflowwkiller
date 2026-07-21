@@ -6626,7 +6626,7 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
 # you see at a glance and the All-icon sums to the unified header's "Owe reply".
 #
 # Why NOT the local `chats` table (an earlier implementation): it is not a
-# faithful mirror of OF — it accumulates phantom/old rows (Lexi: ~290 local vs
+# faithful mirror of OF — it accumulates phantom/old rows (one account: ~290 local vs
 # OF's ~106), `last_message_at` ordering is unreliable, and `unread_count` drifts
 # (WS only increments it), so a local scan read 3 "unread" for a model OF reports
 # as 0. Why NOT a deep scan: paginating the whole history over-counted owe-reply

@@ -60,11 +60,11 @@ describe("useAllModelsInclude exclude-list semantics", () => {
   });
 
   it("deletes the legacy include-list key and ignores its contents", async () => {
-    window.localStorage.setItem(LEGACY_KEY, JSON.stringify(["AriaFree"]));
+    window.localStorage.setItem(LEGACY_KEY, JSON.stringify(["the graded vault"]));
     const useAllModelsInclude = await freshHook();
     const { result } = renderHook(() => useAllModelsInclude());
-    // Under legacy semantics SofiaPaid (absent from the list) was hidden.
-    expect(result.current.isIncluded("SofiaPaid")).toBe(true);
+    // Under legacy semantics the graded vault (absent from the list) was hidden.
+    expect(result.current.isIncluded("the graded vault")).toBe(true);
     expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull();
   });
 

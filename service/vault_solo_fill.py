@@ -23,8 +23,8 @@ Three rules carried over from what production got wrong:
   1. **Empty beats wrong.** A caption is a promise; "playing with my toy" over a
      clip with no toy is a refund. No honest match → the row stays empty.
   2. **Never re-bind media another item already sells** — including script
-     items. On prod one AriaFree media id sits in three rungs at three prices.
-  3. **Believe the prose over the taxonomy.** Measured on AriaFree: 3 items are
+     items. On prod one the graded vault media id sits in three rungs at three prices.
+  3. **Believe the prose over the taxonomy.** Measured on the graded vault: 3 items are
      tagged `fully_nude` while their own description says "wearing black lace
      bodysuit", and the only dildo clip carries an empty `toys` list.
 
@@ -52,7 +52,7 @@ log = logging.getLogger("of-relay.vault_solo_fill")
 # like a set; a single image is one piece.
 WANT_BY_KIND = {"image": 1, "image_set": 8, "video": 1}
 
-# The fewest media that still make the word honest. "Set" is plural: AriaFree's
+# The fewest media that still make the word honest. "Set" is plural: the graded vault's
 # "White halter tease" came out of the filler holding ONE photo, which is not a
 # set at a set's price — it is a single image with a bundle's caption.
 MIN_BY_KIND = {"image": 1, "image_set": 3, "video": 1}
@@ -137,7 +137,7 @@ _TAME = _kw("selfie", "rate", "cute", "no makeup", "sfw", "casual", "bikini", "s
 
 # A caption that NAMES an act is making a checkable promise, and unlike the soft
 # `acts_any` hints above it does not get to degrade into a ranking preference.
-# Measured on AriaFree: "black lace deep fingering" ($100) went out over a clip
+# Measured on the graded vault: "black lace deep fingering" ($100) went out over a clip
 # whose only acts are `groping_own_breasts` and `posing` — there is no fingering
 # in it. `acts` under-reports, so a required act can cost a row its content; that
 # is the correct trade, because the alternative is charging $100 for a promise
@@ -452,7 +452,7 @@ async def suggest_singles(account_id: str, *, only_empty: bool = True,
     # filled row, reserving its own ids would starve the row that owns them.
     #
     # `allow_reuse` turns that off. It exists because exclusivity has a real
-    # cost once the catalog outgrows the vault: on AriaFree, 18 rows over 101
+    # cost once the catalog outgrows the vault: on the graded vault, 18 rows over 101
     # items meant a row could match 69 photos and still fill with none, because
     # every one was spoken for. The trade-off it reinstates is the production
     # defect it was written against — a fan climbing the ladder can be re-sold
@@ -688,7 +688,7 @@ async def suggest_singles(account_id: str, *, only_empty: bool = True,
         prevs = vault_catalog_seed.pick_previews(
             t.kind, want, entry["items"], vault, taken | used_previews)
         # Nothing unsold left that is safe to give away. Measured here: 43 of
-        # AriaFree's 102 items clear `preview_ok`, and after 21 rows have taken
+        # the graded vault's 102 items clear `preview_ok`, and after 21 rows have taken
         # what they sell, FOUR are still free — because the $25 tease sets sell
         # exactly the dressed stills a teaser is made of. Leaving the locked
         # rows with no free frame is the worse trade: a preview is the shop

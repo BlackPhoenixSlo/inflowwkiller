@@ -103,7 +103,7 @@ class Slot:
         # A payoff piece is the most valuable thing on the shelf. The cheap wide
         # slots must never carry one: the $3 teaser goes to EVERY subscriber, so
         # one closer in it hands the whole list what the $60 drop is selling.
-        # Observed on AriaFree — the `mass` lane is suggestive-only, but a
+        # Observed on the graded vault — the `mass` lane is suggestive-only, but a
         # suggestive item can still carry `rubbing_clit`.
         self.no_closers = no_closers
         # Hard ceiling on the explicitness ladder. The free-ish teaser goes to
@@ -118,7 +118,7 @@ class Slot:
         self.fill_from = fill_from
         # How many bundles of this KIND to build when the vault has the material
         # for more than one. Extra copies are built from fresh media only, so a
-        # deep lane (AriaFree's `mass` holds 53) yields several genuinely
+        # deep lane (the graded vault's `mass` holds 53) yields several genuinely
         # different sets instead of one and a lot of unused shelf.
         self.max_copies = max_copies
 
@@ -337,7 +337,7 @@ async def propose_week(account_id: str, *, min_set: int = MIN_SET
 
     # PASS 1 — one bundle of every KIND first. Copies come later: letting a deep
     # lane take its second bundle before `winback` had its first starved the
-    # leftovers slot down to 3 media on AriaFree. Every slot type earns a bundle
+    # leftovers slot down to 3 media on the graded vault. Every slot type earns a bundle
     # before any slot earns a second.
     for slot in WEEKLY_LINEUP:
         uniq, note = pools[slot.key]

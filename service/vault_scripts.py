@@ -8,7 +8,7 @@ of clips that escalates, almost always along the same arc —
 and then uploads the whole run to OF in one go. Two facts make that arc
 recoverable, and one fact makes it necessary:
 
-  * Recoverable (1) — a batch is a tight burst in OF's own `createdAt`. On Aria
+  * Recoverable (1) — a batch is a tight burst in OF's own `createdAt`. On the graded vault
     166 of 249 consecutive gaps are under 10 seconds; day-long gaps separate the
     shoots. So a gap threshold splits the vault into candidate scripts with no
     vision work at all.
@@ -68,7 +68,7 @@ MIN_TAU = 0.30
 #
 # Tau measures ONLY the consistency of a trend, never its size, so a batch
 # scoring 60,55,55 returns tau = −1.00 — maximum confidence off a five-point
-# wobble. Observed on Aria's batch 4542417745, which is three near-identical
+# wobble. Observed on the graded vault's batch, which is three near-identical
 # nude clips and no script at all. The floor demands a real rung transition
 # (dressed→lingerie, lingerie→nude) before we act.
 #
@@ -150,7 +150,7 @@ _ACTS: dict[str, int] = {
     "cumshot": 98,
 }
 
-# The model does not always return the menu spelling. Observed on real Aria
+# The model does not always return the menu spelling. Observed on a real graded
 # batches: `stripping` for strip, `rubbing_breasts` for groping_own_breasts.
 # Unknown acts are ignored rather than guessed at, so drift silently costs
 # signal — these are the spellings actually seen, not speculative synonyms.
@@ -539,7 +539,7 @@ async def apply_folder_order(account_id: str, folder_id: int,
 # ── Outfit scripts (what a script actually IS) ──────────────────────
 #
 # The upload-burst grouping above finds "media pushed to OF in one sitting".
-# That is NOT a script. Measured on AriaFree, bursts are kind-PURE — she uploads
+# That is NOT a script. Measured on the graded vault, bursts are kind-PURE — she uploads
 # her photos in one go and her clips in another — so burst grouping splits every
 # real shoot down the middle and can never produce the mix an operator means.
 #
@@ -572,7 +572,7 @@ _MATERIALS: tuple[str, ...] = (
     "cotton",
 )
 
-# Colour alone is too coarse. AriaFree's "black" group came back as 46 items and
+# Colour alone is too coarse. the graded vault's "black" group came back as 46 items and
 # the operator's read was blunt: three different sets. It was — one 15:27 burst
 # alone held a leather jacket, a fur-lined jacket, four distinct tops, three
 # bodysuits and two bra sets, all black. A bulk archive dump of many outfits
@@ -601,7 +601,7 @@ _GARMENT_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 # Two different shoots in the same colour must not merge just because the colour
 # matches. 48h keeps a shoot whose stills and clips went up on consecutive
-# nights together (AriaFree's pink set spans 26 hours) while separating a black
+# nights together (the graded vault's pink set spans 26 hours) while separating a black
 # set shot a week later.
 DEFAULT_OUTFIT_WINDOW_HOURS = 48
 
@@ -735,7 +735,7 @@ async def collect_outfit_scripts(
 
 # ── Purpose folders (what a weak shoot is still good for) ───────────
 #
-# Not every outfit group is a sellable shoot. AriaFree's `black top` (15 stills,
+# Not every outfit group is a sellable shoot. the graded vault's `black top` (15 stills,
 # ZERO closers) and `white top` (4 stills) have nothing to land a sale on — but
 # they are perfectly good STORY material, and the explicit tail of a weak group
 # still works as a free teaser on a mass send.
@@ -861,8 +861,8 @@ def _lane_covered_explicit(why: dict, fields: dict, kind: str) -> bool:
     REQUIRES the flags to exist. This is the only lane that asserts something is
     safe to put in front of everyone, and every other test here reads "no
     evidence of exposure" — which an UNFLAGGED item satisfies trivially. Before
-    this guard, AriaFree's two unflagged clips (anal penetration; a dildo) sat in
-    this folder, and on V1-described Lexi all 472 members were rows with no
+    this guard, the graded vault's two unflagged clips (anal penetration; a dildo) sat in
+    this folder, and on a V1-described vault all 472 members were rows with no
     `body_focus` at all. Absence of evidence is not evidence of absence, and for
     this lane specifically the default must be to exclude.
 

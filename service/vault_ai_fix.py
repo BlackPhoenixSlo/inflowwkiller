@@ -4,7 +4,7 @@ Two vision passes look at the same picture. `describe` writes prose plus
 `clothing_state`; the cheap `flags` pass writes, per region, whether she is
 bare / covered / not in frame, and NAMES what is covering her. Where they
 contradict each other, one of them is provably wrong — and which one differs
-item by item. On AriaFree, all ten current disputes are `clothing_state:
+item by item. On the graded vault, all ten current disputes are `clothing_state:
 fully_nude` on a still where the flags name a thong or a bodysuit, and the
 flags are right; the reverse also happens.
 

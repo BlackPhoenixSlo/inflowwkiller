@@ -1289,7 +1289,7 @@ def _fold_clip_flags(per_frame: list[dict[str, Any]]) -> dict[str, Any]:
     The v1 fold was `all()` over "covered" booleans, and it collapsed: a frame
     that could not see the region answered `covered=False`, indistinguishable
     from a frame where she was bare, so ANY frame that simply missed the region
-    marked the whole clip uncovered. 20 of 21 AriaFree clips folded to
+    marked the whole clip uncovered. 20 of 21 the graded vault clips folded to
     uncovered, which is no signal at all. With `not_in_frame` as its own state
     those frames fold away instead of voting for exposure.
 
@@ -1444,7 +1444,7 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
 
     Clips are included because the flags gate `AI-safe explicit`, the one folder
     that claims something is safe to mass-send. While clips went unflagged they
-    fell into it by default — on AriaFree that meant a penetration clip and a
+    fell into it by default — on the graded vault that meant a penetration clip and a
     dildo clip in the mass-safe folder.
     """
     account_id = str(payload.get("account_id") or "")
@@ -1547,7 +1547,7 @@ async def flags_review_queue(account_id: str = "", limit: int = 120,
 
     Returns EVERYTHING by default, suspects first. `only_iffy` narrows to the
     nominated ones, and is off by default because the nomination was measured
-    and is not good enough to hide things behind: on AriaFree it flags 40 items
+    and is not good enough to hide things behind: on the graded vault it flags 40 items
     to catch 11 of the 24 that are actually wrong — 28% precision, 46% recall.
     Filtering on that would quietly hide thirteen real errors, which is worse
     than a longer list. The reasons are a SORT ORDER and a set of badges; they
@@ -1953,7 +1953,7 @@ _DESCRIBE_PROMPT = (
 #  3. `beats` — an ordered walk across the sampled frames, so a 2-minute clip
 #     stops collapsing into one static sentence.
 #  4. A CLOSED taxonomy instead of free tag soup. V1's free vocabulary let it
-#     emit `nude` + `lingerie` + `topless` on the SAME item — 78% of Aria's rows
+#     emit `nude` + `lingerie` + `topless` on the SAME item — 78% of the graded vault's rows
 #     carry a contradiction like that, which is why nothing downstream could
 #     order a script. `clothing_state` and `acts` are single-valued rungs, and
 #     they are what service/vault_scripts.py scores.
@@ -2096,7 +2096,7 @@ def _frames_for_duration(seconds: int | None) -> int:
 # Two fixes, and this is the cheap one. Rather than re-running a full describe
 # (2,788 tokens, ~16s/item) to recover two booleans the tier actually reads, ask
 # ONLY for those booleans: ~350 tokens, ~3s/item — measured 5x faster and ~40x
-# cheaper over AriaFree, about $0.001 for a 103-item vault.
+# cheaper over the graded vault, about $0.001 for a 103-item vault.
 #
 # The image still has to keep its ASPECT RATIO. `files.thumb` is 300x300 and
 # OF's stills are 3:4, so the thumb is a centre-CROP with the bottom of the
@@ -2136,7 +2136,7 @@ _FLAG_KEYS = vault_ai_brief.FLAG_KEYS
 # cost. Phrasing is positive ("what can you see") rather than a double negative
 # ("is it kept from view"), because the negative form measured ~91% constant.
 #
-# GRADED against operator labels on 27 AriaFree items (`_probe_flags_score.py`).
+# GRADED against operator labels on 27 the graded vault items (`_probe_flags_score.py`).
 # The version that asked for a state directly scored 80.2%, and 13 of its 16
 # errors were the SAME mistake: `covered` where the truth was `not_in_frame`.
 # Asked "is it covered", a model says yes whenever it cannot see skin — whether
@@ -2582,6 +2582,20 @@ async def _run_describe_all(account_id: str, force: bool,
                                           prompt_version=prompt_version)
                 if res.get("status") == "capped":
                     capped = True
+                # Flag it in the same breath. "Described" used to mean prose
+                # plus `clothing_state` and nothing about what is actually on
+                # show, so a freshly-described vault had no flags at all and
+                # every gated lane was empty until someone remembered a second
+                # button. The flags pass is ~3s and ~$0.00002 against describe's
+                # ~16s and ~$0.0086 — a fifth of a percent — so making it
+                # conditional bought nothing but a way to forget it.
+                if res.get("ok"):
+                    try:
+                        await _flags_one(account_id, mid)
+                    except Exception:  # noqa: BLE001
+                        # Never let the cheap pass take down the expensive one:
+                        # the description is already written and worth keeping.
+                        log.exception("flags after describe failed media=%s", mid)
                 # `done` means "visited", not "described". Track failures
                 # separately: a whole vault can fail (bad/missing provider key)
                 # and still report done=N/N, which reads as success.
@@ -2600,6 +2614,14 @@ async def _run_describe_all(account_id: str, force: bool,
             if capped:
                 break
             await asyncio.gather(*(_one(m) for m in ids[i:i + 50]))
+        try:
+            q = await vault_ai_fix.review_queue(account_id, limit=1,
+                                                version=_FLAGS_VERSION,
+                                                only_iffy=True)
+            _describe_progress[account_id] = {
+                **_describe_progress.get(account_id, {}), "needs_review": q["iffy"]}
+        except Exception:  # noqa: BLE001
+            log.exception("review count after describe failed account=%s", account_id)
         if failed:
             log.warning("describe_all account=%s done=%s/%s FAILED=%s capped=%s first_error=%s",
                         account_id, done, total, failed, capped, first_error)
