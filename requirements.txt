@@ -6,6 +6,11 @@
 # only ever runs the server / paste-curl bootstrap / WebSocket pump.
 
 fastapi==0.136.1
+# httpx backs llm_client's provider calls. This lived ONLY in the deploy repo
+# for months (added there after an identical crash loop) and a sync from the
+# laptop deleted it again — a fix made downstream is a fix that gets reverted.
+# It belongs here, in the source of truth.
+httpx==0.28.1
 uvicorn[standard]==0.47.0
 curl_cffi==0.15.0
 pydantic==2.13.4
