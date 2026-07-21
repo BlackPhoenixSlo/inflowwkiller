@@ -74,6 +74,29 @@ _CLOTHING_FOR = {
     (True, True): "partially_off",    # both out, something still on
 }
 
+# Same table keyed on whether a real GARMENT is WORN over each region, not on
+# whether the region reads "bare". The two differ exactly when a hand or her
+# hair is the only thing over her — "she is still nude behind her own hand"
+# (vault_ai_brief), so a bare chest with a thong on is `pulled_down`, and keying
+# the state on `is_bare` (which reads a hand-covered breast as not-bare) put it
+# in `lingerie_on`. `underwear_visible` is still true here, so both-exposed maps
+# to `partially_off` (an accessory on) rather than `fully_nude`, which would
+# re-trigger the very contradiction being resolved.
+_CLOTHING_WORN = {
+    # (garment worn on breasts?, garment worn on vulva?)
+    (True, True): "lingerie_on",
+    (False, True): "pulled_down",     # chest bare, bottom on — topless
+    (True, False): "pulled_aside",    # top on, bottom exposed
+    (False, False): "partially_off",
+}
+
+
+def _worn(fields: dict[str, Any], region: str) -> bool:
+    """A real garment is over this region. A hand, an arm or her hair is not
+    one — that region is exposed for every downstream reader even when the flags
+    called it `covered`."""
+    return vault_ai_brief.is_clothing(vault_ai_brief.garment_over(fields, region))
+
 
 def _s(v: Any) -> str:
     return str(v or "").strip().lower()
@@ -107,8 +130,19 @@ def propose(fields: dict[str, Any], codes: list[str]) -> dict[str, dict[str, Any
     trust_describe: dict[str, Any] = {}
 
     if "nude_but_clothed" in codes:
-        # Flags right → she is not nude, so `fully_nude` is wrong.
-        trust_flags["clothing_state"] = _CLOTHING_FOR[(bare_b, bare_v)]
+        # Flags right → she is not fully nude. WHICH partial state is decided by
+        # what she is WEARING, not by what reads bare: top off with a thong on is
+        # `pulled_down`. Keying this on `is_bare` made a hand-over-breast/thong
+        # still — the operator's "top exposed, bottom lingerie on" case — come
+        # back `lingerie_on`, because a hand-covered breast is not "bare".
+        trust_flags["clothing_state"] = _CLOTHING_WORN[
+            (_worn(fields, "breasts_vis"), _worn(fields, "vulva_vis"))]
+        # A region the flags called `covered` but named only a hand/hair over is
+        # exposed to every downstream reader (the $10/$50 tiers, the mass-safe
+        # lane), so correct it — the item should be right, not merely un-disputed.
+        for region in ("breasts_vis", "vulva_vis"):
+            if vault_ai_brief.vis(fields, region) == "covered" and not _worn(fields, region):
+                trust_flags[region] = "bare"
         # Describe right → she IS nude, so there is no garment on her. Drop the
         # named garments and open whatever they were covering.
         for region, key in vault_ai_brief.OVER_KEYS.items():
