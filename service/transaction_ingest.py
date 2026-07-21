@@ -1407,8 +1407,14 @@ async def _online_account_ids() -> set[str]:
     Non-admin principals stay scoped to their own accounts, so a multi-tenant
     box doesn't burn one agency's proxy because another agency is online.
 
-    Empty set ⇒ nobody's online; the supervisor cycle skips this tick so
-    we don't hammer broken sessions while every dashboard is closed. The
+    ⚠️ FAST-POLL ONLY. The 5-minute supervisor deliberately does NOT consult
+    this: it is the sole writer of the `transactions` ledger that
+    `fans.lifetime_spend_cents` — and therefore every automation's spend
+    decision — is derived from, and automations run whether or not anyone is
+    watching. Only the 30s freshness loop, which exists purely so an open
+    dashboard updates quickly, may be skipped when nobody is looking.
+
+    Empty set ⇒ nobody's online; the fast poll skips this tick. The
     /admin/ingest/transactions/{aid}/run admin endpoint stays unaffected —
     a manual re-sync is an explicit user gesture and bypasses this gate.
     """
@@ -1490,10 +1496,19 @@ async def start_supervisor() -> None:
                 m["id"] for m in account_registry.list_accounts()
                 if m.get("has_session")
             ]
-            # Gate the cycle on online principals — see _online_account_ids
-            # docstring. Idle dashboard ⇒ no scan, no proxy burn.
-            online = await _online_account_ids()
-            account_ids = [aid for aid in account_ids if aid in online]
+            # NO online gate here. This loop is not a dashboard convenience —
+            # it is the only writer of the `transactions` ledger, and
+            # `event_transcoder` bumps `fans.lifetime_spend_cents` off those
+            # rows. The AUTOMATIONS run 24/7 with no online gate of their own
+            # (automation_executor never consults one) and read that number to
+            # decide real money questions: ai_chatter's whale gate
+            # (max_lifetime_spend_cents), the proven-spend floor, the tip-ladder
+            # base, deep_convo's high-spender skip, of_ai_chat's hand-to-human
+            # gate. Gating the producer on "is a human watching" while the
+            # consumers never stop meant that with every dashboard closed, a fan
+            # who had already blown past the whale cap still read as $0 and the
+            # AI kept selling to him. Freshness for a watching human is what the
+            # 30s fast poll is for — THAT one keeps the online gate.
             if not account_ids:
                 elapsed = time.monotonic() - cycle_started
                 await asyncio.sleep(max(0.0, _TICK_INTERVAL_S - elapsed))
