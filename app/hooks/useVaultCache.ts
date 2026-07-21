@@ -232,11 +232,43 @@ export interface AiFolderPlan {
   flags: { stills: number; flagged: number; missing: number; ready: boolean };
 }
 
-/** Run the cheap two-boolean pass over an account's stills (~3s/item, ~$0.001
- *  per 100). Enrichment only — merges the flags into each row and rewrites
- *  nothing else. Required before the paid tease tiers can be trusted. */
+export interface VaultFlagsStatus {
+  running: boolean;
+  progress: {
+    total: number;
+    done: number;
+    failed: number;
+    capped: boolean;
+    cost_millicents: number;
+    error?: string;
+  } | null;
+  coverage: { stills: number; flagged: number; missing: number; ready: boolean };
+}
+
+/** START the cheap exposure pass over an account's stills AND clips (~3s/item,
+ *  ~$0.001 per 100). Enrichment only — merges the flags into each row and
+ *  rewrites nothing else. Required before the paid tease tiers can be trusted.
+ *
+ *  Returns as soon as the sweep is queued. A whole vault takes minutes, which no
+ *  proxy will hold a socket open for — waiting on the response is what showed
+ *  "Internal Server Error" while the sweep ran on regardless. Poll
+ *  `useVaultFlagsStatus` for progress. */
 export async function runVaultFlags(accountId: string) {
-  return relay.post(`/admin/vault-ai/flags-all`, { account_id: accountId }, { accountId });
+  return relay.post<{ status: string; candidates: number; already: boolean }>(
+    `/admin/vault-ai/flags-all`, { account_id: accountId }, { accountId },
+  );
+}
+
+/** Poll the sweep while it runs. `coverage` comes from the DB, so a relay
+ *  restart mid-sweep shows where the vault really stands rather than zero. */
+export function useVaultFlagsStatus(accountId: string | null, enabled: boolean) {
+  return useQuery<VaultFlagsStatus>({
+    queryKey: ["vault-flags-status", accountId],
+    enabled: !!accountId && enabled,
+    refetchInterval: enabled ? 2500 : false,
+    queryFn: () =>
+      relay.get(`/admin/vault-ai/flags-all/status?account_id=${encodeURIComponent(accountId!)}`),
+  });
 }
 
 /** Preview the folders the pipeline would create. Read-only — creates nothing. */

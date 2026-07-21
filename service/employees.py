@@ -953,7 +953,7 @@ def _safe_snapshot(body_bytes: bytes) -> str | None:
 
 def _extract_target_id(path: str) -> str | None:
     """Heuristic: the last path segment is the target id if it's not a
-    static verb. Catches `/admin/accounts/123456789`, `/admin/proxies/hu-1`.
+    static verb. Catches `/admin/accounts/ACCOUNT_ID`, `/admin/proxies/hu-1`.
     Returns None for fixed-shape paths like `/admin/session/bootstrap`."""
     parts = [p for p in path.split("/") if p]
     if not parts:

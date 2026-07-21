@@ -565,7 +565,7 @@ export function useOfSubscriberCounts(accountId: string | null | undefined) {
 //   • subscribes — new subscriber COUNT per day (free-inclusive)    ← this
 // plus a top-level `subscribers` == sum(subscribes[].count) — OF's own
 // "N Subscribers" header. We use `subscribers`, so it's correct for BOTH
-// free and paid pages (sakai free = 279, Lexi paid = 113). `from`/`to` are
+// free and paid pages (one account free = 279, one account paid = 113). `from`/`to` are
 // the dashboard's ISO window (defaults to last 30 days upstream).
 export function useOfNewFans(
   accountId: string | null | undefined,

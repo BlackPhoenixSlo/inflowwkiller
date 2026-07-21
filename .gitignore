@@ -83,3 +83,37 @@ wholeDIRKCHAT
 
 # Real OF conversation transcripts (creator + fan message bodies). Local only.
 CONVO_RUN*.md
+
+# ── Never commit: real people's data ────────────────────────────────
+#
+# Everything here was written by a tool or a debugging session that had live
+# data in front of it. Each pattern is a class that actually reached a commit
+# or a public sync at least once, not a hypothetical.
+
+# Conversation dumps — verbatim OF message bodies, prices, purchase outcomes
+# and one fan's spending history. `CONVO_RUNSold.md` slipped an ALL-CAPS
+# filename filter because of its lowercase tail, so match loosely.
+[Cc][Oo][Nn][Vv][Oo]*.md
+*_CONVO*.md
+*CHAT*.md
+!plans/*.md
+
+# Probe/report pages. These embed the creator's own media as base64 data URIs —
+# a single file is hundreds of her photographs, inline, in git forever.
+vault-reports/
+*_audit_*.html
+*_review_*.html
+*_recheck_*.html
+flags_*.html
+filter_gaps_*.html
+
+# NOT ignored, deliberately: `service/_labels/` holds the operator's own
+# grading of the vision model — OF media ids and per-item exposure labels. It
+# is real data, but it lives only in this PRIVATE repo, the public mirror
+# excludes it by path, and re-collecting it costs an hour of someone's
+# eyesight. Ignoring it now would drop the backup without removing anything
+# from history, which is the worst of both.
+
+# Anything a probe writes next to itself.
+service/*.html
+service/_out_/

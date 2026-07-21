@@ -1434,31 +1434,23 @@ async def _flags_one(account_id: str, media_id: int,
             "frames": len(per_frame), "cost_millicents": cost}
 
 
-@router.post("/admin/vault-ai/flags-all")
-async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
-    """Run the cheap flags pass over an account's photos AND clips.
+# ── Flags sweep (background, same shape as describe-all) ────────────
+# A whole-vault sweep CANNOT run inside its own request. 327 items × ~3.4s is
+# ~18 minutes; the app's proxy drops the socket long before that and the browser
+# is shown "Internal Server Error" — while the sweep carries on server-side,
+# invisible, so every retry click starts ANOTHER concurrent sweep over the same
+# rows. `describe-all` has always been a background task with a status endpoint;
+# this was the odd one out.
+_flags_running: set[str] = set()
+_flags_progress: dict[str, dict[str, Any]] = {}
+# Same bound as describe. The pass is IO-bound on one small VLM call per item,
+# so 4 at a time turns ~18 minutes into ~5 without changing what is asked.
+_FLAGS_CONCURRENCY = 4
 
-    Enrichment only: merges the three booleans into each row's existing
-    `ai_fields_json` and touches nothing else. Skips items that already carry
-    all of them unless `force`.
 
-    Clips are included because the flags gate `AI-safe explicit`, the one folder
-    that claims something is safe to mass-send. While clips went unflagged they
-    fell into it by default — on the graded vault that meant a penetration clip and a
-    dildo clip in the mass-safe folder.
-    """
-    account_id = str(payload.get("account_id") or "")
-    assert_account_owned(account_id)
-    force = bool(payload.get("force"))
-    limit = int(payload.get("limit") or 0)
-    # Re-check a NAMED set instead of the whole vault. A prompt change is
-    # cheap to evaluate on the couple of dozen items that have ever been wrong
-    # and expensive to evaluate on all of them — and the ones that have been
-    # wrong before are where a regression shows up first. Implies `force`,
-    # since the caller is asking for these specifically.
-    only = payload.get("media_ids")
-    only = {int(m) for m in only} if isinstance(only, (list, tuple, set)) else None
-
+async def _flags_todo(account_id: str, *, force: bool = False,
+                      only: set[int] | None = None, limit: int = 0) -> list[int]:
+    """Which items still need flags, oldest first."""
     async with get_session() as s:
         q = (select(VaultItem.media_id, VaultItem.ai_fields_json)
              .where(VaultItem.account_id == account_id,
@@ -1479,27 +1471,141 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
         stale = int(f.get("_flags_v") or 0) < _FLAGS_VERSION
         if only or force or stale or not vault_ai_brief.flags_known(f):
             todo.append(int(mid))
-    if limit:
-        todo = todo[:limit]
+    return todo[:limit] if limit else todo
 
-    done, failed, cost = 0, 0, 0
-    for mid in todo:
-        res = await _flags_one(account_id, mid)
-        if res.get("ok"):
-            done += 1
-            cost += int(res.get("cost_millicents") or 0)
-        else:
-            failed += 1
-            if res.get("status") == "capped":
+
+async def _run_flags_all(account_id: str, todo: list[int]) -> None:
+    """Background flags sweep. Resumable by construction: it only ever visits
+    rows that are missing or stale, so a relay restart mid-sweep costs the items
+    in flight and nothing else — pressing the button again picks up the rest."""
+    try:
+        total = len(todo)
+        done = failed = cost = 0
+        capped = False
+        first_error = ""
+        _flags_progress[account_id] = {"total": total, "done": 0, "failed": 0,
+                                       "capped": False, "cost_millicents": 0}
+        sem = asyncio.Semaphore(_FLAGS_CONCURRENCY)
+
+        async def _one(mid: int) -> None:
+            nonlocal done, failed, cost, capped, first_error
+            async with sem:
+                if capped:
+                    return
+                res = await _flags_one(account_id, mid)
+                if res.get("ok"):
+                    done += 1
+                    cost += int(res.get("cost_millicents") or 0)
+                else:
+                    failed += 1
+                    if res.get("status") == "capped":
+                        capped = True
+                    if not first_error and res.get("detail"):
+                        first_error = str(res["detail"])[:200]
+                _flags_progress[account_id] = {
+                    "total": total, "done": done, "failed": failed,
+                    "capped": capped, "cost_millicents": cost,
+                    "error": first_error,
+                }
+
+        for i in range(0, len(todo), 50):
+            if capped:
                 break
-    return {"account_id": account_id, "candidates": len(todo),
-            "flagged": done, "failed": failed, "cost_millicents": cost,
-            "prompt_version": _FLAGS_VERSION,
-            # A sweep that stopped early leaves the vault at MIXED versions,
-            # which is the state that has repeatedly been mistaken for a
-            # finished one. Say so in the result rather than leaving a caller
-            # to infer it from `failed`.
-            "complete": failed == 0 and done == len(todo)}
+            await asyncio.gather(*(_one(m) for m in todo[i:i + 50]))
+
+        if failed:
+            log.warning("flags_all account=%s flagged=%s/%s FAILED=%s capped=%s first_error=%s",
+                        account_id, done, total, failed, capped, first_error)
+        else:
+            log.info("flags_all done account=%s flagged=%s/%s cost_mc=%s",
+                     account_id, done, total, cost)
+    except Exception:  # noqa: BLE001
+        log.exception("flags_all failed account=%s", account_id)
+    finally:
+        _flags_running.discard(account_id)
+
+
+@router.post("/admin/vault-ai/flags-all")
+async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
+    """Run the cheap flags pass over an account's photos AND clips.
+
+    Enrichment only: merges the three booleans into each row's existing
+    `ai_fields_json` and touches nothing else. Skips items that already carry
+    all of them unless `force`.
+
+    Clips are included because the flags gate `AI-safe explicit`, the one folder
+    that claims something is safe to mass-send. While clips went unflagged they
+    fell into it by default — on the graded vault that meant a penetration clip and a
+    dildo clip in the mass-safe folder.
+
+    A whole-vault sweep returns `{"status": "running"}` immediately and reports
+    through `/flags-all/status`. A NAMED `media_ids` set stays inline: it is a
+    handful of items, and the caller (the grading probe) wants the answers back
+    in the response.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    force = bool(payload.get("force"))
+    limit = int(payload.get("limit") or 0)
+    # Re-check a NAMED set instead of the whole vault. A prompt change is
+    # cheap to evaluate on the couple of dozen items that have ever been wrong
+    # and expensive to evaluate on all of them — and the ones that have been
+    # wrong before are where a regression shows up first. Implies `force`,
+    # since the caller is asking for these specifically.
+    only = payload.get("media_ids")
+    only = {int(m) for m in only} if isinstance(only, (list, tuple, set)) else None
+
+    todo = await _flags_todo(account_id, force=force, only=only, limit=limit)
+
+    if only:
+        done, failed, cost = 0, 0, 0
+        for mid in todo:
+            res = await _flags_one(account_id, mid)
+            if res.get("ok"):
+                done += 1
+                cost += int(res.get("cost_millicents") or 0)
+            else:
+                failed += 1
+                if res.get("status") == "capped":
+                    break
+        return {"account_id": account_id, "candidates": len(todo),
+                "flagged": done, "failed": failed, "cost_millicents": cost,
+                "prompt_version": _FLAGS_VERSION,
+                # A sweep that stopped early leaves the vault at MIXED versions,
+                # which is the state that has repeatedly been mistaken for a
+                # finished one. Say so in the result rather than leaving a caller
+                # to infer it from `failed`.
+                "complete": failed == 0 and done == len(todo)}
+
+    # One sweep per account. Without this, a click on a button that appears to
+    # have failed re-runs the whole vault alongside the run already going.
+    if account_id in _flags_running:
+        return {"account_id": account_id, "status": "running",
+                "candidates": len(todo), "already": True,
+                "prompt_version": _FLAGS_VERSION}
+    _flags_running.add(account_id)
+    asyncio.create_task(_run_flags_all(account_id, todo))
+    return {"account_id": account_id, "status": "running",
+            "candidates": len(todo), "already": False,
+            "prompt_version": _FLAGS_VERSION}
+
+
+@router.get("/admin/vault-ai/flags-all/status")
+async def flags_all_status(account_id: str = Query(...)) -> dict[str, Any]:
+    """Progress of the background sweep, plus coverage read from the DB.
+
+    Two numbers on purpose. `progress` is this process's live counter and dies
+    with a restart; `coverage` is the durable truth, so a UI that reconnects
+    after a redeploy still shows where the vault actually stands instead of
+    starting over at nothing.
+    """
+    assert_account_owned(account_id)
+    return {
+        "account_id": account_id,
+        "running": account_id in _flags_running,
+        "progress": _flags_progress.get(account_id),
+        "coverage": await vault_scripts.flags_coverage(account_id),
+    }
 
 
 @router.get("/admin/vault-ai/disputes")

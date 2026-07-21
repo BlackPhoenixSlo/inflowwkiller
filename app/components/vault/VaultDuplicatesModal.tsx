@@ -3,7 +3,7 @@
 /**
  * VaultDuplicatesModal — review + confirm removal of re-uploaded vault media.
  *
- * A mature vault is ~30% re-uploads (measured on Lexi: 706 of 2,309). Each copy
+ * A mature vault is ~30% re-uploads (measured on one account: 706 of 2,309). Each copy
  * costs a describe call, clutters the picker, and splits folder ordering.
  *
  * The relay groups them into sets where `original` is the EARLIEST-uploaded copy
