@@ -137,7 +137,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
             )}
             {saveCfgM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
           </div>
-          <p className="text-xs text-fg-dim leading-relaxed">
+          <p className="max-md:hidden text-xs text-fg-dim leading-relaxed">
             One click turns on: <b>sell in the chat</b>, <b>smart pricing</b>, <b>full
             takeover</b>, a <b>follow-up after a buy</b> (engages a silent buyer), a
             <b> free thank-you</b> after a couple of buys, and <b>one win-back discount</b>
@@ -154,7 +154,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
             onChange={(e) => set({ upsell_takes_over: e.target.checked })} />
           <span className="text-sm">
             <span className="font-medium">Take over the chat during a sale</span>
-            <span className="block text-fg-dim text-xs">
+            <span className="block max-md:hidden text-fg-dim text-xs">
               Once a fan is actively buying (an open offer, a fresh purchase, a live
               ladder), she runs his thread <b>even if AI Chatter is in backup or closer
               mode</b> — a sale is never left waiting on the SLA or skipped as
@@ -176,7 +176,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
             })} />
           <span className="text-sm">
             <span className="font-medium">Sell in the chat (1:1)</span>
-            <span className="block text-fg-dim text-xs">
+            <span className="block max-md:hidden text-fg-dim text-xs">
               When a fan is actually talking to her, she can offer him content herself —
               instead of waiting for the scheduled PPV blast. She never puts a price in
               front of a fan who isn&apos;t replying. (This is the 1:1 seller only — the
@@ -191,7 +191,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
             onChange={(e) => set({ smart_pricing_enabled: e.target.checked })} />
           <span className="text-sm">
             <span className="font-medium">Smart pricing</span>
-            <span className="block text-fg-dim text-xs">
+            <span className="block max-md:hidden text-fg-dim text-xs">
               After a fan buys, she asks for more inside the hot window, and the price
               climbs. If he doesn&apos;t buy, she offers the same clip once more, cheaper,
               then stops. Prices stay between the Min and Max in <b>💸 PPV Library</b>.
@@ -213,7 +213,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
               onChange={(e) => set({ force_ask: e.target.checked })} />
             <span className="text-sm">
               <span className="font-medium">Always sell into a hot chat</span>
-              <span className="block text-fg-dim text-xs">
+              <span className="block max-md:hidden text-fg-dim text-xs">
                 When he&apos;s mid-scene with her — actually sexting, actually replying —
                 she attaches the PPV instead of hoping the AI volunteers one. That moment
                 is <b>24× more likely to end in a sale</b> than an ordinary message, and
@@ -235,7 +235,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
               onChange={(e) => set({
                 ask_after_fan_msgs: Math.max(0, Math.min(100, parseInt(e.target.value || "0", 10) || 0)),
               })} />
-            <div className="text-fg-dim text-xs">
+            <div className="max-md:hidden text-fg-dim text-xs">
               Some men never turn the chat sexual — they&apos;re friendly, they&apos;re
               chatting, and nobody ever asks them for a penny. After this many of{" "}
               <b>his</b> messages with no offer in front of him (hers <i>or</i> a
@@ -264,7 +264,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
                 onChange={(e) => set({ max_ask_history_mult: parseFloat(e.target.value || "3") || 3.0 })} />
             </label>
           </div>
-          <p className="text-[11px] text-fg-dim leading-relaxed">
+          <p className="max-md:hidden text-[11px] text-fg-dim leading-relaxed">
             Most of the climb comes from your <b>content order</b> (a $8 piece, then $24,
             then $50…) — these two just bound how fast a single item&apos;s price can rise.
             The ceiling is the <b>&quot;to the moon&quot; lever</b>: raise it and a whale
@@ -385,7 +385,10 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
             </label>
           </div>
         </div>
-        <div className="flex items-center gap-2 border-t border-border pt-2">
+        {/* Desktop keeps the in-flow Save row exactly where it was; on a phone
+         *  it is ~2,000px down the scroll, so a sticky twin is appended as the
+         *  last child of the outer container below. */}
+        <div className="hidden md:flex items-center gap-2 border-t border-border pt-2">
           <Button size="sm" disabled={saveCfgM.isPending} onClick={() => saveCfg()}>
             <Save size={14} className="mr-1" /> Save Upseller settings
           </Button>
@@ -420,7 +423,19 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         </p>
       </Card>
 
-      <GuideCard />
+      <div className="md:mb-0"><GuideCard /></div>
+
+      {/* Phone-only sticky Save bar (`hidden` at >=768px, so desktop renders
+       *  nothing here — the in-flow row inside the Card above still owns it).
+       *  Sticky only pins while its own container is on screen, hence "last
+       *  child of the outer container". `-mx-4 px-4` bleeds to the host Card's
+       *  p-4 edges. */}
+      <div className="hidden max-md:flex sticky bottom-0 z-20 -mx-4 px-4 py-3 items-center gap-2 flex-wrap bg-panel/95 backdrop-blur border-t border-border pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
+        <Button size="sm" disabled={saveCfgM.isPending} onClick={() => saveCfg()}>
+          <Save size={14} className="mr-1" /> Save Upseller settings
+        </Button>
+        {saveCfgM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
+      </div>
     </div>
   );
 }

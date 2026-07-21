@@ -88,11 +88,11 @@ export function VaultFolderPicker({
 
   const modal = (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-0 sm:p-4"
       onClick={onClose}
     >
       <div
-        className="bg-panel border border-border rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl"
+        className="bg-panel border-0 sm:border border-border rounded-none sm:rounded-xl w-full h-full sm:h-auto max-w-none sm:max-w-2xl max-h-none sm:max-h-[85vh] flex flex-col shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -104,8 +104,9 @@ export function VaultFolderPicker({
           </span>
           <button
             onClick={onClose}
-            className="ml-auto text-fg-dim hover:text-fg text-lg leading-none px-1"
+            className="ml-auto text-fg-dim hover:text-fg text-lg leading-none px-1 size-10 sm:size-auto grid place-items-center sm:block"
             title="Close"
+            aria-label="Close"
           >
             ×
           </button>
@@ -163,7 +164,7 @@ export function VaultFolderPicker({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center gap-2 px-4 py-3 border-t border-border">
+        <div className="flex items-center gap-2 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3 border-t border-border">
           <Button onClick={() => { onConfirm(selected); onClose(); }}>
             Use {selected.length} folder{selected.length === 1 ? "" : "s"}
           </Button>
@@ -267,7 +268,7 @@ function FolderPreview({ folder, accountId }: { folder: VaultList; accountId: st
         <div className="text-xs text-fg-dim py-2">Nothing here for this filter.</div>
       ) : (
         <>
-          <div className="grid grid-cols-5 gap-1.5">
+          <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-5">
             {vault.items.map((m) => (
               <MediaTile key={m.id} media={m} accountId={accountId} />
             ))}

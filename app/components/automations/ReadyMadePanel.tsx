@@ -250,8 +250,10 @@ export default function ReadyMadePanel() {
 
       <AccountChips accountId={accountId} onChange={setAccountId} />
 
-      {/* Tab strip */}
-      <div className="flex items-center gap-1 border-b border-border">
+      {/* Tab strip — 14 tabs are ~1100px of min-content, so below md they must
+       *  scroll horizontally or the last 7 are unreachable. Same pattern as
+       *  app/app/settings/page.tsx:77. The -mx-4/px-4 bleed is undone at md. */}
+      <div className="flex items-center gap-1 border-b border-border overflow-x-auto overflow-y-hidden md:overflow-visible no-scrollbar -mx-4 px-4 md:mx-0 md:px-0">
         {TABS.map((t) => {
           const active = tab === t.key;
           return (
@@ -260,7 +262,7 @@ export default function ReadyMadePanel() {
               type="button"
               onClick={() => setTab(t.key)}
               className={cn(
-                "px-3 py-1.5 text-sm rounded-t-md border-b-2 -mb-px transition-colors",
+                "shrink-0 md:shrink whitespace-nowrap md:whitespace-normal px-3 py-2.5 md:py-1.5 text-sm rounded-t-md border-b-2 -mb-px transition-colors",
                 active
                   ? "border-accent text-fg font-medium"
                   : "border-transparent text-fg-dim hover:text-fg",
@@ -355,12 +357,15 @@ export default function ReadyMadePanel() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    {/* Actions — phone gets a full-width row of its own so
+                     *  "Delete" is not 6px from "Run now". */}
+                    <div className="flex items-center gap-2 w-full md:w-auto md:gap-1.5 md:shrink-0">
                       <Button
                         size="sm"
                         variant="secondary"
                         onClick={() => runNow(r)}
                         disabled={runM.isPending}
+                        className="flex-1 min-h-10 md:flex-none md:min-h-0"
                       >
                         Run now
                       </Button>
@@ -368,6 +373,7 @@ export default function ReadyMadePanel() {
                         size="sm"
                         variant="ghost"
                         onClick={() => { setAdding(false); setEditing(r); }}
+                        className="flex-1 min-h-10 md:flex-none md:min-h-0"
                       >
                         Edit
                       </Button>
@@ -376,6 +382,7 @@ export default function ReadyMadePanel() {
                         variant="danger"
                         onClick={() => remove(r)}
                         disabled={deleteM.isPending}
+                        className="flex-1 min-h-10 md:flex-none md:min-h-0"
                       >
                         Delete
                       </Button>
@@ -718,7 +725,7 @@ function ReadyMadeRuleEditor({
           <button
             type="button"
             onClick={() => (rawMode ? exitRaw() : enterRaw())}
-            className="text-[11px] text-accent hover:underline"
+            className="hidden md:inline text-[11px] text-accent hover:underline"
           >
             {rawMode ? "← Composer" : "Edit raw JSON →"}
           </button>
@@ -828,7 +835,7 @@ function ComposeModal({
           <button
             type="button"
             onClick={onClose}
-            className="text-fg-dim hover:text-fg text-lg leading-none"
+            className="text-fg-dim hover:text-fg text-lg leading-none w-11 h-11 -mr-2 -my-2 grid place-items-center shrink-0 md:w-auto md:h-auto md:mr-0 md:my-0 md:inline"
             title="Close"
           >
             ×

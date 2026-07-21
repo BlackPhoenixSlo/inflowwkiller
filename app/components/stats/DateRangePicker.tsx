@@ -65,31 +65,43 @@ export default function DateRangePicker({ from, to, preset, onChange }: Props) {
     <div className="flex flex-wrap items-center gap-2">
       <PresetBtn active={preset === "7d"} onClick={() => setPreset("7d")}>7d</PresetBtn>
       <PresetBtn active={preset === "30d"} onClick={() => setPreset("30d")}>30d</PresetBtn>
-      <span
-        className={cn(
-          "px-2 py-1 text-[11px] uppercase tracking-wide rounded-md border",
-          preset === "custom"
-            ? "border-accent/40 text-accent bg-accent/10"
-            : "border-border text-fg-dim bg-bg-elev-1",
-        )}
-      >
-        Custom
-      </span>
-      <input
-        type="date"
-        value={from ?? ""}
-        onChange={(e) => handleFrom(e.target.value)}
-        className="bg-bg border border-border rounded-lg px-2 py-1 text-xs text-fg focus:outline-none focus:border-accent"
-        aria-label="From date"
-      />
-      <span className="text-fg-dim text-xs">→</span>
-      <input
-        type="date"
-        value={to ?? ""}
-        onChange={(e) => handleTo(e.target.value)}
-        className="bg-bg border border-border rounded-lg px-2 py-1 text-xs text-fg focus:outline-none focus:border-accent"
-        aria-label="To date"
-      />
+      {/* Custom span + the two native date inputs are desk-only: they are
+          ~340px of unshrinkable chrome. `hidden sm:flex` with the same
+          `items-center gap-2` reproduces the parent's own gap at ≥640px, so
+          the row is unchanged from sm up. */}
+      <div className="hidden sm:flex items-center gap-2">
+        <span
+          className={cn(
+            "px-2 py-1 text-[11px] uppercase tracking-wide rounded-md border",
+            preset === "custom"
+              ? "border-accent/40 text-accent bg-accent/10"
+              : "border-border text-fg-dim bg-bg-elev-1",
+          )}
+        >
+          Custom
+        </span>
+        <input
+          type="date"
+          value={from ?? ""}
+          onChange={(e) => handleFrom(e.target.value)}
+          className="bg-bg border border-border rounded-lg px-2 py-1 text-xs text-fg focus:outline-none focus:border-accent"
+          aria-label="From date"
+        />
+        <span className="text-fg-dim text-xs">→</span>
+        <input
+          type="date"
+          value={to ?? ""}
+          onChange={(e) => handleTo(e.target.value)}
+          className="bg-bg border border-border rounded-lg px-2 py-1 text-xs text-fg focus:outline-none focus:border-accent"
+          aria-label="To date"
+        />
+      </div>
+      {/* Read-only echo so a desktop-set custom range stays visible on phone. */}
+      {preset === "custom" && (
+        <span className="sm:hidden px-2 py-1 text-[11px] uppercase tracking-wide rounded-md border border-accent/40 text-accent bg-accent/10">
+          Custom · {from ?? "…"} → {to ?? "…"}
+        </span>
+      )}
     </div>
   );
 }

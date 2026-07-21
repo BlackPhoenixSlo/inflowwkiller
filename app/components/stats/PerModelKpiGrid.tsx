@@ -129,7 +129,7 @@ export default function PerModelKpiGrid({ from, to }: Props) {
  *  grid so the numbers are never a black box. */
 function MetricsLegend() {
   return (
-    <dl className="mt-1 rounded-md border border-border bg-bg-elev-1/40 p-3 text-[11px] leading-relaxed text-fg-dim space-y-1">
+    <dl className="hidden md:block mt-1 rounded-md border border-border bg-bg-elev-1/40 p-3 text-[11px] leading-relaxed text-fg-dim space-y-1">
       <div className="text-fg-dim font-medium uppercase tracking-wide">How these are calculated</div>
       <div><span className="text-fg font-medium">Fans</span> — OF's current subscriber count (subscribers.active), the same audience a mass message reaches. Live from OF, not our chat DB.</div>
       <div><span className="text-fg font-medium">New fans (30d)</span> — new subscribers in the window from OF Statistics (free-inclusive). <em>Paid pages show <span className="text-fg font-medium">New subs</span> instead</em> = new/renewed PAID subscriptions (free trial/promo subs excluded).</div>

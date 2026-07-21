@@ -99,7 +99,7 @@ export default function EmployeePickerGate({ children }: { children: React.React
   // SSR / hydration: render nothing until we've checked localStorage.
   // Avoids a flicker of the picker on a page where you're already logged in.
   if (!hydrated) {
-    return <div className="min-h-screen flex items-center justify-center text-fg-dim">…</div>;
+    return <div className="min-h-dvh flex items-center justify-center text-fg-dim">…</div>;
   }
 
   // Logged in already → render the app.
@@ -117,7 +117,7 @@ export default function EmployeePickerGate({ children }: { children: React.React
   // disabled employee), `current` stays null and we fall through so
   // the user can re-pick.
   if (pickedId !== null && !current && query.isLoading) {
-    return <div className="min-h-screen flex items-center justify-center text-fg-dim">…</div>;
+    return <div className="min-h-dvh flex items-center justify-center text-fg-dim">…</div>;
   }
 
   return (
@@ -231,14 +231,14 @@ function EmployeeList({
 
   return (
     <>
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         {active.map((e, idx) => (
           <button
             key={e.id}
             type="button"
             onClick={() => onPick(e.id)}
             className={cn(
-              "group flex items-center gap-3 px-4 py-3 rounded-xl",
+              "group flex items-center gap-3 px-4 py-3 min-h-12 md:min-h-0 rounded-xl",
               "bg-bg-elev-1 hover:bg-bg-elev-2 border border-border hover:border-border-light",
               "transition-colors text-left",
             )}
@@ -250,7 +250,7 @@ function EmployeeList({
             />
             <span className="flex-1 truncate">{e.display_name}</span>
             {idx < 9 && (
-              <kbd className="text-[10px] text-muted bg-bg border border-border rounded px-1.5 py-0.5">
+              <kbd className="hidden md:inline-block text-[10px] text-muted bg-bg border border-border rounded px-1.5 py-0.5">
                 {idx + 1}
               </kbd>
             )}

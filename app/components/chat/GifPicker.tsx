@@ -140,7 +140,7 @@ export function GifPickerStrip({
         <button
           type="button"
           onClick={onClose}
-          className="w-6 h-6 grid place-items-center rounded-md text-fg-dim hover:text-fg hover:bg-bg-elev-1 shrink-0"
+          className="w-10 h-10 md:w-6 md:h-6 grid place-items-center rounded-md text-fg-dim hover:text-fg hover:bg-bg-elev-1 shrink-0"
           aria-label="Close GIF picker"
           title="Close"
         >
@@ -152,7 +152,7 @@ export function GifPickerStrip({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search GIFs…"
-          className="flex-1 bg-transparent border border-border rounded-md px-2 py-1 text-xs placeholder:text-muted focus:outline-none focus:border-accent"
+          className="flex-1 bg-transparent border border-border rounded-md px-2 py-1 text-base md:text-xs placeholder:text-muted focus:outline-none focus:border-accent"
         />
         <span className="text-[10px] text-fg-dim shrink-0">
           {debouncedSearch ? "search" : "trending"}
@@ -171,14 +171,14 @@ export function GifPickerStrip({
           </div>
         )}
         {grid.length > 0 && (
-          <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
+          <div className="grid grid-cols-3 gap-1.5 max-h-56 overflow-y-auto overscroll-contain md:flex md:max-h-none md:overflow-y-visible md:overflow-x-auto pb-1 scrollbar-thin">
             {grid.map((g) => (
               <button
                 key={g.id}
                 type="button"
                 onClick={() => onPick(g)}
                 className={cn(
-                  "shrink-0 w-32 h-32 rounded-md overflow-hidden border border-border bg-bg-elev-1",
+                  "w-full aspect-square md:aspect-auto md:shrink-0 md:w-32 md:h-32 rounded-md overflow-hidden border border-border bg-bg-elev-1",
                   "hover:border-accent focus:border-accent focus:outline-none",
                 )}
                 title={g.title}
@@ -199,7 +199,7 @@ export function GifPickerStrip({
                 type="button"
                 onClick={loadMore}
                 disabled={loading}
-                className="shrink-0 w-24 h-32 rounded-md border border-dashed border-border text-[11px] text-fg-dim hover:text-fg hover:bg-bg-elev-1 disabled:opacity-40"
+                className="w-full aspect-square md:aspect-auto md:shrink-0 md:w-24 md:h-32 rounded-md border border-dashed border-border text-[11px] text-fg-dim hover:text-fg hover:bg-bg-elev-1 disabled:opacity-40"
               >
                 {loading ? "…" : "more →"}
               </button>

@@ -38,7 +38,7 @@ type Mode = "clock" | "interval";
 
 /** Match the Input primitive so the native <select>s look consistent. */
 const SELECT_CLS =
-  "w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent";
+  "w-full bg-bg border border-border rounded-lg px-3 py-2 text-base md:text-sm focus:outline-none focus:border-accent";
 
 interface FormState {
   folderId: number | null;
@@ -358,7 +358,7 @@ export default function AutoStoriesTab() {
 
         {err && <div className="text-sm text-err">{err}</div>}
 
-        <div className="flex items-center gap-2 pt-1">
+        <div className="flex items-center gap-2 pt-1 flex-wrap md:flex-nowrap">
           <Button onClick={save} disabled={busy || !accountId}>
             {rule ? "Save changes" : "Create automation"}
           </Button>
@@ -376,7 +376,7 @@ export default function AutoStoriesTab() {
                 variant="ghost"
                 onClick={() => { if (confirm("Delete this automation?")) deleteM.mutate(rule.id); }}
                 disabled={deleteM.isPending}
-                className="text-err ml-auto"
+                className="text-err w-full md:w-auto md:ml-auto mt-1 md:mt-0"
               >
                 <Trash2 className="size-4" /> Delete
               </Button>
@@ -498,11 +498,12 @@ function TimesEditor({
           />
           <button
             type="button"
-            className="text-fg-dim hover:text-err"
+            className="text-fg-dim hover:text-err inline-grid place-items-center size-10 shrink-0 md:inline-block md:size-auto md:shrink"
             onClick={() => onChange(times.filter((_, j) => j !== i))}
             title="Remove time"
+            aria-label="Remove time"
           >
-            <Trash2 className="size-3.5" />
+            <Trash2 className="size-4 md:size-3.5" />
           </button>
         </span>
       ))}

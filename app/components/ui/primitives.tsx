@@ -34,8 +34,11 @@ export const Button = forwardRef<
       "bg-err/10 hover:bg-err/20 text-err border-err/30",
   };
   const sizes = {
-    sm: "px-3 py-1.5 text-xs",
-    md: "px-4 py-2 text-sm",
+    // Phone-only touch sizing (`max-md:` = below 768px). The unprefixed
+    // desktop values are left exactly as they were, so >=768px is untouched
+    // and any caller className override still wins at desktop width.
+    sm: "px-3 py-1.5 text-xs max-md:py-2.5 max-md:min-h-11",
+    md: "px-4 py-2 text-sm max-md:py-2.5 max-md:min-h-11",
   } as const;
   return (
     <button
@@ -62,6 +65,10 @@ export const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTML
       ref={ref}
       className={cn(
         "w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm",
+        // Phone-only: 16px text + 44px target. `max-md:` leaves the desktop
+        // rules (px-3 py-2 text-sm) byte-identical and keeps call sites that
+        // override py-/text- (TemplatesTab, MessagesFilters) authoritative.
+        "max-md:py-2.5 max-md:text-base max-md:min-h-11",
         "placeholder:text-muted",
         "focus:outline-none focus:border-accent",
         className,
@@ -80,7 +87,9 @@ export const Textarea = forwardRef<
     ref={ref}
     className={cn(
       "w-full bg-bg border border-border rounded-lg px-3 py-2",
-      "font-mono text-[11px] leading-relaxed",
+      // `max-md:text-base` = 16px on phone only; the 11px mono desktop value
+      // and every caller's own text-* override are unchanged at >=768px.
+      "font-mono text-[11px] leading-relaxed max-md:text-base",
       "placeholder:text-muted",
       "focus:outline-none focus:border-accent",
       "resize-y min-h-24",

@@ -88,13 +88,14 @@ export default function AuditTab() {
         )}
 
         {rows.length > 0 && (
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto -mx-1 px-1 md:mx-0 md:px-0">
+          <table className="w-full min-w-[560px] text-sm">
             <thead>
               <tr className="text-left text-fg-dim text-xs border-b border-border">
-                <th className="px-3 py-2 font-medium w-44">When</th>
-                <th className="px-3 py-2 font-medium w-32">Who</th>
+                <th className="px-3 py-2 font-medium md:w-44">When</th>
+                <th className="px-3 py-2 font-medium md:w-32">Who</th>
                 <th className="px-3 py-2 font-medium">Action</th>
-                <th className="px-3 py-2 font-medium w-32">Account</th>
+                <th className="px-3 py-2 font-medium md:w-32">Account</th>
               </tr>
             </thead>
             <tbody>
@@ -104,6 +105,7 @@ export default function AuditTab() {
               })}
             </tbody>
           </table>
+          </div>
         )}
 
         <div className="flex items-center justify-between mt-3 text-xs text-fg-dim">

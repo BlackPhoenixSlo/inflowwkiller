@@ -68,10 +68,10 @@ export function ErrorBadge() {
       if (!popRef.current?.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onClick);
+    document.addEventListener("pointerdown", onClick);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("pointerdown", onClick);
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
@@ -80,7 +80,7 @@ export function ErrorBadge() {
   if (count === 0 && !open) return null;
 
   return (
-    <div className="relative" ref={popRef}>
+    <div className="relative hidden lg:block" ref={popRef}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

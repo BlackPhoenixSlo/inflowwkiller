@@ -81,7 +81,7 @@ export default function StatsPage() {
             )}
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap md:flex-nowrap items-center justify-start md:justify-end gap-2 md:gap-3 w-full md:w-auto">
           <Link
             href="/messages?tab=all"
             className="text-sm text-accent hover:underline whitespace-nowrap"
@@ -129,9 +129,14 @@ export default function StatsPage() {
 
       {tab === "overview" ? (
         <>
-          <PerEmployeeTable from={fromIso} to={toIso} />
-          <PerAutomationTable from={fromIso} to={toIso} />
-          <PerModelKpiGrid from={fromIso} to={toIso} />
+          {/* Phone puts the already-phone-shaped KPI grid first; `md:order-*`
+              restores the authored DOM order at ≥768px. `gap-5` on the column
+              reproduces the parent's `space-y-5` exactly (order breaks space-y). */}
+          <div className="flex flex-col gap-5">
+            <div className="order-2 md:order-1"><PerEmployeeTable from={fromIso} to={toIso} /></div>
+            <div className="order-3 md:order-2"><PerAutomationTable from={fromIso} to={toIso} /></div>
+            <div className="order-1 md:order-3"><PerModelKpiGrid from={fromIso} to={toIso} /></div>
+          </div>
           <SalesNeedingAttributionCard from={fromIso} to={toIso} />
           <UnattributedDrawer />
           <AutomationRunsCard />

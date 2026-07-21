@@ -465,15 +465,16 @@ function MediaStrip({
               <button
                 type="button"
                 onClick={() => onRemove(i)}
-                className="absolute top-0.5 right-0.5 h-4 w-4 rounded-full bg-black/55 text-white text-[10px] leading-none opacity-0 group-hover:opacity-100 flex items-center justify-center"
+                className="absolute top-0.5 right-0.5 h-6 w-6 md:h-4 md:w-4 rounded-full bg-black/55 text-white text-[10px] leading-none opacity-100 md:opacity-0 md:group-hover:opacity-100 flex items-center justify-center"
                 aria-label={`Remove media ${id}`}
                 title="Remove"
               >
                 ✕
               </button>
             </div>
-            {/* Reorder controls — hidden until hover to keep the strip clean. */}
-            <div className="flex items-stretch justify-between bg-black/40 opacity-0 group-hover:opacity-100">
+            {/* Reorder controls — hover-revealed on desktop, always visible (and
+             *  thumb-sized) on touch, where hover never fires. */}
+            <div className="flex items-stretch justify-between bg-black/40 py-2 md:py-0 opacity-100 md:opacity-0 md:group-hover:opacity-100">
               <button
                 type="button"
                 onClick={() => onMove(i, -1)}

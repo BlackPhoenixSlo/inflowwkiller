@@ -122,20 +122,22 @@ function StyleSection({ accountId }: { accountId: string | null }) {
           const typoKey = `typos_${key}` as keyof StyleConfig;
           const nonnativeKey = `nonnative_${key}` as keyof StyleConfig;
           return (
-            <div key={key} className="flex items-center gap-3">
+            <div key={key} className="flex items-center gap-3 max-md:min-h-[44px]">
               <span className="w-28 text-sm" title={hint}>{label}</span>
-              <span className="w-20 flex justify-center">
+              {/* <label> so the whole 80px cell is the tap target on a phone —
+               *  the box, the centring and the desktop metrics are unchanged. */}
+              <label className="w-20 flex justify-center max-md:items-center max-md:min-h-[44px]">
                 <input type="checkbox" className="h-4 w-4 accent-[var(--accent)] cursor-pointer"
                   checked={!!form[key]} onChange={(e) => set({ [key]: e.target.checked })} />
-              </span>
-              <span className="w-20 flex justify-center">
+              </label>
+              <label className="w-20 flex justify-center max-md:items-center max-md:min-h-[44px]">
                 <input type="checkbox" className="h-4 w-4 accent-[var(--accent)] cursor-pointer"
                   checked={!!form[typoKey]} onChange={(e) => set({ [typoKey]: e.target.checked })} />
-              </span>
-              <span className="w-20 flex justify-center">
+              </label>
+              <label className="w-20 flex justify-center max-md:items-center max-md:min-h-[44px]">
                 <input type="checkbox" className="h-4 w-4 accent-[var(--accent)] cursor-pointer"
                   checked={!!form[nonnativeKey]} onChange={(e) => set({ [nonnativeKey]: e.target.checked })} />
-              </span>
+              </label>
               <span className="text-[11px] text-fg-dim/70 hidden sm:inline">{hint}</span>
             </div>
           );
@@ -159,7 +161,7 @@ function StyleSection({ accountId }: { accountId: string | null }) {
   );
 }
 
-const INPUT = "w-24 bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent";
+const INPUT = "w-24 bg-bg border border-border rounded-lg px-3 py-2 text-sm max-md:text-base focus:outline-none focus:border-accent";
 
 function NumField({
   label, hint, value, onChange, min = 0, max = 100000, step = 1, disabled, suffix,

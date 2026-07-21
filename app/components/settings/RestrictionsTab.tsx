@@ -30,7 +30,7 @@ import { useActiveAccounts } from "@/hooks/useAccounts";
 import { relay } from "@/lib/relay";
 
 const SELECT_CLS =
-  "w-full bg-input border border-border rounded-md px-3 py-2 text-sm";
+  "w-full bg-input border border-border rounded-md px-3 py-2 text-base md:text-sm";
 
 interface RestrictRow {
   fan_id: number;
@@ -167,11 +167,14 @@ export default function RestrictionsTab() {
                 </div>
                 <Button
                   variant="ghost"
+                  className="min-h-[40px] md:min-h-0 shrink-0 md:shrink"
                   disabled={unrestrictOne.isPending}
                   onClick={() => unrestrictOne.mutate(r.fan_id)}
                   title="Unrestrict — resume automations for this fan"
+                  aria-label="Unrestrict"
                 >
                   <Trash2 size={15} />
+                  <span className="md:hidden text-xs">Unrestrict</span>
                 </Button>
               </li>
             ))}
@@ -221,11 +224,14 @@ export default function RestrictionsTab() {
                 </div>
                 <Button
                   variant="ghost"
+                  className="min-h-[40px] md:min-h-0 shrink-0 md:shrink"
                   disabled={liftOfRestrict.isPending}
                   onClick={() => liftOfRestrict.mutate(r.fan_id)}
                   title="Lift the OnlyFans restrict — their messages and unread counts resume"
+                  aria-label="Lift OnlyFans restrict"
                 >
                   <Trash2 size={15} />
+                  <span className="md:hidden text-xs">Lift OF</span>
                 </Button>
               </li>
             ))}

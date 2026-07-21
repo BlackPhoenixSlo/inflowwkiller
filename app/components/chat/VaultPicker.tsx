@@ -1035,26 +1035,36 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                 </span>
               )}
             </h2>
-            <p className="text-[11px] text-fg-dim">Click to select · double-click to attach.</p>
+            <p className="text-[11px] text-fg-dim">
+              {/* Double-click has no touch equivalent; the phone copy points
+               *  at the Attach button in the footer instead. */}
+              <span className="hidden md:inline">Click to select · double-click to attach.</span>
+              <span className="md:hidden">Tap to select, then Attach.</span>
+            </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="text-fg-dim hover:text-fg text-sm px-2 py-1"
+            // At phone width the pane covers the whole backdrop, so this ✕ is
+            // the only exit — it needs a real 44px box. inline-grid (not grid)
+            // keeps the desktop header flex row measuring exactly as before.
+            className="text-fg-dim hover:text-fg text-base md:text-sm w-11 h-11 md:w-auto md:h-auto inline-grid place-items-center md:px-2 md:py-1"
             title="Close (Esc)"
           >
             ✕
           </button>
         </header>
 
-        <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-bg/40 flex-wrap">
+        {/* Phone: one horizontally-scrollable row instead of a 4-line wrapped
+         *  tower. md: restores the original wrap + visible overflow exactly. */}
+        <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-bg/40 flex-nowrap overflow-x-auto md:flex-wrap md:overflow-visible">
           {TYPE_CHIPS.map((c) => (
             <button
               key={c.value}
               type="button"
               onClick={() => setType(c.value)}
               className={cn(
-                "px-3 py-1 rounded-full text-xs border transition-colors",
+                "shrink-0 px-3 py-1 rounded-full text-xs border transition-colors",
                 type === c.value
                   ? "bg-accent/15 border-accent/40 text-accent"
                   : "bg-transparent border-border text-fg-dim hover:text-fg",
@@ -1068,7 +1078,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
             <select
               value={listId ?? ""}
               onChange={(e) => setListId(e.target.value ? Number(e.target.value) : null)}
-              className="ml-2 bg-bg border border-border rounded-md px-2 py-1 text-xs focus:outline-none focus:border-accent"
+              className="shrink-0 max-w-[9rem] md:max-w-none ml-2 bg-bg border border-border rounded-md px-2 py-1 text-xs focus:outline-none focus:border-accent"
               title="Filter by folder"
             >
               {/* Restricted chatters have no "All folders" view — the
@@ -1085,21 +1095,21 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as Sort)}
-            className="ml-2 bg-bg border border-border rounded-md px-2 py-1 text-xs focus:outline-none focus:border-accent"
+            className="shrink-0 ml-2 bg-bg border border-border rounded-md px-2 py-1 text-xs focus:outline-none focus:border-accent"
             title="Sort order (applied by OF server-side)."
           >
             <option value="newest">Newest</option>
             <option value="oldest">Oldest</option>
           </select>
 
-          <div className="relative ml-2">
+          <div className="relative shrink-0 ml-2">
             <input
               type="search"
               value={queryInput}
               onChange={(e) => setQueryInput(e.target.value)}
               placeholder="Search vault…"
               title="Search your vault (OnlineFans-native full-text search)"
-              className="w-40 bg-bg border border-border rounded-md pl-2 pr-6 py-1 text-xs focus:outline-none focus:border-accent"
+              className="w-32 md:w-40 bg-bg border border-border rounded-md pl-2 pr-6 py-1 text-base md:text-xs focus:outline-none focus:border-accent"
             />
             {queryInput && (
               <button
@@ -1113,7 +1123,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
             )}
           </div>
 
-          <div className="ml-auto flex items-center gap-3">
+          <div className="shrink-0 ml-auto flex items-center gap-3">
             {/* AI caption toggle — shows the mirror description + tags as a
              *  blurred bottom-half overlay on each thumb. Off by default here. */}
             <button
@@ -1138,7 +1148,9 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
              *  state. */}
             {wall.hasMore && (
               <span
-                className="text-[11px] text-fg-dim italic"
+                // Desk-only diagnostic prose; it costs the phone a whole
+                // scroll-row of the filter bar. md:inline restores it.
+                className="hidden md:inline text-[11px] text-fg-dim italic"
                 title="The 'posted on wall' ring is being filled in across vault opens. Older posts will get marked on subsequent picker opens."
               >
                 {wall.isFetching ? "scanning wall…" : "wall scan incomplete"}
@@ -1519,7 +1531,11 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                           setPreviewMedia(m);
                         }
                       }}
-                      className="absolute bottom-1 right-1 bg-black/60 hover:bg-black/85 text-white text-[10px] px-1.5 py-0.5 rounded cursor-pointer select-none"
+                      // Phone: a real 40px tap pill (it is the only way to
+                      // open the video preview). The md: half restores the
+                      // original 10px/px-1.5/py-0.5 badge exactly; the box is
+                      // absolutely positioned, so grid vs block is inert.
+                      className="absolute bottom-1 right-1 bg-black/60 hover:bg-black/85 text-white grid place-items-center md:block text-[12px] md:text-[10px] min-h-[40px] md:min-h-0 px-3 md:px-1.5 py-0 md:py-0.5 rounded cursor-pointer select-none"
                       title="Preview video"
                     >
                       ▶ {fmtDur(m.duration)}
@@ -1591,7 +1607,10 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
           </div>
         </div>
 
-        <footer className="border-t border-border px-4 py-3 flex items-center gap-3 bg-panel">
+        {/* pb safe-area: Attach/Cancel sit under the iOS home indicator on this
+         *  `fixed inset-0` pane (viewportFit: cover). max() keeps the desktop
+         *  0.75rem, since env() resolves to 0 there. Composer.tsx:469 precedent. */}
+        <footer className="border-t border-border px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] flex items-center gap-3 bg-panel">
           <span className="text-xs text-fg-dim">
             {selectedIds.size === 0
               ? "No items selected"

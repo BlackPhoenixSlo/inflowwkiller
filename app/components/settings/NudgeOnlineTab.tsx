@@ -358,7 +358,7 @@ export default function NudgeOnlineTab() {
 
           {/* Timing */}
           <div>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 md:gap-4">
               <NumField label="Delay (min)" value={num("delay_minutes", 4)}
                 onChange={(v) => set("delay_minutes", v)} min={0} />
               <NumField label="Jitter (min)" value={num("jitter_minutes", 3)}
@@ -377,7 +377,7 @@ export default function NudgeOnlineTab() {
 
           {/* Caps */}
           <div>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 md:gap-4">
               <NumField label="Min hours between" value={num("min_hours_between_nudges", 12)}
                 onChange={(v) => set("min_hours_between_nudges", v)} min={0} />
               <NumField label="Max per tick" value={num("max_per_tick", 25)}
@@ -402,7 +402,7 @@ export default function NudgeOnlineTab() {
               <DollarField label="Max lifetime spend ($)" cents={num("max_lifetime_spend_cents", 0)}
                 onChange={(c) => set("max_lifetime_spend_cents", c)} />
             </div>
-            <div className="grid grid-cols-3 gap-4 mt-3">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 md:gap-4 mt-3">
               <NumField label="Recent window (days)" value={num("recent_spend_days", 30)}
                 onChange={(v) => set("recent_spend_days", v)} min={1} />
               <DollarField label="Min recent spend ($)" cents={num("min_recent_spend_cents", 0)}
@@ -726,13 +726,13 @@ function MediaThumb({
 }: { id: number; media?: VaultMedia; accountId: string | null; onRemove?: () => void }) {
   const url = thumbSrc(media, accountId);
   return (
-    <div className="relative w-12 h-12 rounded overflow-hidden border border-border bg-bg shrink-0">
+    <div className="relative w-12 h-12 rounded md:overflow-hidden border border-border bg-bg shrink-0">
       {url
-        ? <img src={url} alt="" loading="lazy" className="w-full h-full object-cover" />
+        ? <img src={url} alt="" loading="lazy" className="w-full h-full object-cover rounded md:rounded-none" />
         : <span className="w-full h-full grid place-items-center text-[9px] text-fg-dim">#{id}</span>}
       {onRemove && (
-        <button type="button" onClick={onRemove} title="Remove"
-          className="absolute -top-1 -right-1 bg-panel border border-border rounded-full size-4 grid place-items-center text-[10px] leading-none hover:text-err">×</button>
+        <button type="button" onClick={onRemove} title="Remove" aria-label="Remove image"
+          className="absolute -top-2 -right-2 md:-top-1 md:-right-1 bg-panel border border-border rounded-full w-7 h-7 md:w-4 md:h-4 grid place-items-center text-[10px] leading-none hover:text-err">×</button>
       )}
     </div>
   );
@@ -793,7 +793,7 @@ function SlotEditor({
       {texts.length === 0 && <div className="text-[11px] text-muted">No lines yet.</div>}
       {texts.map((t, i) => (
         <div key={i} className="flex items-center gap-1.5">
-          <Input className="flex-1 text-sm" value={t} onChange={(e) => setLine(i, e.target.value)}
+          <Input className="flex-1 text-base md:text-sm" value={t} onChange={(e) => setLine(i, e.target.value)}
             placeholder="message line, e.g. hey {name} 👀" />
           <button type="button" className="text-fg-dim hover:text-err" title="Remove"
             onClick={() => removeLine(i)}><X className="size-4" /></button>
@@ -803,7 +803,7 @@ function SlotEditor({
         <Plus className="size-3.5" /> Add line
       </Button>
       {/* Images: thumbnails + an add-from-vault tile. Sends ONE (rotated) if several. */}
-      <div className="flex flex-wrap items-center gap-2 pt-1">
+      <div className="flex flex-wrap items-center gap-4 md:gap-2 pt-1">
         {images.map((id) => (
           <MediaThumb key={id} id={id} media={mediaCache[id]} accountId={accountId}
             onRemove={() => removeImage(id)} />

@@ -63,7 +63,7 @@ export function MediaPreviewModal({ media, accountId, onClose }: {
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
       <button type="button" aria-label="Close preview" onClick={onClose}
         className="absolute inset-0 bg-black/75" />
-      <div className="relative max-w-[90%] max-h-[90%] flex flex-col items-center gap-3">
+      <div className="relative max-w-[90%] max-h-[90%] max-md:max-w-full max-md:max-h-full flex flex-col items-center gap-3">
         {drm ? (
           <div className="relative">
             <img src={proxyImage(drmFrames[frameIdx], accountId)}
@@ -73,10 +73,10 @@ export function MediaPreviewModal({ media, accountId, onClose }: {
               <>
                 <button type="button" aria-label="Previous frame"
                   onClick={() => setFrameIdx((n) => (n - 1 + drmFrames.length) % drmFrames.length)}
-                  className="absolute left-1 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/55 hover:bg-black/80 text-white grid place-items-center">‹</button>
+                  className="absolute left-1 max-md:left-2 top-1/2 -translate-y-1/2 w-8 h-8 max-md:w-11 max-md:h-11 rounded-full bg-black/55 hover:bg-black/80 text-white grid place-items-center">‹</button>
                 <button type="button" aria-label="Next frame"
                   onClick={() => setFrameIdx((n) => (n + 1) % drmFrames.length)}
-                  className="absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/55 hover:bg-black/80 text-white grid place-items-center">›</button>
+                  className="absolute right-1 max-md:right-2 top-1/2 -translate-y-1/2 w-8 h-8 max-md:w-11 max-md:h-11 rounded-full bg-black/55 hover:bg-black/80 text-white grid place-items-center">›</button>
               </>
             )}
             <span className="absolute top-2 left-2 bg-black/65 text-white text-[11px] px-2 py-0.5 rounded-full">
@@ -103,8 +103,8 @@ export function MediaPreviewModal({ media, accountId, onClose }: {
             className="max-w-full max-h-[80vh] rounded-md shadow-2xl bg-black object-contain" />
         )}
         <button type="button" onClick={onClose}
-          className="text-xs text-white/80 hover:text-white px-3 py-1 rounded-md bg-black/40 border border-white/15">
-          Close (Esc)
+          className="text-xs max-md:text-sm text-white/80 hover:text-white px-3 max-md:px-4 py-1 max-md:min-h-[44px] rounded-md bg-black/40 border border-white/15">
+          Close<span className="hidden md:inline"> (Esc)</span>
         </button>
       </div>
     </div>

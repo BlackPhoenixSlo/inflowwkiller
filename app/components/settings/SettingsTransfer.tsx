@@ -233,7 +233,8 @@ export default function SettingsTransfer({
             {result.report.rules.entries.length > 0 && (
               <div className="text-xs">
                 <b className="text-fg">Rules review list</b>
-                <table className="w-full mt-1 text-left text-fg-dim">
+                <div className="overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0">
+                <table className="w-full min-w-[520px] mt-1 text-left text-fg-dim">
                   <thead>
                     <tr className="text-[10px] uppercase tracking-wide">
                       <th className="pr-2">Rule</th>
@@ -260,6 +261,7 @@ export default function SettingsTransfer({
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
             )}
 

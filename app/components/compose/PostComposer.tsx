@@ -243,19 +243,19 @@ export function PostComposer({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4"
+      className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-0 sm:p-4"
       onClick={() => { if (!create.isPending) { reset(); onClose(); } }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[560px] max-h-[90vh] flex flex-col bg-panel border border-border rounded-xl shadow-2xl"
+        className="w-full h-full sm:h-auto max-w-none sm:max-w-[560px] max-h-none sm:max-h-[90vh] flex flex-col bg-panel border-0 sm:border border-border rounded-none sm:rounded-xl shadow-2xl"
       >
         <header className="px-4 py-3 border-b border-border flex items-center justify-between">
           <h2 className="text-sm font-semibold">New post</h2>
           <button
             type="button"
             onClick={() => { if (!create.isPending) { reset(); onClose(); } }}
-            className="text-fg-dim hover:text-fg text-lg leading-none"
+            className="text-fg-dim hover:text-fg text-lg leading-none w-11 h-11 -mr-2 -my-2 grid place-items-center shrink-0 md:w-auto md:h-auto md:mr-0 md:my-0 md:inline"
             title="Close"
           >×</button>
         </header>
@@ -322,7 +322,7 @@ export function PostComposer({
               onChange={(e) => setText(e.target.value)}
               placeholder="What's on your feed today?"
               rows={5}
-              className="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
+              className="w-full bg-bg border border-border rounded-md px-3 py-2 text-base md:text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
             />
             <div className="flex items-center gap-1.5 flex-wrap">
               <EmojiQuickRow onInsert={onEmoji} />
@@ -365,7 +365,7 @@ export function PostComposer({
               value={price}
               onChange={(e) => setPrice(sanitizePriceInput(e.target.value))}
               placeholder="0 (free)"
-              className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+              className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent"
             />
             <span className={isPPV ? "text-warn text-[11px]" : "text-fg-dim text-[11px]"}>
               {isPPV ? `🔒 PPV $${priceNum.toFixed(2)}` : "free"}
@@ -391,7 +391,7 @@ export function PostComposer({
           )}
         </div>
 
-        <footer className="px-4 py-3 border-t border-border flex items-center justify-end gap-2">
+        <footer className="px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3 border-t border-border flex items-center justify-end gap-2">
           {progress && <span className="text-fg-dim text-[11px] mr-auto">{progress}</span>}
           {error && !progress && <span className="text-err text-[11px] mr-auto">{error}</span>}
           <button

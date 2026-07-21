@@ -482,7 +482,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           </span>
         </div>
         <ItemsTable items={singles} setItems={setSingles} accountId={accountId} />
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Button size="sm" variant="ghost"
             onClick={() => setSingles([...singles, { ...NEW_ITEM }])}>
             <Plus size={14} className="mr-1" /> Add single
@@ -509,6 +509,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
             ♻️ allow reuse
           </label>
           <Button size="sm" disabled={saveSinglesM.isPending}
+            className="max-md:w-full max-md:order-first"
             onClick={() => saveSinglesM.mutate(singles)}>
             <Save size={14} className="mr-1" /> Save singles ({singles.length})
           </Button>
@@ -564,12 +565,16 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
                     {p.floor_cents > 0 && (
                       <span className="text-fg-dim text-xs"> (floor {dollars(p.floor_cents)})</span>
                     )}
-                    <span className="block text-xs text-fg-dim italic truncate">
+                    <span className="md:block text-xs text-fg-dim italic truncate max-md:whitespace-normal max-md:line-clamp-2">
                       “{p.description_for_ai}”
                     </span>
+                    <span className="hidden max-md:flex flex-wrap items-center gap-1 pt-1">
+                      {p.source && <Badge>{p.source}</Badge>}
+                      <Badge>{p.fillable} to fill</Badge>
+                    </span>
                   </span>
-                  {p.source && <Badge>{p.source}</Badge>}
-                  <Badge>{p.fillable} to fill</Badge>
+                  {p.source && <Badge className="max-md:hidden">{p.source}</Badge>}
+                  <Badge className="max-md:hidden">{p.fillable} to fill</Badge>
                 </label>
               ))}
             </div>

@@ -475,10 +475,15 @@ export default function BrainPanel() {
         </div>
       )}
 
+      {/* Plain wrapper (no space-y of its own) so the phone-only sticky Save bar
+       *  below is NOT a `space-y-3` sibling of the Card — appending a hidden
+       *  last child would otherwise hand the block above it a 12px bottom
+       *  margin at every width, including desktop. */}
+      <div>
       {cfgQ.isLoading || !form ? (
         <div className="text-sm text-fg-dim py-2">Loading…</div>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-4 pb-16 md:pb-0">
           {/* Persona + welcome rules */}
           <label className="block space-y-1">
             <span className="text-[11px] uppercase tracking-wide text-fg-dim">Persona</span>
@@ -944,6 +949,22 @@ export default function BrainPanel() {
           )}
         </div>
       )}
+
+      {/* Phone-only Save bar. The real Save lives in this Card's header, which
+       *  is ~2500px above the last control at 390px. `md:hidden` removes the
+       *  whole node at desktop, so nothing here can compute above 768px. */}
+      <div className="md:hidden sticky bottom-0 z-20 -mx-4 mt-3 flex items-center gap-2 border-t border-border bg-panel/95 px-4 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur">
+        <Button
+          size="sm"
+          variant="primary"
+          onClick={save}
+          disabled={!form || saveM.isPending}
+          className="flex-1 min-h-11"
+        >
+          {saveM.isPending ? "Saving…" : "Save brain"}
+        </Button>
+      </div>
+      </div>
 
       {pickerSlot && accountId && (
         <VaultPicker

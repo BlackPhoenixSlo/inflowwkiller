@@ -152,10 +152,10 @@ export function NotificationBell() {
       if (!ref.current?.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onClick);
+    document.addEventListener("pointerdown", onClick);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("pointerdown", onClick);
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
@@ -255,7 +255,7 @@ export function NotificationBell() {
         )}
       </button>
       {open && (
-        <div className="absolute right-0 mt-1 w-[380px] max-h-[480px] bg-panel border border-border rounded-lg shadow-xl z-40 flex flex-col">
+        <div className="fixed inset-x-2 top-14 w-auto max-h-[70vh] sm:absolute sm:inset-x-auto sm:right-0 sm:top-auto sm:mt-1 sm:w-[380px] sm:max-h-[480px] bg-panel border border-border rounded-lg shadow-xl z-40 flex flex-col">
           {targetAccountIds.length === 0 ? (
             <div className="p-4 text-xs text-fg-dim">
               No active sessions. Capture one in Setup to see notifications.
@@ -270,7 +270,7 @@ export function NotificationBell() {
                       type="button"
                       onClick={() => pickFilter(f)}
                       className={
-                        "px-2 py-0.5 text-[11px] rounded-full border " +
+                        "px-3 py-2 text-xs min-h-[36px] sm:px-2 sm:py-0.5 sm:text-[11px] sm:leading-normal sm:min-h-0 rounded-full border " +
                         (filter.id === f.id
                           ? "bg-accent text-white border-accent"
                           : "border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1")
@@ -284,7 +284,7 @@ export function NotificationBell() {
                   type="button"
                   onClick={() => setSettingsOpen((v) => !v)}
                   className={
-                    "shrink-0 w-6 h-6 grid place-items-center rounded text-[11px] border " +
+                    "shrink-0 w-9 h-9 sm:w-6 sm:h-6 grid place-items-center rounded text-sm sm:text-[11px] border " +
                     (settingsOpen
                       ? "border-accent text-fg bg-bg-elev-1"
                       : "border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1")

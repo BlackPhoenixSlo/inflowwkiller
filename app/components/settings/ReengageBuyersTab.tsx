@@ -23,7 +23,7 @@ interface PreviewResp {
   preview: PreviewRow[]; skipped?: string;
 }
 
-const INPUT = "bg-bg border border-border rounded-lg px-2 py-1.5 text-sm w-full focus:outline-none focus:border-accent";
+const INPUT = "bg-bg border border-border rounded-lg px-2 py-1.5 text-base md:text-sm w-full focus:outline-none focus:border-accent";
 
 function NumField({ label, hint, value, onChange }: {
   label: string; hint?: string; value: number; onChange: (n: number) => void;
@@ -136,15 +136,15 @@ export default function ReengageBuyersTab({ accountId }: { accountId: string | n
           </label>
         </div>
 
-        <div className="flex items-center gap-2 border-t border-border pt-3">
-          <Button size="sm" variant="secondary" disabled={busy !== ""} onClick={runPreview}>
+        <div className="flex items-center gap-2 border-t border-border pt-3 flex-wrap md:flex-nowrap">
+          <Button className="shrink-0 md:shrink" size="sm" variant="secondary" disabled={busy !== ""} onClick={runPreview}>
             {busy === "preview" ? "Checking…" : "Preview (dry run)"}
           </Button>
-          <Button size="sm" variant="primary" disabled={busy !== ""} onClick={sendNow}>
+          <Button className="shrink-0 md:shrink" size="sm" variant="primary" disabled={busy !== ""} onClick={sendNow}>
             {busy === "send" ? "Queuing…" : "Send now"}
           </Button>
-          {error && <span className="text-err text-[11px]">{error}</span>}
-          {okMsg && <span className="text-ok text-[11px]">{okMsg}</span>}
+          {error && <span className="text-err text-[11px] basis-full md:basis-auto">{error}</span>}
+          {okMsg && <span className="text-ok text-[11px] basis-full md:basis-auto">{okMsg}</span>}
         </div>
       </Card>
 

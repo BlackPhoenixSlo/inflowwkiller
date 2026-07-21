@@ -174,8 +174,12 @@ export default function VaultTile({
 
   return (
     <div
-      onMouseEnter={startHover}
-      onMouseLeave={endHover}
+      onPointerEnter={(e) => {
+        if (e.pointerType === "mouse") startHover();
+      }}
+      onPointerLeave={(e) => {
+        if (e.pointerType === "mouse") endHover();
+      }}
       onClick={handleClick}
       title={`#${m.id} · ${m.type}${dur ? ` · ${dur}` : ""}`}
       className={`relative aspect-square rounded-lg overflow-hidden bg-bg-elev-1 border cursor-pointer transition-colors ${
@@ -249,13 +253,19 @@ export default function VaultTile({
             onOrder?.(m, v === "" ? null : Number(v));
           }}
           placeholder="#"
-          className="absolute top-1 left-1 w-10 px-1 py-0.5 rounded bg-black/60 text-white text-[11px] border border-white/40 outline-none"
+          className="hidden md:block absolute top-1 left-1 w-10 px-1 py-0.5 rounded bg-black/60 text-white text-[11px] border border-white/40 outline-none"
         />
       )}
 
-      {/* described dot */}
-      {described && !showOrder && (
-        <div className="absolute top-1 left-1 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-1 ring-black/40" title="described" />
+      {/* described dot — in a folder view the order input owns this corner on
+       *  desktop, but that input is hidden on phone, so the dot takes it back. */}
+      {described && (
+        <div
+          className={`absolute top-1 left-1 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-1 ring-black/40${
+            showOrder ? " md:hidden" : ""
+          }`}
+          title="described"
+        />
       )}
 
       {/* The duration pill IS the play affordance, same as the picker. A nested

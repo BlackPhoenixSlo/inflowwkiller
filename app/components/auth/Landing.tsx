@@ -84,17 +84,17 @@ export default function Landing() {
 
   return (
     <main className="min-h-screen flex items-center justify-center p-6 bg-bg text-fg">
-      <div className="w-full max-w-3xl grid gap-10">
+      <div className="w-full max-w-3xl grid gap-6 sm:gap-10">
         <header className="space-y-3 text-center">
-          <h1 className="text-5xl font-bold tracking-tight">Fastt</h1>
+          <h1 className="text-3xl sm:text-5xl font-bold tracking-tight">Fastt</h1>
           <p className="text-xl text-fg-dim">Very fast.</p>
-          <p className="text-sm text-fg-dim mx-auto max-w-md">
+          <p className="hidden sm:block text-sm text-fg-dim mx-auto max-w-md">
             Conversations open instantly. Vault scrolls without spinners. Built for chatters
             who lose minutes per shift waiting on the OF dashboard.
           </p>
         </header>
 
-        <section className="grid sm:grid-cols-3 gap-4 text-sm">
+        <section className="hidden sm:grid sm:grid-cols-3 gap-4 text-sm">
           <div className="rounded-xl border border-fg/10 p-4">
             <div className="font-semibold mb-1">Inbox</div>
             <div className="text-fg-dim">
@@ -147,7 +147,7 @@ export default function Landing() {
               minLength={3}
               maxLength={32}
               pattern="[a-zA-Z0-9_.\-]{3,32}"
-              className="px-3 py-2 rounded-lg bg-bg border border-fg/10 focus:outline-none focus:border-fg/30"
+              className="px-3 py-2 text-base md:text-sm rounded-lg bg-bg border border-fg/10 focus:outline-none focus:border-fg/30"
             />
           </label>
 
@@ -160,7 +160,7 @@ export default function Landing() {
               autoComplete={mode === "login" ? "current-password" : "new-password"}
               required
               minLength={6}
-              className="px-3 py-2 rounded-lg bg-bg border border-fg/10 focus:outline-none focus:border-fg/30"
+              className="px-3 py-2 text-base md:text-sm rounded-lg bg-bg border border-fg/10 focus:outline-none focus:border-fg/30"
             />
           </label>
 
@@ -185,7 +185,7 @@ export default function Landing() {
           )}
         </form>
 
-        <section className="space-y-3 text-sm">
+        <section className="hidden sm:block space-y-3 text-sm">
           <p className="text-fg-dim text-center">
             I host this for my friends.{" "}
             <a

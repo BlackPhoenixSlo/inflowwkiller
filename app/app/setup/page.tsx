@@ -32,13 +32,19 @@ export default function SetupPage() {
 
       <DriftBanner />
 
-      <PasteCurlCard />
+      {/* Desk-only cards. One wrapper PER card — a single shared wrapper would
+          collapse the parent's space-y-6 gap on desktop. */}
+      <div className="hidden md:block"><PasteCurlCard /></div>
 
       <AccountsTable />
 
-      <ProxiesTable />
+      <p className="md:hidden text-sm text-fg-dim">
+        Session capture, proxies and keys are desktop-only.
+      </p>
 
-      <KeysCard />
+      <div className="hidden md:block"><ProxiesTable /></div>
+
+      <div className="hidden md:block"><KeysCard /></div>
     </div>
   );
 }

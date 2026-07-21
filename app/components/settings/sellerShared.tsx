@@ -33,7 +33,7 @@ import {
 } from "@/hooks/useCatalog";
 
 export const INPUT =
-  "bg-bg border border-border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-accent";
+  "bg-bg border border-border rounded-lg px-2 py-1.5 text-sm max-md:text-base focus:outline-none focus:border-accent";
 export const TH = "text-left text-[11px] uppercase tracking-wide text-fg-dim px-2 py-1";
 export const TD = "px-2 py-1 align-top";
 
@@ -297,7 +297,8 @@ export function ItemsTable({ items, setItems, accountId }: {
     setItems(items.map((x, j) => (j === i ? { ...x, ...p } : x)));
   return (
     <>
-      <table className="w-full text-sm">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[760px] text-sm">
         <thead>
           <tr>
             <th className={TH}>kind</th><th className={TH}>label</th>
@@ -317,6 +318,7 @@ export function ItemsTable({ items, setItems, accountId }: {
           ))}
         </tbody>
       </table>
+      </div>
 
       <VaultPicker open={pickRow !== null} onClose={() => setPickRow(null)}
         accountId={accountId}

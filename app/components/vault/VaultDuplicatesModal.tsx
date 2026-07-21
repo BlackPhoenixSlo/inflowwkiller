@@ -206,12 +206,12 @@ export default function VaultDuplicatesModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4"
+      className="fixed inset-0 z-50 bg-black/50 md:grid md:place-items-center md:p-4"
       onClick={onClose}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[1100px] max-h-[92vh] flex flex-col bg-panel border border-border rounded-xl shadow-2xl"
+        className="w-full h-full md:h-auto max-w-none md:max-w-[1100px] max-h-none md:max-h-[92vh] flex flex-col bg-panel border-0 md:border border-border rounded-none md:rounded-xl shadow-2xl"
       >
         <header className="px-4 py-3 border-b border-border flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -224,7 +224,7 @@ export default function VaultDuplicatesModal({
           <button
             type="button"
             onClick={onClose}
-            className="px-2 py-1 rounded-md text-xs text-fg-dim hover:text-fg"
+            className="px-2 py-2.5 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-xs text-fg-dim hover:text-fg"
           >
             Close
           </button>
@@ -348,13 +348,13 @@ export default function VaultDuplicatesModal({
           })}
         </div>
 
-        <footer className="px-4 py-3 border-t border-border flex flex-wrap items-center gap-3">
+        <footer className="px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-3 border-t border-border flex flex-wrap items-center gap-3">
           {!confirming ? (
             <button
               type="button"
               disabled={selectedIds.length === 0 || busy}
               onClick={() => setConfirming(true)}
-              className="px-3 py-1.5 rounded-md text-xs font-medium border border-rose-500/50 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 disabled:opacity-40"
+              className="px-3 py-2.5 md:py-1.5 min-h-[44px] md:min-h-0 rounded-md text-xs font-medium border border-rose-500/50 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 disabled:opacity-40"
             >
               Remove {selectedIds.length} {selectedIds.length === 1 ? "copy" : "copies"} from
               OnlyFans…
@@ -369,7 +369,7 @@ export default function VaultDuplicatesModal({
                 type="button"
                 disabled={busy}
                 onClick={doHide}
-                className="px-3 py-1.5 rounded-md text-xs font-semibold border border-rose-500 bg-rose-500/20 text-rose-200 hover:bg-rose-500/30 disabled:opacity-40"
+                className="px-3 py-2.5 md:py-1.5 min-h-[44px] md:min-h-0 rounded-md text-xs font-semibold border border-rose-500 bg-rose-500/20 text-rose-200 hover:bg-rose-500/30 disabled:opacity-40"
               >
                 {busy
                   ? progress
@@ -381,7 +381,7 @@ export default function VaultDuplicatesModal({
                 type="button"
                 disabled={busy}
                 onClick={() => setConfirming(false)}
-                className="px-2 py-1 rounded-md text-xs text-fg-dim hover:text-fg"
+                className="px-2 py-2.5 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-xs text-fg-dim hover:text-fg"
               >
                 Cancel
               </button>

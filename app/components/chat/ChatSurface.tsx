@@ -117,15 +117,18 @@ export function ChatSurface({
   const drawerKeepOpen = forceDrawerOpen || drawerKeepOpenPref;
   const [drawerOpen, setDrawerOpen] = useState(
     () => {
-      // forceDrawerOpen (popout window) wins over everything.
-      if (forceDrawerOpen) return true;
-      // Below md the persisted "keep open" preference is overruled: a
-      // 360px viewport doesn't have room for chat + drawer. User can
-      // still tap the header to open the overlay drawer manually.
+      // Below md the persisted "keep open" preference is overruled, and
+      // so is forceDrawerOpen: a 360px viewport doesn't have room for
+      // chat + drawer, and a deep-link would bury the thread under a
+      // full-screen drawer. User can still tap the header to open the
+      // overlay drawer manually. Desktop is unaffected — this guard
+      // never matches at >=768px, so the checks below run as before.
       if (typeof window !== "undefined"
         && window.matchMedia("(max-width: 767px)").matches) {
         return false;
       }
+      // forceDrawerOpen (popout window) wins over everything.
+      if (forceDrawerOpen) return true;
       return readFanDrawerDefault();
     },
   );
@@ -722,7 +725,7 @@ export function ChatSurface({
           <button
             type="button"
             onClick={onBack}
-            className="md:hidden w-9 h-9 -ml-1 grid place-items-center rounded-lg text-fg-dim hover:text-fg hover:bg-bg-elev-1 shrink-0"
+            className="lg:hidden w-9 h-9 -ml-1 grid place-items-center rounded-lg text-fg-dim hover:text-fg hover:bg-bg-elev-1 shrink-0"
             title="Back to chat list"
             aria-label="Back"
           >
@@ -757,6 +760,10 @@ export function ChatSurface({
             <AiStatusStrip accountId={accountId} fanId={fanId} />
           </div>
         </button>
+        {/* Stays mounted on phone: it returns null when nothing is queued,
+            so it costs no header space in the common case, and it is the
+            only way to see/cancel a fan's queued sends. No wrapper div —
+            that would add a stray flex gap to the desktop header. */}
         <ScheduledForChat accountId={accountId} fanId={fanId} />
         <button
           type="button"
@@ -792,11 +799,13 @@ export function ChatSurface({
           <span className={cn("inline-block no-underline", (isRefreshing || handle.isFetching) && "animate-spin")}>↻</span>
           <span>refresh</span>
         </button>
-        <ModelInfoButton accountId={accountId} />
+        <div className="hidden md:block">
+          <ModelInfoButton accountId={accountId} />
+        </div>
         <button
           type="button"
           onClick={() => setActionsOpen((v) => !v)}
-          className="text-fg-dim hover:text-fg text-lg leading-none px-1"
+          className="text-fg-dim hover:text-fg text-lg leading-none w-10 h-10 grid place-items-center shrink-0 md:block md:w-auto md:h-auto md:px-1 md:shrink"
           title="More actions"
           aria-label="More actions"
         >
@@ -1025,7 +1034,7 @@ function GroupChatButton({ accountId, fanId }: { accountId: string; fanId: numbe
       type="button"
       onClick={onClick}
       className={cn(
-        "text-[11px] underline underline-offset-2 transition-colors",
+        "hidden md:inline text-[11px] underline underline-offset-2 transition-colors",
         flash === "added" ? "text-ok"
           : flash === "opened" ? "text-accent"
           : flash === "focused" ? "text-fg-dim"

@@ -49,25 +49,29 @@ export default function TipRow({ row }: Props) {
       />
 
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-medium text-fg text-sm">
-            @{row.fan.username || row.fan_id || "unknown"}
-          </span>
-          {row.fan.display_name && (
-            <span className="text-xs text-fg-dim truncate">
-              ({row.fan.display_name})
+        <div className="flex items-center gap-2 md:flex-wrap">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="font-medium text-fg text-sm truncate">
+              @{row.fan.username || row.fan_id || "unknown"}
             </span>
-          )}
-          <Badge color="ok">
+            {row.fan.display_name && (
+              <span className="hidden md:inline text-xs text-fg-dim truncate">
+                ({row.fan.display_name})
+              </span>
+            )}
+          </div>
+          <Badge color="ok" className="hidden md:inline-flex shrink-0">
             <span>💰</span>
             <span>TIP</span>
           </Badge>
-          <span className="ml-auto text-sm font-semibold text-fg">
-            {fmtCents(row.amount_cents)}
-          </span>
-          <span className="text-xs text-fg-dim">
-            {fmtRelTime(row.occurred_at)}
-          </span>
+          <div className="ml-auto flex items-center gap-2 shrink-0">
+            <span className="text-sm font-semibold text-fg">
+              {fmtCents(row.amount_cents)}
+            </span>
+            <span className="text-xs text-fg-dim">
+              {fmtRelTime(row.occurred_at)}
+            </span>
+          </div>
         </div>
 
         <div className="mt-1 text-xs italic text-fg-dim line-clamp-2 break-words">
@@ -86,7 +90,7 @@ export default function TipRow({ row }: Props) {
           )}
 
           {chatHref && (
-            <span className="ml-auto text-xs text-fg-dim group-hover:text-accent">
+            <span className="hidden md:inline ml-auto text-xs text-fg-dim group-hover:text-accent">
               ↗ open chat
             </span>
           )}

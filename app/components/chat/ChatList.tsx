@@ -208,10 +208,13 @@ export function ChatList({
       if (!settingsRef.current?.contains(e.target as Node)) setSettingsOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSettingsOpen(false); };
-    document.addEventListener("mousedown", onClick);
+    // pointerdown (not mousedown): iOS only synthesises mousedown for taps on
+    // clickable nodes, so tapping the panel background never dismissed this.
+    // pointerdown precedes mousedown for mouse input → desktop unchanged.
+    document.addEventListener("pointerdown", onClick);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("pointerdown", onClick);
       document.removeEventListener("keydown", onKey);
     };
   }, [settingsOpen]);
@@ -684,7 +687,7 @@ export function ChatList({
           <h2 className="font-semibold text-sm truncate">
             {scope.kind === "all" ? "Unified Inbox" : (accountById.get(scope.accountId)?.nickname || scope.accountId)}
           </h2>
-          <div className="flex items-center gap-2 shrink-0" ref={settingsRef}>
+          <div className="flex items-center gap-3 md:gap-2 shrink-0" ref={settingsRef}>
             <span className="text-[11px] text-fg-dim">
               {q.isFetching ? "…" : rows.length}
             </span>
@@ -705,7 +708,7 @@ export function ChatList({
                 q.refresh();
               }}
               disabled={q.isFetching}
-              className="w-6 h-6 grid place-items-center rounded-md text-fg-dim hover:text-fg hover:bg-bg-elev-1 text-sm disabled:opacity-50"
+              className="w-9 h-9 md:w-6 md:h-6 grid place-items-center rounded-md text-fg-dim hover:text-fg hover:bg-bg-elev-1 text-sm disabled:opacity-50"
               title="Refresh inbox"
               aria-label="Refresh inbox"
             >
@@ -715,7 +718,7 @@ export function ChatList({
               <button
                 type="button"
                 onClick={() => setSettingsOpen((v) => !v)}
-                className="h-6 px-1.5 inline-flex items-center gap-1 rounded-md text-fg-dim hover:text-fg hover:bg-bg-elev-1 text-sm"
+                className="h-9 md:h-6 px-2.5 md:px-1.5 inline-flex items-center gap-1 rounded-md text-fg-dim hover:text-fg hover:bg-bg-elev-1 text-sm"
                 title="Inbox settings"
                 aria-label="Inbox settings"
               >
@@ -746,7 +749,7 @@ export function ChatList({
                    *  modes; checking one unchecks the other so the user
                    *  always sees the live state. Applied to chat media tiles
                    *  + vault thumbnails via the useBlurMode hook. */}
-                  <label className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-fg hover:bg-bg-elev-1 cursor-pointer select-none border-t border-border/60">
+                  <label className="w-full hidden md:flex items-center gap-2 px-3 py-1.5 text-xs text-fg hover:bg-bg-elev-1 cursor-pointer select-none border-t border-border/60">
                     <input
                       type="checkbox"
                       checked={blurMode === "hover"}
@@ -755,6 +758,18 @@ export function ChatList({
                     />
                     <span>Blur images till hover</span>
                   </label>
+                  {/* Phone escape hatch: "till hover" has no reveal on touch,
+                   *  and the mode is persisted from desktop. Offer a one-tap
+                   *  way out instead of the (unusable) toggle above. */}
+                  {blurMode === "hover" && (
+                    <button
+                      type="button"
+                      onClick={() => setBlurMode("off")}
+                      className="w-full md:hidden flex items-center gap-2 px-3 py-2 text-xs text-left text-warn hover:bg-bg-elev-1 border-t border-border/60"
+                    >
+                      ◐ Images blurred (hover mode) — tap to unblur
+                    </button>
+                  )}
                   <label className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-fg hover:bg-bg-elev-1 cursor-pointer select-none">
                     <input
                       type="checkbox"
@@ -778,9 +793,9 @@ export function ChatList({
                     {([
                       { key: "recent", label: "Recent activity" },
                       { key: "spend", label: "Amount spent" },
-                      { key: "spend-unread", label: "Spend + unread on top" },
-                      { key: "hybrid", label: "Spend + recency" },
-                    ] as { key: ChatSortMode; label: string }[]).map((opt) => (
+                      { key: "spend-unread", label: "Spend + unread on top", sub: "unread → owe reply → idle" },
+                      { key: "hybrid", label: "Spend + recency", sub: "spend × time-decay" },
+                    ] as { key: ChatSortMode; label: string; sub?: string }[]).map((opt) => (
                       <label
                         key={opt.key}
                         className="flex items-center gap-2 cursor-pointer select-none"
@@ -799,7 +814,16 @@ export function ChatList({
                           onChange={() => setSortMode(opt.key)}
                           className="shrink-0"
                         />
-                        <span>{opt.label}</span>
+                        {/* Phone-only sub-line: on desktop these semantics
+                         *  live in the row's title= tooltip, which touch has
+                         *  no way to surface. Hidden at md → desktop row is
+                         *  the bare label exactly as before. */}
+                        <span className="flex flex-col">
+                          <span>{opt.label}</span>
+                          {opt.sub && (
+                            <span className="md:hidden text-[10px] leading-tight text-fg-dim">{opt.sub}</span>
+                          )}
+                        </span>
                       </label>
                     ))}
                   </div>
@@ -813,7 +837,7 @@ export function ChatList({
           placeholder="Search…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-xs placeholder:text-muted focus:outline-none focus:border-accent"
+          className="w-full bg-bg border border-border rounded-md px-3 py-2.5 text-base md:px-2 md:py-1.5 md:text-xs placeholder:text-muted focus:outline-none focus:border-accent"
         />
         {/* Row 1: built-in OF filters. Always visible, never overflows. */}
         <div className="flex items-center gap-1 text-[11px] flex-wrap">
@@ -847,7 +871,12 @@ export function ChatList({
         {/* Row 2: pinned custom folders + the picker. Horizontally scrolls
          *  when there are too many to fit — they're optional/secondary. */}
         {(pinnedFolders.length > 0 || scope.kind === "model") && (
-          <div className="flex items-center gap-1 text-[11px] overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-1">
+            {/* The scroller keeps flex-1 min-w-0 so it still measures exactly
+             *  100% of the row (the phone-only ✎ below is display:none at md
+             *  and contributes no flex gap), i.e. the desktop strip is
+             *  unchanged. */}
+            <div className="flex-1 min-w-0 flex items-center gap-1 text-[11px] overflow-x-auto no-scrollbar">
             {pinnedFolders.map((f) => {
               const id = String(f.id);
               const isActive = active.kind === "folder" && active.listId === id;
@@ -867,8 +896,23 @@ export function ChatList({
               <button
                 type="button"
                 onClick={() => setPickerOpen(true)}
-                className="px-2 py-0.5 rounded-full border border-border text-fg-dim hover:text-fg hover:border-border-light transition-colors shrink-0"
+                className="hidden md:inline-block px-2 py-0.5 rounded-full border border-border text-fg-dim hover:text-fg hover:border-border-light transition-colors shrink-0"
                 title="Pick folders to pin as chips"
+              >
+                ✎
+              </button>
+            )}
+            </div>
+            {/* Phone twin of the ✎ above: inside the scroller it scrolls out
+             *  of reach once a few folders are pinned. Hidden at md, where the
+             *  in-strip original is restored by `md:inline-block`. */}
+            {scope.kind === "model" && (
+              <button
+                type="button"
+                onClick={() => setPickerOpen(true)}
+                className="md:hidden shrink-0 inline-flex items-center px-3 py-1.5 min-h-[36px] rounded-full border border-border text-[11px] text-fg-dim hover:text-fg hover:border-border-light transition-colors"
+                title="Pick folders to pin as chips"
+                aria-label="Pick folders to pin as chips"
               >
                 ✎
               </button>
@@ -973,6 +1017,15 @@ export function ChatList({
               onMouseLeave={cancelRowPrefetch}
               onFocus={() => scheduleRowPrefetch(accountId, c.withUser.id)}
               onBlur={cancelRowPrefetch}
+              // Touch never fires mouseenter/focus before the tap, so the
+              // hover-prefetch strategy is dead on phone. Fire the prefetchers
+              // directly (skipping the 120ms dwell — the tap IS the intent).
+              // prefetchQuery no-ops while the query is fresh, so a mouse user
+              // who already warmed this row on hover issues nothing extra.
+              onPointerDown={() => {
+                prefetchMessages(accountId, c.withUser.id);
+                prefetchVault(accountId);
+              }}
               className={cn(
                 "w-full text-left px-3 py-2.5 border-b border-border/40",
                 "flex items-start gap-2.5 hover:bg-bg-elev-1 transition-colors",
@@ -981,7 +1034,7 @@ export function ChatList({
             >
               {scope.kind === "all" && (
                 <span
-                  className="mt-1 w-2 h-2 rounded-full shrink-0 border border-black/20"
+                  className="hidden lg:block mt-1 w-2 h-2 rounded-full shrink-0 border border-black/20"
                   style={{ background: acc?.color || "#666" }}
                   title={acc?.nickname || accountId}
                 />
@@ -1017,6 +1070,18 @@ export function ChatList({
                     )}
                     <span className="text-sm font-medium truncate">{fanName}</span>
                   </span>
+                  {/* Below lg the 8px colour dot is hidden and AccountRoster
+                   *  (hidden lg:block) is gone, so this named chip is the only
+                   *  model identifier on the row. lg:hidden ⇒ nothing renders
+                   *  at ≥1024px, where the dot + roster are back. */}
+                  {scope.kind === "all" && (
+                    <span
+                      className="lg:hidden text-[10px] leading-none px-1.5 py-0.5 rounded-full shrink-0 text-white max-w-[40%] truncate"
+                      style={{ background: acc?.color || "#666" }}
+                    >
+                      {acc?.nickname || accountId}
+                    </span>
+                  )}
                   <span className="text-[10px] text-fg-dim shrink-0">
                     {fmtTime(c.lastMessage?.createdAt)}
                   </span>
@@ -1104,7 +1169,7 @@ export function ChatList({
                       <button
                         type="button"
                         onClick={() => q.loadMore()}
-                        className="text-accent hover:underline"
+                        className="text-accent underline underline-offset-2 md:no-underline md:underline-offset-auto md:hover:underline inline-flex items-center px-4 py-2 md:px-0 md:py-0 min-h-[40px] md:min-h-0"
                       >
                         scanned {oweReplyScanned} · {oweReplyMatches} owed · keep scanning
                       </button>
@@ -1121,7 +1186,7 @@ export function ChatList({
                   <button
                     type="button"
                     onClick={() => setCapRows(allRows.length + SCROLL_CAP_STEP)}
-                    className="text-accent hover:underline"
+                    className="text-accent underline underline-offset-2 md:no-underline md:underline-offset-auto md:hover:underline inline-flex items-center px-4 py-2 md:px-0 md:py-0 min-h-[40px] md:min-h-0"
                   >
                     loaded {allRows.length} chats · load more
                   </button>
@@ -1136,7 +1201,7 @@ export function ChatList({
                     <button
                       type="button"
                       onClick={() => q.loadMore()}
-                      className="text-accent hover:underline"
+                      className="text-accent underline underline-offset-2 md:no-underline md:underline-offset-auto md:hover:underline inline-flex items-center px-4 py-2 md:px-0 md:py-0 min-h-[40px] md:min-h-0"
                     >
                       loaded {allRows.length} chats · load more
                     </button>
@@ -1166,7 +1231,7 @@ function FilterChip({
       onClick={onClick}
       title={title}
       className={cn(
-        "px-2 py-0.5 rounded-full border transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1",
+        "px-3 py-1.5 min-h-[36px] md:px-2 md:py-0.5 md:min-h-0 rounded-full border transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1",
         active
           ? "bg-accent/15 text-accent border-accent/30"
           : "bg-transparent text-fg-dim border-border hover:border-border-light",
@@ -1233,7 +1298,7 @@ function FolderPicker({
             return (
               <label
                 key={id}
-                className="flex items-center gap-2 px-3 py-2 hover:bg-bg-elev-1 cursor-pointer text-xs"
+                className="flex items-center gap-2 px-3 py-3 md:py-2 text-sm md:text-xs hover:bg-bg-elev-1 cursor-pointer"
               >
                 <input
                   type="checkbox"

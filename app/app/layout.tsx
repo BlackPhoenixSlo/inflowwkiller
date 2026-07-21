@@ -138,7 +138,7 @@ export default function RootLayout({
   // `font-sans` token (configured in globals.css @theme).
   return (
     <html lang="en" className={sora.variable} suppressHydrationWarning>
-      <body className="min-h-screen bg-bg text-fg antialiased" suppressHydrationWarning>
+      <body className="min-h-dvh md:min-h-screen bg-bg text-fg antialiased" suppressHydrationWarning>
         {/* This inline script runs synchronously before React hydrates, so
          *  the persisted theme is on <html data-theme=…> by the first paint.
          *  Lives in <body> rather than <head> because Next App Router's

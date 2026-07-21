@@ -26,7 +26,7 @@ export function NudgeComposer({ open, onClose }: { open: boolean; onClose: () =>
           <button
             type="button"
             onClick={onClose}
-            className="text-fg-dim hover:text-fg text-lg leading-none"
+            className="text-fg-dim hover:text-fg text-lg leading-none w-11 h-11 -mr-2 -my-2 grid place-items-center shrink-0 md:w-auto md:h-auto md:mr-0 md:my-0 md:inline"
             title="Close"
           >×</button>
         </header>

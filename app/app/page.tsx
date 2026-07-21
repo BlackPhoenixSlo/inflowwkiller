@@ -67,7 +67,7 @@ export default function HomePage() {
           <button
             type="button"
             onClick={clear}
-            className="text-xs text-fg-dim hover:text-fg underline underline-offset-2"
+            className="px-2 py-2.5 -mx-2 -my-2.5 md:px-0 md:py-0 md:mx-0 md:my-0 text-xs text-fg-dim hover:text-fg underline underline-offset-2"
           >
             switch
           </button>
@@ -98,7 +98,8 @@ export default function HomePage() {
       </div>
 
       {/* Welcome card */}
-      <div className="bg-panel border border-border rounded-2xl p-5 sm:p-8 mt-10">
+      {/* Dev-changelog status card — desk-only (≈300px of Phase-A prose). */}
+      <div className="hidden md:block bg-panel border border-border rounded-2xl p-5 sm:p-8 mt-10">
         <h1 className="text-2xl font-semibold mb-2">Fastt is live</h1>
         <p className="text-fg-dim mb-6">
           Phase A complete: DB foundation, SSE pipeline, employee picker, audit log.

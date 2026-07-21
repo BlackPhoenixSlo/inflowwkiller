@@ -88,8 +88,8 @@ export function TagCreatorsPicker({
       if (popRef.current?.contains(t)) return;
       setOpen(false);
     };
-    document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
+    document.addEventListener("pointerdown", onClick);
+    return () => document.removeEventListener("pointerdown", onClick);
   }, [open]);
 
   useLayoutEffect(() => {
@@ -190,7 +190,7 @@ export function TagCreatorsPicker({
               value={rawSearch}
               onChange={(e) => setRawSearch(e.target.value)}
               placeholder="Search creators to tag…"
-              className="w-full bg-bg border border-border rounded-md px-2 py-1 text-sm focus:outline-none focus:border-accent"
+              className="w-full bg-bg border border-border rounded-md px-2 py-1 text-base md:text-sm focus:outline-none focus:border-accent"
             />
             <div className="mt-1 text-[10px] text-fg-dim">
               {q.isFetching ? "Searching…" : `${rows.length} result${rows.length === 1 ? "" : "s"}`}
@@ -256,7 +256,7 @@ export function TagCreatorsPicker({
               <button
                 type="button"
                 onClick={() => onChange([])}
-                className="text-fg-dim hover:text-fg underline underline-offset-2"
+                className="px-3 py-3 -my-1.5 -mr-3 md:px-0 md:py-0 md:my-0 md:mr-0 text-fg-dim hover:text-fg underline underline-offset-2"
               >
                 Clear all
               </button>

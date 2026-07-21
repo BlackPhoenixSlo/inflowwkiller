@@ -236,7 +236,7 @@ export default function OnlineBlastTab() {
           <Hint>Targets <b>every fan online now</b> (OnlyFans’ native online filter, one server-side broadcast). A slot with several images sends <b>one</b> (rotated), not all.</Hint>
         </div>
 
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
           <NumField label="Send every (min)" value={form.everyMinutes} onChange={(v) => set("everyMinutes", v)} min={5} />
           <NumField label="Skip DMed within (hrs)" value={form.excludeRepliedHours === "" ? 0 : form.excludeRepliedHours}
             onChange={(v) => set("excludeRepliedHours", v > 0 ? v : "")} min={0} />
@@ -428,13 +428,13 @@ function thumbSrc(media: VaultMedia | undefined, accountId: string | null): stri
 function MediaThumb({ id, media, accountId, onRemove }: { id: number; media?: VaultMedia; accountId: string | null; onRemove?: () => void }) {
   const url = thumbSrc(media, accountId);
   return (
-    <div className="relative w-12 h-12 rounded overflow-hidden border border-border bg-bg shrink-0">
+    <div className="relative w-12 h-12 rounded md:overflow-hidden border border-border bg-bg shrink-0">
       {url
-        ? <img src={url} alt="" loading="lazy" className="w-full h-full object-cover" />
+        ? <img src={url} alt="" loading="lazy" className="w-full h-full object-cover rounded md:rounded-none" />
         : <span className="w-full h-full grid place-items-center text-[9px] text-fg-dim">#{id}</span>}
       {onRemove && (
-        <button type="button" onClick={onRemove} title="Remove"
-          className="absolute -top-1 -right-1 bg-panel border border-border rounded-full size-4 grid place-items-center text-[10px] leading-none hover:text-err">×</button>
+        <button type="button" onClick={onRemove} title="Remove" aria-label="Remove image"
+          className="absolute -top-2 -right-2 md:-top-1 md:-right-1 bg-panel border border-border rounded-full w-7 h-7 md:w-4 md:h-4 grid place-items-center text-[10px] leading-none hover:text-err">×</button>
       )}
     </div>
   );
@@ -462,12 +462,12 @@ function SlotEditor({
       {texts.length === 0 && <div className="text-[11px] text-muted">No lines yet.</div>}
       {texts.map((t, i) => (
         <div key={i} className="flex items-center gap-1.5">
-          <Input className="flex-1 text-sm" value={t} onChange={(e) => setLine(i, e.target.value)} placeholder="message line, e.g. who's online tonight? 👀" />
+          <Input className="flex-1 text-base md:text-sm" value={t} onChange={(e) => setLine(i, e.target.value)} placeholder="message line, e.g. who's online tonight? 👀" />
           <button type="button" className="text-fg-dim hover:text-err" title="Remove" onClick={() => removeLine(i)}><X className="size-4" /></button>
         </div>
       ))}
       <Button variant="ghost" type="button" onClick={addLine}><Plus className="size-3.5" /> Add line</Button>
-      <div className="flex flex-wrap items-center gap-2 pt-1">
+      <div className="flex flex-wrap items-center gap-4 md:gap-2 pt-1">
         {images.map((id) => (
           <MediaThumb key={id} id={id} media={mediaCache[id]} accountId={accountId} onRemove={() => removeImage(id)} />
         ))}

@@ -494,7 +494,7 @@ export default function RuleEditor({
           <span className="text-[11px] uppercase tracking-wide text-fg-dim">
             Quiet hours (optional, creator-local)
           </span>
-          <div className="flex items-center gap-2 text-sm text-fg-dim">
+          <div className="flex items-center gap-2 text-sm text-fg-dim flex-wrap md:flex-nowrap">
             <Input
               type="number"
               min={0}
@@ -514,7 +514,7 @@ export default function RuleEditor({
               placeholder="—"
               className="w-20"
             />
-            <span className="text-[11px]">leave blank to run 24/7 (wraps midnight if start &gt; end)</span>
+            <span className="text-[11px] basis-full md:basis-auto">leave blank to run 24/7 (wraps midnight if start &gt; end)</span>
           </div>
         </label>
       </div>
@@ -539,7 +539,7 @@ export default function RuleEditor({
             <button
               type="button"
               onClick={() => (rawMode ? exitRaw() : enterRaw())}
-              className="text-[11px] text-accent hover:underline"
+              className="hidden md:inline text-[11px] text-accent hover:underline"
             >
               {rawMode ? "← Typed fields" : "Edit raw JSON →"}
             </button>
@@ -769,7 +769,7 @@ function PremadeComposerModal({
           <button
             type="button"
             onClick={onClose}
-            className="text-fg-dim hover:text-fg text-lg leading-none"
+            className="text-fg-dim hover:text-fg text-lg leading-none w-11 h-11 -mr-2 -my-2 grid place-items-center shrink-0 md:w-auto md:h-auto md:mr-0 md:my-0 md:inline"
             title="Close"
           >
             ×

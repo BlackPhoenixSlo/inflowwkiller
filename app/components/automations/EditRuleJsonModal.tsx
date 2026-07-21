@@ -154,7 +154,7 @@ function EditRuleJsonModal({
           <button
             type="button"
             onClick={onClose}
-            className="text-fg-dim hover:text-fg text-lg leading-none shrink-0"
+            className="text-fg-dim hover:text-fg text-lg leading-none shrink-0 w-11 h-11 -mr-2 -my-2 grid place-items-center md:w-auto md:h-auto md:mr-0 md:my-0 md:inline"
             title="Close"
           >
             ×

@@ -192,11 +192,11 @@ export default function MassMessagesTab() {
   }, [actionableRows]);
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       {/* Auto-unsend automation — a scheduled `unsend_messages` rule per model.
        *  Hourly sweep that unsends broadcasts older than the set hours, by type
        *  (free text / image / PPV). Leave a type off to keep it forever. */}
-      <Card>
+      <Card className="order-2 md:order-1">
         <div className="mb-3">
           <h2 className="text-base font-semibold">Auto-unsend (automation)</h2>
           <p className="text-xs text-fg-dim mt-0.5">
@@ -214,7 +214,7 @@ export default function MassMessagesTab() {
         </div>
       </Card>
 
-      <Card>
+      <Card className="order-1 md:order-2">
         <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
           <div>
             <h2 className="text-base font-semibold">Mass messages</h2>
@@ -292,7 +292,7 @@ export default function MassMessagesTab() {
 
         {/* Bulk action bar. Disabled when nothing matches so the user
          *  doesn't fire a confirmation just to be told "nothing to do". */}
-        <div className="flex items-center gap-2 flex-wrap mb-3 pb-3 border-b border-border">
+        <div className="hidden md:flex items-center gap-2 flex-wrap mb-3 pb-3 border-b border-border">
           <span className="text-[11px] text-fg-dim mr-1">
             Bulk actions ({actionableRows.length} unsendable in view):
           </span>
@@ -515,8 +515,8 @@ function AutoClassRow({
   set: (x: { on: boolean; h: number }) => void;
 }) {
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <label className="flex items-center gap-1.5 w-36 cursor-pointer">
+    <div className="flex items-center gap-2 text-xs flex-wrap md:flex-nowrap">
+      <label className="flex items-center gap-1.5 w-full md:w-36 cursor-pointer">
         <input
           type="checkbox"
           checked={v.on}
@@ -528,7 +528,7 @@ function AutoClassRow({
       <input
         type="number"
         min={1}
-        className="w-16 bg-bg-elev-1 border border-border rounded px-1.5 py-0.5 disabled:opacity-40"
+        className="w-16 bg-bg-elev-1 border border-border rounded px-1.5 py-0.5 text-base md:text-xs disabled:opacity-40"
         value={v.h}
         disabled={!v.on}
         onChange={(e) => set({ ...v, h: Math.max(1, Number(e.target.value) || 1) })}

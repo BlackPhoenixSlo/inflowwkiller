@@ -47,7 +47,7 @@ export function ScheduleField({
           type="datetime-local"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+          className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent"
         />
         {value && (
           <button

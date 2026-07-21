@@ -63,7 +63,7 @@ export function MediaTray({
                 type="button"
                 onClick={() => onPreviewCountChange(Math.max(0, effectivePreviewCount - 1))}
                 disabled={effectivePreviewCount === 0}
-                className="w-4 h-4 grid place-items-center rounded border border-border hover:bg-bg-elev-1 disabled:opacity-30"
+                className="w-10 h-10 md:w-4 md:h-4 text-base md:text-[10px] grid place-items-center rounded border border-border hover:bg-bg-elev-1 disabled:opacity-30"
                 aria-label="Fewer free previews"
               >−</button>
               <span className="tabular-nums text-fg">
@@ -73,7 +73,7 @@ export function MediaTray({
                 type="button"
                 onClick={() => onPreviewCountChange(Math.min(attached.length, effectivePreviewCount + 1))}
                 disabled={effectivePreviewCount >= attached.length}
-                className="w-4 h-4 grid place-items-center rounded border border-border hover:bg-bg-elev-1 disabled:opacity-30"
+                className="w-10 h-10 md:w-4 md:h-4 text-base md:text-[10px] grid place-items-center rounded border border-border hover:bg-bg-elev-1 disabled:opacity-30"
                 aria-label="More free previews"
               >+</button>
             </div>
@@ -147,7 +147,7 @@ export function MediaTray({
                   <button
                     type="button"
                     onClick={() => remove(m.id)}
-                    className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 text-white grid place-items-center text-[10px] opacity-90"
+                    className="absolute top-0.5 right-0.5 w-7 h-7 md:w-4 md:h-4 rounded-full bg-black/70 text-white grid place-items-center text-[10px] opacity-90"
                     aria-label="Remove"
                   >×</button>
                 </div>

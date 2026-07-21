@@ -33,7 +33,7 @@ import {
 } from "@/hooks/useTipRewardConfig";
 
 const INPUT =
-  "bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent";
+  "bg-bg border border-border rounded-lg px-3 py-2 text-base md:text-sm focus:outline-none focus:border-accent";
 
 /** A tier as the form holds it. Folders are the vault folder NAMES this tier
  *  draws from — picked visually, the same string[] shape tip_reward stores. */
@@ -784,7 +784,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       </Section>
 
       {/* Save + feedback */}
-      <div className="flex items-center gap-3 pt-1">
+      <div className="flex items-center gap-3 flex-wrap sticky bottom-0 z-20 -mx-5 px-5 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] bg-panel/95 backdrop-blur border-t border-border rounded-b-2xl md:static md:z-auto md:mx-0 md:px-0 md:py-0 md:pt-1 md:pb-0 md:bg-transparent md:backdrop-blur-none md:border-t-0 md:rounded-b-none md:flex-nowrap">
         <Button onClick={() => saveM.mutate(buildConfig())} disabled={saveM.isPending}>
           {saveM.isPending ? "Saving…" : "Save"}
         </Button>

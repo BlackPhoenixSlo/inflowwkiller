@@ -271,7 +271,7 @@ export default function MassNudgeTab() {
           <Hint>Targets fans <b>online now</b> (OnlyFans’ native online filter). A slot with several images sends <b>one</b> (rotated), not all.</Hint>
         </div>
 
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
           <NumField label="Send every (min)" value={form.everyMinutes} onChange={(v) => set("everyMinutes", v)} min={5} />
           <NumField label="Re-nudge cooldown (hrs)" value={form.excludeRepliedHours === "" ? 0 : form.excludeRepliedHours}
             onChange={(v) => set("excludeRepliedHours", v > 0 ? v : "")} min={0} />
@@ -528,7 +528,7 @@ function SlotEditor({
       {texts.length === 0 && <div className="text-[11px] text-muted">No lines yet.</div>}
       {texts.map((t, i) => (
         <div key={i} className="flex items-center gap-1.5">
-          <Input className="flex-1 text-sm" value={t} onChange={(e) => setLine(i, e.target.value)} placeholder="message line, e.g. who's online tonight? 👀" />
+          <Input className="flex-1 text-base md:text-sm" value={t} onChange={(e) => setLine(i, e.target.value)} placeholder="message line, e.g. who's online tonight? 👀" />
           <button type="button" className="text-fg-dim hover:text-err" title="Remove" onClick={() => removeLine(i)}><X className="size-4" /></button>
         </div>
       ))}

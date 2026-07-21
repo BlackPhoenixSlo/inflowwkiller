@@ -541,7 +541,7 @@ function ToastCard({ t }: { t: Toast }) {
   const body = (
     <div
       className={
-        "pointer-events-auto w-[320px] bg-panel rounded-lg overflow-hidden flex items-start gap-2.5 p-2.5 " +
+        "pointer-events-auto w-auto sm:w-[320px] bg-panel rounded-lg overflow-hidden flex items-start gap-2.5 p-2.5 " +
         ring
       }
     >
@@ -574,7 +574,7 @@ function ToastCard({ t }: { t: Toast }) {
       <button
         type="button"
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); dismissToast(t.accountId, t.id); }}
-        className="text-fg-dim hover:text-fg text-[11px] w-5 h-5 grid place-items-center rounded hover:bg-bg-elev-1"
+        className="text-fg-dim hover:text-fg text-[11px] w-10 h-10 sm:w-5 sm:h-5 grid place-items-center rounded hover:bg-bg-elev-1"
         aria-label="Dismiss"
       >
         ✕
@@ -630,7 +630,7 @@ function ToastStack() {
   const toasts = useToastStack();
   if (toasts.length === 0) return null;
   return (
-    <div className="fixed top-14 right-3 z-[60] flex flex-col gap-2 pointer-events-none">
+    <div className="fixed top-14 left-2 right-2 sm:left-auto sm:right-3 z-[60] flex flex-col gap-2 pointer-events-none [&>*:nth-child(n+3)]:hidden sm:[&>*:nth-child(n+3)]:block">
       {toasts.slice().reverse().map((t) => (
         <ToastCard key={`${t.accountId}:${t.id}`} t={t} />
       ))}

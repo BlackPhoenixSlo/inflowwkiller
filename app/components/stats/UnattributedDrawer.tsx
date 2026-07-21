@@ -54,9 +54,10 @@ export default function UnattributedDrawer() {
               No unattributed outbound messages — everything is signed off.
             </div>
           ) : (
+            <div className="overflow-x-auto">
             <table
               className={cn(
-                "w-full text-sm transition-opacity",
+                "w-full min-w-[520px] text-sm transition-opacity",
                 q.isFetching && q.isPlaceholderData && "opacity-60",
               )}
             >
@@ -92,6 +93,7 @@ export default function UnattributedDrawer() {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       )}
