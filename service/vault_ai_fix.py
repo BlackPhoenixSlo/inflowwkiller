@@ -50,7 +50,19 @@ FIXABLE: tuple[str, ...] = (
     *vault_ai_brief.VIS_REGIONS,
     *vault_ai_brief.OVER_KEYS.values(),
     "underwear_visible",
+    # `penetration` and `acts` are what the offscreen-penetration dispute is
+    # ABOUT, and both were missing here: `propose()` offered "penetration →
+    # none", `apply_fix` silently dropped it as unknown, and the operator got
+    # `no_fixable_fields` from the only button that side of the dispute has.
+    # `acts` comes with it — the contradiction fires on EITHER the field or a
+    # penetrating act, so settling one and not the other leaves the item
+    # disputed forever and the button looks like it did nothing.
+    "penetration", "acts",
 )
+
+# The V2 describe enum (service/vault_ai_api.py `_V2_SCHEMA`). Bounded here so a
+# hand-edited payload cannot write a value the readers do not understand.
+_PENETRATION_STATES = frozenset({"none", "fingers", "toy", "penis", "unclear"})
 
 # `clothing_state` values, low → high reveal. Used to PROPOSE a value when the
 # operator says the flags were right; never applied without them choosing it.
@@ -107,8 +119,18 @@ def propose(fields: dict[str, Any], codes: list[str]) -> dict[str, dict[str, Any
         trust_describe["underwear_visible"] = False
 
     if "lingerie_but_nothing_on" in codes:
-        trust_flags["clothing_state"] = "fully_nude" if not (
-            bare_b or bare_v) else _CLOTHING_FOR[(bare_b, bare_v)]
+        # Flags right → no UNDERWEAR is visible, so `lingerie_on` is wrong. Which
+        # way that falls is decided by what the flags actually saw, and this rule
+        # used to be inverted: nothing on show proposed `fully_nude`, so a woman
+        # photographed in a black top was offered "she is nude" as the
+        # correction. `underwear_visible` is False for a tank top and jeans too —
+        # not-in-lingerie is far more often DRESSED than naked.
+        if not (bare_b or bare_v):
+            trust_flags["clothing_state"] = "dressed"
+        elif vault_ai_brief.wearing_something(fields):
+            trust_flags["clothing_state"] = _CLOTHING_FOR[(bare_b, bare_v)]
+        else:
+            trust_flags["clothing_state"] = "fully_nude"
         trust_describe["underwear_visible"] = True
 
     if "dressed_but_bare" in codes or "sfw_but_bare" in codes:
@@ -122,9 +144,16 @@ def propose(fields: dict[str, Any], codes: list[str]) -> dict[str, dict[str, Any
                 trust_describe[region] = "covered"
 
     if "penetration_offscreen" in codes:
-        # Flags right → nothing genital is in shot, so the recorded
-        # penetration cannot be visible in this frame.
+        # Flags right → nothing genital is in shot, so the recorded penetration
+        # cannot be visible in this frame. Clear the ACTS that assert it in the
+        # same write: the contradiction fires on either source, so dropping the
+        # field alone left the item disputed after the operator had settled it.
         trust_flags["penetration"] = "none"
+        acts = [a for a in (fields.get("acts") or [])
+                if isinstance(a, str)
+                and a.strip().lower() not in vault_ai_brief.PENETRATING_ACTS]
+        if len(acts) != len(fields.get("acts") or []):
+            trust_flags["acts"] = acts
         trust_describe["vulva_vis"] = "bare"
 
     return {"flags": trust_flags, "describe": trust_describe}
@@ -196,6 +225,18 @@ async def apply_fix(account_id: str, media_id: int,
            if k in vault_ai_brief.VIS_REGIONS and v not in vault_ai_brief.VIS_STATES]
     if bad:
         return {"ok": False, "error": "bad_region_state", "fields": bad}
+
+    if "penetration" in edits and _s(edits["penetration"]) not in _PENETRATION_STATES:
+        return {"ok": False, "error": "bad_penetration_state",
+                "value": edits["penetration"]}
+    if "acts" in edits:
+        acts = edits["acts"]
+        if not isinstance(acts, list) or not all(isinstance(a, str) for a in acts):
+            return {"ok": False, "error": "bad_acts", "value": acts}
+        # Normalised on the way in — the readers all lowercase, and an override
+        # is meant to be the last word on this item rather than something the
+        # next comparison has to re-clean.
+        edits["acts"] = [a.strip().lower() for a in acts if a.strip()]
 
     async with get_session() as s:
         item = await s.get(VaultItem, (account_id, media_id))
