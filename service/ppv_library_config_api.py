@@ -326,6 +326,49 @@ def _matrix_view() -> dict:
     }
 
 
+@router.get("/admin/ppv-library-config/suggest")
+async def suggest_ppvs_from_vault(
+    account_id: str = Query(...),
+    min_set: int = Query(0),
+) -> dict[str, Any]:
+    """Propose a WEEK of PPV bundles from the vault. Read-only.
+
+    Free — no LLM and no OF traffic; the bundles are cut from the stored V2
+    describe fields. Nothing is saved: the client appends the rows it wants to
+    its own list and the operator still presses Save.
+
+    Every row comes back `enabled: false` / `feed_enabled: false`, so accepting
+    a suggestion can never start a send. Each is run through the real
+    `_validate_ppv` before it leaves here, so a suggestion the UI accepts can
+    never be rejected at save time.
+    """
+    import vault_ppv_sets
+
+    assert_account_owned(account_id)
+    kw = {"min_set": min_set} if min_set > 0 else {}
+    plan = await vault_ppv_sets.propose_week(account_id, **kw)
+    rows = vault_ppv_sets.to_config_ppvs(plan)
+    validated = [_validate_ppv(p) for p in rows]
+
+    # The vault-side reasoning the operator needs to judge a row, keyed by id —
+    # kept OUT of the PPV objects so they stay exactly config-shaped.
+    notes = {f"ppv_vault_{st['key']}": {
+        "why": st["why"], "note": st["note"], "thin": st["thin"],
+        "preview_unsafe": bool(st.get("preview_unsafe")),
+        "photos": st["photos"], "videos": st["videos"],
+        "closers": st["closers"], "reused": len(st.get("reused") or []),
+        "tiers": st["tiers"],
+    } for st in plan["sets"]}
+
+    return {
+        "account_id": account_id,
+        "ppvs": validated,
+        "notes": notes,
+        "summary": plan["summary"],
+        "lanes": plan.get("lanes") or {},
+    }
+
+
 @router.get("/admin/ppv-library-config")
 async def get_ppv_library_config(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)

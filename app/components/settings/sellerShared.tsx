@@ -112,13 +112,15 @@ export function defaultPreviews(kind: string, ids: number[], current: number[]):
 
 /* ── media thumbnail ───────────────────────────────────────────────── */
 
-export function MediaThumb({ id, accountId, size = 36, dim, selected, onClick }: {
+export function MediaThumb({ id, accountId, size = 36, dim, selected, onClick, onRemove }: {
   id: number;
   accountId: string | null;
   size?: number;
   dim?: boolean;
   selected?: boolean;
   onClick?: (m: VaultMedia | undefined) => void;
+  /** Drop this media from the row. Renders an × in the top-left corner. */
+  onRemove?: () => void;
 }) {
   const cache = useMediaCache();
   const media = cache.get(id);
@@ -126,17 +128,14 @@ export function MediaThumb({ id, accountId, size = 36, dim, selected, onClick }:
   const isVideo = media?.type === "video";
   const style = { width: size, height: size };
   const ring = selected ? "ring-2 ring-accent border-accent" : "border-border";
-  if (!url) {
-    return (
-      <button type="button" style={style} title={`vault ${id}`}
-        onClick={() => onClick?.(media)}
-        className={cn("grid place-items-center rounded border bg-bg-elev-1 text-[8px] text-fg-dim overflow-hidden",
-          ring, dim && "opacity-40")}>
-        {String(id).slice(-4)}
-      </button>
-    );
-  }
-  return (
+  const inner = !url ? (
+    <button type="button" style={style} title={`vault ${id}`}
+      onClick={() => onClick?.(media)}
+      className={cn("grid place-items-center rounded border bg-bg-elev-1 text-[8px] text-fg-dim overflow-hidden",
+        ring, dim && "opacity-40")}>
+      {String(id).slice(-4)}
+    </button>
+  ) : (
     <button type="button" style={style} title={`vault ${id}${isVideo ? " · video" : ""}`}
       onClick={() => onClick?.(media)}
       className={cn("relative rounded overflow-hidden border hover:border-accent",
@@ -146,6 +145,22 @@ export function MediaThumb({ id, accountId, size = 36, dim, selected, onClick }:
         <span className="absolute inset-0 grid place-items-center bg-black/25 text-white text-[10px]">▶</span>
       )}
     </button>
+  );
+  if (!onRemove) return inner;
+  // A sibling, never a child: a <button> inside a <button> is invalid HTML and
+  // React will not deliver the inner click reliably. The wrapper is
+  // `inline-flex` so it keeps the bare thumb's layout inside the flex strips.
+  return (
+    <span className="relative inline-flex">
+      {inner}
+      {/* Same affordance as the mass-send tabs, mirrored to the LEFT so it
+          never lands on the preview toggle that sits beside these strips. */}
+      <button type="button" title="Remove from this item"
+        onClick={(e) => { e.stopPropagation(); onRemove(); }}
+        className="absolute -top-1 -left-1 z-10 bg-panel border border-border rounded-full size-4 grid place-items-center text-[10px] leading-none hover:text-err">
+        ×
+      </button>
+    </span>
   );
 }
 
@@ -199,7 +214,8 @@ function ItemRow({ it, accountId, onChange, onRemove, onPickMedia, onPreview }: 
             <div className="flex flex-wrap gap-1">
               {it.media_ids.map((id) => (
                 <MediaThumb key={id} id={id} accountId={accountId}
-                  onClick={(m) => m && onPreview(m)} />
+                  onClick={(m) => m && onPreview(m)}
+                  onRemove={() => setMedia(it.media_ids.filter((m) => m !== id))} />
               ))}
             </div>
           )}

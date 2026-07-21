@@ -301,6 +301,87 @@ export function usePasteImport(accountId: string | null) {
   });
 }
 
+/** One row's proposed content. `media_ids` empty + `empty_reason` set means the
+ *  vault has nothing that honestly fits that row's caption — which is the
+ *  answer, not a failure: an item with no media is never offered. */
+export interface SingleSuggestionT {
+  /** Null for a draft row that has not been saved yet. */
+  id: number | null;
+  /** "db:<id>" or "draft:<index>" — how the caller matches a proposal back to
+   *  the editor row it came from, since a draft has no id. */
+  key?: string;
+  label: string | null;
+  kind: string;
+  description_for_ai: string | null;
+  price_cents: number;
+  matched: string[];      // which keywords in the row's own text fired
+  /** How many vault items match this text AT ALL (before exclusivity). */
+  candidates: number;
+  /** How many of those were still unsold when this row was considered. */
+  available?: number;
+  /** Matches the words but not the price — the one empty-row cause an operator
+   *  fixes with a number instead of a camera. */
+  wrong_price?: number;
+  /** The price that WOULD fill this row, when the band is what emptied it. */
+  suggested_price_cents?: number;
+  /** The fewest media this caption can honestly ship. */
+  needs?: number;
+  media_ids: number[];
+  /** What the row SELLS, before teaser or filler stills are attached. */
+  locked_media_ids?: number[];
+  /** Stills added to reach one-per-$20 (and 10 on any photo row). May be dups
+   *  of what other rows sell — padding is not what the caption promises. */
+  padding_media_ids?: number[];
+  /** Duplicated to reach the row's minimum, because too few unsold matches
+   *  were left. Everything above the minimum stays exclusive unless the
+   *  operator ticks ♻️ allow reuse. */
+  dup_media_ids?: number[];
+  /** Volume shortfall the price implies — runtime or still count. A WARNING:
+   *  a small bundle is a weak offer, not a false one, so it still ships. */
+  shape_note?: string;
+  runtime_seconds?: number;
+  runtime_wanted?: number;
+  images_wanted?: number;
+  /** Goes out UNLOCKED. Always a subset of media_ids — OF unlocks a slice of
+   *  the attachment, so a borrowed teaser is attached to the item too. */
+  preview_media_ids: number[];
+  /** The teaser is a still another row also sells (nothing unsold was safe to
+   *  give away). */
+  preview_shared?: boolean;
+  empty_reason: string;
+}
+
+/** Propose vault media for singles that have TEXT but no CONTENT. Read-only —
+ *  the caller patches rows locally and the operator still presses Save. */
+export function useSuggestSingles(accountId: string | null) {
+  return useMutation<
+    { proposals: SingleSuggestionT[]; summary: Record<string, number> },
+    Error,
+    { onlyEmpty?: boolean; drafts?: DraftRowT[]; allowReuse?: boolean } | void
+  >({
+    // POST, not GET: rows added by "Suggest text sets" are not saved yet, so
+    // the server cannot see them unless they ride along in the body.
+    mutationFn: (vars) =>
+      relay.post(`/admin/catalog/singles/suggest`, {
+        account_id: accountId,
+        only_empty: (vars && vars.onlyEmpty) !== false,
+        drafts: (vars && vars.drafts) ?? [],
+        allow_reuse: (vars && vars.allowReuse) === true,
+      }),
+  });
+}
+
+/** An unsaved editor row, as the fill endpoint needs to see it. */
+export interface DraftRowT {
+  label: string;
+  description_for_ai: string;
+  kind: string;
+  /** Not cosmetic: the price band is the only thing standing between a $200
+   *  caption and a lingerie tease, and a draft posted without one arrives at 0
+   *  — ungated on exactly the rows the suggest button just invented. */
+  price_cents: number;
+}
+
 export function useSimulate(accountId: string | null) {
   return useMutation<SimulateResponse, Error, string>({
     mutationFn: (fanSays) =>
@@ -328,5 +409,69 @@ export function useCancelOffer(accountId: string | null) {
         { account_id: accountId }),
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: [KEY, "sessions", accountId] }),
+  });
+}
+
+/** One proposed CAPTION row — text, price and kind, no media. `fillable` is how
+ *  many unbound vault items the allocator matched to it, so a proposal is only
+ *  offered when this vault can honestly fill it. */
+export interface TextSuggestionT {
+  label: string;
+  description_for_ai: string;
+  /** Same union as CatalogItemT — the rows drop straight into the singles
+   *  editor, and the server only ever emits these three. */
+  kind: CatalogItemT["kind"];
+  price_cents: number;
+  floor_cents: number;
+  fillable: number;
+  needs: number;
+  previews?: number;
+  why?: string;
+  /** Set on AI-written lines: which media group the line was written from. */
+  source?: string;
+  media_ids?: number[];
+}
+
+/** Propose caption rows to ADD. The other half of `useSuggestSingles`: that one
+ *  fills content into a row that already has text, this one produces the text.
+ *  Read-only — the caller appends rows locally and the operator still presses
+ *  Save singles. `blocked` is set when the vault has no V2 describe fields, in
+ *  which case the answer is "run Describe", not a content gap. */
+export function useSuggestTexts(accountId: string | null) {
+  return useMutation<
+    {
+      proposals: TextSuggestionT[];
+      shoot: TextSuggestionT[];
+      blocked: string;
+      summary: Record<string, number>;
+    },
+    Error,
+    void
+  >({
+    mutationFn: () =>
+      relay.get(`/admin/catalog/singles/suggest-texts?account_id=${aid(accountId)}`),
+  });
+}
+
+/** Write NEW caption lines from the vault's own vision facts — the sibling of
+ *  `useSuggestTexts`, which only ever offers the same 14 shipped captions.
+ *  Costs one cheap LLM call per media group, so it is a POST and the operator
+ *  presses it deliberately. Same row shape, so the same pick-list handles both. */
+export function useGenerateLines(accountId: string | null) {
+  return useMutation<
+    {
+      proposals: TextSuggestionT[];
+      shoot: TextSuggestionT[];
+      blocked: string;
+      summary: Record<string, number>;
+      errors: string[];
+    },
+    Error,
+    { limit?: number } | void
+  >({
+    mutationFn: (vars) =>
+      relay.post(`/admin/catalog/singles/generate-lines`, {
+        account_id: accountId, limit: (vars && vars.limit) ?? 8,
+      }),
   });
 }

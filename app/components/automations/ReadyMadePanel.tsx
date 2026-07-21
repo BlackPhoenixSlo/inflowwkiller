@@ -46,10 +46,11 @@ import WebhookDispatchTab from "@/components/settings/WebhookDispatchTab";
 import AutoreplyTab from "@/components/settings/AutoreplyTab";
 import TipRewardTab from "@/components/settings/TipRewardTab";
 import PPVLibraryTab from "@/components/settings/PPVLibraryTab";
+import VaultAiTab from "@/components/settings/VaultAiTab";
 import ScriptsTab from "@/components/settings/ScriptsTab";
 import UpsellerTab from "@/components/settings/UpsellerTab";
 
-type Tab = "auto_posts" | "mass_premade" | "mass_funnels" | "nudge_online" | "mass_nudge" | "online_blast" | "instant_reply" | "autoreply" | "ai_seller" | "ai_upseller" | "tip_reward" | "ppv_library" | "unsend" | "onboard";
+type Tab = "auto_posts" | "mass_premade" | "mass_funnels" | "nudge_online" | "mass_nudge" | "online_blast" | "instant_reply" | "autoreply" | "ai_seller" | "ai_upseller" | "tip_reward" | "ppv_library" | "vault_ai" | "unsend" | "onboard";
 /** The two tabs that map to an automation_rules kind (the others have their
  *  own self-contained surfaces). */
 type RuleKind = "auto_posts" | "mass_premade";
@@ -67,6 +68,7 @@ const TABS: Array<{ key: Tab; label: string }> = [
   { key: "ai_upseller", label: "💰 AI Upseller" },
   { key: "tip_reward", label: "🎁 Tip Reward" },
   { key: "ppv_library", label: "💸 PPV Library" },
+  { key: "vault_ai", label: "🧠 Vault AI" },
   { key: "onboard", label: "🆕 Onboard old fans" },
 ];
 
@@ -281,6 +283,7 @@ export default function ReadyMadePanel() {
       {tab === "ai_upseller" && <UpsellerTab accountId={accountId} />}
       {tab === "tip_reward" && <TipRewardTab accountId={accountId} />}
       {tab === "ppv_library" && <PPVLibraryTab accountId={accountId} />}
+      {tab === "vault_ai" && <VaultAiTab accountId={accountId} />}
       {tab === "unsend" && <UnsendCard accountId={accountId} />}
       {tab === "onboard" && <OnboardCard accountId={accountId} />}
 

@@ -20,7 +20,9 @@ import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { MediaCacheProvider } from "@/hooks/useMediaCache";
 import {
   useAiChatterConfig, useAiChatterSessions, useCancelOffer, useCatalogScripts,
-  useSaveSingles, useSimulate, useUpsertScript, type CatalogItemT,
+  useGenerateLines, useSaveSingles, useSimulate, useSuggestSingles, useSuggestTexts,
+  useUpsertScript,
+  type CatalogItemT, type TextSuggestionT,
 } from "@/hooks/useCatalog";
 import {
   INPUT, ItemsTable, NEW_ITEM, RhythmSection, ScriptCard, dollars,
@@ -38,12 +40,151 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
   const scriptsQ = useCatalogScripts(accountId);
   const upsertM = useUpsertScript(accountId);
   const saveSinglesM = useSaveSingles(accountId);
+  const suggestM = useSuggestSingles(accountId);
   const simulateM = useSimulate(accountId);
   const sessionsQ = useAiChatterSessions(accountId);
   const cancelM = useCancelOffer(accountId);
 
   const [singles, setSingles] = useState<CatalogItemT[]>([]);
   useEffect(() => { setSingles(scriptsQ.data?.singles ?? []); }, [scriptsQ.data?.singles]);
+  // What the last fill could NOT place, so an empty row explains itself instead
+  // of just staying blank.
+  const [fillNote, setFillNote] = useState<string>("");
+
+  // Fill content into singles that have TEXT but no CONTENT. Only ever patches
+  // EMPTY rows — hand-picked media is never second-guessed — and nothing is
+  // saved until the operator presses "Save singles".
+  // Let a row take media another row already sells. Off is the safer default
+  // (a fan climbing the ladder shouldn't be re-sold what he owns), but once the
+  // catalog outgrows the vault exclusivity starves rows outright — 18 rows over
+  // 101 items left a caption matching 69 photos with none free.
+  const [allowReuse, setAllowReuse] = useState(false);
+
+  const fillContent = () => {
+    setFillNote("");
+    // Rows with no id are not in the DB yet (they came from "Suggest text
+    // sets"), so they have to ride along in the request or the fill silently
+    // skips exactly the rows it was meant to serve.
+    const drafts = singles.filter((it) => it.id == null);
+    const draftKeyOf = new Map(drafts.map((it, i) => [it, `draft:${i}`]));
+    suggestM.mutate({ allowReuse, drafts: drafts.map((it) => ({
+      label: it.label ?? "", description_for_ai: it.description_for_ai ?? "",
+      kind: it.kind, price_cents: it.price_cents,
+    })) }, {
+      onSuccess: (res) => {
+        const byKey = new Map(res.proposals.map((p) => [p.key ?? `db:${p.id}`, p]));
+        setSingles((prev) => prev.map((it) => {
+          const key = it.id != null ? `db:${it.id}` : draftKeyOf.get(it);
+          const p = key ? byKey.get(key) : undefined;
+          if (!p || !p.media_ids.length || it.media_ids.length) return it;
+          // The preview rides along with the media: OF unlocks a slice of the
+          // attachment rather than a separate file, so dropping it here is what
+          // left all 21 saved rows as locked PPVs with no free frame.
+          return { ...it, media_ids: p.media_ids,
+            preview_media_ids: p.preview_media_ids ?? [] };
+        }));
+        const filled = res.proposals.filter((p) => p.media_ids.length).length;
+        const stuck = res.proposals.filter((p) => !p.media_ids.length);
+        // Each stuck row carries its OWN reason, and the two reasons call for
+        // opposite actions: "nothing matches" means shoot it, "already sold by
+        // another row" means rebalance. Collapsing both into "no honest match"
+        // sent the operator off to film content they already own.
+        const withPrev = res.proposals.filter((p) => p.preview_media_ids?.length).length;
+        const padded = res.proposals.reduce((n, p) => n + (p.padding_media_ids?.length ?? 0), 0);
+        const duped = res.proposals.filter((p) => p.dup_media_ids?.length).length;
+        // A shape shortfall never blocks the fill — the row ships and says so.
+        // Runtime is the one bar a vault of short clips can't reach, and the
+        // fix is a longer shoot or a lower price, neither of which is ours.
+        const thin = res.proposals.filter((p) => p.shape_note);
+        setFillNote(
+          `Filled ${filled} of ${res.proposals.length}` +
+          (withPrev ? `, ${withPrev} with a free preview frame` : "") +
+          (padded ? `, ${padded} filler still(s) added` : "") +
+          (duped ? `, ${duped} row(s) duplicated to reach their minimum` : "") + ". " +
+          (stuck.length
+            ? "Left empty on purpose (an item with no content is never offered) — " +
+              stuck.map((p) => `${p.label || "(unnamed)"}: ${p.empty_reason}`).join("; ")
+            : "Review the thumbnails, then Save singles.") +
+          (thin.length
+            ? ` ⚠ Under-sized for the price: ${thin.map(
+              (p) => `${p.label || "(unnamed)"} — ${p.shape_note}`).join("; ")}`
+            : ""),
+        );
+      },
+    });
+  };
+  // Propose CAPTION rows to add — text/price/kind, no media. The other half of
+  // "Fill content": that fills media into a row that already has text, and
+  // until now nothing produced the text, so an empty catalog stayed empty.
+  //
+  // Suggestions are a PICK LIST, never auto-added: what she sells is the
+  // operator's call, and a button that silently appends 13 rows is one the
+  // operator has to undo. Chosen rows land with ZERO content, which "Fill
+  // content" then binds.
+  const suggestTextsM = useSuggestTexts(accountId);
+  const [suggested, setSuggested] = useState<TextSuggestionT[]>([]);
+  const [shootList, setShootList] = useState<TextSuggestionT[]>([]);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+
+  const suggestTexts = () => {
+    setFillNote("");
+    suggestTextsM.mutate(undefined, {
+      onSuccess: (res) => {
+        setShootList(res.shoot);
+        if (res.blocked) { setSuggested([]); setFillNote(res.blocked); return; }
+        setSuggested(res.proposals);
+        setPicked(new Set(res.proposals.map((p) => p.label)));   // all on by default
+        if (!res.proposals.length) {
+          setFillNote(
+            res.summary.already_present
+              ? `Nothing new to suggest — all ${res.summary.already_present} default ` +
+                "captions are already in your catalog."
+              : "Nothing to suggest from this vault.",
+          );
+        }
+      },
+    });
+  };
+
+  // Write NEW lines from the vault's own vision facts. Feeds the SAME pick
+  // list: the 14 shipped captions are identical for every account, these are
+  // about the media THIS creator has and nothing is selling yet.
+  const genLinesM = useGenerateLines(accountId);
+  const generateLines = () => {
+    setFillNote("");
+    genLinesM.mutate(undefined, {
+      onSuccess: (res) => {
+        setShootList([]);
+        if (res.blocked) { setSuggested([]); setFillNote(res.blocked); return; }
+        setSuggested(res.proposals);
+        setPicked(new Set(res.proposals.map((p) => p.label)));
+        setFillNote(
+          `Wrote ${res.summary.generated} line(s) from ${res.summary.groups} media ` +
+          `group(s)${res.errors?.length ? ` — ${res.errors.length} failed` : ""}. ` +
+          "Tick the ones you want, then Add selected.",
+        );
+      },
+    });
+  };
+
+  const addPicked = () => {
+    const rows = suggested.filter((p) => picked.has(p.label));
+    setSingles((prev) => [
+      ...prev,
+      ...rows.map((p) => ({
+        ...NEW_ITEM, kind: p.kind, label: p.label,
+        description_for_ai: p.description_for_ai,
+        price_cents: p.price_cents, tip_unlock_cents: p.price_cents,
+      })),
+    ]);
+    setSuggested([]);
+    setPicked(new Set());
+    setFillNote(
+      `Added ${rows.length} caption row(s) with no content. ` +
+      'Press "✨ Fill content" to pick vault media for them, then Save singles.',
+    );
+  };
+
   const [fanSays, setFanSays] = useState("ngl im kinda in the mood.. u got anything for me? 🥵");
 
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
@@ -346,12 +487,114 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
             onClick={() => setSingles([...singles, { ...NEW_ITEM }])}>
             <Plus size={14} className="mr-1" /> Add single
           </Button>
+          <Button size="sm" variant="secondary" disabled={suggestTextsM.isPending}
+            title="Propose caption rows this vault can actually fill — text and price only, no media. Nothing is saved until you press Save singles."
+            onClick={suggestTexts}>
+            📝 {suggestTextsM.isPending ? "Thinking…" : "Suggest text sets"}
+          </Button>
+          <Button size="sm" variant="secondary" disabled={genLinesM.isPending}
+            title="Write NEW caption lines from what the vision layer found in your vault — about the media you actually have and nothing is selling yet. Costs a small LLM call per media group."
+            onClick={generateLines}>
+            🪄 {genLinesM.isPending ? "Writing…" : "Write lines from vault"}
+          </Button>
+          <Button size="sm" variant="secondary" disabled={suggestM.isPending}
+            title="Pick vault content for any single that has a caption but no media. Nothing is saved until you press Save singles."
+            onClick={fillContent}>
+            ✨ {suggestM.isPending ? "Finding…" : "Fill content"}
+          </Button>
+          <label className="flex items-center gap-1.5 text-xs text-fg-dim cursor-pointer"
+            title="Off: no media is ever bound to two rows (a fan climbing the ladder never re-buys what he owns). On: rows may share media — use it when the catalog has outgrown the vault and rows are filling empty.">
+            <input type="checkbox" checked={allowReuse}
+              onChange={(e) => setAllowReuse(e.target.checked)} />
+            ♻️ allow reuse
+          </label>
           <Button size="sm" disabled={saveSinglesM.isPending}
             onClick={() => saveSinglesM.mutate(singles)}>
             <Save size={14} className="mr-1" /> Save singles ({singles.length})
           </Button>
           {saveSinglesM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
         </div>
+        {suggestM.isError && (
+          <div className="text-[11px] text-warn">Couldn&apos;t fill: {suggestM.error.message}</div>
+        )}
+        {genLinesM.isError && (
+          <div className="text-[11px] text-warn">
+            Couldn&apos;t write lines: {genLinesM.error.message}
+          </div>
+        )}
+        {suggestTextsM.isError && (
+          <div className="text-[11px] text-warn">
+            Couldn&apos;t suggest: {suggestTextsM.error.message}
+          </div>
+        )}
+        {fillNote && <div className="text-[11px] text-fg-dim">{fillNote}</div>}
+
+        {/* ── suggested catalog items — the operator picks, nothing is auto-added ── */}
+        {!!suggested.length && (
+          <div className="rounded-md border border-border bg-bg-elev-1 p-3 space-y-2">
+            <div className="flex items-baseline gap-2">
+              <h4 className="text-sm font-medium">Suggested catalog items</h4>
+              <span className="text-xs text-fg-dim">
+                only captions this vault can actually fill. Ticked ones are added with
+                <b> no content</b> — then press ✨ Fill content.
+              </span>
+              <div className="flex-1" />
+              <button className="text-xs text-fg-dim hover:text-fg"
+                onClick={() => setPicked(new Set(suggested.map((p) => p.label)))}>
+                all
+              </button>
+              <button className="text-xs text-fg-dim hover:text-fg"
+                onClick={() => setPicked(new Set())}>none</button>
+            </div>
+
+            <div className="space-y-1">
+              {suggested.map((p) => (
+                <label key={p.label}
+                  className="flex items-start gap-2 text-sm cursor-pointer rounded px-1.5 py-1 hover:bg-bg-elev-2">
+                  <input type="checkbox" className="mt-1" checked={picked.has(p.label)}
+                    onChange={(e) => setPicked((prev) => {
+                      const next = new Set(prev);
+                      if (e.target.checked) next.add(p.label); else next.delete(p.label);
+                      return next;
+                    })} />
+                  <span className="min-w-0 flex-1">
+                    <span className="font-medium">{p.label}</span>
+                    <span className="text-fg-dim"> · {p.kind}</span>
+                    <span className="text-green-400"> {dollars(p.price_cents)}</span>
+                    {p.floor_cents > 0 && (
+                      <span className="text-fg-dim text-xs"> (floor {dollars(p.floor_cents)})</span>
+                    )}
+                    <span className="block text-xs text-fg-dim italic truncate">
+                      “{p.description_for_ai}”
+                    </span>
+                  </span>
+                  {p.source && <Badge>{p.source}</Badge>}
+                  <Badge>{p.fillable} to fill</Badge>
+                </label>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <Button size="sm" disabled={!picked.size} onClick={addPicked}>
+                <Plus size={14} className="mr-1" /> Add selected ({picked.size})
+              </Button>
+              <Button size="sm" variant="ghost"
+                onClick={() => { setSuggested([]); setPicked(new Set()); }}>
+                Dismiss
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Captions worth having that this vault has nothing behind — a shot
+            list, deliberately NOT offered as rows that would sit empty. */}
+        {!!shootList.length && (
+          <div className="text-[11px] text-fg-dim">
+            Nothing in the vault fits{" "}
+            <b>{shootList.map((p) => p.label).join(", ")}</b> — worth shooting; left out
+            rather than added as an empty promise.
+          </div>
+        )}
       </Card>
 
       {/* ── simulate ── */}

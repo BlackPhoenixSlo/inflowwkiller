@@ -68,6 +68,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 
+import vault_ai_to_chatter
 from automation_registry import register
 from db.engine import get_session
 from db.models import (
@@ -771,6 +772,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     ppv, cfg = _load_ppv(cfg_row.ppv_library_config_json if cfg_row else None, ppv_id)
     if ppv is None:
         return {"status": "skipped", "reason": "ppv_not_found"}
+    # S8: a vault-AI-sourced draft (id `vai-…`) is a sendable offer ONLY once
+    # explicitly armed — the adapter is the single arm gate (library master ON +
+    # this entry `enabled`). An approved+exported-but-un-armed draft (enabled=False)
+    # is invisible here; approval alone never sends (correction #2). Non-vault-AI
+    # PPVs are untouched and fall through to the generic gate below.
+    if (vault_ai_to_chatter.is_vault_ai_offer(ppv)
+            and vault_ai_to_chatter.pickable_offer(cfg, ppv_id) is None):
+        return {"status": "skipped", "reason": "not_armed"}
     if not cfg.get("enabled") or not ppv.get("enabled", True):
         return {"status": "skipped", "reason": "disabled"}
 

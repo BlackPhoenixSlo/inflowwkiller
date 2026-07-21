@@ -80,6 +80,13 @@ _INT_KNOBS = {
     # Upsell "after a buy" knobs.
     "stop_after_unpaid_rungs": (1, 5),
     "spend_velocity_cap_7d_cents": (0, 100_000_000),
+    # Tip ladder: the opening ask, the never-go-below floor, and the ceiling on
+    # an escalated ask. Floor/cap are the guard rails the ×step walk runs between.
+    "tip_ladder_base_cents": (100, 100_000),
+    "tip_ladder_floor_cents": (100, 100_000),
+    "tip_ladder_cap_cents": (100, 1_000_000),
+    # How many asks may sit unanswered at once (runtime floors this at 2).
+    "max_open_offers": (1, 10),
 }
 
 # Float-valued knobs (ladder aggressiveness). Clamped to sane ranges: the ceiling
@@ -87,6 +94,16 @@ _INT_KNOBS = {
 _FLOAT_KNOBS = {
     "escalation_mult": (1.0, 10.0),
     "max_ask_history_mult": (1.0, 20.0),
+    # Tip ladder escalation: ×step after each tip he pays, and the cut band that
+    # decides how far the next ask backs off when he doesn't.
+    "tip_ladder_step": (1.0, 5.0),
+    "tip_ladder_cut_lo": (0.0, 1.0),
+    "tip_ladder_cut_hi": (0.0, 1.0),
+    # Proven-spend floor: never ask below his biggest single paid × this.
+    "proven_spend_floor_mult": (0.0, 2.0),
+    # Discounts. Capped well under 1.0 — a 100%-off "sale" is a giveaway, not a nudge.
+    "haggle_discount_pct": (0.0, 0.9),
+    "teaser_discount_pct": (0.0, 0.9),
 }
 _MODES = ("backup", "always")
 _OFFER_MODES = ("tip", "ppv", "both")
@@ -202,6 +219,14 @@ def _validate_cfg(cfg: dict) -> dict:
         out["gift_enabled"] = bool(cfg["gift_enabled"])
     if "filming_stall_enabled" in cfg:
         out["filming_stall_enabled"] = bool(cfg["filming_stall_enabled"])
+    # Tip ladder + proven-spend floor + the hot-lead trinity. All ship OFF; the
+    # numeric knobs for each ride in _INT_KNOBS / _FLOAT_KNOBS below.
+    if "tip_ladder_enabled" in cfg:
+        out["tip_ladder_enabled"] = bool(cfg["tip_ladder_enabled"])
+    if "proven_spend_floor_enabled" in cfg:
+        out["proven_spend_floor_enabled"] = bool(cfg["proven_spend_floor_enabled"])
+    if "hotsell_trinity_enabled" in cfg:
+        out["hotsell_trinity_enabled"] = bool(cfg["hotsell_trinity_enabled"])
     # Smart pricing without the gate is meaningless (there is no ladder to price),
     # and letting the pair drift apart would be a state the UI can't represent.
     if out.get("smart_pricing_enabled") and not out.get(
@@ -376,6 +401,135 @@ async def put_ai_chatter_config(body: _ConfigBody = Body(...)) -> dict[str, Any]
             s.expunge_all()
     return {"account_id": body.account_id, "config": clean,
             **await _rhythm_view(body.account_id, row, clean)}
+
+
+# ── vault-ai config (account_ai_config.vault_ai_config_json) ─────────────────
+# Shape frozen in plans/VAULT_AI_ACTIONS_CONTRACT.md §1. Absent/NULL → these
+# defaults, master OFF. Own the whole blob (no shallow-merge with other
+# `*_config_json`). GET returns the EFFECTIVE view (defaults + stored); PATCH
+# deep-merges a partial into the stored blob and returns the new effective view.
+
+_VAULT_AI_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "suggest_only": True,
+    "models": {
+        "describe": "qwen3-vl-30b",
+        "escalation": "qwen3-vl-235b",
+        "caption": "deepseek-chat",
+        "script": "deepseek-chat",
+        "escalate_below_confidence": 65,
+    },
+    "describe": {
+        "cadence_hours": 6,
+        "describe_all_cap_percent": 80,
+        "max_items_per_run": 40,
+        "images": True,
+        "videos": True,
+    },
+    "pricing": {
+        "enabled": True,
+        "bands_by_tier": {
+            "safe":       [300, 800],
+            "suggestive": [500, 1500],
+            "explicit":   [1000, 3000],
+            "graphic":    [2000, 6000],
+            "unknown":    [500, 1500],
+        },
+    },
+    "tier_labels": {
+        "safe": "Safe", "suggestive": "Suggestive", "explicit": "Explicit",
+        "graphic": "Graphic", "unknown": "Unclassified",
+    },
+    "folders": {
+        "mode": "internal",
+        "taxonomy": [],
+        "max_folders_per_item": 3,
+    },
+    "scoring": {"story": True, "tip": True},
+    "daily_reminder": {
+        "enabled": False,
+        "auto_post": False,
+        "auto_mass_message": False,
+        "folder_name": "",
+        "lines": [],
+        "images_per_day": 2,
+        "on_under_min_unseen": "use_fewer",
+        "repeat_after_days": 30,
+        "per_fan_cooldown_hours": 48,
+        "daily_at": ["10:00"],
+        "tz_offset_minutes": 0,
+    },
+}
+
+
+def _clone_defaults() -> dict:
+    return json.loads(json.dumps(_VAULT_AI_DEFAULTS))
+
+
+def _deep_merge(dst: dict, src: dict) -> dict:
+    """In-place recursive dict merge; non-dict values (incl. lists) REPLACE.
+
+    Lists replace so a taxonomy edit / band change stores exactly what the
+    operator typed (a per-index merge would trap old items in an updated list).
+    """
+    for k, v in src.items():
+        if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            _deep_merge(dst[k], v)
+        else:
+            dst[k] = v
+    return dst
+
+
+def _load_vault_ai_stored(row: AccountAiConfig | None) -> dict:
+    if row is None or not row.vault_ai_config_json:
+        return {}
+    try:
+        val = json.loads(row.vault_ai_config_json)
+    except (TypeError, ValueError):
+        return {}
+    return val if isinstance(val, dict) else {}
+
+
+def _effective_vault_ai(stored: dict) -> dict:
+    """Defaults + operator overrides = the blob the UI + consumers see."""
+    return _deep_merge(_clone_defaults(), stored or {})
+
+
+@router.get("/admin/account-ai-config/vault-ai")
+async def get_vault_ai_config(account_id: str = Query(...)) -> dict[str, Any]:
+    assert_account_owned(account_id)
+    async with get_session() as s:
+        row = await s.get(AccountAiConfig, account_id)
+    return {"account_id": account_id, "config": _effective_vault_ai(_load_vault_ai_stored(row))}
+
+
+class _VaultAiPatchBody(BaseModel):
+    account_id: str
+    config: dict
+
+
+@router.patch("/admin/account-ai-config/vault-ai")
+async def patch_vault_ai_config(body: _VaultAiPatchBody = Body(...)) -> dict[str, Any]:
+    assert_account_owned(body.account_id)
+    if not isinstance(body.config, dict):
+        raise HTTPException(422, "config must be an object")
+    now = datetime.utcnow()
+    async with get_session() as s:
+        row = await s.get(AccountAiConfig, body.account_id)
+        stored = _load_vault_ai_stored(row)
+        _deep_merge(stored, body.config)
+        payload = json.dumps(stored)
+        await s.execute(
+            sqlite_insert(AccountAiConfig)
+            .values(account_id=body.account_id, utc_offset=0,
+                    vault_ai_config_json=payload, updated_at=now)
+            .on_conflict_do_update(
+                index_elements=["account_id"],
+                set_={"vault_ai_config_json": payload, "updated_at": now})
+        )
+    log.info("vault_ai_config_patched account=%s keys=%s",
+             body.account_id, sorted(body.config.keys()))
+    return {"account_id": body.account_id, "config": _effective_vault_ai(stored)}
 
 
 # ── Catalog read (scripts + singles + per-item conversion stats) ─────────────
@@ -562,6 +716,119 @@ async def put_singles(body: _ItemsBody = Body(...)) -> dict:
     assert_account_owned(body.account_id)
     n = await _replace_items(body.account_id, None, body.items)
     return {"status": "ok", "items": n}
+
+
+@router.get("/admin/catalog/singles/suggest")
+async def suggest_singles_content(
+    account_id: str = Query(...),
+    only_empty: bool = Query(True),
+) -> dict[str, Any]:
+    """Propose vault media for singles that have TEXT but no CONTENT.
+
+    Read-only and free — no LLM, no OF traffic; the match is derived from each
+    row's own `label`/`description_for_ai` against the stored V2 describe
+    fields. Nothing is saved: the UI patches the rows it likes and the operator
+    still presses Save, so a proposal can always be thrown away.
+
+    `only_empty=false` re-proposes over rows that already carry media, for
+    comparison — it still does not write.
+    """
+    import vault_solo_fill
+
+    assert_account_owned(account_id)
+    res = await vault_solo_fill.suggest_singles(account_id, only_empty=only_empty)
+    # `items` carries whole vault rows (describe blobs); the client only needs
+    # the ids, and the thumbs come from the existing by-id vault read.
+    return {
+        **{k: v for k, v in res.items() if k != "proposals"},
+        "proposals": [{k: v for k, v in p.items()
+                       if k not in ("items", "previews")}
+                      for p in res["proposals"]],
+    }
+
+
+class _GenerateLinesBody(BaseModel):
+    account_id: str
+    limit: int = 8
+
+
+@router.post("/admin/catalog/singles/generate-lines")
+async def generate_catalog_lines(body: _GenerateLinesBody = Body(...)) -> dict[str, Any]:
+    """Write NEW caption lines from the vault's own vision facts.
+
+    The sibling of `/suggest-texts`: that one offers 14 fixed captions that are
+    identical for every account, this one writes lines about the media THIS
+    creator actually has and nothing is selling yet. Same row shape, so the same
+    pick-list / Fill content / Save path handles both.
+
+    POST because it costs money — one cheap DeepSeek call per media group,
+    through `llm_client` so it is capped and audited. Writes nothing to the
+    catalog; the operator still picks and saves.
+    """
+    import vault_catalog_copy
+
+    assert_account_owned(body.account_id)
+    return await vault_catalog_copy.generate_lines(
+        body.account_id, limit=max(1, min(int(body.limit), 12)))
+
+
+class _DraftFillBody(BaseModel):
+    account_id: str
+    only_empty: bool = True
+    # Unsaved editor rows — label / description_for_ai / kind each.
+    drafts: list[dict[str, Any]] = []
+    # Let a row take media another row already sells. Operator toggle: with 18
+    # rows over 101 items a caption can match 69 photos and still fill with
+    # none, because every one is spoken for.
+    allow_reuse: bool = False
+
+
+@router.post("/admin/catalog/singles/suggest")
+async def suggest_singles_content_with_drafts(
+    body: _DraftFillBody = Body(...),
+) -> dict[str, Any]:
+    """Same as the GET, but also fills rows that are not saved yet.
+
+    "Suggest text sets" appends caption rows to the editor with no row id, and
+    the GET form reads its targets from the DB — so Fill content was a no-op on
+    exactly the rows it existed to serve (verified: 0 of 13 filled). Posting the
+    drafts lets them compete for the vault alongside the saved rows. Still
+    writes NOTHING; the operator saves.
+    """
+    import vault_solo_fill
+
+    assert_account_owned(body.account_id)
+    res = await vault_solo_fill.suggest_singles(
+        body.account_id, only_empty=body.only_empty, drafts=body.drafts,
+        allow_reuse=body.allow_reuse)
+    return {
+        **{k: v for k, v in res.items() if k != "proposals"},
+        "proposals": [{k: v for k, v in p.items()
+                       if k not in ("items", "previews")}
+                      for p in res["proposals"]],
+    }
+
+
+@router.get("/admin/catalog/singles/suggest-texts")
+async def suggest_singles_texts(account_id: str = Query(...)) -> dict[str, Any]:
+    """Propose CAPTION rows to add — text, price and kind, no media.
+
+    The other half of `/singles/suggest`: that one fills content into a row that
+    already has text, but nothing produced the text, so an empty catalog stayed
+    empty. These rows drop straight into the singles editor and are then filled
+    by "Fill content" and written by "Save singles" — so this endpoint writes
+    NOTHING and a suggestion can always be thrown away.
+
+    Read-only and free — no LLM, no OF. Every proposal is checked against the
+    UNBOUND vault first, so a caption is only offered if this vault can honestly
+    fill it; the rest come back under `shoot` as a shot-list. If the vault has
+    no V2 describe fields, `blocked` says to run Describe rather than reporting
+    a content gap that isn't one.
+    """
+    import vault_catalog_seed
+
+    assert_account_owned(account_id)
+    return await vault_catalog_seed.suggest_texts(account_id)
 
 
 # ── Imports ──────────────────────────────────────────────────────────────────

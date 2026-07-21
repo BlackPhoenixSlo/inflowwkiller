@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -90,6 +91,31 @@ def _thumb_of(files: dict | None) -> str | None:
     if not isinstance(files, dict):
         return None
     for k in ("thumb", "squarePreview", "preview", "full"):
+        f = files.get(k)
+        if isinstance(f, dict) and f.get("url"):
+            return f["url"]
+    return None
+
+
+def _describe_image_of(files: dict | None) -> str | None:
+    """The image variant to send the VISION model — not the same choice as the
+    UI thumb.
+
+    `thumb` is 300x300 and, because OF's stills are 3:4 portrait, it is a
+    centre-CROP: the top and bottom of the picture are simply gone. Describe ran
+    on that for its whole life, which is why it kept reporting `fully_nude` for
+    shots whose only garment was a band of underwear at the bottom edge — the
+    model never saw that part of the frame.
+
+    `preview` (960x1280) keeps the real aspect ratio and ~13x the pixels, so an
+    edge-of-frame waistband survives. `full` (2316x3088) is bigger still but
+    costs proportionally more vision tokens for detail the task does not need.
+    Ordered widest-useful first; `thumb` stays as the last resort for media that
+    exposes nothing else.
+    """
+    if not isinstance(files, dict):
+        return None
+    for k in ("preview", "full", "squarePreview", "thumb"):
         f = files.get(k)
         if isinstance(f, dict) and f.get("url"):
             return f["url"]
@@ -524,7 +550,22 @@ def _overlay(item: VaultItem, manual_order: int | None = None) -> dict[str, Any]
         "suggested_price_cents": item.suggested_price_cents,
         "manual_order": item.manual_order if manual_order is None else manual_order,
         "review_state": item.review_state,
+        "suggested_script": item.suggested_script,
     }
+    # The V2 describe taxonomy (acts / clothing_state / beats / primary_folder /
+    # …) lives ONLY in ai_fields_json — there are no columns for it. Without
+    # this projection the browser receives just `description` + `tags` and the
+    # other 21 fields the model produced are invisible, which is exactly what
+    # made the vault look like it had lost them. Projected read-only: edits
+    # still go through the override+lock path on the real columns.
+    ai = _load_json(item.ai_fields_json, None)
+    if isinstance(ai, dict):
+        base["_ai"]["fields"] = {
+            k: v for k, v in ai.items()
+            # `description`/`tags` are already served from their columns (which
+            # carry any operator override); don't shadow them with the raw AI value.
+            if k not in ("description", "tags")
+        }
     # Stable, signature-free cached-thumb URL (self-heals on miss). Frontend
     # prefers this over the expiring OF url so tiles never break.
     base["_thumb"] = f"/admin/vault-ai/thumb?account_id={item.account_id}&media_id={item.media_id}"
@@ -843,6 +884,741 @@ async def reorder(payload: dict = Body(...)) -> dict[str, Any]:
 import vault_cache  # noqa: E402
 
 
+import vault_dupes  # noqa: E402
+import vault_ai_brief  # noqa: E402  (canonical FLAG_KEYS + flags_known)
+import vault_scripts  # noqa: E402
+
+# Blast-radius guard: one HTTP request can only ever remove this many. Bigger
+# selections are batched by the client (a 2.3k-item vault yields ~700 copies),
+# which also gives the operator a progress readout instead of one long stall.
+_MAX_HIDE_PER_CALL = 500
+# Ids per OF PUT — keeps a single /vault/media/hidden body bounded, and makes a
+# failure cost one chunk instead of the whole batch.
+_OF_HIDE_CHUNK = 100
+# Ids per SQL IN(...) — stays well clear of SQLite's bound-parameter ceiling.
+_DB_IN_CHUNK = 200
+
+
+@router.get("/admin/vault-ai/duplicates")
+async def list_duplicates(
+    account_id: str = Query(...),
+    threshold: int = Query(vault_dupes.DEFAULT_THRESHOLD),
+    limit: int = Query(200),
+) -> dict[str, Any]:
+    """Duplicate sets for the review UI. Each set is {original, dupes[]} where
+    `original` is the EARLIEST-uploaded copy (kept) and `dupes` are removal
+    candidates. Read-only — nothing is hidden until /duplicates/hide is called.
+
+    Thumbs come from the existing /admin/vault-ai/thumb route, so the client
+    renders both sides of every pair before the operator confirms.
+    """
+    assert_account_owned(account_id)
+    res = await vault_dupes.find_duplicates(account_id, threshold)
+
+    def _slim(r: dict, **extra: Any) -> dict[str, Any]:
+        return {
+            "media_id": r["media_id"], "kind": r["kind"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "duration_seconds": r["duration"], "send_count": r["send_count"],
+            **extra,
+        }
+
+    clusters = [
+        {
+            "original": _slim(c["original"]),
+            "dupes": [_slim(d, dhash_dist=d["dhash_dist"],
+                            ahash_dist=d["ahash_dist"], exact=d["exact"],
+                            band=vault_dupes.band_of(
+                                max(d["dhash_dist"], d["ahash_dist"])))
+                      for d in c["dupes"]],
+            "band": c["band"], "worst": c["worst"], "all_exact": c["all_exact"],
+            "sent_dupes": sum(1 for d in c["dupes"] if d["send_count"] > 0),
+        }
+        for c in res["clusters"][:max(1, int(limit))]
+    ]
+    return {**{k: v for k, v in res.items() if k != "clusters"},
+            "account_id": account_id,
+            "returned": len(clusters), "clusters": clusters}
+
+
+@router.get("/admin/vault-ai/scripts")
+async def list_scripts(
+    account_id: str = Query(...),
+    gap_seconds: int = Query(vault_scripts.DEFAULT_GAP_SECONDS),
+    videos_only: bool = Query(False),
+) -> dict[str, Any]:
+    """The script proposal for an account: upload batches, each one's detected
+    direction, and the canonical escalating order.
+
+    Read-only and free — no LLM, no OF traffic. Scoring runs over the V2
+    describe fields already on the rows, so the operator can re-run this with a
+    different `gap_seconds` as often as they like before committing. Nothing is
+    persisted until /scripts/apply.
+    """
+    assert_account_owned(account_id)
+    plan = await vault_scripts.plan_scripts(
+        account_id, gap_seconds=gap_seconds, videos_only=videos_only)
+    return {
+        **{k: v for k, v in plan.items() if k != "scripts"},
+        "scripts": [
+            {
+                "script_id": s["script_id"], "direction": s["direction"],
+                "tau": s["tau"], "size": s["size"], "scoreable": s["scoreable"],
+                "started_at": s["started_at"].isoformat() if s["started_at"] else None,
+                "items": [
+                    {"media_id": i["media_id"], "kind": i["kind"],
+                     "script_seq": i["script_seq"], "score": i["score"],
+                     "duration_seconds": i["duration_seconds"],
+                     "describe_status": i["describe_status"]}
+                    for i in s["items"]
+                ],
+            }
+            for s in plan["scripts"]
+        ],
+    }
+
+
+@router.post("/admin/vault-ai/scripts/apply")
+async def apply_scripts(payload: dict = Body(...)) -> dict[str, Any]:
+    """Persist the script order onto our own mirror columns so the picker and
+    folder views can ORDER BY script_id, script_seq.
+
+    Writes ONLY `script_id` / `script_seq` / `script_score` / `script_reversed`
+    — the OF vault is never touched, no media is moved or hidden, and a re-plan
+    simply overwrites. Re-derives the plan server-side rather than trusting a
+    posted ordering, so a stale UI cannot write an order the current scores no
+    longer support.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    gap_seconds = int(payload.get("gap_seconds") or vault_scripts.DEFAULT_GAP_SECONDS)
+    plan = await vault_scripts.plan_scripts(
+        account_id, gap_seconds=gap_seconds,
+        videos_only=bool(payload.get("videos_only")))
+    written = await vault_scripts.apply_scripts(account_id, plan)
+    return {"account_id": account_id, **written, "summary": plan["summary"]}
+
+
+@router.get("/admin/vault-ai/folder-plan")
+async def get_folder_plan(
+    account_id: str = Query(...),
+    keep: int = Query(2, ge=0, le=20),
+) -> dict[str, Any]:
+    """PREVIEW the folders the pipeline would create. Read-only, free, instant —
+    no LLM, no OF traffic, nothing written. This is what the vault button shows
+    before the operator confirms."""
+    assert_account_owned(account_id)
+    return await vault_scripts.plan_ai_folders(account_id, keep=keep)
+
+
+async def _sync_of_list_membership(client, account_id: str, of_list_id: int) -> int:
+    """Re-read ONE OF list and rewrite the mirror's per-item `of_folder_ids`.
+
+    Without this, mirroring is invisible in the UI. Item→folder membership is
+    written ONLY by a full collect (it is parsed from `listStates` on each media
+    dict), so a folder we just pushed to OF exists there but no cached item
+    claims to be in it — the picker asks "who is in list X", gets nothing, and
+    honestly renders "No media in this filter" while the dropdown, which counts
+    from OF, says 4. Real on OF, invisible locally.
+
+    Membership is taken from OF rather than from the plan we just sent, because
+    `add_media_to_vault_list` only ADDS: a list carries the union of every
+    generation of the rules that has ever run. OF is the only thing that knows
+    what is actually in there, so the mirror is made to agree with OF, not with
+    our intent. Both directions are written — ids gained AND ids dropped — or
+    a folder that shrinks would keep its stale members in the picker forever.
+    """
+    live: set[int] = set()
+    offset = 0
+    for _ in range(_MAX_PAGES):
+        resp = await asyncio.to_thread(
+            client.vault_media, limit=_PAGE, offset=offset,
+            type="all", list_id=int(of_list_id),
+        )
+        rows = (resp or {}).get("list") or []
+        if not rows:
+            break
+        for m in rows:
+            if m.get("id") is not None:
+                live.add(int(m["id"]))
+        if len(rows) < _PAGE:
+            break
+        offset += _PAGE
+        await asyncio.sleep(_PAGE_SLEEP_S)
+
+    touched = 0
+    async with get_session() as s:
+        items = (await s.execute(
+            select(VaultItem).where(VaultItem.account_id == account_id)
+        )).scalars().all()
+        for item in items:
+            try:
+                ids = json.loads(item.of_folder_ids or "[]")
+                ids = [int(x) for x in ids if x is not None]
+            except (ValueError, TypeError):
+                ids = []
+            has, should = int(of_list_id) in ids, int(item.media_id) in live
+            if has == should:
+                continue
+            if should:
+                ids.append(int(of_list_id))
+            else:
+                ids = [x for x in ids if x != int(of_list_id)]
+            item.of_folder_ids = json.dumps(ids)
+            touched += 1
+        await s.commit()
+    return touched
+
+
+async def _mirror_ai_folders_to_of(
+    account_id: str, created: list[dict[str, Any]], plan: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Push the just-built internal folders out as REAL OF vault lists.
+
+    This is the only part of the pipeline that writes to her OnlyFans account,
+    which is why it is opt-in per request rather than implied by "apply".
+
+    Binds `VaultFolder.of_list_id` on success so a re-run ADDS to the same OF
+    list instead of creating a second one with the same name. A folder that
+    already carries an `of_list_id` is reused. Failures are reported per folder
+    and never roll back the internal folder — a folder that exists locally but
+    not on OF is recoverable; losing the grouping is not.
+    """
+    by_name = {f["name"]: f for f in plan.get("folders") or []}
+    client = await asyncio.to_thread(ax._make_client, account_id)
+    out: list[dict[str, Any]] = []
+
+    for made in created:
+        spec = by_name.get(made["name"])
+        media_ids = [int(i["media_id"]) for i in (spec or {}).get("items") or []]
+        async with get_session() as s:
+            folder = await s.get(VaultFolder, made["folder_id"])
+            of_list_id = folder.of_list_id if folder else None
+
+        try:
+            if not of_list_id:
+                res = await asyncio.to_thread(client.create_vault_list, made["name"][:120])
+                of_list_id = res.get("id")
+                if not of_list_id:
+                    raise RuntimeError(f"OF returned no list id: {str(res)[:120]}")
+                async with get_session() as s:
+                    await s.execute(
+                        update(VaultFolder)
+                        .where(VaultFolder.id == made["folder_id"])
+                        .values(of_list_id=int(of_list_id))
+                    )
+                    await s.commit()
+            if media_ids:
+                await asyncio.to_thread(client.add_media_to_vault_list, int(of_list_id), media_ids)
+            # Bind membership into the mirror NOW. A full re-collect would also
+            # do it, but making the operator re-page the whole vault to see the
+            # folder they just built is not a fix — and until they do, the grid
+            # shows nothing.
+            synced = await _sync_of_list_membership(client, account_id, int(of_list_id))
+            out.append({**made, "of_list_id": int(of_list_id),
+                        "of_added": len(media_ids), "mirror_synced": synced})
+        except Exception as e:  # noqa: BLE001
+            log.warning("OF mirror failed folder=%s name=%s",
+                        made["folder_id"], made["name"], exc_info=True)
+            out.append({**made, "of_error": str(e)[:200]})
+    return out
+
+
+@router.post("/admin/vault-ai/folder-plan/apply")
+async def apply_folder_plan(payload: dict = Body(...)) -> dict[str, Any]:
+    """Create the previewed folders and fill them, in send order.
+
+    Requires `confirm: true` — there is no path that creates folders from a
+    single click. The plan is RE-DERIVED here rather than taken from the body,
+    so a preview the operator left open for ten minutes cannot write a stale
+    grouping; the worst case is that they get the current answer.
+
+    Folders are internal and prefixed `AI-`; re-running refreshes the same ones
+    instead of duplicating them, and a folder the operator made by hand is never
+    touched.
+
+    `mirror_to_of` additionally creates them as REAL OF vault lists. That is the
+    ONLY write to her OnlyFans account in this pipeline, so it is opt-in per
+    request and never implied by `confirm` alone. Nothing is ever SENT either
+    way.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    if not payload.get("confirm"):
+        raise HTTPException(status_code=400, detail={"error": "confirm_required"})
+    keep = int(payload.get("keep") or 2)
+    plan = await vault_scripts.plan_ai_folders(account_id, keep=keep)
+    result = await vault_scripts.apply_ai_folders(account_id, plan)
+
+    if payload.get("mirror_to_of"):
+        result["created"] = await _mirror_ai_folders_to_of(
+            account_id, result["created"], plan)
+        result["of_mirrored"] = sum(1 for c in result["created"] if c.get("of_list_id"))
+        result["of_failed"] = sum(1 for c in result["created"] if c.get("of_error"))
+
+    try:
+        await vault_cache.invalidate(account_id)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"account_id": account_id, **result, "summary": plan["summary"]}
+
+
+# Frames sampled from a CLIP for the flags pass.
+#
+# A clip changes state along its length — she can be dressed at 0:05 and nude at
+# 1:30 — so a single frame answers the wrong question half the time. Four frames
+# spread across the clip, each asked independently, then folded in code.
+_FLAGS_VIDEO_FRAMES = 4
+
+
+# What the model writes in an `over_` field when it means "nothing there". It
+# is told to use null; it also says these.
+_NOTHING_OVER = frozenset({"", "null", "none", "nothing", "n/a", "na", "nil",
+                           "not_in_frame", "not in frame", "nude", "naked",
+                           "no clothing", "no garment", "uncovered", "exposed"})
+
+# The model is told to answer null and mostly does, but it also narrates the
+# absence — "nothing, bare skin", "no clothing - she is bare". Any answer whose
+# words are only about there being nothing there is nothing there. Matched on
+# words rather than on the whole string so the phrasings do not have to be
+# enumerated: a real garment always contributes a word that is not in this set.
+_ABSENCE_WORDS = frozenset({"bare", "skin", "nothing", "no", "not", "none",
+                            "null", "n/a", "visible", "is", "she", "her",
+                            "exposed", "uncovered", "nude", "naked", "at",
+                            "all", "and", "the", "a", "-", "—", ","})
+
+
+def _garment_over(answer: dict[str, Any], key: str) -> str:
+    """The named garment/object over a region, or "" for nothing.
+
+    Errs toward "nothing": a false garment silently marks an exposed region
+    covered, which is the direction that puts explicit material in a mass send.
+    A false absence only costs the override, and the state field still stands.
+    """
+    v = answer.get(key)
+    if not isinstance(v, str):
+        return ""
+    s = v.strip()
+    if s.lower().strip(".") in _NOTHING_OVER:
+        return ""
+    words = [w for w in re.split(r"[\s,./-]+", s.lower()) if w]
+    return "" if words and all(w in _ABSENCE_WORDS for w in words) else s
+
+
+def _ground_in_named_garment(answer: dict[str, Any]) -> dict[str, Any]:
+    """Let what the model NAMED overrule what it CLASSIFIED.
+
+    Asking for a state directly ("is her chest bare?") measured badly in both
+    polarities: `covered` pulled toward false on anything racy, and `bare` came
+    back on a white tank top and a black halter top, because a one-word verdict
+    invites the model to answer the vibe of the picture. Naming the garment is
+    a much easier question and the describe pass already answers it correctly —
+    the same model wrote "wearing a white tank top" in prose about the same
+    photo it then called bare.
+
+    So the naming is made LOAD-BEARING rather than advisory: name something over
+    a region and the region is covered, whatever the state field said. Only
+    `bare` is overridden — `not_in_frame` is left alone, because a garment can
+    be named on a body part that is genuinely out of shot.
+    """
+    out = dict(answer)
+    for region, over in (("breasts_vis", "over_breasts"), ("vulva_vis", "over_vulva")):
+        if out.get(region) == "bare" and _garment_over(out, over):
+            out[region] = "covered"
+    return out
+
+
+def _fold_clip_flags(per_frame: list[dict[str, Any]]) -> dict[str, Any]:
+    """Fold per-frame answers into one verdict for the whole clip.
+
+    Regions fold by MAX exposure (`vault_ai_brief.fold_vis`) and
+    `underwear_visible` by `any()` — both conservative, which is the right
+    default for flags that gate what may be shown publicly and what is priced
+    as a full reveal.
+
+    The v1 fold was `all()` over "covered" booleans, and it collapsed: a frame
+    that could not see the region answered `covered=False`, indistinguishable
+    from a frame where she was bare, so ANY frame that simply missed the region
+    marked the whole clip uncovered. 20 of 21 AriaFree clips folded to
+    uncovered, which is no signal at all. With `not_in_frame` as its own state
+    those frames fold away instead of voting for exposure.
+
+    Deliberately folded HERE rather than asked of the model. The reason this
+    pass exists at all is that the model got `fully_nude` wrong; making it also
+    reason across frames would add a second thing it can get wrong, on top of a
+    question it has already been measured good at one image at a time.
+    """
+    out: dict[str, Any] = {}
+    seen = [bool(f["underwear_visible"]) for f in per_frame
+            if isinstance(f.get("underwear_visible"), bool)]
+    if seen:
+        out["underwear_visible"] = any(seen)
+    for region in vault_ai_brief.VIS_REGIONS:
+        folded = vault_ai_brief.fold_vis([str(f.get(region) or "") for f in per_frame])
+        if folded:
+            out[region] = folded
+    return out
+
+
+def _clip_arc(per_frame: list[dict[str, Any]]) -> str | None:
+    """Which way the clip escalates, from the frames already paid for.
+
+    Compares how much is on show in the first frame against the last. A clip
+    that opens covered and ends bare is a build-up; the reverse is a payoff
+    that was uploaded (or shot) back to front. `vault_scripts` currently infers
+    this direction with a rank correlation across SEPARATE items, which is a
+    far weaker signal than watching one clip change — so this is recorded now
+    even though nothing reads it yet.
+    """
+    if len(per_frame) < 2:
+        return None
+    def heat(f: dict[str, Any]) -> int:
+        ranks = [vault_ai_brief.VIS_STATES.index(f[r]) for r in vault_ai_brief.VIS_REGIONS
+                 if f.get(r) in vault_ai_brief.VIS_STATES]
+        return max(ranks) if ranks else -1
+    first, last = heat(per_frame[0]), heat(per_frame[-1])
+    if first < 0 or last < 0 or first == last:
+        return "flat"
+    return "escalates" if last > first else "reverses"
+
+
+async def _flags_one(account_id: str, media_id: int,
+                     model: str = "qwen3-vl-30b") -> dict[str, Any]:
+    """Ask the three booleans for one item and MERGE them into its existing
+    `ai_fields_json`. Never rewrites the description, tags or taxonomy — this is
+    an enrichment pass, so a cheap call can't damage an expensive one.
+
+    Photos ask once. Clips ask `_FLAGS_VIDEO_FRAMES` times, one frame per call,
+    and fold with `_fold_clip_flags`.
+    """
+    async with get_session() as s:
+        item = await s.get(VaultItem, (account_id, media_id))
+    if item is None:
+        return {"media_id": media_id, "ok": False, "status": "not_in_mirror"}
+    if item.kind not in ("photo", "video"):
+        return {"media_id": media_id, "ok": False, "status": "not_flaggable"}
+
+    is_video = item.kind == "video"
+    raw = _load_json(item.raw_json, {}) or {}
+    want = _FLAGS_VIDEO_FRAMES if is_video else 1
+    images = await _collect_images(account_id, item, raw, want=want)
+    if not images:
+        return {"media_id": media_id, "ok": False, "status": "no_image"}
+
+    per_frame: list[dict[str, Any]] = []
+    cost = 0
+    result = None
+    for img in images:
+        content = [{"type": "text", "text": _FLAGS_PROMPT},
+                   {"type": "image_url", "image_url": {"url": _shrink_data_url(img)}}]
+        try:
+            result = await llm_client.chat(
+                model=model, messages=[{"role": "user", "content": content}],
+                purpose="describe_flags", account_id=account_id, temperature=0.1,
+            )
+        except LLMCapExceeded as e:
+            if not per_frame:
+                return {"media_id": media_id, "ok": False, "status": "capped", "detail": str(e)}
+            break  # keep what we already read rather than losing the whole clip
+        except LLMError as e:
+            if not per_frame:
+                return {"media_id": media_id, "ok": False, "status": "error",
+                        "detail": str(e)[:300]}
+            break
+        cost += int(result.cost_cents or 0)
+        parsed = _parse_describe(result.content)
+        if any(k in parsed for k in _FLAG_KEYS):
+            per_frame.append(_ground_in_named_garment(parsed))
+
+    if not per_frame:
+        return {"media_id": media_id, "ok": False, "status": "unparsed",
+                "raw": (result.content if result else "" or "")[:200]}
+
+    data = _fold_clip_flags(per_frame)
+
+    fields = _load_json(item.ai_fields_json, {}) or {}
+    for key in _FLAG_KEYS:
+        if key in data:
+            fields[key] = data[key]
+    # Persisted, not merely used and discarded. Two jobs: when a region says
+    # `covered` this is WHY in the model's own words (a wrong flag is far
+    # cheaper to diagnose from "white tank top" than from "covered"), and
+    # `vault_scripts._is_nude` reads it as the direct evidence that she is
+    # dressed. Taken from the FIRST frame, which is where a clip starts out.
+    for over in ("over_breasts", "over_vulva"):
+        named = _garment_over(per_frame[0], over)
+        if named:
+            fields[over] = named[:60]
+        else:
+            fields.pop(over, None)
+    if is_video:
+        fields["_flags_frames"] = len(per_frame)
+        arc = _clip_arc(per_frame)
+        if arc:
+            fields["_flags_arc"] = arc
+    # Superseded shapes, dropped rather than left to rot: `genitals_covered`
+    # conflated vulva and breasts, and the `*_covered` pair asked two opposite
+    # questions under one name. Leaving either behind would let a caller that
+    # was never updated keep reading a stale answer that looks current.
+    for dead in ("genitals_covered", "pussy_covered", "breasts_covered"):
+        fields.pop(dead, None)
+    fields["_flags_model"] = model
+
+    async with get_session() as s:
+        await s.execute(
+            update(VaultItem)
+            .where(VaultItem.account_id == account_id, VaultItem.media_id == media_id)
+            .values(ai_fields_json=json.dumps(fields, ensure_ascii=False, default=str))
+        )
+        await s.commit()
+    return {"media_id": media_id, "ok": True, "status": "flagged",
+            **{k: fields.get(k) for k in _FLAG_KEYS},
+            "frames": len(per_frame), "cost_millicents": cost}
+
+
+@router.post("/admin/vault-ai/flags-all")
+async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
+    """Run the cheap flags pass over an account's photos AND clips.
+
+    Enrichment only: merges the three booleans into each row's existing
+    `ai_fields_json` and touches nothing else. Skips items that already carry
+    all of them unless `force`.
+
+    Clips are included because the flags gate `AI-safe explicit`, the one folder
+    that claims something is safe to mass-send. While clips went unflagged they
+    fell into it by default — on AriaFree that meant a penetration clip and a
+    dildo clip in the mass-safe folder.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    force = bool(payload.get("force"))
+    limit = int(payload.get("limit") or 0)
+
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.ai_fields_json)
+            .where(VaultItem.account_id == account_id,
+                   VaultItem.removed_at.is_(None),
+                   VaultItem.kind.in_(("photo", "video")))
+            .order_by(VaultItem.created_at.asc())
+        )).all()
+
+    todo = []
+    for mid, fj in rows:
+        f = _load_json(fj, {}) or {}
+        # `flags_known`, not a key-presence test: a row carrying the superseded
+        # boolean shape, or a region the model answered with something outside
+        # the enum, has not really been flagged and must re-run.
+        if force or not vault_ai_brief.flags_known(f):
+            todo.append(int(mid))
+    if limit:
+        todo = todo[:limit]
+
+    done, failed, cost = 0, 0, 0
+    for mid in todo:
+        res = await _flags_one(account_id, mid)
+        if res.get("ok"):
+            done += 1
+            cost += int(res.get("cost_millicents") or 0)
+        else:
+            failed += 1
+            if res.get("status") == "capped":
+                break
+    return {"account_id": account_id, "candidates": len(todo),
+            "flagged": done, "failed": failed, "cost_millicents": cost}
+
+
+@router.post("/admin/vault-ai/scripts/collect")
+async def collect_scripts(payload: dict = Body(...)) -> dict[str, Any]:
+    """Every upload burst big enough to be a shoot, as a PROPOSED folder.
+
+    Body: `{account_id, gap_seconds?, min_items?, queue?}`. Read-only by
+    default. With `queue: true` each proposal is written to the review queue as
+    a **pending** row — which still creates no folder. A folder only exists
+    after the operator approves the row (/review/approve, which re-checks the
+    baseline) and /scripts/folders/apply runs.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    proposals = await vault_scripts.collect_scripts(
+        account_id,
+        gap_seconds=int(payload.get("gap_seconds") or vault_scripts.DEFAULT_GAP_SECONDS),
+        min_items=int(payload.get("min_items") or vault_scripts.MIN_SCRIPT_ITEMS),
+    )
+    queued: dict[str, Any] = {}
+    if payload.get("queue"):
+        queued = await vault_scripts.queue_script_folders(account_id, proposals)
+    return {
+        "account_id": account_id, "count": len(proposals), **queued,
+        "scripts": [
+            {"script_id": p["script_id"], "name": p["name"],
+             "direction": p["direction"], "reason": p["reason"], "tau": p["tau"],
+             "size": p["size"], "kinds": p["kinds"],
+             "closes_on_own": p["closes_on_own"],
+             "started_at": p["started_at"].isoformat() if p["started_at"] else None,
+             "items": [{"media_id": r["media_id"], "kind": r["kind"],
+                        "manual_order": r["manual_order"], "score": r["score"],
+                        "tier": r["why"]["tier"], "closes": r["why"]["closes"]}
+                       for r in p["items"]]}
+            for p in proposals
+        ],
+    }
+
+
+@router.post("/admin/vault-ai/scripts/folders/apply")
+async def apply_script_folders(payload: dict = Body(...)) -> dict[str, Any]:
+    """Create folders for script proposals the operator has APPROVED.
+
+    Only acts on review rows already flipped to `approved` — this endpoint can
+    never approve anything itself, so a mis-click here cannot create a folder
+    that was not confirmed. Internal folders only; no OF writes.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    return {"account_id": account_id,
+            **(await vault_scripts.apply_approved_script_folders(account_id))}
+
+
+@router.post("/admin/vault-ai/scripts/order-folder")
+async def order_folder_by_script(payload: dict = Body(...)) -> dict[str, Any]:
+    """Order ONE internal folder into send order — tease first, payoff last.
+
+    Body: `{account_id, folder_id, apply?}`. Writes `manual_order` 1..n on that
+    folder's membership rows using the schema's existing convention, so the same
+    media keeps an independent position in every other folder it belongs to.
+    `apply` defaults to false: the caller gets the proposed order to render
+    before anything is persisted.
+
+    Requires the script columns to be populated — run /scripts/apply first.
+    No OF writes; nothing is moved, hidden, or sent.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    try:
+        folder_id = int(payload.get("folder_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail={"error": "folder_id_required"})
+
+    order = await vault_scripts.plan_folder_order(account_id, folder_id)
+    applied = 0
+    if payload.get("apply"):
+        applied = (await vault_scripts.apply_folder_order(
+            account_id, folder_id, order))["items"]
+    return {
+        "account_id": account_id, "folder_id": folder_id,
+        "applied": applied, "items": len(order),
+        "unscored": sum(1 for r in order if r["score"] is None),
+        "order": [{"media_id": r["media_id"], "manual_order": r["manual_order"],
+                   "score": r["score"], "kind": r["kind"],
+                   "script_id": r["script_id"], "script_seq": r["script_seq"]}
+                  for r in order],
+    }
+
+
+@router.post("/admin/vault-ai/duplicates/hide")
+async def hide_duplicates(payload: dict = Body(...)) -> dict[str, Any]:
+    """Remove confirmed duplicate copies from the REAL OF vault.
+
+    This calls OF's own "Remove selected items from vault" path
+    (`PUT /vault/media/hidden`) — the media is hidden, not destroyed, so
+    anything already attached to a sent PPV or a live post keeps working. OF
+    exposes no unhide, so the UI must confirm before calling this.
+
+    Guards, all enforced server-side because the client's set can be stale:
+      · every id is re-clustered NOW and must still be a DUPE — an id that is
+        the ORIGINAL of its set is refused, so the keeper can never be hidden;
+      · ids not in any duplicate set at the current threshold are refused;
+      · copies with send_count > 0 are skipped unless `allow_sent` is set;
+      · at most `_MAX_HIDE_PER_CALL` ids per request.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    media_ids = [int(x) for x in (payload.get("media_ids") or [])
+                 if str(x).lstrip("-").isdigit()]
+    if not media_ids:
+        raise HTTPException(status_code=400,
+                            detail={"error": "media_ids_required"})
+    if len(media_ids) > _MAX_HIDE_PER_CALL:
+        raise HTTPException(status_code=400, detail={
+            "error": "too_many", "max": _MAX_HIDE_PER_CALL,
+            "got": len(media_ids)})
+    allow_sent = bool(payload.get("allow_sent"))
+    threshold = int(payload.get("threshold") or vault_dupes.DEFAULT_THRESHOLD)
+
+    # Re-derive the truth rather than trusting the payload's classification.
+    res = await vault_dupes.find_duplicates(account_id, threshold, rehash=False)
+    originals = {c["original"]["media_id"] for c in res["clusters"]}
+    dupes = {d["media_id"]: d for c in res["clusters"] for d in c["dupes"]}
+
+    approved: list[int] = []
+    refused: dict[str, list[int]] = {"is_original": [], "not_a_duplicate": [],
+                                     "has_sends": []}
+    for mid in media_ids:
+        if mid in originals:
+            refused["is_original"].append(mid)
+        elif mid not in dupes:
+            refused["not_a_duplicate"].append(mid)
+        elif dupes[mid]["send_count"] > 0 and not allow_sent:
+            refused["has_sends"].append(mid)
+        else:
+            approved.append(mid)
+
+    # Send OF a bounded body per call rather than one giant mediaIds array, and
+    # treat each chunk as independently durable: if a later chunk fails, the
+    # ones already hidden ARE hidden on OF, so they must still be recorded
+    # locally and reported — silently 502-ing the whole request would leave the
+    # mirror claiming media that is actually gone.
+    done: list[int] = []
+    of_error: str | None = None
+    if approved:
+        client = await asyncio.to_thread(ax._make_client, account_id)
+        for i in range(0, len(approved), _OF_HIDE_CHUNK):
+            chunk = approved[i:i + _OF_HIDE_CHUNK]
+            try:
+                await asyncio.to_thread(client.hide_vault_media, chunk)
+            except Exception as e:  # noqa: BLE001
+                of_error = str(e)[:300]
+                log.warning("vault dupes hide chunk failed account=%s at=%s",
+                            account_id, i, exc_info=True)
+                break
+            done.extend(chunk)
+        if not done:
+            raise HTTPException(status_code=502, detail={
+                "error": "of_hide_failed", "detail": of_error,
+                "attempted": len(approved)})
+        # Mirror the removal locally so the grid, the picker, the describe
+        # sweep and every automation stop seeing the copies immediately —
+        # without waiting for the next collect to notice they're gone.
+        now = datetime.utcnow()
+        async with get_session() as s:
+            for i in range(0, len(done), _DB_IN_CHUNK):
+                await s.execute(
+                    update(VaultItem)
+                    .where(VaultItem.account_id == account_id,
+                           VaultItem.media_id.in_(done[i:i + _DB_IN_CHUNK]))
+                    .values(removed_at=now)
+                )
+            await s.commit()
+        try:
+            await vault_cache.invalidate(account_id)
+        except Exception:  # noqa: BLE001
+            pass
+        log.info("vault dupes hidden account=%s n=%s", account_id, len(done))
+    hidden = len(done)
+
+    out: dict[str, Any] = {
+        "account_id": account_id, "hidden": hidden,
+        "hidden_ids": done,
+        "refused": {k: v for k, v in refused.items() if v},
+    }
+    if of_error:
+        # Partial success: report what OF actually took and what it didn't, so
+        # the UI can re-offer the remainder instead of double-counting.
+        out["of_error"] = of_error
+        out["not_hidden"] = approved[len(done):]
+    return out
+
+
 @router.post("/admin/vault-ai/of-folders")
 async def create_of_folder(payload: dict = Body(...)) -> dict[str, Any]:
     """Create a REAL OF vault folder (POST /vault/lists) and optionally add the
@@ -995,6 +1771,263 @@ _DESCRIBE_PROMPT = (
     "For a video the images are sampled frames — describe the overall clip."
 )
 
+
+# ── V2 describe prompt (bake-off variant B, chosen 2026-07-21) ──────
+#
+# Measured over 12 real items x 3 variants (service/_probe_describe_v2.py):
+# V2@9 frames on qwen3-vl-30b beat the V1 prompt decisively and cost $0.88 for a
+# 2,309-item vault, with 235B kept in the harness for later. V1 above is left in
+# place as the cheap baseline and as what the harness diffs against.
+#
+# The four changes over V1, each aimed at a measured failure:
+#  1. Ownership/consent framing — V1 gave the model no reason not to sanitise,
+#     which is how a clip with fingers inside became "touching her genitals".
+#  2. An explicit anti-euphemism rule naming that exact failure mode.
+#  3. `beats` — an ordered walk across the sampled frames, so a 2-minute clip
+#     stops collapsing into one static sentence.
+#  4. A CLOSED taxonomy instead of free tag soup. V1's free vocabulary let it
+#     emit `nude` + `lingerie` + `topless` on the SAME item — 78% of Aria's rows
+#     carry a contradiction like that, which is why nothing downstream could
+#     order a script. `clothing_state` and `acts` are single-valued rungs, and
+#     they are what service/vault_scripts.py scores.
+_V2_SCHEMA = """{
+  "description":      "<2-4 literal sentences — see RULES>",
+  "beats":            ["<what happens first>", "<then>", "..."],
+  "acts":             ["<from ACTS>"],
+  "penetration":      "none|fingers|toy|penis|unclear",
+  "insertion_depth":  "none|shallow|deep|unclear",
+  "clothing_state":   "dressed|lingerie_on|pulled_aside|pulled_down|partially_off|fully_nude|unclear",
+  "clothing_items":   ["<literal garments, with colour/material>"],
+  "genitals_covered": true|false,
+  "underwear_visible": true|false,
+  "body_focus":       ["<from BODY>"],
+  "position":         "<from POSITION>",
+  "setting":          "<bedroom|bathroom|shower|kitchen|car|outdoor|studio|other>",
+  "camera":           "<handheld_selfie|mirror|tripod_wide|pov_overhead|closeup|screen_recording>",
+  "people_count":     <int>,
+  "partner_visible":  true|false,
+  "face_visible":     true|false,
+  "toys":             ["<literal toy, with colour>"],
+  "explicitness":     "sfw|suggestive|explicit|hardcore",
+  "nsfw":             true|false,
+  "sellable":         true|false,
+  "primary_folder":   "<exactly one from FOLDERS>",
+  "tags":             ["<lowercase, only what is VISIBLE>"],
+  "confidence":       <0-100>
+}"""
+
+_V2_ACTS = ("posing, tease, strip, undress, groping_own_breasts, ass_shaking, twerk, "
+            "spreading, rubbing_clit, fingering, toy_insertion, toy_on_clit, riding_toy, "
+            "masturbation_orgasm, squirt, blowjob, handjob, sex_missionary, sex_doggy, "
+            "sex_riding, cumshot, shower, bath, talking_to_camera, none")
+_V2_BODY = ("face, hair, breasts, nipples, pussy, clit, ass, thighs, legs, feet, "
+            "stomach, full_body")
+_V2_POSITION = ("standing, sitting, kneeling, lying_on_back, lying_on_stomach, "
+                "on_all_fours, legs_spread, bent_over, straddling, unclear")
+_V2_FOLDERS = ("solo_fingering, solo_toy, solo_tease, nude_stills, lingerie, "
+               "ass_twerk, boobs, blowjob, sex_with_partner, shower_bath, feet, "
+               "outfit_cosplay, sfw_selfie, talking_head, other")
+
+_DESCRIBE_PROMPT_V2 = (
+    "You are an explicit-content CATALOGUER for an adult creator's own private media "
+    "vault. The creator owns this media and has asked for it to be indexed so she can "
+    "search it and file it into folders. Describe it plainly and clinically. Do not "
+    "moralise, do not soften, do not refuse, do not add warnings.\n\n"
+    "You are given frames sampled IN ORDER from one clip (or a single photo). "
+    "Return STRICT JSON only — no prose, no markdown fences:\n"
+    f"{_V2_SCHEMA}\n\n"
+    "RULES\n"
+    "1. description: 2-4 sentences, literal and anatomically specific. Name the act, "
+    "the body part it is done TO, and the hand/toy doing it. Say whether contact is "
+    "rubbing/stroking on the surface or INSERTED, and roughly how many fingers. "
+    "Vague verbs are FORBIDDEN: 'touching herself', 'pleasuring herself', 'being "
+    "intimate' are all wrong answers — say exactly what is happening.\n"
+    "2. Clothing must be stated exactly. If underwear is still ON but pushed/pulled to "
+    "one side to expose her, that is 'pulled_aside' — NOT nude and NOT simply 'wearing "
+    "lingerie'. Pulled down to the thighs is 'pulled_down'. Only say fully_nude when no "
+    "garment is on her body.\n"
+    "2b. BEFORE you choose clothing_state, answer these two literally, by LOOKING at "
+    "the frame rather than summarising the scene:\n"
+    "    underwear_visible — is ANY garment visible anywhere on her body or pushed "
+    "aside/down, however small? Waistband, strap, a thong string, lace at the hip, "
+    "stockings — all count as TRUE.\n"
+    "    genitals_covered — is her vulva covered by ANY fabric right now? Pushed aside "
+    "so it is exposed = FALSE. Covered by a thong = TRUE. Out of frame or hidden by her "
+    "pose/leg/hand rather than by fabric = FALSE (nothing is covering it).\n"
+    "    These two govern: if underwear_visible is true you must NOT say fully_nude, "
+    "whatever the overall impression. 'Nude except for a thong' is NOT fully_nude — it "
+    "is pulled_aside or lingerie_on. This is the single most common error on this "
+    "task, and a wrong answer here sells the wrong thing.\n"
+    "3. beats: for a clip, 2-6 short ordered steps describing how it PROGRESSES across "
+    "the frames (what she starts doing, what changes, how it ends). For a single photo "
+    "return [].\n"
+    "4. Only ever report what is VISIBLE in a frame. Never emit contradictory tags "
+    "(nude + lingerie, topless + bra). The vocabularies below are a menu to choose "
+    "from, not a checklist to fill in — an item with 3 true tags gets 3 tags.\n"
+    "5. If a frame is too dark/blurred/cropped to tell, say 'unclear' in the field and "
+    "lower `confidence`. Guessing is worse than 'unclear'.\n"
+    "6. explicitness: sfw = nothing sexual; suggestive = clothed/implied; explicit = "
+    "genitals or a sex act visible; hardcore = penetration, cum, or a partner act.\n\n"
+    f"ACTS: {_V2_ACTS}\n"
+    f"BODY: {_V2_BODY}\n"
+    f"POSITION: {_V2_POSITION}\n"
+    f"FOLDERS: {_V2_FOLDERS}\n"
+)
+
+# Frames per clip. V1 shipped a hardcoded 3 for a clip of ANY length (a 17-minute
+# video was summarised from 3 stills); the bake-off's other real lever was
+# raising this to 9. Photos always send exactly 1.
+_DESCRIBE_FRAMES = 9
+
+# …but a flat count is wrong in both directions: 12 stills of a 3-second clip is
+# 4× the tokens for the same one moment, and 9 stills of a 17-minute session
+# still misses most of it. Measured 2026-07-21 (`_probe_frames_vs_duration.py`,
+# 6 long clips × 4 counts × 3 repeats, scored as coverage of the pooled union of
+# every finding across all runs — NOT against one reference run, which is
+# noise):
+#
+#     frames    coverage    mean beats
+#          3         38%           1.9
+#          6         49%           2.7
+#          9         47%           2.9
+#         12         55%           3.7
+#
+# 3→6 is a real jump; 6→9 is flat (inside run-to-run variance); 9→12 gains ~8pp
+# and 27% more `beats`, which IS the progression a long clip needs. `beats` is
+# the cleanest signal because it rises monotonically with frame count.
+#
+# 12 is the ceiling: `server._STORYBOARD_FRAMES = 12`, already extracted and
+# cached, so using all of them costs nothing but vision tokens.
+#
+# CAVEAT worth remembering: no frame count exceeds ~55% coverage, and two
+# IDENTICAL 12-frame runs agree only ~75% with each other. A single describe
+# pass on a long clip is inherently lossy — for `epic` clips, two passes unioned
+# would gain more than any frame-count change.
+_FRAME_LADDER: tuple[tuple[int, int], ...] = (
+    (30, 6),      # < 30s   — one moment; more stills just re-see it
+    (180, 9),     # < 3min
+)
+_FRAME_LADDER_MAX = 12  # >= 3min, and the storyboard ceiling
+
+
+def _frames_for_duration(seconds: int | None) -> int:
+    """How many stills a clip of this length gets (see `_FRAME_LADDER`)."""
+    s = int(seconds or 0)
+    for limit, n in _FRAME_LADDER:
+        if s < limit:
+            return n
+    return _FRAME_LADDER_MAX
+
+
+# ── Cheap flags pass ────────────────────────────────────────────────
+#
+# `clothing_state` was wrong on ~1 in 3 of the items the $50 tier is built from:
+# it reported `fully_nude` for shots where she still had panties on, and the
+# error was invisible to every stored-data check because the enum, the garment
+# list and the prose all agreed and all three were wrong.
+#
+# Two fixes, and this is the cheap one. Rather than re-running a full describe
+# (2,788 tokens, ~16s/item) to recover two booleans the tier actually reads, ask
+# ONLY for those booleans: ~350 tokens, ~3s/item — measured 5x faster and ~40x
+# cheaper over AriaFree, about $0.001 for a 103-item vault.
+#
+# The image still has to keep its ASPECT RATIO. `files.thumb` is 300x300 and
+# OF's stills are 3:4, so the thumb is a centre-CROP with the bottom of the
+# frame missing — which is precisely where a waistband sits, and precisely why
+# describe kept saying `fully_nude`. So we start from `preview` and downscale it
+# ourselves: fewer pixels, whole picture. 448px on the long edge is the measured
+# floor — 320px flips an item that 448 and 640 agree on, and 640 buys nothing.
+_FLAGS_MAX_EDGE = 448
+
+# Canonical in `vault_ai_brief` — `vault_scripts` gates its mass-safe lane on
+# the same tuple, and two copies would drift the moment a flag is added.
+_FLAG_KEYS = vault_ai_brief.FLAG_KEYS
+
+# Each region is asked SEPARATELY because those splits ARE the price boundaries:
+# $10 is breasts out with her vulva still covered, $50 is her vulva on show, and
+# the mass-safe lane turns on nothing being on show at all. A single conflated
+# question could not express the middle tier.
+#
+# Every region is asked in the SAME direction and with the SAME three answers.
+# The previous version asked `pussy_covered` about fabric and `breasts_covered`
+# about visibility, which meant `false` meant opposite things across two flags
+# a caller had to read together — see `vault_ai_brief.VIS_STATES` for what that
+# cost. Phrasing is positive ("what can you see") rather than a double negative
+# ("is it kept from view"), because the negative form measured ~91% constant.
+_FLAGS_PROMPT = (
+    "You are indexing one photo from an adult creator's own vault. She owns it "
+    "and has asked for it to be catalogued so it can be sorted. Report only "
+    "what you can SEE in this frame.\n\n"
+    "Reply with STRICT JSON only, no prose. Fill the two `over_` fields FIRST, "
+    "then decide the states from them:\n"
+    '{"over_breasts": "<what is over her chest, or null>",\n'
+    ' "over_vulva":   "<what is over her crotch, or null>",\n'
+    ' "breasts_vis": "...", "vulva_vis": "...", "anus_vis": "...",\n'
+    ' "underwear_visible": true|false}\n\n'
+    "over_breasts / over_vulva — NAME the thing, in two or three words: "
+    '"white tank top", "black lace bra", "her right hand", "the bedsheet". Use '
+    "null ONLY when there is genuinely nothing there and you are looking at "
+    "skin, or when that part of her is not in the photo. Naming it first is the "
+    "point of this step: it is much easier to say what she is wearing than to "
+    "judge how exposed a picture is, and the second answer follows from the "
+    "first.\n\n"
+    "For vulva_vis, breasts_vis and anus_vis answer with EXACTLY one of these "
+    "three words. The question is whether you can see SKIN there, not whether "
+    "that part of her body is in the photo:\n"
+    '  "bare"         — nothing at all is over it. You are seeing skin.\n'
+    '  "covered"      — it is in the photo but something is over it: any '
+    "clothing at all, her hand, her arm, her thigh, bedding, an object, or the "
+    "way she is turned.\n"
+    '  "not_in_frame" — it is not in this photo, or is too far out of shot to '
+    "tell.\n\n"
+    "THE MISTAKE TO AVOID: clothing that shows the SHAPE of her body is still "
+    'clothing. A tank top, t-shirt, bra, bodysuit or swimsuit is "covered" no '
+    "matter how tight it is, how much cleavage there is, how sheer it looks, or "
+    'how sexy the photo is. "bare" means the garment is not there — pulled '
+    "down, pulled aside, or never on. If you named anything in the matching "
+    '`over_` field, the state MUST be "covered".\n\n'
+    "Judge each region on its own. She is very often bare in one place and "
+    "covered in another, and that difference is the whole point of this check. "
+    "Do not let how explicit the picture FEELS decide the answers — a picture "
+    "can be very explicit with nothing actually on show, and a plain one can "
+    "have everything on show.\n\n"
+    'vulva_vis — her vulva specifically. Panties or a thong over it is '
+    '"covered". Pulled aside so the skin is exposed is "bare". Only her thighs '
+    'or stomach in shot is "not_in_frame".\n'
+    'breasts_vis — her breasts. A bra, top, bodysuit or bikini over them is '
+    '"covered", and so is lying face down or an arm across them. "bare" needs '
+    "actual bare breast, at minimum an exposed nipple or an uncovered breast.\n"
+    'anus_vis — her anus specifically. A bare backside with the anus not on '
+    'show is "covered", NOT "bare".\n\n'
+    "underwear_visible — is ANY garment visible anywhere on her body, worn or "
+    "pushed aside or pulled down, however small? A waistband, a strap, a thong "
+    "string, a band of lace at the hip or at the very bottom edge of the "
+    "picture, stockings — all TRUE. Look at the edges of the frame before you "
+    "answer FALSE.\n"
+)
+
+
+def _shrink_data_url(data_url: str, max_edge: int = _FLAGS_MAX_EDGE) -> str:
+    """Downscale a base64 data-URL to `max_edge` on its LONG side, preserving
+    aspect. Returns the input unchanged if Pillow can't read it — a cheap pass
+    must never take down the caller."""
+    import io
+
+    try:
+        from PIL import Image
+
+        _, _, b64 = data_url.partition(",")
+        with Image.open(io.BytesIO(base64.b64decode(b64))) as im:
+            im = im.convert("RGB")
+            im.thumbnail((max_edge, max_edge), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=82)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:  # noqa: BLE001
+        log.warning("flags shrink failed; sending full-size", exc_info=True)
+        return data_url
+
+
 _REFUSAL_MARKERS = ("i can't", "i cannot", "i'm unable", "cannot assist", "content policy",
                     "i'm sorry", "not able to", "against my")
 
@@ -1037,10 +2070,24 @@ async def _download_frames(client: Any, urls: list[str]) -> list[str]:
     return out
 
 
-async def _collect_images(account_id: str, item: VaultItem, raw: dict) -> list[str]:
+def _spread(n_have: int, want: int) -> list[int]:
+    """`want` frame indices spread evenly over `n_have` slots, endpoints
+    included. 12 frames → 3 gives [1,5,10]; → 9 gives [0,1,3,4,5,6,8,9,11].
+    Endpoints matter for `beats`: the model has to see how a clip ENDS."""
+    if want >= n_have:
+        return list(range(n_have))
+    if want <= 1:
+        return [n_have // 2]
+    step = (n_have - 1) / (want - 1)
+    return sorted({int(round(i * step)) for i in range(want)})
+
+
+async def _collect_images(account_id: str, item: VaultItem, raw: dict,
+                          want: int = _DESCRIBE_FRAMES) -> list[str]:
     """Return base64 data-URLs to send the model. Photos → the thumb; videos →
-    up to 3 warmed storyboard frames (warmed on demand if missing). Downloaded
-    through the account's OF client so the URL's source-IP signature matches."""
+    up to `want` warmed storyboard frames (warmed on demand if missing).
+    Downloaded through the account's OF client so the URL's source-IP signature
+    matches."""
     client = await asyncio.to_thread(ax._make_client, account_id)
     if item.kind == "video":
         import server as srv  # lazy
@@ -1051,7 +2098,7 @@ async def _collect_images(account_id: str, item: VaultItem, raw: dict) -> list[s
             if not srv._storyboard_all_frames_present(h):
                 await asyncio.to_thread(_warm_one_sync, client, url, float(raw.get("duration") or 0))
             urls: list[str] = []
-            for i in (2, 6, 10):
+            for i in _spread(srv._STORYBOARD_FRAMES, want):
                 p = srv._storyboard_frame_path(h, i)
                 if p.is_file():
                     urls.append(_img_data_url(p.read_bytes()))
@@ -1060,10 +2107,10 @@ async def _collect_images(account_id: str, item: VaultItem, raw: dict) -> list[s
         # DRM-only (no sliceable mp4) or storyboard produced nothing → fall back
         # to OF's pre-extracted poster frames. OF DOES serve these even for DRM,
         # so we can still describe/tag the clip instead of giving up (blocked_drm).
-        return await _download_frames(client, _video_poster_frames(raw)[:3])
+        return await _download_frames(client, _video_poster_frames(raw)[:want])
     # photo / gif
     files = raw.get("files") or {}
-    url = _thumb_of(files) or item.thumb_url or item.full_url
+    url = _describe_image_of(files) or item.thumb_url or item.full_url
     if not url:
         return []
     try:
@@ -1085,13 +2132,23 @@ def _parse_describe(text: str) -> dict[str, Any]:
         return {}
 
 
-async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-30b") -> dict[str, Any]:
+async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-30b",
+                        prompt_version: str = "v2",
+                        frames: int | None = None) -> dict[str, Any]:
+    """Describe one item.
+
+    `prompt_version` picks the bake-off variant: "v2" (default — rich structured
+    schema, the one in production) or "v1" (the original one-sentence prompt,
+    ~4× cheaper, kept for bulk passes where only a rough tag is wanted).
+    `frames` overrides the duration ladder; None = `_frames_for_duration`.
+    """
     async with get_session() as s:
         item = await s.get(VaultItem, (account_id, media_id))
     if item is None:
         raise HTTPException(status_code=404, detail={"error": "not_in_mirror", "media_id": media_id})
     raw = _load_json(item.raw_json, {}) or {}
-    images = await _collect_images(account_id, item, raw)
+    want = int(frames) if frames else _frames_for_duration(item.duration_seconds)
+    images = await _collect_images(account_id, item, raw, want=want)
     if not images:
         async with get_session() as s:
             await s.execute(
@@ -1102,7 +2159,8 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
             await s.commit()
         return {"media_id": media_id, "ok": False, "status": "blocked_drm"}
 
-    content = [{"type": "text", "text": _DESCRIBE_PROMPT}]
+    prompt = _DESCRIBE_PROMPT if str(prompt_version) == "v1" else _DESCRIBE_PROMPT_V2
+    content = [{"type": "text", "text": prompt}]
     content += [{"type": "image_url", "image_url": {"url": u}} for u in images]
 
     # Try 30b; on refusal/blank escalate ONCE to 235b (never overwrite a good
@@ -1151,10 +2209,25 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
     nsfw = bool(data.get("nsfw")) if data.get("nsfw") is not None else None
     sellable = bool(data.get("sellable")) if data.get("sellable") is not None else None
     is_video = item.kind == "video"
-    search_text = (desc + " " + " ".join(tags)).lower()
+    # Fold the V2 taxonomy into the local search blob too, so a search for
+    # "pulled_aside" or "solo_toy" hits even though those never appear in the
+    # prose. `beats` carries the clip's progression, which is often the only
+    # place a mid-clip act is named at all.
+    v2_terms: list[str] = []
+    for key in ("acts", "body_focus", "toys", "clothing_items", "beats"):
+        v2_terms += [str(x) for x in (data.get(key) or []) if str(x).strip()]
+    for key in ("clothing_state", "penetration", "position", "setting",
+                "camera", "primary_folder"):
+        if data.get(key):
+            v2_terms.append(str(data[key]))
+    search_text = " ".join([desc, *tags, *v2_terms]).lower()
 
     # Human edits win: never overwrite an effective field the operator locked.
     locked = set(_load_json(item.locked_fields_json, []))
+    # Stamp WHICH variant produced this row: a v1 row is a candidate for a later
+    # v2 re-scan, and without the stamp "already described" is ambiguous.
+    data = {**data, "_prompt_version": ("v1" if str(prompt_version) == "v1" else "v2"),
+            "_frames": len(images)}
     vals: dict[str, Any] = {
         "describe_status": "described",
         "describe_model": used_model,
@@ -1204,7 +2277,11 @@ async def describe_one(payload: dict = Body(...)) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         raise HTTPException(status_code=400, detail={"error": "media_id_required"})
     model = str(payload.get("model") or "qwen3-vl-30b")
-    return await _describe_one(account_id, media_id, model=model)
+    return await _describe_one(
+        account_id, media_id, model=model,
+        prompt_version=str(payload.get("prompt_version") or "v2"),
+        frames=payload.get("frames"),
+    )
 
 
 # ── Describe ALL (background sweep, gen_info-style) ─────────────────
@@ -1213,13 +2290,40 @@ _describe_progress: dict[str, dict[str, Any]] = {}
 _DESCRIBE_CONCURRENCY = 4
 
 
-async def _run_describe_all(account_id: str, force: bool) -> None:
+async def _run_describe_all(account_id: str, force: bool,
+                            prompt_version: str = "v2",
+                            model: str = "qwen3-vl-30b",
+                            restage: bool = False) -> None:
+    """Background describe sweep.
+
+    Three selections:
+      force=False (default) — only items not yet successfully described.
+      restage=True          — items described by a DIFFERENT prompt version, i.e.
+                              the "we have a better prompt now, re-scan the old
+                              rows" pass. Cheaper than force: rows already on
+                              this version are left alone, so an interrupted
+                              re-scan resumes instead of starting over.
+      force=True            — everything, regardless.
+    """
     try:
         async with get_session() as s:
             stmt = select(VaultItem.media_id).where(
                 VaultItem.account_id == account_id, VaultItem.removed_at.is_(None)
             )
-            if not force:
+            if force:
+                pass
+            elif restage:
+                # `_prompt_version` is stamped into ai_fields_json by _describe_one.
+                # A row that predates the stamp has no marker at all, so it counts
+                # as stale and gets re-scanned.
+                stmt = stmt.where(
+                    (VaultItem.describe_status != "described")
+                    | (VaultItem.describe_status.is_(None))
+                    | (VaultItem.ai_fields_json.is_(None))
+                    | (~VaultItem.ai_fields_json.like(
+                        f'%"_prompt_version": "{prompt_version}"%'))
+                )
+            else:
                 # Skip only items already successfully described. blocked_drm is
                 # NO LONGER terminal — poster-frame fallback can now describe DRM
                 # clips — so a normal "Describe all" retries them (and refused/
@@ -1237,7 +2341,8 @@ async def _run_describe_all(account_id: str, force: bool) -> None:
             async with sem:
                 if capped:
                     return
-                res = await _describe_one(account_id, mid)
+                res = await _describe_one(account_id, mid, model=model,
+                                          prompt_version=prompt_version)
                 if res.get("status") == "capped":
                     capped = True
                 done += 1
@@ -1263,9 +2368,48 @@ async def describe_all(payload: dict = Body(...)) -> dict[str, Any]:
     if account_id in _describe_running:
         raise HTTPException(status_code=409, detail={"error": "describe_already_running"})
     force = bool(payload.get("force"))
+    restage = bool(payload.get("restage"))
+    prompt_version = "v1" if str(payload.get("prompt_version")) == "v1" else "v2"
+    model = str(payload.get("model") or "qwen3-vl-30b")
+    if model not in llm_client.MODELS:
+        raise HTTPException(status_code=400, detail={"error": "unknown_model",
+                                                    "model": model})
     _describe_running.add(account_id)
-    asyncio.create_task(_run_describe_all(account_id, force))
-    return {"account_id": account_id, "status": "running"}
+    asyncio.create_task(_run_describe_all(account_id, force,
+                                          prompt_version=prompt_version,
+                                          model=model, restage=restage))
+    return {"account_id": account_id, "status": "running",
+            "prompt_version": prompt_version, "model": model,
+            "force": force, "restage": restage}
+
+
+@router.get("/admin/vault-ai/describe-all/plan")
+async def describe_all_plan(
+    account_id: str = Query(...),
+    prompt_version: str = Query("v2"),
+) -> dict[str, Any]:
+    """What each sweep mode WOULD do, so the UI can show real counts (and a cost
+    estimate) before the operator commits to a re-scan of the whole vault."""
+    assert_account_owned(account_id)
+    pv = "v1" if str(prompt_version) == "v1" else "v2"
+    async with get_session() as s:
+        live = select(VaultItem).where(VaultItem.account_id == account_id,
+                                       VaultItem.removed_at.is_(None))
+        total = await s.scalar(
+            select(func.count()).select_from(live.subquery()))
+        undescribed = await s.scalar(select(func.count()).select_from(
+            live.where(VaultItem.describe_status.isnot("described")).subquery()))
+        stale = await s.scalar(select(func.count()).select_from(
+            live.where(
+                (VaultItem.describe_status != "described")
+                | (VaultItem.describe_status.is_(None))
+                | (VaultItem.ai_fields_json.is_(None))
+                | (~VaultItem.ai_fields_json.like(f'%"_prompt_version": "{pv}"%'))
+            ).subquery()))
+    return {"account_id": account_id, "prompt_version": pv,
+            "total": int(total or 0),
+            "undescribed": int(undescribed or 0),
+            "restage": int(stale or 0)}
 
 
 @router.get("/admin/vault-ai/describe-all/status")
@@ -1434,3 +2578,377 @@ async def harvest_keywords_status(account_id: str = Query(...)) -> dict[str, Any
         "running": account_id in _kw_running,
         "progress": _kw_progress.get(account_id),
     }
+
+
+# ── Review queue (S2) ──────────────────────────────────────────────
+# Pending AI-proposed ACTIONS (folder / ppv / reminder) awaiting operator
+# approval. Approval flips status pending→approved ONLY — no OF write, no send,
+# no vault mutation (contract §2 correction #2: approved ≠ applied ≠ armed). A
+# separate consumer later does the OF work and flips approved→applied.
+#
+# On approve, we recompute the world-view captured in baseline_json (media
+# hashes / folder membership / config hash) for the keys the producer stored.
+# A mismatch ⇒ the proposal is `stale`, left `pending`, and the id is returned
+# under "stale" instead of "approved". No global approve — approve is scoped
+# per-kind or per-ids (contract §2).
+
+import hashlib  # noqa: E402
+
+from db.models import AccountAiConfig, VaultAiReviewItem  # noqa: E402
+import vault_ai_baseline as vab  # noqa: E402
+
+_REVIEW_KINDS = ("folder", "ppv", "reminder")
+
+
+def _review_item_view(row: VaultAiReviewItem) -> dict[str, Any]:
+    """Wire shape for a review row (contract §2 `item`)."""
+    return {
+        "id": row.id,
+        "kind": row.kind,
+        "status": row.status,
+        "payload": _load_json(row.payload_json, {}),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _normalize_for_compare(value: Any) -> Any:
+    """Order-insensitive normalize so stored vs recomputed compare as sets/maps.
+    Lists become sorted, dicts key-sorted with values recursed; leaves are
+    coerced to str so an int '12' matches a str '12' (JSON round-trip drift)."""
+    if isinstance(value, dict):
+        return {str(k): _normalize_for_compare(value[k]) for k in sorted(value, key=str)}
+    if isinstance(value, (list, tuple, set)):
+        return sorted(
+            (_normalize_for_compare(v) for v in value),
+            key=lambda v: json.dumps(v, sort_keys=True, default=str),
+        )
+    return value
+
+
+async def _current_baseline_view(
+    session, account_id: str, stored: dict[str, Any],
+) -> dict[str, Any]:
+    """Recompute the world-view keys present in `stored`. Delegates to the shared
+    `vault_ai_baseline` so this checker and the producer (`vault_ai_service`)
+    compute baselines from ONE implementation — see that module's header for the
+    drift bug this prevents (producer/checker hashing the config two ways ⇒ every
+    approval came back `stale`)."""
+    return await vab.current_baseline_view(session, account_id, stored)
+
+
+def _is_stale(stored_baseline_json: str | None, current: dict[str, Any]) -> bool:
+    """True if the stored baseline no longer matches the current world for any
+    key the producer captured. A NULL/empty baseline means the producer opted
+    out of staleness detection — always fresh."""
+    if not stored_baseline_json:
+        return False
+    stored = _load_json(stored_baseline_json, None)
+    if not isinstance(stored, dict) or not stored:
+        return False
+    trimmed_stored = {k: stored[k] for k in current.keys() if k in stored}
+    return _normalize_for_compare(trimmed_stored) != _normalize_for_compare(current)
+
+
+@router.get("/admin/vault-ai/review")
+async def list_review_items(account_id: str = Query(...)) -> dict[str, Any]:
+    """Pending review items for the account, grouped by kind."""
+    assert_account_owned(account_id)
+    grouped: dict[str, list[dict[str, Any]]] = {k: [] for k in _REVIEW_KINDS}
+    async with get_session() as s:
+        rows = (
+            await s.execute(
+                select(VaultAiReviewItem)
+                .where(
+                    VaultAiReviewItem.account_id == account_id,
+                    VaultAiReviewItem.status == "pending",
+                )
+                .order_by(VaultAiReviewItem.created_at.asc(), VaultAiReviewItem.id.asc())
+            )
+        ).scalars().all()
+    for row in rows:
+        bucket = grouped.get(row.kind)
+        if bucket is None:
+            continue
+        bucket.append(_review_item_view(row))
+    return grouped
+
+
+async def _load_target_rows(
+    session, account_id: str, kind: str | None, ids: list[int] | None,
+) -> list[VaultAiReviewItem]:
+    """Fetch pending rows for a section approve (kind) OR an explicit ids list.
+    Rows scoped to `account_id` and `status='pending'` in both cases so nothing
+    outside the operator's scope can be touched."""
+    stmt = select(VaultAiReviewItem).where(
+        VaultAiReviewItem.account_id == account_id,
+        VaultAiReviewItem.status == "pending",
+    )
+    if ids is not None:
+        stmt = stmt.where(VaultAiReviewItem.id.in_(ids))
+    if kind is not None:
+        stmt = stmt.where(VaultAiReviewItem.kind == kind)
+    stmt = stmt.order_by(VaultAiReviewItem.id.asc())
+    return list((await session.execute(stmt)).scalars().all())
+
+
+def _parse_ids(payload: dict) -> list[int] | None:
+    raw = payload.get("ids")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail={"error": "ids_must_be_list"})
+    out: list[int] = []
+    for v in raw:
+        try:
+            out.append(int(v))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail={"error": "ids_must_be_ints"})
+    return out
+
+
+@router.post("/admin/vault-ai/review/approve")
+async def approve_review_items(payload: dict = Body(...)) -> dict[str, Any]:
+    """Flip pending review rows to `approved`. Approval mutates NO OF state and
+    triggers NO send — a downstream consumer applies later. On approve, each
+    row's baseline_json is compared against the recomputed current world; a
+    mismatch leaves the row `pending` and returns its id under `stale` instead
+    of `approved` (contract §2).
+
+    Body: `{account_id, kind}` for a section approve OR `{account_id, ids: [...]}`
+    for an explicit set. Global approve is deliberately unsupported.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    if not account_id:
+        raise HTTPException(status_code=400, detail={"error": "account_id_required"})
+    kind = payload.get("kind")
+    ids = _parse_ids(payload)
+    if kind is None and ids is None:
+        raise HTTPException(status_code=400, detail={"error": "kind_or_ids_required"})
+    if kind is not None:
+        kind = str(kind)
+        if kind not in _REVIEW_KINDS:
+            raise HTTPException(status_code=400, detail={"error": "unknown_kind", "kind": kind})
+
+    approved: list[int] = []
+    stale: list[int] = []
+    now = datetime.utcnow()
+    async with get_session() as s:
+        rows = await _load_target_rows(s, account_id, kind, ids)
+        for row in rows:
+            stored_baseline = _load_json(row.baseline_json, None) or {}
+            current = await _current_baseline_view(s, account_id, stored_baseline if isinstance(stored_baseline, dict) else {})
+            if _is_stale(row.baseline_json, current):
+                stale.append(row.id)
+                continue
+            row.status = "approved"
+            row.resolved_at = now
+            approved.append(row.id)
+        await s.commit()
+    return {"approved": approved, "stale": stale}
+
+
+@router.post("/admin/vault-ai/review/reject")
+async def reject_review_items(payload: dict = Body(...)) -> dict[str, Any]:
+    """Flip pending review rows to `rejected`. No OF/vault mutation; the
+    proposal is simply discarded so the queue clears."""
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    if not account_id:
+        raise HTTPException(status_code=400, detail={"error": "account_id_required"})
+    ids = _parse_ids(payload)
+    if not ids:
+        raise HTTPException(status_code=400, detail={"error": "ids_required"})
+
+    rejected: list[int] = []
+    now = datetime.utcnow()
+    async with get_session() as s:
+        rows = await _load_target_rows(s, account_id, None, ids)
+        for row in rows:
+            row.status = "rejected"
+            row.resolved_at = now
+            rejected.append(row.id)
+        await s.commit()
+    return {"rejected": rejected}
+
+
+# ── Edit-and-lock a mirror item (S10) ──────────────────────────────
+# Operator edits to an item's description / tags / tier / caption / script.
+# Per contract §3 write rule, each edited field is written into
+# operator_overrides_json AND its name added to locked_fields_json AND projected
+# into the legacy compat column of the same name — so a later forced describe
+# rerun's is_locked() skips it (see _describe_one's locked-skip). We read the
+# result back ONLY through effective_value(), never the raw column.
+
+from vault_ai_effective import effective_value, locked_fields as _locked_fields  # noqa: E402
+
+# The only fields the editor may override+lock. `tags` is stored as a JSON list;
+# every other field is free text.
+_EDITABLE_FIELDS = (
+    "description", "tags", "explicitness_tier", "suggested_caption", "suggested_script",
+    # Operator-set PPV price for this media, in CENTS. The AI never writes this
+    # (vision classifies explicitness_tier instead — PLAN correction #3); it is
+    # purely an operator choice, and the Composer prices an attachment set at the
+    # MAX suggested price across the selection.
+    "suggested_price_cents",
+)
+
+
+def _normalize_tags(v: Any) -> list[str]:
+    """Accept a list OR a comma/newline-separated string → deduped, lower-cased,
+    trimmed tag list (cap 12, matching the describe path)."""
+    if isinstance(v, str):
+        parts = _re.split(r"[,\n]", v)
+    elif isinstance(v, (list, tuple)):
+        parts = [str(x) for x in v]
+    else:
+        parts = []
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        t = str(p).strip().lower()
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out[:12]
+
+
+def _item_edit_view(item: VaultItem, locked: list[str]) -> dict[str, Any]:
+    """Wire shape for an edited mirror row — every editable field read through
+    effective_value() so the operator sees the override that just won, not a raw
+    column. `video_description` is surfaced raw for the FE (S9 overlay reads it)."""
+    return {
+        "media_id": item.media_id,
+        "id": item.media_id,
+        "kind": item.kind,
+        "description": effective_value(item, "description"),
+        "video_description": item.video_description,
+        "tags": effective_value(item, "tags", default=[]),
+        "explicitness_tier": effective_value(item, "explicitness_tier"),
+        "suggested_caption": effective_value(item, "suggested_caption"),
+        "suggested_script": effective_value(item, "suggested_script"),
+        "suggested_price_cents": effective_value(item, "suggested_price_cents"),
+        "describe_status": item.describe_status,
+        "locked_fields": locked,
+    }
+
+
+@router.patch("/admin/vault-ai/items/{media_id}")
+async def edit_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
+    """Override + lock one or more editable fields on a mirror item.
+
+    Body: `{account_id, fields: {description?, tags?, explicitness_tier?,
+    suggested_caption?, suggested_script?}}`. Each supplied field is written to
+    `operator_overrides_json`, added to `locked_fields_json`, and projected into
+    the same-named legacy column (contract §3 + §6c). Returns the updated row
+    (read via effective_value) and the full locked-field list.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    if not account_id:
+        raise HTTPException(status_code=400, detail={"error": "account_id_required"})
+    fields = payload.get("fields")
+    if not isinstance(fields, dict) or not fields:
+        raise HTTPException(status_code=400, detail={"error": "fields_required"})
+    # Only known fields may be edited; ignore anything else the client sends.
+    edits = {k: fields[k] for k in _EDITABLE_FIELDS if k in fields}
+    if not edits:
+        raise HTTPException(status_code=400, detail={"error": "no_editable_fields"})
+
+    async with get_session() as s:
+        item = await s.get(VaultItem, (account_id, media_id))
+        if item is None:
+            raise HTTPException(
+                status_code=404, detail={"error": "not_in_mirror", "media_id": media_id}
+            )
+        overrides = _load_json(item.operator_overrides_json, {}) or {}
+        locked = set(_load_json(item.locked_fields_json, []) or [])
+        # compat-column projection per field (same-named legacy column).
+        col_vals: dict[str, Any] = {}
+        for field, raw in edits.items():
+            if field == "tags":
+                ov: Any = _normalize_tags(raw)
+                col_vals["tags"] = json.dumps(ov)
+            elif field == "suggested_price_cents":
+                # Cents, non-negative. Blank/None clears it back to "no price".
+                if raw is None or (isinstance(raw, str) and not raw.strip()):
+                    ov = None
+                else:
+                    try:
+                        ov = max(0, int(float(raw)))
+                    except (TypeError, ValueError):
+                        raise HTTPException(
+                            status_code=400,
+                            detail={"error": "bad_price", "field": field},
+                        )
+                col_vals[field] = ov
+            elif raw is None:
+                ov = None
+                col_vals[field] = None
+            else:
+                ov = str(raw)
+                col_vals[field] = ov
+            overrides[field] = ov       # operator override (locked or not — read-time wins)
+            locked.add(field)            # lock: a describe rerun's is_locked() skips it
+        col_vals["operator_overrides_json"] = json.dumps(overrides, ensure_ascii=False)
+        col_vals["locked_fields_json"] = json.dumps(sorted(locked))
+        await s.execute(
+            update(VaultItem)
+            .where(VaultItem.account_id == account_id, VaultItem.media_id == media_id)
+            .values(**col_vals)
+        )
+        await s.commit()
+        # Re-read through the ORM so effective_value resolves the fresh columns.
+        item = await s.get(VaultItem, (account_id, media_id))
+        await s.refresh(item)
+        locked_out = sorted(_locked_fields(item))
+        view = _item_edit_view(item, locked_out)
+    return {"item": view, "locked": locked_out}
+
+
+@router.post("/admin/vault-ai/items/{media_id}/hide")
+async def hide_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
+    """Remove ONE media from the real OF vault (operator-confirmed).
+
+    Same mechanism the duplicates sweep uses — OF's own "Remove selected items
+    from vault" (`PUT /vault/media/hidden`) via `of_client.hide_vault_media`: the
+    media is HIDDEN, not destroyed, so anything already attached to a sent PPV or
+    a live post keeps working. **OF exposes no unhide**, so the UI must confirm
+    before calling this.
+
+    Unlike /duplicates/hide there is no cluster to re-derive — the operator is
+    pointing at one specific item — so ownership is the only guard.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    if not account_id:
+        raise HTTPException(status_code=400, detail={"error": "account_id_required"})
+
+    client = await asyncio.to_thread(ax._make_client, account_id)
+    try:
+        await asyncio.to_thread(client.hide_vault_media, [int(media_id)])
+    except Exception as e:  # noqa: BLE001
+        log.warning("vault item hide failed account=%s media=%s",
+                    account_id, media_id, exc_info=True)
+        raise HTTPException(status_code=502, detail={
+            "error": "of_hide_failed", "detail": str(e)[:300],
+            "media_id": int(media_id)})
+
+    # Mirror the removal locally so the grid, the picker, the describe sweep and
+    # every automation stop seeing it immediately — rather than waiting for the
+    # next collect to notice it's gone.
+    now = datetime.utcnow()
+    async with get_session() as s:
+        await s.execute(
+            update(VaultItem)
+            .where(VaultItem.account_id == account_id,
+                   VaultItem.media_id == int(media_id))
+            .values(removed_at=now)
+        )
+        await s.commit()
+    try:
+        await vault_cache.invalidate(account_id)
+    except Exception:  # noqa: BLE001
+        pass
+    log.info("vault item hidden account=%s media=%s", account_id, media_id)
+    return {"ok": True, "media_id": int(media_id), "hidden": True}

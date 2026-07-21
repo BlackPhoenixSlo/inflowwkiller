@@ -214,7 +214,9 @@ export function useVaultMedia(opts: UseVaultMediaOpts) {
     isFetchingNextPage: q.isFetchingNextPage,
     isPlaceholderData: q.isPlaceholderData,
     error: q.error,
-    loadMore: () => q.fetchNextPage(),
+    loadMore: () => {
+      if (q.hasNextPage && !q.isFetchingNextPage) q.fetchNextPage();
+    },
     /** Hard refresh — drops every cached page for this account's vault
      *  (any type/listId combo, the wall-media cache, and the lists cache)
      *  so the next render starts from a blank slate. The plain `q.refetch()`

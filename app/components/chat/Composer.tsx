@@ -370,6 +370,19 @@ export function Composer({
     // Replace selection wholesale — the picker pre-selects from
     // `attached` so any removals/adds done inside it stick on confirm.
     setAttached(picked);
+    // Auto-price: the operator sets a per-media price in /vault, and a bundle is
+    // worth the HIGHEST of what's in it — never undercharge for the best clip in
+    // the set. Media with no price contribute nothing, so attaching unpriced
+    // media leaves whatever price you already typed alone.
+    const top = picked.reduce((max, m) => {
+      const c = (m as { _ai?: { suggested_price_cents?: number | null } })._ai
+        ?.suggested_price_cents;
+      return typeof c === "number" && c > max ? c : max;
+    }, 0);
+    if (top > 0) {
+      setPrice((top / 100).toFixed(2));
+      setPriceOpen(true);
+    }
   }
 
   function removeAttachment(id: number) {

@@ -92,6 +92,138 @@ export function evenFrameIndex(beat: number, frameCount: number, totalBeats = SC
   return Math.min(frameCount - 1, Math.floor((beat / totalBeats) * frameCount));
 }
 
+// ── AI description overlay (S9) ──────────────────────────────────────────
+// Renders the vault-AI mirror `description` / `video_description` (+ a short
+// `tags` list) as a blurred, gradient-backed caption across the BOTTOM HALF of
+// a thumb. Pure FE over the existing /items `_ai` overlay — no new endpoint.
+// Toggle default ON in the /vault manager, OFF in this chat picker (so it
+// doesn't fight the send flow).
+
+/** The subset of the /items `_ai` overlay the caption reads. */
+export interface VaultAiFields {
+  description?: string | null;
+  video_description?: string | null;
+  tags?: string[] | null;
+}
+
+/** Pull the one-glance caption for a tile: the video description for videos
+ *  (falling back to the still description), the image description otherwise,
+ *  plus up to four tag chips. Returns null when the item has neither — the
+ *  overlay then doesn't render at all. */
+export function aiCaptionFor(
+  m: VaultMedia & { _ai?: VaultAiFields },
+): { text: string; tags: string[] } | null {
+  const ai = m._ai;
+  if (!ai) return null;
+  const primary = m.type === "video" ? ai.video_description : ai.description;
+  const text = (primary || ai.description || ai.video_description || "").trim();
+  const tags = (Array.isArray(ai.tags) ? ai.tags : [])
+    .map((t) => String(t).trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  if (!text && tags.length === 0) return null;
+  return { text, tags };
+}
+
+/** Blurred, gradient-backed caption across the BOTTOM HALF of a vault thumb.
+ *  Absolutely positioned so it NEVER shifts the grid; pointer-events-none so
+ *  it never intercepts tile selection. The linear mask fades both the dark
+ *  gradient and the frosted backdrop-blur upward, leaving the top half of the
+ *  media clear and the text readable at a glance. */
+export function VaultAiCaptionOverlay({
+  caption,
+}: {
+  caption: { text: string; tags: string[] };
+}) {
+  return (
+    <div
+      aria-hidden
+      className="absolute inset-x-0 bottom-0 h-1/2 pointer-events-none select-none"
+    >
+      {/* ONLY the frosted backdrop is masked, so it still fades upward and
+       *  leaves the top half of the media clear. The text layer below is
+       *  deliberately OUTSIDE this element: masking the copy too is what washed
+       *  the description out to an unreadable ghost — it sits above the tags,
+       *  i.e. exactly in the fade zone. */}
+      <div
+        className={cn(
+          "absolute inset-0",
+          "bg-gradient-to-t from-black/85 via-black/55 to-transparent",
+          "backdrop-blur-[2px]",
+          "[mask-image:linear-gradient(to_top,black_55%,transparent)]",
+          "[-webkit-mask-image:linear-gradient(to_top,black_55%,transparent)]",
+        )}
+      />
+      {/* Unmasked content — always fully opaque. Description first (clamped to
+       *  a short 2 lines so it reads at a glance), tag chips under it. */}
+      <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1 p-1.5">
+        {caption.text && (
+          <p className="text-white text-[10px] leading-snug line-clamp-2 drop-shadow-[0_1px_2px_rgba(0,0,0,0.95)]">
+            {caption.text}
+          </p>
+        )}
+        {caption.tags.length > 0 && (
+          <div className="flex flex-wrap gap-0.5">
+            {caption.tags.map((t) => (
+              <span
+                key={t}
+                className="px-1 py-px rounded-full bg-white/20 text-white/95 text-[8px] leading-tight"
+              >
+                {t}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export type CaptionSurface = "manager" | "picker";
+
+const CAPTION_EVENT = "chatterly-vault-caption-change";
+
+function captionKey(surface: CaptionSurface): string {
+  return `chatterly:vault-ai-caption:${surface}`;
+}
+
+/** Default ON in the manager, OFF in the picker; only a stored value overrides. */
+function readCaptionOn(surface: CaptionSurface): boolean {
+  const dflt = surface === "manager";
+  if (typeof window === "undefined") return dflt;
+  const raw = window.localStorage.getItem(captionKey(surface));
+  if (raw === "1") return true;
+  if (raw === "0") return false;
+  return dflt;
+}
+
+/** Persisted, cross-instance caption toggle (mirrors useBlurMode's shape) so a
+ *  flip from either surface's control updates every mounted tile at once. */
+export function useCaptionOverlay(
+  surface: CaptionSurface,
+): [boolean, (next: boolean) => void] {
+  const [on, setOn] = useState<boolean>(() => readCaptionOn(surface));
+  useEffect(() => {
+    const sync = () => setOn(readCaptionOn(surface));
+    window.addEventListener(CAPTION_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(CAPTION_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, [surface]);
+  function update(next: boolean) {
+    setOn(next);
+    try {
+      window.localStorage.setItem(captionKey(surface), next ? "1" : "0");
+      window.dispatchEvent(new Event(CAPTION_EVENT));
+    } catch {
+      /* quota / private mode — silent */
+    }
+  }
+  return [on, update];
+}
+
 type MediaType = "all" | "photo" | "video" | "gif";
 type Sort = "newest" | "oldest";
 
@@ -282,7 +414,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
         hasMore: vaultMirror.hasMore,
         isLoading: cacheSummary.isLoading || vaultMirror.isLoading,
         isFetching: vaultMirror.isFetching,
-        isFetchingNextPage: vaultMirror.isFetching,
+        isFetchingNextPage: vaultMirror.isFetchingNextPage,
         isPlaceholderData: false,
         error: null,
         loadMore: vaultMirror.loadMore,
@@ -393,6 +525,9 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
   const wall = useWallMedia(accountId, open && cosmeticReady);
   const [blurMode] = useBlurMode();
   const blurCls = blurImageClass(blurMode);
+  // AI caption overlay — default OFF in the picker so it doesn't crowd the
+  // send flow; the chatter can flip it on from the toolbar toggle.
+  const [captionOn, setCaptionOn] = useCaptionOverlay("picker");
   // Hover-to-preview is a 12-frame slideshow served by the relay's
   // /img/scrub endpoint. The previous implementation streamed the actual
   // mp4 through two <video> elements + a canvas scrub pipeline, which
@@ -979,6 +1114,23 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
           </div>
 
           <div className="ml-auto flex items-center gap-3">
+            {/* AI caption toggle — shows the mirror description + tags as a
+             *  blurred bottom-half overlay on each thumb. Off by default here. */}
+            <button
+              type="button"
+              onClick={() => setCaptionOn(!captionOn)}
+              aria-pressed={captionOn}
+              title={captionOn ? "Hide AI descriptions on thumbs" : "Show AI descriptions on thumbs"}
+              className={cn(
+                "inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border transition-colors",
+                captionOn
+                  ? "bg-accent/15 border-accent/40 text-accent"
+                  : "bg-transparent border-border text-fg-dim hover:text-fg",
+              )}
+            >
+              <span aria-hidden>📝</span>
+              <span>captions</span>
+            </button>
             {/* Wall-scan indicator: only render while coverage is
              *  incomplete so the user understands the blue "posted on
              *  wall" ring is still filling in. Once `fullyBackfilled`
@@ -1341,6 +1493,10 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                       {m.type}
                     </div>
                   )}
+                  {captionOn && (() => {
+                    const cap = aiCaptionFor(m);
+                    return cap ? <VaultAiCaptionOverlay caption={cap} /> : null;
+                  })()}
                   {m.type === "video" && (
                     // Repurposed as the preview-open affordance. Nested
                     // <button> isn't legal HTML so we use a span with
@@ -1464,7 +1620,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
 /** Full-screen modal video player. Sits above the picker's slide-over
  *  pane so backdrop click closes only the preview. The native <video>
  *  controls give scrub/volume/fullscreen; we don't reimplement them. */
-function VaultVideoPreview({
+export function VaultVideoPreview({
   media, accountId, onClose,
 }: { media: VaultMedia; accountId: string | null; onClose: () => void }) {
   // Progressive mp4 only — NOT files.preview.url (a poster JPEG). Resolving
@@ -1481,6 +1637,13 @@ function VaultVideoPreview({
   // surface the same friendly hint about refresh + transcoding.
   const [loadError, setLoadError] = useState(false);
   useEffect(() => { setLoadError(false); }, [media.id]);
+  // Lock background scroll while open. The overlay is viewport-level (`fixed`),
+  // so without this the page behind it still scrolls under the backdrop.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, []);
   // DRM poster-frame lightbox cursor. Auto-advances so the user sees the
   // whole set; arrow keys / on-screen arrows let them step manually.
   const [frameIdx, setFrameIdx] = useState(0);
@@ -1516,14 +1679,18 @@ function VaultVideoPreview({
   );
   const showError = !src || loadError;
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center">
+    // `fixed`, not `absolute`: this is reused OUTSIDE the picker's own portal
+    // (e.g. the /vault manager), where an absolute overlay would size itself to
+    // whatever positioned ancestor it landed in — which rendered the video tiny
+    // and left the page behind it scrollable.
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
       <button
         type="button"
         aria-label="Close preview"
         onClick={onClose}
-        className="absolute inset-0 bg-black/75"
+        className="absolute inset-0 bg-black/80"
       />
-      <div className="relative max-w-[90%] max-h-[90%] flex flex-col items-center gap-3">
+      <div className="relative max-w-[95vw] max-h-[95vh] flex flex-col items-center gap-3">
         {drm ? (
           <>
             {/* DRM (FairPlay) video — segments are encrypted, so we can't
@@ -1533,7 +1700,7 @@ function VaultVideoPreview({
               <img
                 src={proxyImage(drmFrames[frameIdx], accountId)}
                 alt={`Frame ${frameIdx + 1} of ${drmFrames.length}`}
-                className="max-w-full max-h-[80vh] rounded-md shadow-2xl bg-black object-contain"
+                className="max-w-[92vw] max-h-[88vh] rounded-md shadow-2xl bg-black object-contain"
               />
               {drmFrames.length > 1 && (
                 <>
@@ -1579,7 +1746,7 @@ function VaultVideoPreview({
                 id: media.id, rawSrc, src,
               });
             }}
-            className="max-w-full max-h-[80vh] rounded-md shadow-2xl bg-black"
+            className="vault-video max-w-[92vw] max-h-[88vh] rounded-md shadow-2xl bg-black"
           />
         ) : (
           <div className="px-6 py-12 bg-panel rounded-md text-sm text-fg-dim border border-border max-w-md text-center space-y-2">

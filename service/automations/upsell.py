@@ -51,9 +51,24 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from random import Random
 
+import vault_ai_to_chatter
+
 from ._common import norm_text
 
 log = logging.getLogger("of-relay.automation.upsell")
+
+
+def vault_ai_offer_candidates(ppv_library_config: dict | None) -> list[dict]:
+    """Offer-Engine seam (S8): the armed vault-AI PPV drafts, as pickable offers.
+
+    The 1:1 seller's own shelf is `catalog_items`; this is the seam that lets an
+    approved-AND-ARMED solo draft — exported into `ppv_library_config` by the vault-AI
+    consumer (correction #2) — ride the same offer path, its `suggested_script` as the
+    copy and its `media_ids` as the media. Un-approved / un-armed drafts are invisible:
+    the adapter gates on the library master AND the entry's own `enabled`, so nothing
+    is sellable until an explicit arm. Pure pass-through to the adapter — no DB, no
+    send, no mutation."""
+    return vault_ai_to_chatter.armed_vault_ai_offers(ppv_library_config)
 
 # ── Price constants. These are SAFETY choices, owned as taste — NOT EV claims.
 # Every "optimal price" number anyone produced from this corpus was contaminated by
