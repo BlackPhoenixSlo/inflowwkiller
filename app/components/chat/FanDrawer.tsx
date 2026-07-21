@@ -46,7 +46,7 @@ function AiSellerChip({ accountId, fanId }: { accountId: string; fanId: number }
   );
   if (!pin && !offer) return null;
   return (
-    <div className="mt-1 inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-400">
+    <div className="mt-1 inline-flex flex-wrap md:flex-nowrap items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-400">
       <span>🎬</span>
       {pin && <span>{pin.script} · item {pin.position} · {pin.status}</span>}
       {offer && (
@@ -65,7 +65,7 @@ function AiSellerChip({ accountId, fanId }: { accountId: string; fanId: number }
         <button
           type="button"
           title="Cancel the AI offer and take over"
-          className="text-amber-400/70 hover:text-red-400"
+          className="shrink-0 md:shrink grid md:block place-items-center w-9 h-9 md:w-auto md:h-auto -my-2 md:my-0 text-base md:text-[10px] text-amber-400/70 hover:text-red-400"
           onClick={() => cancelM.mutate(offer.id)}
         >
           ×
@@ -93,7 +93,7 @@ function MassExcludeToggle({
         <div className="text-xs font-medium text-fg flex items-center gap-1.5">
           <span>🚫</span> {title}
         </div>
-        <div className="text-[10px] text-fg-dim leading-tight mt-0.5">{hint}</div>
+        <div className="hidden md:block text-[10px] text-fg-dim leading-tight mt-0.5">{hint}</div>
       </div>
       <button
         type="button"
@@ -103,14 +103,14 @@ function MassExcludeToggle({
         onClick={() => toggle.mutate(!isOn)}
         title={isOn ? `Remove from ${title}` : `Add to ${title}`}
         className={cn(
-          "relative shrink-0 w-10 h-6 rounded-full transition-colors disabled:opacity-50",
+          "relative shrink-0 w-12 h-7 md:w-10 md:h-6 rounded-full transition-colors disabled:opacity-50",
           isOn ? "bg-accent" : "bg-bg-elev-1 border border-border",
         )}
       >
         <span
           className={cn(
-            "absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform",
-            isOn ? "translate-x-4" : "translate-x-0",
+            "absolute top-0.5 left-0.5 w-6 h-6 md:w-5 md:h-5 rounded-full bg-white shadow transition-transform",
+            isOn ? "translate-x-5 md:translate-x-4" : "translate-x-0",
           )}
         />
       </button>
@@ -336,7 +336,7 @@ export function FanDrawer({
             <button
               type="button"
               onClick={onClose}
-              className="text-fg-dim hover:text-fg text-lg leading-none"
+              className="shrink-0 md:shrink grid md:block place-items-center w-11 h-11 md:w-auto md:h-auto -mr-2 md:mr-0 -mt-1 md:mt-0 text-2xl md:text-lg leading-none text-fg-dim hover:text-fg"
               aria-label="Close"
             >
               ×
@@ -344,7 +344,7 @@ export function FanDrawer({
           )}
         </header>
 
-        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-4">
           {isLoading && (
             <div className="text-xs text-fg-dim">Loading fan profile…</div>
           )}
@@ -354,7 +354,7 @@ export function FanDrawer({
               {/* Recency strip — the two signals you scan first when a
                *  chat header is clicked: did they just buy, are they still
                *  in the convo. Promoted out of the bottom stats grid. */}
-              <div className="grid grid-cols-2 gap-x-4 text-[11px]">
+              <div className="order-first md:order-none grid grid-cols-2 gap-x-4 text-[11px]">
                 <Stat label="Last purchase" value={fmtRelTime(lastPurchase)} />
                 <Stat label="Last message in" value={fmtRelTime(fan.last_message_received_at)} />
               </div>
@@ -362,13 +362,16 @@ export function FanDrawer({
               {/* Purchases chart at the top — quick visual of spend
                *  cadence. The detail row list ("Sales") is rendered at
                *  the bottom of the drawer below the stats grid. */}
-              <PpvChartSection
-                items={ppvHistoryQ.data?.items ?? []}
-                maxCents={ppvHistoryQ.data?.summary.max_cents ?? 0}
-                avgCents={ppvHistoryQ.data?.summary.avg_cents ?? 0}
-                loading={ppvHistoryQ.isLoading}
-              />
+              <div className="order-2 md:order-none">
+                <PpvChartSection
+                  items={ppvHistoryQ.data?.items ?? []}
+                  maxCents={ppvHistoryQ.data?.summary.max_cents ?? 0}
+                  avgCents={ppvHistoryQ.data?.summary.avg_cents ?? 0}
+                  loading={ppvHistoryQ.isLoading}
+                />
+              </div>
 
+              <div className="order-3 md:order-none flex flex-col gap-4">
               <Field label="Custom nickname" hint="Synced with OnlyFans. Saving updates OF's per-fan custom name and our local mirror.">
                 <input
                   type="text"
@@ -387,7 +390,7 @@ export function FanDrawer({
                     });
                   }}
                   placeholder={chat.withUser.name ?? fan.of_display_name ?? ""}
-                  className="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-sm focus:outline-none focus:border-accent"
+                  className="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-sm focus:outline-none focus:border-accent"
                 />
               </Field>
 
@@ -408,7 +411,7 @@ export function FanDrawer({
                   }}
                   rows={6}
                   placeholder="loves bondage, German, paid $500 last week…"
-                  className="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent resize-y"
+                  className="w-full h-16 md:h-auto bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent resize-y"
                 />
               </Field>
 
@@ -427,7 +430,7 @@ export function FanDrawer({
                     update.mutate({ tags: next });
                   }}
                   placeholder="whale, EU, kink:feet"
-                  className="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+                  className="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent"
                 />
                 {fan.tags?.length ? (
                   <div className="mt-2 flex flex-wrap gap-1">
@@ -439,8 +442,9 @@ export function FanDrawer({
                   </div>
                 ) : null}
               </Field>
+              </div>
 
-              <div className="space-y-1.5">
+              <div className="order-4 md:order-none space-y-1.5">
                 <MassExcludeToggle accountId={accountId} fanId={fanId} kind="ppv"
                   title="MASSppvEXCLUDE" hint="Never include in mass PPV sends." />
                 <MassExcludeToggle accountId={accountId} fanId={fanId} kind="dm"
@@ -468,7 +472,7 @@ export function FanDrawer({
                   sub?.expiredAt ?? null,
                 );
                 return (
-                  <div className="border-t border-border pt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]">
+                  <div className="order-1 md:order-none border-t border-border pt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]">
                     <Stat label="Lifetime spend" value={fmtUsd(spendCents)} />
                     <Stat label="Sub status" value={status.short} tone={status.tone} />
                     <Stat
@@ -501,6 +505,7 @@ export function FanDrawer({
                 );
               })()}
 
+              <div className="order-5 md:order-none">
               <PpvSalesSection
                 items={ppvHistoryQ.data?.items ?? []}
                 loading={ppvHistoryQ.isLoading}
@@ -524,13 +529,19 @@ export function FanDrawer({
                   ppvHistoryQ.isFetching || chatMediaQ.isFetchingNextPage
                 }
               />
+              </div>
 
-              <UnsoldPpvsSection
-                items={unsoldPpvs}
-                loading={unsoldChatMediaQ.isLoading}
-                accountId={accountId}
-                onComposeWith={onComposeWith}
-              />
+              {/* md:contents (not md:order-none): UnsoldPpvsSection renders
+               *  null when there is nothing unsold, and an empty wrapper
+               *  would still consume a gap-4 slot on desktop. */}
+              <div className="order-6 md:contents">
+                <UnsoldPpvsSection
+                  items={unsoldPpvs}
+                  loading={unsoldChatMediaQ.isLoading}
+                  accountId={accountId}
+                  onComposeWith={onComposeWith}
+                />
+              </div>
 
               {update.error && (
                 <div className="text-err text-xs">
@@ -557,7 +568,7 @@ export function FanDrawer({
         overlayHideOnDesktopWhenPinned && "md:hidden",
       )}
     >
-      <div className="flex-1 bg-black/40 pointer-events-auto" onClick={onClose} />
+      <div className="flex-1 min-w-14 sm:min-w-0 bg-black/40 pointer-events-auto" onClick={onClose} />
       {panel}
     </div>
   );
@@ -572,7 +583,7 @@ function Field({
         <label className="text-[11px] font-medium text-fg-dim uppercase tracking-wide">{label}</label>
       </div>
       {children}
-      {hint && <div className="text-[10px] text-fg-dim">{hint}</div>}
+      {hint && <div className="hidden md:block text-[10px] text-fg-dim">{hint}</div>}
     </div>
   );
 }
@@ -641,13 +652,15 @@ function PpvChartSection({
           <span>Avg <span className="text-warn font-medium">{fmtUsd(avgCents)}</span></span>
         </div>
       </div>
-      {loading && items.length === 0 ? (
-        <div className="text-[10px] text-fg-dim h-24 flex items-center">Loading purchase history…</div>
-      ) : items.length === 0 ? (
-        <div className="text-[10px] text-fg-dim h-24 flex items-center">No PPV purchases yet.</div>
-      ) : (
-        <PpvHistoryChart items={items} maxCents={maxCents} />
-      )}
+      <div className="hidden md:block">
+        {loading && items.length === 0 ? (
+          <div className="text-[10px] text-fg-dim h-24 flex items-center">Loading purchase history…</div>
+        ) : items.length === 0 ? (
+          <div className="text-[10px] text-fg-dim h-24 flex items-center">No PPV purchases yet.</div>
+        ) : (
+          <PpvHistoryChart items={items} maxCents={maxCents} />
+        )}
+      </div>
     </div>
   );
 }
@@ -744,7 +757,7 @@ function PpvSalesSection({
             title="Refresh OnlyFans gallery now (otherwise auto-refreshes after 30 min)"
             aria-label="Refresh gallery"
             className={cn(
-              "text-fg-dim hover:text-fg text-[12px] leading-none disabled:opacity-50",
+              "w-9 h-9 md:w-auto md:h-auto grid md:block place-items-center text-fg-dim hover:text-fg text-base md:text-[12px] leading-none disabled:opacity-50",
               chatMediaFetching && "animate-spin",
             )}
           >
@@ -774,7 +787,7 @@ function PpvSalesSection({
             <button
               type="button"
               onClick={() => setShowAll(true)}
-              className="w-full text-[10px] text-fg-dim hover:text-fg border border-dashed border-border rounded-md py-1.5"
+              className="w-full text-xs md:text-[10px]/[1.5] text-fg-dim hover:text-fg border border-dashed border-border rounded-md py-3 md:py-1.5"
             >
               Show {hiddenCount} more
             </button>
@@ -783,7 +796,7 @@ function PpvSalesSection({
             <button
               type="button"
               onClick={() => setShowAll(false)}
-              className="w-full text-[10px] text-fg-dim hover:text-fg border border-dashed border-border rounded-md py-1.5"
+              className="w-full text-xs md:text-[10px]/[1.5] text-fg-dim hover:text-fg border border-dashed border-border rounded-md py-3 md:py-1.5"
             >
               Show less
             </button>
@@ -801,7 +814,7 @@ function PpvSalesSection({
               type="button"
               onClick={onLoadMore}
               disabled={serverFetching}
-              className="w-full text-[11px] text-accent hover:text-accent-hover border border-dashed border-accent/50 rounded-md py-1.5 disabled:opacity-50 disabled:cursor-progress"
+              className="w-full text-sm md:text-[11px]/[1.5] text-accent hover:text-accent-hover border border-dashed border-accent/50 rounded-md py-3 md:py-1.5 disabled:opacity-50 disabled:cursor-progress"
             >
               {serverFetching ? "Loading…" : "Load more from server"}
             </button>
@@ -1149,6 +1162,16 @@ function VideoScrubThumb({
   // hover of the same video can't reach into a freshly-started build.
   const [sessionId, setSessionId] = useState<string>("");
   const hoverTimerRef = useRef<number | null>(null);
+  // Touch devices synthesise mouseenter on tap, so every tap on this thumb
+  // would commit a 12-frame relay ffmpeg storyboard build (and the cancel
+  // POST rides on mouseleave, which may never fire) while the click opens
+  // the lightbox on top of it. Real pointers keep the hover-scrub exactly
+  // as it is today.
+  const [canHover] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia("(hover: hover) and (pointer: fine)").matches,
+  );
 
   const start = () => {
     if (hoverTimerRef.current != null) window.clearTimeout(hoverTimerRef.current);
@@ -1228,10 +1251,10 @@ function VideoScrubThumb({
     <button
       type="button"
       onClick={(e) => { e.stopPropagation(); onClick(); }}
-      onMouseEnter={start}
-      onMouseLeave={stop}
+      onMouseEnter={canHover ? start : undefined}
+      onMouseLeave={canHover ? stop : undefined}
       className="relative shrink-0 w-20 h-20 rounded-md bg-bg-elev-2 border border-border overflow-hidden group"
-      title="Hover to scrub, click to play"
+      title={canHover ? "Hover to scrub, click to play" : "Tap to play"}
     >
       {/* Static thumb — always rendered as the loading state /
        *  fallback when frames fail. Frames fade in on top. */}
@@ -1321,6 +1344,7 @@ function MediaLightbox({ media, onClose }: { media: LightboxMedia; onClose: () =
           src={media.proxiedUrl}
           controls
           autoPlay
+          playsInline
           className="max-w-full max-h-full rounded-md"
           onClick={(e) => e.stopPropagation()}
         />
@@ -1335,7 +1359,7 @@ function MediaLightbox({ media, onClose }: { media: LightboxMedia; onClose: () =
       <button
         type="button"
         onClick={onClose}
-        className="absolute top-3 right-3 text-white text-2xl leading-none w-9 h-9 grid place-items-center rounded-full bg-black/40 hover:bg-black/60"
+        className="absolute right-3 top-[calc(0.75rem_+_env(safe-area-inset-top))] md:top-3 text-white text-2xl leading-none w-11 h-11 md:w-9 md:h-9 grid place-items-center rounded-full bg-black/40 hover:bg-black/60"
         aria-label="Close preview"
       >
         ×

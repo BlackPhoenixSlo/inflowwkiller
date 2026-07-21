@@ -863,19 +863,39 @@ export function EmojiQuickRow({
   const row = useMemo(() => buildQuickRow(recents, slots), [recents, slots]);
 
   return (
-    <div className="flex gap-1">
-      {row.map((e) => (
-        <button
-          key={e}
-          type="button"
-          disabled={disabled}
-          onClick={() => { pushRecent(e); onInsert(e); }}
-          className="w-7 h-7 grid place-items-center rounded-md hover:bg-bg-elev-1 disabled:opacity-40 text-base"
-        >
-          {e}
-        </button>
-      ))}
-    </div>
+    <>
+      {/* Desktop row — unchanged: all 8 slots, 28px buttons. `hidden md:flex`
+       *  (no bare `flex`) so it computes to display:flex at >=768px exactly
+       *  as the original single div did. */}
+      <div className="hidden md:flex gap-1">
+        {row.map((e) => (
+          <button
+            key={e}
+            type="button"
+            disabled={disabled}
+            onClick={() => { pushRecent(e); onInsert(e); }}
+            className="w-7 h-7 grid place-items-center rounded-md hover:bg-bg-elev-1 disabled:opacity-40 text-base"
+          >
+            {e}
+          </button>
+        ))}
+      </div>
+      {/* Phone row — 5 slots at 40px. display:none at >=768px, so it
+       *  generates no box and cannot affect the desktop flex line. */}
+      <div className="md:hidden flex gap-1">
+        {row.slice(0, 5).map((e) => (
+          <button
+            key={e}
+            type="button"
+            disabled={disabled}
+            onClick={() => { pushRecent(e); onInsert(e); }}
+            className="w-10 h-10 grid place-items-center rounded-md hover:bg-bg-elev-1 disabled:opacity-40 text-base"
+          >
+            {e}
+          </button>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -924,8 +944,8 @@ export function EmojiPickerButton({
       if (popRef.current?.contains(t)) return;
       setOpen(false);
     };
-    window.addEventListener("mousedown", onClick);
-    return () => window.removeEventListener("mousedown", onClick);
+    window.addEventListener("pointerdown", onClick);
+    return () => window.removeEventListener("pointerdown", onClick);
   }, [open]);
 
   useLayoutEffect(() => {
@@ -1013,7 +1033,7 @@ export function EmojiPickerButton({
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search emoji…"
-              className="w-full bg-bg border border-border rounded-md px-2 py-1 text-xs placeholder:text-muted focus:outline-none focus:border-accent"
+              className="w-full bg-bg border border-border rounded-md px-2 py-1 text-base md:text-xs placeholder:text-muted focus:outline-none focus:border-accent"
             />
           </div>
 
@@ -1024,7 +1044,7 @@ export function EmojiPickerButton({
                   No emoji match &ldquo;{search}&rdquo;.
                 </div>
               ) : (
-                <div className="grid grid-cols-8 gap-1">
+                <div className="grid grid-cols-6 md:grid-cols-8 gap-1">
                   {filtered.map((e) => (
                     <EmojiBtn key={e} emoji={e} onClick={pick} />
                   ))}
@@ -1039,7 +1059,7 @@ export function EmojiPickerButton({
                     type="button"
                     onClick={() => setTab("recents")}
                     className={cn(
-                      "px-2 py-1 rounded-md text-base shrink-0",
+                      "px-3 py-2 md:px-2 md:py-1 rounded-md text-xl md:text-base shrink-0",
                       tab === "recents" ? "bg-bg-elev-1" : "hover:bg-bg-elev-1/50",
                     )}
                     title="Recent"
@@ -1053,7 +1073,7 @@ export function EmojiPickerButton({
                     type="button"
                     onClick={() => setTab(c.id)}
                     className={cn(
-                      "px-2 py-1 rounded-md text-base shrink-0",
+                      "px-3 py-2 md:px-2 md:py-1 rounded-md text-xl md:text-base shrink-0",
                       tab === c.id ? "bg-bg-elev-1" : "hover:bg-bg-elev-1/50",
                     )}
                     title={c.id}
@@ -1064,13 +1084,13 @@ export function EmojiPickerButton({
               </div>
               <div className="p-2 flex-1 min-h-0 overflow-y-auto">
                 {tab === "recents" && recents.length > 0 ? (
-                  <div className="grid grid-cols-8 gap-1">
+                  <div className="grid grid-cols-6 md:grid-cols-8 gap-1">
                     {recents.map((e, i) => (
                       <EmojiBtn key={`${e}-${i}`} emoji={e} onClick={pick} />
                     ))}
                   </div>
                 ) : (
-                  <div className="grid grid-cols-8 gap-1">
+                  <div className="grid grid-cols-6 md:grid-cols-8 gap-1">
                     {activeCategory.items.map(([e]) => (
                       <EmojiBtn key={e} emoji={e} onClick={pick} />
                     ))}
@@ -1091,7 +1111,7 @@ function EmojiBtn({ emoji, onClick }: { emoji: string; onClick: (e: string) => v
     <button
       type="button"
       onClick={() => onClick(emoji)}
-      className="w-7 h-7 grid place-items-center rounded-md hover:bg-bg-elev-1 text-base"
+      className="w-11 h-11 md:w-7 md:h-7 grid place-items-center rounded-md hover:bg-bg-elev-1 text-2xl md:text-base"
     >
       {emoji}
     </button>

@@ -27,7 +27,15 @@ export default function FanAvatar({
     >
       {src ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={src} alt={alt} className="w-full h-full object-cover" />
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          decoding="async"
+          width={40}
+          height={40}
+          className="w-full h-full object-cover"
+        />
       ) : (
         <div className="w-full h-full grid place-items-center text-fg-dim text-xs">
           {alt[0]?.toUpperCase() ?? "?"}

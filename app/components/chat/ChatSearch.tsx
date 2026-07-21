@@ -203,7 +203,7 @@ export function ChatSearch(props: ChatSearchProps) {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search this conversation…"
-          className="flex-1 bg-bg border border-border rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:border-accent placeholder:text-muted"
+          className="flex-1 bg-bg border border-border rounded-md px-2.5 py-2.5 md:py-1.5 text-base md:text-sm focus:outline-none focus:border-accent placeholder:text-muted"
         />
         {(searching || jumpingId != null || autoFilling || loadingOlder) && (
           <span className="text-[11px] text-fg-dim">
@@ -219,8 +219,9 @@ export function ChatSearch(props: ChatSearchProps) {
         <button
           type="button"
           onClick={onClose}
-          className="text-[11px] text-fg-dim hover:text-fg px-1"
+          className="text-fg-dim hover:text-fg w-10 h-10 md:w-auto md:h-auto grid md:block place-items-center text-base md:text-[11px] md:px-1"
           title="Close"
+          aria-label="Close search"
         >
           ✕
         </button>
@@ -249,7 +250,7 @@ export function ChatSearch(props: ChatSearchProps) {
                 type="button"
                 onClick={() => handlePick(id)}
                 disabled={jumpingId != null}
-                className="w-full text-left px-2.5 py-1.5 hover:bg-bg-elev-1 text-[12px] disabled:opacity-60"
+                className="w-full text-left px-2.5 py-3 md:py-1.5 hover:bg-bg-elev-1 text-[12px] disabled:opacity-60"
               >
                 <div className="flex items-center gap-2">
                   {msg ? (

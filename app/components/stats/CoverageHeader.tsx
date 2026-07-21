@@ -85,9 +85,10 @@ export default function CoverageHeader({ from, to }: Props) {
           ) : accounts.length === 0 ? (
             <div className="p-4 text-sm text-fg-dim">No outbound traffic in this window.</div>
           ) : (
+            <div className="overflow-x-auto">
             <table
               className={cn(
-                "w-full text-sm transition-opacity",
+                "w-full min-w-[560px] text-sm transition-opacity",
                 q.isFetching && q.isPlaceholderData && "opacity-60",
               )}
             >
@@ -105,6 +106,7 @@ export default function CoverageHeader({ from, to }: Props) {
                 {accounts.map((r) => <AccountRow key={r.account_id} row={r} />)}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       )}

@@ -95,7 +95,7 @@ export default function PerEmployeeTable({ from, to }: Props) {
 
   return (
     <Card className="p-0 overflow-hidden">
-      <header className="flex items-center justify-between p-4 border-b border-border gap-4">
+      <header className="flex flex-col md:flex-row md:items-center justify-between p-4 border-b border-border gap-3 md:gap-4">
         <div>
           <h2 className="text-sm font-medium text-fg">Per-employee revenue</h2>
           <p className="text-xs text-fg-dim mt-0.5">
@@ -107,22 +107,22 @@ export default function PerEmployeeTable({ from, to }: Props) {
             )}
           </p>
         </div>
-        <div className="flex items-center gap-4 shrink-0">
-          <label className="flex items-center gap-2 text-xs text-fg-dim">
+        <div className="flex flex-wrap md:flex-nowrap items-center gap-4 shrink-0">
+          <label className="flex items-center gap-2 py-2 md:py-0 text-xs text-fg-dim">
             <input
               type="checkbox"
               checked={hideZeroRev}
               onChange={(e) => setHideZeroRev(e.target.checked)}
-              className="accent-accent"
+              className="w-5 h-5 md:w-auto md:h-auto accent-accent"
             />
             Hide $0 rows
           </label>
-          <label className="flex items-center gap-2 text-xs text-fg-dim">
+          <label className="flex items-center gap-2 py-2 md:py-0 text-xs text-fg-dim">
             <input
               type="checkbox"
               checked={!byAccount}
               onChange={(e) => setByAccount(!e.target.checked)}
-              className="accent-accent"
+              className="w-5 h-5 md:w-auto md:h-auto accent-accent"
             />
             Show totals only
           </label>
@@ -149,6 +149,7 @@ export default function PerEmployeeTable({ from, to }: Props) {
           )}
         </div>
       ) : (
+        <div className="overflow-x-auto">
         <table
           className={cn(
             "w-full text-sm transition-opacity",
@@ -160,20 +161,20 @@ export default function PerEmployeeTable({ from, to }: Props) {
               <HeaderCell label="Employee" k="display_name" curr={sortKey} dir={sortDir} onClick={toggleSort} align="left" />
               <HeaderCell label="Messages" k="messages_sent" curr={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
               <HeaderCell label="PPVs"     k="ppv_conversions" curr={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
-              <th className="px-4 py-2 font-medium text-right select-none">PPV Rev</th>
-              <th className="px-4 py-2 font-medium text-right select-none">Tip Rev</th>
+              <th className="hidden md:table-cell px-2 md:px-4 py-2 font-medium text-right select-none">PPV Rev</th>
+              <th className="hidden md:table-cell px-2 md:px-4 py-2 font-medium text-right select-none">Tip Rev</th>
               <HeaderCell label="Total"    k="revenue_cents" curr={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
             </tr>
           </thead>
           <tbody>
             {q.isPending && Array.from({ length: 5 }).map((_, i) => (
               <tr key={`skeleton:${i}`} className="border-b border-border last:border-0">
-                <td className="px-4 py-2.5 text-fg-dim">—</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-fg-dim">—</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-fg-dim">—</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-fg-dim">—</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-fg-dim">—</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-fg-dim">—</td>
+                <td className="px-2 md:px-4 py-2.5 text-fg-dim">—</td>
+                <td className="px-2 md:px-4 py-2.5 text-right tabular-nums text-fg-dim">—</td>
+                <td className="px-2 md:px-4 py-2.5 text-right tabular-nums text-fg-dim">—</td>
+                <td className="hidden md:table-cell px-2 md:px-4 py-2.5 text-right tabular-nums text-fg-dim">—</td>
+                <td className="hidden md:table-cell px-2 md:px-4 py-2.5 text-right tabular-nums text-fg-dim">—</td>
+                <td className="px-2 md:px-4 py-2.5 text-right tabular-nums text-fg-dim">—</td>
               </tr>
             ))}
             {visible.map((r) => {
@@ -193,7 +194,7 @@ export default function PerEmployeeTable({ from, to }: Props) {
                       expandable && "cursor-pointer hover:bg-bg-elev-1/40",
                     )}
                   >
-                    <td className="px-4 py-2.5">
+                    <td className="px-2 md:px-4 py-2.5">
                       <div className="flex items-center gap-2">
                         {expandable && (
                           <span className="text-fg-dim text-xs w-3 inline-block">
@@ -210,24 +211,24 @@ export default function PerEmployeeTable({ from, to }: Props) {
                         )}
                       </div>
                     </td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">
+                    <td className="px-2 md:px-4 py-2.5 text-right tabular-nums">
                       {r.messages_sent.toLocaleString()}
                     </td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">
+                    <td className="px-2 md:px-4 py-2.5 text-right tabular-nums">
                       {r.ppv_conversions.toLocaleString()}
                     </td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">
+                    <td className="hidden md:table-cell px-2 md:px-4 py-2.5 text-right tabular-nums">
                       {fmtKindCents(r.revenue_by_kind.ppv)}
                     </td>
                     <td
                       className={cn(
-                        "px-4 py-2.5 text-right tabular-nums",
+                        "hidden md:table-cell px-2 md:px-4 py-2.5 text-right tabular-nums",
                         !isOrphan && r.revenue_by_kind.tip > 0 && "text-ok font-medium",
                       )}
                     >
                       {fmtKindCents(r.revenue_by_kind.tip)}
                     </td>
-                    <td className="px-4 py-2.5 text-right tabular-nums font-medium">
+                    <td className="px-2 md:px-4 py-2.5 text-right tabular-nums font-medium">
                       {fmtCentsBlankZero(r.revenue_cents)}
                     </td>
                   </tr>
@@ -241,31 +242,32 @@ export default function PerEmployeeTable({ from, to }: Props) {
           {visible.length >= 1 && (
             <tfoot>
               <tr className="border-t border-border bg-bg-elev-1/30">
-                <td className="px-4 py-2.5 text-[11px] uppercase tracking-wide text-fg-dim">
+                <td className="px-2 md:px-4 py-2.5 text-[11px] uppercase tracking-wide text-fg-dim">
                   Total ({visible.length})
                 </td>
-                <td className="px-4 py-2.5 text-right tabular-nums font-medium">
+                <td className="px-2 md:px-4 py-2.5 text-right tabular-nums font-medium">
                   {visible.reduce((s, r) => s + r.messages_sent, 0).toLocaleString()}
                 </td>
-                <td className="px-4 py-2.5 text-right tabular-nums font-medium">
+                <td className="px-2 md:px-4 py-2.5 text-right tabular-nums font-medium">
                   {visible.reduce((s, r) => s + r.ppv_conversions, 0).toLocaleString()}
                 </td>
-                <td className="px-4 py-2.5 text-right tabular-nums font-medium">
+                <td className="hidden md:table-cell px-2 md:px-4 py-2.5 text-right tabular-nums font-medium">
                   {fmtCentsBlankZero(visible.reduce((s, r) => s + r.revenue_by_kind.ppv, 0))}
                 </td>
-                <td className="px-4 py-2.5 text-right tabular-nums font-medium">
+                <td className="hidden md:table-cell px-2 md:px-4 py-2.5 text-right tabular-nums font-medium">
                   {/* Every row (Unattributed included) carries a real by-kind
                       split since view rev 0042 — fold uniformly. PPV+Tip may
                       trail Total by `custom`-kind cents (rare). */}
                   {fmtCentsBlankZero(visible.reduce((s, r) => s + r.revenue_by_kind.tip, 0))}
                 </td>
-                <td className="px-4 py-2.5 text-right tabular-nums font-semibold">
+                <td className="px-2 md:px-4 py-2.5 text-right tabular-nums font-semibold">
                   {fmtCentsBlankZero(visible.reduce((s, r) => s + r.revenue_cents, 0))}
                 </td>
               </tr>
             </tfoot>
           )}
         </table>
+        </div>
       )}
     </Card>
   );
@@ -286,7 +288,7 @@ function HeaderCell({
     <th
       onClick={() => onClick(k)}
       className={cn(
-        "px-4 py-2 font-medium cursor-pointer select-none",
+        "px-2 md:px-4 py-2 font-medium cursor-pointer select-none",
         align === "right" ? "text-right" : "text-left",
         active && "text-fg",
       )}
@@ -302,27 +304,27 @@ function HeaderCell({
 function SubRow({ sub, orphanParent }: { sub: PerEmployeeAccountRow; orphanParent: boolean }) {
   return (
     <tr className="border-b border-border last:border-0 bg-bg-elev-1/30">
-      <td className="px-4 py-1.5 pl-10 text-xs text-fg-dim">
+      <td className="px-2 md:px-4 py-1.5 pl-6 md:pl-10 text-xs text-fg-dim">
         {sub.account_nickname ?? <span className="font-mono">{sub.account_id ?? "—"}</span>}
       </td>
-      <td className="px-4 py-1.5 text-right tabular-nums text-xs text-fg-dim">
+      <td className="px-2 md:px-4 py-1.5 text-right tabular-nums text-xs text-fg-dim">
         {sub.messages_sent.toLocaleString()}
       </td>
-      <td className="px-4 py-1.5 text-right tabular-nums text-xs text-fg-dim">
+      <td className="px-2 md:px-4 py-1.5 text-right tabular-nums text-xs text-fg-dim">
         {sub.ppv_conversions.toLocaleString()}
       </td>
-      <td className="px-4 py-1.5 text-right tabular-nums text-xs text-fg-dim">
+      <td className="hidden md:table-cell px-2 md:px-4 py-1.5 text-right tabular-nums text-xs text-fg-dim">
         {fmtKindCents(sub.revenue_by_kind.ppv)}
       </td>
       <td
         className={cn(
-          "px-4 py-1.5 text-right tabular-nums text-xs",
+          "hidden md:table-cell px-2 md:px-4 py-1.5 text-right tabular-nums text-xs",
           !orphanParent && sub.revenue_by_kind.tip > 0 ? "text-ok" : "text-fg-dim",
         )}
       >
         {fmtKindCents(sub.revenue_by_kind.tip)}
       </td>
-      <td className="px-4 py-1.5 text-right tabular-nums text-xs text-fg-dim">
+      <td className="px-2 md:px-4 py-1.5 text-right tabular-nums text-xs text-fg-dim">
         {fmtCentsBlankZero(sub.revenue_cents)}
       </td>
     </tr>

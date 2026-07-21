@@ -54,7 +54,7 @@ export default function TopTippersCard({
           No tips in this window yet.
         </div>
       ) : (
-        <ul className="divide-y divide-border">
+        <ul className="divide-y divide-border max-h-56 overflow-y-auto overscroll-contain md:max-h-none md:overflow-y-visible">
           {rows.map((r) => {
             const username = r.fan.username;
             const clickable = !!username && !!onSelectFan;
@@ -65,7 +65,7 @@ export default function TopTippersCard({
                   disabled={!clickable}
                   onClick={() => username && onSelectFan?.(username)}
                   className={
-                    "w-full text-left px-3 py-2 flex items-center gap-2 text-xs" +
+                    "w-full text-left px-3 py-3 md:py-2 flex items-center gap-2 text-sm md:text-xs" +
                     (clickable
                       ? " hover:bg-bg-elev-1/40 cursor-pointer"
                       : " cursor-default")
@@ -77,13 +77,19 @@ export default function TopTippersCard({
                   <span className="w-5 tabular-nums text-fg-dim">
                     {r.rank}.
                   </span>
-                  <span className="flex-1 truncate text-fg">
-                    @{username || `fan-${r.fan_id}`}
+                  <span className="flex-1 min-w-0">
+                    <span className="block truncate text-fg">
+                      @{username || `fan-${r.fan_id}`}
+                    </span>
+                    <span className="block md:hidden text-[11px] text-fg-dim truncate">
+                      {r.tip_count} tip{r.tip_count === 1 ? "" : "s"} ·{" "}
+                      {fmtRelTime(r.last_tip_at)}
+                    </span>
                   </span>
-                  <span className="tabular-nums font-medium text-fg">
+                  <span className="tabular-nums font-medium text-fg shrink-0">
                     {fmtCents(r.total_cents)}
                   </span>
-                  <span className="text-fg-dim whitespace-nowrap">
+                  <span className="hidden md:inline text-fg-dim whitespace-nowrap">
                     ({r.tip_count} tip{r.tip_count === 1 ? "" : "s"} ·{" "}
                     {fmtRelTime(r.last_tip_at)})
                   </span>

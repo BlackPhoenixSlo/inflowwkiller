@@ -104,6 +104,7 @@ export default function PerAutomationTable({ from, to }: Props) {
           No automation activity in this window.
         </div>
       ) : (
+        <div className="overflow-x-auto">
         <table
           className={cn(
             "w-full text-sm transition-opacity",
@@ -115,8 +116,8 @@ export default function PerAutomationTable({ from, to }: Props) {
               <HeaderCell label="Automation" k="automation" curr={sortKey} dir={sortDir} onClick={toggleSort} align="left" />
               <HeaderCell label="Messages" k="messages_sent" curr={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
               <HeaderCell label="Earnings" k="revenue_cents" curr={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
-              <HeaderCell label="LLM calls" k="llm_calls" curr={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
-              <th className="px-4 py-2 font-medium text-right select-none">Tokens (in/out)</th>
+              <HeaderCell label="LLM calls" k="llm_calls" curr={sortKey} dir={sortDir} onClick={toggleSort} align="right" thClass="hidden md:table-cell" />
+              <th className="hidden md:table-cell px-4 py-2 font-medium text-right select-none">Tokens (in/out)</th>
               <HeaderCell label="Spend" k="cost_millicents" curr={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
             </tr>
           </thead>
@@ -124,38 +125,49 @@ export default function PerAutomationTable({ from, to }: Props) {
             {q.isPending && Array.from({ length: 5 }).map((_, i) => (
               <tr key={`skeleton:${i}`} className="border-b border-border last:border-0">
                 {Array.from({ length: 6 }).map((__, j) => (
-                  <td key={j} className="px-4 py-2.5 text-fg-dim tabular-nums">—</td>
+                  <td
+                    key={j}
+                    className={cn(
+                      "px-2 md:px-4 py-2.5 text-fg-dim tabular-nums",
+                      // Mirror the two md-only columns (LLM calls, Tokens) or the
+                      // loading state renders 6 cells under a 4-column header.
+                      (j === 3 || j === 4) && "hidden md:table-cell",
+                    )}
+                  >
+                    —
+                  </td>
                 ))}
               </tr>
             ))}
             {sorted.map((r) => (
               <tr key={r.automation} className="border-b border-border last:border-0 hover:bg-bg-elev-1/40">
-                <td className="px-4 py-2.5 font-medium text-fg">{label(r.automation)}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{r.messages_sent.toLocaleString()}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums font-semibold">
+                <td className="px-2 md:px-4 py-2.5 font-medium text-fg">{label(r.automation)}</td>
+                <td className="px-2 md:px-4 py-2.5 text-right tabular-nums">{r.messages_sent.toLocaleString()}</td>
+                <td className="px-2 md:px-4 py-2.5 text-right tabular-nums font-semibold">
                   {fmtCentsBlankZero(r.revenue_cents)}
                 </td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-fg-dim">{r.llm_calls.toLocaleString()}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-fg-dim">
+                <td className="hidden md:table-cell px-4 py-2.5 text-right tabular-nums text-fg-dim">{r.llm_calls.toLocaleString()}</td>
+                <td className="hidden md:table-cell px-4 py-2.5 text-right tabular-nums text-fg-dim">
                   {r.llm_calls > 0 ? `${fmtTokens(r.tokens_in)} / ${fmtTokens(r.tokens_out)}` : "—"}
                 </td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{fmtCentsBlankZero(r.cost_cents)}</td>
+                <td className="px-2 md:px-4 py-2.5 text-right tabular-nums">{fmtCentsBlankZero(r.cost_cents)}</td>
               </tr>
             ))}
           </tbody>
           {totals && (
             <tfoot>
               <tr className="border-t border-border bg-bg-elev-1/30 text-fg font-medium">
-                <td className="px-4 py-2.5">Total</td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{totals.messages_sent.toLocaleString()}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{fmtCentsBlankZero(totals.revenue_cents)}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{totals.llm_calls.toLocaleString()}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-fg-dim">—</td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{fmtCentsBlankZero(totals.cost_cents)}</td>
+                <td className="px-2 md:px-4 py-2.5">Total</td>
+                <td className="px-2 md:px-4 py-2.5 text-right tabular-nums">{totals.messages_sent.toLocaleString()}</td>
+                <td className="px-2 md:px-4 py-2.5 text-right tabular-nums">{fmtCentsBlankZero(totals.revenue_cents)}</td>
+                <td className="hidden md:table-cell px-4 py-2.5 text-right tabular-nums">{totals.llm_calls.toLocaleString()}</td>
+                <td className="hidden md:table-cell px-4 py-2.5 text-right tabular-nums text-fg-dim">—</td>
+                <td className="px-2 md:px-4 py-2.5 text-right tabular-nums">{fmtCentsBlankZero(totals.cost_cents)}</td>
               </tr>
             </tfoot>
           )}
         </table>
+        </div>
       )}
     </Card>
   );
@@ -168,6 +180,7 @@ function HeaderCell({
   dir,
   onClick,
   align,
+  thClass,
 }: {
   label: string;
   k: SortKey;
@@ -175,13 +188,16 @@ function HeaderCell({
   dir: SortDir;
   onClick: (k: SortKey) => void;
   align: "left" | "right";
+  /** Extra classes on the <th> (used to drop diagnostic columns below md). */
+  thClass?: string;
 }) {
   const active = curr === k;
   return (
     <th
       className={cn(
-        "px-4 py-2 font-medium select-none cursor-pointer hover:text-fg",
+        "px-2 md:px-4 py-2 font-medium select-none cursor-pointer hover:text-fg",
         align === "right" ? "text-right" : "text-left",
+        thClass,
       )}
       onClick={() => onClick(k)}
     >

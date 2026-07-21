@@ -138,10 +138,13 @@ function useClickOutside<T extends HTMLElement>(onClose: () => void) {
       if (!ref.current.contains(e.target as Node)) onClose();
     }
     function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
-    document.addEventListener("mousedown", onDown);
+    // pointerdown, not mousedown: iOS only synthesises mousedown for taps on
+    // clickable nodes, so tapping the backdrop never dismissed these popovers.
+    // pointerdown precedes mousedown for a mouse, so desktop is unchanged.
+    document.addEventListener("pointerdown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("pointerdown", onDown);
       document.removeEventListener("keydown", onKey);
     };
   }, [onClose]);
@@ -336,7 +339,7 @@ export default function CompetitorReports() {
         <div className="text-[15px] font-medium mb-3" style={{ color: "#111827" }}>Creator Reports</div>
 
         {/* Tabs + controls */}
-        <div className="flex items-center justify-between border-b" style={{ borderColor: "#e5e7eb" }}>
+        <div className="flex flex-col items-stretch gap-2 md:flex-row md:items-center md:justify-between md:gap-0 border-b" style={{ borderColor: "#e5e7eb" }}>
           <div className="flex items-center gap-6">
             <button
               type="button"
@@ -370,7 +373,7 @@ export default function CompetitorReports() {
             </button>
           </div>
 
-          <div className="flex items-center gap-2 pb-2">
+          <div className="flex flex-wrap md:flex-nowrap items-center gap-2 pb-2">
             <DateRangePill from={from} to={to} onChange={(f, t) => { setFrom(f); setTo(t); }} />
             <SelectPill
               label={period === "day" ? "Shown by day" : period === "week" ? "Shown by week" : "Shown by month"}
@@ -412,8 +415,8 @@ export default function CompetitorReports() {
           <Info />
         </div>
 
-        <div className="grid grid-cols-4 gap-x-8 gap-y-4 pb-5 border-b" style={{ borderColor: "#f1f5f9" }}>
-          <div className="row-span-2 flex items-start gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 md:gap-x-8 gap-y-4 pb-5 border-b" style={{ borderColor: "#f1f5f9" }}>
+          <div className="col-span-2 md:col-span-1 md:row-span-2 flex items-start gap-3">
             <IconCircle color="#dbeafe"><RocketIcon /></IconCircle>
             <div>
               <div className="text-[12px]" style={{ color: "#2563eb" }}>Total earnings</div>
@@ -444,7 +447,7 @@ export default function CompetitorReports() {
           <span className="text-[13px] font-medium" style={{ color: "#111827" }}>Earnings by channel</span>
           <Info />
         </div>
-        <div className="grid grid-cols-[1fr_220px] gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_220px] gap-6">
           <ChannelLines labels={periodLabels} series={[
             { name: "messages",      color: "#f59e0b", values: channelSeries.messages },
             { name: "subscriptions", color: "#3b82f6", values: channelSeries.subscriptions },
@@ -475,7 +478,7 @@ export default function CompetitorReports() {
           </div>
         </div>
 
-        <div className="grid grid-cols-4 gap-3 mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
           <StatCard value={visibleCreators.length.toLocaleString()} label="Creators" />
           <StatCard value={fmtUsd(messageEarnings)}                  label="Message earnings" />
           <StatCard value={fmtUsd(totalEarningsAcrossCreators)}      label="Total earnings" />
@@ -884,8 +887,12 @@ function CreatorTable({ creators, cols, ratio }: {
   // "Creator" is always the anchor column on the left.
   const template = ["1.2fr", ...cols.map(colTemplateWidth)].join(" ");
 
+  // min-w-[640px] sits well below the ~912px desktop content width, so the
+  // scroller never engages above phone. The min-w goes on the bordered div,
+  // not the inner grids — inside `overflow-hidden` they would clip, not scroll.
   return (
-    <div className="rounded-md border overflow-hidden" style={{ borderColor: "#e5e7eb" }}>
+    <div className="overflow-x-auto">
+    <div className="rounded-md border overflow-hidden min-w-[640px]" style={{ borderColor: "#e5e7eb" }}>
       <div
         className="grid text-[12px] py-2.5 px-3"
         style={{
@@ -921,6 +928,7 @@ function CreatorTable({ creators, cols, ratio }: {
           ))}
         </div>
       ))}
+    </div>
     </div>
   );
 }
@@ -1071,7 +1079,9 @@ function StatCard({ value, label }: { value: string; label: string }) {
         <div className="text-[20px] font-semibold tracking-tight" style={{ color: "#111827" }}>{value}</div>
         <div className="text-[12px]" style={{ color: "#6b7280" }}>{label}</div>
       </div>
-      <Info />
+      {/* md:contents (not md:block) — this is a flex row, so `contents` keeps
+          the svg the direct flex item it is today. */}
+      <span className="hidden md:contents"><Info /></span>
     </div>
   );
 }

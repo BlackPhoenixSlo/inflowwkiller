@@ -227,3 +227,192 @@ async def apply_fix(account_id: str, media_id: int,
     return {"ok": True, "media_id": media_id, "applied": edits,
             "locked": sorted(locked),
             "still_disagrees": vault_ai_brief.contradictions(fields)}
+
+
+# ── The grading loop ────────────────────────────────────────────────
+#
+# The flags pass is a vision model guessing, and it has been wrong in a
+# different direction after every prompt change: over-reporting exposure, then
+# under-reporting it, then calling a fully-exposed still "not in frame". Each
+# reversal was invisible to every automatic check and obvious to the operator
+# in about four seconds of looking.
+#
+# So looking is part of the product, not part of the test harness. The operator
+# is shown items pre-set to what the model believes and taps only what is
+# wrong. Two things are then recorded, and BOTH matter:
+#
+#   * a correction   → written through `apply_fix`, locked, permanent. The data
+#                      is right from then on no matter what the model does.
+#   * a confirmation → the model's answer, stamped with the prompt version that
+#                      produced it. This is the half that is easy to skip and
+#                      the half that makes measurement possible: without it,
+#                      "left alone" and "never looked at" are the same record,
+#                      and an accuracy computed over them reads 100%.
+#
+# Accumulated, these turn model quality into a number the operator can see, per
+# prompt version, on their own vault — instead of a claim made in a chat window.
+GRADE_KEY = "_graded"
+
+
+def grade_of(fields: dict[str, Any] | None) -> dict[str, Any]:
+    """The operator's recorded verdict for this item, or {}."""
+    if not isinstance(fields, dict):
+        return {}
+    g = fields.get(GRADE_KEY)
+    return g if isinstance(g, dict) else {}
+
+
+def _priority(fields: dict[str, Any], lanes: list[str], version: int) -> tuple:
+    """Grading order. Never-graded first, then whatever costs most to get wrong.
+
+    Two rounds of tuning were scored entirely on items that had already been
+    graded, and a regression sat in the ungraded remainder through both without
+    moving any total. Fresh items are where a real number comes from, so they
+    lead — and within them, the ones that gate money or a mass send.
+    """
+    g = grade_of(fields)
+    graded_this_version = int(g.get("v") or 0) >= version
+    paid = any(ln in ("tease 10", "tease 50", "safe explicit") for ln in lanes)
+    return (graded_this_version, not vault_ai_brief.contradictions(fields),
+            not paid, not vault_ai_brief.any_bare(fields))
+
+
+async def review_queue(account_id: str, *, limit: int = 60,
+                       version: int = 0) -> dict[str, Any]:
+    """Items for the operator to grade, most valuable first."""
+    import vault_scripts
+
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.kind, VaultItem.ai_fields_json,
+                   VaultItem.locked_fields_json)
+            .where(VaultItem.account_id == account_id,
+                   VaultItem.removed_at.is_(None),
+                   VaultItem.kind.in_(("photo", "video"))))).all()
+
+    plan = await vault_scripts.plan_ai_folders(account_id, keep=2)
+    lanes: dict[int, list[str]] = {}
+    for fold in plan["folders"]:
+        for it in fold["items"]:
+            lanes.setdefault(int(it["media_id"]), []).append(
+                fold["name"].removeprefix("AI-"))
+
+    out: list[dict[str, Any]] = []
+    graded = 0
+    for mid, kind, fj, lj in rows:
+        fields = vault_ai_brief.load_fields(fj)
+        if not vault_ai_brief.flags_known(fields):
+            continue
+        g = grade_of(fields)
+        if int(g.get("v") or 0) >= version:
+            graded += 1
+        try:
+            locked = set(json.loads(lj) if isinstance(lj, str) else (lj or []))
+        except (TypeError, ValueError):
+            locked = set()
+        out.append({
+            "media_id": int(mid), "kind": kind,
+            "lanes": lanes.get(int(mid), []),
+            "regions": {r: vault_ai_brief.vis(fields, r)
+                        for r in vault_ai_brief.VIS_REGIONS},
+            "over": {r: vault_ai_brief.garment_over(fields, r)
+                     for r in vault_ai_brief.OVER_KEYS},
+            "description": str(fields.get("description") or "")[:280],
+            "clothing_state": _s(fields.get("clothing_state")),
+            "explicitness": _s(fields.get("explicitness")),
+            "codes": vault_ai_brief.contradictions(fields),
+            "locked": sorted(locked & set(vault_ai_brief.VIS_REGIONS)),
+            "graded": g,
+            "_sort": _priority(fields, lanes.get(int(mid), []), version),
+        })
+
+    out.sort(key=lambda r: r["_sort"])
+    for r in out:
+        r.pop("_sort")
+    return {"account_id": account_id, "prompt_version": version,
+            "total": len(out), "graded": graded,
+            "items": out[:max(1, int(limit))]}
+
+
+async def record_grade(account_id: str, media_id: int, *,
+                       corrections: dict[str, Any] | None = None,
+                       version: int = 0, note: str = "") -> dict[str, Any]:
+    """Record one operator verdict: corrections locked, the rest confirmed.
+
+    Confirming is not a no-op. It says the operator looked at this answer, at
+    this prompt version, and agreed — which is exactly the evidence
+    `flags_accuracy` needs and exactly what an un-recorded "left it alone"
+    cannot supply.
+    """
+    corrections = {k: v for k, v in (corrections or {}).items() if k in FIXABLE}
+    applied: dict[str, Any] = {}
+    if corrections:
+        res = await apply_fix(account_id, media_id, corrections)
+        if not res.get("ok"):
+            return res
+        applied = res["applied"]
+
+    async with get_session() as s:
+        item = await s.get(VaultItem, (account_id, media_id))
+        if item is None:
+            return {"ok": False, "error": "not_in_mirror", "media_id": media_id}
+        fields = _fields(item)
+        # The CONFIRMED answers are everything the operator did not change —
+        # snapshotted, because the stored value will move on the next re-run
+        # and then this record could no longer say what was agreed to.
+        confirmed = {r: vault_ai_brief.vis(fields, r)
+                     for r in vault_ai_brief.VIS_REGIONS
+                     if r not in applied}
+        fields[GRADE_KEY] = {"v": int(version), "confirmed": confirmed,
+                             "corrected": sorted(applied), **({"note": note[:200]}
+                                                              if note.strip() else {})}
+        await s.execute(
+            update(VaultItem)
+            .where(VaultItem.account_id == account_id, VaultItem.media_id == media_id)
+            .values(ai_fields_json=json.dumps(fields, ensure_ascii=False, default=str)))
+        await s.commit()
+
+    return {"ok": True, "media_id": media_id, "corrected": sorted(applied),
+            "confirmed": sorted(confirmed)}
+
+
+async def flags_accuracy(account_id: str, version: int = 0) -> dict[str, Any]:
+    """How often the model agrees with the operator, per region.
+
+    Counted ONLY over graded items, and only those graded at `version`: a score
+    that mixes prompt versions measures nothing, and a score that treats
+    ungraded items as correct is how a 100% gets reported on a vault nobody has
+    checked. Corrections that are now locked are counted as the misses they
+    were, from the grade record, not from the (since-repaired) stored value.
+    """
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.ai_fields_json)
+            .where(VaultItem.account_id == account_id,
+                   VaultItem.removed_at.is_(None)))).all()
+
+    per = {r: {"ok": 0, "n": 0} for r in vault_ai_brief.VIS_REGIONS}
+    graded = stale = 0
+    for _mid, fj in rows:
+        fields = vault_ai_brief.load_fields(fj)
+        g = grade_of(fields)
+        if not g:
+            continue
+        if int(g.get("v") or 0) != int(version):
+            stale += 1
+            continue
+        graded += 1
+        corrected = set(g.get("corrected") or [])
+        for region in vault_ai_brief.VIS_REGIONS:
+            if region in corrected:
+                per[region]["n"] += 1          # the model was wrong here
+            elif region in (g.get("confirmed") or {}):
+                per[region]["n"] += 1
+                per[region]["ok"] += 1
+    tot_ok = sum(v["ok"] for v in per.values())
+    tot_n = sum(v["n"] for v in per.values())
+    return {"account_id": account_id, "prompt_version": version,
+            "graded_items": graded, "graded_other_versions": stale,
+            "per_region": per,
+            "accuracy": round(tot_ok / tot_n, 4) if tot_n else None,
+            "answers": tot_n}

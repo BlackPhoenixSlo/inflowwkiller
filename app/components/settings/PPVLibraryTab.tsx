@@ -35,8 +35,13 @@ import {
   type PreviewPpvToFeedResult,
 } from "@/hooks/usePpvLibraryConfig";
 
-const INPUT =
-  "bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent";
+/** Size-free base so the mono caption editors can append their OWN font size.
+ *  These class strings are plain template concatenation (no twMerge), so a size
+ *  baked into INPUT would sit alongside the caller's `text-[12px]` and the
+ *  winner would depend on stylesheet order. */
+const INPUT_BASE =
+  "bg-bg border border-border rounded-lg px-3 py-2 focus:outline-none focus:border-accent";
+const INPUT = `${INPUT_BASE} text-sm max-md:text-base`;
 
 // Feed-post caption styles (public voice) — keys mirror PPV_FEED_CAPTION_POOLS.
 const FEED_POOL_LABELS: Record<string, string> = {
@@ -731,14 +736,18 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                             {isPrev ? "⭐" : "☆"}
                           </span>
                         </button>
+                        {/* On touch there is no hover, so `opacity-0` made this
+                         *  remove button invisible yet still hit-testable. Below
+                         *  768px it is always visible and thumb-sized; >=768px
+                         *  keeps the exact hover-reveal it has today. */}
                         <button
                           type="button"
                           onClick={() => removeMedia(i, id)}
                           title="Remove this from the set"
                           aria-label="Remove this from the set"
-                          className="absolute top-0 left-0 w-4 h-4 grid place-items-center rounded-br-md
-                                     bg-black/60 text-white text-[10px] leading-none
-                                     opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-red-600"
+                          className="absolute top-0 left-0 w-4 h-4 max-md:w-6 max-md:h-6 grid place-items-center rounded-br-md
+                                     bg-black/60 text-white text-[10px] max-md:text-[11px] leading-none
+                                     opacity-0 max-md:opacity-100 group-hover:opacity-100 focus:opacity-100 hover:bg-red-600"
                         >
                           ✕
                         </button>
@@ -840,7 +849,7 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                 <div key={ci} className="flex items-start gap-1.5">
                   <textarea
                     rows={Math.max(2, cap.split("\n").length)}
-                    className={`${INPUT} w-full font-mono text-[12px]`}
+                    className={`${INPUT_BASE} w-full font-mono text-sm text-[12px] max-md:text-base`}
                     placeholder={ci === 0
                       ? "short: unlock this babe 🙈\n…or a long one:\n🌟 just for u 🌟\n\n{off} off today, was {was} now {now}"
                       : "another caption…"}
@@ -871,7 +880,7 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                 <div className="space-y-1">
                   <textarea
                     rows={5}
-                    className={`${INPUT} w-full font-mono text-[12px]`}
+                    className={`${INPUT_BASE} w-full font-mono text-sm text-[12px] max-md:text-base`}
                     placeholder={"unlock this one babe 🙈\nlast chance, dont leave me hangin\nokay im obsessed with this set"}
                     value={importText}
                     onChange={(e) => setImportText(e.target.value)}
@@ -945,7 +954,7 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                   <div key={ci} className="flex items-start gap-1.5">
                     <textarea
                       rows={Math.max(2, cap.split("\n").length)}
-                      className={`${INPUT} w-full font-mono text-[12px]`}
+                      className={`${INPUT_BASE} w-full font-mono text-sm text-[12px] max-md:text-base`}
                       placeholder={"🔥 new set just dropped 🔥 unlock below babe — {off} off today, was {was} now {now}"}
                       value={cap}
                       onChange={(e) => setFeedCaption(i, ci, e.target.value)}
@@ -1068,7 +1077,7 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
         <ul className="mt-2 space-y-1.5 list-disc pl-4">
           <li><b>+ Add PPV / templates / Duplicate</b> — start blank, start from a ready preset, or copy a PPV you already built (to make 20 fast).</li>
           <li><b>✨ Build a week from vault</b> — reads your described vault and proposes a week of bundles: content, ⭐ teasers, price, cadence and caption style, each on the style written for its job. It only <b>proposes</b> — you tick what you want, press <b>Add</b>, then <b>Save</b>. Everything arrives <b>switched OFF</b>, so nothing can send until you turn it on. Running it again refreshes the content of bundles it made before instead of duplicating them, and keeps any price/caption you changed.</li>
-          <li><b>Content + ⭐ teaser</b> — pick the photos/video the fan pays to unlock. Then tap ⭐ on any of them to show that one FREE as a teaser (rotates daily so resends look fresh). No star = fully locked. Hover a thumbnail and hit the <b>✕</b> in its top-left corner to drop that one piece from the set (if it was the starred teaser, it un-stars too).</li>
+          <li><b>Content + ⭐ teaser</b> — pick the photos/video the fan pays to unlock. Then tap ⭐ on any of them to show that one FREE as a teaser (rotates daily so resends look fresh). No star = fully locked. <span className="max-md:hidden">Hover a thumbnail and hit the </span><span className="hidden max-md:inline">Tap the </span><b>✕</b> in its top-left corner to drop that one piece from the set (if it was the starred teaser, it un-stars too).</li>
           <li><b>Caption style</b> — a ready-made wording group; one is random-picked each send. Styles range from short &amp; sweet to long multi-paragraph (&quot;big bundle&quot;, &quot;exclusive list&quot;). <b>Your own captions</b> override it — <b>one box = one caption</b>, <b>+ Discount caption</b> drops in a price-token example, <b>Paste many</b> turns a pasted list into one caption each. Hit <b>Preview captions</b> to read them.</li>
           <li><b>Price words in captions</b> — type <span className="font-mono">{"{now}"}</span> for what that fan pays, <span className="font-mono">{"{was}"}</span> for an old price (auto ≈4× higher, so it always looks like a deal), and <span className="font-mono">{"{off}"}</span> for the % off. They fill in by themselves per fan group.</li>
           <li><b>Base price</b> — your starting price. Each fan group then pays base × their multiplier (whales more, quiet/never-paid less). The line above each card shows the range.</li>
@@ -1129,7 +1138,12 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
         </div>
       </div>
 
-      <div className="flex items-center gap-3 pt-1">
+      {/* With ~20 PPV cards this Save sits ~15,000px down the scroll, so below
+       *  768px the row pins to the bottom of the viewport. Every sticky/paint
+       *  utility is `max-md:`-scoped, so at >=768px this is still exactly
+       *  `flex items-center gap-3 pt-1` in normal flow. `-mx-4 px-4` bleeds to
+       *  the host Card's own p-4 (note: this Card is p-4, not p-5). */}
+      <div className="flex items-center gap-3 pt-1 max-md:sticky max-md:bottom-0 max-md:z-20 max-md:flex-wrap max-md:-mx-4 max-md:px-4 max-md:py-3 max-md:pb-[calc(env(safe-area-inset-bottom)+0.75rem)] max-md:bg-panel/95 max-md:backdrop-blur max-md:border-t max-md:border-border">
         <Button onClick={() => saveM.mutate(buildConfig())} disabled={saveM.isPending}>
           {saveM.isPending ? "Saving…" : "Save"}
         </Button>

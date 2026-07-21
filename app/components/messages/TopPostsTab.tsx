@@ -49,7 +49,7 @@ export default function TopPostsTab({ from, to }: Props) {
           <select
             value={accountId ?? ""}
             onChange={(e) => setAccountId(e.target.value || null)}
-            className="bg-bg border border-border rounded-lg px-2 py-1.5 text-xs text-fg focus:outline-none focus:border-accent"
+            className="bg-bg border border-border rounded-lg px-3 py-2 text-base md:px-2 md:py-1.5 md:text-xs text-fg focus:outline-none focus:border-accent"
           >
             {accounts.length === 0 && <option value="">No models</option>}
             {accounts.map((a) => (
@@ -60,9 +60,9 @@ export default function TopPostsTab({ from, to }: Props) {
           </select>
         </label>
 
-        <label className="flex flex-col gap-1">
+        <label className="flex flex-col gap-1 w-full md:w-auto">
           <span className="text-[10px] uppercase tracking-wide text-fg-dim">Rank by</span>
-          <div className="flex items-center gap-1">
+          <div className="grid grid-cols-4 gap-1 md:flex md:items-center">
             {METRICS.map((m) => (
               <Button
                 key={m.key}
@@ -70,7 +70,7 @@ export default function TopPostsTab({ from, to }: Props) {
                 variant={by === m.key ? "primary" : "secondary"}
                 size="sm"
                 onClick={() => setBy(m.key)}
-                className={cn(by !== m.key && "border-border")}
+                className={cn("px-1.5 py-2.5 md:px-3 md:py-1.5", by !== m.key && "border-border")}
               >
                 {m.label}
               </Button>
@@ -84,7 +84,7 @@ export default function TopPostsTab({ from, to }: Props) {
           size="sm"
           onClick={() => q.refetch()}
           disabled={!accountId || q.isFetching}
-          className="self-end border-border"
+          className="hidden md:inline-flex self-end border-border"
         >
           {q.isFetching ? "Loading…" : "Refresh"}
         </Button>

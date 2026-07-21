@@ -83,27 +83,31 @@ export default function MessageRowGeneric({ row }: Props) {
         />
 
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <DirectionChip direction={direction} />
-            <span className="font-medium text-fg text-sm">
-              @{row.fan.username || row.fan_id}
-            </span>
-            {row.fan.display_name && (
-              <span className="text-xs text-fg-dim truncate">
-                ({row.fan.display_name})
+          <div className="flex items-center gap-2 md:flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
+              <DirectionChip direction={direction} />
+              <span className="font-medium text-fg text-sm truncate">
+                @{row.fan.username || row.fan_id}
               </span>
-            )}
-            {isPriced && (
-              <span className="ml-auto text-sm font-semibold text-fg">
-                {fmtCents(row.price_cents)}
+              {row.fan.display_name && (
+                <span className="hidden md:inline text-xs text-fg-dim truncate">
+                  ({row.fan.display_name})
+                </span>
+              )}
+            </div>
+            <div className="ml-auto shrink-0 flex flex-col items-end md:flex-row md:items-center md:gap-2">
+              {isPriced && (
+                <span className="text-sm font-semibold text-fg">
+                  {fmtCents(row.price_cents)}
+                </span>
+              )}
+              <span className="text-xs text-fg-dim">
+                {fmtRelTime(row.sent_at)}
               </span>
-            )}
-            <span className={cn("text-xs text-fg-dim", !isPriced && "ml-auto")}>
-              {fmtRelTime(row.sent_at)}
-            </span>
+            </div>
           </div>
 
-          <div className="mt-1 text-xs text-fg-dim line-clamp-3 break-words">
+          <div className="mt-1 text-xs text-fg-dim line-clamp-1 md:line-clamp-3 break-words">
             {previewBody || <em className="text-muted">(no text)</em>}
           </div>
 
@@ -140,7 +144,7 @@ export default function MessageRowGeneric({ row }: Props) {
               </span>
             ) : null)}
 
-            <span className="ml-auto text-xs text-fg-dim group-hover:text-accent">
+            <span className="hidden md:inline ml-auto text-xs text-fg-dim group-hover:text-accent">
               ↗ open chat
             </span>
           </div>
@@ -168,32 +172,36 @@ function MassSummaryRow({ row }: Props) {
       </div>
 
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Badge color="warn" className="!px-1.5">
-            <span>MASS</span>
-          </Badge>
-          <span className="font-medium text-fg text-sm">{label}</span>
-          {row.funnel_name && (
-            <span className="text-xs text-fg-dim truncate">· {row.funnel_name}</span>
-          )}
-          {/* Who fired the broadcast — the denormalized "mass-<who>" tag when
-              present (survives an employee delete), else the joined name. */}
-          {(row.sender_name || row.employee_name) && (
-            <span className="text-[11px] text-fg-dim">
-              {row.sender_name || `by ${row.employee_name}`}
+        <div className="flex items-center gap-2 md:flex-wrap">
+          <div className="flex items-center gap-2 min-w-0 flex-wrap md:flex-nowrap">
+            <Badge color="warn" className="!px-1.5 shrink-0">
+              <span>MASS</span>
+            </Badge>
+            <span className="font-medium text-fg text-sm shrink-0">{label}</span>
+            {row.funnel_name && (
+              <span className="text-xs text-fg-dim truncate">· {row.funnel_name}</span>
+            )}
+            {/* Who fired the broadcast — the denormalized "mass-<who>" tag when
+                present (survives an employee delete), else the joined name. */}
+            {(row.sender_name || row.employee_name) && (
+              <span className="text-[11px] text-fg-dim truncate">
+                {row.sender_name || `by ${row.employee_name}`}
+              </span>
+            )}
+          </div>
+          <div className="ml-auto shrink-0 flex flex-col items-end md:flex-row md:items-center md:gap-2">
+            {isPriced && (
+              <span className="text-sm font-semibold text-fg">
+                {fmtCents(row.price_cents)}
+              </span>
+            )}
+            <span className="text-xs text-fg-dim">
+              {fmtRelTime(row.sent_at)}
             </span>
-          )}
-          {isPriced && (
-            <span className="ml-auto text-sm font-semibold text-fg">
-              {fmtCents(row.price_cents)}
-            </span>
-          )}
-          <span className={cn("text-xs text-fg-dim", !isPriced && "ml-auto")}>
-            {fmtRelTime(row.sent_at)}
-          </span>
+          </div>
         </div>
 
-        <div className="mt-1 text-xs text-fg-dim line-clamp-3 break-words">
+        <div className="mt-1 text-xs text-fg-dim line-clamp-1 md:line-clamp-3 break-words">
           {previewBody || <em className="text-muted">(no text)</em>}
         </div>
 
@@ -223,22 +231,22 @@ function MassSummaryRow({ row }: Props) {
 function DirectionChip({ direction }: { direction: "in" | "out" | "system" }) {
   if (direction === "in") {
     return (
-      <Badge color="muted" className="!px-1.5">
+      <Badge color="muted" className="!px-1.5 shrink-0">
         <ArrowDownLeft size={11} aria-hidden />
-        <span>from fan</span>
+        <span className="hidden md:inline">from fan</span>
       </Badge>
     );
   }
   if (direction === "out") {
     return (
-      <Badge color="muted" className="!px-1.5">
+      <Badge color="muted" className="!px-1.5 shrink-0">
         <ArrowUpRight size={11} aria-hidden />
-        <span>from us</span>
+        <span className="hidden md:inline">from us</span>
       </Badge>
     );
   }
   return (
-    <Badge color="warn" className="!px-1.5">
+    <Badge color="warn" className="!px-1.5 shrink-0">
       <span>system</span>
     </Badge>
   );

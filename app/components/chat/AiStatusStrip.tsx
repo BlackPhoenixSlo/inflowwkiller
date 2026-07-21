@@ -102,6 +102,12 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
         {until ? ` → ${until}` : ""}
       </span>
 
+      {/* Everything past the state chip is desktop-only: 11 chips that explain
+          themselves through title= alone tower 8-10 lines high inside the phone
+          header. `md:contents` keeps them DIRECT flex children at md, so the
+          row's gaps are byte-identical to today. */}
+      <div className="hidden md:contents">
+
       {/* A live unpaid ask — ours OR one a human chatter sent. This is the signal that
           makes the thread break-proof, so surfacing it explains the state above. */}
       {data.open_ask && (
@@ -201,6 +207,8 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
           ⚡ force-ask
         </span>
       )}
+
+      </div>
     </div>
   );
 }

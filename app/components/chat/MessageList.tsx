@@ -370,7 +370,7 @@ export function MessageList(props: MessageListProps) {
       // manual pin when media loads above the fold ("bounce to middle"
       // bug, fix #11). We own scroll position via the effects above.
       style={{ overflowAnchor: "none" }}
-      className="h-full overflow-y-auto overflow-x-hidden px-4 py-3 space-y-2"
+      className="h-full overflow-y-auto overflow-x-hidden px-2 md:px-4 py-3 space-y-2"
     >
       {/* Sentinel for IntersectionObserver auto-load + an explicit
        *  click-to-load button. Scroll-up alone isn't enough when the
@@ -541,6 +541,11 @@ function Bubble({
   employeeLabel?: string | null;
 }) {
   const bubbleRef = useRef<HTMLDivElement | null>(null);
+  // Touch reveal for the per-message toolbar. On phones there is no hover, so
+  // the toolbar is hidden AND inert (pointer-events-none) until the bubble is
+  // tapped. At md this state is ignored entirely — the md: classes restore the
+  // original hover-only behaviour.
+  const [touchOpen, setTouchOpen] = useState(false);
   // Scroll into view when search picks this bubble. Defer to next tick so
   // the container's own scroll-restore effect doesn't fight us for the
   // scrollTop slot.
@@ -611,14 +616,16 @@ function Bubble({
         highlighted && "rounded-md ring-2 ring-info/60 transition-shadow",
       )}
     >
-      <div className="max-w-[75%] flex flex-col gap-1 relative">
+      <div className="max-w-[88%] md:max-w-[75%] flex flex-col gap-1 relative">
         {/* Hover toolbar — sits above the bubble. Only shows when the
          *  message is in a state where actions make sense. */}
         {(canReply || canLike || canPin || canUnsend || canSendReward) && (
           <div
             className={cn(
-              "absolute -top-7 opacity-0 group-hover:opacity-100 transition-opacity",
+              "absolute -top-7 transition-opacity",
               "flex items-center gap-1 bg-panel border border-border rounded-md shadow-sm px-1 py-0.5 z-10",
+              touchOpen ? "opacity-100" : "opacity-0 pointer-events-none",
+              "md:opacity-0 md:group-hover:opacity-100 md:pointer-events-auto",
               side === "right" ? "right-1" : "left-1",
             )}
           >
@@ -626,7 +633,7 @@ function Bubble({
               <button
                 type="button"
                 onClick={() => onQuoteReply!(msg)}
-                className="text-[10px] px-1.5 py-0.5 rounded hover:bg-bg-elev-1 text-fg-dim hover:text-fg"
+                className="text-[11px] px-2 py-2 md:text-[10px] md:px-1.5 md:py-0.5 rounded hover:bg-bg-elev-1 text-fg-dim hover:text-fg"
                 title="Quote-reply"
               >
                 ↩ reply
@@ -637,7 +644,7 @@ function Bubble({
                 type="button"
                 onClick={() => onToggleLike!(msg)}
                 className={cn(
-                  "text-[10px] px-1.5 py-0.5 rounded hover:bg-bg-elev-1",
+                  "text-[11px] px-2 py-2 md:text-[10px] md:px-1.5 md:py-0.5 rounded hover:bg-bg-elev-1",
                   msg.isLiked ? "text-err" : "text-fg-dim hover:text-fg",
                 )}
                 title={msg.isLiked ? "Unlike" : "Like (or double-click bubble)"}
@@ -650,7 +657,7 @@ function Bubble({
                 type="button"
                 onClick={() => onTogglePin!(msg)}
                 className={cn(
-                  "text-[10px] px-1.5 py-0.5 rounded hover:bg-bg-elev-1",
+                  "text-[11px] px-2 py-2 md:text-[10px] md:px-1.5 md:py-0.5 rounded hover:bg-bg-elev-1",
                   msg.isPinned ? "text-accent" : "text-fg-dim hover:text-fg",
                 )}
                 title={msg.isPinned ? "Unpin from chat" : "Pin to chat"}
@@ -662,7 +669,7 @@ function Bubble({
               <button
                 type="button"
                 onClick={() => onUnsend!(msg)}
-                className="text-[10px] px-1.5 py-0.5 rounded hover:bg-err/10 text-fg-dim hover:text-err"
+                className="text-[11px] px-2 py-2 md:text-[10px] md:px-1.5 md:py-0.5 rounded hover:bg-err/10 text-fg-dim hover:text-err"
                 title="Unsend (within OF's 24h window)"
               >
                 🗑 unsend
@@ -672,7 +679,7 @@ function Bubble({
               <button
                 type="button"
                 onClick={() => onSendReward!(msg)}
-                className="text-[10px] px-1.5 py-0.5 rounded hover:bg-info/10 text-fg-dim hover:text-info"
+                className="text-[11px] px-2 py-2 md:text-[10px] md:px-1.5 md:py-0.5 rounded hover:bg-info/10 text-fg-dim hover:text-info"
                 title="Send a free vault reward for this tip (fires the tip_reward automation)"
               >
                 🎁 reward
@@ -697,6 +704,7 @@ function Bubble({
         )}
         <div
           onDoubleClick={onBubbleDoubleClick}
+          onClick={() => setTouchOpen((v) => !v)}
           data-msg-id={String(msg.id)}
           className={cn(
             "relative rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words",
@@ -850,16 +858,23 @@ function Bubble({
            *  doesn't bounce/reflow when the async attribution map lands and
            *  the label pops in. Empty placeholder keeps the 10px line height;
            *  aria-hidden + a NBSP so it occupies space without being read. */}
-          {(isOutgoing || isOptimisticOutgoing) &&
-            (employeeLabel ? (
-              <span className="text-fg-dim/70" title={`Sent by ${employeeLabel}`}>
-                Sent by {employeeLabel}
-              </span>
-            ) : (
-              <span className="text-fg-dim/70" aria-hidden>
-                &nbsp;
-              </span>
-            ))}
+          {/* Phone: which teammate sent it is a desktop concern — the wrapper
+           *  hides BOTH branches (label + anti-reflow placeholder) below md,
+           *  and only exists on outbound bubbles so no empty flex item (and
+           *  therefore no extra gap-0.5) is ever added on desktop. */}
+          {(isOutgoing || isOptimisticOutgoing) && (
+            <span className="hidden md:inline">
+              {employeeLabel ? (
+                <span className="text-fg-dim/70" title={`Sent by ${employeeLabel}`}>
+                  Sent by {employeeLabel}
+                </span>
+              ) : (
+                <span className="text-fg-dim/70" aria-hidden>
+                  &nbsp;
+                </span>
+              )}
+            </span>
+          )}
         </div>
       </div>
     </div>

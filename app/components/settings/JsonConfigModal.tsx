@@ -66,10 +66,10 @@ export function EditRawJsonButton({
         type="button"
         disabled={!accountId}
         onClick={() => setOpen(true)}
-        className={
+        className={`hidden md:inline-block ${
           className ??
           "text-[11px] text-fg-dim hover:text-fg underline underline-offset-2 disabled:opacity-40 disabled:no-underline"
-        }
+        }`}
         title={accountId ? "Edit the raw JSON for this config" : "Pick an account first"}
       >
         {label}
@@ -185,7 +185,7 @@ function JsonConfigModal({
           <button
             type="button"
             onClick={onClose}
-            className="text-fg-dim hover:text-fg text-lg leading-none shrink-0"
+            className="text-fg-dim hover:text-fg text-lg leading-none shrink-0 max-md:grid max-md:place-items-center max-md:w-11 max-md:h-11 max-md:-mr-2 max-md:-my-2"
             title="Close"
           >
             ×

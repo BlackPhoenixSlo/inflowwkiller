@@ -24,8 +24,13 @@ import {
   type VaultAiTier,
 } from "@/hooks/useVaultAiConfig";
 
-const INPUT =
-  "bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent";
+/** Size-free base so the mono caption editors can append their OWN font size.
+ *  These class strings are plain template concatenation (no twMerge), so a size
+ *  baked into INPUT would sit alongside the caller's `text-[12px]` and the
+ *  winner would depend on stylesheet order. */
+const INPUT_BASE =
+  "bg-bg border border-border rounded-lg px-3 py-2 focus:outline-none focus:border-accent";
+const INPUT = `${INPUT_BASE} text-sm max-md:text-base`;
 
 const TIER_ORDER: VaultAiTier[] = ["safe", "suggestive", "explicit", "graphic", "unknown"];
 
@@ -312,7 +317,7 @@ export default function VaultAiTab({ accountId }: { accountId: string | null }) 
           </div>
           <textarea
             rows={5}
-            className={`${INPUT} w-full font-mono text-[12px]`}
+            className={`${INPUT_BASE} w-full font-mono text-sm text-[12px] max-md:text-base`}
             placeholder={"beach\nlingerie\nshower\ncosplay"}
             value={taxonomyText}
             onChange={(e) => { markDirty(); setTaxonomyText(e.target.value); }}
@@ -383,7 +388,7 @@ export default function VaultAiTab({ accountId }: { accountId: string | null }) 
             </div>
             <textarea
               rows={4}
-              className={`${INPUT} w-full font-mono text-[12px]`}
+              className={`${INPUT_BASE} w-full font-mono text-sm text-[12px] max-md:text-base`}
               placeholder={"miss me? 🥵\nunlock this babe\nnew set just dropped"}
               value={reminderLinesText}
               onChange={(e) => { markDirty(); setReminderLinesText(e.target.value); }}
@@ -392,7 +397,9 @@ export default function VaultAiTab({ accountId }: { accountId: string | null }) 
         </div>
       </fieldset>
 
-      <div className="flex items-center gap-3 pt-1">
+      {/* Desktop keeps this in-flow row untouched; the phone gets the sticky
+       *  twin below (outside the fieldset, last child of the Card). */}
+      <div className="hidden md:flex md:mb-0 items-center gap-3 pt-1">
         <Button onClick={onSave} disabled={saveM.isPending || !dirty}>
           {saveM.isPending ? "Saving…" : "Save"}
         </Button>
@@ -404,6 +411,20 @@ export default function VaultAiTab({ accountId }: { accountId: string | null }) 
         )}
         {!dirty && !saveM.isSuccess && (
           <span className="text-[11px] text-fg-dim/70">No unsaved changes.</span>
+        )}
+      </div>
+
+      {/* Phone-only sticky Save bar — `hidden` at >=768px so desktop renders
+       *  nothing extra. `-mx-4 px-4` bleeds to this Card's own p-4 edges. */}
+      <div className="hidden max-md:flex sticky bottom-0 z-20 -mx-4 px-4 py-3 items-center gap-3 flex-wrap bg-panel/95 backdrop-blur border-t border-border pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
+        <Button onClick={onSave} disabled={saveM.isPending || !dirty}>
+          {saveM.isPending ? "Saving…" : "Save"}
+        </Button>
+        {saveM.isSuccess && !dirty && (
+          <span className="text-xs text-emerald-500">Saved ✓</span>
+        )}
+        {saveM.isError && (
+          <span className="text-xs text-red-500">{saveM.error?.message || "Save failed"}</span>
         )}
       </div>
     </Card>

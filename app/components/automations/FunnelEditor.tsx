@@ -378,7 +378,7 @@ export function FunnelEditor({
           <button
             type="button"
             onClick={() => (rawMode ? exitRaw() : enterRaw())}
-            className="text-[11px] text-accent hover:underline"
+            className="hidden md:inline text-[11px] text-accent hover:underline"
           >
             {rawMode ? "← Typed fields" : "Edit raw JSON →"}
           </button>
@@ -531,25 +531,25 @@ function StepCard({
           <span className="text-[11px] uppercase tracking-wide text-fg-dim">Step {index + 1}</span>
           <Badge color={isPpv ? "warn" : "muted"}>{isPpv ? "paid PPV" : "reply"}</Badge>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2 md:gap-1">
           <button
             type="button"
             onClick={() => onMove(-1)}
             disabled={index === 0}
-            className="text-fg-dim hover:text-fg disabled:opacity-30 text-xs px-1"
+            className="text-fg-dim hover:text-fg disabled:opacity-30 text-base px-2 py-1 min-w-10 min-h-10 md:text-xs md:px-1 md:py-0 md:min-w-0 md:min-h-0"
             title="Move up"
           >↑</button>
           <button
             type="button"
             onClick={() => onMove(1)}
             disabled={index === total - 1}
-            className="text-fg-dim hover:text-fg disabled:opacity-30 text-xs px-1"
+            className="text-fg-dim hover:text-fg disabled:opacity-30 text-base px-2 py-1 min-w-10 min-h-10 md:text-xs md:px-1 md:py-0 md:min-w-0 md:min-h-0"
             title="Move down"
           >↓</button>
           <button
             type="button"
             onClick={onRemove}
-            className="text-[11px] text-err hover:underline ml-1"
+            className="text-xs px-2 py-1 min-h-10 md:text-[11px] md:px-0 md:py-0 md:min-h-0 text-err hover:underline ml-1"
           >remove</button>
         </div>
       </div>
@@ -822,7 +822,9 @@ export function MassFunnelsTab({ accountId }: { accountId: string | null }) {
             {funnels.map((f) => (
               <li key={f.id} className="py-2.5 space-y-1">
                 <div className="flex flex-wrap items-center gap-3">
-                  <div className="min-w-0 flex-1">
+                  {/* Phone: the name claims a whole row (basis-full) so the four
+                   *  buttons below don't starve it to ~49px. */}
+                  <div className="min-w-0 basis-full md:basis-0 md:flex-1">
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="text-sm font-medium text-fg truncate">{f.name}</span>
                       <Badge color="muted">{f.step_count} step{f.step_count === 1 ? "" : "s"}</Badge>
@@ -831,7 +833,7 @@ export function MassFunnelsTab({ accountId }: { accountId: string | null }) {
                       {f.description || f.opening_message}
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="flex w-full items-center justify-end gap-1.5 md:w-auto md:shrink-0">
                     <Button
                       size="sm"
                       variant="primary"

@@ -72,7 +72,7 @@ export function PostCard({
 
   return (
     <article className="border border-border rounded-xl bg-panel p-3 space-y-2">
-      <div className="flex items-center gap-2 text-[11px] text-fg-dim">
+      <div className="flex flex-wrap md:flex-nowrap items-center gap-2 text-[11px] text-fg-dim">
         {rank != null && (
           <span className="px-1.5 py-0.5 rounded bg-info/15 text-info font-semibold">#{rank}</span>
         )}
@@ -86,13 +86,13 @@ export function PostCard({
         )}
         <span>{dateStr}</span>
         {(onTogglePin || onEdit || onDelete) && (
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex items-center gap-1 md:gap-3">
             {onTogglePin && (
               <button
                 type="button"
                 onClick={() => onTogglePin(post)}
                 disabled={pinning}
-                className="text-[11px] text-fg-dim hover:text-accent transition-colors disabled:opacity-50"
+                className="inline-flex items-center justify-center min-h-[40px] px-2 -my-2 md:min-h-0 md:px-0 md:my-0 text-[11px] text-fg-dim hover:text-accent transition-colors disabled:opacity-50"
               >
                 {pinning ? "…" : post.isPinned ? "Unpin" : "Pin"}
               </button>
@@ -101,7 +101,7 @@ export function PostCard({
               <button
                 type="button"
                 onClick={() => onEdit(post)}
-                className="text-[11px] text-fg-dim hover:text-fg transition-colors"
+                className="inline-flex items-center justify-center min-h-[40px] px-2 -my-2 md:min-h-0 md:px-0 md:my-0 text-[11px] text-fg-dim hover:text-fg transition-colors"
               >
                 Edit
               </button>
@@ -189,7 +189,7 @@ function DeleteControl({
       <button
         type="button"
         onClick={() => setArmed(true)}
-        className="text-[11px] text-fg-dim hover:text-err transition-colors"
+        className="inline-flex items-center justify-center min-h-[40px] px-2 -my-2 md:min-h-0 md:px-0 md:my-0 text-[11px] text-fg-dim hover:text-err transition-colors"
       >
         Delete
       </button>
@@ -197,18 +197,18 @@ function DeleteControl({
   }
 
   return (
-    <span className="flex items-center gap-2">
+    <span className="flex flex-row-reverse md:flex-row items-center gap-2">
       <button
         type="button"
         onClick={onConfirm}
-        className="text-[11px] font-medium text-err hover:underline"
+        className="inline-flex items-center justify-center min-h-[40px] px-2 -my-2 md:min-h-0 md:px-0 md:my-0 text-[11px] font-medium text-err hover:underline"
       >
         Confirm
       </button>
       <button
         type="button"
         onClick={() => setArmed(false)}
-        className="text-[11px] text-fg-dim hover:text-fg"
+        className="inline-flex items-center justify-center min-h-[40px] px-2 -my-2 md:min-h-0 md:px-0 md:my-0 text-[11px] text-fg-dim hover:text-fg"
       >
         Cancel
       </button>

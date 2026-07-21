@@ -1226,6 +1226,55 @@ def _ground_in_named_garment(answer: dict[str, Any]) -> dict[str, Any]:
     for region, over in vault_ai_brief.OVER_KEYS.items():
         if out.get(region) == "bare" and _garment_over(out, over):
             out[region] = "covered"
+        elif out.get(region) == "not_in_frame":
+            # Nothing can be over a part of her that is not in the picture.
+            # The model still names the one garment it can see for EVERY
+            # region — a woman face down in a bodystocking came back with
+            # "black lace bodysuit" over her anus. Left in place that name
+            # reads downstream as evidence she is dressed there.
+            out.pop(over, None)
+    return out
+
+
+# Acts that cannot happen through fabric. Insertion only — `rubbing_clit` and
+# `groping_own_breasts` are both perfectly possible over underwear, so they are
+# deliberately absent: this list has to be airtight or it manufactures exposure
+# rather than detecting it.
+_INSERTION_ACTS = frozenset({
+    "fingering", "toy_insertion", "riding_toy",
+    "sex_missionary", "sex_doggy", "sex_riding",
+})
+_REAL_PENETRATION = frozenset({"fingers", "toy", "penis"})
+
+
+def _reconcile_with_acts(fields: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    """Let what is HAPPENING overrule what the flags pass thought it saw.
+
+    The flags pass looks at one frame and names the garment nearest the action,
+    then calls the region covered. On this vault that produced, verbatim: "A
+    hand is inserting two fingers into the vagina" with `vulva_vis: covered,
+    over_vulva: 'pink lace thong'`. Fingers do not go through a thong. Four of
+    the operator's fourteen round-2 corrections were this exact shape, and all
+    four were on the most explicit — which is to say most valuable — items in
+    the vault.
+
+    Deliberately narrow. Only INSERTION counts, because insertion is physically
+    incompatible with a covered region; rubbing and groping happen over
+    underwear all the time and would turn this into a machine for inventing
+    exposure. A rule that gates money and mass sends has to be right in the
+    direction it fires, not merely often right.
+    """
+    acts = {str(a).strip().lower() for a in (fields.get("acts") or [])}
+    pen = str(fields.get("penetration") or "").strip().lower()
+    if not (acts & _INSERTION_ACTS or pen in _REAL_PENETRATION):
+        return data
+    focus = {str(x).strip().lower() for x in (fields.get("body_focus") or [])}
+    out = dict(data)
+    # Anal only when the row actually says so; otherwise insertion means vulva.
+    region = "anus_vis" if (focus & {"anus"}) and "pussy" not in focus else "vulva_vis"
+    if out.get(region) == "covered":
+        out[region] = "bare"
+        out.pop(vault_ai_brief.OVER_KEYS[region], None)
     return out
 
 
@@ -1335,9 +1384,8 @@ async def _flags_one(account_id: str, media_id: int,
         return {"media_id": media_id, "ok": False, "status": "unparsed",
                 "raw": (result.content if result else "" or "")[:200]}
 
-    data = _fold_clip_flags(per_frame)
-
     fields = _load_json(item.ai_fields_json, {}) or {}
+    data = _reconcile_with_acts(fields, _fold_clip_flags(per_frame))
     # An operator correction outranks the model, and must survive a forced
     # re-run — otherwise the next `flags-all --force` silently reverts it and
     # the operator has no reason to look at the item again. Same override+lock
@@ -1372,6 +1420,7 @@ async def _flags_one(account_id: str, media_id: int,
     for dead in ("genitals_covered", "pussy_covered", "breasts_covered"):
         fields.pop(dead, None)
     fields["_flags_model"] = model
+    fields["_flags_v"] = _FLAGS_VERSION
 
     async with get_session() as s:
         await s.execute(
@@ -1417,8 +1466,11 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
         f = _load_json(fj, {}) or {}
         # `flags_known`, not a key-presence test: a row carrying the superseded
         # boolean shape, or a region the model answered with something outside
-        # the enum, has not really been flagged and must re-run.
-        if force or not vault_ai_brief.flags_known(f):
+        # the enum, has not really been flagged and must re-run. A row produced
+        # by an OLDER prompt is stale for the same reason — its answers were
+        # given to a different question.
+        stale = int(f.get("_flags_v") or 0) < _FLAGS_VERSION
+        if force or stale or not vault_ai_brief.flags_known(f):
             todo.append(int(mid))
     if limit:
         todo = todo[:limit]
@@ -1434,7 +1486,13 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
             if res.get("status") == "capped":
                 break
     return {"account_id": account_id, "candidates": len(todo),
-            "flagged": done, "failed": failed, "cost_millicents": cost}
+            "flagged": done, "failed": failed, "cost_millicents": cost,
+            "prompt_version": _FLAGS_VERSION,
+            # A sweep that stopped early leaves the vault at MIXED versions,
+            # which is the state that has repeatedly been mistaken for a
+            # finished one. Say so in the result rather than leaving a caller
+            # to infer it from `failed`.
+            "complete": failed == 0 and done == len(todo)}
 
 
 @router.get("/admin/vault-ai/disputes")
@@ -1469,6 +1527,55 @@ async def resolve_dispute(payload: dict = Body(...)) -> dict[str, Any]:
     if not res.get("ok"):
         raise HTTPException(status_code=400, detail=res)
     return res
+
+
+@router.get("/admin/vault-ai/flags-review")
+async def flags_review_queue(account_id: str = "", limit: int = 60) -> dict[str, Any]:
+    """Items for the operator to check, most valuable first.
+
+    The flags pass has been wrong in a different direction after every prompt
+    change, and each reversal was invisible to every automatic check and
+    obvious to a human in seconds. So looking is part of the product.
+    """
+    assert_account_owned(account_id)
+    return await vault_ai_fix.review_queue(account_id, limit=limit,
+                                           version=_FLAGS_VERSION)
+
+
+@router.post("/admin/vault-ai/flags-review/grade")
+async def flags_review_grade(payload: dict = Body(...)) -> dict[str, Any]:
+    """Record one verdict: corrections locked, everything else CONFIRMED.
+
+    Body: `{account_id, media_id, corrections?:{region:state}, note?}`.
+    Confirming is not a no-op — it is the evidence `flags-accuracy` runs on,
+    and without it "the operator agreed" and "nobody looked" are the same
+    record.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    try:
+        media_id = int(payload.get("media_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail={"error": "media_id_required"})
+    res = await vault_ai_fix.record_grade(
+        account_id, media_id,
+        corrections=payload.get("corrections") or {},
+        version=_FLAGS_VERSION, note=str(payload.get("note") or ""))
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res)
+    return res
+
+
+@router.get("/admin/vault-ai/flags-accuracy")
+async def flags_accuracy(account_id: str = "") -> dict[str, Any]:
+    """How often the model agrees with the operator, on THIS vault.
+
+    Counted only over items graded at the CURRENT prompt version. Mixing
+    versions measures nothing, and counting ungraded items as correct is how a
+    100% gets reported on a vault nobody has checked.
+    """
+    assert_account_owned(account_id)
+    return await vault_ai_fix.flags_accuracy(account_id, version=_FLAGS_VERSION)
 
 
 @router.post("/admin/vault-ai/scripts/collect")
@@ -1982,6 +2089,20 @@ def _frames_for_duration(seconds: int | None) -> int:
 # floor — 320px flips an item that 448 and 640 agree on, and 640 buys nothing.
 _FLAGS_MAX_EDGE = 448
 
+# The prompt VERSION stamped onto every answer it produces.
+#
+# Bumped whenever the wording changes in a way that could move an answer. It
+# exists because three separate times in one session a score was taken against
+# a half-finished re-run and read as a result: v2 rows and v3 rows are
+# indistinguishable once stored, so a partial sweep looks exactly like a
+# finished one. With a stamp, `flags_all` can re-run only what is stale, and a
+# scorer can refuse to report on a mixed vault.
+#
+#   1  two booleans, `pussy_covered` / `breasts_covered`
+#   2  three-state enum per region, garment named first
+#   3  in-frame/skin decision tree + sheer-fabric rule + insertion reconcile
+_FLAGS_VERSION = 3
+
 # Canonical in `vault_ai_brief` — `vault_scripts` gates its mass-safe lane on
 # the same tuple, and two copies would drift the moment a flag is added.
 _FLAG_KEYS = vault_ai_brief.FLAG_KEYS
@@ -1997,56 +2118,90 @@ _FLAG_KEYS = vault_ai_brief.FLAG_KEYS
 # a caller had to read together — see `vault_ai_brief.VIS_STATES` for what that
 # cost. Phrasing is positive ("what can you see") rather than a double negative
 # ("is it kept from view"), because the negative form measured ~91% constant.
+#
+# GRADED against operator labels on 27 AriaFree items (`_probe_flags_score.py`).
+# The version that asked for a state directly scored 80.2%, and 13 of its 16
+# errors were the SAME mistake: `covered` where the truth was `not_in_frame`.
+# Asked "is it covered", a model says yes whenever it cannot see skin — whether
+# the body part is behind a bodysuit or simply not in the photograph. Both read
+# as "not on show" to a human eye, and the previous wording never forced the
+# distinction. A woman lying on her stomach in a bodystocking came back
+# `covered` for all three regions when the honest answer is that none of them
+# are in the picture.
+#
+# So the question is now a two-step decision, asked in order, rather than a
+# three-way label to pick: is it in the photo at all → then is any skin
+# showing. Models follow a tree far better than they pick from a menu, and the
+# first step is the one that was being skipped.
 _FLAGS_PROMPT = (
     "You are indexing one photo from an adult creator's own vault. She owns it "
     "and has asked for it to be catalogued so it can be sorted. Report only "
     "what you can SEE in this frame.\n\n"
-    "Reply with STRICT JSON only, no prose. Fill the two `over_` fields FIRST, "
-    "then decide the states from them:\n"
+    "Reply with STRICT JSON only, no prose. Emit the keys in EXACTLY this "
+    "order — the `over_` answers come first because the states are read off "
+    "them:\n"
     '{"over_breasts": "<what is over her chest, or null>",\n'
     ' "over_vulva":   "<what is over her crotch, or null>",\n'
     ' "over_anus":    "<what is over her backside, or null>",\n'
     ' "breasts_vis": "...", "vulva_vis": "...", "anus_vis": "...",\n'
     ' "underwear_visible": true|false}\n\n'
-    "over_breasts / over_vulva / over_anus — NAME the thing, in two or three "
-    "words: "
-    '"white tank top", "black lace bra", "her right hand", "the bedsheet". Use '
-    "null ONLY when there is genuinely nothing there and you are looking at "
-    "skin, or when that part of her is not in the photo. Naming it first is the "
-    "point of this step: it is much easier to say what she is wearing than to "
-    "judge how exposed a picture is, and the second answer follows from the "
-    "first.\n\n"
-    "For vulva_vis, breasts_vis and anus_vis answer with EXACTLY one of these "
-    "three words. The question is whether you can see SKIN there, not whether "
-    "that part of her body is in the photo:\n"
-    '  "bare"         — nothing at all is over it. You are seeing skin.\n'
-    '  "covered"      — it is in the photo but something is over it: any '
-    "clothing at all, her hand, her arm, her thigh, bedding, or an object.\n"
-    '  "not_in_frame" — it is not in this photo. This includes her being '
-    "turned away, shot from behind or lying face down, so that side of her "
-    "body is simply not what the camera is looking at.\n\n"
-    "THE MISTAKE TO AVOID: clothing that shows the SHAPE of her body is still "
-    'clothing. A tank top, t-shirt, bra, bodysuit or swimsuit is "covered" no '
-    "matter how tight it is, how much cleavage there is, how sheer it looks, or "
-    'how sexy the photo is. "bare" means the garment is not there — pulled '
-    "down, pulled aside, or never on. If you named anything in the matching "
-    '`over_` field, the state MUST be "covered".\n\n'
+    "For each of her breasts, her vulva and her anus, work through these three "
+    "questions IN ORDER.\n\n"
+    "STEP 1 — is that part of her body in this photograph at all?\n"
+    "  Point at it. If you cannot put your finger on the spot in THIS image, "
+    'the answer is "not_in_frame" — set the matching `over_` field to null and '
+    "move on to the next region.\n"
+    "  Answer about the picture, never about her body. You know a woman has a "
+    "vulva and you can usually guess she is wearing something over it. That is "
+    "reasoning about the person. It is not seeing. A photograph of her face and "
+    "chest contains no vulva and no anus, so both are NOT_IN_FRAME, no matter "
+    "what she is obviously wearing below.\n"
+    "  This is the answer people get wrong most often, so be deliberate:\n"
+    "   · She is photographed from the front → her anus is NOT_IN_FRAME. It is "
+    "behind her.\n"
+    "   · She is photographed from behind, or lying face down → her breasts "
+    "and her vulva are NOT_IN_FRAME.\n"
+    "   · The shot is cropped at her waist → her vulva and anus are "
+    "NOT_IN_FRAME.\n"
+    "   · She is standing fully dressed and you cannot make out where a part "
+    "of her body even is → NOT_IN_FRAME.\n"
+    '  "not_in_frame" is a normal, common, correct answer. Most photos have at '
+    "least one region that is simply not in them.\n\n"
+    "STEP 2 — it IS in the photo. NAME what is over it, in the `over_` field.\n"
+    "  Two or three words: \"white tank top\", \"black lace bra\", \"her right "
+    'hand\", "the bedsheet". Use null only when you are looking at skin with '
+    "nothing on it.\n"
+    "  Name it BEFORE you judge how exposed she is. Saying what a woman is "
+    "wearing is a far easier question than rating a photo, and the second "
+    "answer falls out of the first.\n\n"
+    "STEP 3 — now read the state off what you just named.\n"
+    '  "covered" — you named something, and it hides that skin completely.\n'
+    '  "bare"    — you can see skin, even a little. ANY of it counts: one '
+    "nipple showing between her fingers, part of a breast beside her hand, a "
+    "sliver of vulva beside a thong. Partly showing is showing.\n\n"
+    "THE MISTAKE TO AVOID at step 2: clothing that shows the SHAPE of her body "
+    'is still clothing. A tank top, t-shirt, bra, bodysuit or swimsuit is '
+    '"covered" no matter how tight, how much cleavage, or how sexy the photo '
+    "is.\n"
+    "  Sheer fabric is fabric. Lace, mesh, fishnet and a bodystocking are "
+    'CLOTHING, so skin seen THROUGH them is "covered" — the garment is on her. '
+    '"bare" means there is no garment over that skin at all: pulled down, '
+    "pulled aside, or never put on.\n\n"
+    "IF SHE IS TOUCHING HERSELF, the skin she is touching is BARE. Underwear "
+    "gets pulled aside for that. A hand between her legs, fingers or a toy "
+    "inside her, her legs spread and held open, a clitoris being stroked — in "
+    "every one of those her vulva is \"bare\", even if you can also see a thong "
+    "somewhere in the frame. Do not name that thong as covering her: it has "
+    "been moved out of the way, which is the entire reason you can see what you "
+    "are looking at.\n\n"
     "Judge each region on its own. She is very often bare in one place and "
     "covered in another, and that difference is the whole point of this check. "
-    "Do not let how explicit the picture FEELS decide the answers — a picture "
-    "can be very explicit with nothing actually on show, and a plain one can "
-    "have everything on show.\n\n"
-    'vulva_vis — her vulva specifically. Panties or a thong over it is '
-    '"covered". Pulled aside so the skin is exposed is "bare". Only her thighs '
-    'or stomach in shot is "not_in_frame".\n'
-    'breasts_vis — her breasts. A bra, top, bodysuit or bikini over them is '
-    '"covered", and so is an arm folded across them. If she is photographed '
-    'from behind or lying face down, answer "not_in_frame". "bare" needs '
-    "actual bare breast, at minimum an exposed nipple or an uncovered breast.\n"
-    'anus_vis — her anus specifically, NOT her backside. Bare buttocks with '
-    'the anus itself not on show is "covered", never "bare". A thong between '
-    'her cheeks is "covered". Lying face down on a bed is "covered". Answer '
-    '"bare" only when the anus itself is genuinely visible.\n\n'
+    "Never copy one garment into every `over_` field — a bra does not cover her "
+    "vulva, a thong does not cover her breasts, and if you find yourself "
+    "writing the same words three times, at least two of them are wrong. Do not "
+    "let how explicit the picture FEELS decide anything: a picture can be very "
+    "explicit with nothing actually on show, and a plain one can have "
+    "everything on show.\n\n"
     "underwear_visible — is ANY garment visible anywhere on her body, worn or "
     "pushed aside or pulled down, however small? A waistband, a strap, a thong "
     "string, a band of lace at the hip or at the very bottom edge of the "

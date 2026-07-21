@@ -320,8 +320,8 @@ export function Composer({
         setQuickMenuOpen(false);
       }
     };
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
+    window.addEventListener("pointerdown", onDown);
+    return () => window.removeEventListener("pointerdown", onDown);
   }, [quickMenuOpen]);
 
   // Autofocus the textarea on mount. The Composer remounts whenever the
@@ -492,9 +492,13 @@ export function Composer({
         )}
         <div className="flex items-center justify-between">
           <EmojiQuickRow onInsert={onEmoji} disabled={disabled || blocked} />
-          <span className="text-[10px] text-fg-dim">
-            {inflight > 0 ? `${inflight} sending…` : "Enter to send · Shift+Enter for newline"}
-          </span>
+          {inflight > 0 ? (
+            <span className="text-[10px] text-fg-dim">{inflight} sending…</span>
+          ) : (
+            <span className="hidden md:inline text-[10px] text-fg-dim">
+              Enter to send · Shift+Enter for newline
+            </span>
+          )}
         </div>
 
         {scheduleOpen && (
@@ -505,7 +509,7 @@ export function Composer({
               value={scheduleAt}
               onChange={(e) => setScheduleAt(e.target.value)}
               min={localNowForInput()}
-              className="bg-transparent border-0 px-1 py-0.5 text-sm focus:outline-none"
+              className="bg-transparent border-0 px-1 py-0.5 text-base md:text-sm focus:outline-none"
             />
             <div className="flex items-center gap-1">
               {[5, 10, 15, 30, 60].map((mins) => (
@@ -551,7 +555,7 @@ export function Composer({
                 value={price}
                 onChange={(e) => setPrice(sanitizePriceInput(e.target.value))}
                 placeholder="0.00"
-                className="w-20 bg-transparent border-0 px-1 py-0.5 text-sm focus:outline-none placeholder:text-muted"
+                className="w-20 bg-transparent border-0 px-1 py-0.5 text-base md:text-sm focus:outline-none placeholder:text-muted"
               />
             </div>
             <label className="text-xs text-fg-dim flex items-center gap-1.5 cursor-pointer select-none">
@@ -602,7 +606,7 @@ export function Composer({
                   type="button"
                   onClick={() => bumpPreviewCount((c) => Math.max(0, c - 1))}
                   disabled={effectivePreviewCount === 0}
-                  className="w-4 h-4 grid place-items-center rounded border border-border hover:bg-bg-elev-1 disabled:opacity-30"
+                  className="w-8 h-8 md:w-4 md:h-4 grid place-items-center rounded border border-border hover:bg-bg-elev-1 disabled:opacity-30"
                   aria-label="Fewer free previews"
                 >−</button>
                 <span className="tabular-nums text-fg">
@@ -612,7 +616,7 @@ export function Composer({
                   type="button"
                   onClick={() => bumpPreviewCount((c) => Math.min(attached.length, c + 1))}
                   disabled={effectivePreviewCount >= attached.length}
-                  className="w-4 h-4 grid place-items-center rounded border border-border hover:bg-bg-elev-1 disabled:opacity-30"
+                  className="w-8 h-8 md:w-4 md:h-4 grid place-items-center rounded border border-border hover:bg-bg-elev-1 disabled:opacity-30"
                   aria-label="More free previews"
                 >+</button>
               </div>
@@ -708,7 +712,7 @@ export function Composer({
                     <button
                       type="button"
                       onClick={() => removeAttachment(m.id)}
-                      className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 text-white grid place-items-center text-[10px] opacity-80 hover:opacity-100"
+                      className="absolute top-0.5 right-0.5 w-6 h-6 md:w-4 md:h-4 rounded-full bg-black/70 text-white grid place-items-center text-[10px] opacity-80 hover:opacity-100"
                       aria-label="Remove attachment"
                     >
                       ✕
@@ -729,7 +733,7 @@ export function Composer({
                         }}
                         placeholder="free"
                         aria-label="PPV price"
-                        className="flex-1 min-w-0 bg-transparent border-0 text-white text-[12px] placeholder:text-white/60 focus:outline-none py-0.5"
+                        className="flex-1 min-w-0 bg-transparent border-0 text-white text-base md:text-[12px] placeholder:text-white/60 focus:outline-none py-0.5"
                       />
                     </div>
                   </div>
@@ -771,7 +775,7 @@ export function Composer({
                 <button
                   type="button"
                   onClick={() => setPickedGifs((prev) => prev.filter((p) => p.id !== g.id))}
-                  className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 text-white grid place-items-center text-[10px] opacity-80 hover:opacity-100"
+                  className="absolute top-0.5 right-0.5 w-6 h-6 md:w-4 md:h-4 rounded-full bg-black/70 text-white grid place-items-center text-[10px] opacity-80 hover:opacity-100"
                   aria-label="Remove GIF"
                 >
                   ✕
@@ -871,7 +875,7 @@ export function Composer({
               disabled={disabled}
               placeholder="free"
               aria-label="PPV price"
-              className="w-16 bg-transparent border-0 px-0 py-0 text-[11px] focus:outline-none placeholder:text-muted"
+              className="w-16 bg-transparent border-0 px-0 py-0 text-base md:text-[11px] focus:outline-none placeholder:text-muted"
             />
           </label>
           <button
@@ -890,19 +894,27 @@ export function Composer({
             🕐
           </button>
           <EmojiPickerButton onInsert={onEmoji} disabled={disabled} />
-          <GifPickerButton
-            open={gifPickerOpen}
-            onToggle={() => setGifPickerOpen((v) => !v)}
-            disabled={disabled}
-          />
+          {/* Desk-only toolbar controls. `md:contents` keeps each control a
+           *  direct flex child of the toolbar row at >=768px, so the desktop
+           *  layout (order + gap-1.5) is untouched. One wrapper per control —
+           *  they are not contiguous. */}
+          <div className="hidden md:contents">
+            <GifPickerButton
+              open={gifPickerOpen}
+              onToggle={() => setGifPickerOpen((v) => !v)}
+              disabled={disabled}
+            />
+          </div>
           <TemplatePicker accountId={accountId} onPick={onPickTemplate} />
           <LinesPicker accountId={accountId} fanId={fanId} onPick={onPickLine} />
-          <TagCreatorsPicker
-            accountId={accountId}
-            selected={taggedCreators}
-            onChange={setTaggedCreators}
-            disabled={disabled}
-          />
+          <div className="hidden md:contents">
+            <TagCreatorsPicker
+              accountId={accountId}
+              selected={taggedCreators}
+              onChange={setTaggedCreators}
+              disabled={disabled}
+            />
+          </div>
         </div>
 
         <div className="flex items-end gap-2">
@@ -927,7 +939,7 @@ export function Composer({
                 size="sm"
                 onClick={() => submit()}
                 disabled={!canSend}
-                className="rounded-r-none"
+                className="md:rounded-r-none"
               >
                 {scheduleOpen && scheduleAt && new Date(scheduleAt) > new Date()
                   ? "Schedule"
@@ -939,7 +951,7 @@ export function Composer({
                 disabled={!canSend}
                 title="Send in N minutes"
                 className={cn(
-                  "px-1.5 rounded-r-md border-l border-accent/30 bg-accent text-bg text-xs",
+                  "hidden md:block px-1.5 rounded-r-md border-l border-accent/30 bg-accent text-bg text-xs",
                   "hover:opacity-90",
                   !canSend && "opacity-40 cursor-not-allowed",
                 )}

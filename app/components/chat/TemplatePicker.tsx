@@ -152,8 +152,8 @@ export function TemplatePicker({ accountId, onPick, hideImageTemplates }: Templa
       if (popRef.current?.contains(t)) return;
       setOpen(false);
     };
-    document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
+    document.addEventListener("pointerdown", onClick);
+    return () => document.removeEventListener("pointerdown", onClick);
   }, [open]);
 
   useLayoutEffect(() => {
@@ -261,7 +261,7 @@ export function TemplatePicker({ accountId, onPick, hideImageTemplates }: Templa
                 }
               }}
               placeholder="Search templates…"
-              className="w-full bg-bg border border-border rounded-md px-2 py-1 text-sm focus:outline-none focus:border-accent"
+              className="w-full bg-bg border border-border rounded-md px-2 py-1 text-base md:text-sm focus:outline-none focus:border-accent"
             />
             <div className="text-[10px] text-fg-dim">
               {loading
@@ -297,7 +297,7 @@ export function TemplatePicker({ accountId, onPick, hideImageTemplates }: Templa
                 onClick={() => { onPick(t); setOpen(false); }}
                 className="w-full text-left px-3 py-2 border-b border-border/40 hover:bg-bg-elev-1 transition-colors"
               >
-                <div className="flex items-center gap-2 mb-0.5">
+                <div className="flex items-center flex-wrap md:flex-nowrap gap-x-2 gap-y-0.5 mb-0.5">
                   {t.isWelcome && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent">👋 welcome</span>
                   )}
@@ -311,7 +311,9 @@ export function TemplatePicker({ accountId, onPick, hideImageTemplates }: Templa
                     <span className="text-[10px] text-fg-dim">📎 {t.mediaCount}</span>
                   )}
                   {t.gifId && (
-                    <span className="text-[10px] text-fg-dim" title="Includes a GIF">🎬</span>
+                    <span className="text-[10px] text-fg-dim" title="Includes a GIF">
+                      🎬<span className="md:hidden"> gif</span>
+                    </span>
                   )}
                   {t.scriptId && (
                     <span
@@ -325,13 +327,17 @@ export function TemplatePicker({ accountId, onPick, hideImageTemplates }: Templa
                     <span className="text-[10px] text-warn">🔒 ${t.price.toFixed(2)}</span>
                   )}
                   {t.previews.length > 0 && (
-                    <span className="text-[10px] text-fg-dim" title="Free previews on apply">👁 {t.previews.length}</span>
+                    <span className="text-[10px] text-fg-dim" title="Free previews on apply">
+                      👁 {t.previews.length}<span className="md:hidden"> free</span>
+                    </span>
                   )}
                   {t.taggedUsers.length > 0 && (
-                    <span className="text-[10px] text-accent" title="@-tags applied on pick">@{t.taggedUsers.length}</span>
+                    <span className="text-[10px] text-accent" title="@-tags applied on pick">
+                      @{t.taggedUsers.length}<span className="md:hidden"> tagged</span>
+                    </span>
                   )}
                 </div>
-                <div className="text-xs text-fg line-clamp-2">{t.text}</div>
+                <div className="text-sm md:text-xs text-fg line-clamp-2">{t.text}</div>
               </button>
             ))}
           </div>

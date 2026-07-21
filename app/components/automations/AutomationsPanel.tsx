@@ -114,11 +114,15 @@ export default function AutomationsPanel() {
   }
 
   return (
-    <div className="space-y-5">
-      {/* Per-account Brain (persona / time lines + images / model / caps). */}
-      <BrainPanel />
+    <div className="flex flex-col gap-5">
+      {/* Per-account Brain (persona / time lines + images / model / caps).
+       *  Phone: the ~2000px of always-expanded config drops below the rules
+       *  list; `md:order-1` puts it back on top at desktop. */}
+      <div className="order-3 md:order-1">
+        <BrainPanel />
+      </div>
 
-      <Card className="p-4 space-y-3">
+      <Card className="p-4 space-y-3 order-1 md:order-2">
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-sm font-medium text-fg">Automation rules</h2>
@@ -247,13 +251,15 @@ export default function AutomationsPanel() {
                         </div>
                       </div>
 
-                      {/* Actions */}
-                      <div className="flex items-center gap-1.5 shrink-0">
+                      {/* Actions — on phone they take their own full-width row
+                       *  so "Delete" is not 6px from "Run now". */}
+                      <div className="flex items-center gap-2 w-full md:w-auto md:gap-1.5 md:shrink-0">
                         <Button
                           size="sm"
                           variant="secondary"
                           onClick={() => runNow(r)}
                           disabled={runM.isPending}
+                          className="flex-1 min-h-10 md:flex-none md:min-h-0"
                         >
                           Run now
                         </Button>
@@ -261,6 +267,7 @@ export default function AutomationsPanel() {
                           size="sm"
                           variant="ghost"
                           onClick={() => { setAdding(false); setEditing(r); }}
+                          className="flex-1 min-h-10 md:flex-none md:min-h-0"
                         >
                           Edit
                         </Button>
@@ -269,6 +276,7 @@ export default function AutomationsPanel() {
                           variant="danger"
                           onClick={() => remove(r)}
                           disabled={deleteM.isPending}
+                          className="flex-1 min-h-10 md:flex-none md:min-h-0"
                         >
                           Delete
                         </Button>
@@ -293,10 +301,16 @@ export default function AutomationsPanel() {
 
       {/* Ready-made posts & broadcasts — fire-once actions, tabbed, under the
        *  recurring-rules list. */}
-      <ReadyMadePanel />
+      <div className="order-2 md:order-3">
+        <ReadyMadePanel />
+      </div>
 
-      {/* Full run history (read-only) lives right below the controls. */}
-      <AutomationRunsCard />
+      {/* Full run history (read-only) lives right below the controls.
+       *  `order-4` is mandatory: without it this stays at order:0 and floats
+       *  above every ordered sibling at EVERY breakpoint. */}
+      <div className="order-4">
+        <AutomationRunsCard />
+      </div>
     </div>
   );
 }

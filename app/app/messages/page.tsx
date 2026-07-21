@@ -156,7 +156,7 @@ function MessagesPageInner() {
         <DateRangePicker from={from} to={to} preset={preset} onChange={handleRange} />
       </header>
 
-      <div className="flex items-center gap-1 border-b border-border">
+      <div className="flex items-center gap-1 border-b border-border overflow-x-auto overflow-y-hidden md:overflow-visible no-scrollbar -mx-3 px-3 sm:mx-0 sm:px-0">
         <TabButton active={tab === "ppv"} onClick={() => setTab("ppv")}>
           PPV
         </TabButton>
@@ -203,7 +203,7 @@ function MessagesPageInner() {
           {tab === "myfeed" && <MyFeedTab />}
           {tab === "top" && <TopPostsTab from={fromIso} to={toIso} />}
         </div>
-        <aside className="space-y-3">
+        <aside className="space-y-3 order-first md:order-none">
           <TopTippersCard
             from={fromIso}
             to={toIso}
@@ -247,7 +247,7 @@ function TabButton({
       disabled={disabled}
       title={title}
       className={cn(
-        "px-4 py-2 text-sm font-medium -mb-px border-b-2 transition-colors",
+        "px-4 py-2 text-sm font-medium -mb-px border-b-2 transition-colors shrink-0 whitespace-nowrap",
         active
           ? "border-accent text-fg"
           : "border-transparent text-fg-dim hover:text-fg",

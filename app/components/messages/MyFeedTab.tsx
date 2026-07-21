@@ -116,7 +116,7 @@ export default function MyFeedTab() {
           <select
             value={accountId ?? ""}
             onChange={(e) => setAccountId(e.target.value || null)}
-            className="bg-bg border border-border rounded-lg px-2 py-1.5 text-xs text-fg focus:outline-none focus:border-accent"
+            className="bg-bg border border-border rounded-lg px-3 py-2 text-base md:px-2 md:py-1.5 md:text-xs text-fg focus:outline-none focus:border-accent"
           >
             {accounts.length === 0 && <option value="">No models</option>}
             {accounts.map((a) => (
@@ -127,9 +127,9 @@ export default function MyFeedTab() {
           </select>
         </label>
 
-        <label className="flex flex-col gap-1">
+        <label className="flex flex-col gap-1 w-full md:w-auto">
           <span className="text-[10px] uppercase tracking-wide text-fg-dim">Type</span>
-          <div className="flex items-center gap-1">
+          <div className="grid grid-cols-3 gap-1 md:flex md:items-center">
             {TYPES.map((t) => (
               <Button
                 key={t.key}
@@ -137,7 +137,7 @@ export default function MyFeedTab() {
                 variant={type === t.key ? "primary" : "secondary"}
                 size="sm"
                 onClick={() => setType(t.key)}
-                className={cn(type !== t.key && "border-border")}
+                className={cn("px-1.5 py-2.5 md:px-3 md:py-1.5", type !== t.key && "border-border")}
               >
                 {t.label}
               </Button>
@@ -152,7 +152,7 @@ export default function MyFeedTab() {
             size="sm"
             onClick={() => q.refetch()}
             disabled={!accountId || q.isFetching}
-            className="border-border"
+            className="hidden md:inline-flex border-border"
           >
             {q.isFetching ? "Loading…" : "Refresh"}
           </Button>

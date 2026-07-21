@@ -335,6 +335,74 @@ export async function resolveDispute(
   );
 }
 
+/** One item awaiting the operator's eye. Pre-set to what the model believes;
+ *  the operator taps only what is wrong. */
+export interface FlagsReviewItem {
+  media_id: number;
+  kind: string;
+  lanes: string[];
+  regions: Record<string, string>;
+  over: Record<string, string>;
+  description: string;
+  clothing_state: string;
+  explicitness: string;
+  codes: string[];
+  /** Regions already corrected by hand and frozen against re-runs. */
+  locked: string[];
+  graded: { v?: number; corrected?: string[]; note?: string };
+}
+
+export function useFlagsReview(accountId: string | null, enabled = false, limit = 60) {
+  return useQuery<{
+    prompt_version: number;
+    total: number;
+    graded: number;
+    items: FlagsReviewItem[];
+  }>({
+    queryKey: ["vault-flags-review", accountId, limit],
+    enabled: !!accountId && enabled,
+    queryFn: () =>
+      relay.get(
+        `/admin/vault-ai/flags-review?account_id=${encodeURIComponent(accountId!)}&limit=${limit}`,
+      ),
+    staleTime: 15_000,
+  });
+}
+
+export function useFlagsAccuracy(accountId: string | null, enabled = false) {
+  return useQuery<{
+    prompt_version: number;
+    graded_items: number;
+    graded_other_versions: number;
+    answers: number;
+    accuracy: number | null;
+    per_region: Record<string, { ok: number; n: number }>;
+  }>({
+    queryKey: ["vault-flags-accuracy", accountId],
+    enabled: !!accountId && enabled,
+    queryFn: () =>
+      relay.get(`/admin/vault-ai/flags-accuracy?account_id=${encodeURIComponent(accountId!)}`),
+    staleTime: 15_000,
+  });
+}
+
+/** Record one verdict. Corrections are locked permanently; everything left
+ *  alone is recorded as CONFIRMED — which is not a no-op, it is the evidence
+ *  the accuracy number runs on. Without it, "looked and agreed" and "never
+ *  opened" are the same record. */
+export async function gradeFlags(
+  accountId: string,
+  mediaId: number,
+  corrections: Record<string, string>,
+  note = "",
+): Promise<{ ok: boolean; corrected: string[]; confirmed: string[] }> {
+  return relay.post(
+    `/admin/vault-ai/flags-review/grade`,
+    { account_id: accountId, media_id: mediaId, corrections, note },
+    { accountId },
+  );
+}
+
 /** Harvest OF's own vault search for `query` and fold it into our index, so
  *  local search becomes a superset of OF's. Cached server-side after first run. */
 export async function searchOf(

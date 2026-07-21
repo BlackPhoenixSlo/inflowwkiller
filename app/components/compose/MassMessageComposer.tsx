@@ -620,12 +620,12 @@ export function MassMessageComposer({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4"
+      className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-0 sm:p-4"
       onClick={() => { if (!send.isPending) { reset(); onClose(); } }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[640px] max-h-[90vh] flex flex-col bg-panel border border-border rounded-xl shadow-2xl"
+        className="w-full h-full sm:h-auto max-w-none sm:max-w-[640px] max-h-none sm:max-h-[90vh] flex flex-col bg-panel border-0 sm:border border-border rounded-none sm:rounded-xl shadow-2xl"
       >
         <header className="px-4 py-3 border-b border-border flex items-center justify-between">
           <h2 className="text-sm font-semibold">
@@ -636,7 +636,7 @@ export function MassMessageComposer({
           <button
             type="button"
             onClick={() => { if (!send.isPending) { reset(); onClose(); } }}
-            className="text-fg-dim hover:text-fg text-lg leading-none"
+            className="text-fg-dim hover:text-fg text-lg leading-none w-11 h-11 -mr-2 -my-2 grid place-items-center shrink-0 md:w-auto md:h-auto md:mr-0 md:my-0 md:inline"
             title="Close"
           >×</button>
         </header>
@@ -709,7 +709,7 @@ export function MassMessageComposer({
               onChange={(e) => setText(e.target.value)}
               placeholder="What's the broadcast?"
               rows={4}
-              className="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
+              className="w-full bg-bg border border-border rounded-md px-3 py-2 text-base md:text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
             />
             {/* Toolbar — same composer features as the chat: recent-
              *  emojis quick row, full emoji picker, GIF picker,
@@ -756,7 +756,7 @@ export function MassMessageComposer({
                     <button
                       type="button"
                       onClick={() => setPickedGifs((prev) => prev.filter((p) => p.id !== g.id))}
-                      className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 text-white grid place-items-center text-[10px] opacity-80 hover:opacity-100"
+                      className="absolute top-0.5 right-0.5 w-6 h-6 md:w-4 md:h-4 rounded-full bg-black/70 text-white grid place-items-center text-[10px] opacity-80 hover:opacity-100"
                       aria-label="Remove GIF"
                     >
                       ✕
@@ -797,7 +797,7 @@ export function MassMessageComposer({
                   value={price}
                   onChange={(e) => setPrice(sanitizePriceInput(e.target.value))}
                   placeholder="0 (free)"
-                  className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+                  className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent"
                 />
                 <span className={isPPV ? "text-warn text-[11px]" : "text-fg-dim text-[11px]"}>
                   {isPPV ? `🔒 PPV $${effectivePrice.toFixed(2)}` : "free"}
@@ -834,7 +834,7 @@ export function MassMessageComposer({
             <select
               value={funnelId ?? ""}
               onChange={(e) => setFunnelId(e.target.value ? Number(e.target.value) : null)}
-              className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+              className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent"
             >
               <option value="">— none (just send the opener) —</option>
               {(funnelsQ.data ?? []).map((f) => (
@@ -879,7 +879,7 @@ export function MassMessageComposer({
               </div>
             </div>
             {!allModels && (
-              <div className="grid grid-cols-2 gap-3 pt-2 border-t border-border/60">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-border/60">
                 <div>
                   <div className="text-[11px] text-fg-dim mb-1.5">Custom lists — include</div>
                   <ListColumn
@@ -1007,7 +1007,7 @@ export function MassMessageComposer({
           )}
         </div>
 
-        <footer className="px-4 py-3 border-t border-border flex items-center justify-end gap-2">
+        <footer className="px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3 border-t border-border flex items-center justify-end gap-2">
           {progress && <span className="text-fg-dim text-[11px] mr-auto">{progress}</span>}
           {error && !progress && <span className="text-err text-[11px] mr-auto">{error}</span>}
           <button
@@ -1084,14 +1084,14 @@ function ListColumn({
     return <div className="text-[11px] text-fg-dim italic">{emptyLabel}</div>;
   }
   return (
-    <div className="flex flex-col gap-1 max-h-32 overflow-y-auto pr-1">
+    <div className="flex flex-col gap-1 max-h-none sm:max-h-32 overflow-visible sm:overflow-y-auto pr-1">
       {lists.map((l) => {
         const id = String(l.id);
         const checked = selected.has(id);
         return (
           <label
             key={id}
-            className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-bg-elev-1/40 rounded px-1 py-0.5"
+            className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-bg-elev-1/40 rounded px-1 min-h-[40px] sm:min-h-auto py-2 sm:py-0.5"
           >
             <input
               type="checkbox"
@@ -1127,7 +1127,7 @@ function NumField({
         value={value}
         onChange={(e) => onChange(e.target.value.replace(/[^0-9.]/g, ""))}
         placeholder={placeholder}
-        className="bg-bg border border-border rounded-md px-2 py-1.5 text-xs text-fg focus:outline-none focus:border-accent"
+        className="bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs text-fg focus:outline-none focus:border-accent"
       />
     </label>
   );

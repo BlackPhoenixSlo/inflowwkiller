@@ -169,21 +169,26 @@ function SaleRow({ row }: { row: SaleNeedingAttribution }) {
   const candidates = row.candidate_chatters ?? [];
 
   return (
-    <li className="py-2.5 flex flex-wrap items-center gap-x-3 gap-y-2">
-      <span className="text-sm font-semibold tabular-nums text-fg w-20">
-        {fmtCents(row.amount_cents)}
-      </span>
-      <span className="text-[10px] uppercase tracking-wide text-fg-dim w-8">
-        {kindLabel(row.kind)}
-      </span>
+    <li className="py-2.5 flex flex-col gap-2 md:flex-row md:flex-wrap md:items-center md:gap-x-3">
+      {/* `md:contents` dissolves this wrapper at ≥768px so the three meta
+          spans stay direct flex items of the row — the desktop layout is
+          the same three children in the same order. */}
+      <div className="flex items-center gap-2 md:contents">
+        <span className="text-sm font-semibold tabular-nums text-fg w-auto md:w-20">
+          {fmtCents(row.amount_cents)}
+        </span>
+        <span className="text-[10px] uppercase tracking-wide text-fg-dim w-auto md:w-8">
+          {kindLabel(row.kind)}
+        </span>
+        <span
+          className="text-xs text-fg-dim w-auto md:w-28 truncate"
+          title={row.occurred_at ?? ""}
+        >
+          {fmtDateTime(row.occurred_at)}
+        </span>
+      </div>
       <span
-        className="text-xs text-fg-dim w-28 truncate"
-        title={row.occurred_at ?? ""}
-      >
-        {fmtDateTime(row.occurred_at)}
-      </span>
-      <span
-        className="text-xs text-fg-dim flex-1 min-w-[8rem] truncate"
+        className="text-xs text-fg-dim w-full md:w-auto md:flex-1 md:min-w-[8rem] truncate"
         title={row.description ?? ""}
       >
         {row.description || `fan ${row.fan_id ?? "?"} · ${row.account_id}`}
@@ -209,13 +214,13 @@ function SaleRow({ row }: { row: SaleNeedingAttribution }) {
               onClick={() => assignTo(c.employee_id)}
               disabled={mut.isPending}
               title={c.last_at ? `last chatted ${fmtDateTime(c.last_at)}` : undefined}
-              className="text-xs px-2 py-1 rounded-full border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50"
+              className="text-xs min-h-[40px] px-3 py-2 md:min-h-0 md:px-2 md:py-1 rounded-full border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50"
             >
               {c.name || `Employee ${c.employee_id}`}
             </button>
           ))}
           <select
-            className="text-xs bg-bg-elev-1 border border-border rounded px-2 py-1 text-fg"
+            className="text-xs min-h-[40px] px-3 py-2 md:min-h-0 md:px-2 md:py-1 bg-bg-elev-1 border border-border rounded text-fg"
             value={selected}
             onChange={(e) => setSelected(e.target.value)}
             disabled={mut.isPending}

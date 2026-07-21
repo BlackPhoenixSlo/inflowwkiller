@@ -17,7 +17,7 @@ export function MassNudgeComposer({ open, onClose }: { open: boolean; onClose: (
       >
         <header className="px-4 py-3 border-b border-border flex items-center justify-between">
           <h2 className="text-sm font-semibold">Set up automation</h2>
-          <button type="button" onClick={onClose} className="text-fg-dim hover:text-fg text-lg leading-none" title="Close">×</button>
+          <button type="button" onClick={onClose} className="text-fg-dim hover:text-fg text-lg leading-none w-11 h-11 -mr-2 -my-2 grid place-items-center shrink-0 md:w-auto md:h-auto md:mr-0 md:my-0 md:inline" title="Close">×</button>
         </header>
         <div className="flex-1 overflow-y-auto p-4">
           <MassNudgeTab />

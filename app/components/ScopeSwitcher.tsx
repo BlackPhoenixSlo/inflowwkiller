@@ -74,8 +74,8 @@ export default function ScopeSwitcher() {
     const onClick = (e: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
     };
-    window.addEventListener("mousedown", onClick);
-    return () => window.removeEventListener("mousedown", onClick);
+    window.addEventListener("pointerdown", onClick);
+    return () => window.removeEventListener("pointerdown", onClick);
   }, [open]);
 
   // Refetch the roster every time the picker opens, so a model captured
@@ -103,11 +103,11 @@ export default function ScopeSwitcher() {
       : accounts.find((a) => a.id === scope.accountId)?.color || "#666";
 
   return (
-    <div ref={wrapRef} className="relative shrink-0">
+    <div ref={wrapRef} className="relative min-w-0 lg:shrink-0">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 px-2 lg:px-3 py-1.5 rounded-lg text-sm bg-bg-elev-1 hover:bg-bg-elev-2 border border-border whitespace-nowrap max-w-[8rem] lg:max-w-none"
+        className="flex items-center gap-2 px-2 lg:px-3 py-1.5 rounded-lg text-sm bg-bg-elev-1 hover:bg-bg-elev-2 border border-border whitespace-nowrap max-w-[6rem] sm:max-w-[8rem] lg:max-w-none"
       >
         <span
           className="w-2 h-2 rounded-full shrink-0"
@@ -116,7 +116,24 @@ export default function ScopeSwitcher() {
         <span className="text-xs truncate">{currentLabel}</span>
       </button>
       {open && (
-        <div className="absolute top-full right-0 mt-1 w-64 bg-panel border border-border rounded-lg shadow-lg overflow-hidden z-40">
+        <>
+        {/* Phone/tablet backdrop — the panel is a fixed sheet below lg, so
+            give it a tap-to-close surface. Sits under the panel's z-40 and
+            never renders at lg, where the panel is an anchored dropdown. */}
+        <div
+          className="lg:hidden fixed top-0 left-0 w-screen h-dvh z-30"
+          onClick={() => setOpen(false)}
+          aria-hidden
+        />
+        <div className="fixed left-2 right-2 top-14 w-auto max-h-[70vh] overflow-y-auto bg-panel border border-border rounded-lg shadow-lg z-40 lg:absolute lg:inset-auto lg:top-full lg:right-0 lg:left-auto lg:mt-1 lg:w-64 lg:max-h-none lg:overflow-hidden lg:overflow-y-hidden">
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="lg:hidden ml-auto w-11 h-11 grid place-items-center text-lg leading-none text-fg-dim hover:text-fg"
+            aria-label="Close model picker"
+          >
+            ✕
+          </button>
           {/* "All models" row — master checkbox checks/unchecks every model
               at once (indeterminate when the aggregate is partial); the name
               area swaps scope, same two-target layout as the per-model rows. */}
@@ -179,12 +196,12 @@ export default function ScopeSwitcher() {
                 )}
               <div
                 className={cn(
-                  "w-full flex items-center gap-2 text-sm hover:bg-bg-elev-1",
+                  "w-full flex items-center gap-3 lg:gap-2 text-sm hover:bg-bg-elev-1",
                   active && "bg-bg-elev-1/60",
                 )}
               >
                 <label
-                  className="pl-3 py-2 flex items-center cursor-pointer select-none"
+                  className="pl-3 pr-1 lg:pr-0 py-3 lg:py-2 flex items-center cursor-pointer select-none"
                   title={
                     included
                       ? "Included in the all-models aggregate"
@@ -195,19 +212,28 @@ export default function ScopeSwitcher() {
                     type="checkbox"
                     checked={included}
                     onChange={() => toggle(a.id)}
-                    className="w-3.5 h-3.5 cursor-pointer"
+                    className="w-5 h-5 lg:w-3.5 lg:h-3.5 cursor-pointer"
                   />
                 </label>
                 {canEditColor ? (
-                  <input
-                    type="color"
-                    value={a.color || "#666666"}
-                    onChange={(ev) => recolorM.mutate({ id: a.id, color: ev.target.value })}
-                    onClick={(ev) => ev.stopPropagation()}
-                    className="w-4 h-4 rounded-full border border-border bg-transparent cursor-pointer p-0 shrink-0"
-                    title="Set model color"
-                    aria-label={`Color for ${a.nickname || a.id}`}
-                  />
+                  <>
+                    {/* Below lg the swatch is read-only: a 16px <input type="color">
+                        is a mis-tap that PATCHes the model colour for the whole
+                        team. The editable input is restored verbatim at lg. */}
+                    <span
+                      className="lg:hidden w-2 h-2 rounded-full shrink-0"
+                      style={{ background: a.color || "#666" }}
+                    />
+                    <input
+                      type="color"
+                      value={a.color || "#666666"}
+                      onChange={(ev) => recolorM.mutate({ id: a.id, color: ev.target.value })}
+                      onClick={(ev) => ev.stopPropagation()}
+                      className="hidden lg:block w-4 h-4 rounded-full border border-border bg-transparent cursor-pointer p-0 shrink-0"
+                      title="Set model color"
+                      aria-label={`Color for ${a.nickname || a.id}`}
+                    />
+                  </>
                 ) : (
                   <span
                     className="w-2 h-2 rounded-full shrink-0"
@@ -223,6 +249,9 @@ export default function ScopeSwitcher() {
                   className="flex-1 pr-3 py-2 flex items-center gap-2 text-left"
                 >
                   <span className="truncate flex-1">{a.nickname || a.id}</span>
+                  {!included && (
+                    <span className="lg:hidden text-[10px] text-fg-dim shrink-0">excluded</span>
+                  )}
                   {active && <span className="text-[10px] text-fg-dim">●</span>}
                 </button>
               </div>
@@ -242,6 +271,7 @@ export default function ScopeSwitcher() {
             </div>
           )}
         </div>
+        </>
       )}
     </div>
   );

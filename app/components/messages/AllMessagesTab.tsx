@@ -113,20 +113,20 @@ export default function AllMessagesTab({ from, to, fanId, onClearFanId }: Props)
           direction={direction}
           onDirectionChange={handleDirectionChange}
         />
-        <div className="flex items-center gap-2">
+        <div className="hidden md:flex items-center gap-2">
           <GroupMassButton accountId={accountId} />
           <CsvExportButton params={params} disabled={!from || !to} />
         </div>
       </div>
 
       {fanId != null && (
-        <div className="flex items-center gap-2 text-xs text-fg-dim">
+        <div className="flex items-center gap-2 text-sm md:text-xs text-fg-dim">
           <span>Filtered to fan #{fanId}</span>
           {onClearFanId && (
             <button
               type="button"
               onClick={onClearFanId}
-              className="text-accent hover:underline"
+              className="text-accent underline underline-offset-2 md:no-underline md:underline-offset-auto md:hover:underline inline-flex items-center px-3 py-2 -my-2 min-h-11 md:inline-block md:px-0 md:py-0 md:my-0 md:min-h-0"
             >
               clear
             </button>

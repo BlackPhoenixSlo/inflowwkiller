@@ -56,11 +56,11 @@ export default function UserDataTab() {
             Sheet, read live from our DB. Sorted by spend.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 w-full sm:w-auto">
           <select
             value={effectiveAccount ?? ""}
             onChange={(e) => setAccountId(e.target.value || null)}
-            className="rounded-lg bg-bg-elev-1 border border-border text-sm px-2 py-1.5 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
+            className="rounded-lg bg-bg-elev-1 border border-border text-base sm:text-sm px-2 py-2 sm:py-1.5 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           >
             {accounts.length === 0 && <option value="">No accounts</option>}
             {accounts.map((a) => (
@@ -73,7 +73,7 @@ export default function UserDataTab() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search name / nickname / bio…"
-            className="w-56"
+            className="w-full sm:w-56 text-base sm:text-sm"
           />
         </div>
       </header>

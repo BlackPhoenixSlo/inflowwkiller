@@ -53,7 +53,7 @@ export default function PostsTab() {
           <select
             value={accountId ?? ""}
             onChange={(e) => setAccountId(e.target.value || null)}
-            className="bg-bg border border-border rounded-lg px-2 py-1.5 text-xs text-fg focus:outline-none focus:border-accent"
+            className="bg-bg border border-border rounded-lg px-3 py-2 text-base md:px-2 md:py-1.5 md:text-xs text-fg focus:outline-none focus:border-accent"
           >
             {accounts.length === 0 && <option value="">No models</option>}
             {accounts.map((a) => (

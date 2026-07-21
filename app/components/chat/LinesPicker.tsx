@@ -43,8 +43,8 @@ export function LinesPicker({ accountId, fanId, onPick }: LinesPickerProps) {
       if (rootRef.current?.contains(e.target as Node)) return;
       setOpen(false);
     };
-    document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
+    document.addEventListener("pointerdown", onClick);
+    return () => document.removeEventListener("pointerdown", onClick);
   }, [open]);
 
   // While a batch is generating, refetch /lines every 4s. The job runs on the

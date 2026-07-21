@@ -88,7 +88,7 @@ export default function PaidMessagesTab({ from, to }: Props) {
           fanQuery={fanQuery}
           onFanQueryChange={setFanQuery}
         />
-        <div className="flex items-center gap-2">
+        <div className="hidden md:flex items-center gap-2">
           <GroupMassButton accountId={accountId} />
           <CsvExportButton params={params} disabled={!from || !to} />
         </div>

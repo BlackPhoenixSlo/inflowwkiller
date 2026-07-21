@@ -39,14 +39,14 @@ export function ScheduledForChat({
         setOpen(false);
       }
     };
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
+    window.addEventListener("pointerdown", onDown);
+    return () => window.removeEventListener("pointerdown", onDown);
   }, [open]);
 
   if (mine.length === 0) return null;
 
   return (
-    <div className="relative">
+    <div className="static md:relative">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -58,7 +58,7 @@ export function ScheduledForChat({
       {open && (
         <div
           ref={popoverRef}
-          className="absolute right-0 top-full mt-1 w-80 bg-panel border border-border rounded-lg shadow-lg z-30 max-h-96 overflow-y-auto"
+          className="absolute top-full mt-1 left-0 right-0 w-auto md:left-auto md:right-0 md:w-80 bg-panel border border-border rounded-lg shadow-lg z-30 max-h-96 overflow-y-auto"
         >
           <div className="px-3 py-2 border-b border-border text-xs font-medium">
             Scheduled for this fan
@@ -114,7 +114,7 @@ export function ScheduledForChat({
                         );
                       }}
                       disabled={busy}
-                      className="text-[10px] px-2 py-0.5 rounded border border-err/40 text-err hover:bg-err/10 disabled:opacity-40"
+                      className="text-[10px] px-2 py-1.5 md:py-0.5 rounded border border-err/40 text-err hover:bg-err/10 disabled:opacity-40"
                     >
                       {busy ? "Cancelling…" : "Cancel"}
                     </button>

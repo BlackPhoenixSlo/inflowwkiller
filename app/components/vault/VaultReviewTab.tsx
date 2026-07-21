@@ -218,7 +218,7 @@ function ReviewCard({
   onReject: () => void;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3">
+    <div className="py-2.5 md:py-0 flex flex-col gap-2 md:flex-row md:items-start md:justify-between md:gap-3">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-xs text-fg-dim">
           <span>#{item.id}</span>
@@ -237,12 +237,12 @@ function ReviewCard({
           <PayloadView kind={item.kind} payload={item.payload} />
         </div>
       </div>
-      <div className="flex items-center gap-1 shrink-0">
+      <div className="flex items-center gap-2 md:gap-1 w-full md:w-auto shrink-0">
         <button
           type="button"
           onClick={onApprove}
           disabled={busy}
-          className="px-2 py-1 rounded-md text-xs border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-40"
+          className="flex-1 md:flex-initial inline-flex md:block items-center justify-center px-3 md:px-2 py-2 md:py-1 min-h-10 md:min-h-0 rounded-md text-sm md:text-xs border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-40"
         >
           Approve
         </button>
@@ -250,7 +250,7 @@ function ReviewCard({
           type="button"
           onClick={onReject}
           disabled={busy}
-          className="px-2 py-1 rounded-md text-xs border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 disabled:opacity-40"
+          className="flex-1 md:flex-initial inline-flex md:block items-center justify-center px-3 md:px-2 py-2 md:py-1 min-h-10 md:min-h-0 rounded-md text-sm md:text-xs border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 disabled:opacity-40"
         >
           Reject
         </button>

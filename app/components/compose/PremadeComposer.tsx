@@ -220,19 +220,19 @@ export function PremadeComposer({
       : "Premade Mass (send · resend · unsend)";
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4"
+      className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-0 sm:p-4"
       onClick={onClose}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[640px] max-h-[90vh] flex flex-col bg-panel border border-border rounded-xl shadow-2xl"
+        className="w-full h-full sm:h-auto max-w-none sm:max-w-[640px] max-h-none sm:max-h-[90vh] flex flex-col bg-panel border-0 sm:border border-border rounded-none sm:rounded-xl shadow-2xl"
       >
         <header className="px-4 py-3 border-b border-border flex items-center justify-between">
           <h2 className="text-sm font-semibold">{title}</h2>
           <button
             type="button"
             onClick={onClose}
-            className="text-fg-dim hover:text-fg text-lg leading-none"
+            className="text-fg-dim hover:text-fg text-lg leading-none w-11 h-11 -mr-2 -my-2 grid place-items-center shrink-0 md:w-auto md:h-auto md:mr-0 md:my-0 md:inline"
             title="Close"
           >×</button>
         </header>
@@ -673,7 +673,7 @@ export function PremadeForm({
                           : posts ? "Post caption…" : "Broadcast text…"
                       }
                       rows={2}
-                      className="flex-1 bg-bg border border-border rounded-md px-3 py-2 text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
+                      className="flex-1 bg-bg border border-border rounded-md px-3 py-2 text-base md:text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
                     />
                     {r.texts.length > 1 && (
                       <button
@@ -757,7 +757,7 @@ export function PremadeForm({
                         value={r.mediaCount}
                         onChange={(e) => patchRow(i, { mediaCount: e.target.value.replace(/[^0-9]/g, "") })}
                         placeholder="1"
-                        className="w-12 bg-bg border border-border rounded-md px-2 py-1 text-xs text-fg text-center focus:outline-none focus:border-accent"
+                        className="w-16 md:w-12 bg-bg border border-border rounded-md px-2 py-1 text-base md:text-xs text-fg text-center focus:outline-none focus:border-accent"
                       />
                       <span>
                         image{r.mediaCount === "1" ? "" : "s"} at random per fire
@@ -781,7 +781,7 @@ export function PremadeForm({
                   value={r.price}
                   onChange={(e) => patchRow(i, { price: sanitizePriceInput(e.target.value) })}
                   placeholder="0 (free)"
-                  className="w-24 bg-bg border border-border rounded-md px-2 py-1.5 text-xs text-fg focus:outline-none focus:border-accent"
+                  className="w-24 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs text-fg focus:outline-none focus:border-accent"
                 />
                 {Number(r.price) > 0 ? (
                   <span className="text-warn text-[11px]">
@@ -857,7 +857,7 @@ export function PremadeForm({
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {posts ? (
                   <NumField
                     label="Auto-delete after" suffix="hrs · blank = keep"
@@ -934,7 +934,7 @@ export function PremadeForm({
                   {/* Custom lists — include / exclude columns. Per-account, so
                    *  hidden in all-models mode (only system audiences apply). */}
                   {!allModels && (
-                    <div className="grid grid-cols-2 gap-3 pt-1 border-t border-border/50">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-border/50">
                       <div>
                         <div className="text-[11px] text-fg-dim mb-1">Custom lists — include</div>
                         <ListColumn
@@ -959,7 +959,7 @@ export function PremadeForm({
                   )}
 
                   {/* DB-sourced add/exclude knobs (resolved server-side). */}
-                  <div className="grid grid-cols-2 gap-2 pt-1 border-t border-border/50">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-border/50">
                     <NumField
                       label="Exclude I replied to" suffix="last N hrs"
                       value={r.excludeRepliedHours}
@@ -1029,7 +1029,7 @@ export function PremadeForm({
               <div className="text-[11px] uppercase tracking-wide text-fg-dim">
                 Repost cycle
               </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <NumField
                   label="Repost whole list after" suffix="hrs · blank = once"
                   value={postsResendAfterHours}
@@ -1067,7 +1067,7 @@ export function PremadeForm({
             </div>
           )}
 
-          <div className="flex items-center justify-end gap-2 pt-1">
+          <div className="flex items-center justify-end gap-2 sticky bottom-0 z-10 -mx-4 -mb-4 px-4 py-3 bg-panel border-t border-border md:static md:z-auto md:mx-0 md:mb-0 md:px-0 md:pb-0 md:pt-1 md:border-0 md:bg-transparent">
             {error && <span className="text-err text-[11px] mr-auto">{error}</span>}
             <button
               type="button"
@@ -1216,7 +1216,7 @@ function NumField({
         value={value}
         onChange={(e) => onChange(e.target.value.replace(/[^0-9.]/g, ""))}
         placeholder={placeholder}
-        className="bg-bg border border-border rounded-md px-2 py-1.5 text-xs text-fg focus:outline-none focus:border-accent"
+        className="bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs text-fg focus:outline-none focus:border-accent"
       />
     </label>
   );

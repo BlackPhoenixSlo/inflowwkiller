@@ -51,6 +51,7 @@ import accounts as account_registry
 from attribution_backfill import attribute_orphans
 from db.engine import engine, get_session
 from db.models import (
+    Account,
     Chatter,
     ChatterUser,
     Fan,
@@ -1389,9 +1390,22 @@ async def _online_account_ids() -> set[str]:
     _ONLINE_WINDOW_S seconds.
 
     Sources combined:
+      • ADMINS (users.is_admin + last_seen_at) → EVERY account. An admin sees
+        the whole roster in the UI, so scoping their tick to the accounts they
+        happen to be listed against in `user_accounts` silently starves the
+        rest. That is not hypothetical: SofiaPaid had NO user_accounts row at
+        all and AriaPaid's owner was offline, so neither account's ledger was
+        ever scanned — no `transactions` rows, an empty PPV chart on every one
+        of their fans, and `fans.lifetime_spend_cents` frozen at 0 (which also
+        starves the of_ai_chat "hand payers to humans" gate). Ownership is NOT
+        the right lever for "should this run": a live, connected account must
+        be ingested regardless of who is listed as its owner.
       • owners (users.last_seen_at) → user_accounts.account_id
       • chatters (chatters.last_seen_at + is_active=True) →
             chatter_users → user_accounts.account_id
+
+    Non-admin principals stay scoped to their own accounts, so a multi-tenant
+    box doesn't burn one agency's proxy because another agency is online.
 
     Empty set ⇒ nobody's online; the supervisor cycle skips this tick so
     we don't hammer broken sessions while every dashboard is closed. The
@@ -1400,6 +1414,14 @@ async def _online_account_ids() -> set[str]:
     """
     cutoff = datetime.utcnow() - timedelta(seconds=_ONLINE_WINDOW_S)
     async with get_session() as s:
+        admin_online = (await s.execute(
+            select(User.id).where(User.last_seen_at >= cutoff,
+                                  User.is_admin.is_(True)).limit(1)
+        )).first()
+        if admin_online:
+            # Every known account — the per-account `has_session` / paused
+            # filters in the callers still decide what actually gets scanned.
+            return {r[0] for r in (await s.execute(select(Account.id))).all()}
         owner_rows = (await s.execute(
             select(UserAccount.account_id)
             .join(User, User.id == UserAccount.user_id)

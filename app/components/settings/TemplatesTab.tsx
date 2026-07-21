@@ -147,14 +147,27 @@ export default function TemplatesTab() {
   const deleteReplyM = useDeleteSavedReply(accountId);
   const replies = replyQ.data ?? [];
 
+  /** Phone-only: the draft editor mounts at the TOP of the card, so tapping
+   *  Edit on a reply far down the list looks like nothing happened. Bail out
+   *  at >=768px so desktop scroll behaviour is exactly what it is today. */
+  function revealDraft() {
+    if (typeof window === "undefined") return;
+    if (window.matchMedia("(min-width: 768px)").matches) return;
+    requestAnimationFrame(() => {
+      document.getElementById("tpl-draft")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }
+
   function startNewReply() {
     setDraft({ ...EMPTY_REPLY });
     setSaveErr(null);
+    revealDraft();
   }
 
   function startNewWelcome() {
     setDraft({ ...EMPTY_WELCOME });
     setSaveErr(null);
+    revealDraft();
   }
 
   function startEditWelcome(t: OFMessageTemplate) {
@@ -173,6 +186,7 @@ export default function TemplatesTab() {
       scriptStep: "",
     });
     setSaveErr(null);
+    revealDraft();
   }
 
   function startEditReply(r: SavedReply) {
@@ -201,6 +215,7 @@ export default function TemplatesTab() {
       scriptStep: r.script_step != null ? String(r.script_step) : "",
     });
     setSaveErr(null);
+    revealDraft();
   }
 
   async function save() {
@@ -344,7 +359,7 @@ export default function TemplatesTab() {
         )}
 
         {draft && (
-          <div className="border border-accent/40 rounded-lg p-3 mb-4 space-y-3 bg-bg/40">
+          <div id="tpl-draft" className="border border-accent/40 rounded-lg p-3 mb-4 space-y-3 bg-bg/40">
             <div className="flex items-center justify-between">
               <div className="text-sm font-medium">
                 {draft.id != null
@@ -537,7 +552,7 @@ export default function TemplatesTab() {
                           };
                         })
                       }
-                      className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 text-white grid place-items-center text-[10px] opacity-80 hover:opacity-100"
+                      className="absolute top-0.5 right-0.5 w-4 h-4 max-md:w-6 max-md:h-6 rounded-full bg-black/70 text-white grid place-items-center text-[10px] max-md:text-xs opacity-80 hover:opacity-100"
                       aria-label="Remove attachment"
                     >
                       ✕

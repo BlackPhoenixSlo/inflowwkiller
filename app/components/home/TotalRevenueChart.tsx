@@ -106,7 +106,7 @@ export default function TotalRevenueChart() {
               type="button"
               onClick={() => setRange(r.key)}
               className={cn(
-                "px-2.5 py-1 text-xs rounded-md transition-colors",
+                "px-3 py-2 text-xs rounded-md transition-colors min-h-[40px] md:px-2.5 md:py-1 md:min-h-0",
                 range === r.key
                   ? "bg-bg-elev-2 text-fg"
                   : "text-fg-dim hover:text-fg",

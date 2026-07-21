@@ -113,7 +113,7 @@ export default function MessageRow({ row }: Props) {
               </span>
             )}
 
-            <span className="ml-auto text-xs text-fg-dim group-hover:text-accent">
+            <span className="hidden md:inline ml-auto text-xs text-fg-dim group-hover:text-accent">
               ↗ open chat
             </span>
           </div>

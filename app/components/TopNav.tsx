@@ -95,10 +95,10 @@ export default function TopNav() {
       if (!composeRef.current?.contains(e.target as Node)) setComposeOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setComposeOpen(false); };
-    document.addEventListener("mousedown", onClick);
+    document.addEventListener("pointerdown", onClick);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("pointerdown", onClick);
       document.removeEventListener("keydown", onKey);
     };
   }, [composeOpen]);
@@ -110,10 +110,10 @@ export default function TopNav() {
       if (!mobileNavRef.current?.contains(e.target as Node)) setMobileNavOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMobileNavOpen(false); };
-    document.addEventListener("mousedown", onClick);
+    document.addEventListener("pointerdown", onClick);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("pointerdown", onClick);
       document.removeEventListener("keydown", onKey);
     };
   }, [mobileNavOpen]);
@@ -253,7 +253,7 @@ export default function TopNav() {
             <button
               type="button"
               onClick={clear}
-              className="flex items-center gap-2 px-2 lg:px-3 py-1.5 rounded-lg text-sm bg-bg-elev-1 hover:bg-bg-elev-2 border border-border max-w-[8rem] lg:max-w-none shrink-0"
+              className="flex items-center gap-2 px-2 lg:px-3 py-1.5 rounded-lg text-sm bg-bg-elev-1 hover:bg-bg-elev-2 border border-border min-w-0 max-w-[6rem] sm:max-w-[8rem] lg:max-w-none lg:shrink-0"
               title="Switch employee"
             >
               <span
@@ -295,14 +295,14 @@ export default function TopNav() {
        *  since it's hidden in the bar at < sm. */}
       {mobileNavOpen && (
         <div ref={mobileNavRef} className="lg:hidden border-t border-border bg-panel">
-          <nav className="flex flex-col px-3 py-2 gap-1">
+          <nav className="grid grid-cols-2 gap-1.5 px-3 py-2">
             {visibleLinks.map((l) => (
               <Link
                 key={l.href}
                 href={l.href}
                 onClick={() => setMobileNavOpen(false)}
                 className={cn(
-                  "px-3 py-2 rounded-lg text-sm transition-colors",
+                  "px-3 min-h-11 flex items-center rounded-lg text-sm transition-colors",
                   pathname === l.href
                     ? "bg-bg-elev-1 text-fg"
                     : "text-fg-dim hover:text-fg hover:bg-bg-elev-1/50",
@@ -314,7 +314,7 @@ export default function TopNav() {
             <button
               type="button"
               onClick={toggle}
-              className="sm:hidden mt-1 px-3 py-2 rounded-lg text-sm text-left text-fg-dim hover:text-fg hover:bg-bg-elev-1/50"
+              className="sm:hidden col-span-2 mt-1 px-3 min-h-11 flex items-center rounded-lg text-sm text-left text-fg-dim hover:text-fg hover:bg-bg-elev-1/50"
             >
               {theme === "dark" ? "☀ Switch to light mode" : "☾ Switch to dark mode"}
             </button>

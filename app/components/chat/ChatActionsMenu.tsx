@@ -51,10 +51,10 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
       if (!ref.current?.contains(e.target as Node)) onClosed();
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClosed(); };
-    document.addEventListener("mousedown", onClick);
+    document.addEventListener("pointerdown", onClick);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("pointerdown", onClick);
       document.removeEventListener("keydown", onKey);
     };
   }, [onClosed]);
@@ -224,7 +224,7 @@ export function ChatActionsMenu({ accountId, fanId, chat, onClosed }: Props) {
   return (
     <div
       ref={ref}
-      className="absolute right-2 top-full mt-1 z-40 min-w-[220px] bg-panel border border-border rounded-lg shadow-xl py-1"
+      className="absolute right-2 top-full mt-1 z-40 min-w-[220px] w-[min(88vw,320px)] md:w-auto max-h-[70vh] overflow-y-auto overscroll-contain md:max-h-none md:overflow-y-visible bg-panel border border-border rounded-lg shadow-xl py-1"
     >
       {!submenu && (
         <>
@@ -335,7 +335,7 @@ function Item({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-fg hover:bg-bg-elev-1 disabled:opacity-50"
+      className="w-full flex items-center gap-2 px-3 py-3 md:py-1.5 text-sm md:text-xs text-left text-fg hover:bg-bg-elev-1 disabled:opacity-50"
     >
       <span className="w-4 text-center text-[11px]">{icon}</span>
       <span>{label}</span>
@@ -408,11 +408,11 @@ function ToggleListsSubmenu({
   }
 
   return (
-    <div className="max-h-[280px] overflow-y-auto">
+    <div className="max-h-[60vh] md:max-h-[280px] overflow-y-auto overscroll-contain">
       <button
         type="button"
         onClick={onBack}
-        className="w-full text-left px-3 py-1.5 text-[11px] text-fg-dim hover:text-fg hover:bg-bg-elev-1 border-b border-border"
+        className="w-full text-left px-3 py-3 md:py-1.5 text-[14px] md:text-[11px] text-fg-dim hover:text-fg hover:bg-bg-elev-1 border-b border-border"
       >
         ← Back
       </button>
@@ -439,12 +439,12 @@ function ToggleListsSubmenu({
             type="button"
             disabled={inflight}
             onClick={() => toggle(f)}
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-fg hover:bg-bg-elev-1 disabled:opacity-60 disabled:hover:bg-transparent"
+            className="w-full flex items-center gap-2 px-3 py-3 md:py-1.5 text-sm md:text-xs text-left text-fg hover:bg-bg-elev-1 disabled:opacity-60 disabled:hover:bg-transparent"
             title={inList ? "Remove from list" : "Add to list"}
           >
             <span
               className={
-                "w-4 h-4 rounded border grid place-items-center text-[10px] shrink-0 " +
+                "w-6 h-6 md:w-4 md:h-4 rounded border grid place-items-center text-[10px] shrink-0 " +
                 (inList ? "bg-accent border-accent text-white" : "border-border bg-bg")
               }
             >
@@ -452,7 +452,7 @@ function ToggleListsSubmenu({
             </span>
             <span className="flex-1 truncate">{f.name || `list ${idStr}`}</span>
             {typeof f.usersCount === "number" && (
-              <span className="text-[9px] text-fg-dim">{f.usersCount}</span>
+              <span className="text-[11px] md:text-[9px] text-fg-dim">{f.usersCount}</span>
             )}
             {inflight && <span className="text-[9px] text-fg-dim">…</span>}
           </button>

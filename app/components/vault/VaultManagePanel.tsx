@@ -21,6 +21,7 @@ import {
 } from "@/components/chat/VaultPicker";
 import VaultAiFoldersModal from "@/components/vault/VaultAiFoldersModal";
 import VaultDisputesModal from "@/components/vault/VaultDisputesModal";
+import VaultFlagsReviewModal from "@/components/vault/VaultFlagsReviewModal";
 import VaultDuplicatesModal from "@/components/vault/VaultDuplicatesModal";
 import VaultTile from "@/components/vault/VaultTile";
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -116,6 +117,7 @@ export default function VaultManagePanel() {
   const [showDupes, setShowDupes] = useState(false);
   const [showAiFolders, setShowAiFolders] = useState(false);
   const [showDisputes, setShowDisputes] = useState(false);
+  const [showFlagsReview, setShowFlagsReview] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState<string>("");
   const [describeAll, setDescribeAll] = useState<string>("");
@@ -154,12 +156,15 @@ export default function VaultManagePanel() {
   // underneath it.
   useEffect(() => {
     if (!preview || selectMode || playMedia) return;
+    // Phone only: the drawer is a full-screen sheet there, so there is no
+    // "outside" to click — and a thumb brushing the edge would close it.
+    if (!window.matchMedia("(min-width: 768px)").matches) return;
     const onDown = (e: MouseEvent) => {
       const el = drawerRef.current;
       if (el && !el.contains(e.target as Node)) setPreview(null);
     };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
   }, [preview, selectMode, playMedia]);
 
   // On a search, harvest OF's own results in the BACKGROUND and merge them in.
@@ -520,7 +525,7 @@ export default function VaultManagePanel() {
       {/* top controls */}
       <div className="flex flex-wrap items-center gap-3 justify-between">
         <AccountChips accountId={accountId} onChange={setAccountId} />
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap md:flex-nowrap items-center gap-2">
           <span className="text-xs text-fg-dim">
             {isCollecting ? (
               <>
@@ -534,14 +539,18 @@ export default function VaultManagePanel() {
               "not collected"
             )}
           </span>
-          <button
-            type="button"
-            onClick={onCollect}
-            disabled={isCollecting || !accountId}
-            className="px-3 py-1.5 rounded-lg text-sm border border-accent bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50"
-          >
-            {isCollecting ? "Collecting…" : cachedCount > 0 ? "Re-collect" : "Collect all"}
-          </button>
+          {/* Desk-only batch sweeps. `md:contents` keeps every button a direct
+              flex child at md, so the desktop row is untouched. */}
+          <div className="hidden md:contents">
+            <button
+              type="button"
+              onClick={onCollect}
+              disabled={isCollecting || !accountId}
+              className="px-3 py-1.5 rounded-lg text-sm border border-accent bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50"
+            >
+              {isCollecting ? "Collecting…" : cachedCount > 0 ? "Re-collect" : "Collect all"}
+            </button>
+          </div>
           <button
             type="button"
             onClick={() => {
@@ -555,77 +564,79 @@ export default function VaultManagePanel() {
           >
             {selectMode ? "Selecting" : "Select"}
           </button>
-          <button
-            type="button"
-            onClick={() => onDescribeAll("new")}
-            disabled={!!describeAll || cachedCount === 0}
-            className="px-3 py-1.5 rounded-lg text-sm border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
-            title="Describe every un-described item (background)"
-          >
-            {describeAll
-              ? `Describing ${describeAll}`
-              : `Describe all${plan.data?.undescribed ? ` (${plan.data.undescribed})` : ""}`}
-          </button>
-          {/* Which bake-off prompt the sweep runs. B is the default and the only
-              one that emits the structured taxonomy auto-foldering needs; A is
-              ~4× cheaper for a rough first pass over a huge vault. */}
-          <select
-            value={promptVersion}
-            onChange={(e) => setPromptVersion(e.target.value as "v1" | "v2")}
-            disabled={!!describeAll}
-            title="Describe prompt variant"
-            className="px-2 py-1.5 rounded-lg text-sm bg-bg-elev-1 border border-border text-fg-dim"
-          >
-            <option value="v2">B · rich</option>
-            <option value="v1">A · fast</option>
-          </select>
-          {!!plan.data?.restage && !describeAll && (
+          <div className="hidden md:contents">
             <button
               type="button"
-              onClick={() => onDescribeAll("restage")}
-              disabled={cachedCount === 0}
-              className="px-3 py-1.5 rounded-lg text-sm border border-amber-500/50 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 disabled:opacity-50"
-              title="Re-describe items that were described with the OTHER prompt version. Resumable — already-current rows are skipped."
+              onClick={() => onDescribeAll("new")}
+              disabled={!!describeAll || cachedCount === 0}
+              className="px-3 py-1.5 rounded-lg text-sm border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
+              title="Describe every un-described item (background)"
             >
-              Re-scan old ({plan.data.restage})
+              {describeAll
+                ? `Describing ${describeAll}`
+                : `Describe all${plan.data?.undescribed ? ` (${plan.data.undescribed})` : ""}`}
             </button>
-          )}
-          <button
-            type="button"
-            onClick={onHarvest}
-            disabled={!!harvest || cachedCount === 0}
-            className="px-3 py-1.5 rounded-lg text-sm border border-sky-500/50 bg-sky-500/10 text-sky-400 hover:bg-sky-500/20 disabled:opacity-50"
-            title="Run OF's own search across ~50 selling keywords and fold into local search"
-          >
-            {harvest ? `Harvesting ${harvest}` : "Harvest OF (50)"}
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowDupes(true)}
-            disabled={cachedCount === 0}
-            className="px-3 py-1.5 rounded-lg text-sm border border-rose-500/50 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 disabled:opacity-50"
-            title="Find re-uploaded copies and remove them from the OF vault (review + confirm first)"
-          >
-            Duplicates
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowAiFolders(true)}
-            disabled={cachedCount === 0}
-            className="px-3 py-1.5 rounded-lg text-sm border border-violet-500/50 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 disabled:opacity-50"
-            title="Group the vault into shoots and send lanes — preview first, nothing is created until you confirm"
-          >
-            Build AI folders
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowDisputes(true)}
-            disabled={cachedCount === 0}
-            className="px-3 py-1.5 rounded-lg text-sm border border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 disabled:opacity-50"
-            title="Items where the two vision passes disagree — pick the reading that matches the picture. Your choice is locked against re-runs."
-          >
-            Fix disagreements
-          </button>
+            {/* Which bake-off prompt the sweep runs. B is the default and the only
+                one that emits the structured taxonomy auto-foldering needs; A is
+                ~4× cheaper for a rough first pass over a huge vault. */}
+            <select
+              value={promptVersion}
+              onChange={(e) => setPromptVersion(e.target.value as "v1" | "v2")}
+              disabled={!!describeAll}
+              title="Describe prompt variant"
+              className="px-2 py-1.5 rounded-lg text-sm bg-bg-elev-1 border border-border text-fg-dim"
+            >
+              <option value="v2">B · rich</option>
+              <option value="v1">A · fast</option>
+            </select>
+            {!!plan.data?.restage && !describeAll && (
+              <button
+                type="button"
+                onClick={() => onDescribeAll("restage")}
+                disabled={cachedCount === 0}
+                className="px-3 py-1.5 rounded-lg text-sm border border-amber-500/50 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 disabled:opacity-50"
+                title="Re-describe items that were described with the OTHER prompt version. Resumable — already-current rows are skipped."
+              >
+                Re-scan old ({plan.data.restage})
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onHarvest}
+              disabled={!!harvest || cachedCount === 0}
+              className="px-3 py-1.5 rounded-lg text-sm border border-sky-500/50 bg-sky-500/10 text-sky-400 hover:bg-sky-500/20 disabled:opacity-50"
+              title="Run OF's own search across ~50 selling keywords and fold into local search"
+            >
+              {harvest ? `Harvesting ${harvest}` : "Harvest OF (50)"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowDupes(true)}
+              disabled={cachedCount === 0}
+              className="px-3 py-1.5 rounded-lg text-sm border border-rose-500/50 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 disabled:opacity-50"
+              title="Find re-uploaded copies and remove them from the OF vault (review + confirm first)"
+            >
+              Duplicates
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAiFolders(true)}
+              disabled={cachedCount === 0}
+              className="px-3 py-1.5 rounded-lg text-sm border border-violet-500/50 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 disabled:opacity-50"
+              title="Group the vault into shoots and send lanes — preview first, nothing is created until you confirm"
+            >
+              Build AI folders
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowDisputes(true)}
+              disabled={cachedCount === 0}
+              className="px-3 py-1.5 rounded-lg text-sm border border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 disabled:opacity-50"
+              title="Items where the two vision passes disagree — pick the reading that matches the picture. Your choice is locked against re-runs."
+            >
+              Fix disagreements
+            </button>
+          </div>
         </div>
       </div>
 
@@ -678,9 +689,9 @@ export default function VaultManagePanel() {
       {/* Fixed-height two-pane: each side scrolls on its OWN, so only the media
           grid moves (with its own bottom-of-list infinite load) and the folder
           rail stays put — the page itself barely scrolls. */}
-      <div className="flex items-stretch rounded-xl border border-border overflow-hidden h-[74vh]">
+      <div className="flex flex-col md:flex-row items-stretch rounded-xl border border-border overflow-hidden h-[70vh] md:h-[74vh]">
         {/* LEFT rail — OF folders (independently scrollable) */}
-        <aside className="w-56 shrink-0 border-r border-border bg-bg-elev-1/40 overflow-y-auto">
+        <aside className="w-full md:w-56 shrink-0 max-h-44 md:max-h-none border-b md:border-b-0 md:border-r border-border bg-bg-elev-1/40 overflow-y-auto">
           <button
             type="button"
             onClick={() => setOfFolderId(null)}
@@ -710,7 +721,9 @@ export default function VaultManagePanel() {
                 onClick={startCustomize}
                 title="Customize folder order (drag)"
                 className={cx(
-                  "w-6 h-6 grid place-items-center rounded-md hover:bg-bg-elev-1",
+                  // HTML5 drag never fires on touch, and while the mode is on a
+                  // folder tap stops opening the folder — so hide it on phone.
+                  "hidden md:grid w-6 h-6 place-items-center rounded-md hover:bg-bg-elev-1",
                   customizeOrder ? "text-accent" : "text-fg-dim hover:text-fg",
                 )}
               >
@@ -762,7 +775,7 @@ export default function VaultManagePanel() {
                   </div>
                 </div>
                 {!customizeOrder && (
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                  <div className="flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity shrink-0">
                     <button
                       type="button"
                       onClick={(e) => {
@@ -770,7 +783,7 @@ export default function VaultManagePanel() {
                         onRenameFolder(f);
                       }}
                       title="Rename"
-                      className="w-6 h-6 grid place-items-center rounded-md hover:bg-bg text-fg-dim hover:text-fg text-xs"
+                      className="w-10 h-10 md:w-6 md:h-6 grid place-items-center rounded-md hover:bg-bg text-fg-dim hover:text-fg text-xs"
                     >
                       ✏️
                     </button>
@@ -781,7 +794,7 @@ export default function VaultManagePanel() {
                         onDeleteFolder(f);
                       }}
                       title="Delete folder"
-                      className="w-6 h-6 grid place-items-center rounded-md hover:bg-red-500/20 text-fg-dim hover:text-red-400 text-xs"
+                      className="w-10 h-10 md:w-6 md:h-6 grid place-items-center rounded-md hover:bg-red-500/20 text-fg-dim hover:text-red-400 text-xs"
                     >
                       🗑
                     </button>
@@ -800,12 +813,12 @@ export default function VaultManagePanel() {
               {useLocal && <span className="ml-2 text-[10px] text-emerald-400">● local</span>}
               {usingFolder && <span className="ml-2 text-[10px] text-fg-dim">(set # to reorder)</span>}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 w-full md:w-auto">
               <input
                 value={searchRaw}
                 onChange={(e) => setSearchRaw(e.target.value)}
                 placeholder={useLocal ? "Search tags (instant)…" : "Search…"}
-                className="px-3 py-1.5 rounded-lg text-sm bg-bg-elev-1 border border-border focus:border-accent outline-none w-48"
+                className="px-3 py-1.5 rounded-lg text-base md:text-sm bg-bg-elev-1 border border-border focus:border-accent outline-none w-48 max-md:w-auto max-md:flex-1 max-md:min-w-0"
               />
               <select
                 value={sort}
@@ -892,7 +905,7 @@ export default function VaultManagePanel() {
         // drawer just swaps to that item.
         <aside
           ref={drawerRef}
-          className="fixed right-0 top-0 z-40 h-full w-[min(430px,92vw)] flex flex-col border-l border-border bg-panel/95 backdrop-blur-sm shadow-2xl"
+          className="fixed inset-0 md:inset-y-0 md:left-auto md:right-0 z-40 h-full w-full md:w-[430px] flex flex-col border-l border-border bg-panel/95 backdrop-blur-sm shadow-2xl pt-[env(safe-area-inset-top)] md:pt-0 pb-[env(safe-area-inset-bottom)] md:pb-0"
         >
           <header className="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
             <div className="text-sm font-medium truncate">
@@ -917,7 +930,7 @@ export default function VaultManagePanel() {
                 onClick={() => setPreview(null)}
                 aria-label="Close details"
                 title="Close (Esc)"
-                className="w-7 h-7 grid place-items-center rounded-md border border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1"
+                className="w-9 h-9 md:w-7 md:h-7 grid place-items-center rounded-md border border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1"
               >
                 ✕
               </button>
@@ -964,6 +977,13 @@ export default function VaultManagePanel() {
       {showDupes && accountId && (
         <VaultDuplicatesModal accountId={accountId} onClose={() => setShowDupes(false)} />
       )}
+      {showFlagsReview && accountId && (
+        <VaultFlagsReviewModal
+          accountId={accountId}
+          onClose={() => setShowFlagsReview(false)}
+        />
+      )}
+
       {showDisputes && accountId && (
         <VaultDisputesModal accountId={accountId} onClose={() => setShowDisputes(false)} />
       )}
@@ -1310,7 +1330,7 @@ function VaultItemEditor({
 
   const label = "text-[11px] uppercase tracking-wide text-fg-dim";
   const inputCls =
-    "w-full px-2 py-1.5 rounded-md text-sm bg-bg-elev-1 border border-border focus:border-accent outline-none";
+    "w-full px-2 py-1.5 rounded-md text-base md:text-sm bg-bg-elev-1 border border-border focus:border-accent outline-none";
 
   return (
     <div className="space-y-2.5">
@@ -1381,7 +1401,7 @@ function VaultItemEditor({
         <div className="flex-1">
           <div className={label}>Price{lockBadge("suggested_price_cents")}</div>
           <div className="relative mt-1">
-            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-sm text-fg-dim pointer-events-none">
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-base md:text-sm text-fg-dim pointer-events-none">
               $
             </span>
             <input

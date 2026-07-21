@@ -118,11 +118,11 @@ export function PinnedPopover({
       onClose();
     };
     const t = setTimeout(() => {
-      document.addEventListener("mousedown", onDocClick);
+      document.addEventListener("pointerdown", onDocClick);
     }, 0);
     return () => {
       clearTimeout(t);
-      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("pointerdown", onDocClick);
     };
   }, [open, onClose]);
 
@@ -258,8 +258,8 @@ export function PinnedSidePanel({
   return (
     <div
       className={cn(
-        "w-[280px] shrink-0 border-r border-border bg-panel",
-        "flex flex-col h-full min-h-0",
+        "hidden md:flex w-[280px] shrink-0 border-r border-border bg-panel",
+        "flex-col h-full min-h-0",
       )}
       role="complementary"
       aria-label="Pinned messages"

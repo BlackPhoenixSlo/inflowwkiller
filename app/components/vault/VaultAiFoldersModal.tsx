@@ -195,10 +195,10 @@ export default function VaultAiFoldersModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-black/50 md:grid md:place-items-center md:p-4" onClick={onClose}>
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[1100px] max-h-[92vh] flex flex-col bg-panel border border-border rounded-xl shadow-2xl"
+        className="w-full h-full md:h-auto max-w-none md:max-w-[1100px] max-h-none md:max-h-[92vh] flex flex-col bg-panel border-0 md:border border-border rounded-none md:rounded-xl shadow-2xl"
       >
         <header className="px-4 py-3 border-b border-border flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -231,7 +231,7 @@ export default function VaultAiFoldersModal({
           <button
             type="button"
             onClick={onClose}
-            className="px-2 py-1 rounded-md text-xs text-fg-dim hover:text-fg"
+            className="px-2 py-2.5 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-xs text-fg-dim hover:text-fg"
           >
             Close
           </button>
@@ -326,7 +326,7 @@ export default function VaultAiFoldersModal({
           ))}
         </div>
 
-        <footer className="px-4 py-3 border-t border-border flex items-center justify-between gap-3">
+        <footer className="px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-3 border-t border-border flex items-center justify-between gap-3">
           <p className="text-[11px] text-fg-dim">
             {result
               ? "Re-running refreshes these folders rather than making duplicates."
@@ -338,7 +338,7 @@ export default function VaultAiFoldersModal({
             <button
               type="button"
               onClick={onClose}
-              className="px-3 py-1.5 rounded-md text-xs border border-border hover:bg-bg-elev-1"
+              className="px-3 py-2.5 md:py-1.5 min-h-[44px] md:min-h-0 rounded-md text-xs border border-border hover:bg-bg-elev-1"
             >
               {result ? "Done" : "Cancel"}
             </button>
@@ -351,7 +351,7 @@ export default function VaultAiFoldersModal({
                   ? "Run the flags pass first — the $10/$50 tiers would be built on an unreliable signal"
                   : undefined
               }
-              className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent text-black disabled:opacity-40"
+              className="px-3 py-2.5 md:py-1.5 min-h-[44px] md:min-h-0 rounded-md text-xs font-medium bg-accent text-black disabled:opacity-40"
             >
               {busy
                 ? "Creating…"
