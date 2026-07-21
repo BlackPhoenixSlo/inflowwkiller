@@ -35,6 +35,7 @@ purpose / latency / token counts — never message bodies.
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 import os
 import re
@@ -155,6 +156,19 @@ _ASSUMED_OUTPUT_TOKENS = 1024
 _MILLICENTS_PER_CENT = 100  # internal cost unit: 1 cent = 100 millicents
 _DEFAULT_CAP_CENTS = 100  # mirrors AccountAiConfig.daily_cost_cap_cents default
 _REQUEST_TIMEOUT_S = 120.0
+
+# Transient-failure retry for the single fire (19 §2 step 4). Every automation
+# funnels through here, and a one-shot POST turned a flaky provider into a
+# permanent per-item failure: a DeepInfra `ReadTimeout` stamped
+# `describe_status='failed'` with no retry, so a 97-item vault sweep left a
+# random 3-5 undone every run and each re-run only rescued some. Only transient
+# faults retry — timeouts, transport/connection errors, 429 and 5xx. A 4xx
+# (auth, bad request, real content refusal) will not improve on a re-fire, so it
+# fails fast as before. The audit row and the cap reservation are made ONCE,
+# outside the loop, and released once on final give-up.
+_LLM_MAX_ATTEMPTS = 3
+_LLM_RETRY_BACKOFF_S = 1.5          # ×attempt: 1.5s, then 3.0s
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 # Defensive: strip a <think>…</think> reasoning block if a provider ever inlines
 # it into `content` instead of the separate `reasoning_content` field.
@@ -580,33 +594,53 @@ async def chat(
         "Accept": "application/json",
     }
 
-    # ── 4. Fire ─────────────────────────────────────────────────────────
-    t0 = time.monotonic()
-    try:
-        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_S) as client:
-            resp = await client.post(url, headers=headers, json=body)
-        latency_ms = int(round((time.monotonic() - t0) * 1000))
-        resp.raise_for_status()
-        data = resp.json()
-    except httpx.HTTPStatusError as e:
-        latency_ms = int(round((time.monotonic() - t0) * 1000))
-        # e.response.text is the provider's error body (not our prompt) → safe to keep.
-        snippet = (e.response.text or "")[:500]
-        msg = f"{prov.name} HTTP {e.response.status_code}: {snippet}"
-        await _finalize_call(call_id, status="error", error_text=msg[:2000], latency_ms=latency_ms)
-        await _adjust_daily(day, account_id, -reserve_mc, -1, now, prov.name)  # release reservation
-        log.warning("llm_client: %s call failed model=%s purpose=%s status=%s latency=%dms",
-                    prov.name, model, purpose, e.response.status_code, latency_ms)
-        raise LLMHTTPError(msg, status=e.response.status_code) from e
-    except (httpx.RequestError, ValueError) as e:
-        # ValueError covers resp.json() on a non-JSON body.
-        latency_ms = int(round((time.monotonic() - t0) * 1000))
-        msg = f"{prov.name} request error: {type(e).__name__}: {e}"
-        await _finalize_call(call_id, status="error", error_text=msg[:2000], latency_ms=latency_ms)
-        await _adjust_daily(day, account_id, -reserve_mc, -1, now, prov.name)
-        log.warning("llm_client: %s call errored model=%s purpose=%s latency=%dms (%s)",
-                    prov.name, model, purpose, latency_ms, type(e).__name__)
-        raise LLMHTTPError(msg) from e
+    # ── 4. Fire (retry transient faults; see _LLM_MAX_ATTEMPTS) ─────────
+    # The reservation + audit row above are made ONCE. Only the network round
+    # trip repeats; a permanent failure finalizes and releases exactly once,
+    # below, when the attempts run out.
+    data = None
+    for attempt in range(_LLM_MAX_ATTEMPTS):
+        last = attempt + 1 >= _LLM_MAX_ATTEMPTS
+        t0 = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_S) as client:
+                resp = await client.post(url, headers=headers, json=body)
+            latency_ms = int(round((time.monotonic() - t0) * 1000))
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except httpx.HTTPStatusError as e:
+            latency_ms = int(round((time.monotonic() - t0) * 1000))
+            # e.response.text is the provider's error body (not our prompt) → safe to keep.
+            snippet = (e.response.text or "")[:500]
+            msg = f"{prov.name} HTTP {e.response.status_code}: {snippet}"
+            if e.response.status_code in _RETRYABLE_STATUS and not last:
+                log.warning("llm_client: %s HTTP %s — retry %d/%d model=%s purpose=%s",
+                            prov.name, e.response.status_code, attempt + 1,
+                            _LLM_MAX_ATTEMPTS, model, purpose)
+                await asyncio.sleep(_LLM_RETRY_BACKOFF_S * (attempt + 1))
+                continue
+            await _finalize_call(call_id, status="error", error_text=msg[:2000], latency_ms=latency_ms)
+            await _adjust_daily(day, account_id, -reserve_mc, -1, now, prov.name)  # release reservation
+            log.warning("llm_client: %s call failed model=%s purpose=%s status=%s latency=%dms",
+                        prov.name, model, purpose, e.response.status_code, latency_ms)
+            raise LLMHTTPError(msg, status=e.response.status_code) from e
+        except (httpx.RequestError, ValueError) as e:
+            # httpx.RequestError = timeout / connection / transport, all transient.
+            # ValueError = resp.json() on a non-JSON body; a re-fire may get a clean one.
+            latency_ms = int(round((time.monotonic() - t0) * 1000))
+            msg = f"{prov.name} request error: {type(e).__name__}: {e}"
+            if not last:
+                log.warning("llm_client: %s %s — retry %d/%d model=%s purpose=%s latency=%dms",
+                            prov.name, type(e).__name__, attempt + 1,
+                            _LLM_MAX_ATTEMPTS, model, purpose, latency_ms)
+                await asyncio.sleep(_LLM_RETRY_BACKOFF_S * (attempt + 1))
+                continue
+            await _finalize_call(call_id, status="error", error_text=msg[:2000], latency_ms=latency_ms)
+            await _adjust_daily(day, account_id, -reserve_mc, -1, now, prov.name)
+            log.warning("llm_client: %s call errored model=%s purpose=%s latency=%dms (%s)",
+                        prov.name, model, purpose, latency_ms, type(e).__name__)
+            raise LLMHTTPError(msg) from e
 
     # ── 5. Parse + cost + finalize ──────────────────────────────────────
     choice = (data.get("choices") or [{}])[0]
