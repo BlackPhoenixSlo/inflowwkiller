@@ -52,6 +52,7 @@ from attribution_backfill import attribute_orphans
 from db.engine import engine, get_session
 from db.models import (
     Account,
+    AutomationRule,
     Chatter,
     ChatterUser,
     Fan,
@@ -1365,8 +1366,8 @@ async def start_fast_poll() -> None:
                 m["id"] for m in account_registry.list_accounts()
                 if m.get("has_session")
             ]
-            online = await _online_account_ids()
-            account_ids = [aid for aid in account_ids if aid in online]
+            wanted = await _fast_poll_account_ids()
+            account_ids = [aid for aid in account_ids if aid in wanted]
             for aid in account_ids:
                 if await _is_paused(aid):
                     continue
@@ -1383,6 +1384,41 @@ async def start_fast_poll() -> None:
         except Exception:
             log.warning("ingest_tx_fast_poll cycle failed", exc_info=True)
             await asyncio.sleep(_FAST_TICK_INTERVAL_S)
+
+
+# Automations whose behaviour changes the moment a fan pays: they hold an open
+# offer, or they gate on spend. For these, "did he buy?" is the ledger's
+# `kind='ppv_message'` row — the WS pump catches ~0 unlock events and the OF
+# re-read fastpath is capped at 20 messages, so the ingest IS the signal
+# (see project_offer_stuck_ambiguous_linker_and_fast_poll). They run around the
+# clock, so their purchase detection cannot wait for someone to open the app.
+_SELLING_KINDS = ("ai_chatter", "of_ai_chat", "ppv_send", "tip_request",
+                  "reengage_buyers", "deep_convo")
+
+
+async def _fast_poll_account_ids() -> set[str]:
+    """Accounts the 30s loop should cover.
+
+    Two independent reasons to poll fast, unioned:
+
+      • a SELLING automation is enabled on the account — it may be sitting on an
+        open offer right now, and the only reliable "he paid" signal is a ledger
+        row. At 5-minute granularity the AI keeps saying "waiting on your tip"
+        and re-offering content the fan already bought, at 3am with nobody
+        watching. This half does NOT depend on anyone being online.
+      • somebody is actually looking at the account — dashboard freshness, the
+        original reason this loop was gated at all.
+
+    So an idle, non-selling account still costs nothing when no one is around,
+    but a live seller never learns about a purchase late.
+    """
+    async with get_session() as s:
+        selling = {r[0] for r in (await s.execute(
+            select(AutomationRule.account_id)
+            .where(AutomationRule.kind.in_(_SELLING_KINDS),
+                   AutomationRule.is_enabled.is_(True))
+        )).all()}
+    return selling | await _online_account_ids()
 
 
 async def _online_account_ids() -> set[str]:

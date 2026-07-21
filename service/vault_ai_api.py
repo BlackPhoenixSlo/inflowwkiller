@@ -1451,15 +1451,22 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     force = bool(payload.get("force"))
     limit = int(payload.get("limit") or 0)
+    # Re-check a NAMED set instead of the whole vault. A prompt change is
+    # cheap to evaluate on the couple of dozen items that have ever been wrong
+    # and expensive to evaluate on all of them — and the ones that have been
+    # wrong before are where a regression shows up first. Implies `force`,
+    # since the caller is asking for these specifically.
+    only = payload.get("media_ids")
+    only = {int(m) for m in only} if isinstance(only, (list, tuple, set)) else None
 
     async with get_session() as s:
-        rows = (await s.execute(
-            select(VaultItem.media_id, VaultItem.ai_fields_json)
-            .where(VaultItem.account_id == account_id,
-                   VaultItem.removed_at.is_(None),
-                   VaultItem.kind.in_(("photo", "video")))
-            .order_by(VaultItem.created_at.asc())
-        )).all()
+        q = (select(VaultItem.media_id, VaultItem.ai_fields_json)
+             .where(VaultItem.account_id == account_id,
+                    VaultItem.removed_at.is_(None),
+                    VaultItem.kind.in_(("photo", "video"))))
+        if only:
+            q = q.where(VaultItem.media_id.in_(only))
+        rows = (await s.execute(q.order_by(VaultItem.created_at.asc()))).all()
 
     todo = []
     for mid, fj in rows:
@@ -1470,7 +1477,7 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
         # by an OLDER prompt is stale for the same reason — its answers were
         # given to a different question.
         stale = int(f.get("_flags_v") or 0) < _FLAGS_VERSION
-        if force or stale or not vault_ai_brief.flags_known(f):
+        if only or force or stale or not vault_ai_brief.flags_known(f):
             todo.append(int(mid))
     if limit:
         todo = todo[:limit]
