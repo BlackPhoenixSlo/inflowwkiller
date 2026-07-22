@@ -511,9 +511,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # He spoke last (the trigger) → his ask is the latest inbound. Tip-ask only
         # when the closer doesn't own the account (double-pitch guard above).
         last_in = next((b for d, b in reversed(history) if d == "in"), "")
-        content_ask = (not ai_chatter_owns) and _language.is_content_ask(last_in, account_lang)
+        # Per-fan language: fans.language (manual pin or gen_info detection) overrides
+        # the account default; unset → account default.
+        fan_lang = _language.resolve_language(account_lang, getattr(f, "language", None))
+        content_ask = (not ai_chatter_owns) and _language.is_content_ask(last_in, fan_lang)
         msgs = _build_messages(persona, f, history, style, style_on=style_on,
-                               nonnative_on=nonnative_on, lang=account_lang,
+                               nonnative_on=nonnative_on, lang=fan_lang,
                                content_ask=content_ask, tip_ask_block=tip_ask_block,
                                painful_on=painful_on)
         try:

@@ -358,6 +358,9 @@ async def _load_config(account_id: str) -> dict:
             merged.update({k: v for k, v in stored.items() if v is not None})
         except Exception:
             log.warning("bad ai_chatter_config account=%s", account_id, exc_info=True)
+    # Account language rides on cfg so scripted surfaces (script packs, the intent
+    # gate, unlock reactions) localize without threading a param through every call.
+    merged["_account_lang"] = _language.norm_lang(getattr(cfg, "language", None)) or "en"
     return merged
 
 
@@ -443,9 +446,11 @@ async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
     last_in: dict[int, str] = {}
     for fid, body in rows:
         last_in[int(fid)] = body or ""   # rows asc → last write per fan = newest inbound
+    gate_lang = cfg.get("_account_lang", "en")
     for fid, body in last_in.items():
         stripped = _strip_html(body)
-        if _CONTENT_ASK_RE.search(stripped) or ESCALATION_RE.search(stripped):
+        if (_language.is_content_ask(stripped, gate_lang)
+                or _language.is_escalation(stripped, gate_lang)):
             owned.add(fid)
     return owned
 
@@ -672,6 +677,22 @@ _UNLOCK_REACTIONS = (
     "ur the best 😏 enjoy",
     "eeek ok enjoy 💕 dont be shy after",
 )
+# Localized watcher reactions. 'en' is the fallback; add sl/pt/fr/de/it the same way.
+_UNLOCK_REACTIONS_BY_LANG: dict[str, tuple[str, ...]] = {
+    "en": _UNLOCK_REACTIONS,
+    "es": (
+        "omg disfrútalo bebé 😘",
+        "mmm disfruta 🙈 dime qué te pareció después",
+        "eres el mejor 😏 disfrútalo",
+        "eeek ok disfruta 💕 no seas tímido después",
+    ),
+    "sl": (  # female speaker → male fan
+        "omg uživaj srček 😘",
+        "mmm uživaj 🙈 povej mi kako ti je bilo potem",
+        "najboljši si 😏 uživaj",
+        "iii ok uživaj 💕 ne bodi sramežljiv potem",
+    ),
+}
 
 # Fast-path window: only re-read a chat from OF (isOpened) when the fan was
 # active this recently — keeps the per-tick OF load at ~one read per HOT offer.
@@ -1415,7 +1436,9 @@ async def _deliver_unlocked(client, account_id: str, offer: ContentOffer,
     """The unlock landed — tip mode sends the media FREE with a short reaction;
     PPV already delivered inside the locked message, so just react. Returns the
     sent message id (None = send failed; caller retries next tick)."""
-    caption = apply_word_restriction(random.choice(_UNLOCK_REACTIONS))
+    _ul_lang = await _language.load_account_language(account_id)
+    caption = _language.apply_word_restriction(
+        random.choice(_UNLOCK_REACTIONS_BY_LANG.get(_ul_lang, _UNLOCK_REACTIONS)), _ul_lang)
     media = _item_media(item)
     try:
         if by == "tip":
@@ -3181,12 +3204,14 @@ async def _handle_decline(account_id: str, fan_id: int, kind: str,
 
 def _pack_line(slot: str, cfg: dict, fan_id: int, *, name: str = "babe",
                price_cents: int | None = None) -> str | None:
-    """One line from the account's script pack (UI overrides > shipped defaults)."""
+    """One line from the account's script pack (UI overrides > shipped defaults), in
+    the account's language (cfg._account_lang; English per-slot fallback)."""
     overrides = cfg.get("script_pack_overrides")
     return script_packs.render(
         slot, rng=random.Random(f"pack:{slot}:{fan_id}:{datetime.utcnow():%Y%m%d%H%M}"),
         name=name, price_cents=price_cents,
-        overrides=overrides if isinstance(overrides, dict) else None)
+        overrides=overrides if isinstance(overrides, dict) else None,
+        lang=cfg.get("_account_lang", "en"))
 
 
 # ── Prompt (forked from of_ai_chat._build_messages — adds the sell seam) ─────
@@ -4441,15 +4466,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         sell_block = _manifest_block(offerable, scripts, cfg_offer_mode,
                                                      quotes=quotes or None)
 
-            content_ask = bool(offerable) and bool(
-                _CONTENT_ASK_RE.search(c.last_body or ""))
-            # Lean-in pivot: he's getting physical/horny (ESCALATION_RE) with a live
+            # Per-fan language: fans.language (manual pin or gen_info detection)
+            # overrides the account default; unset → account default. Drives both the
+            # reply language AND the bilingual buy-signal detectors below.
+            fan_lang = _language.resolve_language(account_lang, getattr(f, "language", None))
+            content_ask = bool(offerable) and _language.is_content_ask(c.last_body, fan_lang)
+            # Lean-in pivot: he's getting physical/horny (ESCALATION) with a live
             # manifest and HAS chatted a bit — ride it as an offer instead of teasing
             # again. An explicit content-ask already owns the pivot, so don't
             # double-count. Offer pacing caps still gate whether `offerable` is live.
             escalation = (bool(offerable) and pivot_on_escalation and not content_ask
                           and c.fan_msg_n >= esc_min_msgs
-                          and bool(ESCALATION_RE.search(c.last_body or "")))
+                          and _language.is_escalation(c.last_body, fan_lang))
             buyer_facts = await _buyer_facts(account_id, fan_id)
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
                                               style_on=style_on,
@@ -4460,7 +4488,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                               hot_thread=hot_thread,
                                               bot_accused=bot_accused_first,
                                               painful_on=painful_on,
-                                              lang=account_lang,
+                                              lang=fan_lang,
                                               profile=profiles.get(fan_id),
                                               ask_every=(old_q_every
                                                          if fan_id in old_fan_ids
@@ -4673,7 +4701,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         teaser = None      # brake + the per-tick paid cap
             if not dry_run:
                 await _bump_attempt(account_id, fan_id, now)
-            parts = [_language.apply_word_restriction(p, account_lang)[:_REPLY_MAX_CHARS]
+            parts = [_language.apply_word_restriction(p, fan_lang)[:_REPLY_MAX_CHARS]
                      for p in split_for_bubbles(raw, max_bubbles,
                                                 rng=random.Random(f"split:{fan_id}:{raw}"))
                      if p.strip()][:max_bubbles]

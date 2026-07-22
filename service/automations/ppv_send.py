@@ -223,6 +223,204 @@ PPV_CAPTION_POOLS: dict[str, list[str]] = {
 }
 _FALLBACK_CAPTION = "made somethin for u 🙈 unlock it"
 
+# ── Spanish message pools (es) — same keys as PPV_CAPTION_POOLS; _pick_caption
+#    falls back to the English pool PER KEY for anything omitted, so a partial set
+#    is safe. Add pt/fr/de/it/sl the same way: a PPV_CAPTION_POOLS_<CODE> dict + a
+#    PPV_CAPTION_POOLS_BY_LANG entry. Discount tokens {now}/{was}/{off} preserved. ─
+PPV_CAPTION_POOLS_ES: dict[str, list[str]] = {
+    "intro_new": [
+        "ok normalmente no hago esto pero hice algo solo para ti 🙈 quieres verlo?",
+        "has sido tan lindo conmigo que te dejo entrar primero... solo cuesta un poquito abrirlo, prometo que vale la pena",
+        "pensaba en ti cuando grabé esto jaja. ábrelo, no me dejes esperando",
+        "el primero casi va por mi cuenta, apenas cuesta nada. solo ábrelo y dime qué piensas",
+        "estoy un poco nerviosa de mandarte esto la verdad... pero lo ves antes que nadie. dale 👀",
+        "soy nueva aquí así que quiero consentirte un poco. échale un ojo a esto y dime",
+    ],
+    "standard_active": [
+        "llevo todo el día pensando en mandarte esto... por fin lo hice 🤭 ábrelo por mí",
+        "siempre sabes lo que me gusta así que hice esto pensando en ti. míralo",
+        "ok este quizás es mi favorito que he hecho. no lo dejes pasar bebé",
+        "no debería ser tan traviesa un martes jaja. te está esperando",
+        "grabé algo hace rato y pensé en ti al instante. es tuyo si lo quieres",
+        "deja de ser tímido y ábrelo ya 😏 sabes que quieres",
+    ],
+    "vip_whale": [
+        "solo le mando esto a como 3 de mis personas favoritas y tú eres una. es especial, no lo compartas ok",
+        "este es el que no publico en ningún lado. lo hice para los que de verdad me cuidan 🖤",
+        "me esforcé muchísimo en este... es mucho más de lo que suelo dar. solo para ti",
+        "tú me consientes así que yo te consiento a ti, este es mi mejor trabajo sin duda. mira lo que hice",
+        "guardo lo bueno de verdad para ti. esto no son los teasers que le mando a todos, ábrelo y lo verás",
+    ],
+    "winback_dormant": [
+        "hey extraño... dónde te metiste? hice esto esperando que te trajera de vuelta. {off} de descuento solo para ti, era {was} ahora {now}",
+        "ok te extraño en serio 🙈 aquí un detallito para compensar, casi nada. vuelve conmigo",
+        "te olvidaste de mí?? qué grosero jaja. abre esto y te perdono, te doy {off} de descuento así queda en {now}",
+        "hace rato que no sé de ti. esto costaba {was}, te doy {off} de descuento por {now}, no lo desperdicies",
+        "guardé este para cuando volvieras... toma. son solo {now} ({off} menos bebé), ábrelo y saluda",
+    ],
+    "teaser_free": [
+        "esto es solo el adelantito... lo demás está muchísimo mejor créeme 👀",
+        "solo te muestro esto gratis jaja. espera a ver lo que pasa después",
+        "una probadita. quieres la cosa completa? dilo",
+        "no me pude aguantar hoy. esta es la versión suave, la de verdad viene en camino",
+        "considera esto un teaser. vas a estar pensando en lo demás todo el día prometido",
+    ],
+    "photoset_striptease": [
+        "empieza tierno e inocente... pero NO se queda así jaja. ábrelo para ver hasta dónde llega",
+        "puede que haya empezado vestida con esto 🙈 puede que no haya terminado así. tú decides si averiguas",
+        "se pone mejor con cada foto. no pares hasta la última",
+        "mírame quitarme la ropa una foto a la vez. las últimas son mis favoritas",
+        "este set es toda una historia... tienes que ver cómo termina",
+    ],
+    "video_ppv": [
+        "no pude quedarme quieta en este 🤭 es un video, ábrelo y míralo",
+        "te hice un clip. los primeros segundos son tranquilos, dale un momento y verás por qué te lo mandé",
+        "este video es más largo de lo que suelo hacer... vale cada segundo prometido. dale play",
+        "grabé esto de una sola toma y casi no lo edité, soy toda yo",
+        "dijiste que querías verme moverme de verdad... aquí está. dale play",
+    ],
+    "followup_nonunlocker": [
+        "me dejaste en visto con ese 🥺 todavía no expira pero no me hagas esperar",
+        "ahí sigue esperando a que lo abras jaja. estás bien?",
+        "ok te lo endulzo ya que has estado ocupado. el mismo, un poquito más barato ahora",
+        "holaaa se te olvidó lo que te mandé 👀 sigue ahí",
+        "no te voy a mentir seguía revisando si lo abriste. me vas a dejar esperando?",
+    ],
+    "bundle_anchor": [
+        "ok voy a hacer una locura... todo un bundle de mis cosas por como {off} menos. es un montón, ábrelo",
+        "estoy limpiando mi vault y te doy todo por un solo precio. esto no va a estar mucho tiempo bebé",
+        "nunca había soltado tanto de una vez. todo, un solo pago, muchísimo menos de lo que vale. corre",
+        "drop enorme solo para mis de verdad. montón de contenido un solo precio, no lo pienses tanto solo ábrelo",
+    ],
+    "bundle_long": [
+        "🌟 solo para ti bebé 🌟\n\nhoy hago {off} de descuento en mi bundle completo ❤️‍🔥 abre esto y tienes todo... todas las fotos, todos los videos, lo que no publico en ningún lado\n\nera {was}, tuyo por {now} ahora mismo 🙈 no lo dejo mucho tiempo así que no te duermas 😘",
+        "ok por fin voy a soltar el grande 🔥\n\nesto es todo lo que te he estado guardando. el set completo, nada cortado, y es tuyo de por vida en cuanto lo abras\n\nnormalmente {was}... te lo dejo en {now} solo para los que de verdad aparecen por mí. ese eres tú 🖤 corre antes de que cambie de opinión",
+        "voy a hacer algo un poco loco esta noche 😳\n\nsiempre me cuidas tan bien así que aquí tienes todo mi vault en un solo drop. cada ángulo, cada tease, la cosa completa\n\n{off} de descuento así queda en solo {now} (era {was}) bebé. créeme que vas a querer este para siempre 😈",
+        "en serio casi no publico esto 🙈\n\npero armé mi bundle más grande hasta ahora y quiero que lo tengas. montón de contenido, un solo pago, mucho más de lo que vale\n\nera {was}, tuyo por {now} solo por hoy. no me dejes esperando ok 💋",
+    ],
+    "flash_discount": [
+        "🔥 {off} DE DESCUENTO solo por hoy bebé 🔥 literal nunca lo he vendido tan barato... era {was} ahora solo {now} 🙈 ábrelo antes de que lo vuelva a subir",
+        "ok hora de sale 😈 {off} de descuento por las próximas horas nada más. {now} en vez de {was}. corre corre antes de que cambie de opinión 🤭",
+        "{now}?? eso no es nada por lo que recibes 🙈 era {was}, lo bajo solo por hoy. ábrelo y me agradeces después 😘",
+        "oferta flash solo para ti 🔥 {off} de descuento, solo {now} (era {was}). termina esta noche, no lo dejes ahí 👀",
+        "consintiéndote hoy bebé 💋 {off} de descuento en mi set más nuevo. era {was}, tuyo por {now} ahorita. no me hagas arrepentirme de ser tan generosa 😏",
+    ],
+    "exclusive_list": [
+        "⚠️ esto no es un dm masivo bebé estás en mi listita especial 🙈\n\nasí que recibes mi bundle nuevecito antes de que se lo suelte a todos. esto es lo que trae (y te lo quedas todo de por vida):\n\n✨ el set completo\n✨ todos mis ángulos favoritos\n✨ las vistas que siempre pides\n✨ y más 😻\n\n{off} de descuento así queda en solo {now} (era {was}). no le digas a los demás 🤫",
+        "psst... no le mando esto a todos ok 🙈 solo a mis de verdad\n\narmé un drop exclusivo y estás en la lista. lo que incluye:\n\n✨ mis fotos más nuevas\n✨ un video que nunca publiqué\n✨ los closeups que te encantan\n\nsolo {now} para ti bebé (era {was}, eso es {off} menos). que quede entre nosotros 🤍",
+        "hey tú 🙈 eres literal de como un puñado que recibe esto\n\nbundle nuevecito, demasiado para mostrárselo a todos mis fans aquí jaja. así que es solo para la lista especial. el resumen:\n\n✨ set completo\n✨ detrás de cámaras\n✨ mis ángulos favoritos absolutos\n\ntuyo por {now} (era {was}) 😻 no lo compartas ok",
+    ],
+    "intimate_reveal": [
+        "me tomó un rato agarrar esta confianza contigo pero por fin estoy lista para mostrarte este lado mío 🙈 por favor no me juzgues ok... es mucho para mí. ábrelo y sé lindo",
+        "esto es una de las cosas más personales que he grabado 😳 la verdad un poco nerviosa de mandarlo. pero confío en ti. míralo, solo no lo compartas 🤍",
+        "supongo que todos tenemos nuestros kinks secretos verdad 🙈 pues este es el mío. nunca muestro esta parte de mí pero... aquí está. no me decepciones ok",
+        "nunca he sido tan abierta aquí. abrir esto honestamente se siente como un gran paso para mí. sé gentil con él bebé, es solo para ti 🥺",
+        "ok casi no mando este... es bien íntimo. pero algo de ti me hace querer mostrarte todo. es tuyo 😳",
+    ],
+}
+_FALLBACK_CAPTION_ES = "hice algo para ti 🙈 ábrelo"
+
+# ── Slovenian message pools (sl). GENDER: female speaker → male fan (HER verbs
+#    feminine: naredila/posnela/pripravljena; HIS masculine: si bil/boš videl). ──
+PPV_CAPTION_POOLS_SL: dict[str, list[str]] = {
+    "intro_new": [
+        "ok ponavadi tega ne počnem ampak naredila sem nekaj samo zate 🙈 hočeš videt?",
+        "bil si tako prijazen z mano zato te spustim prvega... samo malo stane da odkleneš, obljubim da je vredno",
+        "mislila sem nate ko sem tole posnela lol. odkleni, ne pusti me viset",
+        "prvi je skoraj zastonj, komaj kaj stane. samo odkleni in povej kaj misliš",
+        "malo sem živčna da ti tole pošljem ngl... ampak ti to vidiš pred vsemi. daj 👀",
+        "nova sem tukaj zato te hočem malo razvajat. poglej tole in mi povej",
+    ],
+    "standard_active": [
+        "cel dan razmišljam da bi ti to poslala... končno sem 🤭 odkleni zame",
+        "vedno veš kaj mi je všeč zato sem tole naredila s tabo v mislih. poglej",
+        "ok tale je mogoče moj najljubši kar sem jih naredila. ne spreglej ga srček",
+        "ne bi smela bit tako poredna v torek lol. čaka te",
+        "nekaj sem posnela prej in takoj pomislila nate. tvoj je če hočeš",
+        "nehaj bit sramežljiv in ga že odkleni 😏 saj veš da hočeš",
+    ],
+    "vip_whale": [
+        "tole pošiljam samo kakim 3 najljubšim ljudem in ti si eden od njih. posebno je, ne deli ok",
+        "tale je tisti ki ga ne objavim nikjer. naredila sem ga za tiste ki zares skrbijo zame 🖤",
+        "res sem se potrudila pri tem... veliko več kot ponavadi dam. samo zate",
+        "ti me razvajaš zato te jaz razvajam nazaj, tole je moje najboljše delo brez dvoma. poglej kaj sem naredila",
+        "pravo stvar hranim zate. to niso tisti mali teaserji ki jih pošiljam vsem, odkleni in boš dobil 😈",
+    ],
+    "winback_dormant": [
+        "hej tujec... kje si bil? tole sem naredila v upanju da te pripelje nazaj. {off} popusta samo zate, bilo {was} zdaj {now}",
+        "ok res te pogrešam 🙈 tukaj nekaj malega da se odkupim, skoraj nič. vrni se k meni",
+        "si me pozabil?? nesramno lol. odkleni tole in ti odpustim, dam ti {off} popusta da je samo {now}",
+        "že dolgo se nisi oglasil. tole je bilo {was}, dajem ti {off} popusta za {now}, ne zapravi ga",
+        "tega sem hranila za ko se vrneš... izvoli. samo {now} je ({off} manj srček), samo odkleni in pozdravi",
+    ],
+    "teaser_free": [
+        "tole je samo mali predogled... ostalo je veliko boljše verjemi 👀",
+        "samo tolikane ti pokažem zastonj lol. počakaj da vidiš kaj pride potem",
+        "mala pokušina. hočeš celo stvar? samo reci",
+        "nisem se mogla zadržat danes. tole je nežna verzija, prava pride",
+        "vzemi to kot teaser. cel dan boš razmišljal o ostalem obljubim",
+    ],
+    "photoset_striptease": [
+        "začne se srčkano in nedolžno... ampak NE ostane tako lol. odkleni da vidiš kam gre",
+        "mogoče sem bila oblečena v tem 🙈 mogoče nisem tako končala. tvoja izbira da izveš",
+        "boljše je z vsako sliko. ne ustavi se do zadnje",
+        "glej me kako se slačim sliko za sliko. zadnje so moje najljubše",
+        "tale set je cela zgodbica... moraš videt kako se konča",
+    ],
+    "video_ppv": [
+        "nisem mogla držat rok pri miru v tem 🤭 video je, odkleni in glej",
+        "naredila sem ti posnetek. prvih par sekund je mirnih, daj mu minuto pa boš videl zakaj sem ti ga poslala",
+        "tale video je daljši kot ponavadi delam... vreden vsake sekunde obljubim. daj predvajaj",
+        "posnela sem to v enem posnetku in skoraj nič urejala, vse sem jaz",
+        "rekel si da me hočeš res videt kako se premikam... izvoli. pritisni play",
+    ],
+    "followup_nonunlocker": [
+        "pustil si me na prebrano s tem 🥺 še ne poteče ampak ne pusti me čakat",
+        "še vedno tam čaka da ga odkleneš lol. si ok?",
+        "ok osladim ti ga ker si bil zaposlen. isti, malo ceneje zdaj",
+        "haloo si pozabil kaj sem ti poslala 👀 še vedno je tam",
+        "ne bom lagala ves čas sem preverjala če si odklenil. me boš pustil viset?",
+    ],
+    "bundle_anchor": [
+        "ok delam noro stvar... cel bundle mojih stvari za kakih {off} manj. veliko je, odkleni",
+        "čistim svoj vault in ti dam vse za eno ceno. tole ne bo dolgo gor srček",
+        "nikoli nisem spustila toliko naenkrat. vse, eno plačilo, veliko manj kot je vredno. pohiti",
+        "ogromen drop samo za moje prave. kup vsebine ena cena, ne razmišljaj preveč samo odkleni",
+    ],
+    "bundle_long": [
+        "🌟 samo zate srček 🌟\n\ndanes dajem {off} popusta na cel bundle ❤️‍🔥 odkleni tole in imaš vse... vse slike, vse videe, stvari ki jih ne objavim nikjer\n\nbilo {was}, tvoje za {now} prav zdaj 🙈 ne pustim ga dolgo gor zato ne zaspi 😘",
+        "ok končno spuščam velikega 🔥\n\ntole je vse kar sem ti prihranila. cel set, nič odrezano, in obdržiš ga za vedno v trenutku ko odkleneš\n\nponavadi {was}... dajem ti ga za {now} samo za tiste ki se zares pojavijo zame. to si ti 🖤 pohiti preden si premislim",
+        "delam malo noro stvar nocoj 😳\n\nvedno tako lepo skrbiš zame zato ti dam cel svoj vault v enem dropu. vsak kot, vsak tease, cela stvar\n\n{off} popusta da je samo {now} (bilo {was}) srček. verjemi da boš tole hotel za vedno 😈",
+        "res skoraj nisem objavila tega 🙈\n\nampak sestavila sem svoj največji bundle do zdaj in hočem da ga imaš. kup vsebine, eno plačilo, veliko več kot je vredno\n\nbilo {was}, tvoje za {now} samo danes. ne pusti me čakat ok 💋",
+    ],
+    "flash_discount": [
+        "🔥 {off} POPUSTA samo danes srček 🔥 dobesedno še nikoli nisem prodala tako poceni... bilo {was} zdaj samo {now} 🙈 odkleni preden ga dam nazaj gor",
+        "ok čas za razprodajo 😈 {off} popusta za naslednjih par ur. {now} namesto {was}. pohiti pohiti preden si premislim 🤭",
+        "{now}?? to ni nič za to kar dobiš 🙈 bilo {was}, spuščam samo za danes. odkleni in se mi zahvali kasneje 😘",
+        "flash deal samo zate 🔥 {off} popusta, samo {now} (bilo {was}). konča se nocoj, ne pusti ga tam 👀",
+        "razvajam te danes srček 💋 {off} popusta na moj najnovejši set. bilo {was}, tvoj za {now} zdaj. ne pusti da obžalujem da sem tako radodarna 😏",
+    ],
+    "exclusive_list": [
+        "⚠️ tole ni množičen dm srček na mojem posebnem seznamčku si 🙈\n\nzato dobiš moj čisto nov bundle preden ga spustim vsem. tukaj je kaj je notri (in vse obdržiš za vedno):\n\n✨ cel set\n✨ vsi moji najljubši koti\n✨ pogledi ki jih vedno prosiš\n✨ in več 😻\n\n{off} popusta da je samo {now} (bilo {was}). ne povej drugim 🤫",
+        "psst... tega ne pošiljam vsem ok 🙈 samo mojim pravim\n\nnaredila sem ekskluziven drop in si na seznamu zanj. kaj vključuje:\n\n✨ moje najnovejše slike\n✨ video ki ga nisem nikoli objavila\n✨ close upi ki jih obožuješ\n\nsamo {now} zate srček (bilo {was}, to je {off} manj). naj ostane med nama 🤍",
+        "hej ti 🙈 dobesedno eden od peščice si ki to dobi\n\nčisto nov bundle, preveč da bi ga pokazala vsem svojim fanom tukaj haha. zato je samo za posebni seznam. povzetek:\n\n✨ cel set\n✨ zakulisje\n✨ moji absolutno najljubši koti\n\ntvoj za {now} (bilo {was}) 😻 ne deli ok",
+    ],
+    "intimate_reveal": [
+        "trajalo je nekaj časa da sem se ti tako odprla ampak končno sem pripravljena da ti pokažem to plat sebe 🙈 prosim ne obsojaj me ok... veliko je zame. odkleni in bodi prijazen",
+        "tole je ena najbolj osebnih stvari kar sem jih posnela 😳 res malo živčna da pošiljam ngl. ampak zaupam ti. poglej, samo ne deli 🤍",
+        "verjetno imamo vsi svoje skrivne kinke ne 🙈 no tale je moj. nikoli ne pokažem te plati sebe ampak... izvoli. ne razočaraj me ok",
+        "nikoli nisem bila tako odprta tukaj. odkleniti tole se iskreno zdi kot velik korak zame. bodi nežen z njim srček, samo zate je 🥺",
+        "ok skoraj nisem poslala tega... res je intimno. ampak nekaj pri tebi me naredi da ti hočem pokazat vse. tvoj je 😳",
+    ],
+}
+_FALLBACK_CAPTION_SL = "nekaj sem naredila zate 🙈 odkleni"
+
+# Language registries — 'en' authoritative; _pick_caption falls back per-key.
+PPV_CAPTION_POOLS_BY_LANG: dict[str, dict[str, list[str]]] = {
+    "en": PPV_CAPTION_POOLS, "es": PPV_CAPTION_POOLS_ES, "sl": PPV_CAPTION_POOLS_SL}
+_FALLBACK_CAPTION_BY_LANG: dict[str, str] = {
+    "en": _FALLBACK_CAPTION, "es": _FALLBACK_CAPTION_ES, "sl": _FALLBACK_CAPTION_SL}
+
 # ── Message-pool → feed-pool mapping ─────────────────────────────────────────
 # When a PPV has no explicit feed_captions/feed_caption_pool_key, the feed post
 # must still use PUBLIC-feed voice — never the 1:1 message caption. This maps each
@@ -284,6 +482,93 @@ PPV_FEED_CAPTION_POOLS: dict[str, list[str]] = {
     ],
 }
 
+# Spanish feed pools (es) — public-feed voice. Same keys; English per-key fallback.
+PPV_FEED_CAPTION_POOLS_ES: dict[str, list[str]] = {
+    "feed_new_drop": [
+        "acabo de publicar algo nuevo 🙈 desbloquéalo abajo bebé",
+        "nuevo set arriba 🔥 ve a desbloquearlo, no te vas a arrepentir",
+        "no me pude aguantar a compartir este... está bloqueado abajo, ve a ver 👀",
+        "contenido fresco recién soltado 😏 toca para desbloquear",
+        "publiqué algo un poquito picante hoy 🙈 es todo tuyo abajo",
+    ],
+    "feed_flash_sale": [
+        "🔥 {off} DE DESCUENTO solo hoy 🔥 era {was} ahora solo {now}, desbloquéalo antes de que lo vuelva a subir",
+        "hora de sale 😈 {off} menos, solo {now} (era {was}). no te duermas",
+        "{now} en vez de {was} solo por las próximas horas 🙈 corre corre corre",
+        "consintiéndote hoy 💋 {off} menos, era {was} ahora {now}. desbloquea abajo",
+        "poniendo esto en oferta un rato — {off} menos, solo {now} (era {was}) 👀",
+    ],
+    "feed_bundle_drop": [
+        "bundle enorme recién soltado 🔥 todo en un solo desbloqueo, mucho más de lo que vale",
+        "solté mi set más grande hasta ahora 🙈 montón de contenido, un solo precio abajo. ve a desbloquear",
+        "nuevo bundle en vivo 😈 todas las fotos + videos en uno, no te lo pierdas",
+        "{off} de descuento en mi bundle completo hoy 🌟 era {was} ahora {now}, desbloquea todo abajo",
+    ],
+    "feed_teaser": [
+        "esto es solo el adelanto... lo completo está bloqueado abajo 👀",
+        "una probadita de lo que publiqué 🙈 desbloquea por el resto",
+        "quieres la versión completa? está justo abajo bebé, ve a desbloquear 😏",
+        "considera esta la versión suave... la de verdad está bloqueada abajo",
+    ],
+    "feed_video_drop": [
+        "nuevo video arriba 🔥 desbloquéalo abajo y dale play",
+        "publiqué un clip hoy 🙈 está bloqueado abajo, ve a verlo",
+        "grabé algo especial... es todo tuyo abajo, desbloquea para ver 😈",
+        "nuevo video recién soltado 👀 vale cada segundo prometido, desbloquea abajo",
+    ],
+    "feed_photoset": [
+        "nuevo set de fotos arriba 🙈 empieza tierno... NO se queda así. desbloquea abajo",
+        "publiqué un set completo hoy 🔥 se pone mejor con cada foto, ve a desbloquear",
+        "solté un set de striptease 😏 mírame perder el outfit foto por foto, abajo",
+        "nuevas fotos en vivo 👀 las últimas son mis favoritas, desbloquea para ver",
+    ],
+}
+
+# Slovenian feed pools (sl) — public-feed voice; female speaker (HER verbs feminine).
+PPV_FEED_CAPTION_POOLS_SL: dict[str, list[str]] = {
+    "feed_new_drop": [
+        "pravkar sem objavila nekaj novega 🙈 odkleni spodaj srček",
+        "nov set je gor 🔥 pojdi odkleni, ne boš obžaloval",
+        "nisem se mogla zadržat da delim tega... zaklenjen je spodaj, pojdi poglej 👀",
+        "sveža vsebina pravkar spuščena 😏 tapni za odklep",
+        "danes sem objavila nekaj malo pikantnega 🙈 vse tvoje spodaj",
+    ],
+    "feed_flash_sale": [
+        "🔥 {off} POPUSTA samo danes 🔥 bilo {was} zdaj samo {now}, odkleni preden dam nazaj gor",
+        "čas za razprodajo 😈 {off} manj, samo {now} (bilo {was}). ne zaspi",
+        "{now} namesto {was} samo za naslednjih par ur 🙈 pohiti pohiti pohiti",
+        "razvajam te danes 💋 {off} manj, bilo {was} zdaj {now}. odkleni spodaj",
+        "dajem tole na razprodajo za malo — {off} manj, samo {now} (bilo {was}) 👀",
+    ],
+    "feed_bundle_drop": [
+        "ogromen bundle pravkar spuščen 🔥 vse v enem odklepu, veliko več kot je vredno",
+        "spustila sem svoj največji set do zdaj 🙈 kup vsebine, ena cena spodaj. pojdi odkleni",
+        "nov bundle v živo 😈 vse slike + videi v enem, ne zamudi",
+        "{off} popusta na moj cel bundle danes 🌟 bilo {was} zdaj {now}, odkleni vse spodaj",
+    ],
+    "feed_teaser": [
+        "tole je samo predogled... celota je zaklenjena spodaj 👀",
+        "mala pokušina tega kar sem objavila 🙈 odkleni za ostalo",
+        "hočeš celo verzijo? je prav spodaj srček, pojdi odkleni 😏",
+        "vzemi tole kot nežno verzijo... prava je zaklenjena spodaj",
+    ],
+    "feed_video_drop": [
+        "nov video je gor 🔥 odkleni spodaj in pritisni play",
+        "danes sem objavila posnetek 🙈 zaklenjen je spodaj, pojdi poglej",
+        "posnela sem nekaj posebnega... vse tvoje spodaj, odkleni da vidiš 😈",
+        "nov video pravkar spuščen 👀 vreden vsake sekunde obljubim, odkleni spodaj",
+    ],
+    "feed_photoset": [
+        "nov foto set je gor 🙈 začne se srčkano... NE ostane tako. odkleni spodaj",
+        "danes sem objavila cel set 🔥 boljše je z vsako sliko, pojdi odkleni",
+        "spustila sem striptease set 😏 glej me kako se slačim sliko za sliko, spodaj",
+        "nove slike v živo 👀 zadnje so moje najljubše, odkleni da vidiš",
+    ],
+}
+PPV_FEED_CAPTION_POOLS_BY_LANG: dict[str, dict[str, list[str]]] = {
+    "en": PPV_FEED_CAPTION_POOLS, "es": PPV_FEED_CAPTION_POOLS_ES,
+    "sl": PPV_FEED_CAPTION_POOLS_SL}
+
 
 def round_to_99(amount_cents: float, bounds: tuple[int, int] | None = None) -> int:
     """Round to the nearest whole dollar, then end in .99, clamped into the
@@ -332,14 +617,18 @@ def _pct_off(now_cents: int, was_cents: int) -> int:
     return round((1 - now_cents / was_cents) * 100)
 
 
-def _pick_caption(ppv: dict, cell_price_cents: int) -> str:
+def _pick_caption(ppv: dict, cell_price_cents: int, lang: str = "en") -> str:
     """Random caption (custom caption_texts win over the pool), discount tokens filled:
     {now} = this segment's price, {was} = an auto anchor ~4x above (always a discount),
-    {off} = the resulting percent off (e.g. '75%')."""
+    {off} = the resulting percent off (e.g. '75%'). `lang` selects the language pool
+    (English per-key fallback); a custom caption_texts always wins, in any language."""
+    from automations import _language
     texts = ppv.get("caption_texts")
     if not (isinstance(texts, list) and texts):
-        texts = PPV_CAPTION_POOLS.get(str(ppv.get("caption_pool_key") or ""), [])
-    line = random.choice(texts) if texts else _FALLBACK_CAPTION
+        key = str(ppv.get("caption_pool_key") or "")
+        texts = _language.localized(PPV_CAPTION_POOLS_BY_LANG, lang, key) or []
+    norm = _language.norm_lang(lang) or "en"
+    line = random.choice(texts) if texts else _FALLBACK_CAPTION_BY_LANG.get(norm, _FALLBACK_CAPTION)
     if "{now}" in line or "{was}" in line or "{off}" in line:
         was = _anchor_price(cell_price_cents)
         line = (line.replace("{now}", _money(cell_price_cents))
@@ -355,22 +644,23 @@ def _rotate_preview(pool: list, idx: int) -> list[int]:
     return [pool[idx % len(pool)]] if pool else []
 
 
-def pick_feed_caption(ppv: dict, base_cents: int) -> tuple[str, bool]:
+def pick_feed_caption(ppv: dict, base_cents: int, lang: str = "en") -> tuple[str, bool]:
     """Caption for the FEED post (public voice, NEVER the 1:1 message caption).
     Priority: the PPV's own feed_captions → its feed_caption_pool_key
     (PPV_FEED_CAPTION_POOLS) → the feed pool mapped from the message caption_pool_key
-    via _MSG_TO_FEED_POOL (default 'feed_new_drop'). Returns (caption,
-    used_feed_specific) — used_feed_specific is always True; this never falls through
-    to the message pool. Tokens are filled at the base price (a feed post is one
-    price for everyone)."""
+    via _MSG_TO_FEED_POOL (default 'feed_new_drop'). `lang` selects the language feed
+    pool (English per-key fallback). Returns (caption, used_feed_specific) —
+    used_feed_specific is always True; this never falls through to the message pool.
+    Tokens are filled at the base price (a feed post is one price for everyone)."""
+    from automations import _language
     feed_caps = [s for s in (ppv.get("feed_captions") or []) if isinstance(s, str) and s.strip()]
     if feed_caps:
         return _pick_caption({"caption_texts": feed_caps}, base_cents), True
     key = str(ppv.get("feed_caption_pool_key") or "").strip()
-    if key and key in PPV_FEED_CAPTION_POOLS:
-        return _pick_caption({"caption_texts": PPV_FEED_CAPTION_POOLS[key]}, base_cents), True
-    feed_key = _MSG_TO_FEED_POOL.get(str(ppv.get("caption_pool_key") or "").strip(), "feed_new_drop")
-    return _pick_caption({"caption_texts": PPV_FEED_CAPTION_POOLS[feed_key]}, base_cents), True
+    if not (key and key in PPV_FEED_CAPTION_POOLS):
+        key = _MSG_TO_FEED_POOL.get(str(ppv.get("caption_pool_key") or "").strip(), "feed_new_drop")
+    pool = _language.localized(PPV_FEED_CAPTION_POOLS_BY_LANG, lang, key) or PPV_FEED_CAPTION_POOLS[key]
+    return _pick_caption({"caption_texts": pool}, base_cents), True
 
 
 async def post_to_feed(account_id: str, ppv: dict, *, employee_id: int | None = None,
@@ -418,7 +708,9 @@ async def post_to_feed(account_id: str, ppv: dict, *, employee_id: int | None = 
     if isinstance(caption, str) and caption.strip():
         used_feed_caption = True
     else:
-        caption, used_feed_caption = pick_feed_caption(ppv, base_cents)
+        from automations import _language
+        _feed_lang = await _language.load_account_language(account_id)
+        caption, used_feed_caption = pick_feed_caption(ppv, base_cents, _feed_lang)
     price = base_cents / 100   # OF wants dollars
 
     client = await asyncio.to_thread(ax._make_client, account_id)
@@ -813,6 +1105,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     ppv, cfg = _load_ppv(cfg_row.ppv_library_config_json if cfg_row else None, ppv_id)
     if ppv is None:
         return {"status": "skipped", "reason": "ppv_not_found"}
+    # Account language for the DEFAULT caption pools (a PPV's own caption_texts still
+    # win, in whatever language they were authored). cfg_row is already loaded above.
+    from automations import _language
+    account_lang = _language.norm_lang(getattr(cfg_row, "language", None)) or "en"
     # S8: a vault-AI-sourced draft (id `vai-…`) is a sendable offer ONLY once
     # explicitly armed — the adapter is the single arm gate (library master ON +
     # this entry `enabled`). An approved+exported-but-un-armed draft (enabled=False)
@@ -948,7 +1244,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             plan.append({
                 "cell": key, "recipients": len(cell["fan_ids"]),
                 "price": price / 100,
-                "caption": _pick_caption(ppv, price)[:80],
+                "caption": _pick_caption(ppv, price, account_lang)[:80],
                 "preview": _rotate_preview(preview_pool, day_idx),
             })
         return {"dry_run": True, "ppv_id": ppv_id, "is_resend": is_resend,
@@ -973,7 +1269,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         send_payload = {
             # Text is intentionally NOT locked — fans see the teaser caption free,
             # only the media sits behind the price (locked_text defaults off).
-            "text": _pick_caption(ppv, price),
+            "text": _pick_caption(ppv, price, account_lang),
             "media_files": media_ids,
             "previews": _rotate_preview(preview_pool, day_idx),
             "price": price / 100,                 # OF wants dollars
@@ -1012,7 +1308,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if broadcasting:
         known_ids = await _all_fan_ids(account_id)
         broadcast_payload = {
-            "text": _pick_caption(ppv, bcast_cents),  # default-price caption
+            "text": _pick_caption(ppv, bcast_cents, account_lang),  # default-price caption
             "media_files": media_ids,
             "previews": _rotate_preview(preview_pool, day_idx),
             "price": bcast_cents / 100,               # the DEFAULT price, clamped
