@@ -16,13 +16,16 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Sparkles, Wand2 } from "lucide-react";
+import { CalendarClock, Sparkles, Wand2 } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/primitives";
 import {
   useVaultAiConfig,
   useSaveVaultAiConfig,
   useGenerateVaultPpvWeek,
+  useVaultArcStatus,
+  useApproveVaultArc,
+  useCancelVaultArc,
   type VaultAiConfig,
   type VaultAiTier,
 } from "@/hooks/useVaultAiConfig";
@@ -44,10 +47,27 @@ function money(cents: number): string {
   return `$${(cents / 100).toFixed(2).replace(/\.00$/, "")}`;
 }
 
+function when(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, {
+    weekday: "short", hour: "numeric", minute: "2-digit",
+  });
+}
+
+const CHANNEL_LABEL: Record<string, string> = {
+  mass_ppv: "💬💰 mass PPV + feed",
+  feed_paid: "📌💰 paid post",
+  feed_free: "📌 free post",
+  mass_free: "💬 free DM",
+};
+
 export default function VaultAiTab({ accountId }: { accountId: string | null }) {
   const cfgQ = useVaultAiConfig(accountId);
   const saveM = useSaveVaultAiConfig(accountId);
   const genM = useGenerateVaultPpvWeek(accountId);
+  const arcQ = useVaultArcStatus(accountId);
+  const armM = useApproveVaultArc(accountId);
+  const cancelM = useCancelVaultArc(accountId);
 
   const [enabled, setEnabled] = useState(false);
   const [bands, setBands] = useState<Record<VaultAiTier, [number, number]>>({
@@ -137,12 +157,51 @@ export default function VaultAiTab({ accountId }: { accountId: string | null }) 
 
   const onGenerate = () => genM.mutate({ weeks, use_llm: inVoice, combine });
 
+  // The single moment suggest-only is spent. The server rebuilds the plan from
+  // the same config the preview used, so what was read is what gets armed — but
+  // the operator still has to say the number of drops out loud first.
+  const onArm = () => {
+    const n = genM.data?.summary;
+    const drops = n ? (n.dm_sends ?? 0) + (n.feed_posts ?? 0) : weeks * 7;
+    const span = weeks === 1 ? "week" : `${weeks} weeks`;
+    if (
+      !window.confirm(
+        `Arm this ${span}?\n\n` +
+          `~${drops} real sends will go out on their own days — paid posts on the ` +
+          `feed and PPV messages in DMs, at ${money(n?.price_low_cents ?? 0)}–` +
+          `${money(n?.price_high_cents ?? 0)}.\n\n` +
+          `Each drop fires once. Nothing regenerates when the arc ends.`,
+      )
+    ) return;
+    armM.mutate({ weeks, use_llm: inVoice, combine });
+  };
+
+  const onStandDown = () => {
+    if (!window.confirm("Cancel every drop that hasn't fired yet? Sent drops stay sent."))
+      return;
+    cancelM.mutate();
+  };
+
+  const arc = arcQ.data;
+  const armError =
+    armM.error?.message?.includes("ppv_library_master_off")
+      ? "Turn the PPV Library master switch on first — with it off every priced drop would silently skip."
+      : armM.error?.message?.includes("vault_ai_off")
+        ? "Turn Vault AI on and Save first."
+        : armM.error?.message;
+
+  // Written into a same-origin about:blank rather than opened as a blob: URL —
+  // the page's thumbnails are root-relative relay routes (/admin/vault-ai/thumb),
+  // and a blob: document has no origin to resolve them against, so every tile
+  // would come up empty in the popup even though the iframe above shows them.
   const openFull = () => {
     const html = genM.data?.html;
     if (!html) return;
-    const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
-    window.open(url, "_blank");
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    const w = window.open("", "_blank");
+    if (!w) return;
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
   };
 
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
@@ -372,6 +431,73 @@ export default function VaultAiTab({ accountId }: { accountId: string | null }) 
             className="w-full h-[72vh] rounded-lg border border-border bg-white"
           />
         )}
+
+        {/* ── Arm it ────────────────────────────────────────────────────── */}
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 space-y-3">
+          <div className="flex items-center gap-2">
+            <CalendarClock size={15} className="text-amber-500" />
+            <span className="text-sm font-medium">Let the arc run itself</span>
+          </div>
+          <p className="text-xs text-fg-dim leading-relaxed">
+            Approve once and every day&apos;s drop leaves on its own day — Human Rhythm
+            picks the hour, so it never lands on the same clock minute twice and never
+            fires while she&apos;d be asleep. Each drop fires <b>once</b>; when the arc
+            runs out it stops and waits for you.
+          </p>
+          <div className="flex items-center gap-3 flex-wrap">
+            <Button onClick={onArm} disabled={!genM.data || armM.isPending}>
+              {armM.isPending ? "Arming…" : `Approve & run this ${weeks === 1 ? "week" : "month"}`}
+            </Button>
+            {!genM.data && (
+              <span className="text-[11px] text-fg-dim/70">Generate a preview first.</span>
+            )}
+            {armError && <span className="text-xs text-red-500">{armError}</span>}
+          </div>
+
+          {arc?.active && (
+            <div className="rounded-md border border-border/60 bg-bg-elev-1/50 p-2 space-y-2">
+              <div className="flex items-center gap-3 flex-wrap text-xs">
+                <span className="text-emerald-500 font-medium">● Armed</span>
+                <span className="text-fg-dim">
+                  <b className="text-fg">{arc.fired}</b> fired ·{" "}
+                  <b className="text-fg">{arc.pending}</b> to go
+                </span>
+                {arc.next_at && (
+                  <span className="text-fg-dim">next {when(arc.next_at)}</span>
+                )}
+                <button
+                  onClick={onStandDown}
+                  disabled={cancelM.isPending}
+                  className="ml-auto text-red-500 hover:underline disabled:opacity-50"
+                >
+                  {cancelM.isPending ? "Cancelling…" : "Stand down"}
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="text-[11px] w-full border-collapse">
+                  <tbody>
+                    {(arc.drops ?? []).map((d) => (
+                      <tr key={d.job_id} className="border-t border-border/40">
+                        <td className="py-1 pr-3 text-fg-dim">{when(d.run_at)}</td>
+                        <td className="py-1 pr-3">{CHANNEL_LABEL[d.channel] ?? d.channel}</td>
+                        <td className="py-1 pr-3 text-fg-dim">{money(d.price_cents)}</td>
+                        <td className="py-1 text-right">
+                          {d.state === "pending" ? (
+                            <span className="text-fg-dim/70">queued</span>
+                          ) : d.state === "error" ? (
+                            <span className="text-red-500">failed</span>
+                          ) : (
+                            <span className="text-emerald-500">sent</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
       </Card>
     </div>
   );

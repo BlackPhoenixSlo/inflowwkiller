@@ -119,6 +119,75 @@ export function useSaveVaultAiConfig(accountId: string | null) {
   });
 }
 
+/** One booked drop of an armed arc, mirroring a `scheduled_jobs` row. */
+export interface VaultArcDrop {
+  job_id: number;
+  seq: number;
+  weekday: string;
+  /** Which planned channel this drop is — mass_ppv / feed_paid / feed_free / mass_free. */
+  channel: string;
+  /** The sender it runs through. */
+  kind: "ppv_send" | "auto_posts" | "send_mass_message";
+  price_cents: number;
+  run_at: string;
+  /** Live job state; "done" once the row has been claimed and reaped. */
+  state?: string;
+}
+
+export interface VaultArcStatus {
+  active: boolean;
+  arc_id?: string;
+  approved_at?: string;
+  drops?: VaultArcDrop[];
+  pending?: number;
+  fired?: number;
+  next_at?: string | null;
+}
+
+const ARC_KEY = "vault-arc-status";
+
+/** What the armed arc is doing. Polls while drops are still pending so a drop
+ *  firing shows up without a manual refresh. */
+export function useVaultArcStatus(accountId: string | null) {
+  return useQuery<VaultArcStatus>({
+    queryKey: [ARC_KEY, accountId],
+    enabled: !!accountId,
+    queryFn: () =>
+      relay.get<VaultArcStatus>(
+        `/admin/vault-ai/ppv-week/status?account_id=${encodeURIComponent(accountId!)}`,
+        BG_CTX,
+      ),
+    refetchInterval: (q) => (q.state.data?.pending ? 60_000 : false),
+    staleTime: 30_000,
+  });
+}
+
+/** ARM the arc — the one call in this surface that books real sends. The server
+ *  rebuilds the plan from the same config the preview used; nothing about the
+ *  media or the prices travels back up from the browser. */
+export function useApproveVaultArc(accountId: string | null) {
+  const qc = useQueryClient();
+  return useMutation<
+    { status: string; arc_id: string; drops: VaultArcDrop[] },
+    Error,
+    { weeks: number; use_llm: boolean; combine: boolean }
+  >({
+    mutationFn: (body) =>
+      relay.post(`/admin/vault-ai/ppv-week/approve`, { account_id: accountId, ...body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [ARC_KEY, accountId] }),
+  });
+}
+
+/** Stand the arc down. Drops already sent stay sent. */
+export function useCancelVaultArc(accountId: string | null) {
+  const qc = useQueryClient();
+  return useMutation<{ status: string; cancelled_drops: number }, Error, void>({
+    mutationFn: () =>
+      relay.post(`/admin/vault-ai/ppv-week/cancel`, { account_id: accountId }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [ARC_KEY, accountId] }),
+  });
+}
+
 /** Generate the PPV week/month arc for review. Read-only + suggest-only — nothing
  *  is armed or sent. `use_llm` writes captions in-voice (slower, ~7·weeks calls). */
 export function useGenerateVaultPpvWeek(accountId: string | null) {

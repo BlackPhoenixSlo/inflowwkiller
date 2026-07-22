@@ -136,6 +136,10 @@ def _validate_ppv(p: Any) -> dict:
         "base_price_cents": base,
         "preview_options": previews,
         "sends_per_week": spw,
+        # Owned by an approved vault-AI arc (`vault_arc`): this entry exists to be
+        # fired ONCE by its own scheduled job on its own day. Preserved through
+        # validation so `_sync_rules` can refuse to give it a cadence.
+        "arc_owned": bool(p.get("arc_owned")),
         "resend_monthly": bool(p.get("resend_monthly")),
         # Skip fans who already unlocked this PPV's media (don't re-pitch owned content).
         "exclude_buyers": bool(p.get("exclude_buyers", True)),
@@ -231,6 +235,14 @@ async def _sync_rules(s, account_id: str, cfg: dict) -> dict[str, int]:
     desired_ids: set[str] = set()
     for p in cfg.get("ppvs") or []:
         pid = p["id"]
+        # An arc-owned entry is fired ONCE by the scheduled job `vault_arc` booked
+        # for its day. Minting a cadence rule for it here would turn a single story
+        # beat into a weekly blast that outlives the arc — and it would happen on
+        # the operator merely opening the PPV Library and pressing Save. Claim the
+        # id so the orphan sweep below leaves it alone, then skip it.
+        if p.get("arc_owned"):
+            desired_ids.add(pid)
+            continue
         desired_ids.add(pid)
         trigger = json.dumps({"every_seconds": _every_seconds(p["sends_per_week"])})
         steps = json.dumps({"account_id": account_id, "ppv_id": pid})
