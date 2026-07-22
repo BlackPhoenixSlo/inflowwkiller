@@ -26,7 +26,7 @@ import {
   type AiChatterConfig, type CatalogItemT,
 } from "@/hooks/useCatalog";
 import {
-  GuideCard, INPUT, NEW_ITEM, ScriptPackCard, dollars, useSellerConfig,
+  ConfigLoadError, GuideCard, INPUT, NEW_ITEM, ScriptPackCard, dollars, useSellerConfig,
 } from "@/components/settings/sellerShared";
 
 /** The recommended "sell hard + take over" preset — written on "Enable Upseller". */
@@ -83,12 +83,23 @@ const STARTER_SINGLES: CatalogItemT[] = ([
 
 export default function UpsellerTab({ accountId }: { accountId: string | null }) {
   const cfgQ = useAiChatterConfig(accountId);
-  const { cfg, set, saveCfg, saveCfgM, shippedPack, packText, setPackText } = useSellerConfig(accountId);
+  const { cfg, set, saveCfg, saveCfgM, configLoaded, shippedPack, packText, setPackText } =
+    useSellerConfig(accountId);
   const scriptsQ = useCatalogScripts(accountId);
   const saveSinglesM = useSaveSingles(accountId);
 
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
   if (cfgQ.isLoading) return <div className="text-sm text-fg-dim">Loading…</div>;
+  // Same rule as the AI Chatter tab: every knob below falls back to a hardcoded
+  // literal, so a config that never loaded would render as a tab full of saved-
+  // looking settings — and all three Save buttons write the whole blob.
+  if (cfgQ.isError) {
+    return (
+      <ConfigLoadError what="this account's AI Upseller settings"
+        error={cfgQ.error} retrying={cfgQ.isFetching}
+        onRetry={() => void cfgQ.refetch()} />
+    );
+  }
 
   const gateOn = !!cfg.qualification_gate_enabled;
   const isRecommended =
@@ -125,7 +136,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         <div className="rounded-md border border-accent/40 bg-accent/5 px-3 py-3 space-y-2">
           <div className="flex items-center gap-3 flex-wrap">
             <Button size="sm" variant={gateOn ? "secondary" : "primary"}
-              disabled={saveCfgM.isPending}
+              disabled={saveCfgM.isPending || !configLoaded}
               onClick={() => saveCfg(RECOMMENDED)}>
               <Sparkles size={14} className="mr-1" />
               {gateOn ? "Re-apply recommended" : "Enable Upseller (recommended)"}
@@ -136,6 +147,11 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
                 : <span className="text-xs text-amber-400">custom settings — click to reset to recommended</span>
             )}
             {saveCfgM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
+            {saveCfgM.isError && (
+              <span className="text-xs text-red-500">
+                {saveCfgM.error?.message || "Save failed"} — nothing was stored.
+              </span>
+            )}
           </div>
           <p className="max-md:hidden text-xs text-fg-dim leading-relaxed">
             One click turns on: <b>sell in the chat</b>, <b>smart pricing</b>, <b>full
@@ -388,11 +404,17 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         {/* Desktop keeps the in-flow Save row exactly where it was; on a phone
          *  it is ~2,000px down the scroll, so a sticky twin is appended as the
          *  last child of the outer container below. */}
-        <div className="hidden md:flex items-center gap-2 border-t border-border pt-2">
-          <Button size="sm" disabled={saveCfgM.isPending} onClick={() => saveCfg()}>
+        <div className="hidden md:flex items-center gap-2 flex-wrap border-t border-border pt-2">
+          <Button size="sm" disabled={saveCfgM.isPending || !configLoaded}
+            onClick={() => saveCfg()}>
             <Save size={14} className="mr-1" /> Save Upseller settings
           </Button>
           {saveCfgM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
+          {saveCfgM.isError && (
+            <span className="text-xs text-red-500">
+              {saveCfgM.error?.message || "Save failed"} — nothing was stored.
+            </span>
+          )}
         </div>
       </Card>
 
@@ -403,7 +425,11 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         setText={(slot, v) => setPackText((t) => ({ ...t, [slot]: v }))}
         onSave={() => saveCfg()}
         saving={saveCfgM.isPending}
+        canSave={configLoaded}
         saved={saveCfgM.isSuccess}
+        error={saveCfgM.isError
+          ? `${saveCfgM.error?.message || "Save failed"} — nothing was stored.`
+          : null}
       />
 
       <Card className="p-4 space-y-2">
@@ -431,10 +457,16 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
        *  child of the outer container". `-mx-4 px-4` bleeds to the host Card's
        *  p-4 edges. */}
       <div className="hidden max-md:flex sticky bottom-0 z-20 -mx-4 px-4 py-3 items-center gap-2 flex-wrap bg-panel/95 backdrop-blur border-t border-border pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
-        <Button size="sm" disabled={saveCfgM.isPending} onClick={() => saveCfg()}>
+        <Button size="sm" disabled={saveCfgM.isPending || !configLoaded}
+          onClick={() => saveCfg()}>
           <Save size={14} className="mr-1" /> Save Upseller settings
         </Button>
         {saveCfgM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
+        {saveCfgM.isError && (
+          <span className="text-xs text-red-500">
+            {saveCfgM.error?.message || "Save failed"} — nothing was stored.
+          </span>
+        )}
       </div>
     </div>
   );

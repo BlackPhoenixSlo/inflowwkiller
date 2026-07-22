@@ -23,12 +23,12 @@ Who it talks to (code-side gates, never prompt-side):
     rule's quiet_hours_json (executor-enforced).
 
 Trigger modes (`mode` in ai_chatter_config_json):
-  • "backup"  (default) — the bot only steps in when an inbound fan message has
-    sat unanswered for ≥ sla_minutes (chatters are slow). The W7 webhook wake
+  • "backup" — the bot only steps in when an inbound fan message has sat
+    unanswered for ≥ sla_minutes (chatters are slow). The W7 webhook wake
     enqueues a fan-scoped job delayed by the SLA; the periodic rule is the
     fallback sweep. At fire time the gate re-checks — if a human answered
     meanwhile, the fan is simply no longer "fan spoke last".
-  • "always" — reply when eligible, like of_ai_chat today.
+  • "always" (default) — reply when eligible, like of_ai_chat today.
 
 Unlike of_ai_chat there are NO graduation cutoffs: no max-message skip, no
 deep_convo handoff (ai_chatter IS the post-gather voice — one bot voice per
@@ -67,6 +67,7 @@ from db.models import (
     AccountAiConfig, Blacklist, CatalogItem, CatalogProgress, CatalogScript,
     ContentOffer, Fan, FanProfile, LadderQuote, LadderState, Message, PendingOffer,
     RhythmState, ScheduledJob, SkipList, Transaction, VaultSend,
+    created_at_text, parse_ts,
 )
 from llm_client import LLMCapExceeded
 from . import rhythm, script_packs, tip_ladder, upsell
@@ -148,7 +149,12 @@ _DEFAULTS: dict = {
     "hotsell_trinity_enabled": False,    # hot-lead tip→tip→PPV ladder (S2→S1→S3).
                                          # Ships DARK: default off, zero behavior
                                          # change until an account opts in.
-    "mode": "backup",                    # "backup" | "always"
+    "mode": "always",                    # "backup" | "always". House default is
+                                         # always-on: `enabled` below is the real
+                                         # master switch, and every live account
+                                         # runs "always" anyway — shipping "backup"
+                                         # only meant a freshly-enabled account sat
+                                         # behind an SLA hold nobody asked for.
     "intent_only": False,                # closer mode: only engage a fan whose
                                          # latest message shows buying intent
                                          # (_CONTENT_ASK_RE) or who has an open
@@ -196,17 +202,20 @@ _DEFAULTS: dict = {
     "min_fan_msgs_before_escalation_pitch": 2,  # "chat a bit first": no escalation
                                                 # pivot until he's sent >= this many
     "max_fans_per_tick": 8,
-    "resume_after_manual_hours": 6,      # cautious resume after a human chatted
+    "resume_after_manual_hours": 1,      # cautious resume after a human chatted.
+                                         # 6h read as "the bot is dead" on a thread a
+                                         # chatter touched once; 1h is long enough that
+                                         # she never talks over a live human hand-off.
     "stall_ttl_hours": 6,                # open offer → expired after this many hours
     "unsend_expired_offer": True,        # on expiry, pull (unsend) the unpurchased
                                          # PPV/offer message from the chat (per-chat
                                          # unsend; bounded by OF's 24h window)
 
     # ── Cadence controller (items 10/17/18/21) — the stop-condition subsystem.
-    # OFF by default: when disabled ai_chatter keeps its historical "no graduation
-    # cutoff" behavior (byte-compatible). Enable per-account to make the bot back
-    # off deliberately instead of chatting/selling forever.
-    "cadence_enabled": False,
+    # ON by default (2026-07-22): "chat/sell forever" was never the behavior anyone
+    # wanted — every live account had ticked this on by hand. Disable per-account to
+    # get the historical no-graduation-cutoff behavior back.
+    "cadence_enabled": True,
     # Item 21 — reply caps per burst, chosen by the fan's live signal. A "burst" is
     # counted on the fly (outbound messages since the last >session_gap_minutes gap),
     # NOT lifetime, so a long-term fan is never permanently silenced.
@@ -234,18 +243,21 @@ _DEFAULTS: dict = {
     # who re-engages with a real buying signal (tier upgrade) is served again, and a
     # burst naturally reopens after a session_gap of silence. Nothing to configure.
     # Item 18 — re-engage nudge: one gentle follow-up if a fan we made an offer to
-    # goes quiet without buying. Extra-guarded: OFF even when cadence is on, since
-    # it is the only cadence piece that SENDS an unsolicited message.
-    "nudge_enabled": False,
+    # goes quiet without buying. The only cadence piece that SENDS an unsolicited
+    # message, so it stayed off long after cadence shipped — but ONE follow-up on a
+    # fan who was quoted a price and went quiet is the cheapest close there is, and
+    # every live account runs it. On by default (2026-07-22); still needs cadence on.
+    "nudge_enabled": True,
     "nudge_after_minutes": 15,
 
     # ── Old-fan engagement — lifts process_old_fans' `old_fan_pre_ai` skip.
-    # OFF by default (flagged fans stay human territory). ON → ai_chatter also
-    # replies to them, but interviews GENTLY: the info-gather ask fires at most
-    # ~once every `old_fan_question_every` replies (1/N chance per message);
-    # the rest of the time it's pure convo — these are established fans, not
-    # fresh subs to onboard.
-    "engage_old_fans": False,
+    # ON by default (2026-07-22): the flagged roster is the back catalogue, and
+    # leaving it to a team that never gets to it just meant silence. She replies to
+    # them too, but interviews GENTLY: the info-gather ask fires at most ~once every
+    # `old_fan_question_every` replies (1/N chance per message); the rest of the time
+    # it's pure convo — these are established fans, not fresh subs to onboard.
+    # Off per-account to hand the roster back to humans.
+    "engage_old_fans": True,
     "old_fan_question_every": 10,
 
     # ── The 1:1 offer engine (upsell.py) + human reply pacing (rhythm.py) +
@@ -301,12 +313,15 @@ _DEFAULTS: dict = {
     # so a default account — gate off — behaves exactly as today. The hand-back is
     # the existing COOLDOWN → COMPANION transition (returns him to normal chat).
     "upsell_takes_over": True,
-    # Human reply timing: sleep window, variable delays, cover lines.
-    "rhythm_enabled": False,
+    # Human reply timing: sleep window, variable delays, cover lines. ON by default
+    # (2026-07-22) — instant answers around the clock is the single loudest bot tell.
+    "rhythm_enabled": True,
     # No-sleep pacing: keep the hot/cold/busy variable delays + short "stepped away"
     # breaks, but NEVER the long overnight sleep — and it needs no timezone. For a
     # creator who wants "she's a person who gets busy" without an 8-hour night gap.
-    "rhythm_no_sleep": False,
+    # Default ON alongside rhythm: it is the variant that needs no timezone, so it is
+    # the only one that behaves correctly on an account nobody has set a tz for.
+    "rhythm_no_sleep": True,
     # None ⇒ DERIVED from the account's own outbound hour histogram
     # (rhythm.derive_sleep_window). ["HH:MM", "HH:MM"] ⇒ operator override.
     "sleep_window": None,
@@ -531,14 +546,28 @@ async def _gather(account_id: str,
     where = [Message.account_id == str(account_id), Message.is_unsent.is_(False)]
     if fan_ids:
         where.append(Message.fan_id.in_(fan_ids))
+    # created_at_text() + parse_ts() instead of the mapped DateTime column: this is
+    # a ONE-QUERY scan of the whole account, and on 2026-07-22 a single row whose
+    # created_at was '' made SQLAlchemy raise while materialising the rows, which
+    # killed every reply for that account (see db/models.py for the full story).
+    # Read as text, parse defensively, drop the bad row — never the account.
     async with get_session() as s:
         rows = (await s.execute(
             select(Message.fan_id, Message.direction, Message.body,
-                   Message.created_at, Message.automation_kind, Message.mass_run_id)
+                   created_at_text(), Message.automation_kind, Message.mass_run_id)
             .where(*where)
             .order_by(Message.fan_id, Message.created_at, Message.message_id)
         )).all()
-    for fan_id, direction, body, created_at, automation_kind, mass_run_id in rows:
+    bad_ts: list[int] = []   # fans that own a row with an unreadable created_at
+    for fan_id, direction, body, created_at_raw, automation_kind, mass_run_id in rows:
+        created_at = parse_ts(created_at_raw)
+        if created_at is None and created_at_raw is not None:
+            # Unreadable, not absent: the row can't be placed on the thread's
+            # timeline (its ORDER BY position is already meaningless), so it is
+            # dropped from history AND from the gate clocks. A NULL created_at is
+            # left alone — the guards below already cope with that.
+            bad_ts.append(int(fan_id))
+            continue
         c = out.get(fan_id)
         if c is None:
             c = out[fan_id] = _Cand(int(fan_id))
@@ -570,6 +599,14 @@ async def _gather(account_id: str,
                     c.session_out_n += 1   # HER reply — not a human's, not a bubble
                 her_last[fan_id] = created_at
             mid_reply[fan_id] = hers         # a human's row also closes her turn
+
+    # ONE line per run, not one per row: the point is to make the corrupt rows
+    # findable and fixable, not to flood the relay log if a whole account is dirty.
+    if bad_ts:
+        log.warning("ai_chatter[%s]: skipped %d message row(s) with an unreadable "
+                    "created_at (fans %s) — repair the rows; one bad cell must "
+                    "never silence an account again",
+                    account_id, len(bad_ts), sorted(set(bad_ts))[:10])
 
     # The burst also goes stale on the CLOCK, not only when a new reply of hers arrives.
     # Without this the reset above can never fire for the fan it matters most for: she is

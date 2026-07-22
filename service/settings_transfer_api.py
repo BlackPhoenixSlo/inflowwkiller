@@ -87,7 +87,7 @@ CONFIG_JSON_COLS = ("time_activities_json", "time_images_json", "welcome_pinned_
                     "model_by_purpose", "nudge_config_json", "webhook_config_json",
                     "autoreply_config_json", "style_config_json", "tip_reward_config_json",
                     "ai_chatter_config_json", "ppv_library_config_json",
-                    "vault_ai_config_json")
+                    "vault_ai_config_json", "make_right_config_json")
 CONFIG_COLS = CONFIG_SCALAR_COLS + CONFIG_JSON_COLS
 
 # Config blobs whose `enabled` flag is consumed by senders/dispatchers OUTSIDE
@@ -98,7 +98,11 @@ _ENABLED_FLAG_BLOBS = ("nudge_config_json", "webhook_config_json", "autoreply_co
                        "ppv_library_config_json",
                        # vault-AI's master is read by describe_media/the consumers
                        # directly, so a clone must land with it off like the rest.
-                       "vault_ai_config_json")
+                       "vault_ai_config_json",
+                       # make_right APOLOGISES TO FANS and can gift content
+                       # (auto_send) off its own master — never a flag a clone
+                       # should inherit hot.
+                       "make_right_config_json")
 
 # ── Strip key sets (exact key-name match; booleans like with_image are NOT here).
 STRIP_KEYS_MEDIA = frozenset({

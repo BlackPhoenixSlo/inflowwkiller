@@ -81,21 +81,22 @@ def _defaults() -> dict:
     """Built-in OFF state + sensible knobs (the UI seeds from this)."""
     return {
         "enabled": False,
-        "silence_min_minutes": 30,   # give the team half an hour before stepping in
-        "silence_max_minutes": 120,
+        "silence_min_minutes": 24,   # give the team this long before stepping in
+        "silence_max_minutes": 1115,  # ~18.5h — past this the thread is too stale
         "max_nudges": 1,
         "min_gap_minutes": 5,        # ≥ this between replies to the same fan
-        "max_lifetime_spend_cents": 2000,     # < $20 lifetime
-        "recent_spend_days": 30,
-        "max_recent_spend_cents": 500,        # < $5 in the window
-        "min_days_since_purchase": 7,
-        "min_days_since_first_chat": 2,
+        "max_lifetime_spend_cents": 2_000_000,  # < $20,000 lifetime (whales are the
+                                                # closer's; the hot-lead skip owns them)
+        "recent_spend_days": 1,
+        "max_recent_spend_cents": 50_000,       # < $500 in the window
+        "min_days_since_purchase": 0,           # a recent buyer still gets kept warm
+        "min_days_since_first_chat": 0,         # brand-new fans included
         "last_n_messages": _HISTORY_TAIL,
         "quiet_hours_json": None,             # [start,end] creator-local; null=24/7
         # When True, don't require a complete profile — just respond from the last
         # few messages + whatever's already been gathered. Widens coverage to fans
-        # we don't fully know yet (off by default: known-fan-only stays the norm).
-        "info_not_required": False,
+        # we don't fully know yet.
+        "info_not_required": True,
     }
 
 
