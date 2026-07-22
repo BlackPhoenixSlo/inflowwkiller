@@ -632,6 +632,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
         c = by_fan.get(fan_id) or _Candidate(fan_id)
         f = fans.get(fan_id) or Fan(account_id=str(account_id), fan_id=fan_id)
+        # Per-fan language: fans.language (manual pin or gen_info detection) overrides
+        # the account default; unset → account default.
+        fan_lang = _language.resolve_language(account_lang, getattr(f, "language", None))
         q, tease = profiles[fan_id]
         if style_on:  # casualize the proper-case scripted Q/Tease to match the voice
             q, tease = casualize_qtease(q), casualize_qtease(tease)
@@ -674,12 +677,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 if _fan_asked(c):
                     lead = await _generate_leadin(model, persona, f, c, account_id, fan_id,
                                                   style_on=style_on, nonnative_on=nonnative_on,
-                                                  lang=account_lang)
+                                                  lang=fan_lang)
                     if lead:
                         await _send(client, account_id, fan_id, lead,
                                     typing_wpm=typing_wpm, typing_indicator=typing_indicator,
                             typo=typo_on, nonnative=nonnative_on, protect=typo_protect,
-                            lang=account_lang)
+                            lang=fan_lang)
                         if _STEP_GAP_S:
                             await hold_with_typing(account_id, fan_id, _jittered_gap(),
                                                    typing_indicator=typing_indicator)
@@ -699,7 +702,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             elif state == _S_Q_SENT:
                 reply = await _generate(model, persona, f, c, account_id, fan_id,
                                        style_on=style_on, nonnative_on=nonnative_on,
-                                       painful_on=painful_on, lang=account_lang)
+                                       painful_on=painful_on, lang=fan_lang)
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -712,7 +715,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _send(client, account_id, fan_id, reply,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
                             typo=typo_on, nonnative=nonnative_on, protect=typo_protect,
-                            lang=account_lang)
+                            lang=fan_lang)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now,
                                   deep_convo_state=_S_CHATTED_1, **reset)
@@ -722,7 +725,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             elif state == _S_CHATTED_1:
                 reply = await _generate(model, persona, f, c, account_id, fan_id,
                                        style_on=style_on, nonnative_on=nonnative_on,
-                                       painful_on=painful_on, lang=account_lang)
+                                       painful_on=painful_on, lang=fan_lang)
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -737,7 +740,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _send(client, account_id, fan_id, reply,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
                             typo=typo_on, nonnative=nonnative_on, protect=typo_protect,
-                            lang=account_lang)
+                            lang=fan_lang)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now,
                                   deep_convo_state=_S_CHATTED_2, **reset)

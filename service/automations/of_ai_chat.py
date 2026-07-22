@@ -1583,12 +1583,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _handoff_to_deep_convo(client, account_id, fan_id, f)
                 newly_skiplisted += 1
                 continue  # finally releases the lease (sent_ok stays False)
+            # Per-fan language: a manual pin or gen_info detection on this fan
+            # (fans.language) overrides the account default; unset → account default.
+            fan_lang = _language.resolve_language(account_lang, getattr(f, "language", None))
             msgs, presented = _build_messages(
                 persona, f, c, asked, history_tail,
                 style_on=style_on, nonnative_on=nonnative_on,
-                content_ask=_language.is_content_ask(c.last_body, account_lang),
+                content_ask=_language.is_content_ask(c.last_body, fan_lang),
                 tip_ask_block=tip_ask_block,
-                painful_on=painful_on, lang=account_lang,
+                painful_on=painful_on, lang=fan_lang,
                 profile=profiles.get(fan_id))
             try:
                 res = await llm_client.chat(
@@ -1634,7 +1637,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Up to `max_bubbles` bubbles (newline / em-dash / mid-emoji); em-dashes
             # are always cleaned out. Cap (2, or 3 with the style opt-in) so we
             # never spam.
-            parts = [_language.apply_word_restriction(p, account_lang)[:_REPLY_MAX_CHARS]
+            parts = [_language.apply_word_restriction(p, fan_lang)[:_REPLY_MAX_CHARS]
                      for p in split_for_bubbles(raw, max_bubbles,
                                                 rng=random.Random(f"split:{fan_id}:{raw}"))
                      if p.strip()][:max_bubbles]

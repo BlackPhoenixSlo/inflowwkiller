@@ -67,6 +67,18 @@ def resolve_language(account_lang=None, fan_lang=None) -> str:
     return norm_lang(fan_lang) or norm_lang(account_lang) or "en"
 
 
+def localized(registry: dict, lang, key):
+    """Pick registry[lang][key] with an English fallback. `registry` is a
+    {lang: {key: value}} map whose 'en' entry is the authoritative/complete set; a
+    missing language OR a missing/empty key falls back to English. This is the ONE
+    seam every localized content pack shares (script packs, PPV caption pools, unlock
+    reactions) — adding sl/pt/fr/de/it later is just dropping another
+    {'<code>': {...}} block into the registry, with zero call-site changes."""
+    en = registry.get("en", {})
+    loc = registry.get(norm_lang(lang) or "en", en)
+    return loc.get(key) or en.get(key)
+
+
 # ── The OUTPUT-LANGUAGE directive (appended at the END of a system prompt) ──
 def output_language_directive(lang: str) -> str:
     """The block that forces the model's OUTPUT language. Appended at the very END of a
@@ -172,6 +184,50 @@ _ES_RESTRICTED_RE = re.compile(
     r"(?<!\w)(" + "|".join(_ES_RESTRICTED) + r")(?!\w)", re.IGNORECASE)
 
 
+# ── Slovenian buy-signals (sl) ───────────────────────────────────────
+# Detectors run on the FAN's inbound (male → female creator). Only content-ask +
+# escalation are authored — the two signals that gate the closer's intent gate and
+# sell-pivot; the other guards fall back to English for sl (see the maps below).
+_SL_CONTENT_ASK = re.compile(
+    r"(?<!\w)("
+    # imperatives — Slovenian + English code-switch (fans mix English freely)
+    r"pošlji|pokaži|send( me)?|show me|"
+    # price ask
+    r"(koliko|kolk[oa]) (stane|stanejo|za)|how much|"
+    # verb (SL + English) + object (SL + English nouns)
+    r"(hočem|želim|rad bi|bi rad|daj|daj mi|imaš|maš|want|i want|wanna see|gimme|give me) "
+    r"(te |to )?(videt|videl|vidim|see|slik[eio]|fotk[eio]|foto|photos?|pics?|"
+    r"video|posnetek|golo|nud(es?|i|ce)|kaj lepega)|"
+    # strong bare content nouns (SL + English)
+    r"(gole slike|gola slika|nud(es?|i|ce)|pics?|več slik|več fotk|več golega)"
+    r")(?!\w)", re.IGNORECASE)
+
+# NOTE the gender split: the FAN is male, so his self-description is MASCULINE
+# ("vroč sem", "trd sem"), while describing HER is FEMININE ("vroča si", "mokra si").
+# Slovenians code-switch English a lot, so horny/hard/hot/wet are matched too.
+_SL_ESCALATION = re.compile(
+    r"(?<!\w)("
+    # HIM about himself (masc): hot / horny / hard — Slovenian + English mix
+    r"(zelo |tako |čist |cist )?(vroč|napaljen|nabrit|horni|horny|hard) sem|"
+    r"vroče mi je|trd sem|imam (ga )?trd(ega)?|so (horny|hard)|"
+    # explicit acts he wants (both word orders, SL)
+    r"(hočem te|te hočem|hočem|želim te) (pofukat|fukat|polizat|lizat|čutit|začutit)|"
+    r"(pofukal|polizal|lizal|nategnil) bi te|bi te (rad )?(pofukal|polizal|nategnil)|"
+    r"hočem (biti |bit )?v tebi|drkam|drka mi|"
+    # HER, as he describes her (fem): hot / wet / sexy — Slovenian + English
+    r"si (tako |čist )?(seksi|sexy|vroča|mokra|hot|wet)|"
+    r"tako si (seksi|sexy|vroča|mokra|hot|wet)|so (hot|sexy|wet)|"
+    # general wanting
+    r"hočem te|želim te|rabim te"
+    r")(?!\w)", re.IGNORECASE)
+
+# Per-language detector maps — a language present here uses its OWN regex; absent →
+# the English _common detector. 'es' reproduces the exact prior behavior. To make a
+# signal bilingual for a new language, add its regex here.
+_CONTENT_ASK_BY_LANG = {"es": _ES_CONTENT_ASK, "sl": _SL_CONTENT_ASK}
+_ESCALATION_BY_LANG = {"es": _ES_ESCALATION, "sl": _SL_ESCALATION}
+
+
 # ── Language-aware dispatchers ───────────────────────────────────────
 # English (and any language without a guard layer) delegates to the EXISTING tuned
 # functions — unchanged behaviour. Only a GUARD_LANGS account runs the Spanish layer.
@@ -181,27 +237,30 @@ def _es(lang: str) -> bool:
 
 
 def is_content_ask(text, lang="en") -> bool:
-    if _es(lang):
-        return bool(text) and bool(_ES_CONTENT_ASK.search(text or ""))
+    rx = _CONTENT_ASK_BY_LANG.get(norm_lang(lang))
+    if rx is not None:
+        return bool(text) and bool(rx.search(text or ""))
     return _common.is_content_ask(text)
 
 
 def is_escalation(text, lang="en") -> bool:
-    if _es(lang):
-        return bool(text) and bool(_ES_ESCALATION.search(text or ""))
+    rx = _ESCALATION_BY_LANG.get(norm_lang(lang))
+    if rx is not None:
+        return bool(text) and bool(rx.search(text or ""))
     return _common.is_escalation(text)
 
 
 def thread_heat(messages, lang="en") -> bool:
     """Bilingual thread_heat: the 24.3× purchase signal. For es, ANY recent fan message
     that is a content-ask or an escalation. For en, the existing helper unchanged."""
-    if not _es(lang):
+    ca = _CONTENT_ASK_BY_LANG.get(norm_lang(lang))
+    esc = _ESCALATION_BY_LANG.get(norm_lang(lang))
+    if ca is None or esc is None:
         return _common.thread_heat(messages)
     for m in messages or []:
         body = m[1] if isinstance(m, (tuple, list)) and len(m) > 1 else getattr(m, "body", "")
         direction = m[0] if isinstance(m, (tuple, list)) else getattr(m, "direction", "in")
-        if direction == "in" and (_ES_CONTENT_ASK.search(body or "") or
-                                  _ES_ESCALATION.search(body or "")):
+        if direction == "in" and (ca.search(body or "") or esc.search(body or "")):
             return True
     return False
 

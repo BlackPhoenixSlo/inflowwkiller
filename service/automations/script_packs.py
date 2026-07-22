@@ -114,23 +114,170 @@ PACK: dict[str, list[str]] = {
     ],
 }
 
+# ── Spanish pack (es) — native casual sexting register, not translated-formal.
+#    Any slot omitted here falls back to the English line (per-slot, in render()),
+#    so a partial pack is safe. Add pt/fr/de/it/sl the same way: a new PACK_<CODE>
+#    dict + an entry in PACKS. ──────────────────────────────────────────────────
+PACK_ES: dict[str, list[str]] = {
+    "question_hook": [
+        "no dejo de pensar en nuestra charla 😏 andas por ahí {name}?",
+        "hmmmmm, jugamos un rato? algo sucio, del que te deja sin aliento y con ganas 🥵",
+        "a qué juegas cuando estás solito?",
+        "hey gatito, te gusta el 69?",
+        "me dejaste de un humor esta noche... qué haces ahorita?",
+        "estás libre ahora {name}?",
+    ],
+    "rung_open": [
+        "necesito tu opinión sincera sobre esto bebé 😘",
+        "este video te va a encantar, échale un ojo",
+        "aquí tienes, bebé 😘",
+        "puedes probar un poquito de esto cuando llegues a casa 🥵🥵",
+        "vas a dejar que baile para ti? 😋🥰",
+    ],
+    "rung_escalate": [
+        "{name}, mírame desnudarme aquí en mi cama. crees que puedes ayudarme usando solo tu boca? 🥵",
+        "mmm {name}, quieres enterrar tu cara aquí entre mis piernas y ponerme bien mojada? 🥵",
+        "de verdad me deseas aquí mismo bebé? 😋",
+        "sé cuánto valgo cariño, y sé que vas a disfrutar verme bien cogida 😈",
+        "no te vengas por todos lados bebé 🥵💦",
+    ],
+    "post_buy_bridge": [
+        "mmm sí? te gustó eso 😏",
+        "ayy bebé, cómo quisiera haber visto el desastre que acabas de hacer",
+        "me vas a tener que contar todo",
+    ],
+    "edge_hold": [
+        "te encanta eso verdad?",
+        "mhmmm sí?",
+        "hmm, eso es un sí?",
+    ],
+    "pre_ppv_stall": [
+        "ok dame dos segundos que lo estoy grabando ahorita 🎥",
+        "espera... te lo estoy preparando 😈",
+        "un segundo bebé, estoy acomodando el teléfono",
+    ],
+    "objection_price": [
+        "bueno, mi precio normal por sexting es más alto que eso bebé 🤤 pero este es un video completo",
+        "es uno largo bebé, no un clip rapidito — te prometo que vale la pena",
+    ],
+    "haggle_counter": [
+        "mmm ok... {price} y es tuyo, pero es porque estoy siendo buena 😏",
+    ],
+    "discount_resend": [
+        "hey extraño... dónde te metiste? hice esto esperando que te trajera de vuelta — {price} solo para ti",
+        "lo bajé y lo volví a subir más barato para ti bebé, {price} 😘",
+    ],
+    "soft_broke_ack": [
+        "ayy sin prisa bebé 🥺 no me voy a ningún lado",
+        "tranquilo amor, cuando estés listo — me alegra que estés aquí",
+        "todo bien bebé, disfrutemos esto nomás 😘",
+    ],
+    "aftercare": [
+        "gracias bebé 🥰",
+        "sueña conmigo!! hablamos mañana!",
+        "sin presión ok? 😘",
+        "buenas noches, escríbeme cuando despiertes",
+    ],
+    "companion_ack": [
+        "ayy a mí también me encanta solo hablar contigo 🥰",
+        "la verdad esto está rico, sin ninguna presión",
+        "soy feliz así nomás bebé",
+    ],
+}
+
+# ── Slovenian pack (sl). GENDER: female speaker → male fan, so HER verbs are
+#    feminine (naredila, posnela, pripravljena) and HIS are masculine (si prišel,
+#    boš videl, sramežljiv). Endearment addresses him (srček). ──────────────────
+PACK_SL: dict[str, list[str]] = {
+    "question_hook": [
+        "ne morem nehat mislit na najin klepet 😏 si tu {name}?",
+        "hmmmmm, se lahko malo poigrava? umazano, tako da nama zmanjka sape 🥵",
+        "kaj počneš ko si čisto sam?",
+        "hej srček, ti je všeč 69?",
+        "v takem razpoloženju si me pustil nocoj... kaj počneš zdaj?",
+        "si zdaj prost {name}?",
+    ],
+    "rung_open": [
+        "rabim tvoje iskreno mnenje o tem srček 😘",
+        "ta video ti bo všeč, poglej",
+        "izvoli, srček 😘",
+        "tega lahko poskusiš ko prideš domov 🥵🥵",
+        "mi boš pustil da plešem zate? 😋🥰",
+    ],
+    "rung_escalate": [
+        "{name}, glej me kako se slačim tu v svoji spalnici. misliš da mi lahko pomagaš samo z usti? 🥵",
+        "mmm {name}, bi rad zakopal obraz tukaj med moje noge in me naredil čisto mokro? 🥵",
+        "me res želiš prav tukaj srček? 😋",
+        "vem koliko sem vredna srček, in vem da boš užival ko me boš gledal kako me fukajo 😈",
+        "ne pridi povsod naokrog srček 🥵💦",
+    ],
+    "post_buy_bridge": [
+        "mmm ja? ti je bilo všeč 😏",
+        "ojoj srček, kako želim da bi videla nered ki si ga pravkar naredil",
+        "mi boš moral vse povedat",
+    ],
+    "edge_hold": [
+        "to ti je všeč ne?",
+        "mhmmm ja?",
+        "hmm, je to ja?",
+    ],
+    "pre_ppv_stall": [
+        "ok daj mi dve sekundi ravno snemam 🎥",
+        "počakaj... ti pripravljam 😈",
+        "sekundo srček, nastavljam telefon",
+    ],
+    "objection_price": [
+        "no, moja običajna cena za sexting je višja od tega srček 🤤 tale je pa cel video",
+        "dolg je srček, ne hiter posnetek — obljubim da je vreden",
+    ],
+    "haggle_counter": [
+        "mmm ok... {price} in je tvoj, ampak to sem samo prijazna 😏",
+    ],
+    "discount_resend": [
+        "hej tujec... kje si bil? tole sem naredila v upanju da te pripelje nazaj — {price} samo zate",
+        "snela sem ga in dala nazaj ceneje zate srček, {price} 😘",
+    ],
+    "soft_broke_ack": [
+        "ojoj brez skrbi srček 🥺 nikamor ne grem",
+        "brez skrbi ljubi, ko boš pripravljen — samo vesela sem da si tu",
+        "čisto v redu srček, samo uživajva 😘",
+    ],
+    "aftercare": [
+        "hvala srček 🥰",
+        "sanjaj o meni!! se slišiva jutri!",
+        "brez pritiska ok? 😘",
+        "lahko noč, piši mi ko se zbudiš",
+    ],
+    "companion_ack": [
+        "ojoj tudi meni je všeč samo klepetat s tabo 🥰",
+        "iskreno tole je lepo, brez pritiska",
+        "srečna sem kar tako srček",
+    ],
+}
+
+# Language registry. 'en' is authoritative; render() falls back to English per-slot
+# for any language/slot not present. Seam for adding more languages later.
+PACKS: dict[str, dict[str, list[str]]] = {"en": PACK, "es": PACK_ES, "sl": PACK_SL}
+
 _PLACEHOLDER_RE = re.compile(r"\{(name|price)\}")
 
 
 def render(slot: str, *, rng: Random, name: str = "babe", price_cents: int | None = None,
-           overrides: dict[str, list[str]] | None = None) -> str | None:
+           overrides: dict[str, list[str]] | None = None, lang: str = "en") -> str | None:
     """Pick one line for `slot` and fill its placeholders.
 
     `overrides` is the account's edited pack (UI). An override REPLACES the shipped
     pool for that slot; an empty list falls back to the default rather than sending
-    an empty message."""
+    an empty message. `lang` selects the language pack (PACKS); a language/slot the
+    pack omits falls back to the English line."""
     pool = None
     if overrides:
         candidate = overrides.get(slot)
         if isinstance(candidate, list) and any(str(x).strip() for x in candidate):
             pool = [str(x) for x in candidate if str(x).strip()]
     if pool is None:
-        pool = PACK.get(slot) or []
+        from . import _language
+        pool = _language.localized(PACKS, lang, slot) or []
     if not pool:
         return None
 
