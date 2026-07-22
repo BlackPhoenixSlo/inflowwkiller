@@ -522,6 +522,7 @@ export interface FanRecord {
   // ── gen_info-extracted facts (for the AI-Profile card) ─
   occupation?: string | null;
   employer?: string | null;
+  relationship_status?: string | null;
   relationship_stage?: string | null;
   has_kids?: boolean | null;
   pets?: unknown[];

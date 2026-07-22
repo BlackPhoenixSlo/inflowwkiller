@@ -27,7 +27,7 @@ import { useFanActivity } from "@/hooks/useLastPurchases";
 import { useFanPpvHistory, type PpvHistoryItem } from "@/hooks/useFanPpvHistory";
 import { useFanChatMedia, type FanChatMediaItem } from "@/hooks/useFanChatMedia";
 import { stripOFHtml } from "@/lib/ofHtml";
-import { proxyImage, proxyScrubFrame, relay, type OFChatItem, type VaultMedia } from "@/lib/relay";
+import { proxyImage, proxyScrubFrame, relay, type FanRecord, type OFChatItem, type VaultMedia } from "@/lib/relay";
 import { cn, fmtRelTime, interpretSubStatus } from "@/lib/utils";
 import { type PickedTemplate } from "./TemplatePicker";
 import { useAiChatterSessions, useCancelOffer } from "@/hooks/useCatalog";
