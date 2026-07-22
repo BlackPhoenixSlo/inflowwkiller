@@ -97,6 +97,28 @@ async def reengage_preview(body: _ReengageBody = Body(...)) -> dict[str, Any]:
     }, run_id=0)
 
 
+# ── Make It Right (Resolution Agent) — dry-run preview (detected incidents +
+#    the proposed apology + free gift; NO send, NO state write) ──────────────
+
+class _MakeRightBody(BaseModel):
+    account_id: str
+
+
+@router.post("/admin/make-right-preview")
+async def make_right_preview(body: _MakeRightBody = Body(...)) -> dict[str, Any]:
+    """Run make_right in DRY-RUN and return the detected wrong-content incidents
+    (headline: double-charges) + the make-right each would get (apology text, the
+    free unseen gift media, whether a refund is flagged for an operator, or
+    operator_only when the fan is over the cap / no gift is available). Nothing
+    sends and nothing is logged. Detection reads the account's persisted config
+    (lookback, cap, gift policy); the 'Run now' button uses the normal
+    /admin/automation/enqueue path with kind:make_right, which only actually sends
+    when both `enabled` and `auto_send` are on."""
+    assert_account_owned(body.account_id)
+    from automations.make_right import run as _run
+    return await _run(body.account_id, {"dry_run": True}, run_id=0)
+
+
 # ── Welcome line PIN — "reroll until I like one, then send THAT" ──────────
 
 class _PinBody(BaseModel):

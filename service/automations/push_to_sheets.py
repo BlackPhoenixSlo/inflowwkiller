@@ -307,6 +307,7 @@ async def build_fan_data(account_id: str, limit: int = _DEFAULT_LIMIT) -> list[d
     spend = await _load_spend(account_id)
     out: list[dict] = []
     for r in _build_rows(profiles, fans, spend):
+        fan = fans.get(int(r.fan_id))
         out.append({
             "account_id": account_id,
             "fan_name": r.fan_name, "fan_id": r.fan_id, "chat_id": r.fan_id,
@@ -317,6 +318,8 @@ async def build_fan_data(account_id: str, limit: int = _DEFAULT_LIMIT) -> list[d
             "total_spend": round(r.total_spend_cents / 100.0, 2),
             "message_count": r.message_count,
             "last_updated": r.last_updated, "note_on_of": r.note_on_of,
+            # read-surface only (NOT the positional sheet _HEADER): the fan's language.
+            "language": (fan.language if fan is not None else None),
         })
     return out
 

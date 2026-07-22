@@ -49,7 +49,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from automation_registry import register
@@ -152,6 +152,22 @@ _SYSTEM_PROMPT = (
     '  "fetishes": comma-separated kinks he mentioned ("" if none),\n'
     '  "recent_events": a JSON array of short strings — things happening in his life '
     "lately (trip, new job, breakup, birthday, holiday); [] if none.\n"
+    # ── Richer facts (appended at the END so the stable prompt prefix — and its
+    #    DeepSeek cache — is untouched). Same never-guess discipline. ──
+    '  "employer": the company/place he works (ONLY if named; ""),\n'
+    '  "partner_name": his partner\'s name (ONLY if he named one; ""),\n'
+    '  "relationship_stage": where things stand with YOU the creator (e.g. new/regular/'
+    'devoted/cooling) — ONLY if the chat clearly shows it; "" otherwise,\n'
+    '  "has_kids": true or false ONLY if he clearly stated it; otherwise the empty '
+    'string "" (never guess),\n'
+    '  "pets": a JSON array of short strings like "dog Toby" for pets he mentioned; [] '
+    "if none (do NOT invent),\n"
+    '  "communication_style": a JSON object with any of {"chatty":true/false,'
+    '"kink_forward":true/false,"romantic":true/false,"blunt":true/false} you can '
+    "actually tell from how he writes; {} if unsure,\n"
+    '  "language": the ISO 639-1 code (two letters, e.g. "en", "es", "pt") of the '
+    "language HE writes in — judge from his own messages, not yours. If he mixes "
+    'languages, pick the dominant one. "" if you truly cannot tell.\n'
     "\nCRITICAL: only record facts the fan ACTUALLY stated in the chat. If something "
     "wasn't said, leave it EMPTY — never guess or infer (don't guess a city from a "
     "country, don't invent hobbies or a job he never mentioned).\n"
@@ -468,7 +484,8 @@ async def _gather_candidates(
                     Fan.fan_id, Fan.of_display_name, Fan.of_username,
                     Fan.real_name, Fan.his_age, Fan.home_city, Fan.home_country,
                     Fan.hobbies, Fan.occupation, Fan.relationship_status,
-                    Fan.fetishes, Fan.recent_events, Fan.generated_nickname,
+                    Fan.fetishes, Fan.recent_events, Fan.recent_events_timeline,
+                    Fan.generated_nickname,
                     Fan.custom_nickname, Fan.source, Fan.is_muted, Fan.subscribed_at,
                 ).where(
                     Fan.account_id == account_id,
@@ -489,6 +506,7 @@ async def _gather_candidates(
                     "relationship_status": r.relationship_status or "",
                     "fetishes": r.fetishes or "",
                     "recent_events": r.recent_events or "[]",
+                    "recent_events_timeline": r.recent_events_timeline or "[]",
                     "generated_nickname": r.generated_nickname or "",
                     "custom_nickname": r.custom_nickname or "",
                     "source": r.source or "",
@@ -608,6 +626,121 @@ def _build_user_prompt(c: _Candidate) -> str:
 
 # ── Persistence ──────────────────────────────────────────────────────
 
+# The extracted facts written back onto the `fans` row, as (json_key, column, kind).
+# `kind` drives per-type serialization so a bool/JSON field never reaches the DB as a
+# Python repr: the naive `str(val)` path turned has_kids=False into "" (dropped) and
+# a bool True into the string "True", which RAISES StatementError on a Boolean column
+# and rolls back the whole persist. Adding a field here is now type-safe.
+#   str      → cleaned text ("" ⇒ skip); a list is comma-joined
+#   bool     → real True/False from yes/no/true/false/1/0 ("unknown"/"" ⇒ skip)
+#   json_arr → json.dumps(list)   ("[]"/empty ⇒ skip)
+#   json_obj → json.dumps(dict)   ({}/empty ⇒ skip)
+_FACT_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("real_name", "real_name", "str"),
+    ("his_age", "his_age", "str"),
+    ("home_country", "home_country", "str"),
+    ("home_city", "home_city", "str"),
+    ("hobbies", "hobbies", "str"),
+    ("occupation", "occupation", "str"),
+    ("relationship_status", "relationship_status", "str"),
+    ("fetishes", "fetishes", "str"),
+    # ── Richer facts (R1): fill columns gen_info never wrote before. ──
+    ("employer", "employer", "str"),
+    ("partner_name", "partner_name", "str"),
+    ("relationship_stage", "relationship_stage", "str"),
+    ("has_kids", "has_kids", "bool"),
+    ("pets", "pets", "json_arr"),
+    ("communication_style", "communication_style", "json_obj"),
+)
+
+# Profile columns that must be KEPT when the LLM returns them empty (FIX-2): a sparse
+# response (~7% are fully empty) must NOT null out a fan's stored nickname / bio /
+# openers. Nulling q/tease trips `lines_empty` → the one exemption from _MIN_NEW_MSGS
+# → a forced regen every inbound → unbounded. These are guarded in the upsert set_.
+_PROFILE_KEEP_IF_EMPTY = frozenset((
+    "nickname", "short_bio", "bullet_points", "original_name",
+    "q1", "q2", "q3", "tease1", "tease2", "tease3",
+))
+
+
+# ── Language detection (R1) ──────────────────────────────────────────
+# gen_info DETECTS the fan's language and stores it as an observation (source="ai").
+# It does NOT yet drive routing — the bot's output language is the ACCOUNT default
+# (resolve_language) until per-fan routing is switched on. So a wrong detection is a
+# display/collection error, never a mis-route. Two guards make it safe:
+#   • EVIDENCE FLOOR — need real fan text before trusting a guess (44 fans have zero
+#     inbound; 19.7% have < 400 chars). Below the floor ⇒ leave NULL ⇒ "use account".
+#   • MANUAL WINS — never overwrite a language an operator pinned (language_source
+#     == "manual"). Enforced per-column in the upsert CASE, not a row-level where=.
+_LANG_EVIDENCE_MIN_CHARS = 40          # min inbound fan text before we trust detection
+_KNOWN_LANGS = frozenset((             # ISO 639-1 we accept; others ⇒ leave NULL
+    "en", "es", "sl", "pt", "fr", "de", "it", "nl", "ru", "pl", "tr", "ar",
+    "sv", "no", "da", "fi", "cs", "ro", "hu", "el", "he", "ja", "ko", "zh",
+))
+_LANG_NAME_MAP = {                      # tolerate a name if the model ignores "ISO code"
+    "english": "en", "spanish": "es", "español": "es", "espanol": "es",
+    "slovenian": "sl", "slovene": "sl", "slovenščina": "sl",
+    "portuguese": "pt", "french": "fr", "german": "de", "italian": "it",
+}
+
+
+def _norm_lang(raw: Any) -> str:
+    """Normalize a model language value to a known ISO 639-1 code, else "". Accepts
+    'es', 'ES', 'es-MX', or a language NAME ('Spanish'); rejects anything unknown so a
+    junk value never becomes a routing key."""
+    s = (raw or "")
+    s = s.strip().lower() if isinstance(s, str) else ""
+    if not s:
+        return ""
+    code = s.split("-")[0].split("_")[0]           # 'es-MX' → 'es'
+    if code in _KNOWN_LANGS:
+        return code
+    return _LANG_NAME_MAP.get(s, "")
+
+
+def _enough_language_evidence(c: "_Candidate") -> bool:
+    """True when the fan has written enough text to trust a language guess."""
+    chars = sum(len(b) for d, b in c.messages if d == "in" and b)
+    return chars >= _LANG_EVIDENCE_MIN_CHARS
+
+
+def _serialize_fact(kind: str, raw: Any) -> tuple[bool, Any]:
+    """(should_write, typed_value) for one extracted fact. Never returns should_write
+    for an empty/unknown value, so a sparse run never clobbers a prior fact. See
+    _FACT_FIELDS for the kinds. This is the single guard against binding a Python repr
+    (dict/bool) to a typed column."""
+    if raw is None:
+        return (False, None)
+    if kind == "bool":
+        if isinstance(raw, bool):
+            return (True, raw)
+        s = str(raw).strip().lower()
+        if s in ("true", "yes", "y", "1"):
+            return (True, True)
+        if s in ("false", "no", "n", "0"):
+            return (True, False)
+        return (False, None)                     # "unknown"/"" ⇒ leave the column alone
+    if kind == "json_arr":
+        if isinstance(raw, (list, tuple)):
+            items = [x for x in raw if x not in (None, "", {}, [])]
+            return (True, json.dumps(items, ensure_ascii=False)) if items else (False, None)
+        s = str(raw).strip()
+        if s and s != "[]":
+            return (True, json.dumps([s], ensure_ascii=False))
+        return (False, None)
+    if kind == "json_obj":
+        if isinstance(raw, dict):
+            obj = {k: v for k, v in raw.items() if v not in (None, "", [], {})}
+            return (True, json.dumps(obj, ensure_ascii=False)) if obj else (False, None)
+        return (False, None)
+    # str (default): flatten a list to a comma-joined string.
+    if isinstance(raw, (list, tuple)):
+        val = ", ".join(str(x).strip() for x in raw if str(x).strip())
+    else:
+        val = raw.strip() if isinstance(raw, str) else str(raw).strip()
+    return (True, val) if val else (False, None)
+
+
 async def _persist(
     account_id: str, c: _Candidate, data: dict, call_id: int | None, now: datetime,
     *, client=None
@@ -658,25 +791,9 @@ async def _persist(
     # later sparse generation never wipes a fact an earlier one found.
     fact_update: dict[str, Any] = {"grok_facts_updated_at": now,
                                    "updated_at": now}
-    for col, key in (
-        ("real_name", "real_name"),
-        ("his_age", "his_age"),
-        ("home_country", "home_country"),
-        ("home_city", "home_city"),
-        ("hobbies", "hobbies"),
-        ("occupation", "occupation"),
-        ("relationship_status", "relationship_status"),
-        ("fetishes", "fetishes"),
-    ):
-        # A fact may arrive as a list (e.g. hobbies/fetishes as an array) — flatten
-        # to a comma-joined string so a list never reaches the VARCHAR column.
-        raw = data.get(key)
-        if isinstance(raw, (list, tuple)):
-            val = ", ".join(str(x).strip() for x in raw if str(x).strip())
-        else:
-            val = (raw or "")
-            val = val.strip() if isinstance(val, str) else str(val)
-        if val:
+    for key, col, kind in _FACT_FIELDS:
+        ok, val = _serialize_fact(kind, data.get(key))
+        if ok:
             fact_update[col] = val
     if original_name and "real_name" not in fact_update:
         fact_update["real_name"] = original_name
@@ -688,19 +805,62 @@ async def _persist(
     new_events = _parse_events(data.get("recent_events"))
     if new_events:
         prior_events = _parse_events(c.known.get("recent_events"))
-        merged = prior_events + [e for e in new_events if e not in prior_events]
+        fresh = [e for e in new_events if e not in prior_events]
+        merged = prior_events + fresh
         fact_update["recent_events"] = json.dumps(merged[:20], ensure_ascii=False)
+        # Dated timeline (step 6): stamp each NEWLY-learned event with today's date and
+        # accrete onto the prior timeline (keeps old dates), newest last, cap 30. Read by
+        # none of the six recent_events readers — the flat list above is untouched.
+        if fresh:
+            try:
+                prior_tl = json.loads(c.known.get("recent_events_timeline") or "[]")
+                prior_tl = [t for t in prior_tl if isinstance(t, dict) and t.get("event")]
+            except (json.JSONDecodeError, TypeError):
+                prior_tl = []
+            seen_ev = {t.get("event") for t in prior_tl}
+            day = now.strftime("%Y-%m-%d")
+            for e in fresh:
+                if e not in seen_ev:
+                    prior_tl.append({"date": day, "event": e})
+            fact_update["recent_events_timeline"] = json.dumps(prior_tl[-30:], ensure_ascii=False)
+
+    # Language: a detected observation (source="ai"), written only past the evidence
+    # floor and NEVER over an operator's manual pin. Kept out of fact_update because it
+    # needs a per-column CASE guard, not a plain overwrite.
+    detected_lang = _norm_lang(data.get("language"))
+    write_lang = bool(detected_lang) and _enough_language_evidence(c)
 
     async with get_session() as s:
+        # FIX-2: for the content columns, KEEP the stored value when the LLM returned
+        # an empty/NULL one — a sparse (~7%) response must not wipe a fan's nickname /
+        # bio / openers (which would trip the lines_empty forced-regen loop). Metadata
+        # columns (counts, timestamps, call id) always take the new value.
+        prof_stmt = sqlite_insert(FanProfile).values(**prof_values)
+        prof_set: dict[str, Any] = {}
+        for k in prof_update:
+            new_val = prof_stmt.excluded[k]
+            if k in _PROFILE_KEEP_IF_EMPTY:
+                prof_set[k] = case(
+                    (or_(new_val.is_(None), new_val == ""), getattr(FanProfile, k)),
+                    else_=new_val,
+                )
+            else:
+                prof_set[k] = new_val
         await s.execute(
-            sqlite_insert(FanProfile)
-            .values(**prof_values)
-            .on_conflict_do_update(
-                index_elements=["account_id", "fan_id"], set_=prof_update
+            prof_stmt.on_conflict_do_update(
+                index_elements=["account_id", "fan_id"], set_=prof_set
             )
         )
         # The fans row exists (scrape/WS created it); guard anyway with an upsert
         # carrying identity-safe defaults so gen_info never fails on a stray fan.
+        fan_set: dict[str, Any] = dict(fact_update)
+        if write_lang:
+            # FIX-3, per-column: keep the operator's pin when language_source=='manual';
+            # otherwise record the AI observation. Bare `Fan.language*` = the EXISTING
+            # row's value in an ON CONFLICT DO UPDATE set_.
+            manual = Fan.language_source == "manual"
+            fan_set["language"] = case((manual, Fan.language), else_=detected_lang)
+            fan_set["language_source"] = case((manual, Fan.language_source), else_="ai")
         await s.execute(
             sqlite_insert(Fan)
             .values(
@@ -710,7 +870,7 @@ async def _persist(
                 grok_facts_updated_at=now,
             )
             .on_conflict_do_update(
-                index_elements=["account_id", "fan_id"], set_=fact_update
+                index_elements=["account_id", "fan_id"], set_=fan_set
             )
         )
 
@@ -862,6 +1022,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     refill_ids = coerce_ids(payload.get("refill_ids"))
     limit = int(payload.get("limit") or _DEFAULT_FAN_LIMIT)
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
+    # Localize the fan-facing openers (Q/Tease) to the account language — deep_convo /
+    # reengage send them verbatim. Facts stay as stated; appended at the END so the
+    # stable prompt prefix (and its cache) is untouched. "" for en.
+    from . import _language
+    system_prompt = _SYSTEM_PROMPT + _language.qtease_directive(
+        await _language.load_account_language(account_id))
 
     now = datetime.utcnow()
     candidates = await _gather_candidates(account_id, force_ids, limit, now)
@@ -921,7 +1087,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 result = await llm_client.chat(
                     model=model,
                     messages=[
-                        {"role": "system", "content": _SYSTEM_PROMPT},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": _build_user_prompt(c)},
                     ],
                     purpose=_PURPOSE,

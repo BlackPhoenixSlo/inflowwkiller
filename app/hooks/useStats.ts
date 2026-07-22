@@ -619,6 +619,7 @@ export interface FanDataRow {
   message_count: number;
   last_updated: string;
   note_on_of: string;
+  language?: string | null;
 }
 export interface FanDataResp {
   rows: FanDataRow[];

@@ -29,6 +29,7 @@ import {
   useSellerConfig, useSellerStyle,
 } from "@/components/settings/sellerShared";
 import ReengageBuyersTab from "@/components/settings/ReengageBuyersTab";
+import MakeRightTab from "@/components/settings/MakeRightTab";
 import type { AiChatterConfig } from "@/hooks/useCatalog";
 
 export default function ScriptsTab({ accountId }: { accountId: string | null }) {
@@ -691,6 +692,12 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           with the chatter (not the mass broadcasts). ── */}
       <div className="border-t border-border pt-4">
         <ReengageBuyersTab accountId={accountId} />
+      </div>
+
+      {/* ── Make It Right — the safety net that apologises + gifts free content
+          when a fan got the wrong outcome (esp. a double-charge). ── */}
+      <div className="border-t border-border pt-4">
+        <MakeRightTab accountId={accountId} />
       </div>
     </div>
     </MediaCacheProvider>

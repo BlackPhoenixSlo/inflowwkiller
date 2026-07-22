@@ -515,8 +515,31 @@ export interface FanRecord {
   last_message_received_at: string | null;
   source: string;
   is_followed: boolean;
+  /** ISO 639-1 the fan writes in (per-fan override/detection); null = use account default. */
+  language: string | null;
+  /** 'manual' when an operator pinned language (then AI detection can't overwrite it). */
+  language_source: string | null;
+  // ── gen_info-extracted facts (for the AI-Profile card) ─
+  occupation?: string | null;
+  employer?: string | null;
+  relationship_stage?: string | null;
+  has_kids?: boolean | null;
+  pets?: unknown[];
+  communication_style?: Record<string, unknown>;
+  recent_events_timeline?: { date?: string; event?: string }[];
+  /** The joined gen_info profile: rich note + openers. */
+  profile?: FanProfileBlock;
   created_at: string | null;
   updated_at: string | null;
+}
+
+export interface FanProfileBlock {
+  rich_note: string;
+  short_bio: string | null;
+  nickname: string | null;
+  q: string[];
+  tease: string[];
+  last_generated_at: string | null;
 }
 
 export interface FanUpdate {
@@ -529,6 +552,8 @@ export interface FanUpdate {
   his_age?: string | null;
   hobbies?: string | null;
   fetishes?: string | null;
+  /** ISO 639-1 code, or "" / null to clear the manual override. */
+  language?: string | null;
 }
 
 export interface SendMessageBody {

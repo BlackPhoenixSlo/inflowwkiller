@@ -1,0 +1,319 @@
+"use client";
+
+/**
+ * MakeRightTab — Automations → "🤝 Make It Right" (the Resolution Agent).
+ *
+ * Detects when the bot got the content wrong — above all, a fan CHARGED TWICE for
+ * the same content — and makes him whole: a warm apology + a few FREE unseen pieces
+ * from the tip library, up to twice per fan, then hands him to an operator. Refunds
+ * are flagged for a human, never moved automatically.
+ *
+ * Ships OFF + PREVIEW-ONLY. Preview (dry-run) → POST /admin/make-right-preview shows
+ * the detected incidents + each proposed make-right. Nothing sends until BOTH
+ * "Enabled" and "Auto-send" are ticked and saved; "Run now" enqueues the sweep.
+ * Config persists on account_ai_config.make_right_config_json.
+ */
+
+import { useEffect, useState } from "react";
+
+import { Button, Card, Input } from "@/components/ui/primitives";
+import { relay } from "@/lib/relay";
+import { useEmployee } from "@/contexts/EmployeeContext";
+
+interface Cfg {
+  enabled?: boolean; auto_send?: boolean; lookback_days?: number;
+  per_fan_cap?: number; gift_value_match?: boolean; gift_piece_value_cents?: number;
+  gift_min_count?: number; gift_max_count?: number; gift_tier?: string;
+  apology_caption?: string; flag_refund?: boolean; guard_hours?: number;
+  // Multi-turn exchange (apology -> N free on his replies -> PPV -> close).
+  free_steps?: number; gift_pieces_per_step?: number; open_with_gift?: boolean;
+  ppv_folder?: string; ppv_price_cents?: number; ppv_caption?: string;
+  nudge_hours?: number; close_hours?: number;
+}
+interface PreviewRow {
+  fan_id: number; name?: string; incident_key: string; kind: string;
+  wrongful_cents?: number; apology?: string; steps?: string[]; step?: number;
+  gift_media_ids?: number[]; refund_flagged?: boolean; action: string; reason?: string;
+}
+interface PreviewResp {
+  dry_run: boolean; preview_only_reason?: string | null; candidates: number;
+  would_open?: number; operator_only?: number; in_progress?: number;
+  excluded?: number; already_handled?: number; preview: PreviewRow[];
+}
+
+const INPUT = "w-24 bg-bg border border-border rounded-lg px-2 py-1.5 text-base md:text-sm focus:outline-none focus:border-accent";
+
+function NumField({ label, hint, value, onChange, min = 0, max = 100000, step = 1, suffix }: {
+  label: string; hint?: string; value: number; min?: number; max?: number;
+  step?: number; suffix?: string; onChange: (n: number) => void;
+}) {
+  return (
+    <label className="space-y-1 block">
+      <div className="text-xs text-fg-dim">{label}</div>
+      <div className="flex items-center gap-2">
+        <input type="number" min={min} max={max} step={step} className={INPUT} value={value}
+          onChange={(e) => onChange(Math.max(min, Math.min(Number(e.target.value) || 0, max)))} />
+        {suffix && <span className="text-xs text-fg-dim">{suffix}</span>}
+      </div>
+      {hint && <div className="text-[11px] text-fg-dim/70">{hint}</div>}
+    </label>
+  );
+}
+
+const ACTION_LABEL: Record<string, string> = {
+  would_open: "start exchange", in_progress: "exchange in progress",
+  operator_only: "operator only", excluded: "skipped (guarded)",
+  already_handled: "already handled",
+};
+
+export default function MakeRightTab({ accountId }: { accountId: string | null }) {
+  const { current: employee } = useEmployee();
+  const ctx = { accountId: accountId ?? undefined, employeeId: employee?.id };
+
+  const [form, setForm] = useState<Cfg>({});
+  const [loaded, setLoaded] = useState(false);
+  const [preview, setPreview] = useState<PreviewResp | null>(null);
+  const [busy, setBusy] = useState<"" | "save" | "preview" | "run">("");
+  const [error, setError] = useState<string | null>(null);
+  const [okMsg, setOkMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!accountId) return;
+    setLoaded(false); setPreview(null); setError(null); setOkMsg(null);
+    relay.get<{ config: Cfg; defaults: Cfg }>(
+      `/admin/make-right-config?account_id=${encodeURIComponent(accountId)}`, ctx)
+      .then((r) => { setForm({ ...r.defaults, ...r.config }); setLoaded(true); })
+      .catch((e) => { setError((e as Error)?.message || "Load failed"); setLoaded(true); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId]);
+
+  const set = (patch: Partial<Cfg>) => setForm((f) => ({ ...f, ...patch }));
+  const dollars = (c?: number) => Math.round(((c ?? 0) / 100) * 100) / 100;
+  const cents = (d: number) => Math.round(d * 100);
+
+  async function save() {
+    if (!accountId) { setError("Pick an account first."); return; }
+    setError(null); setOkMsg(null); setBusy("save");
+    try {
+      await relay.put("/admin/make-right-config", { account_id: accountId, config: form }, ctx);
+      setOkMsg("Saved ✓");
+    } catch (e) { setError((e as Error)?.message || "Save failed"); }
+    finally { setBusy(""); }
+  }
+
+  async function runPreview() {
+    if (!accountId) { setError("Pick an account first."); return; }
+    setError(null); setOkMsg(null); setBusy("preview");
+    try {
+      setPreview(await relay.post<PreviewResp>(
+        "/admin/make-right-preview", { account_id: accountId }, ctx));
+    } catch (e) { setError((e as Error)?.message || "Preview failed"); }
+    finally { setBusy(""); }
+  }
+
+  async function runNow() {
+    if (!accountId) { setError("Pick an account first."); return; }
+    setError(null); setOkMsg(null);
+    if (!form.enabled || !form.auto_send) {
+      setError("Turn on BOTH Enabled and Auto-send (and Save) before a real run — otherwise nothing sends.");
+      return;
+    }
+    setBusy("run");
+    let n = 0;
+    try {
+      const pv = await relay.post<PreviewResp>("/admin/make-right-preview", { account_id: accountId }, ctx);
+      setPreview(pv); n = pv.would_open ?? 0;
+    } catch (e) { setBusy(""); setError((e as Error)?.message || "Couldn't check incidents"); return; }
+    if (n === 0) { setBusy(""); setOkMsg("No new make-rights to send right now — nothing queued."); return; }
+    if (!window.confirm(
+      `Send a real apology + free gift to ${n} fan(s) who were wrongly charged?\n\n` +
+      `This sends real DMs and free content, and flags any refunds for you to action in OF.`)) {
+      setBusy(""); return;
+    }
+    try {
+      const resp = await relay.post<{ enqueued_job_id: number }>(
+        "/admin/automation/enqueue",
+        { account_id: accountId, kind: "make_right", payload: {} }, ctx);
+      setOkMsg(`Queued (job #${resp.enqueued_job_id}) — sends within ~30s.`);
+    } catch (e) { setError((e as Error)?.message || "Run failed"); }
+    finally { setBusy(""); }
+  }
+
+  if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
+  if (!loaded) return <div className="text-sm text-fg-dim">Loading…</div>;
+
+  const enabled = !!form.enabled;
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-sm font-medium text-fg">🤝 Make It Right (the safety net)</h3>
+        <p className="text-xs text-fg-dim leading-relaxed mt-1">
+          Catches when a fan got the wrong outcome — above all, <b>charged twice for the
+          same content</b> — and makes him whole: a warm apology + a few <b>free, unseen</b>
+          pieces from your tip library, valued at least what he was over-charged. It fires
+          <b> up to twice per fan</b>, then hands him to you. <b>Refunds are flagged for you</b>,
+          never moved automatically. Ships off — nothing sends until you tick
+          <b> Enabled</b> + <b>Auto-send</b>. <b>Preview</b> first to see who&apos;d get what.
+        </p>
+      </div>
+
+      <Card className="p-4 space-y-4 max-w-2xl">
+        <div className="flex flex-wrap items-center gap-5">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]"
+              checked={enabled} onChange={(e) => set({ enabled: e.target.checked })} />
+            <span className="text-sm">{enabled ? "Enabled" : "Disabled"}</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]"
+              checked={!!form.auto_send} onChange={(e) => set({ auto_send: e.target.checked })} />
+            <span className="text-sm">Auto-send <span className="text-[11px] text-fg-dim/70">(off = preview only)</span></span>
+          </label>
+        </div>
+
+        <fieldset className="space-y-4" style={{ opacity: enabled ? 1 : 0.55 }}>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <NumField label="Look back" hint="days" value={form.lookback_days ?? 30} min={1} max={365}
+              onChange={(n) => set({ lookback_days: n })} suffix="d" />
+            <NumField label="Max per fan" hint="then operator" value={form.per_fan_cap ?? 2} min={1} max={10}
+              onChange={(n) => set({ per_fan_cap: n })} />
+            <NumField label="Free pieces min" value={form.gift_min_count ?? 2} min={1} max={20}
+              onChange={(n) => set({ gift_min_count: n })} />
+            <NumField label="Free pieces max" value={form.gift_max_count ?? 4} min={1} max={20}
+              onChange={(n) => set({ gift_max_count: n })} />
+          </div>
+          <div className="flex flex-wrap gap-4 items-end">
+            <label className="flex items-center gap-2 cursor-pointer pb-1.5">
+              <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]"
+                checked={form.gift_value_match ?? true}
+                onChange={(e) => set({ gift_value_match: e.target.checked })} />
+              <span className="text-sm">Match the over-charge</span>
+            </label>
+            <NumField label="Piece value" hint="for the match math" value={dollars(form.gift_piece_value_cents ?? 600)}
+              min={0.01} max={1000} step={0.01} suffix="$"
+              onChange={(n) => set({ gift_piece_value_cents: cents(n) })} />
+            <NumField label="Skip if messaged within" hint="contact-guard" value={form.guard_hours ?? 12} min={0} max={8760}
+              onChange={(n) => set({ guard_hours: n })} suffix="h" />
+            <label className="flex items-center gap-2 cursor-pointer pb-1.5">
+              <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]"
+                checked={form.flag_refund ?? true}
+                onChange={(e) => set({ flag_refund: e.target.checked })} />
+              <span className="text-sm">Flag refunds for me</span>
+            </label>
+          </div>
+          <label className="space-y-1 block max-w-md">
+            <div className="text-xs text-fg-dim">Gift tier <span className="opacity-60">(a tip-reward tier name, blank = auto)</span></div>
+            <Input value={form.gift_tier ?? ""} placeholder="e.g. basic"
+              onChange={(e) => set({ gift_tier: e.target.value })} />
+          </label>
+          <label className="space-y-1 block max-w-md">
+            <div className="text-xs text-fg-dim">Apology caption override <span className="opacity-60">(blank = warm auto text)</span></div>
+            <Input value={form.apology_caption ?? ""} placeholder="on me, so sorry babe 💕"
+              onChange={(e) => set({ apology_caption: e.target.value })} />
+          </label>
+
+          <div className="border-t border-border/60 pt-3 space-y-3">
+            <div className="text-xs font-medium text-fg">The exchange <span className="text-fg-dim/70 font-normal">— apology → free pieces (on his replies) → a PPV → close</span></div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <NumField label="Free pieces" hint="before the PPV" value={form.free_steps ?? 3} min={0} max={10}
+                onChange={(n) => set({ free_steps: n })} />
+              <NumField label="Pieces per step" value={form.gift_pieces_per_step ?? 1} min={1} max={10}
+                onChange={(n) => set({ gift_pieces_per_step: n })} />
+              <NumField label="Nudge after" hint="silent hrs" value={form.nudge_hours ?? 24} min={1} max={8760}
+                onChange={(n) => set({ nudge_hours: n })} suffix="h" />
+              <NumField label="Close after" hint="silent hrs" value={form.close_hours ?? 48} min={1} max={8760}
+                onChange={(n) => set({ close_hours: n })} suffix="h" />
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]"
+                checked={form.open_with_gift ?? true}
+                onChange={(e) => set({ open_with_gift: e.target.checked })} />
+              <span className="text-sm">Send the first free piece with the apology</span>
+            </label>
+            <div className="flex flex-wrap gap-4 items-end">
+              <label className="space-y-1 block">
+                <div className="text-xs text-fg-dim">PPV folder <span className="opacity-60">(tip-library folder; blank = no PPV)</span></div>
+                <Input value={form.ppv_folder ?? ""} placeholder="e.g. premium"
+                  onChange={(e) => set({ ppv_folder: e.target.value })} />
+              </label>
+              <NumField label="PPV price" value={dollars(form.ppv_price_cents ?? 1500)} min={0} max={10000} step={0.01} suffix="$"
+                onChange={(n) => set({ ppv_price_cents: cents(n) })} />
+            </div>
+            <label className="space-y-1 block max-w-md">
+              <div className="text-xs text-fg-dim">PPV tease caption <span className="opacity-60">(blank = built-in)</span></div>
+              <Input value={form.ppv_caption ?? ""} placeholder="now that we're good 😌 unlock this? 😏"
+                onChange={(e) => set({ ppv_caption: e.target.value })} />
+            </label>
+          </div>
+        </fieldset>
+
+        <div className="flex items-center gap-2 border-t border-border pt-3 flex-wrap md:flex-nowrap">
+          <Button className="shrink-0" size="sm" variant="secondary" disabled={busy !== ""} onClick={save}>
+            {busy === "save" ? "Saving…" : "Save"}
+          </Button>
+          <Button className="shrink-0" size="sm" variant="secondary" disabled={busy !== ""} onClick={runPreview}>
+            {busy === "preview" ? "Checking…" : "Preview (dry run)"}
+          </Button>
+          <Button className="shrink-0" size="sm" variant="primary" disabled={busy !== ""} onClick={runNow}>
+            {busy === "run" ? "Queuing…" : "Run now"}
+          </Button>
+          {error && <span className="text-err text-[11px] basis-full md:basis-auto">{error}</span>}
+          {okMsg && <span className="text-ok text-[11px] basis-full md:basis-auto">{okMsg}</span>}
+        </div>
+      </Card>
+
+      {preview && (
+        <Card className="p-4 space-y-2">
+          <div className="text-sm">
+            {preview.candidates === 0 ? (
+              <span className="text-fg-dim">No wrong-content incidents found in the last {form.lookback_days ?? 30} days. 🎉</span>
+            ) : (
+              <span className="text-fg">
+                <b>{preview.candidates}</b> incident(s): <b>{preview.would_open ?? 0}</b> would start an exchange,
+                {" "}<b>{preview.operator_only ?? 0}</b> operator-only,
+                {" "}{preview.in_progress ?? 0} already in progress,
+                {" "}{preview.excluded ?? 0} skipped, {preview.already_handled ?? 0} already handled.
+                {preview.preview_only_reason && (
+                  <span className="text-fg-dim"> (preview-only: {preview.preview_only_reason})</span>
+                )}
+              </span>
+            )}
+          </div>
+          {(preview.preview ?? []).length > 0 && (
+            <ul className="space-y-2">
+              {preview.preview.map((r) => (
+                <li key={r.incident_key} className="text-sm border border-border rounded-lg p-2.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-fg-dim text-xs">{r.name || r.fan_id}</span>
+                    <span className="text-[10px] uppercase tracking-wide bg-accent/10 border border-accent/30 rounded px-1.5 py-0.5">
+                      {ACTION_LABEL[r.action] || r.action}{r.reason ? ` · ${r.reason}` : ""}
+                    </span>
+                    {typeof r.wrongful_cents === "number" && r.wrongful_cents > 0 && (
+                      <span className="text-[11px] text-fg-dim">over-charged ${(r.wrongful_cents / 100).toFixed(2)}</span>
+                    )}
+                    {r.refund_flagged && <span className="text-[11px] text-amber-500">refund flagged</span>}
+                    {r.gift_media_ids && r.gift_media_ids.length > 0 && (
+                      <span className="text-[11px] text-fg-dim">gift ×{r.gift_media_ids.length}</span>
+                    )}
+                  </div>
+                  {r.apology && (
+                    <div className="mt-1.5 bg-accent/10 border border-accent/30 rounded-2xl px-3 py-1 inline-block whitespace-pre-line">
+                      {r.apology}
+                    </div>
+                  )}
+                  {r.steps && r.steps.length > 0 && (
+                    <div className="mt-1 text-[11px] text-fg-dim/70">
+                      exchange: {r.steps.map((s) => s.replace("apology_gift", "apology+gift")).join(" → ")}
+                      {typeof r.step === "number" && r.step > 0 ? ` (at step ${r.step})` : ""}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}

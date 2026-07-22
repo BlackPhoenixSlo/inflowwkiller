@@ -22,6 +22,9 @@ export type AiStatus = {
   engine: "ai_chatter" | "ai_upseller" | "none";
   graduated: string | null; // of_ai_chat handed him off (e.g. "spent")
   ladder: { status: string; rung: number };
+  /** The language she writes to this fan (resolved), + where it came from. */
+  language: string;
+  language_source: string;
   open_ask: { price_cents: number | null; at: string | null; by: "ai" | "human" } | null;
   last_paid_at: string | null;
   force_ask: boolean;

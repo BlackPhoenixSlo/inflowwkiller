@@ -45,6 +45,12 @@ TIME_SLOTS: tuple[str, ...] = (
 PURPOSES: tuple[str, ...] = (
     "gen_info", "of_ai_chat", "send_welcome", "send_followup", "deep_convo",
 )
+# Languages the account can be set to. The code is the routing/guard key; the label is
+# for the editor dropdown. Sourced from the language layer so there's one list.
+from automations._language import KNOWN_LANGS, LANG_DISPLAY, norm_lang  # noqa: E402
+LANGUAGES: tuple[dict, ...] = tuple(
+    {"code": c, "label": LANG_DISPLAY.get(c, c)} for c in KNOWN_LANGS
+)
 
 
 def _model_options() -> list[str]:
@@ -92,6 +98,7 @@ def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
         "persona": row.persona if row else None,
         "welcome_rules": row.welcome_rules if row else None,
         "location": row.location if row else None,
+        "language": (norm_lang(row.language) or "en") if row else "en",
         "utc_offset": row.utc_offset if row else 0,
         "daily_cost_cap_cents": row.daily_cost_cap_cents if row else 100,
         "model": row.model if row else None,
@@ -116,6 +123,7 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         "slots": list(TIME_SLOTS),
         "model_options": _model_options(),
         "purposes": list(PURPOSES),
+        "languages": list(LANGUAGES),
     }
 
 
@@ -137,7 +145,17 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     location = _clean_text(cfg.get("location"), "location")
     model = _validate_model(cfg.get("model"), "model", allowed)
 
-    # utc_offset — whole hours (e.g. Los Angeles −8); sane range, default 0.
+    # language: an ISO 639-1 code from the known set; anything else (incl. "en" or
+    # unset) stores NULL so the code default ("en") applies.
+    lang_raw = cfg.get("language")
+    language = norm_lang(lang_raw)
+    if lang_raw and not language:
+        raise HTTPException(422, f"language {lang_raw!r} is not a supported code")
+    language = language or None
+    if language == "en":
+        language = None                      # NULL == en; keeps the column sparse
+
+    # utc_offset — whole hours (e.g. Vancouver −6); sane range, default 0.
     utc_raw = cfg.get("utc_offset", 0)
     if isinstance(utc_raw, bool) or not isinstance(utc_raw, (int, float)):
         raise HTTPException(422, "utc_offset must be a whole number of hours")
@@ -194,6 +212,7 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
         "persona": persona,
         "welcome_rules": welcome_rules,
         "location": location,
+        "language": language,
         "utc_offset": utc_offset,
         "daily_cost_cap_cents": cap,
         "model": model,

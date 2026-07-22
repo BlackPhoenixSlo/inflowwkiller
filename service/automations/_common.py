@@ -573,7 +573,11 @@ def is_qualifying_inbound(text: str | None) -> bool:
     if not is_substantive_msg(text):
         return False
     stripped = _EMOJI_STRIP_RE.sub("", text or "")
-    tokens = [t for t in re.findall(r"[a-z0-9']+", stripped.lower()) if t]
+    # Latin-accented letters (À-ɏ) join the class so accented words tokenize
+    # WHOLE — old [a-z0-9'] shattered "cuánto"→['cu','nto'] (inflating the token count)
+    # and "sí"→['s']. For pure-ASCII English input the added range never matches, so
+    # English tokenization is byte-identical (asserted in test_guard_unicode_hygiene).
+    tokens = [t for t in re.findall(r"[0-9a-zÀ-ɏ']+", stripped.lower()) if t]
     if not tokens:
         return False
     if len(tokens) == 1 and tokens[0] in _LOW_INFO_TOKENS:
@@ -1354,6 +1358,48 @@ def build_facts_note(facts: dict, max_len: int = _FACTS_NOTE_MAX,
     return "\n".join(out)[:max_len]
 
 
+# ── R2: the APP-ONLY rich note ───────────────────────────────────────
+# The OF note is capped at 200 (build_facts_note above, pushed by apply_profiles /
+# of_ai_chat / deep_convo). Our UI can show much more. build_rich_note is a SEPARATE,
+# app-only projection that reads the STORED gen_info bullet_points (the rich text that
+# actually carries the "Important:" section — the push_to_sheets rebuild drops it) plus
+# the short_bio, and caps by the fan's spend tier (higher spend ⇒ longer). It is NEVER
+# pushed to OnlyFans and never fed to build_facts_note. Drawer + stats table only.
+_RICH_NOTE_TIERS = (        # (min lifetime cents, char cap)
+    (50000, 3000),          # whale ≥ $500
+    (5000, 1500),           # spender ≥ $50
+    (1, 800),               # buyer > $0
+    (0, 400),               # free $0
+)
+
+
+def rich_note_cap(lifetime_spend_cents: int) -> int:
+    """The app-side rich-note length cap for a fan, by spend tier (higher = longer)."""
+    cents = int(lifetime_spend_cents or 0)
+    for floor, cap in _RICH_NOTE_TIERS:
+        if cents >= floor:
+            return cap
+    return _RICH_NOTE_TIERS[-1][1]
+
+
+def build_rich_note(bullet_points: str | None, short_bio: str = "",
+                    lifetime_spend_cents: int = 0) -> str:
+    """The app-only rich note: the STORED bullet_points (kept whole — it already holds
+    Recent/Intr/Important/Job/Rel/Kinks from gen_info) followed by the short_bio, hard-cut
+    at the fan's spend-tier cap. '' when nothing is stored. The structured facts
+    (employer/pets/…) are shown as their own cells in the drawer, so they're not
+    duplicated here."""
+    cap = rich_note_cap(lifetime_spend_cents)
+    parts = []
+    bp = (bullet_points or "").strip()
+    if bp:
+        parts.append(bp)
+    bio = (short_bio or "").strip()
+    if bio and bio not in bp:
+        parts.append(bio)
+    return "\n\n".join(parts)[:cap]
+
+
 # ── Live nickname + note push (V1 build_structured_nickname / apply_nickname) ──
 _NICK_MAX = 70
 
@@ -1450,7 +1496,9 @@ def name_token(s: str | None, *, last: bool = False) -> str:
     raw = words[-1] if last else words[0]
     if not raw[:1].isupper():                 # real names are Capitalized; handles aren't
         return ""
-    w = re.sub(r"[^A-Za-z]", "", raw)
+    # Keep letters only, but UNICODE-correct: str.isalpha() preserves accented names
+    # (José, Ángel, Muñoz, Nicolás) that the old [^A-Za-z] strip mangled to Jos/ngel/Muoz.
+    w = "".join(ch for ch in raw if ch.isalpha())
     return w if len(w) >= 2 else ""
 
 

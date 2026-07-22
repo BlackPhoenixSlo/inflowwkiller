@@ -328,6 +328,8 @@ export async function applyAiFolders(
 export interface VaultDispute {
   media_id: number;
   kind: string;
+  /** Poster-frame count for a video (0 for a photo). Drives the hover-scrub. */
+  frame_count: number;
   codes: string[];
   reasons: string[];
   description: string;
@@ -723,4 +725,12 @@ export function mirrorThumbSrc(accountId: string, mediaId: number): string {
  *  waistband or genitalia (the exact crop that misled the vision model). */
 export function mirrorFullSrc(accountId: string, mediaId: number): string {
   return `/admin/vault-ai/image?account_id=${encodeURIComponent(accountId)}&media_id=${mediaId}`;
+}
+
+/** One of a video's poster frames (OF's own pre-extracted stills, media-id keyed
+ *  and permanent — the same frames the chat VaultPicker slideshows). Used to
+ *  hover-scrub a clip in the review UI: a video cannot be judged from a single
+ *  still, so the operator drags across frame 0 → N-1 to see the whole thing. */
+export function mirrorPosterSrc(accountId: string, mediaId: number, i: number): string {
+  return `/admin/vault-ai/poster?account_id=${encodeURIComponent(accountId)}&media_id=${mediaId}&i=${i}`;
 }

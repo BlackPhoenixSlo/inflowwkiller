@@ -2223,6 +2223,7 @@ class OFClient:
                     "send_with": [vault_id],
                     "upload_key": None,
                     "etag": md5_hex,
+                    "md5": md5_hex,
                     "size": size,
                     "filename": filename,
                     "deduped": True,
@@ -2284,6 +2285,7 @@ class OFClient:
                 "send_with": None,
                 "upload_key": key,
                 "etag": etag,
+                "md5": md5_hex,
                 "size": size,
                 "filename": filename,
                 "deduped": False,
@@ -2310,6 +2312,13 @@ class OFClient:
             "send_with": [send_with],
             "upload_key": key,
             "etag": etag,
+            # md5 of the *source bytes we uploaded* + size = the key OF's vault
+            # dedupe indexes on (GET /vault/media/hash). After the story finishes
+            # transcoding, vault_media_lookup_hash(md5, size) resolves the fresh
+            # vault item OF filed from this upload — i.e. the story dupe. It does
+            # NOT collide with the source vault item (whose stored master has a
+            # different md5), so it's a safe handle for later hide-cleanup.
+            "md5": md5_hex,
             "size": size,
             "filename": filename,
             "deduped": False,
@@ -2421,32 +2430,44 @@ class OFClient:
                    watermark_text: str | None = None,
                    caption: str | None = None,
                    mention: str | None = None,
-                   question: str | None = None) -> Any:
+                   question: str | None = None,
+                   return_upload: bool = False) -> Any:
         """Upload a local file and publish it as a story in one call.
 
         Forces the fresh-upload path (check_dedupe=False): /stories only
         accepts a convert claim, and a dedupe hit returns a bare vault id
-        that stories rejects."""
+        that stories rejects.
+
+        `return_upload=True` returns `{"story": <resp>, "upload": {md5, size}}`
+        instead of the bare story dict, so the caller can later find and hide
+        the vault dupe this fresh upload creates (see upload_media's `md5`)."""
         up = self.upload_media(
             file_path, content_type=content_type,
             check_dedupe=False, watermark_text=watermark_text,
         )
         if not up.get("ready") or not up.get("send_with"):
             raise OFAPIError(f"story media not ready: {up.get('note')}")
-        return self.create_story(
+        story = self.create_story(
             up["send_with"], caption=caption, mention=mention, question=question,
         )
+        if return_upload:
+            return {"story": story, "upload": {"md5": up.get("md5"), "size": up.get("size")}}
+        return story
 
     def post_story_from_url(self, media_url: str, *,
                             content_type: str | None = None,
                             watermark_text: str | None = None,
                             caption: str | None = None,
                             mention: str | None = None,
-                            question: str | None = None) -> Any:
+                            question: str | None = None,
+                            return_upload: bool = False) -> Any:
         """Download an image (vault CDN url or any image url) and publish it
         as a story. This is the "post from vault / from CDN" path: a vault
         item's `files.full.url` (or a thumbs/cdn url) is fetched, re-uploaded
-        through OF's convert pipeline, then posted."""
+        through OF's convert pipeline, then posted.
+
+        `return_upload=True` bubbles the `{story, upload:{md5,size}}` shape up
+        from post_story (used by auto_stories to hide the re-uploaded dupe)."""
         import tempfile, os, mimetypes
         r = self._proxy_retry(
             lambda: self.http.get(media_url, timeout=max(self.timeout_s, 60)),
@@ -2468,6 +2489,7 @@ class OFClient:
             return self.post_story(
                 tmp_path, content_type=ct, watermark_text=watermark_text,
                 caption=caption, mention=mention, question=question,
+                return_upload=return_upload,
             )
         finally:
             if tmp_path:

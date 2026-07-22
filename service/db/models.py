@@ -275,11 +275,22 @@ class Fan(Base):
     fetishes: Mapped[str | None] = mapped_column(Text)
     # JSON array of {date, event}
     recent_events: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # DATED timeline, additive/deduped: JSON array [{date, event}] built by gen_info
+    # from the real message timestamps. Read by NONE of the six recent_events readers,
+    # so the flat string-array shape (and every reader) is left unchanged. NULL == none.
+    recent_events_timeline: Mapped[str | None] = mapped_column(Text)
     self_description: Mapped[str | None] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
     likes_boobs: Mapped[bool] = mapped_column(Boolean, default=False)
     likes_ass: Mapped[bool] = mapped_column(Boolean, default=False)
     timezone: Mapped[str | None] = mapped_column(String)
+    # ISO 639-1 language for THIS fan (per-fan override / detection seam). NULL means
+    # "use the account default" (resolve_language). language_source is 'manual' when an
+    # operator set it (manual always wins over any AI detection). Both nullable — the
+    # per-fan UI + gen_info detection ship LATER; the columns exist now so resolve_language
+    # and the PATCH guard have a coherent target (no second migration when per-fan lands).
+    language: Mapped[str | None] = mapped_column(String)
+    language_source: Mapped[str | None] = mapped_column(String)
 
     # ── §2.4 Extended Grok-extracted facts ───────────────────
     occupation: Mapped[str | None] = mapped_column(Text)
@@ -1229,6 +1240,12 @@ class AccountAiConfig(Base):
     # the revenue drop. See service/automations/rhythm.py:local_now.
     timezone: Mapped[str | None] = mapped_column(String)
     location: Mapped[str | None] = mapped_column(String)
+    # ISO 639-1 language this creator writes in (en/es/sl/…). NULL == "en". Gates BOTH
+    # the output language of every conversational prompt AND which guard vocabulary
+    # runs (English-only guards would mangle Spanish, and vice-versa — see
+    # resolve_language + the Spanish guard layer). Nullable, no server_default: NULL is
+    # treated as "en" in code, so init_db materializes it on prod with zero risk.
+    language: Mapped[str | None] = mapped_column(String)
     # JSON dict {morning_1, morning_2, afternoon_1, afternoon_2, evening, night}
     time_activities_json: Mapped[str | None] = mapped_column(Text)
     # Parallel per-slot vault image IDs, same 6 keys → media_id (int). When set,
@@ -1310,6 +1327,11 @@ class AccountAiConfig(Base):
     # master off, suggest-only; nothing describes/sends until a creator enables
     # it). Own column to avoid the nudge/webhook shallow-merge collision.
     vault_ai_config_json: Mapped[str | None] = mapped_column(Text)
+    # make_right (Resolution Agent): per-account config for the "detect a wrong-content
+    # incident (headline: charged twice for the same content) and make it right"
+    # safety net. Absent/NULL → make_right's built-in defaults (DISABLED + preview-only).
+    # Own column to avoid the nudge/webhook shallow-merge collision.
+    make_right_config_json: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = _ts_now()
 
 
@@ -2470,3 +2492,33 @@ class PendingOffer(Base):
     item_id: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = _ts_now()
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ResolutionLog(Base):
+    """make_right (Resolution Agent) ledger — one row per detected wrong-content
+    incident (headline: a fan charged twice for the same content). `incident_key`
+    is the idempotency key (unique per account); the "up to twice per fan" cap is a
+    COUNT of status='resolved' rows for the fan. Schema mirrors the
+    20260721_0000_resolution_log migration exactly."""
+    __tablename__ = "resolution_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    fan_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    incident_key: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=_now, server_default=text("CURRENT_TIMESTAMP")
+    )
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, server_default=text("'detected'"), default="detected"
+    )
+    remediation_json: Mapped[str | None] = mapped_column(Text)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "incident_key", name="uq_resolution_incident"),
+        Index("ix_resolution_fan", "account_id", "fan_id", "status"),
+    )

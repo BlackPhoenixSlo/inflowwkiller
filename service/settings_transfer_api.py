@@ -82,7 +82,7 @@ _BACKUP_KEEP = 20
 # export test asserts this list against AccountAiConfig.__table__.columns so a
 # future column can't silently fall out of the export.
 CONFIG_SCALAR_COLS = ("persona", "welcome_rules", "utc_offset", "timezone", "location",
-                      "daily_cost_cap_cents", "model")
+                      "language", "daily_cost_cap_cents", "model")
 CONFIG_JSON_COLS = ("time_activities_json", "time_images_json", "welcome_pinned_json",
                     "model_by_purpose", "nudge_config_json", "webhook_config_json",
                     "autoreply_config_json", "style_config_json", "tip_reward_config_json",

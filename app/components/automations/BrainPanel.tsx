@@ -207,6 +207,7 @@ export default function BrainPanel() {
   const slots = cfgQ.data?.slots ?? [];
   const modelOptions = cfgQ.data?.model_options ?? [];
   const purposes = cfgQ.data?.purposes ?? [];
+  const languages = cfgQ.data?.languages ?? [{ code: "en", label: "English" }];
 
   // Resolve the SAVED slot image ids (and the two preview image ids) back to
   // VaultMedia so the slots/preview render real thumbnails on load — mediaCache
@@ -506,8 +507,8 @@ export default function BrainPanel() {
             />
           </label>
 
-          {/* Location / offset / cap */}
-          <div className="grid gap-3 sm:grid-cols-3">
+          {/* Location / language / offset / cap */}
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <label className="block space-y-1">
               <span className="text-[11px] uppercase tracking-wide text-fg-dim">Location</span>
               <Input
@@ -515,6 +516,19 @@ export default function BrainPanel() {
                 onChange={(e) => set("location", e.target.value)}
                 placeholder="e.g. Vancouver Island"
               />
+            </label>
+            <label className="block space-y-1">
+              <span className="text-[11px] uppercase tracking-wide text-fg-dim">Language</span>
+              <select
+                value={form.language ?? "en"}
+                onChange={(e) => set("language", e.target.value)}
+                className={selectCls}
+                title="The language she writes in AND which safety-word list runs. Changing it re-generates each fan's saved lines on their next profile pass."
+              >
+                {languages.map((l) => (
+                  <option key={l.code} value={l.code}>{l.label}</option>
+                ))}
+              </select>
             </label>
             <label className="block space-y-1">
               <span className="text-[11px] uppercase tracking-wide text-fg-dim">UTC offset (h)</span>

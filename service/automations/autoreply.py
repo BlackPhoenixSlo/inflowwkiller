@@ -44,6 +44,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax
 import llm_client
+from . import _language
 from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
@@ -147,7 +148,8 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
                     nonnative_on: bool = False,
                     content_ask: bool = False,
                     tip_ask_block: str = "",
-                    painful_on: bool = True) -> list[dict]:
+                    painful_on: bool = True,
+                    lang: str = "en") -> list[dict]:
     facts = []
     nm = resolve_fan_name(f)
     if nm:
@@ -206,6 +208,7 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
         f"{NONNATIVE_REGISTER + chr(10) + chr(10) if nonnative_on else ''}"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
+        f"{_language.output_language_directive(lang)}"
     )
     user = (
         f"What you know about him:\n{facts_block}\n\n"
@@ -377,6 +380,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typing_wpm = await load_typing_wpm(account_id)
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
+    account_lang = await _language.load_account_language(account_id)  # output language + guards
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
@@ -507,9 +511,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # He spoke last (the trigger) → his ask is the latest inbound. Tip-ask only
         # when the closer doesn't own the account (double-pitch guard above).
         last_in = next((b for d, b in reversed(history) if d == "in"), "")
-        content_ask = (not ai_chatter_owns) and is_content_ask(last_in)
+        content_ask = (not ai_chatter_owns) and _language.is_content_ask(last_in, account_lang)
         msgs = _build_messages(persona, f, history, style, style_on=style_on,
-                               nonnative_on=nonnative_on,
+                               nonnative_on=nonnative_on, lang=account_lang,
                                content_ask=content_ask, tip_ask_block=tip_ask_block,
                                painful_on=painful_on)
         try:

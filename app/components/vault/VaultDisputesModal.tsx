@@ -24,11 +24,12 @@
  * No OF writes. Nothing here sends anything.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
   mirrorFullSrc,
+  mirrorPosterSrc,
   resolveDispute,
   useVaultDisputes,
   type VaultDispute,
@@ -58,10 +59,74 @@ function ProposalLines({ values }: { values: Record<string, unknown> }) {
         <li key={k} className="text-[11px] font-mono text-fg-dim">
           {REGION_LABEL[k] ?? k}
           {" → "}
-          <span className="text-fg">{v === null ? "—" : String(v)}</span>
+          <span className="text-fg">
+            {v === null ? "—" : Array.isArray(v) ? (v.length ? v.join(", ") : "none") : String(v)}
+          </span>
         </li>
       ))}
     </ul>
+  );
+}
+
+/** A photo shows one full frame. A video CANNOT be judged from one still — the
+ *  two vision passes each sample different frames of it, which is half of why
+ *  they "disagree" — so a video is marked and hover-scrubs its poster frames:
+ *  move the cursor left→right across it to run frame 1→N. Reverts to frame 1 on
+ *  leave. Clicking still opens the lightbox. */
+function CardMedia({
+  accountId,
+  d,
+  onZoom,
+}: {
+  accountId: string;
+  d: VaultDispute;
+  onZoom: () => void;
+}) {
+  const isVideo = d.kind === "video" && d.frame_count >= 2;
+  const [frame, setFrame] = useState(0);
+  const ref = useRef<HTMLDivElement>(null);
+
+  function scrub(e: React.MouseEvent) {
+    if (!isVideo || !ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    const f = Math.floor(((e.clientX - r.left) / r.width) * d.frame_count);
+    setFrame(Math.min(d.frame_count - 1, Math.max(0, f)));
+  }
+
+  const src = isVideo
+    ? mirrorPosterSrc(accountId, d.media_id, frame)
+    : mirrorFullSrc(accountId, d.media_id);
+
+  return (
+    <div
+      ref={ref}
+      onClick={onZoom}
+      onMouseMove={scrub}
+      onMouseLeave={() => setFrame(0)}
+      title={isVideo ? "Drag across to scrub · click to enlarge" : "Click to view full size"}
+      className="relative w-full h-56 bg-black/70 cursor-zoom-in overflow-hidden"
+    >
+      {/* Full FRAME, letterboxed — never the square crop. The whole point of a
+          correction is to judge what is on show, and the square hides the top
+          and bottom of a 3:4 portrait. */}
+      <img src={src} alt="" className="w-full h-full object-contain" draggable={false} />
+      {isVideo && (
+        <>
+          <span className="absolute top-1.5 left-1.5 rounded bg-black/70 px-1.5 py-px text-[10px] font-semibold tracking-wide text-white">
+            ▶ VIDEO
+          </span>
+          <span className="absolute bottom-2 right-1.5 rounded bg-black/70 px-1.5 py-px font-mono text-[10px] text-white/90">
+            {frame + 1}/{d.frame_count}
+          </span>
+          <div className="absolute inset-x-0 bottom-0 h-1 bg-white/20">
+            <div
+              className="h-full bg-sky-400/80"
+              style={{ width: `${((frame + 1) / d.frame_count) * 100}%` }}
+            />
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -96,16 +161,7 @@ function DisputeCard({
 
   return (
     <div className="rounded-lg border border-border bg-bg-soft overflow-hidden flex flex-col">
-      {/* Full FRAME, letterboxed — never the square crop. The whole point of a
-          correction is to judge what is on show, and the square hides the top
-          and bottom of a 3:4 portrait. Click to enlarge for detail. */}
-      <img
-        src={mirrorFullSrc(accountId, d.media_id)}
-        alt=""
-        onClick={() => setZoom(true)}
-        title="Click to view full size"
-        className="w-full h-56 object-contain bg-black/70 cursor-zoom-in"
-      />
+      <CardMedia accountId={accountId} d={d} onZoom={() => setZoom(true)} />
       {zoom && (
         <ImageLightbox accountId={accountId} mediaId={d.media_id} onClose={() => setZoom(false)} />
       )}
@@ -216,10 +272,11 @@ export default function VaultDisputesModal({
           <div className="min-w-0">
             <h2 className="text-sm font-semibold">Fix disagreements</h2>
             <p className="text-[11px] text-fg-dim">
-              Both vision passes looked at the same picture and cannot both be right, so
-              one of them is wrong here — and it is not always the same one. Pick the
-              reading that matches what you see. Your choice is locked: re-running the
-              flags will refresh everything except what you fixed.
+              The two vision passes contradict each other here, so at least one is wrong —
+              and it is not always the same one. Pick the reading that matches what you
+              see. A video shows one still by default: hover and drag across it to scrub
+              the whole clip, since the passes sample different frames. Your choice is
+              locked — re-running the flags refreshes everything except what you fixed.
             </p>
           </div>
           <button
