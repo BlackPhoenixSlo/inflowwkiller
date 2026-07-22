@@ -31,6 +31,7 @@ import asyncio
 import html
 import logging
 from typing import Any, Callable
+from urllib.parse import quote
 
 import vault_ai_brief
 import vault_scripts
@@ -374,10 +375,15 @@ MASS_CAPTION_BRIEF = (
 # ── the plan ─────────────────────────────────────────────────────────
 
 def _item_view(item: dict[str, Any]) -> dict[str, Any]:
-    """The slice of an item the review UI needs — no ai_fields_json blob."""
+    """The slice of an item the review UI needs — no ai_fields_json blob.
+
+    `account_id` rides along so the renderer can address the relay's own media
+    route for this item; OF's `thumb_url` is kept only as the fallback for a
+    pure plan built outside an account (see `_media_src`)."""
     fields = item.get("fields") or {}
     return {
         "media_id": item["media_id"],
+        "account_id": item.get("account_id") or "",
         "kind": item.get("kind") or "",
         "tier": item["why"]["tier"],
         "closes": _closes(item),
@@ -643,7 +649,8 @@ async def _load_items(account_id: str) -> list[dict[str, Any]]:
         if not fields:
             continue
         items.append({
-            "media_id": int(mid), "kind": kind, "duration_seconds": dur,
+            "media_id": int(mid), "account_id": account_id,
+            "kind": kind, "duration_seconds": dur,
             "fields": fields, "thumb_url": thumb or "",
             "description": (desc or vdesc or fields.get("description") or ""),
             "script_id": sid, "script_seq": seq,
@@ -807,11 +814,33 @@ _TIER_BADGE = {
 }
 
 
-def _thumb_html(item: dict[str, Any], href: str | None = None) -> str:
+def _media_src(item: dict[str, Any], base: str = "", *, full: bool = False) -> str:
+    """The `<img src>` for one item — the RELAY's own media route, not OF's url.
+
+    A vault item's `thumb_url` is a CloudFront signed url whose policy pins
+    `AWS:SourceIp` to the relay's IP and expires within a day, so it 403s in the
+    operator's browser and every tile renders blank. `/admin/vault-ai/{thumb,image}`
+    serves the permanent on-disk copy (re-fetching through the account's own
+    client on a miss), which is what the vault review UI already shows.
+
+    `base` prefixes an absolute origin for a page opened OUTSIDE the app (the
+    `_gen_ppv_week_preview` file lands on `file://`, where a root-relative path
+    resolves nowhere); "" keeps it same-origin for the in-app iframe/popup.
+    Falls back to the raw url for a pure plan carrying no account."""
+    aid = str(item.get("account_id") or "").strip()
+    mid = item.get("media_id")
+    if not (aid and mid):
+        return item.get("thumb_url") or ""
+    route = "image" if full else "thumb"
+    return (f"{base.rstrip('/')}/admin/vault-ai/{route}"
+            f"?account_id={quote(aid, safe='')}&media_id={int(mid)}")
+
+
+def _thumb_html(item: dict[str, Any], href: str | None = None, base: str = "") -> str:
     desc = html.escape((item.get("description") or "")[:140])
     tier = html.escape(item.get("tier") or "")
     star = " ⭐" if item.get("closes") else ""
-    url = html.escape(item.get("thumb_url") or "")
+    url = html.escape(_media_src(item, base))
     kind = "🎬" if item.get("kind") == "video" else "🖼"
     img = (f'<img src="{url}" loading="lazy" alt="" '
            f'onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
@@ -831,13 +860,14 @@ def _thumb_html(item: dict[str, Any], href: str | None = None) -> str:
     return fig
 
 
-def _pv_thumb_html(item: dict[str, Any], dn: int, k: int, free: bool) -> str:
+def _pv_thumb_html(item: dict[str, Any], dn: int, k: int, free: bool,
+                   base: str = "") -> str:
     """A larger, badged thumb inside a day modal — links to its own image zoom."""
     desc = html.escape((item.get("description") or "")[:200])
     tier = html.escape(item.get("tier") or "")
     kind = "🎬" if item.get("kind") == "video" else "🖼"
     star = " ⭐" if item.get("closes") else ""
-    url = html.escape(item.get("thumb_url") or "")
+    url = html.escape(_media_src(item, base))
     img = (f'<img src="{url}" loading="lazy" alt="" '
            f'onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
            if url else "")
@@ -851,16 +881,23 @@ def _pv_thumb_html(item: dict[str, Any], dn: int, k: int, free: bool) -> str:
     )
 
 
-def _img_modal_html(item: dict[str, Any], dn: int, k: int, free: bool) -> str:
-    """Full-size zoom for one picked media — closing returns to its day modal."""
+def _img_modal_html(item: dict[str, Any], dn: int, k: int, free: bool,
+                    base: str = "") -> str:
+    """Full-size zoom for one picked media — closing returns to its day modal.
+    Uses the aspect-preserving FULL frame (`/image`), not the square crop: the
+    operator is judging what he'll be sold, and the 300px centre-crop cuts the
+    top and bottom off a 3:4 portrait."""
     desc = html.escape((item.get("description") or "")[:300])
     tier = html.escape(item.get("tier") or "")
     kind = "🎬 video" if item.get("kind") == "video" else "🖼 photo"
     star = " · ⭐ closer" if item.get("closes") else ""
-    url = html.escape(item.get("thumb_url") or "")
+    url = html.escape(_media_src(item, base, full=True))
     tag = ('<span class="pvb free">FREE PREVIEW</span>' if free
            else '<span class="pvb lock">🔒 locked</span>')
-    big = (f'<img class="imbig" src="{url}" alt="" '
+    # lazy: the zoom lives in a closed `:target` modal, and a month page holds one
+    # per picked media — eager loading would fire hundreds of cold full-frame
+    # fetches through the OF client the moment the page opened.
+    big = (f'<img class="imbig" src="{url}" loading="lazy" alt="" '
            f'onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
            if url else "")
     return (
@@ -874,7 +911,7 @@ def _img_modal_html(item: dict[str, Any], dn: int, k: int, free: bool) -> str:
     )
 
 
-def _day_modal_html(day: dict[str, Any], dn: int, back: str) -> str:
+def _day_modal_html(day: dict[str, Any], dn: int, back: str, base: str = "") -> str:
     """The picked-content preview a calendar cell (or a day card) opens on click.
     Pure CSS ":target" — no scripts. Shows every media picked for the day, marks
     the free previews vs the locked payoff, and drills into a full-size zoom."""
@@ -882,11 +919,11 @@ def _day_modal_html(day: dict[str, Any], dn: int, back: str) -> str:
     prevset = set(day["preview_media_ids"])
     items = day["items"]
     grid = "".join(
-        _pv_thumb_html(it, dn, k, it["media_id"] in prevset)
+        _pv_thumb_html(it, dn, k, it["media_id"] in prevset, base)
         for k, it in enumerate(items)) or \
         '<div class="pv-empty">No content picked for this day.</div>'
     imgs = "".join(
-        _img_modal_html(it, dn, k, it["media_id"] in prevset)
+        _img_modal_html(it, dn, k, it["media_id"] in prevset, base)
         for k, it in enumerate(items))
 
     flags = []
@@ -935,7 +972,7 @@ def _chan_html(day: dict[str, Any]) -> str:
     return "".join(chips)
 
 
-def _day_card_html(day: dict[str, Any], dn: int) -> str:
+def _day_card_html(day: dict[str, Any], dn: int, base: str = "") -> str:
     colour = _TIER_BADGE.get(day["tier"], "#94a3b8")
     flags = []
     if day["thin"]:
@@ -956,7 +993,7 @@ def _day_card_html(day: dict[str, Any], dn: int) -> str:
                  if day["delivery"] != "free_post" else 'all free')
 
     # Every tile (and the "+N more") opens the day's picked-content preview.
-    thumbs = "".join(_thumb_html(i, href=f"#pv-d{dn}") for i in day["items"][:12])
+    thumbs = "".join(_thumb_html(i, f"#pv-d{dn}", base) for i in day["items"][:12])
     more = (f'<a class="more" href="#pv-d{dn}">+{day["size"] - 12} more</a>'
             if day["size"] > 12 else "")
     peek = (f'<a class="cardpeek" href="#pv-d{dn}">🔍 Preview picked content '
@@ -1142,15 +1179,19 @@ def _coverage_panel(cov: dict[str, Any]) -> str:
     </div><div class="note">Tiers: {tier_bar or '—'}</div>{warn}</div>"""
 
 
-def render_week_html(plan: dict[str, Any], *, title: str | None = None) -> str:
-    """One week as a self-contained page. Read-only — nothing is sent by viewing."""
+def render_week_html(plan: dict[str, Any], *, title: str | None = None,
+                     media_base: str = "") -> str:
+    """One week as a self-contained page. Read-only — nothing is sent by viewing.
+    `media_base` prefixes the relay origin on the media routes for a page viewed
+    outside the app (see `_media_src`); "" is right for the in-app preview."""
     account = plan.get("account_id", "?")
     smry = plan["summary"]
     title = title or f"Vault PPV week · {account}"
     days = plan["days"]
-    cards = "".join(_day_card_html(d, dn) for dn, d in enumerate(days))
+    cards = "".join(_day_card_html(d, dn, media_base) for dn, d in enumerate(days))
     # Picked-content preview modals (+ per-image zoom), pure CSS ":target".
-    modals = "".join(_day_modal_html(d, dn, "wtop") for dn, d in enumerate(days))
+    modals = "".join(_day_modal_html(d, dn, "wtop", media_base)
+                     for dn, d in enumerate(days))
 
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -1189,7 +1230,8 @@ def _cell_html(day: dict[str, Any], dn: int) -> str:
             f'<div class="cc">{icons}{f" · {n}📎" if n else ""}</div></a>')
 
 
-def render_month_html(plan: dict[str, Any], *, title: str | None = None) -> str:
+def render_month_html(plan: dict[str, Any], *, title: str | None = None,
+                      media_base: str = "") -> str:
     """A whole month — calendar overview (monthly), per-week arcs (weekly), and
     every day expanded with its channels + captions (daily). Self-contained,
     read-only. `build_month` fills the captions in-voice before this renders."""
@@ -1217,7 +1259,7 @@ def render_month_html(plan: dict[str, Any], *, title: str | None = None) -> str:
     sections = []
     for wp in weeks:
         wsm = wp["summary"]
-        cards = "".join(_day_card_html(d, dn_of[id(d)]) for d in wp["days"])
+        cards = "".join(_day_card_html(d, dn_of[id(d)], media_base) for d in wp["days"])
         sections.append(
             f'<section id="wk{wp["week_index"]}" class="wksec">'
             f'<h2>Week {wp["week_index"]} — {_money(wsm["price_low_cents"])}→'
@@ -1231,7 +1273,7 @@ def render_month_html(plan: dict[str, Any], *, title: str | None = None) -> str:
 
     # Picked-content preview modals (+ per-image zoom) for every day, pure CSS.
     modals = "".join(
-        _day_modal_html(d, dn_of[id(d)], "month")
+        _day_modal_html(d, dn_of[id(d)], "month", media_base)
         for wp in weeks for d in wp["days"])
 
     return f"""<!doctype html>

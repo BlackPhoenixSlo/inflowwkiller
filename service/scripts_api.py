@@ -582,6 +582,69 @@ async def generate_vault_ppv_week(
             "summary": plan["summary"], "coverage": coverage, "html": html}
 
 
+# ── PPV arc arming (the one place suggest-only is spent, on an explicit confirm)
+
+class _ArcApproveBody(BaseModel):
+    account_id: str
+    weeks: int = 1
+    use_llm: bool = False
+    combine: bool | None = None
+
+
+@router.post("/admin/vault-ai/ppv-week/approve")
+async def approve_vault_ppv_arc(body: _ArcApproveBody = Body(...)) -> dict[str, Any]:
+    """Arm the arc the operator just reviewed: book every day's drop as its own
+    future-dated job so the week runs itself, then stop when it runs out.
+
+    The plan is REBUILT here rather than accepted from the client — the browser
+    only ever received rendered HTML, and taking media ids and prices back from a
+    request body would make "what was approved" forgeable. Same account config and
+    same exclusivity rules as the preview, so what was read is what is armed."""
+    assert_account_owned(body.account_id)
+    import vault_arc
+    import vault_ppv_week as vw
+
+    async with get_session() as s:
+        row = await s.get(AccountAiConfig, body.account_id)
+    config = _effective_vault_ai(_load_vault_ai_stored(row))
+    if not config.get("enabled"):
+        raise HTTPException(409, "vault_ai_off")
+    weeks = max(1, min(int(body.weeks or 1), 4))
+    if body.combine is not None:
+        config.setdefault("ppv_week", {})["combine_feed_and_dm"] = bool(body.combine)
+
+    if weeks == 1:
+        plan = await vw.build_week(body.account_id, config=config,
+                                   use_llm=bool(body.use_llm))
+    else:
+        plan = await vw.build_month(body.account_id, weeks=weeks, config=config,
+                                    use_llm=bool(body.use_llm))
+
+    res = await vault_arc.approve(body.account_id, plan)
+    if res.get("status") == "refused":
+        raise HTTPException(409, res.get("reason") or "refused")
+    log.info("vault_arc_armed account=%s weeks=%d drops=%d",
+             body.account_id, weeks, len(res.get("drops") or []))
+    return res
+
+
+@router.get("/admin/vault-ai/ppv-week/status")
+async def vault_ppv_arc_status(account_id: str = Query(...)) -> dict[str, Any]:
+    """What the armed arc is doing — live job state per drop. Read-only."""
+    assert_account_owned(account_id)
+    import vault_arc
+    return await vault_arc.status(account_id)
+
+
+@router.post("/admin/vault-ai/ppv-week/cancel")
+async def cancel_vault_ppv_arc(account_id: str = Body(..., embed=True)) -> dict[str, Any]:
+    """Stand the arc down — every drop that has not fired yet is dropped. Drops
+    already sent are history and stay sent."""
+    assert_account_owned(account_id)
+    import vault_arc
+    return await vault_arc.cancel(account_id)
+
+
 # ── Catalog read (scripts + singles + per-item conversion stats) ─────────────
 
 def _item_out(it: CatalogItem, stats: dict[int, dict]) -> dict:
