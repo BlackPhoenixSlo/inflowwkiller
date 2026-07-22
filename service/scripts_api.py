@@ -46,7 +46,7 @@ from auth import assert_account_owned
 from db.engine import get_session
 from db.models import (
     AccountAiConfig, AutomationRule, CatalogItem, CatalogProgress, CatalogScript,
-    ContentOffer, Fan, Message,
+    ContentOffer, Fan, Message, created_at_text, parse_ts,
 )
 from automations import rhythm, script_packs
 from automations.ai_chatter import (
@@ -277,18 +277,31 @@ async def _outbound_hour_histogram(account_id: str,
 
     Local, not UTC: a US creator's 3am dip sits at 08:00 UTC, and a window derived
     in UTC would put her to sleep through her peak. Bounded scan (the derivation
-    only needs a shape, and it discards anything under 200 samples)."""
+    only needs a shape, and it discards anything under 200 samples).
+
+    Reads created_at as TEXT (created_at_text) and parses it here: the None-guard
+    below used to cover only a SQL NULL, but a created_at of '' is not NULL — it
+    made SQLAlchemy raise `Invalid isoformat string: ''` while materialising the
+    rows, i.e. before this loop ever ran, 500-ing the whole Rhythm view. A
+    histogram is a SHAPE; a handful of unreadable rows can simply be left out."""
     async with get_session() as s:
         rows = (await s.execute(
-            select(Message.created_at)
+            select(created_at_text())
             .where(Message.account_id == account_id, Message.direction == "out")
             .order_by(Message.created_at.desc())
             .limit(_HOUR_HIST_LIMIT))).scalars().all()
     counts: dict[int, int] = {h: 0 for h in range(24)}
-    for ts in rows:
+    bad = 0
+    for raw in rows:
+        ts = parse_ts(raw)
         if ts is None:
+            if raw is not None:
+                bad += 1            # unreadable, as opposed to simply absent
             continue
         counts[rhythm.local_now(ts, tz_offset_minutes).hour] += 1
+    if bad:
+        log.warning("rhythm histogram[%s]: skipped %d outbound row(s) with an "
+                    "unreadable created_at", account_id, bad)
     return counts
 
 

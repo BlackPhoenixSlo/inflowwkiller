@@ -235,10 +235,10 @@ export default function AutoreplyTab({ accountId }: { accountId: string | null }
           <div className="text-xs font-medium text-fg mb-2">Reply window (after he messages)</div>
           <div className="flex flex-wrap gap-4">
             <NumField label="Step in after (min)" hint="give the team this long first"
-              value={form.silence_min_minutes ?? 30} min={1} max={1440}
+              value={form.silence_min_minutes ?? 24} min={1} max={1440}
               onChange={(n) => set({ silence_min_minutes: n })} suffix="min" />
             <NumField label="…but not after (min)" hint="past this it's too stale"
-              value={form.silence_max_minutes ?? 180} min={2} max={10080}
+              value={form.silence_max_minutes ?? 1115} min={2} max={10080}
               onChange={(n) => set({ silence_max_minutes: n })} suffix="min" />
           </div>
         </div>
@@ -259,13 +259,13 @@ export default function AutoreplyTab({ accountId }: { accountId: string | null }
           <div className="text-xs font-medium text-fg mb-2">Only low spenders</div>
           <div className="flex flex-wrap gap-4">
             <NumField label="Lifetime spend under ($)"
-              value={form.max_lifetime_spend_cents != null ? dollars(form.max_lifetime_spend_cents) : 20} min={0} max={100000} step={0.01}
+              value={form.max_lifetime_spend_cents != null ? dollars(form.max_lifetime_spend_cents) : 20000} min={0} max={100000} step={0.01}
               onChange={(n) => set({ max_lifetime_spend_cents: cents(n) })} suffix="$" />
             <NumField label="Recent spend under ($)"
-              value={form.max_recent_spend_cents != null ? dollars(form.max_recent_spend_cents) : 5} min={0} max={100000} step={0.01}
+              value={form.max_recent_spend_cents != null ? dollars(form.max_recent_spend_cents) : 500} min={0} max={100000} step={0.01}
               onChange={(n) => set({ max_recent_spend_cents: cents(n) })} suffix="$" />
             <NumField label="…in the last (days)"
-              value={form.recent_spend_days ?? 30} min={1} max={365}
+              value={form.recent_spend_days ?? 1} min={1} max={365}
               onChange={(n) => set({ recent_spend_days: n })} suffix="days" />
           </div>
         </div>
@@ -274,10 +274,10 @@ export default function AutoreplyTab({ accountId }: { accountId: string | null }
           <div className="text-xs font-medium text-fg mb-2">Timing filters</div>
           <div className="flex flex-wrap gap-4">
             <NumField label="Days since last purchase ≥" hint="re-warm cooled fans (never bought = ok)"
-              value={form.min_days_since_purchase ?? 7} min={0} max={3650}
+              value={form.min_days_since_purchase ?? 0} min={0} max={3650}
               onChange={(n) => set({ min_days_since_purchase: n })} suffix="days" />
             <NumField label="Days since first chat ≥" hint="established fans only"
-              value={form.min_days_since_first_chat ?? 2} min={0} max={3650}
+              value={form.min_days_since_first_chat ?? 0} min={0} max={3650}
               onChange={(n) => set({ min_days_since_first_chat: n })} suffix="days" />
             <NumField label="Read last N messages" hint="context for tone"
               value={form.last_n_messages ?? 16} min={2} max={60}

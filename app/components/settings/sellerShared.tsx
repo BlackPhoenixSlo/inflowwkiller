@@ -618,13 +618,18 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
 
 /* ── The script pack — the words are already written ───────────────── */
 
-export function ScriptPackCard({ pack, text, setText, onSave, saving, saved }: {
+export function ScriptPackCard({ pack, text, setText, onSave, saving, saved, error, canSave = true }: {
   pack: Record<string, string[]>;
   text: Record<string, string>;
   setText: (slot: string, v: string) => void;
   onSave: () => void;
   saving: boolean;
   saved: boolean;
+  /** Why the last save was rejected. Without it a failed save looks like nothing
+   *  happened, and the operator walks away believing her lines are stored. */
+  error?: string | null;
+  /** False while the config hasn't loaded — saving then REPLACES it with placeholders. */
+  canSave?: boolean;
 }) {
   const slots = Object.keys(pack);
   return (
@@ -678,11 +683,42 @@ export function ScriptPackCard({ pack, text, setText, onSave, saving, saved }: {
       </div>
 
       <div className="flex items-center gap-2">
-        <Button size="sm" disabled={saving} onClick={onSave}>
+        <Button size="sm" disabled={saving || !canSave} onClick={onSave}>
           <Save size={14} className="mr-1" /> Save lines
         </Button>
         {saved && <span className="text-xs text-green-400">saved ✓</span>}
+        {error && <span className="text-xs text-red-500">{error}</span>}
       </div>
+    </Card>
+  );
+}
+
+/* ── a load that FAILED, said so out loud ──────────────────────────── */
+
+/** What a seller tab renders INSTEAD of its editors when the config never
+ *  arrived. Every input on those tabs falls back to a hardcoded literal
+ *  (`cfg.sla_minutes ?? 10`), so rendering anyway shows invented numbers that
+ *  read as this account's saved settings — "it reset to defaults" — and one
+ *  Save would write those placeholders over the real stored config. */
+export function ConfigLoadError({ what, error, onRetry, retrying }: {
+  /** What failed to load, in the operator's words ("this account's settings"). */
+  what: string;
+  error?: Error | null;
+  onRetry: () => void;
+  retrying?: boolean;
+}) {
+  return (
+    <Card className="p-4 space-y-2">
+      <h3 className="text-sm font-medium text-red-500">Couldn&apos;t load {what}.</h3>
+      <p className="text-xs text-fg-dim leading-relaxed">
+        {error?.message || "The relay didn't answer."} Nothing is shown rather than
+        default values that were never yours — what you&apos;d be editing here are
+        placeholders, and saving them would overwrite the settings this account
+        actually has.
+      </p>
+      <Button size="sm" variant="secondary" disabled={retrying} onClick={onRetry}>
+        {retrying ? "Retrying…" : "Retry"}
+      </Button>
     </Card>
   );
 }
@@ -770,6 +806,14 @@ export function useSellerConfig(accountId: string | null) {
   const cfgQ = useAiChatterConfig(accountId);
   const saveCfgM = useSaveAiChatterConfig(accountId);
 
+  /** The stored config actually came back. Until it does there is nothing to be
+   *  sparse AGAINST: `buildSparse({})` emits only the two authoritative keys
+   *  ({sleep_window: null, script_pack_overrides: {}}), and posting that REPLACES
+   *  the whole blob — a save on a failed load silently wipes the account's real
+   *  settings. So every save path is gated on this, and the tabs disable their
+   *  Save buttons with it. */
+  const configLoaded = cfgQ.isSuccess && !!cfgQ.data;
+
   const eff: AiChatterConfig = useMemo(() => {
     const d = cfgQ.data?.defaults ?? {};
     const c = cfgQ.data?.config ?? {};
@@ -804,7 +848,11 @@ export function useSellerConfig(accountId: string | null) {
 
   /** The full sparse config over `base` (dropping keys still at the default), plus
    *  the two authoritative keys. `base` is `cfg` merged with any just-applied patch,
-   *  so a patch can be saved WITHOUT waiting for a state round-trip. */
+   *  so a patch can be saved WITHOUT waiting for a state round-trip.
+   *
+   *  Only meaningful once `configLoaded` — with no loaded config every key looks
+   *  like a default and the result is the two authoritative keys alone. Callers
+   *  that SEND it must check that flag first. */
   const buildSparse = (base: AiChatterConfig): AiChatterConfig => {
     const d = (cfgQ.data?.defaults ?? {}) as Record<string, unknown>;
     const out: Record<string, unknown> = {};
@@ -825,13 +873,17 @@ export function useSellerConfig(accountId: string | null) {
   /** Save. An optional `patch` is applied to state AND folded into the saved config
    *  synchronously (for one-click presets like "Enable upseller"). */
   const saveCfg = (patch?: Partial<AiChatterConfig>) => {
+    // A save is a REPLACE. Never write on top of a config we never read — that
+    // posts placeholders as if they were the operator's settings. The tabs also
+    // disable Save on `configLoaded`; this is the belt to that pair of braces.
+    if (!configLoaded) return;
     const base = patch ? { ...cfg, ...patch } : cfg;
     if (patch) setCfg(base);
     saveCfgM.mutate({ config: buildSparse(base), timezone: tz.trim() || null });
   };
 
   return {
-    cfgQ, saveCfgM, eff, cfg, setCfg, set, tz, setTz,
+    cfgQ, saveCfgM, configLoaded, eff, cfg, setCfg, set, tz, setTz,
     shippedPack, packText, setPackText, packOverrides, sparseCfg, saveCfg,
   };
 }

@@ -26,7 +26,7 @@ flavors against the same `metadata` so Alembic sees the whole schema.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from sqlalchemy import (
     BigInteger,
@@ -45,6 +45,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     text,
+    type_coerce,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -466,6 +467,50 @@ class Message(Base):
             postgresql_where=text("automation_kind IS NOT NULL"),
         ),
     )
+
+
+# ── Reading messages.created_at when the DATA is dirtier than the SCHEMA ─────
+# The column is DateTime NOT NULL, but on 2026-07-22 exactly one row on one
+# account held the empty string '' there (an ingest wrote a blank where OF gave
+# no createdAt). SQLAlchemy converts a DateTime column while MATERIALISING the
+# result, so that single cell raised `ValueError: Invalid isoformat string: ''`
+# out of str_to_datetime and took the WHOLE result set down with it — and since
+# ai_chatter._gather reads every message of an account in ONE query, one bad cell
+# silenced that account's automation completely. Wrapping the consuming `for`
+# loop in try/except cannot save it: the raise happens inside .execute()/.all(),
+# before the first row is ever handed to the loop.
+#
+# So a reader that must survive dirty data selects `created_at_text()` instead of
+# the mapped column. type_coerce swaps the PYTHON-side type only — the emitted
+# SQL is byte-identical, so WHERE/ORDER BY on the real column still work — but the
+# DateTime result processor never runs and the driver's raw value comes back
+# untouched. `parse_ts()` then converts it, returning None for anything it cannot
+# read so the caller can drop that ONE row (with a warning) instead of the account.
+def created_at_text():
+    """`Message.created_at` selected WITHOUT the DateTime parse (see above)."""
+    return type_coerce(Message.created_at, String).label("created_at")
+
+
+def parse_ts(value) -> datetime | None:
+    """Best-effort DB timestamp → naive-UTC datetime; None when unusable.
+
+    Tolerates what the DateTime processor refuses: '', whitespace, a stray 'Z',
+    junk. Returns naive UTC because that is what the rest of the schema stores —
+    an aware datetime leaking out of here would blow up the very arithmetic
+    (`utcnow() - ts`) the callers do with it.
+    """
+    if value is None or isinstance(value, datetime):
+        return value                      # None, or a driver that types it for us
+    s = str(value).strip()
+    if not s:
+        return None                       # the '' cell that started all this
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
 
 
 class MessageMedia(Base):

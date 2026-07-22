@@ -25,7 +25,7 @@ import {
   type CatalogItemT, type TextSuggestionT,
 } from "@/hooks/useCatalog";
 import {
-  INPUT, ItemsTable, NEW_ITEM, RhythmSection, ScriptCard, dollars,
+  ConfigLoadError, INPUT, ItemsTable, NEW_ITEM, RhythmSection, ScriptCard, dollars,
   useSellerConfig, useSellerStyle,
 } from "@/components/settings/sellerShared";
 import ReengageBuyersTab from "@/components/settings/ReengageBuyersTab";
@@ -34,7 +34,7 @@ import type { AiChatterConfig } from "@/hooks/useCatalog";
 
 export default function ScriptsTab({ accountId }: { accountId: string | null }) {
   const cfgQ = useAiChatterConfig(accountId);
-  const { cfg, set, tz, setTz, saveCfg, saveCfgM } = useSellerConfig(accountId);
+  const { cfg, set, tz, setTz, saveCfg, saveCfgM, configLoaded } = useSellerConfig(accountId);
   const style = useSellerStyle(accountId);
 
   // Content library — the base chatter sells from this catalog (Upseller just tunes how).
@@ -190,6 +190,23 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
 
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
   if (cfgQ.isLoading || scriptsQ.isLoading) return <div className="text-sm text-fg-dim">Loading…</div>;
+  // A failed load is NOT an empty account. Rendering on would fall back to the
+  // literals below (`cfg.sla_minutes ?? 10`, a $1,000 whale gate, 6h hands-off)
+  // and they read as SAVED settings — the config looks like it "reset to
+  // defaults" when it simply never arrived, and one Save makes that true.
+  if (cfgQ.isError || scriptsQ.isError) {
+    const what = [cfgQ.isError && "AI Chatter settings", scriptsQ.isError && "content library"]
+      .filter(Boolean).join(" or ");
+    return (
+      <ConfigLoadError what={`this account's ${what}`}
+        error={cfgQ.error ?? scriptsQ.error}
+        retrying={cfgQ.isFetching || scriptsQ.isFetching}
+        onRetry={() => {
+          if (cfgQ.isError) void cfgQ.refetch();
+          if (scriptsQ.isError) void scriptsQ.refetch();
+        }} />
+    );
+  }
 
   // Nested tier cap: always write a COMPLETE object so the server's shallow merge
   // never drops a tier.
@@ -283,7 +300,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <label className="space-y-1">
             <div className="text-fg-dim text-xs">Mode</div>
-            <select className={`${INPUT} w-full`} value={cfg.mode ?? "backup"}
+            <select className={`${INPUT} w-full`} value={cfg.mode ?? "always"}
               onChange={(e) => set({ mode: e.target.value as AiChatterConfig["mode"] })}>
               <option value="backup">backup (when chatters are slow)</option>
               <option value="always">always on</option>
@@ -304,7 +321,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           <label className="space-y-1">
             <div className="text-fg-dim text-xs">Hands-off after human send (h)</div>
             <input type="number" className={`${INPUT} w-full`} min={0}
-              value={cfg.resume_after_manual_hours ?? 6}
+              value={cfg.resume_after_manual_hours ?? 1}
               onChange={(e) => set({ resume_after_manual_hours: parseInt(e.target.value || "0", 10) })} />
           </label>
         </div>
@@ -446,11 +463,17 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           {style.saveStyleM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
         </div>
 
-        <div className="flex items-center gap-2">
-          <Button size="sm" disabled={saveCfgM.isPending} onClick={() => saveCfg()}>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button size="sm" disabled={saveCfgM.isPending || !configLoaded}
+            onClick={() => saveCfg()}>
             <Save size={14} className="mr-1" /> Save config
           </Button>
           {saveCfgM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
+          {saveCfgM.isError && (
+            <span className="text-xs text-red-500">
+              {saveCfgM.error?.message || "Save failed"} — nothing was stored.
+            </span>
+          )}
           {!!cfg.enabled && (
             <span className="text-xs text-amber-400">
               live — replaces Auto-AI-chat for fans under the gate
