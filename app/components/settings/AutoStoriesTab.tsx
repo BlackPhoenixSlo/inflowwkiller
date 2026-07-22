@@ -48,6 +48,7 @@ interface FormState {
   everyHours: number;       // interval mode
   perRun: number;
   hoursToLive: number;      // 0 = keep
+  removeVaultDupe: boolean; // hide the re-uploaded vault copy (default ON)
   maxRuns: number | null;   // null = run forever
   enabled: boolean;
 }
@@ -60,6 +61,7 @@ const DEFAULT_FORM: FormState = {
   everyHours: 6,
   perRun: 1,
   hoursToLive: 6,
+  removeVaultDupe: true,
   maxRuns: null,
   enabled: true,
 };
@@ -83,6 +85,8 @@ function ruleToForm(rule: AutomationRule): FormState {
     everyHours: t.every_seconds ? Math.max(1, Math.round(t.every_seconds / 3600)) : 6,
     perRun: typeof p.per_run === "number" ? p.per_run : 1,
     hoursToLive: typeof p.hours_to_live === "number" ? p.hours_to_live : 0,
+    // Default ON: only an explicit `false` opts a rule out.
+    removeVaultDupe: p.remove_vault_dupe !== false,
     maxRuns: typeof t.max_runs === "number" ? t.max_runs : null,
     enabled: rule.is_enabled,
   };
@@ -161,6 +165,7 @@ export default function AutoStoriesTab() {
       folder_id: form.folderId,
       per_run: Math.max(1, Math.round(form.perRun)),
       hours_to_live: Math.max(0, Math.round(form.hoursToLive)),
+      remove_vault_dupe: form.removeVaultDupe,
     };
     // Explicit image pool combines with the folder (backend unions them).
     if (form.mediaIds.length) p.media_files = form.mediaIds;
@@ -335,6 +340,25 @@ export default function AutoStoriesTab() {
             />
           </Field>
         </div>
+
+        {/* Vault-dupe cleanup — posting a story re-uploads the photo, which
+            leaves an extra copy in the vault. This hides that copy for you. */}
+        <label className="flex items-start gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={form.removeVaultDupe}
+            onChange={(e) => set("removeVaultDupe", e.target.checked)}
+          />
+          <span>
+            Remove the re-uploaded copy from the vault
+            <span className="block text-xs text-muted mt-0.5">
+              Every story re-uploads its photo (OnlyFans requires it), leaving a
+              duplicate in your vault. This hides that duplicate automatically
+              once it finishes processing — your live story is unaffected.
+            </span>
+          </span>
+        </label>
 
         <Field label="Total runs (blank = forever)">
           <Input

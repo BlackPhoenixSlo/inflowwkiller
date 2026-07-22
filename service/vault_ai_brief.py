@@ -273,7 +273,7 @@ CONTRADICTIONS: dict[str, str] = {
     "sfw_but_bare": "explicitness=sfw, yet a bare region is visible",
     "nude_but_clothed": "clothing_state=fully_nude, yet a garment is visible",
     "lingerie_but_nothing_on": "clothing_state=lingerie_on, yet no garment is visible",
-    "penetration_offscreen": "penetration recorded, yet neither vulva nor anus is in frame",
+    "penetration_offscreen": "genital act recorded, yet neither vulva nor anus is in frame",
 }
 
 # The `acts` values that assert something is inside her, and the `penetration`
@@ -283,6 +283,18 @@ CONTRADICTIONS: dict[str, str] = {
 PENETRATING_ACTS: frozenset[str] = frozenset({
     "fingering", "toy_insertion", "riding_toy", "sex_missionary",
     "sex_doggy", "sex_riding",
+})
+# The wider set that all NEED the vulva or anus in the frame to be depicted at
+# all: insertion, clitoral contact, and squirting. So a genital act recorded
+# beside `vulva_vis: not_in_frame` AND `anus_vis: not_in_frame` cannot both be
+# true — one pass hallucinated. Kept distinct from PENETRATING_ACTS, which means
+# specifically "physically inside her" and is used elsewhere to overrule a
+# `covered` region (clit-rubbing over fabric is legitimate, so it must NOT be in
+# that set). `rubbing_clit`/`toy_on_clit` touch the clitoris (part of the vulva);
+# `squirt` issues from the vulva. Deliberately NOT here: `spreading` and
+# `masturbation_orgasm`, which can be framed without the genitals in shot.
+GENITAL_ACTS: frozenset[str] = PENETRATING_ACTS | frozenset({
+    "rubbing_clit", "toy_on_clit", "squirt",
 })
 # "none" and "unclear" are ANSWERS, not findings. Truthiness alone read them as
 # penetration, so an item the model had explicitly cleared still disputed — and
@@ -297,6 +309,19 @@ def penetration_claimed(fields: dict[str, Any] | None) -> bool:
     if _scalar(fields, "penetration").lower().strip() not in _NO_PENETRATION:
         return True
     return bool({a.lower() for a in _clean(fields.get("acts"))} & PENETRATING_ACTS)
+
+
+def genital_act_claimed(fields: dict[str, Any] | None) -> bool:
+    """Do these fields assert any act that NEEDS the genitals in frame — from
+    either source? Penetration, clit contact, or squirt (`GENITAL_ACTS`). A
+    superset of `penetration_claimed`: it also catches `rubbing_clit` on a still
+    where the vulva is `not_in_frame`, the describe pass inventing an act it
+    could not have seen."""
+    if penetration_claimed(fields):
+        return True
+    if not isinstance(fields, dict):
+        return False
+    return bool({a.lower() for a in _clean(fields.get("acts"))} & GENITAL_ACTS)
 
 
 def contradictions(fields: dict[str, Any] | None) -> list[str]:
@@ -323,7 +348,7 @@ def contradictions(fields: dict[str, Any] | None) -> list[str]:
     if cl == "lingerie_on" and garment is False:
         out.append("lingerie_but_nothing_on")
 
-    if penetration_claimed(fields) \
+    if genital_act_claimed(fields) \
             and vis(fields, "vulva_vis") == "not_in_frame" \
             and vis(fields, "anus_vis") == "not_in_frame":
         out.append("penetration_offscreen")

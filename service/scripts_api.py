@@ -459,6 +459,17 @@ _VAULT_AI_DEFAULTS: dict[str, Any] = {
         "daily_at": ["10:00"],
         "tz_offset_minutes": 0,
     },
+    # ── PPV week/month arc (service/vault_ppv_week.py) ────────────────────────
+    # Assembles a story-shaped WEEK (soft→payoff, copy references yesterday) from
+    # already-derived vault content, repeated as exclusive waves across the month.
+    # Every day hits the feed AND DMs (combine). Still suggest-only: the operator
+    # generates a preview and confirms before anything is armed.
+    "ppv_week": {
+        "enabled": False,          # arc automation on (still nothing auto-sends)
+        "weeks": 4,                # 1 = a single week, 4 = a month of waves
+        "combine_feed_and_dm": True,   # each drop = paid post (feed) + mass PPV (DM)
+        "in_voice_copy": True,     # captions written via PAINFUL_TEXTING, not template
+    },
 }
 
 
@@ -530,6 +541,45 @@ async def patch_vault_ai_config(body: _VaultAiPatchBody = Body(...)) -> dict[str
     log.info("vault_ai_config_patched account=%s keys=%s",
              body.account_id, sorted(body.config.keys()))
     return {"account_id": body.account_id, "config": _effective_vault_ai(stored)}
+
+
+@router.get("/admin/vault-ai/ppv-week")
+async def generate_vault_ppv_week(
+    account_id: str = Query(...),
+    weeks: int = Query(4, ge=1, le=4),
+    use_llm: bool = Query(False),
+    combine: bool | None = Query(None),
+) -> dict[str, Any]:
+    """Build a WEEK (weeks=1) or MONTH (weeks>1) escalation arc from the account's
+    already-described vault and return it as a self-contained HTML review page.
+
+    Read-only and suggest-only — nothing is armed or sent. `use_llm=true` writes
+    every caption in-voice (PAINFUL_TEXTING); it makes ~7·weeks model calls, so
+    the operator opts into the slower path deliberately. The account's Vault-AI
+    config (price bands + combine toggle) drives the plan.
+    """
+    assert_account_owned(account_id)
+    import vault_ppv_week as vw
+
+    async with get_session() as s:
+        row = await s.get(AccountAiConfig, account_id)
+    config = _effective_vault_ai(_load_vault_ai_stored(row))
+    weeks = max(1, min(int(weeks or 4), 4))
+    if combine is not None:
+        config.setdefault("ppv_week", {})["combine_feed_and_dm"] = bool(combine)
+
+    if weeks == 1:
+        plan = await vw.build_week(account_id, config=config, use_llm=bool(use_llm))
+        html = vw.render_week_html(plan, title=f"Vault PPV week · {account_id}")
+        coverage = plan["coverage"]
+    else:
+        plan = await vw.build_month(account_id, weeks=weeks, config=config,
+                                    use_llm=bool(use_llm))
+        html = vw.render_month_html(plan, title=f"Vault PPV month · {account_id}")
+        coverage = plan["weeks"][0]["coverage"] if plan.get("weeks") else {}
+
+    return {"account_id": account_id, "weeks": weeks,
+            "summary": plan["summary"], "coverage": coverage, "html": html}
 
 
 # ── Catalog read (scripts + singles + per-item conversion stats) ─────────────

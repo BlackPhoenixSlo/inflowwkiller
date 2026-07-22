@@ -24,7 +24,7 @@ Design notes:
     ({"enabled": bool}); absent/NULL → OFF. The global kill-switch is the env
     var W7_WEBHOOK_DISPATCH_DISABLED (set to 1/true to disable everywhere).
   • Memory: the live detector must NEVER run on jaka (its inbound is stranger/
-    promo spam). The default-OFF gate enforces that — enable Lexi first.
+    promo spam). The default-OFF gate enforces that — enable Ava first.
 """
 from __future__ import annotations
 
@@ -38,7 +38,9 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, update
 
 from db.engine import get_session
-from db.models import AccountAiConfig, Fan, FunnelState, MassRun, ScheduledJob, SkipList
+from db.models import (
+    AccountAiConfig, Fan, FunnelState, MassRun, ResolutionLog, ScheduledJob, SkipList,
+)
 import automation_executor as ax
 
 # deep_convo's terminal state — once a fan reaches it, no automation replies
@@ -127,6 +129,23 @@ async def _wake_after(delay_s: float) -> None:
         pass
 
 
+async def _fan_in_resolution(account_id: str, fan_id: int) -> bool:
+    """True iff this fan has an IN-PROGRESS make_right resolution — the multi-turn
+    apology→free→…→PPV exchange owns his replies until it closes, so the normal
+    chatter must not interleave it (same one-voice rule as a funnel)."""
+    async with get_session() as s:
+        row = (
+            await s.execute(
+                select(ResolutionLog.id).where(
+                    ResolutionLog.account_id == str(account_id),
+                    ResolutionLog.fan_id == int(fan_id),
+                    ResolutionLog.status == "in_progress",
+                ).limit(1)
+            )
+        ).first()
+    return row is not None
+
+
 async def _fan_mid_funnel(account_id: str, fan_id: int) -> bool:
     """True iff this fan has a pending funnel_state row under one of this
     account's mass runs — i.e. reply_mass_funnel owns the fan through a
@@ -162,6 +181,11 @@ async def _classify_kind(account_id: str, fan_id: int) -> str | None:
     _load_stop_lists / _handoff_to_deep_convo; deep_convo.py deep_convo_state),
     so we never wake an automation that would just skip this fan.
     """
+    # A fan mid make-right exchange owns his replies until it closes — advance the
+    # apology→free→…→PPV resolution rather than waking the normal chatter.
+    if await _fan_in_resolution(account_id, fan_id):
+        return "make_right"
+
     if await _fan_mid_funnel(account_id, fan_id):
         return "reply_mass_funnel"
 

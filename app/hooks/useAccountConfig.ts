@@ -16,12 +16,19 @@ export interface BrainConfig {
   persona: string | null;
   welcome_rules: string | null;
   location: string | null;
+  /** ISO 639-1 the creator writes in; "en" default. Gates output language + guard vocab. */
+  language: string;
   utc_offset: number;
   daily_cost_cap_cents: number;
   model: string | null;
   model_by_purpose: Record<string, string>;
   time_activities: Record<string, string>;
   time_images: Record<string, number>;
+}
+
+export interface LanguageOption {
+  code: string;
+  label: string;
 }
 
 export interface AccountConfigResp {
@@ -32,6 +39,7 @@ export interface AccountConfigResp {
   slots: string[];          // the 6 time-of-day slot keys, ordered
   model_options: string[];  // LLM model ids the account may pick
   purposes: string[];       // per-purpose override targets
+  languages: LanguageOption[]; // language codes + labels for the dropdown
 }
 
 export function useAccountConfig(accountId: string | null) {

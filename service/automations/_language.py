@@ -1,0 +1,246 @@
+"""service/automations/_language.py — the per-account language layer (R3).
+
+The pivotal lesson from the adversarial passes: you CANNOT make the English guards
+bilingual by unioning Spanish tokens into them — Spanish/English homographs (once, come,
+solo, sale, red, mas, …) mean a Spanish token fires on English at scale (proven: 6,390
+real outbound English messages mangled). So language is a GATE, not a union.
+
+This module gives every sender:
+  • resolve_language(account_lang, fan_lang)  → the effective ISO 639-1 code
+  • output_language_directive(lang)           → the OUTPUT-LANGUAGE block (appended at
+                                                 the END of a system prompt; "" for en)
+  • language-aware detector dispatchers        → English delegates to the EXISTING tuned
+                                                 _common/upsell functions unchanged; only
+                                                 a non-en account runs the Spanish layer.
+
+The Spanish regexes are separately authored and WORD-BOUNDARY anchored. Because they
+only run on non-en accounts they never touch English traffic — and the test suite still
+proves zero false positives against the real English corpus (defense in depth for
+code-switching fans).
+"""
+from __future__ import annotations
+
+import re
+
+from sqlalchemy import select
+
+from . import _common
+from db.engine import get_session
+from db.models import AccountAiConfig
+
+# Languages the product can route. NULL/unknown ⇒ "en".
+KNOWN_LANGS = ("en", "es", "sl", "pt", "fr", "de", "it")
+LANG_DISPLAY = {
+    "en": "English", "es": "Español", "sl": "Slovenščina",
+    "pt": "Português", "fr": "Français", "de": "Deutsch", "it": "Italiano",
+}
+# Which languages have a hand-built guard + output layer TODAY. Others fall back to the
+# English guards but still get the output-language directive (best effort).
+GUARD_LANGS = frozenset({"es"})
+
+
+def norm_lang(raw) -> str:
+    """A value → a known ISO 639-1 code, else '' (caller treats '' as 'en')."""
+    s = (raw or "")
+    s = s.strip().lower() if isinstance(s, str) else ""
+    if not s:
+        return ""
+    code = s.split("-")[0].split("_")[0]
+    return code if code in KNOWN_LANGS else ""
+
+
+async def load_account_language(account_id: str) -> str:
+    """The account's configured language ('en' when unset). One tiny read; senders call
+    it once per run and thread the result into resolve_language + the guards."""
+    async with get_session() as s:
+        raw = (await s.execute(
+            select(AccountAiConfig.language).where(AccountAiConfig.account_id == str(account_id))
+        )).scalar_one_or_none()
+    return norm_lang(raw) or "en"
+
+
+def resolve_language(account_lang=None, fan_lang=None) -> str:
+    """The effective language for a turn. A per-fan value (manual override or, later,
+    detection) wins; then the account default; then 'en'. For v1 the senders pass only
+    the account default (per-fan routing is deferred) — passing fan_lang is the one-line
+    flip that turns per-fan routing on."""
+    return norm_lang(fan_lang) or norm_lang(account_lang) or "en"
+
+
+# ── The OUTPUT-LANGUAGE directive (appended at the END of a system prompt) ──
+def output_language_directive(lang: str) -> str:
+    """The block that forces the model's OUTPUT language. Appended at the very END of a
+    system prompt so the stable prefix (and its provider cache) is untouched. '' for en
+    (English prompts already produce English). Names the language explicitly and pins
+    the protocol token so a Spanish reply never leaks '>>OFERTA'."""
+    code = norm_lang(lang)
+    if not code or code == "en":
+        return ""
+    name = LANG_DISPLAY.get(code, code)
+    return (
+        f"\n\nOUTPUT LANGUAGE: Write EVERY message to the fan in {name} "
+        f"({code}), in a natural, casual, native texting register — not translated, "
+        f"not formal. Match the fan's dialect if he shows one. "
+        f"Do NOT switch to English. The ONLY thing that stays in English is any literal "
+        f"protocol marker you were told to emit (e.g. a line starting with '>>OFFER') — "
+        f"emit it EXACTLY as instructed, in English, never translated."
+    )
+
+
+def qtease_directive(lang: str) -> str:
+    """The instruction appended to gen_info's prompt so the fan-facing openers it
+    generates (Q1-3, Tease1-3) come out in the fan's language — deep_convo / reengage
+    send those VERBATIM, so they'd otherwise ship English on a Spanish account. The
+    extracted FACTS stay as the fan stated them; only the openers are localized. '' for en."""
+    code = norm_lang(lang)
+    if not code or code == "en":
+        return ""
+    name = LANG_DISPLAY.get(code, code)
+    return (
+        f"\n\nLANGUAGE: The fan writes in {name} ({code}). Write the fields "
+        f'"Q1","Q2","Q3","Tease1","Tease2","Tease3" in {name}, as a native would text him '
+        f"(they are sent to him word-for-word). Keep every extracted FACT (real_name, "
+        f"his_age, home_city, home_country, occupation, employer, hobbies, etc.) exactly as "
+        f"he stated it. short_bio and bullet_points stay in English (they're for the operator)."
+    )
+
+
+# ── Spanish guard vocabulary (anchored; runs ONLY on non-en accounts) ──
+# Buying signal — he asks to SEE content.
+_ES_CONTENT_ASK = re.compile(
+    r"(?<!\w)("
+    r"m[aá]ndame|env[ií]ame|mu[eé]strame|ens[eé][nñ]ame|"
+    r"quiero ver|d[eé]jame ver|me ense[nñ]as|puedo ver|"
+    r"cu[aá]nto (cuesta|vale|por)|"
+    r"tienes (fotos?|v[ií]deos?|algo)|"
+    r"(manda|mandame|quiero|dame|tienes) (fotos?|nudes?|desnuda|contenido|v[ií]deos?)|"
+    r"m[aá]s (fotos?|contenido|v[ií]deos?)|"
+    r"desnud[ao]s?|nudes?"
+    r")(?!\w)", re.IGNORECASE)
+
+# Escalation — he describes a horny state or an act he wants.
+_ES_ESCALATION = re.compile(
+    r"(?<!\w)("
+    r"estoy (muy )?(caliente|cachond[ao]|duro)|me pones (caliente|cachond[ao])|"
+    r"quiero (cogerte|follarte|chuparte|comerte|lamerte|penetrarte|tocarte)|"
+    r"me quiero (correr|venir)|c[oó]rrete|hazme (acabar|correr)|"
+    r"est[aá]s buen[ao]|qu[eé] rica|te deseo|te necesito dentro"
+    r")(?!\w)", re.IGNORECASE)
+
+# Poverty brake — he says he's broke / can't pay / it's too expensive.
+_ES_SPEND_REGRET = re.compile(
+    r"(?<!\w)("
+    r"no tengo (dinero|plata|para)|sin dinero|estoy (quebrado|pelado|sin (un )?peso)|"
+    r"no puedo (pagar|permitirme|gastar)|no me alcanza|ando corto|"
+    r"(muy|demasiado) (caro|cara)|est[aá] caro|no tengo tanto"
+    r")(?!\w)", re.IGNORECASE)
+
+# Hard decline — stop / not interested / no thanks. NB: bare "para" is EXCLUDED — it is
+# the ubiquitous preposition ("para cojerte" = "to fuck you"), not the imperative "stop".
+# Only the unambiguous imperative forms ("para ya", "párate", "basta ya") are decline.
+_ES_DECLINE = re.compile(
+    r"(?<!\w)("
+    r"no gracias|no me interesa|d[eé]jame en paz|ya no quiero|"
+    r"para ya|p[aá]rate|basta ya|ya basta|"
+    r"no quiero (nada|comprar|pagar|m[aá]s)|"
+    r"me voy a (dar de baja|desuscribir)|cancelar la suscripci[oó]n"
+    r")(?!\w)", re.IGNORECASE)
+
+# Stated price ceiling — "I'll pay you 25". Note the inner group is NON-capturing so the
+# number is always group(2).
+_ES_STATED_CAP = re.compile(
+    r"(?<!\w)("
+    r"te pago|te doy|puedo pagar|pago hasta|mi (?:l[ií]mite|presupuesto) es"
+    r")\s*\$?\s*(\d{1,4})", re.IGNORECASE)
+
+# Bot accusation — "are you a bot / are you real / am I talking to an AI".
+_ES_BOT = re.compile(
+    r"(?<!\w)("
+    r"eres (un[ao]? )?(bot|robot|m[aá]quina|ia|inteligencia artificial)|"
+    r"eres real|de verdad eres|hablo con (una?|un) (bot|robot|m[aá]quina|ia|persona real)|"
+    r"esto es (un[ao]? )?(bot|ia|autom[aá]tico)"
+    r")(?!\w)", re.IGNORECASE)
+
+# OF ToS / restricted vocabulary in Spanish (the English list can't cover it). Doubled
+# like the English list to soften OF's own filter.
+_ES_RESTRICTED = (
+    "menor", "menores", "violaci[oó]n", "violar", "sangre", "orina", "esclav[ao]",
+    "secuestr[oa]", "incesto", "embarazada", "borracha", "dormida", "inconsciente",
+    "prostitut[ao]", "drogad[ao]", "menor de edad",
+)
+_ES_RESTRICTED_RE = re.compile(
+    r"(?<!\w)(" + "|".join(_ES_RESTRICTED) + r")(?!\w)", re.IGNORECASE)
+
+
+# ── Language-aware dispatchers ───────────────────────────────────────
+# English (and any language without a guard layer) delegates to the EXISTING tuned
+# functions — unchanged behaviour. Only a GUARD_LANGS account runs the Spanish layer.
+
+def _es(lang: str) -> bool:
+    return norm_lang(lang) in GUARD_LANGS
+
+
+def is_content_ask(text, lang="en") -> bool:
+    if _es(lang):
+        return bool(text) and bool(_ES_CONTENT_ASK.search(text or ""))
+    return _common.is_content_ask(text)
+
+
+def is_escalation(text, lang="en") -> bool:
+    if _es(lang):
+        return bool(text) and bool(_ES_ESCALATION.search(text or ""))
+    return _common.is_escalation(text)
+
+
+def thread_heat(messages, lang="en") -> bool:
+    """Bilingual thread_heat: the 24.3× purchase signal. For es, ANY recent fan message
+    that is a content-ask or an escalation. For en, the existing helper unchanged."""
+    if not _es(lang):
+        return _common.thread_heat(messages)
+    for m in messages or []:
+        body = m[1] if isinstance(m, (tuple, list)) and len(m) > 1 else getattr(m, "body", "")
+        direction = m[0] if isinstance(m, (tuple, list)) else getattr(m, "direction", "in")
+        if direction == "in" and (_ES_CONTENT_ASK.search(body or "") or
+                                  _ES_ESCALATION.search(body or "")):
+            return True
+    return False
+
+
+def detect_spend_regret(text, lang="en") -> bool:
+    if _es(lang):
+        return bool(text) and bool(_ES_SPEND_REGRET.search(text or ""))
+    from . import upsell
+    return bool(upsell.detect_spend_regret(text))
+
+
+def is_hard_decline(text, lang="en") -> bool:
+    if _es(lang):
+        return bool(text) and bool(_ES_DECLINE.search(text or ""))
+    from . import upsell
+    return upsell.classify_decline(text) is not None
+
+
+def detect_stated_cap(text, lang="en"):
+    """Returns the stated cap in CENTS, or None. Spanish or English."""
+    if _es(lang):
+        m = _ES_STATED_CAP.search(text or "") if text else None
+        return int(m.group(2)) * 100 if m else None
+    from . import upsell
+    return upsell.detect_stated_cap(text)
+
+
+def detect_bot_accusation(text, lang="en") -> bool:
+    if _es(lang):
+        return bool(text) and bool(_ES_BOT.search(text or ""))
+    return bool(_common.detect_bot_accusation(text))
+
+
+def apply_word_restriction(text, lang="en") -> str:
+    """OF banned-word softening. English delegates to the existing filter (unchanged).
+    Spanish runs the SPANISH banned list (the English list both misses Spanish ToS terms
+    AND mangles Spanish homographs, so it must NOT run on es)."""
+    if not text:
+        return text
+    if _es(lang):
+        return _ES_RESTRICTED_RE.sub(lambda m: _common._double_first_vowel(m), text)
+    return _common.apply_word_restriction(text)

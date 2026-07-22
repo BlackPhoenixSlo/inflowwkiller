@@ -92,9 +92,11 @@ export default function UserDataTab() {
             <tr className="text-left">
               <Th>Fan</Th>
               <Th>Nickname</Th>
+              <Th>Lang</Th>
               <Th className="text-right">Spend</Th>
               <Th className="text-right">Msgs</Th>
               <Th>Short bio</Th>
+              <Th>Rich note</Th>
               <Th>Q1 / Q2 / Q3</Th>
               <Th>Tease 1 / 2 / 3</Th>
               <Th>Note on OF</Th>
@@ -107,7 +109,7 @@ export default function UserDataTab() {
             ))}
             {!dataQ.isLoading && filtered.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-3 py-6 text-center text-fg-dim">
+                <td colSpan={11} className="px-3 py-6 text-center text-fg-dim">
                   No profiled fans yet for this account.
                 </td>
               </tr>
@@ -143,9 +145,15 @@ function Row({ r }: { r: FanDataRow }) {
         <div className="text-[10px] text-fg-dim font-mono">{r.fan_id}</div>
       </td>
       <td className="px-3 py-2 whitespace-nowrap">{r.nickname || <span className="text-fg-dim">—</span>}</td>
+      <td className="px-3 py-2 whitespace-nowrap uppercase font-mono text-[10px]">
+        {r.language ? r.language : <span className="text-fg-dim">—</span>}
+      </td>
       <td className="px-3 py-2 text-right whitespace-nowrap font-medium">{fmtSpend(r.total_spend)}</td>
       <td className="px-3 py-2 text-right whitespace-nowrap">{r.message_count || "—"}</td>
       <td className="px-3 py-2 max-w-[260px]"><span className="text-fg-dim">{r.short_bio || "—"}</span></td>
+      <td className="px-3 py-2 max-w-[300px]">
+        <span className="text-fg-dim whitespace-pre-line line-clamp-4">{r.bullet_points || "—"}</span>
+      </td>
       <td className="px-3 py-2 max-w-[260px]"><Stack items={[r.q1, r.q2, r.q3]} /></td>
       <td className="px-3 py-2 max-w-[260px]"><Stack items={[r.tease1, r.tease2, r.tease3]} /></td>
       <td className="px-3 py-2 whitespace-nowrap">

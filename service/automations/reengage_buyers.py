@@ -74,7 +74,9 @@ def clean_name(raw: str) -> str:
     ("Hawaii,USA/Spender"), and "heyy Hawaii,USA 🙈" reads like a bot — so anything
     that isn't a plain single alphabetic word is dropped."""
     first = (raw or "").split("/")[0].strip()
-    return first if re.fullmatch(r"[A-Za-z][A-Za-z'’\-]{1,19}", first) else ""
+    # UNICODE-correct: accented given names (José, Núria, Iñaki) are real names, not
+    # handles — the old [A-Za-z] class dropped them to "" → the "babe" pet fallback.
+    return first if re.fullmatch(r"[A-Za-zÀ-ɏ][A-Za-zÀ-ɏ'’\-]{1,19}", first) else ""
 
 
 def compose_opener(f: Fan, p: FanProfile | None, tone: str, rng: Random) -> str:

@@ -54,6 +54,17 @@ export interface VaultAiDailyReminder {
   tz_offset_minutes: number;
 }
 
+/** The PPV week/month escalation arc (service/vault_ppv_week.py). */
+export interface VaultAiPpvWeek {
+  enabled: boolean;
+  /** 1 = a single week, up to 4 = a month of exclusive waves. */
+  weeks: number;
+  /** Each drop = paid post (feed) + mass PPV (DM). */
+  combine_feed_and_dm: boolean;
+  /** Captions written via PAINFUL_TEXTING rather than the template. */
+  in_voice_copy: boolean;
+}
+
 export interface VaultAiConfig {
   /** Master gate — nothing describes/proposes/sends until true. */
   enabled: boolean;
@@ -66,6 +77,16 @@ export interface VaultAiConfig {
   folders: VaultAiFolders;
   scoring: { story: boolean; tip: boolean };
   daily_reminder: VaultAiDailyReminder;
+  ppv_week: VaultAiPpvWeek;
+}
+
+/** The generated arc — a self-contained HTML review page + rollup stats. */
+export interface VaultPpvWeekResult {
+  account_id: string;
+  weeks: number;
+  summary: Record<string, number>;
+  coverage: Record<string, unknown>;
+  html: string;
 }
 
 interface VaultAiConfigResponse {
@@ -95,5 +116,21 @@ export function useSaveVaultAiConfig(accountId: string | null) {
     mutationFn: (patch) =>
       relay.patch(`/admin/account-ai-config/vault-ai`, { account_id: accountId, config: patch }),
     onSuccess: (data) => qc.setQueryData([KEY, accountId], data),
+  });
+}
+
+/** Generate the PPV week/month arc for review. Read-only + suggest-only — nothing
+ *  is armed or sent. `use_llm` writes captions in-voice (slower, ~7·weeks calls). */
+export function useGenerateVaultPpvWeek(accountId: string | null) {
+  return useMutation<
+    VaultPpvWeekResult,
+    Error,
+    { weeks: number; use_llm: boolean; combine: boolean }
+  >({
+    mutationFn: ({ weeks, use_llm, combine }) =>
+      relay.get<VaultPpvWeekResult>(
+        `/admin/vault-ai/ppv-week?account_id=${encodeURIComponent(accountId!)}` +
+          `&weeks=${weeks}&use_llm=${use_llm}&combine=${combine}`,
+      ),
   });
 }

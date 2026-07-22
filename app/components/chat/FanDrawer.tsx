@@ -371,6 +371,10 @@ export function FanDrawer({
                 />
               </div>
 
+              <div className="order-2 md:order-none">
+                <ProfileCard fan={fan} />
+              </div>
+
               <div className="order-3 md:order-none flex flex-col gap-4">
               <Field label="Custom nickname" hint="Synced with OnlyFans. Saving updates OF's per-fan custom name and our local mirror.">
                 <input
@@ -441,6 +445,19 @@ export function FanDrawer({
                     ))}
                   </div>
                 ) : null}
+              </Field>
+
+              <Field label="Language" hint={languageHint(fan.language, fan.language_source)}>
+                <select
+                  value={fan.language ?? ""}
+                  onChange={(e) => update.mutate({ language: e.target.value })}
+                  className="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-sm focus:outline-none focus:border-accent"
+                >
+                  <option value="">Default (account)</option>
+                  {LANGUAGE_OPTIONS.map((l) => (
+                    <option key={l.code} value={l.code}>{l.label}</option>
+                  ))}
+                </select>
               </Field>
               </div>
 
@@ -1619,6 +1636,125 @@ function sameList(a: string[], b: string[]): boolean {
   const A = a.slice().sort();
   const B = b.slice().sort();
   return A.every((v, i) => v === B[i]);
+}
+
+// Per-fan language override options. "Default (account)" is the empty value — it clears
+// the override so the fan follows the account's language. Picking one pins it MANUAL,
+// so gen_info's auto-detection can never change it.
+const LANGUAGE_OPTIONS: { code: string; label: string }[] = [
+  { code: "en", label: "English" },
+  { code: "es", label: "Español" },
+  { code: "sl", label: "Slovenščina" },
+  { code: "pt", label: "Português" },
+  { code: "fr", label: "Français" },
+  { code: "de", label: "Deutsch" },
+  { code: "it", label: "Italiano" },
+];
+
+function languageHint(language: string | null, source: string | null): string {
+  if (!language) return "Using the account default. Pick one to pin this fan.";
+  if (source === "manual") return "Manual override — auto-detection won't change it.";
+  return "Auto-detected. Pick one to pin it (stops auto-detection).";
+}
+
+const LANG_LABEL: Record<string, string> = {
+  en: "English", es: "Español", sl: "Slovenščina", pt: "Português",
+  fr: "Français", de: "Deutsch", it: "Italiano",
+};
+
+function fmtCommStyle(cs: Record<string, unknown> | undefined): string {
+  if (!cs) return "";
+  return Object.entries(cs).filter(([, v]) => v === true).map(([k]) => k.replace(/_/g, " ")).join(", ");
+}
+
+// Read-only card summarising what gen_info learned: the detected language, the rich
+// note, the extracted facts, a dated timeline, and the openers it wrote.
+function ProfileCard({ fan }: { fan: FanRecord }) {
+  const p = fan.profile;
+  const facts: [string, string | null | undefined][] = [
+    ["Age", fan.his_age],
+    ["Location", [fan.home_city, fan.home_country].filter(Boolean).join(", ") || null],
+    ["Job", fan.occupation],
+    ["Employer", fan.employer],
+    ["Relationship", fan.relationship_status],
+    ["Stage", fan.relationship_stage],
+    ["Kids", fan.has_kids == null ? null : fan.has_kids ? "yes" : "no"],
+    ["Pets", Array.isArray(fan.pets) && fan.pets.length ? fan.pets.map(petLabel).join(", ") : null],
+    ["Style", fmtCommStyle(fan.communication_style) || null],
+  ];
+  const shown = facts.filter(([, v]) => v);
+  const timeline = (fan.recent_events_timeline ?? []).filter((t) => t?.event);
+  const richNote = p?.rich_note?.trim();
+  const langCode = fan.language ?? "";
+  const nothing = !richNote && shown.length === 0 && timeline.length === 0 &&
+    !(p?.q?.length) && !(p?.tease?.length);
+
+  return (
+    <div className="rounded-lg border border-border bg-bg-elev-1/40 p-3">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] font-medium text-fg-dim uppercase tracking-wide">AI profile</span>
+        <div className="flex items-center gap-2">
+          {langCode ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-border text-fg-dim"
+              title={fan.language_source === "manual" ? "Manual override" : "Auto-detected"}>
+              🌐 {LANG_LABEL[langCode] ?? langCode}
+              {fan.language_source === "manual" ? " · pinned" : ""}
+            </span>
+          ) : null}
+          {p?.last_generated_at ? (
+            <span className="text-[10px] text-fg-dim">{fmtRelTime(p.last_generated_at)}</span>
+          ) : null}
+        </div>
+      </div>
+
+      {nothing ? (
+        <div className="text-[11px] text-fg-dim">No profile yet — gen_info fills this once he chats a little.</div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {richNote ? (
+            <div className="text-[11px] text-fg whitespace-pre-line leading-relaxed">{richNote}</div>
+          ) : null}
+
+          {shown.length ? (
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+              {shown.map(([k, v]) => (
+                <div key={k} className="text-[11px]">
+                  <span className="text-fg-dim">{k}: </span><span className="text-fg">{v}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {timeline.length ? (
+            <div>
+              <div className="text-[10px] text-fg-dim uppercase tracking-wide mb-1">Timeline</div>
+              <ul className="space-y-0.5">
+                {timeline.slice(-6).reverse().map((t, i) => (
+                  <li key={i} className="text-[11px] text-fg-dim">
+                    <span className="font-mono text-[10px]">{t.date}</span> · <span className="text-fg">{t.event}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {p?.q?.length || p?.tease?.length ? (
+            <div className="text-[10px] text-fg-dim">
+              {p?.q?.length ? <div>{p.q.length} question{p.q.length > 1 ? "s" : ""} + {p?.tease?.length ?? 0} tease{(p?.tease?.length ?? 0) > 1 ? "s" : ""} ready</div> : null}
+            </div>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function petLabel(p: unknown): string {
+  if (p && typeof p === "object") {
+    const o = p as Record<string, unknown>;
+    return [o.kind, o.name].filter(Boolean).join(" ") || JSON.stringify(o);
+  }
+  return String(p);
 }
 
 // OF stores both the per-fan rename and the private creator-side note on

@@ -70,6 +70,7 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from . import rhythm, script_packs, tip_ladder, upsell
+from . import _language
 # ppv_send owns the ONE price authority (`price_bounds`) and the ONE ownership
 # check (`_owners_of_media`, keyed on MEDIA — a fan who bought a clip in a mass
 # blast has no content_offers row at all). Importing them rather than growing a
@@ -3200,6 +3201,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     hot_thread: bool = False,
                     bot_accused: bool = False,
                     painful_on: bool = True,
+                    lang: str = "en",
                     profile: "FanProfile | None" = None,
                     ask_every: int = 0,
                     buyer_facts: list[str] | None = None) -> tuple[list[dict], list[str]]:
@@ -3457,6 +3459,9 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
            "(it's stripped before sending — the fan never sees it)."
            if has_sell else
            "Your reply is ONLY the message text — no JSON, quotes, or metadata.")
+        # OUTPUT-LANGUAGE block at the very END (prefix-cache safe); "" for en. It also
+        # pins the >>OFFER token so a Spanish reply never leaks a translated marker.
+        + _language.output_language_directive(lang)
     )
     user = (
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
@@ -3598,6 +3603,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
+    account_lang = await _language.load_account_language(account_id)  # output language + guard gate
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     persona = await _load_persona(account_id)
 
@@ -4454,6 +4460,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                               hot_thread=hot_thread,
                                               bot_accused=bot_accused_first,
                                               painful_on=painful_on,
+                                              lang=account_lang,
                                               profile=profiles.get(fan_id),
                                               ask_every=(old_q_every
                                                          if fan_id in old_fan_ids
@@ -4666,7 +4673,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         teaser = None      # brake + the per-tick paid cap
             if not dry_run:
                 await _bump_attempt(account_id, fan_id, now)
-            parts = [apply_word_restriction(p)[:_REPLY_MAX_CHARS]
+            parts = [_language.apply_word_restriction(p, account_lang)[:_REPLY_MAX_CHARS]
                      for p in split_for_bubbles(raw, max_bubbles,
                                                 rng=random.Random(f"split:{fan_id}:{raw}"))
                      if p.strip()][:max_bubbles]

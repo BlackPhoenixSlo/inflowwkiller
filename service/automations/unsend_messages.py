@@ -132,6 +132,23 @@ def _norm_targets(raw: object) -> list[dict]:
                     "kind": "story",
                     "story_id": int(t["story_id"]),
                 })
+            elif isinstance(t.get("hide_upload"), dict):
+                # Hide a fresh vault item by the md5+size of the bytes that were
+                # uploaded to create it (auto_stories dupe-cleanup). `exclude_ids`
+                # are vault ids we must NEVER hide (the source item), guarding
+                # against a hash collision resolving back to the original.
+                hu = t["hide_upload"]
+                md5 = hu.get("md5")
+                size = hu.get("size")
+                if md5 and size is not None:
+                    out.append({
+                        "kind": "hide_upload",
+                        "md5": str(md5),
+                        "size": int(size),
+                        "exclude_ids": [int(x) for x in (hu.get("exclude_ids") or [])],
+                    })
+                else:
+                    log.warning("unsend_target_bad_hide target=%r — skipped", t)
             elif t.get("queue_id") is not None:
                 out.append({
                     "kind": "mass",
@@ -530,6 +547,9 @@ async def _write_action(account_id: str, target: dict, flipped: int) -> None:
         action, target_type, target_id = "delete_post", "post", str(target["post_id"])
     elif target["kind"] == "story":
         action, target_type, target_id = "delete_story", "story", str(target["story_id"])
+    elif target["kind"] == "hide_upload":
+        action, target_type = "hide_vault_media", "vault_media"
+        target_id = str(target.get("hidden_id") or target.get("md5") or "")
     else:
         action, target_type, target_id = "unsend_message", "message", str(target["message_id"])
     async with get_session() as s:
@@ -646,6 +666,21 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # Stories have no local mirror table — just delete on OF.
                 await asyncio.to_thread(client.delete_story, t["story_id"])
                 flipped = 0
+            elif t["kind"] == "hide_upload":
+                # Resolve the re-uploaded vault item by its source-byte hash,
+                # then hide it (OF's "Remove from vault"). A miss = the dupe is
+                # already gone / still transcoding, or the hash resolved to an
+                # excluded source id — none of which is a failure.
+                hit = await asyncio.to_thread(
+                    client.vault_media_lookup_hash, t["md5"], t["size"]
+                )
+                vid = (hit or {}).get("id") or (hit or {}).get("mediaId")
+                if vid is not None and int(vid) not in t.get("exclude_ids", []):
+                    await asyncio.to_thread(client.hide_vault_media, [int(vid)])
+                    t["hidden_id"] = int(vid)
+                    flipped = 1
+                else:
+                    flipped = 0
             else:
                 await asyncio.to_thread(
                     client.unsend_message, t["message_id"], t["fan_id"]

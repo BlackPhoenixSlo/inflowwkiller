@@ -11,6 +11,15 @@ Drives the Settings → Auto stories tab. On each trigger it:
   4. if `hours_to_live` is set, enqueues a one-shot `unsend_messages` job at
      now+hours carrying a `{story_id}` target → the story auto-deletes
      (DELETE /stories/{id}); 0/absent = keep until it expires on its own.
+  5. if `remove_vault_dupe` (default ON), also removes the vault DUPLICATE the
+     story's fresh re-upload creates: /stories can't take a bare vault id, so
+     every post re-uploads the bytes → OF files a new vault item. We schedule a
+     deferred `unsend_messages` cleanup carrying a `{hide_upload:{md5,size}}`
+     target that, once OF finishes transcoding, resolves that new item by hash
+     (vault_media_lookup_hash) and hides it (PUT /vault/media/hidden). The
+     source vault id rides along as `exclude_ids` so a hash collision can never
+     hide the ORIGINAL. Piggybacks on the delete job when a TTL is set; else a
+     short-delay hide-only job so transcoding has finished first.
 
 The cadence ("cron time") and the run-limit ("how many times to run") live on
 the automation_rule's `trigger_json` and are enforced by the executor's
@@ -29,6 +38,7 @@ Payload (steps_json) shape::
       "media_count": 1,            # photos per trigger (alias/fallback: `per_run`)
       "per_run": 1,                # legacy count knob (used when media_count unset)
       "hours_to_live": 6,          # auto-delete after N hours (null/0 = keep)
+      "remove_vault_dupe": true,   # hide the re-uploaded vault copy (default ON)
       "watermark_text": null,      # optional watermark stamped on re-upload
       "dry_run": false             # resolve picks, post nothing
     }
@@ -46,6 +56,11 @@ from automation_registry import register
 from automations._pools import has_media_source, pick_media
 
 log = logging.getLogger("of-relay.automation.auto_stories")
+
+# When a story is KEPT (no TTL) but we still want its re-uploaded vault dupe
+# gone, the hide has to wait for OF to finish transcoding the upload — the new
+# vault item is only hash-findable once ready. This short delay covers that.
+_HIDE_DELAY_MINUTES = 15
 
 
 def _pos_float(raw: object) -> float | None:
@@ -103,6 +118,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     count = _pos_int(payload.get("media_count"), 0) or per_run
     hours_to_live = _pos_float(payload.get("hours_to_live"))
     watermark_text = payload.get("watermark_text") or None
+    # Default ON: missing/garbage → True, an explicit `false` opts a rule out.
+    _rd = payload.get("remove_vault_dupe", True)
+    remove_dupe = _rd if isinstance(_rd, bool) else True
 
     pool_spec = {
         "media_files": payload.get("media_files"),
@@ -131,6 +149,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         return {
             "dry_run": True, "folder_id": folder_id,
             "would_post": [mid for mid, _ in resolved],
+            "remove_vault_dupe": remove_dupe,
             "posted": 0,
         }
 
@@ -147,26 +166,58 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     now = datetime.utcnow()
     for mid, url in resolved:
         try:
-            story = await asyncio.to_thread(
-                lambda u=url: client.post_story_from_url(u, watermark_text=watermark_text)
+            result = await asyncio.to_thread(
+                lambda u=url: client.post_story_from_url(
+                    u, watermark_text=watermark_text, return_upload=remove_dupe)
             )
         except Exception as e:  # noqa: BLE001 — one bad pick shouldn't strand the rest
             failed += 1
             log.warning("auto_stories: post failed vault=%s: %s", mid, e)
             continue
+        # return_upload=True → {story, upload:{md5,size}}; else a bare story dict.
+        if remove_dupe and isinstance(result, dict) and "story" in result:
+            story = result.get("story")
+            upload = result.get("upload") or {}
+        else:
+            story, upload = result, {}
         story_id = story.get("id") if isinstance(story, dict) else None
         entry = {"vault_id": mid, "story_id": story_id}
 
-        # Schedule the auto-delete (the cleanup leg).
+        # The dupe-hide leg: hide the fresh vault item this upload created, keyed
+        # by its source-byte hash, with the source id excluded so the original is
+        # never touched. Only when we actually captured the upload identity.
+        hide_tgt = None
+        if remove_dupe and upload.get("md5") and upload.get("size"):
+            hide_tgt = {"hide_upload": {
+                "md5": upload["md5"],
+                "size": int(upload["size"]),
+                "exclude_ids": [int(mid)],
+            }}
+
+        # Cleanup scheduling: when a TTL is set, one job both deletes the story
+        # and hides the dupe (fires at now+hours, so transcoding is long done).
+        # When the story is KEPT, a separate short-delay job hides the dupe only.
         if story_id and hours_to_live:
             delete_at = now + timedelta(hours=hours_to_live)
+            targets: list[dict] = [{"story_id": int(story_id)}]
+            if hide_tgt:
+                targets.append(hide_tgt)
             entry["delete_job_id"] = await ax.enqueue_job(
                 account_id, "unsend_messages",
-                payload={"targets": [{"story_id": int(story_id)}]},
+                payload={"targets": targets},
                 run_at=delete_at,
                 created_by_employee_id=employee_id,
             )
             entry["delete_at"] = delete_at.isoformat() + "Z"
+        elif hide_tgt:
+            hide_at = now + timedelta(minutes=_HIDE_DELAY_MINUTES)
+            entry["hide_job_id"] = await ax.enqueue_job(
+                account_id, "unsend_messages",
+                payload={"targets": [hide_tgt]},
+                run_at=hide_at,
+                created_by_employee_id=employee_id,
+            )
+            entry["hide_at"] = hide_at.isoformat() + "Z"
         posted.append(entry)
 
     return {

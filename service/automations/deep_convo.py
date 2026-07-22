@@ -77,6 +77,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
+from . import _language
 from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
@@ -308,7 +309,7 @@ async def _gather_messages(account_id: str, fan_ids: set[int]) -> dict[int, _Can
 
 def _build_messages(persona: str, f: Fan, c: _Candidate,
                     style_on: bool = False, nonnative_on: bool = False,
-                    painful_on: bool = True) -> list[dict]:
+                    painful_on: bool = True, lang: str = "en") -> list[dict]:
     """Compose the (system, user) pair for an in-between reply during the drill
     (the Q + Tease themselves are sent verbatim from the profile — not generated)."""
     facts = []
@@ -343,6 +344,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"{NONNATIVE_REGISTER + chr(10) + chr(10) if nonnative_on else ''}"
         "IMPORTANT: your reply is ONLY the chat message text. Never include JSON, "
         "code blocks, curly braces, or any metadata. Just text him back."
+        f"{_language.output_language_directive(lang)}"
     )
     user = (
         f"What you know about him:\n{facts_block}\n\n"
@@ -388,7 +390,8 @@ async def _push_profile(client, account_id: str, fan_id: int, f: Fan) -> None:
         await push_nick_and_notes(
             client, account_id, fan_id,
             nick=build_structured_nickname(f),
-            notes=build_facts_note(facts_from_fan(f), short_bio=short_bio),
+            # 200 pinned EXPLICITLY — this PUTs to OnlyFans; never inherit a widened default.
+            notes=build_facts_note(facts_from_fan(f), short_bio=short_bio, max_len=200),
         )
     except Exception:
         log.debug("deep_convo profile push failed account=%s fan=%s",
@@ -434,7 +437,8 @@ async def _send_one(client, account_id: str, fan_id: int, text: str,
 async def _send(client, account_id: str, fan_id: int, text: str,
                 *, typing_wpm: float | None = None,
                 typing_indicator: bool | None = None,
-                typo: bool = False, nonnative: bool = False, protect=()) -> bool:
+                typo: bool = False, nonnative: bool = False, protect=(),
+                lang: str = "en") -> bool:
     """Send one message + persist it through the optimistic path. Returns True on
     a 200 (whether or not OF echoed an id). Raises on a transport failure so the
     caller can leave state un-advanced and retry next tick.
@@ -457,7 +461,7 @@ async def _send(client, account_id: str, fan_id: int, text: str,
     text = _strip_emojis(text)  # deep_convo is emoji-free (covers Q, replies, tease)
     if nonnative:  # opt-in: deterministic non-native misspellings (BEFORE word restrict)
         text = apply_nonnative_style(text, protect=protect)
-    text = apply_word_restriction(text)  # last-mile OF-restricted word substitution
+    text = _language.apply_word_restriction(text, lang)  # last-mile OF-restricted word substitution (language-gated)
     if typing_wpm is None:
         typing_wpm = await load_typing_wpm(account_id)
     if typing_indicator is None:
@@ -500,6 +504,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
     style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
+    account_lang = await _language.load_account_language(account_id)  # output language
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
@@ -668,11 +673,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # bubble first, THEN send the scripted Q (human-ish typing pause between).
                 if _fan_asked(c):
                     lead = await _generate_leadin(model, persona, f, c, account_id, fan_id,
-                                                  style_on=style_on, nonnative_on=nonnative_on)
+                                                  style_on=style_on, nonnative_on=nonnative_on,
+                                                  lang=account_lang)
                     if lead:
                         await _send(client, account_id, fan_id, lead,
                                     typing_wpm=typing_wpm, typing_indicator=typing_indicator,
-                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect)
+                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect,
+                            lang=account_lang)
                         if _STEP_GAP_S:
                             await hold_with_typing(account_id, fan_id, _jittered_gap(),
                                                    typing_indicator=typing_indicator)
@@ -692,7 +699,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             elif state == _S_Q_SENT:
                 reply = await _generate(model, persona, f, c, account_id, fan_id,
                                        style_on=style_on, nonnative_on=nonnative_on,
-                                       painful_on=painful_on)
+                                       painful_on=painful_on, lang=account_lang)
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -704,7 +711,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     continue
                 await _send(client, account_id, fan_id, reply,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
-                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect)
+                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect,
+                            lang=account_lang)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now,
                                   deep_convo_state=_S_CHATTED_1, **reset)
@@ -714,7 +722,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             elif state == _S_CHATTED_1:
                 reply = await _generate(model, persona, f, c, account_id, fan_id,
                                        style_on=style_on, nonnative_on=nonnative_on,
-                                       painful_on=painful_on)
+                                       painful_on=painful_on, lang=account_lang)
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -728,7 +736,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # before the Tease recovers by sending ONLY the Tease), then Tease.
                 await _send(client, account_id, fan_id, reply,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
-                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect)
+                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect,
+                            lang=account_lang)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now,
                                   deep_convo_state=_S_CHATTED_2, **reset)
@@ -814,14 +823,15 @@ _CAP = object()
 async def _generate(model: str, persona: str, f: Fan, c: _Candidate,
                     account_id: str, fan_id: int,
                     style_on: bool = False, nonnative_on: bool = False,
-                    painful_on: bool = True) -> str | object:
+                    painful_on: bool = True, lang: str = "en") -> str | object:
     """Generate ONE in-between reply. Returns the text, '' on a generation error,
     or the _CAP sentinel when the daily LLM cap is hit (caller stops the run)."""
     try:
         res = await llm_client.chat(
             model=model,
             messages=_build_messages(persona, f, c, style_on=style_on,
-                                     nonnative_on=nonnative_on, painful_on=painful_on),
+                                     nonnative_on=nonnative_on, painful_on=painful_on,
+                                     lang=lang),
             purpose=_PURPOSE,
             account_id=account_id,
             fan_id=fan_id,
@@ -849,7 +859,8 @@ def _fan_asked(c: _Candidate) -> bool:
 
 
 def _leadin_messages(persona: str, f: Fan, c: _Candidate,
-                     style_on: bool = False, nonnative_on: bool = False) -> list[dict]:
+                     style_on: bool = False, nonnative_on: bool = False,
+                     lang: str = "en") -> list[dict]:
     history = c.messages[-_HISTORY_TAIL:]
     convo = "\n".join(f"{'FAN' if d == 'in' else 'YOU'}: {b}" for d, b in history if b)
     system = (
@@ -863,6 +874,7 @@ def _leadin_messages(persona: str, f: Fan, c: _Candidate,
         f"{LIVE_PROOF_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
         f"{NONNATIVE_REGISTER if nonnative_on else ''}"
+        f"{_language.output_language_directive(lang)}"
     )
     user = f"Recent conversation (oldest→newest):\n{convo}\n\nAnswer his last message in one short sentence."
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -870,14 +882,15 @@ def _leadin_messages(persona: str, f: Fan, c: _Candidate,
 
 async def _generate_leadin(model: str, persona: str, f: Fan, c: _Candidate,
                            account_id: str, fan_id: int,
-                           style_on: bool = False, nonnative_on: bool = False) -> str:
+                           style_on: bool = False, nonnative_on: bool = False,
+                           lang: str = "en") -> str:
     """A short bubble that answers the fan's question BEFORE the scripted Q goes out,
     so the Q doesn't read like a bot talking past him. Best-effort — any failure
     (incl. the LLM cap) just skips the lead-in and we send the Q alone."""
     try:
         res = await llm_client.chat(
             model=model, messages=_leadin_messages(persona, f, c, style_on=style_on,
-                                                    nonnative_on=nonnative_on),
+                                                    nonnative_on=nonnative_on, lang=lang),
             purpose=_PURPOSE,
             account_id=account_id, fan_id=fan_id, temperature=_REPLY_TEMPERATURE,
         )

@@ -72,6 +72,7 @@ from nudge_config_api import router as _nudge_config_router  # noqa: E402
 from webhook_config_api import router as _webhook_config_router  # noqa: E402
 from autoreply_config_api import router as _autoreply_config_router  # noqa: E402
 from tip_reward_config_api import router as _tip_reward_config_router  # noqa: E402
+from make_right_config_api import router as _make_right_config_router  # noqa: E402
 from ppv_library_config_api import router as _ppv_library_config_router  # noqa: E402
 from vault_ai_api import router as _vault_ai_router  # noqa: E402
 from scripts_api import router as _scripts_router  # noqa: E402
@@ -176,6 +177,7 @@ app.include_router(_nudge_config_router)
 app.include_router(_webhook_config_router)
 app.include_router(_autoreply_config_router)
 app.include_router(_tip_reward_config_router)
+app.include_router(_make_right_config_router)
 app.include_router(_ppv_library_config_router)
 app.include_router(_vault_ai_router)
 app.include_router(_scripts_router)

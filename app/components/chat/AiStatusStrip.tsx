@@ -102,6 +102,18 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
         {until ? ` → ${until}` : ""}
       </span>
 
+      {/* Language chip — only when she's NOT writing default English, so English
+          accounts see no extra clutter. */}
+      {data.language && data.language !== "en" && (
+        <span className="text-fg-dim" title={
+          data.language_source === "manual" ? "Language pinned for this fan"
+          : data.language_source === "account" ? "Account default language"
+          : "Auto-detected language"
+        }>
+          🌐 {data.language}{data.language_source === "manual" ? "·pinned" : ""}
+        </span>
+      )}
+
       {/* Everything past the state chip is desktop-only: 11 chips that explain
           themselves through title= alone tower 8-10 lines high inside the phone
           header. `md:contents` keeps them DIRECT flex children at md, so the

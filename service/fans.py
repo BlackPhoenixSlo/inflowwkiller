@@ -108,6 +108,8 @@ def _row_to_dict(f: Fan) -> dict[str, Any]:
         ),
         "source": f.source,
         "is_followed": f.is_followed,
+        "language": f.language,
+        "language_source": f.language_source,
         # ── §2.4 extended Grok facts ─
         "occupation": f.occupation,
         "employer": f.employer,
@@ -116,6 +118,7 @@ def _row_to_dict(f: Fan) -> dict[str, Any]:
         "has_kids": f.has_kids,
         "family_names": _safe_load_obj(f.family_names),
         "pets": _safe_load_array(f.pets),
+        "recent_events_timeline": _safe_load_array(f.recent_events_timeline),
         "mood_at_last_message": f.mood_at_last_message,
         "sentiment_trend": f.sentiment_trend,
         "relationship_stage": f.relationship_stage,
@@ -202,6 +205,9 @@ class FanUpdateBody(BaseModel):
     persona_job_claimed: str | None = None
     profile_last_synced_at: datetime | None = None
     grok_facts_updated_at: datetime | None = None
+    # Per-fan language override (ISO 639-1). Setting it marks language_source='manual'
+    # so gen_info's detection can never overwrite it. "" / null clears the override.
+    language: str | None = None
 
     @field_validator("relationship_status")
     @classmethod
@@ -211,6 +217,17 @@ class FanUpdateBody(BaseModel):
         raise ValueError(
             f"relationship_status must be one of {sorted(_RELATIONSHIP_STATUSES)}"
         )
+
+    @field_validator("language")
+    @classmethod
+    def _check_language(cls, v: str | None) -> str | None:
+        if not v:
+            return None
+        from automations._language import norm_lang
+        code = norm_lang(v)
+        if not code:
+            raise ValueError(f"language {v!r} is not a supported ISO 639-1 code")
+        return code
 
 
 # NOTE: route order matters. FastAPI matches paths in declaration order
@@ -375,7 +392,28 @@ async def get_fan(account_id: str, fan_id: int) -> dict[str, Any]:
             s.add(f)
             await s.commit()
             await s.refresh(f)
-        return _row_to_dict(f)
+        row = _row_to_dict(f)
+        # Join the gen_info profile so the drawer can show the rich note + openers.
+        prof = await s.get(FanProfile, (account_id, fan_id))
+    row["profile"] = _profile_block(prof, f.lifetime_spend_cents or 0)
+    return row
+
+
+def _profile_block(prof: "FanProfile | None", lifetime_spend_cents: int) -> dict[str, Any]:
+    """The gen_info profile for the drawer's AI-Profile card. `rich_note` is the app-only
+    spend-tiered projection of the STORED bullet_points (not the 200-char OF note)."""
+    from automations._common import build_rich_note
+    if prof is None:
+        return {"rich_note": "", "short_bio": None, "nickname": None,
+                "q": [], "tease": [], "last_generated_at": None}
+    return {
+        "rich_note": build_rich_note(prof.bullet_points, prof.short_bio or "", lifetime_spend_cents),
+        "short_bio": prof.short_bio,
+        "nickname": prof.nickname,
+        "q": [x for x in (prof.q1, prof.q2, prof.q3) if x],
+        "tease": [x for x in (prof.tease1, prof.tease2, prof.tease3) if x],
+        "last_generated_at": prof.last_generated_at.isoformat() if prof.last_generated_at else None,
+    }
 
 
 @router.get("/admin/fans/{account_id}/{fan_id}/ai-status")
@@ -408,6 +446,11 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
     async with get_session() as s:
         fan = (await s.execute(select(Fan).where(
             Fan.account_id == str(account_id), Fan.fan_id == int(fan_id)))).scalar_one_or_none()
+
+    from automations import _language as _lang
+    _lang_resolved = _lang.resolve_language(
+        await _lang.load_account_language(account_id),
+        fan.language if fan is not None else None)
 
     blacklist, skip_reasons = await ac._load_stop_lists(account_id)
     reason = skip_reasons.get(int(fan_id))
@@ -632,6 +675,11 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
             "status": (lad.status if lad is not None else "idle"),
             "rung": int(lad.rung_index or 0) if lad is not None else 0,
         },
+        # The language she writes to THIS fan (resolved: per-fan override → account
+        # default → en) + where it came from, so the strip can show a 🌐 chip.
+        "language": _lang_resolved,
+        "language_source": (
+            fan.language_source if (fan is not None and fan.language) else "account"),
         # A live ask he hasn't paid — OURS or a human chatter's. This is what makes the
         # thread break-proof, and what the strip shows as "🔒 $45 ask open".
         "open_ask": (
@@ -888,6 +936,11 @@ async def update_fan(
                 f.communication_style = json.dumps(v or {})
             elif k == "pets":
                 f.pets = json.dumps(v or [])
+            elif k == "language":
+                # An operator-set language is authoritative: mark it 'manual' so
+                # gen_info detection never overwrites it (or clear the override).
+                f.language = v or None
+                f.language_source = "manual" if v else None
             else:
                 setattr(f, k, v)
         f.updated_at = datetime.utcnow()

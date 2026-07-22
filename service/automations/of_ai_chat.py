@@ -64,11 +64,13 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
+from . import _language
 from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
 from db.models import (
-    AccountAiConfig, Blacklist, Fan, FanProfile, FunnelState, MassRun, Message, SkipList,
+    AccountAiConfig, Blacklist, Fan, FanProfile, FunnelState, MassRun, Message,
+    ScheduledJob, SkipList,
 )
 from llm_client import LLMCapExceeded
 from ._common import (
@@ -804,6 +806,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
                     content_ask: bool = False,
                     tip_ask_block: str = "",
                     painful_on: bool = True,
+                    lang: str = "en",
                     profile: "FanProfile | None" = None) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — a faithful port of V1
     prompts.create_chat_response: a short, GIRLY, 100%-human reply that flirts
@@ -996,6 +999,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"{LIVE_PROOF_GUARDRAIL}"
         f"{humanizer}{nonnative}\n\n"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
+        # OUTPUT-LANGUAGE block appended at the very END (prefix-cache safe); "" for en.
+        f"{_language.output_language_directive(lang)}"
     )
     user = (
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
@@ -1175,7 +1180,9 @@ async def _handoff_to_deep_convo(client, account_id: str, fan_id: int, f: Fan) -
         await push_nick_and_notes(
             client, account_id, fan_id,
             nick=build_structured_nickname(f),
-            notes=build_facts_note(facts_from_fan(f)),
+            # 200 pinned EXPLICITLY: this PUTs the note to OnlyFans (no dedup/throttle
+            # on this path), so it must never inherit a widened build_facts_note default.
+            notes=build_facts_note(facts_from_fan(f), max_len=200),
         )
     except Exception:
         log.debug("of_ai_chat handoff push failed account=%s fan=%s",
@@ -1265,11 +1272,12 @@ async def _mark_reply_sent(account_id: str, fan_id: int, now: datetime) -> None:
 async def _maybe_refresh_profile(account_id: str, fan_id: int, fan_msg_n: int,
                                  now: datetime) -> bool:
     """Refresh-if-stale hook: after an AI-chat reply lands, regenerate the fan's
-    profile from the latest messages IF the Fibonacci/age gate says it's due
-    (`gen_info.profile_is_stale`). Enqueues a gen_info job (force_ids=[fan]) so the
-    regen runs ASYNC on the supervisor — the chat reply is never blocked or slowed.
-    Best-effort: any failure here is logged and swallowed (never breaks the reply).
-    Returns True iff a refresh was enqueued."""
+    profile from the latest messages IF the spend-tiered age/volume gate says it's
+    due (`gen_info.profile_is_stale`). Enqueues a GATED gen_info job (refill_ids=[fan],
+    re-checked at run time) so the regen runs ASYNC on the supervisor — the chat reply
+    is never blocked or slowed. Guarded against runaway re-enqueues by a pending-job
+    check + the min-interval floor inside profile_is_stale. Best-effort: any failure
+    here is logged and swallowed (never breaks the reply). Returns True iff enqueued."""
     try:
         async with get_session() as s:
             row = (await s.execute(
@@ -1295,8 +1303,27 @@ async def _maybe_refresh_profile(account_id: str, fan_id: int, fan_msg_n: int,
                                          lines_empty=lines_empty,
                                          fresh_after=fresh_after, volume_cap=volume_cap):
             return False
+        # Dedup: don't stack a second regen when one is already queued for this fan.
+        # The runaway (one fan drew 23 regens in 3h) was per-reply enqueues piling up
+        # here with no pending-check — the cold-start bootstrap path already guards
+        # this way; the refresh hook must too.
+        async with get_session() as s:
+            pending = (await s.execute(
+                select(ScheduledJob.id)
+                .where(ScheduledJob.account_id == str(account_id),
+                       ScheduledJob.kind == "gen_info",
+                       ScheduledJob.status.in_(("pending", "running")),
+                       ScheduledJob.payload_json.like(f"%[{int(fan_id)}]%"))
+                .limit(1)
+            )).first()
+        if pending is not None:
+            return False
+        # refill_ids (NOT force_ids): the gen_info RUN re-checks profile_is_stale, so a
+        # duplicate that still slips through no-ops once the first regen stamps the
+        # baseline — instead of force-bypassing the gate and re-mining the full
+        # transcript every reply.
         await ax.enqueue_job(account_id, "gen_info",
-                             payload={"force_ids": [int(fan_id)]})
+                             payload={"refill_ids": [int(fan_id)]})
         return True
     except Exception:
         log.debug("of_ai_chat profile-refresh enqueue skipped account=%s fan=%s",
@@ -1369,6 +1396,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
     factground_on = await load_factground_flag(account_id)  # rich-profile grounding (default ON)
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
+    account_lang = await _language.load_account_language(account_id)  # output language + guard gate
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     # Content-ask tip-ask: when a fan asks to SEE content, swap the gather question
@@ -1558,8 +1586,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             msgs, presented = _build_messages(
                 persona, f, c, asked, history_tail,
                 style_on=style_on, nonnative_on=nonnative_on,
-                content_ask=is_content_ask(c.last_body), tip_ask_block=tip_ask_block,
-                painful_on=painful_on,
+                content_ask=_language.is_content_ask(c.last_body, account_lang),
+                tip_ask_block=tip_ask_block,
+                painful_on=painful_on, lang=account_lang,
                 profile=profiles.get(fan_id))
             try:
                 res = await llm_client.chat(
@@ -1605,7 +1634,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Up to `max_bubbles` bubbles (newline / em-dash / mid-emoji); em-dashes
             # are always cleaned out. Cap (2, or 3 with the style opt-in) so we
             # never spam.
-            parts = [apply_word_restriction(p)[:_REPLY_MAX_CHARS]
+            parts = [_language.apply_word_restriction(p, account_lang)[:_REPLY_MAX_CHARS]
                      for p in split_for_bubbles(raw, max_bubbles,
                                                 rng=random.Random(f"split:{fan_id}:{raw}"))
                      if p.strip()][:max_bubbles]

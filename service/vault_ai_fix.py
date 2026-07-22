@@ -30,6 +30,7 @@ for `description` and `tags`; this only extends it to the exposure fields.
 from __future__ import annotations
 
 import json
+import json
 import logging
 import re
 from typing import Any
@@ -41,6 +42,23 @@ from db.engine import get_session
 from db.models import VaultItem
 
 log = logging.getLogger("of-relay.vault_ai_fix")
+
+
+def _poster_frame_count(raw_json: str | None) -> int:
+    """How many hover-scrub frames a video has — the count of OF's own
+    pre-extracted poster frames (`files.preview.options[]`, media-id keyed and
+    permanent). 0 for a photo or a video that exposes none, so the review UI
+    knows not to offer a scrub. Kept here rather than importing vault_ai_api to
+    avoid a cycle; it is a shallow dict walk, no OF call."""
+    try:
+        raw = json.loads(raw_json) if isinstance(raw_json, str) else (raw_json or {})
+    except (TypeError, ValueError):
+        return 0
+    if not isinstance(raw, dict):
+        return 0
+    prev = (raw.get("files") or {}).get("preview") or {}
+    opts = prev.get("options") if isinstance(prev, dict) else None
+    return sum(1 for o in (opts or []) if isinstance(o, dict) and o.get("url"))
 
 # The exposure fields an operator may correct. Deliberately narrow: these are
 # the ones the lanes and the price tiers read, and the ones the two passes can
@@ -178,14 +196,19 @@ def propose(fields: dict[str, Any], codes: list[str]) -> dict[str, dict[str, Any
                 trust_describe[region] = "covered"
 
     if "penetration_offscreen" in codes:
-        # Flags right → nothing genital is in shot, so the recorded penetration
-        # cannot be visible in this frame. Clear the ACTS that assert it in the
-        # same write: the contradiction fires on either source, so dropping the
-        # field alone left the item disputed after the operator had settled it.
+        # Flags right → nothing genital is in shot, so ANY recorded genital act is
+        # off-frame and cannot be seen. Clear the penetration field AND every act
+        # that needs the genitals visible (`GENITAL_ACTS`) in the same write: the
+        # contradiction fires on either source, so dropping one alone left the
+        # item disputed after the operator had settled it. Stripping only the
+        # INSERTION acts used to leave `rubbing_clit` on a still where the vulva
+        # is not_in_frame, so "Flags were right" still claimed she was rubbing a
+        # clit that is not in the picture — the exact both-wrong case an operator
+        # cannot fix with either button.
         trust_flags["penetration"] = "none"
         acts = [a for a in (fields.get("acts") or [])
                 if isinstance(a, str)
-                and a.strip().lower() not in vault_ai_brief.PENETRATING_ACTS]
+                and a.strip().lower() not in vault_ai_brief.GENITAL_ACTS]
         if len(acts) != len(fields.get("acts") or []):
             trust_flags["acts"] = acts
         trust_describe["vulva_vis"] = "bare"
@@ -202,7 +225,8 @@ async def list_disputes(account_id: str) -> dict[str, Any]:
     async with get_session() as s:
         rows = (await s.execute(
             select(VaultItem.media_id, VaultItem.kind, VaultItem.ai_fields_json,
-                   VaultItem.locked_fields_json, VaultItem.created_at)
+                   VaultItem.locked_fields_json, VaultItem.raw_json,
+                   VaultItem.created_at)
             .where(VaultItem.account_id == account_id,
                    VaultItem.removed_at.is_(None),
                    VaultItem.kind.in_(("photo", "video")))
@@ -210,7 +234,7 @@ async def list_disputes(account_id: str) -> dict[str, Any]:
 
     out: list[dict[str, Any]] = []
     checked = 0
-    for mid, kind, fj, lj, _ in rows:
+    for mid, kind, fj, lj, raw_json, _ in rows:
         fields = vault_ai_brief.load_fields(fj)
         if not vault_ai_brief.flags_known(fields):
             continue
@@ -225,6 +249,7 @@ async def list_disputes(account_id: str) -> dict[str, Any]:
         out.append({
             "media_id": int(mid),
             "kind": kind,
+            "frame_count": _poster_frame_count(raw_json) if kind == "video" else 0,
             "codes": codes,
             "reasons": [vault_ai_brief.CONTRADICTIONS.get(c, c) for c in codes],
             "description": str(fields.get("description") or "")[:400],
