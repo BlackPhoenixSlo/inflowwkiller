@@ -34,6 +34,7 @@ import {
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
+import { TIMEZONES, zoneLabel } from "@/components/settings/sellerShared";
 
 // The welcome automation's default cadence: poll OF's new-subscriber feed every
 // 5 min (matches the send_welcome spec's {every_seconds: 300}).
@@ -81,8 +82,36 @@ function isBlankBrain(c: BrainConfig): boolean {
 }
 
 // The defaults, with this account's own images kept (defaults carry none).
+// timezone is account identity (where SHE lives), not brain voice — a reset
+// must never move the creator to another city.
 function defaultsWithImages(defaults: BrainConfig, current: BrainConfig): BrainConfig {
-  return { ...defaults, time_images: current.time_images ?? {} };
+  return { ...defaults, time_images: current.time_images ?? {},
+           timezone: current.timezone ?? null };
+}
+
+// "UTC-7" / "her clock: 1:20 AM" for the picked IANA zone — the operator's
+// glance-check that the creator's clock is right (the Witcher incident was a
+// bot claiming 10am at 12:30am creator-time). Computed by Intl, never stored:
+// the saved utc_offset is only a legacy fallback for zone-less accounts.
+function zoneOffsetLabel(tz: string): string | null {
+  try {
+    const part = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" })
+      .formatToParts(new Date())
+      .find((p) => p.type === "timeZoneName")?.value;
+    return part ? part.replace("GMT", "UTC") : null;
+  } catch {
+    return null;
+  }
+}
+
+function localTimeIn(tz: string): string | null {
+  try {
+    return new Date().toLocaleTimeString("en-US", {
+      timeZone: tz, hour: "numeric", minute: "2-digit",
+    });
+  } catch {
+    return null;
+  }
 }
 
 const textareaCls =
@@ -531,14 +560,35 @@ export default function BrainPanel() {
               </select>
             </label>
             <label className="block space-y-1">
-              <span className="text-[11px] uppercase tracking-wide text-fg-dim">UTC offset (h)</span>
-              <Input
-                type="number"
-                min={-24}
-                max={24}
-                value={String(form.utc_offset)}
-                onChange={(e) => set("utc_offset", Number(e.target.value) || 0)}
-              />
+              <span className="text-[11px] uppercase tracking-wide text-fg-dim">Timezone</span>
+              <select
+                value={form.timezone ?? ""}
+                onChange={(e) => set("timezone", e.target.value || null)}
+                className={selectCls}
+                title="The creator's IANA timezone — powers her clock in chat prompts and the sleep window. The offset is computed from it (DST-aware), so there's nothing else to set."
+              >
+                <option value="">— not set —</option>
+                {(form.timezone && !TIMEZONES.includes(form.timezone)
+                  ? [form.timezone, ...TIMEZONES]
+                  : TIMEZONES
+                ).map((z) => (
+                  <option key={z} value={z}>{zoneLabel(z)}</option>
+                ))}
+              </select>
+              {form.timezone ? (
+                <span className="block text-[11px] text-fg-dim">
+                  {zoneOffsetLabel(form.timezone)} · her clock: {localTimeIn(form.timezone)}
+                </span>
+              ) : form.utc_offset !== 0 ? (
+                <span className="block text-[11px] text-amber-400"
+                  title="A fixed offset drifts an hour every DST change — pick her real timezone above.">
+                  legacy UTC{form.utc_offset > 0 ? "+" : ""}{form.utc_offset} offset in use
+                </span>
+              ) : (
+                <span className="block text-[11px] text-fg-dim">
+                  unset — she has no clock in chat
+                </span>
+              )}
             </label>
             <label className="block space-y-1">
               <span className="text-[11px] uppercase tracking-wide text-fg-dim">Daily cap (¢)</span>

@@ -11,14 +11,26 @@
  * ["notif-list", aid, type] query keys as the bell, so the cache is shared and
  * the toaster's invalidation on SSE arrival refreshes this list too.
  *
+ * COLD START: a page refresh wipes the react-query cache, and each model's
+ * OF fan-out lands at its own pace — so every successful fetch is mirrored
+ * into a localStorage snapshot, and the next mount shows those rows
+ * immediately (dimmed) while each model revalidates independently. The rail
+ * never blanks back to "Loading…" just because the tab reloaded.
+ *
  * WHICH MODELS: every active one by default, deliberately ignoring the
  * ScopeContext the rest of the UI follows — money landing on the model you're
  * NOT looking at is exactly what you don't want to miss. Narrow it in ⚙.
  *
  * Two sizes, and the marker (">" / "⌄") points where a click takes you.
  * Collapsing SHRINKS THE WINDOW, it doesn't truncate the feed — every row
- * stays mounted and scrolls, so "small" shows 1 row (configurable 1-4) with
- * the rest a flick away, and "big" shows 6 (configurable 5-8).
+ * stays mounted and scrolls, so "small" shows 1 row (configurable 0-4, where
+ * 0 collapses to just the header bar) with the rest a flick away, and "big"
+ * shows 6 (configurable 5-8). Which SURFACES show the rail at all (inbox /
+ * solo chat pop-out / group tab / everything else) is also a ⚙ choice — the
+ * house default keeps it on the chat surfaces and off the admin pages. A
+ * rail hidden on the current surface is restorable from the 🔔 dropdown,
+ * which is mounted everywhere. The header always carries the count of sales
+ * that arrived since the rows were last on screen.
  *
  * Draggable by its header. Position + the collapsed/expanded bit are persisted
  * PER SURFACE (inbox / chat pop-out / group tab): the rail is mounted once in
@@ -61,7 +73,7 @@ const ROW_H = 68;
  *  can't run off the screen edge. Estimates, not measurements — measuring
  *  would need a post-render pass feeding back into the height that caused it. */
 const HEADER_H = 38;
-const SETTINGS_H = 200;
+const SETTINGS_H = 280;
 /** Breathing room kept between the panel and the far viewport edge. */
 const VIEWPORT_MARGIN = 12;
 /** The default (never-dragged) corner sits `bottom-3 right-3` = 12px in. */
@@ -71,8 +83,12 @@ const DEFAULT_EDGE_GAP = 12;
 // Deliberately NOT per-surface, unlike position: "watch 6 rows, for these
 // models" is a preference about the work, not about this window's layout.
 const SETTINGS_KEY = "chatterly:money-rail:settings:v1";
-const SMALL_ROW_CHOICES = [1, 2, 3, 4] as const;
+/** 0 = collapsed shows ONLY the header bar — for chatters who want the dock
+ *  reachable but zero rows of it on screen until they expand. */
+const SMALL_ROW_CHOICES = [0, 1, 2, 3, 4] as const;
 const BIG_ROW_CHOICES = [5, 6, 7, 8] as const;
+
+const SURFACE_VALUES = ["inbox", "popup", "group", "other"] as const;
 
 export interface RailSettings {
   /** Rows visible while collapsed. */
@@ -84,12 +100,37 @@ export interface RailSettings {
    *  rest of the UI follows: a chatter scoped to one model still wants to see
    *  the money landing on the others. */
   accounts: string[] | null;
+  /** Surfaces the rail renders on. null = everywhere. Lets a chatter keep it
+   *  on the chat surfaces but off Setup/Automations/Stats etc. ("other"), or
+   *  any combination, instead of the old all-or-nothing hide. */
+  surfaces: Surface[] | null;
 }
 
-const DEFAULT_SETTINGS: RailSettings = { smallRows: 1, bigRows: 6, accounts: null };
+const DEFAULT_SETTINGS: RailSettings = {
+  smallRows: 1,
+  bigRows: 6,
+  accounts: null,
+  // House default: the chat surfaces only. On Setup/Automations/Stats pages
+  // the rail is clutter over the forms — anyone who wants it there ticks
+  // "Other pages" in ⚙.
+  surfaces: ["inbox", "popup", "group"],
+};
 
 function clampChoice(v: unknown, choices: readonly number[], fallback: number): number {
   return typeof v === "number" && choices.includes(v) ? v : fallback;
+}
+
+/** Empty and complete picks both normalise to null ("everywhere") — a rail
+ *  hidden on EVERY surface, whose only un-hide control lives inside the rail
+ *  itself, would be gone for good. */
+export function parseSurfaces(v: unknown): Surface[] | null {
+  if (!Array.isArray(v)) return null;
+  const picked = SURFACE_VALUES.filter((s) => v.includes(s));
+  return picked.length > 0 && picked.length < SURFACE_VALUES.length ? picked : null;
+}
+
+export function railVisibleOn(settings: RailSettings, surface: Surface): boolean {
+  return !settings.surfaces || settings.surfaces.includes(surface);
 }
 
 export function readSettings(): RailSettings {
@@ -107,14 +148,34 @@ export function readSettings(): RailSettings {
         Array.isArray(p.accounts) && p.accounts.length > 0
           ? p.accounts.filter((a): a is string => typeof a === "string")
           : null,
+      // Three states on disk: an array = that pick; an explicit null = the
+      // user chose "everywhere"; MISSING = a save from before surfaces
+      // existed (or junk) → the house default, NOT "everywhere".
+      surfaces:
+        p.surfaces === null
+          ? null
+          : Array.isArray(p.surfaces)
+            ? parseSurfaces(p.surfaces)
+            : DEFAULT_SETTINGS.surfaces,
     };
   } catch {
     return DEFAULT_SETTINGS;
   }
 }
 
+export const SETTINGS_EVENT = "chatterly:money-rail:settings";
+
 export function writeSettings(s: RailSettings): void {
   try { window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* quota */ }
+  // Same-tab siblings (the bell's "show it here" restore button lives in a
+  // different component) hear this and re-read; popout tabs get the native
+  // storage event. Deferred so a subscriber's setState never fires inside
+  // the caller's render/commit.
+  try {
+    queueMicrotask(() => {
+      try { window.dispatchEvent(new CustomEvent(SETTINGS_EVENT)); } catch { /* ignore */ }
+    });
+  } catch { /* ignore */ }
 }
 
 /** Which accounts the rail actually queries. Defaults to every active account
@@ -139,16 +200,20 @@ const DETAIL_REFRESH_MIN_GAP_MS = 10_000;
 /** Pointer slop before a press on the header counts as a drag and not a click. */
 const DRAG_THRESHOLD_PX = 4;
 
-/** The rail is mounted once in the root layout, but the same dock in the inbox,
- *  a chat pop-out and the group tab are three different working surfaces — a
- *  spot that's out of the way on one covers something on another. So position
- *  (and open/collapsed) is persisted per surface, not globally. */
-export type Surface = "inbox" | "popup" | "group";
+/** The rail is mounted once in the root layout, but the same dock in the
+ *  inbox, a chat pop-out, the group tab and everything else are different
+ *  working surfaces — a spot that's out of the way on one covers something on
+ *  another. So position (and open/collapsed) is persisted per surface, not
+ *  globally. "other" is every non-chat page (Setup, Automations, Stats, …):
+ *  one bucket, because none of them is a chatting surface — it exists so the
+ *  rail can be kept on the chat surfaces but off the admin ones. */
+export type Surface = "inbox" | "popup" | "group" | "other";
 
 export function surfaceOf(pathname: string | null): Surface {
   if (pathname?.startsWith("/group")) return "group";
   if (pathname?.startsWith("/chat/")) return "popup";
-  return "inbox";
+  if (pathname?.startsWith("/inbox")) return "inbox";
+  return "other";
 }
 
 export interface DockState {
@@ -234,6 +299,106 @@ interface MergedItem {
   accountId: string;
   typeKey: NotifTypeKey;
   ts: number;
+}
+
+// ── Cold-start snapshot ──────────────────────────────────────────────────
+// A refresh wipes the react-query cache, so without this the rail blanks to
+// "Loading…" and rows trickle back in as each account's OF fan-out lands.
+// Every successful list fetch is mirrored here; the next mount serves these
+// rows as react-query placeholders — visible at once, dimmed, and replaced
+// per (account, type) as each real fetch returns. Models revalidate
+// independently: a slow account never holds the others' rows hostage.
+
+const SNAPSHOT_KEY = "chatterly:money-rail:snapshot:v1";
+// EVICT-BY: fetched-at. Older than this and the rows are pure archaeology.
+const SNAPSHOT_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+/** Matches the fetch limit — persisting more than one response is waste. */
+const SNAPSHOT_MAX_ITEMS = 20;
+
+export interface SnapshotEntry {
+  /** dataUpdatedAt of the fetch these rows came from — doubles as the
+   *  dirty-check so an unchanged response isn't re-serialised. */
+  at: number;
+  items: NotificationItem[];
+}
+export type SnapshotMap = Record<string, SnapshotEntry>;
+
+export function snapshotKeyOf(aid: string, type: string): string {
+  return `${aid}:${type}`;
+}
+
+function slimUser(u?: NotificationUser): NotificationUser | undefined {
+  if (!u) return undefined;
+  return { id: u.id, name: u.name, username: u.username, avatar: u.avatar };
+}
+
+/** Strip a notification to the fields the rail renders — raw OF rows drag
+ *  along subscription/media payload we'd be persisting for nothing. */
+export function slimNotif(n: NotificationItem): NotificationItem {
+  return {
+    id: n.id,
+    type: n.type,
+    text: n.text,
+    description: n.description,
+    createdAt: n.createdAt,
+    user: slimUser(n.user),
+    fromUser: slimUser(n.fromUser),
+    replacePairs: n.replacePairs,
+  };
+}
+
+export function readMoneySnapshot(): SnapshotMap {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(SNAPSHOT_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as SnapshotMap;
+    const cutoff = Date.now() - SNAPSHOT_TTL_MS;
+    const out: SnapshotMap = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (!v || typeof v.at !== "number" || !Array.isArray(v.items)) continue;
+      if (v.at < cutoff) continue;
+      out[k] = { at: v.at, items: v.items.slice(0, SNAPSHOT_MAX_ITEMS) };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function writeMoneySnapshot(map: SnapshotMap): void {
+  try { window.localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(map)); } catch { /* quota */ }
+}
+
+// ── Unseen-sales watermark ───────────────────────────────────────────────
+// The header shows how many money rows arrived since the user last had the
+// rail's rows on screen — the count that makes bar-only collapse workable.
+// "Seen" = the rows were visibly rendered (any size with ≥1 row); while the
+// bar-only dock or a hidden surface accumulates, the number climbs. The
+// watermark is a timestamp in localStorage: global across surfaces and tabs
+// (money you saw in the inbox is not "new" again in the popout), and it
+// survives refresh so the cold-start snapshot doesn't all count as new.
+
+const SEEN_KEY = "chatterly:money-rail:seen:v1";
+
+export function readSeenTs(): number {
+  if (typeof window === "undefined") return 0;
+  try {
+    const v = Number(window.localStorage.getItem(SEEN_KEY));
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function writeSeenTs(ts: number): void {
+  try { window.localStorage.setItem(SEEN_KEY, String(ts)); } catch { /* quota */ }
+}
+
+export function unseenCountOf(items: readonly { ts: number }[], seenTs: number): number {
+  let n = 0;
+  for (const it of items) if (it.ts > seenTs) n++;
+  return n;
 }
 
 /** Where the conversation with this payer stands right now.
@@ -378,12 +543,42 @@ export function MoneyRail() {
   // Needed to cap the body height against the viewport. Kept in state (not read
   // during render) so SSR and the first client render agree.
   const [viewportH, setViewportH] = useState(0);
+  // Last session's fetched rows, served as query placeholders below. Loaded
+  // once per mount — after the first real fetches land, it's inert.
+  const [snapshot, setSnapshot] = useState<SnapshotMap>({});
+  // Timestamp of the newest money row the user has actually had on screen.
+  const [seenTs, setSeenTs] = useState(0);
   useEffect(() => {
     setDock(readDock(surface));
     setSettings(readSettings());
+    setSnapshot(readMoneySnapshot());
+    // First-ever use: nothing that predates the rail counts as "new" — a
+    // fresh install greeting the user with "50 new" is noise, not signal.
+    let seen = readSeenTs();
+    if (!seen) {
+      seen = Date.now();
+      writeSeenTs(seen);
+    }
+    setSeenTs(seen);
     setViewportH(window.innerHeight);
     setMounted(true);
   }, [surface]);
+
+  // The bell's "show the rail here" button (and any other tab) writes the
+  // settings from outside this component — re-read on its event, or the rail
+  // stays hidden until the next full reload.
+  useEffect(() => {
+    const reread = () => setSettings(readSettings());
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === SETTINGS_KEY) reread();
+    };
+    window.addEventListener(SETTINGS_EVENT, reread);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener(SETTINGS_EVENT, reread);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
 
   const open = dock.open;
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -521,6 +716,8 @@ export function MoneyRail() {
     const bump = () => bumpHistory((n) => n + 1);
     const onStorage = (e: StorageEvent) => {
       if (e.key === "chatterly:notif-history:v1") bump();
+      // Another tab saw the rows — this tab's "new" badge clears too.
+      if (e.key === SEEN_KEY) setSeenTs(readSeenTs());
     };
     window.addEventListener("chatterly:notif-history", bump);
     window.addEventListener("storage", onStorage);
@@ -544,10 +741,43 @@ export function MoneyRail() {
       enabled: mounted,
       staleTime: 30_000,
       refetchOnWindowFocus: false,
+      // Cold start: show this account's rows from the last session at once
+      // (dimmed) while the real fetch runs, instead of blanking the rail.
+      placeholderData: () => snapshot[snapshotKeyOf(aid, type)]?.items,
     })),
   });
 
   const dataSig = listQueries.map((q) => q.dataUpdatedAt).join(",");
+
+  // Mirror every real fetch into the snapshot for the NEXT page load.
+  // Read-merge-write so accounts outside the current pick keep their rows.
+  useEffect(() => {
+    if (!mounted) return;
+    const map = readMoneySnapshot();
+    let dirty = false;
+    listQueries.forEach((q, i) => {
+      const def = queryDefs[i];
+      if (!def || !q.data || q.isPlaceholderData || !q.dataUpdatedAt) return;
+      const key = snapshotKeyOf(def.aid, def.type);
+      if (map[key]?.at === q.dataUpdatedAt) return;
+      map[key] = { at: q.dataUpdatedAt, items: q.data.slice(0, SNAPSHOT_MAX_ITEMS).map(slimNotif) };
+      dirty = true;
+    });
+    if (dirty) writeMoneySnapshot(map);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, dataSig]);
+
+  // Accounts still on placeholder rows — their fetch hasn't landed yet, so
+  // their rows render dimmed until it does. Not memoised: trivially cheap,
+  // and listQueries is a fresh array every render anyway.
+  const placeholderAids = new Set<string>();
+  listQueries.forEach((q, i) => {
+    if (q.isPlaceholderData) {
+      const def = queryDefs[i];
+      if (def) placeholderAids.add(def.aid);
+    }
+  });
+  const anyRefreshing = listQueries.some((q) => q.isFetching);
 
   const merged = useMemo<MergedItem[]>(() => {
     const acc: MergedItem[] = [];
@@ -586,8 +816,27 @@ export function MoneyRail() {
     }
     acc.sort((a, b) => b.ts - a.ts);
     return acc.slice(0, MAX_ROWS);
+    // `snapshot` is a dep because placeholder rows surface through q.data
+    // WITHOUT touching dataUpdatedAt — when the snapshot loads on mount,
+    // nothing else here changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataSig, queryDefs, targetAccountIds, historyTick]);
+  }, [dataSig, queryDefs, targetAccountIds, historyTick, snapshot]);
+
+  // Header count of not-yet-seen sales. The watermark advances only while
+  // rows are actually rendered (≥1 visible row on a shown surface) — a
+  // bar-only dock or a hidden surface lets it climb instead. Scrolling depth
+  // is deliberately ignored: rows-on-screen counts as seen.
+  const unseen = unseenCountOf(merged, seenTs);
+  useEffect(() => {
+    if (!mounted || merged.length === 0) return;
+    if (!railVisibleOn(settings, surface)) return;
+    if ((open ? settings.bigRows : settings.smallRows) === 0) return;
+    const newest = merged[0]?.ts ?? 0; // merged is sorted newest-first
+    if (newest > seenTs) {
+      writeSeenTs(newest);
+      setSeenTs(newest);
+    }
+  }, [mounted, merged, open, settings, surface, seenTs]);
 
   // ── Per-fan chat detail: the last message in the thread + whether the
   // fan has read it. OF's /chats/{fanId} carries `lastMessage` and
@@ -596,7 +845,8 @@ export function MoneyRail() {
   // Only for the rows we actually render, deduped by fan.
   const detailTargets = useMemo(() => {
     // Fetch a little past what's visible (the window scrolls), but never for
-    // all 50 — each row is an OF roundtrip.
+    // all 50 — each row is an OF roundtrip. At 0 collapsed rows this still
+    // pre-warms the lookahead, so expanding doesn't start from nothing.
     const want = (open ? settings.bigRows : settings.smallRows) + DETAIL_ROWS_LOOKAHEAD;
     const rows = merged.slice(0, Math.min(want, DETAIL_ROWS_MAX));
     const out: { aid: string; fanId: number }[] = [];
@@ -610,7 +860,7 @@ export function MoneyRail() {
       out.push({ aid: m.accountId, fanId });
     }
     return out;
-  }, [merged, open]);
+  }, [merged, open, settings.bigRows, settings.smallRows]);
 
   const chatQueries = useQueries({
     queries: detailTargets.map(({ aid, fanId }) => ({
@@ -732,7 +982,7 @@ export function MoneyRail() {
     return m;
   }, [activeAccounts]);
 
-  if (!mounted || targetAccountIds.length === 0) return null;
+  if (!mounted || targetAccountIds.length === 0 || !railVisibleOn(settings, surface)) return null;
 
   // Collapsed no longer truncates the feed — it just shrinks the window onto
   // it. Every row stays in the DOM and scrolls, so one row is visible but the
@@ -748,7 +998,10 @@ export function MoneyRail() {
   const chromeH = HEADER_H + (settingsOpen ? SETTINGS_H : 0);
   const edgeGap = placed ? dock.y! : DEFAULT_EDGE_GAP;
   const room = viewportH - edgeGap - chromeH - VIEWPORT_MARGIN;
-  const wantH = (open ? settings.bigRows : settings.smallRows) * ROW_H;
+  // 0 visible rows (collapsed, smallRows=0) drops the body entirely — the
+  // dock is just its header bar until expanded.
+  const visRows = open ? settings.bigRows : settings.smallRows;
+  const wantH = visRows * ROW_H;
   // Never below one row: a cramped dock still beats an invisible one.
   const bodyH = Math.max(ROW_H, Math.min(wantH, room));
 
@@ -786,6 +1039,26 @@ export function MoneyRail() {
           </span>
           <span className="text-[12px] font-medium text-fg flex items-center gap-1.5 truncate">
             <span aria-hidden>💰</span> Buys &amp; tips
+            {/* Not-yet-seen sales. Green when there's something to look at;
+             *  a dim 0 otherwise, so the number is always there to glance. */}
+            <span
+              className={cn(
+                "shrink-0 px-1 min-w-[16px] h-[14px] rounded-full text-[9px] font-semibold grid place-items-center",
+                unseen > 0
+                  ? "bg-ok text-white"
+                  : "bg-bg-elev-1 text-fg-dim border border-border",
+              )}
+              title={
+                unseen > 0
+                  ? `${unseen} new sale${unseen === 1 ? "" : "s"} since you last looked`
+                  : "No new sales since you last looked"
+              }
+            >
+              {unseen}
+            </span>
+            {anyRefreshing && (
+              <span className="text-fg-dim animate-pulse" title="Refreshing…" aria-hidden>↻</span>
+            )}
           </span>
         </button>
         {/* Opens the /group tab on the newest payers. Clicking again while
@@ -829,30 +1102,33 @@ export function MoneyRail() {
           onChange={commitSettings}
         />
       )}
-      <div
-        style={{ maxHeight: bodyH }}
-        className="overflow-y-auto overscroll-contain"
-      >
-        {anyLoading && merged.length === 0 && (
-          <div className="px-3 py-2.5 text-[11px] text-fg-dim">Loading…</div>
-        )}
-        {merged.length === 0 && !anyLoading && (
-          <div className="px-3 py-2.5 text-[11px] text-fg-dim">
-            No recent purchases or tips.
-          </div>
-        )}
-        {merged.map((m, i) => {
-          const fanId = m.n.user?.id ?? m.n.fromUser?.id;
-          return (
-            <Row
-              key={`${m.accountId}:${m.n.id ?? i}`}
-              m={m}
-              accountLabel={showAccountTag ? (accountLabel.get(m.accountId) ?? null) : null}
-              reply={fanId ? (replyStates.get(`${m.accountId}:${fanId}`) ?? null) : null}
-            />
-          );
-        })}
-      </div>
+      {visRows > 0 && (
+        <div
+          style={{ maxHeight: bodyH }}
+          className="overflow-y-auto overscroll-contain"
+        >
+          {anyLoading && merged.length === 0 && (
+            <div className="px-3 py-2.5 text-[11px] text-fg-dim">Loading…</div>
+          )}
+          {merged.length === 0 && !anyLoading && (
+            <div className="px-3 py-2.5 text-[11px] text-fg-dim">
+              No recent purchases or tips.
+            </div>
+          )}
+          {merged.map((m, i) => {
+            const fanId = m.n.user?.id ?? m.n.fromUser?.id;
+            return (
+              <Row
+                key={`${m.accountId}:${m.n.id ?? i}`}
+                m={m}
+                accountLabel={showAccountTag ? (accountLabel.get(m.accountId) ?? null) : null}
+                reply={fanId ? (replyStates.get(`${m.accountId}:${fanId}`) ?? null) : null}
+                dim={placeholderAids.has(m.accountId)}
+              />
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -876,10 +1152,13 @@ function Row({
   m,
   accountLabel,
   reply,
+  dim = false,
 }: {
   m: MergedItem;
   accountLabel: string | null;
   reply: ReplyState | null;
+  /** Last session's snapshot, still being revalidated for this account. */
+  dim?: boolean;
 }) {
   const { n, accountId, typeKey } = m;
   const user = n.user || n.fromUser || {};
@@ -928,7 +1207,10 @@ function Row({
       </div>
     </>
   );
-  const cls = "px-3 py-2 border-b border-border/60 last:border-b-0 flex items-start gap-2.5 hover:bg-bg-elev-1/40";
+  const cls = cn(
+    "px-3 py-2 border-b border-border/60 last:border-b-0 flex items-start gap-2.5 hover:bg-bg-elev-1/40",
+    dim && "opacity-60",
+  );
   if (href) {
     return (
       <a href={href} target="_blank" rel="noreferrer" className={cls} title={text}>
@@ -939,9 +1221,18 @@ function Row({
   return <div className={cls} title={text}>{body}</div>;
 }
 
-/** The ⚙ popover: how many rows each size shows, and which models feed the
- *  rail. Writes straight through on every change — no Save button, the rail
- *  re-renders under you so the effect IS the feedback. */
+/** Order + labels for the "Show on" surface checkboxes. */
+const SURFACE_CHOICES: { key: Surface; label: string }[] = [
+  { key: "inbox", label: "Inbox" },
+  { key: "popup", label: "Solo chat" },
+  { key: "group", label: "Group tab" },
+  { key: "other", label: "Other pages" },
+];
+
+/** The ⚙ popover: where the rail shows at all, how many rows each size
+ *  shows, and which models feed it. Writes straight through on every change
+ *  — no Save button, the rail re-renders under you so the effect IS the
+ *  feedback. */
 function SettingsPanel({
   settings,
   accounts,
@@ -970,8 +1261,43 @@ function SettingsPanel({
     onChange({ ...settings, accounts: next });
   };
 
+  const surfaceOn = (s: Surface) => railVisibleOn(settings, s);
+  const toggleSurface = (s: Surface) => {
+    const current = settings.surfaces ?? SURFACE_CHOICES.map((c) => c.key);
+    const next = current.includes(s)
+      ? current.filter((x) => x !== s)
+      : [...current, s];
+    // parseSurfaces applies the same guard on read, but normalise here too so
+    // the ticks reflect what will actually happen: all off = back to all.
+    onChange({ ...settings, surfaces: parseSurfaces(next) });
+  };
+
   return (
     <div className="px-3 py-2.5 border-b border-border bg-bg-elev-1/30 text-[11px] space-y-2.5">
+      <div>
+        <span className="text-fg-dim">Show on</span>
+        <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-1">
+          {SURFACE_CHOICES.map((s) => (
+            <label
+              key={s.key}
+              className="flex items-center gap-1.5 cursor-pointer hover:text-fg text-fg-dim"
+            >
+              <input
+                type="checkbox"
+                checked={surfaceOn(s.key)}
+                onChange={() => toggleSurface(s.key)}
+                className="accent-info"
+              />
+              <span>{s.label}</span>
+            </label>
+          ))}
+        </div>
+        <p className="text-[10px] text-fg-dim mt-1 leading-snug">
+          Unticking the surface you&apos;re on hides the rail here instantly —
+          bring it back from the 🔔 dropdown.
+        </p>
+      </div>
+
       <div className="flex items-center justify-between gap-2">
         <label htmlFor="rail-small" className="text-fg-dim">Rows when small</label>
         <select
@@ -980,7 +1306,9 @@ function SettingsPanel({
           onChange={(e) => onChange({ ...settings, smallRows: Number(e.target.value) })}
           className="bg-panel border border-border rounded px-1.5 py-0.5 text-fg"
         >
-          {SMALL_ROW_CHOICES.map((n) => <option key={n} value={n}>{n}</option>)}
+          {SMALL_ROW_CHOICES.map((n) => (
+            <option key={n} value={n}>{n === 0 ? "0 (bar only)" : n}</option>
+          ))}
         </select>
       </div>
 

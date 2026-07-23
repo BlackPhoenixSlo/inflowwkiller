@@ -28,6 +28,8 @@ export interface StyleConfig {
   factground_of_ai_chat?: boolean;
   // account-wide brevity/emotion framing ("painful texting") — default ON
   painful_texting?: boolean;
+  // cat-sticker reaction pack (AI Chatter ends some replies with a cat gif) — default ON
+  cat_stickers?: boolean;
   // independent thumb-typo injector toggle, per automation
   typos_of_ai_chat?: boolean;
   typos_autoreply?: boolean;

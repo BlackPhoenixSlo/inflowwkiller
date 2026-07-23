@@ -54,6 +54,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
+from . import rhythm  # tz_offset_for — IANA timezone beats the legacy utc_offset
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
@@ -128,23 +129,25 @@ _STEP_USER_INSTRUCTIONS = {
 
 # ── Prompt-shaping helpers (ports of the spec's pure helpers) ─────────
 
-def _model_hour(utc_offset: int | None) -> int:
-    """Current hour in the model's timezone (utcnow + offset hours)."""
+def _model_hour(utc_offset: float | int | None) -> int:
+    """Current hour in the model's timezone (utcnow + offset hours). Accepts
+    fractional hours — _load_ai_config resolves IANA zones and e.g. Kolkata
+    is +5:30."""
     try:
-        off = int(utc_offset)
+        off = float(utc_offset)
     except (TypeError, ValueError):
-        off = 0
-    return int((datetime.utcnow().hour + off) % 24)
+        off = 0.0
+    return (datetime.utcnow() + timedelta(hours=off)).hour
 
 
-def _model_clock(utc_offset: int | None) -> str:
+def _model_clock(utc_offset: float | int | None) -> str:
     """Full local wall-clock for the account's timezone, e.g.
     'Friday, June 05 — 02:30 PM' (V1's now_str). Gives the AI a concrete
     sense of what time it is for the creator, not just a coarse bucket."""
     try:
-        off = int(utc_offset)
+        off = float(utc_offset)
     except (TypeError, ValueError):
-        off = 0
+        off = 0.0
     local = datetime.utcnow() + timedelta(hours=off)
     return local.strftime("%A, %B %d — %I:%M %p")
 
@@ -334,9 +337,15 @@ async def _load_ai_config(account_id: str) -> dict:
                 imgs = json.loads(cfg.time_images_json) or {}
             except Exception:
                 imgs = {}
+        # Effective creator-local offset in HOURS — IANA `timezone` wins
+        # (DST-correct), stored utc_offset is the legacy fallback (mirrors
+        # send_welcome._load_ai_config).
+        off_min = rhythm.tz_offset_for(getattr(cfg, "timezone", None),
+                                       cfg.utc_offset)
         return {
             "persona": cfg.persona,
-            "utc_offset": cfg.utc_offset,
+            "utc_offset": (off_min / 60.0 if off_min is not None
+                           else (cfg.utc_offset or 0)),
             "location": cfg.location,
             "time_activities": acts,
             "time_images": imgs,

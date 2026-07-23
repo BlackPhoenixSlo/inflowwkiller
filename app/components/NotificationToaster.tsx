@@ -238,8 +238,13 @@ function NotificationDeltaPoller() {
   // SSE: direct "toasts" event — OF pushes the full notification payload
   // here within ~1s of the underlying action. This is our only source of
   // truth now; no polling, no count-diff backstop.
+  //
+  // The listener runs even with the master "Enabled" toggle OFF: the history
+  // mirror feeds the bell dropdown AND the Buys & tips rail, and muting
+  // popups must not make those go deaf. `enabled` gates the pings below
+  // (toast + badge + OS), not the pipeline.
   useEffect(() => {
-    if (!settings.enabled || !ready) return;
+    if (!ready) return;
     const off = eventBus.on("toasts", (env: EventEnvelope) => {
       const aid = env.__account_id;
       if (!aid || !targetIds.includes(aid)) return;
@@ -350,11 +355,12 @@ function NotificationDeltaPoller() {
         });
         pushedAny = true;
 
-        // Per-type filter for the visible toast popup AND the unread badge.
-        // A type toggled off (e.g. Likes) is still recorded to history above
-        // — so it shows in the feed dropdown — but does NOT ping: no popup,
-        // no OS notification, no badge increment.
-        if (typeKey && !settings.toast[typeKey]) {
+        // Master + per-type filter for the visible toast popup AND the
+        // unread badge. A muted arrival (master off, or e.g. Likes toggled
+        // off) is still recorded to history above — so it shows in the feed
+        // dropdown and the money rail — but does NOT ping: no popup, no OS
+        // notification, no badge increment.
+        if (!settings.enabled || (typeKey && !settings.toast[typeKey])) {
           // Resolve username → id in the background even if we didn't
           // toast — the history entry will be patched.
           if (!user.id && user.username) {
@@ -427,7 +433,9 @@ function NotificationDeltaPoller() {
   // rendered as an accent-ring "bubble" when `settings.bubble.message` is
   // on. Outbound (our own sends / AI replies / mass / funnel) never ping.
   useEffect(() => {
-    if (!settings.enabled || !ready) return;
+    // Same as the `toasts` handler: the mirror keeps running with the master
+    // toggle off; only the pings below are gated.
+    if (!ready) return;
     const off = eventBus.on("api2_chat_message", (env: EventEnvelope) => {
       const target: ChatTarget | null = resolveChatTarget(
         env as unknown as Parameters<typeof resolveChatTarget>[0],
@@ -482,12 +490,12 @@ function NotificationDeltaPoller() {
         createdAt: new Date(createdMs).toISOString(),
       });
 
-      // History is mirrored above REGARDLESS of the per-type toggle, so the
-      // bell dropdown still lists DMs even with message toasts off. The badge
-      // bump + toast popup + OS ping ARE gated by the toggle — mirroring the
-      // `toasts` handler, so turning message toasts off no longer drops DMs
-      // from the feed dropdown.
-      if (!settings.toast.message) return;
+      // History is mirrored above REGARDLESS of the master + per-type
+      // toggles, so the bell dropdown still lists DMs even with toasts off.
+      // The badge bump + toast popup + OS ping ARE gated — mirroring the
+      // `toasts` handler, so muting toasts no longer drops DMs from the
+      // feed dropdown.
+      if (!settings.enabled || !settings.toast.message) return;
 
       dispatchNotifArrived();
 

@@ -70,7 +70,7 @@ from db.models import (
     created_at_text, parse_ts,
 )
 from llm_client import LLMCapExceeded
-from . import rhythm, script_packs, tip_ladder, upsell
+from . import cat_stickers, rhythm, script_packs, tip_ladder, upsell
 from . import _language
 # ppv_send owns the ONE price authority (`price_bounds`) and the ONE ownership
 # check (`_owners_of_media`, keyed on MEDIA — a fan who bought a clip in a mass
@@ -82,7 +82,8 @@ from ._common import (
     ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING, STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER,
     STYLE_MAX_BUBBLES,
     apply_nonnative_style, apply_word_restriction, coerce_ids, guard_offplatform,
-    hold_with_typing, apply_typo_throttle, load_nonnative_flags,
+    hold_with_typing, apply_typo_throttle, load_cat_stickers_flag,
+    load_nonnative_flags,
     load_painful_texting_flag, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags,
     quarantine_if_undeliverable, recent_payer_fans, resolve_fan_name, resolve_model,
@@ -93,7 +94,8 @@ from ._common import (
 from .of_ai_chat import (
     _BREATHER_VARIANTS, _EXTRACT_HISTORY_TAIL, _HISTORY_TAIL, _MSG_CLIP,
     _NOID_PAUSE, _REPLY_MAX_CHARS, _REPLY_TEMPERATURE, _STYLE_VARIANTS,
-    _bump_attempt, _dedupe_lead_reaction, _extract_and_fill, _load_mid_funnel_fans,
+    _bump_attempt, _clock_line, _dedupe_lead_reaction, _extract_and_fill,
+    _load_mid_funnel_fans,
     _good_examples, _load_persona, _looks_like_echo, _mark_question_asked,
     _mark_reply_sent,
     _maybe_push_nickname, _maybe_refresh_profile, _nonempty, _pause_fan,
@@ -3262,7 +3264,9 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     lang: str = "en",
                     profile: "FanProfile | None" = None,
                     ask_every: int = 0,
-                    buyer_facts: list[str] | None = None) -> tuple[list[dict], list[str]]:
+                    buyer_facts: list[str] | None = None,
+                    clock: str = "",
+                    sticker_mode: str = "skip") -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — of_ai_chat's girly info-gather prompt
     with one structural difference: `sell_block`. Empty (M2) → the no-offers
     line stays, byte-equal behavior. Non-empty (M3) → the catalog/offer rules
@@ -3472,9 +3476,21 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
 
     style_extra = ((STYLE_3LINE,) * 2 + (STYLE_BRIEF,) * 2) if style_on else ()
     style = random.choice(_STYLE_VARIANTS + style_extra)
+    # A "solo" sticker roll owns the per-message STYLE slot — a bullet buried
+    # mid-prompt loses to "YOUR GOAL THIS MESSAGE"/the style line (verified
+    # live: 5/5 solo rolls yielded plain text until the directive moved here).
+    if sticker_mode == "solo":
+        style = ("a cat sticker says it all this time — if one of the CAT "
+                 "STICKERS below fits his last message, reply with ONLY the "
+                 "STICKER line, no text at all. Only write text if truly "
+                 "none fits.")
 
     humanizer = f"\n\n{STYLE_HUMANIZER}" if style_on else ""
     nonnative = f"\n\n{NONNATIVE_REGISTER}" if nonnative_on else ""
+    # Sticker protocol enters the prompt only on an allow/solo roll — a model
+    # that can't see it can't over-use it (measured 48% attach when always on).
+    _sticker_block = cat_stickers.prompt_block(sticker_mode)
+    stickers = f"\n\n{_sticker_block}" if _sticker_block else ""
 
     # M3 seam: with no catalog in play the no-offers rule applies (chat-only,
     # current of_ai_chat behavior); with one, a short pointer goes in the intro
@@ -3486,6 +3502,14 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                    if has_sell else "don't offer pics or videos yet.")
     sell_section = f"\n\n{sell_block.strip()}\n\n" if has_sell else "\n\n"
 
+    # The prompt clock ("" when the account has no tz configured → byte-equal
+    # prompt) — same block as of_ai_chat. "what time is it where you are?" is
+    # the classic bot trap, and a model with no clock invents one.
+    clock_block = (
+        f"RIGHT NOW for you it is {clock}. If the time, your day, or what "
+        "you're doing comes up, stay consistent with this clock — never claim "
+        "a different time of day.\n\n" if clock else "")
+
     system = (
         f"{persona}\n"
         "You're texting a fan to get to know him while flirting. You are 100% human "
@@ -3495,6 +3519,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         "He may send several texts in a row — read them all, reply to "
         "the latest.\n\n"
         f"{PAINFUL_TEXTING + chr(10) + chr(10) if painful_on else ''}"
+        f"{clock_block}"
         f"{need_block}{dodge_note}{call_him}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         "HOW YOU TEXT (a real 22yo girl, not an assistant):\n"
@@ -3510,13 +3535,18 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         "never cold or preachy.\n"
         f"{_good_examples(f, asked, have_durable_name)}\n"
         f"{ONPLATFORM_GUARDRAIL}"
-        f"{humanizer}{nonnative}"
+        f"{humanizer}{nonnative}{stickers}"
         f"{sell_section}"
         + ("Your reply is ONLY the message text — no JSON, quotes, or metadata. "
            "The ONE exception: the final >>OFFER line when you pitch a piece "
            "(it's stripped before sending — the fan never sees it)."
            if has_sell else
            "Your reply is ONLY the message text — no JSON, quotes, or metadata.")
+        # Without this carve-out the contract line above suppresses the marker
+        # entirely — verified live: 4/4 solo rolls produced no STICKER line
+        # until the exception was stated here.
+        + (" The final STICKER: <tag> line is ALSO allowed (stripped before "
+           "sending — he only sees the gif)." if _sticker_block else "")
         # OUTPUT-LANGUAGE block at the very END (prefix-cache safe); "" for en. It also
         # pins the >>OFFER token so a Spanish reply never leaks a translated marker.
         + _language.output_language_directive(lang)
@@ -3661,6 +3691,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
+    stickers_on = await load_cat_stickers_flag(account_id)    # cat reaction gifs (default ON)
     account_lang = await _language.load_account_language(account_id)  # output language + guard gate
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     persona = await _load_persona(account_id)
@@ -3700,10 +3731,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     rhythm_resume = bool(payload.get("rhythm_resume"))
     rhythm_cover = payload.get("rhythm_cover") if rhythm_resume else None
 
-    cfg_row = await _load_cfg_row(account_id) if (rhythm_on or pricing_on) else None
+    cfg_row = await _load_cfg_row(account_id)
     tz_off = (rhythm.tz_offset_for(getattr(cfg_row, "timezone", None),
                                    getattr(cfg_row, "utc_offset", None))
               if rhythm_on else None)
+    # Prompt clock: independent of the rhythm flag — the chat model must know
+    # HER local time even when human-rhythm pacing is off. None ⇒ no clock line.
+    clock_tz = rhythm.tz_offset_for(getattr(cfg_row, "timezone", None),
+                                    getattr(cfg_row, "utc_offset", None))
     sleep_win = (await _sleep_window(account_id, tz_off, cfg.get("sleep_window"))
                  if rhythm_on else rhythm.DEFAULT_SLEEP)
     media_asks: dict[int, list[int]] = {}
@@ -3930,6 +3965,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     taps_expired = 0        # tap-outs that served their TTL and reopened (not a life sentence)
     rhythm_deferred = 0     # lease released + resume job enqueued (never slept)
     cover_lines_sent = 0    # "sorry babe was in the shower 🚿" before the reply
+    stickers_sent = 0       # cat reaction gifs delivered (incl. sticker-only replies)
     price_errors = 0        # §4.1: priced attaches OF rejected → offer dropped, resent unpriced
     spend_regret_stops = 0  # §6.1: "im out of money" → 24h soft stop + COOLDOWN
     companion_routed = 0    # §6.3: "i just wanna talk" → seller OFF, conversation ON
@@ -4515,7 +4551,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                           and c.fan_msg_n >= esc_min_msgs
                           and _language.is_escalation(c.last_body, fan_lang))
             buyer_facts = await _buyer_facts(account_id, fan_id)
+            # Cat-sticker roll (code-side rate control): most replies never see
+            # the sticker protocol at all; "allow" lets the model judge, "solo"
+            # nudges a sticker-ONLY reply. Deterministic per reply (fan + his
+            # latest text) so a re-run rolls the same. Cooldown forces skip.
+            sticker_mode = "skip"
+            if stickers_on:
+                sticker_mode = cat_stickers.roll_mode(
+                    random.Random(f"sticker:{account_id}:{fan_id}:{c.last_body}"),
+                    cat_stickers.cooldown_active(account_id, fan_id))
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
+                                              sticker_mode=sticker_mode,
                                               style_on=style_on,
                                               nonnative_on=nonnative_on,
                                               sell_block=sell_block,
@@ -4529,7 +4575,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                               ask_every=(old_q_every
                                                          if fan_id in old_fan_ids
                                                          else 0),
-                                              buyer_facts=buyer_facts)
+                                              buyer_facts=buyer_facts,
+                                              clock=_clock_line(clock_tz))
             try:
                 res = await llm_client.chat(
                     model=model,
@@ -4555,6 +4602,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # the id against the code-side manifest (price/terms come from the
             # catalog row — the model never sets them).
             raw, offer_id = _parse_offer_marker(raw)
+            # Sticker marker: ALWAYS strip protocol lines (a fan must never see
+            # them); honor the tag only when this reply's roll offered the pack.
+            raw, sticker_tag = cat_stickers.parse_marker(raw)
+            if sticker_mode == "skip":
+                sticker_tag = None
             offer_item = offerable.get(offer_id) if offer_id is not None else None
             if offer_id is not None and offer_item is None:
                 log.info("ai_chatter offer marker rejected account=%s fan=%s id=%s",
@@ -4753,10 +4805,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if bot_accused_first and parts:
                 parts = parts[:1]
             if not parts:
-                errors += 1
-                log.debug("ai_chatter dropped echo-only reply account=%s fan=%s",
-                          account_id, fan_id)
-                continue
+                # A sticker-only reply (empty text + a tag) is a legit pure
+                # reaction — but never when an offer/teaser needs pitch text to
+                # ride on, and never as the brush-off to a bot accusation.
+                if (sticker_tag is None or offer_item is not None
+                        or teaser is not None or bot_accused_first):
+                    errors += 1
+                    log.debug("ai_chatter dropped echo-only reply account=%s fan=%s",
+                              account_id, fan_id)
+                    continue
             # Anti-hallucination floor: price talk with NO validated offer
             # behind it never reaches a fan on a selling account. Strip those
             # bubbles; if nothing survives, skip the reply entirely (silence
@@ -4829,7 +4886,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             rst = rstates.get(fan_id)
             cover_line: str | None = rhythm_cover if rhythm_resume else None
             first_delay: float | None = None
-            if rhythm_on and not rhythm_resume:
+            # `parts` is empty only on a sticker-only reply — no text bubble to
+            # time, so rhythm's decide() (which reads parts[0]) is skipped and
+            # the sticker send below uses its own short hold.
+            if rhythm_on and not rhythm_resume and parts:
                 rnow = datetime.utcnow()
                 d = rhythm.decide(rhythm.RhythmCtx(
                     account_id=str(account_id), fan_id=fan_id, text=parts[0],
@@ -5063,6 +5123,52 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     log.warning("ai_chatter send returned no id account=%s fan=%s — paused %s",
                                 account_id, fan_id, _NOID_PAUSE)
                 continue
+            # ── Cat sticker — its own bubble after the text, or the WHOLE reply
+            # (parts empty). Empty text + top-level giphyId is the verified
+            # GIF-only wire shape; failure is non-fatal when text already landed.
+            sticker_sent = False
+            if sticker_tag is not None and not send_failed and not first_no_id:
+                gid = cat_stickers.pick_gif(
+                    sticker_tag,
+                    random.Random(f"gif:{account_id}:{fan_id}:{c.last_body}"))
+                if gid is not None:
+                    srng = random.Random(f"sdelay:{fan_id}:{gid}")
+                    await hold_with_typing(account_id, fan_id,
+                                           2.0 + 4.0 * srng.random(),
+                                           typing_indicator=typing_indicator)
+                    try:
+                        result = await asyncio.to_thread(
+                            lambda g=gid: client.send_message(fan_id, "",
+                                                              giphy_id=g))
+                    except Exception:
+                        result = None
+                        log.warning("ai_chatter sticker send failed account=%s "
+                                    "fan=%s tag=%s", account_id, fan_id,
+                                    sticker_tag, exc_info=True)
+                    s_msg_id = result.get("id") if isinstance(result, dict) else None
+                    if s_msg_id:
+                        await write_outbound_attribution(
+                            account_id=account_id,
+                            fan_id=int(fan_id),
+                            message_id=int(s_msg_id),
+                            sent_by_employee_id=None,
+                            automation_kind=_PURPOSE,
+                            body=str(result.get("text") or ""),
+                            price_cents=0,
+                            created_at=ax._parse_iso(result.get("createdAt"))
+                            or datetime.utcnow(),
+                            emit_live=True,
+                        )
+                        cat_stickers.mark_sent(account_id, fan_id)
+                        sticker_sent = True
+                        sent_ok = True
+                        stickers_sent += 1
+                        log.info("ai_chatter sticker sent account=%s fan=%s "
+                                 "tag=%s gif=%s solo=%s", account_id, fan_id,
+                                 sticker_tag, gid, not parts)
+            if not parts and not sticker_sent:
+                errors += 1     # sticker-only reply and the gif never landed
+                continue
             await _mark_reply_sent(account_id, fan_id, now)
             # §3.4 — record the REALIZED inbound→send latency + bubble count at the SEND
             # site (not the drawn delay at decide() time), rolling last 20. Fed back into
@@ -5072,7 +5178,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 realized = ((datetime.utcnow() - c.last_in_at).total_seconds()
                             if c.last_in_at is not None else 0.0)
                 await _record_turn(account_id, fan_id, rstates.get(fan_id),
-                                   realized_s=realized, bubbles=len(parts),
+                                   realized_s=realized,
+                                   bubbles=len(parts) + (1 if sticker_sent else 0),
                                    informal=style_on)
             target = _primary_ask_target(presented)
             if target:
@@ -5238,6 +5345,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "rhythm_deferred": rhythm_deferred,
         "rhythm_waiting": rhythm_waiting,
         "cover_lines_sent": cover_lines_sent,
+        "stickers_sent": stickers_sent,
         "price_errors": price_errors,
         "spend_regret_stops": spend_regret_stops,
         "companion_routed": companion_routed,

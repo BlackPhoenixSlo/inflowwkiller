@@ -21,11 +21,20 @@
  */
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { useQueries } from "@tanstack/react-query";
 
 import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useNotificationSettings } from "@/hooks/useNotificationSettings";
+import {
+  SETTINGS_EVENT as RAIL_SETTINGS_EVENT,
+  parseSurfaces,
+  railVisibleOn,
+  readSettings as readRailSettings,
+  surfaceOf,
+  writeSettings as writeRailSettings,
+} from "@/components/MoneyRail";
 import { relay, proxyImage } from "@/lib/relay";
 import {
   NOTIF_ARRIVED_EVENT,
@@ -121,6 +130,33 @@ export function NotificationBell() {
     () => (accountId ? [accountId] : activeAccounts.map((a) => a.id)),
     [accountId, activeAccounts],
   );
+
+  // Money-rail rescue hatch: hiding the rail on a surface takes its ⚙ (the
+  // only un-hide control) down with it. The bell is mounted everywhere, so
+  // it offers the way back when the rail is hidden on the CURRENT surface.
+  const railSurface = surfaceOf(usePathname());
+  const [railTick, setRailTick] = useState(0);
+  useEffect(() => {
+    const bump = () => setRailTick((t) => t + 1);
+    window.addEventListener(RAIL_SETTINGS_EVENT, bump);
+    return () => window.removeEventListener(RAIL_SETTINGS_EVENT, bump);
+  }, []);
+  // Reading localStorage at render is safe here: the dropdown only exists
+  // after a click, well past hydration. railTick re-evaluates it whenever
+  // the rail's settings change under us.
+  const railHiddenHere = useMemo(
+    () => (open ? !railVisibleOn(readRailSettings(), railSurface) : false),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [open, railSurface, railTick],
+  );
+  const showRailHere = () => {
+    const s = readRailSettings();
+    // Adding the last missing surface normalises to null (= everywhere).
+    writeRailSettings({
+      ...s,
+      surfaces: parseSurfaces([...(s.surfaces ?? []), railSurface]),
+    });
+  };
 
   // Badge counter — bump on every arrival (unless the panel is open and the
   // user is already looking at it), reset on every cleared event.
@@ -295,6 +331,20 @@ export function NotificationBell() {
                   ⚙
                 </button>
               </div>
+              {railHiddenHere && (
+                <button
+                  type="button"
+                  onClick={showRailHere}
+                  className="w-full text-left px-3 py-1.5 text-[11px] border-b border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1 flex items-center gap-1.5"
+                  title="The Buys & tips rail is hidden on this page — bring it back"
+                >
+                  <span aria-hidden>💰</span>
+                  <span className="truncate">
+                    Buys &amp; tips rail is hidden here —{" "}
+                    <span className="text-info">show it on this page</span>
+                  </span>
+                </button>
+              )}
               {settingsOpen && (
                 <div className="border-b border-border p-2.5 bg-bg-elev-1/30">
                   <div className="flex items-center justify-between mb-2 gap-2">
@@ -313,7 +363,10 @@ export function NotificationBell() {
                       >
                         Mark all read
                       </button>
-                      <label className="flex items-center gap-1.5 text-[11px] text-fg-dim cursor-pointer">
+                      <label
+                        className="flex items-center gap-1.5 text-[11px] text-fg-dim cursor-pointer"
+                        title="Off mutes popups, badges and OS pings. The feed and the Buys & tips rail stay live."
+                      >
                         <input
                           type="checkbox"
                           checked={settings.enabled}

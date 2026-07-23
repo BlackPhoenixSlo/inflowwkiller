@@ -136,6 +136,7 @@ export default function RuleEditor({
   const [humanStyle, setHumanStyle] = useState(false);
   const [typos, setTypos] = useState(false);
   const [nonnative, setNonnative] = useState(false);
+  const [catStickers, setCatStickers] = useState(true);
   // Seed the three booleans ONCE per kind, the first time the query has data —
   // not on every data-reference change. A background refetch (the 5s-stale
   // remount, or another surface saving + invalidating) must NOT clobber the
@@ -152,6 +153,8 @@ export default function RuleEditor({
     setHumanStyle(Boolean(c[kind as keyof StyleConfig]));
     setTypos(Boolean(c[`typos_${kind}` as keyof StyleConfig]));
     setNonnative(Boolean(c[`nonnative_${kind}` as keyof StyleConfig]));
+    // account-wide, default ON — absent (older relay) still renders checked
+    setCatStickers(c.cat_stickers !== false);
   }, [styleCfgQ.data, kind]);
 
   const meta = useMemo(() => kinds.find((k) => k.kind === kind), [kinds, kind]);
@@ -384,6 +387,8 @@ export default function RuleEditor({
             [kind]: humanStyle,
             [`typos_${kind}`]: typos,
             [`nonnative_${kind}`]: nonnative,
+            // account-wide; only the ai_chatter editor surfaces the checkbox
+            ...(kind === "ai_chatter" ? { cat_stickers: catStickers } : {}),
           } as StyleConfig);
         } catch (e) {
           // The rule already saved — surface the style failure but don't block.
@@ -630,6 +635,18 @@ export default function RuleEditor({
               <span className="text-sm text-fg">Non-native</span>
               <span className="text-[11px] text-fg-dim/70">consistent non-native misspellings + broken grammar</span>
             </label>
+            {kind === "ai_chatter" && (
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={catStickers}
+                  onChange={(e) => setCatStickers(e.target.checked)}
+                  className="w-4 h-4 rounded accent-accent cursor-pointer"
+                />
+                <span className="text-sm text-fg">Cat stickers 🐱</span>
+                <span className="text-[11px] text-fg-dim/70">some replies end with (or ARE) a cat reaction gif</span>
+              </label>
+            )}
           </div>
         </div>
       )}

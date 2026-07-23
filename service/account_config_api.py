@@ -99,6 +99,7 @@ def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
         "welcome_rules": row.welcome_rules if row else None,
         "location": row.location if row else None,
         "language": (norm_lang(row.language) or "en") if row else "en",
+        "timezone": row.timezone if row else None,
         "utc_offset": row.utc_offset if row else 0,
         "daily_cost_cap_cents": row.daily_cost_cap_cents if row else 100,
         "model": row.model if row else None,
@@ -154,6 +155,18 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     language = language or None
     if language == "en":
         language = None                      # NULL == en; keeps the column sparse
+
+    # timezone — an IANA zone (e.g. America/Vancouver). Wins over utc_offset in
+    # rhythm.tz_offset_for (DST-correct); blank clears the column so the legacy
+    # offset (or "no clock") applies again.
+    tz = _clean_text(cfg.get("timezone"), "timezone")
+    if tz is not None:
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo(tz)
+        except Exception:
+            raise HTTPException(
+                422, f"timezone {tz!r} is not a known IANA zone (e.g. America/Vancouver)")
 
     # utc_offset — whole hours (e.g. Vancouver −6); sane range, default 0.
     utc_raw = cfg.get("utc_offset", 0)
@@ -213,6 +226,7 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
         "welcome_rules": welcome_rules,
         "location": location,
         "language": language,
+        "timezone": tz,
         "utc_offset": utc_offset,
         "daily_cost_cap_cents": cap,
         "model": model,

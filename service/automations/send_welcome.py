@@ -75,6 +75,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
+from . import rhythm  # tz_offset_for — IANA timezone beats the legacy utc_offset
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
@@ -188,13 +189,15 @@ def _fan_name_hint(display_name: str | None, username: str | None) -> tuple[str,
     return ("username", f"Riff playfully on their handle '{target}'.")
 
 
-def _model_hour(utc_offset: int) -> int:
-    """Current hour in the model's timezone (utcnow + offset hours)."""
+def _model_hour(utc_offset: float | int | None) -> int:
+    """Current hour in the model's timezone (utcnow + offset hours). Accepts
+    fractional hours — _load_ai_config resolves IANA zones and e.g. Kolkata
+    is +5:30."""
     try:
-        off = int(utc_offset)
+        off = float(utc_offset)
     except (TypeError, ValueError):
-        off = 0
-    return int((datetime.utcnow().hour + off) % 24)
+        off = 0.0
+    return (datetime.utcnow() + timedelta(hours=off)).hour
 
 
 def _time_activity(hour: int, acts: dict) -> tuple[str, str]:
@@ -351,10 +354,17 @@ async def _load_ai_config(account_id: str) -> dict:
                 pins = json.loads(cfg.welcome_pinned_json) or {}
             except Exception:
                 pins = {}
+        # Effective creator-local offset in HOURS: the IANA `timezone` column
+        # wins (DST-correct); the stored utc_offset is only the legacy
+        # fallback. Resolving here keeps every _model_hour/_model_weekday
+        # call site untouched — they never see the raw column again.
+        off_min = rhythm.tz_offset_for(getattr(cfg, "timezone", None),
+                                       cfg.utc_offset)
         return {
             "persona": cfg.persona,
             "welcome_rules": cfg.welcome_rules,
-            "utc_offset": cfg.utc_offset,
+            "utc_offset": (off_min / 60.0 if off_min is not None
+                           else (cfg.utc_offset or 0)),
             "location": cfg.location,
             "time_activities": acts,
             "time_images": imgs,
@@ -433,9 +443,9 @@ async def _mark_welcomed(account_id: str, fan_id: int, username: str | None) -> 
 def _model_weekday(utc_offset) -> str:
     """Weekday name in the creator's timezone (utcnow + offset hours)."""
     try:
-        off = int(utc_offset)
+        off = float(utc_offset)
     except (TypeError, ValueError):
-        off = 0
+        off = 0.0
     return (datetime.utcnow() + timedelta(hours=off)).strftime("%A")
 
 
@@ -807,7 +817,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # ONLY working filter — `subscribes`/`subscriptions` 400 (verified live
         # 2026-06). The untyped feed is unusable: a content-moderation event
         # (`deactivated_media`) flood can bury every subscribe past offset 1000+,
-        # silently starving welcomes (this happened to Lexi 2026-06-10 → 4 days of
+        # silently starving welcomes (this happened to Ava 2026-06-10 → 4 days of
         # missed welcomes). _extract_new_subscribers still filters client-side as a
         # belt-and-braces guard.
         resp = await asyncio.to_thread(
