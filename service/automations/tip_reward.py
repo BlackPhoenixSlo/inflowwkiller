@@ -74,7 +74,9 @@ _DEFAULTS: dict = {
     # just also fires. Default OFF (keep the standdown). See webhook_dispatch.
     "always_reward": False,
     "dollars_per_image": 5,    # 1 media item per $5 of the tip ($25 → 5 photos)
-    "min_images": 1,           # any tip ≥ $0.01 still gets at least this many
+    "min_images": 2,           # any tip ≥ $0.01 still gets at least this many
+                               # (house default 2 since 07-23: one photo reads
+                               # stingy as a thank-you; two is a real reward)
     "max_images": 12,          # cap so a whale tip can't drain a folder in one shot
                                # (12 = the bundle hard cap; $60 → the full 12)
     "caption": "",             # optional thank-you text ('' → media-only message)
