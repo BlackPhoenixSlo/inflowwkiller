@@ -776,6 +776,15 @@ async def _start_event_pumps() -> None:
     except Exception:
         log.exception("db_init failed — relay will run but SSE/inbox writes will error")
 
+    # Feature-owned data heals ride here, after the schema is ready and before
+    # the automation supervisor can claim jobs. Each is idempotent and states
+    # its own expiry in its docstring.
+    try:
+        import vault_arc
+        await vault_arc.heal_armed_arcs()
+    except Exception:
+        log.exception("arc tease heal failed — armed pre-fix arcs may skip their teases")
+
     # TEST-MODE GUARD — db init above already ran (prod-critical at startup);
     # everything BELOW is the spawn/network section (persist worker, WS pumps,
     # pump-supervisor, live_rev network refresh, evictors, tx-ingest,
