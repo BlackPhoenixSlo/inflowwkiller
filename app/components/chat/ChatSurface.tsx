@@ -30,6 +30,7 @@ import AiStatusStrip from "@/components/chat/AiStatusStrip";
 import { useAccountLabel } from "@/hooks/useAccounts";
 import { useRosterCountActions } from "@/hooks/useRosterCounts";
 import { readFanDrawerDefault, useFanDrawerDefault } from "@/hooks/useFanDrawerDefault";
+import { useTranslateMode } from "@/hooks/useTranslateMode";
 import {
   useServerScheduledSends,
   scheduledToPseudoMessage,
@@ -134,6 +135,9 @@ export function ChatSurface({
   );
   const [quoted, setQuoted] = useState<QuotedReply | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  // 🌐 header toggle — persisted; MessageList reads the same hook and does
+  // the actual translation fetch/render.
+  const [translateOn, setTranslateOn] = useTranslateMode();
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
@@ -775,6 +779,17 @@ export function ChatSurface({
           title="Search this conversation"
         >
           🔍 search
+        </button>
+        <button
+          type="button"
+          onClick={() => setTranslateOn(!translateOn)}
+          className={cn(
+            "text-[11px] underline underline-offset-2",
+            translateOn ? "text-accent" : "text-fg-dim hover:text-fg",
+          )}
+          title="Translate non-English messages to English — tags each with its detected language, original on hover"
+        >
+          🌐 translate
         </button>
         <a
           href={`/chat/${encodeURIComponent(accountId)}/${fanId}`}
