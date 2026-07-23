@@ -39,7 +39,7 @@ import {
   IsRestoringProvider,
 } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
-import { persistQueryClient } from "@tanstack/react-query-persist-client";
+import { persistQueryClient, removeOldestQuery } from "@tanstack/react-query-persist-client";
 import { createSyncStoragePersister } from "@tanstack/query-sync-storage-persister";
 import { useEffect, useState } from "react";
 
@@ -185,6 +185,11 @@ export default function Providers({ children }: { children: React.ReactNode }) {
       // the new tab reads it. 1000ms (the previous value) was long
       // enough to miss freshly-loaded queries.
       throttleTime: 250,
+      // On QuotaExceededError, shed the oldest queries and retry instead of
+      // giving up. Without this the cache pins the origin at the 5MB quota
+      // and every OTHER localStorage write on the site (rail settings, dock
+      // spots, notif history, exclude lists) silently fails forever.
+      retry: removeOldestQuery,
     });
     const [unsubscribe, restorePromise] = persistQueryClient({
       queryClient,
