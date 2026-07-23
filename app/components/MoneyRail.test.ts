@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   anchorFor,
@@ -365,6 +365,63 @@ describe("rail settings", () => {
       JSON.stringify({ smallRows: 1, bigRows: 6, accounts: [] }),
     );
     expect(readSettings().accounts).toBeNull();
+  });
+});
+
+describe("rail settings under a full localStorage", () => {
+  // On prod the react-query persister mirrors chats + vault into the same
+  // origin's ~5MB of localStorage, so setItem can throw QuotaExceededError.
+  // writeSettings swallows it, then the queued SETTINGS_EVENT makes the rail
+  // re-read the OLD saved value — every ⚙ pick (rows, models, surfaces)
+  // silently snaps back. These tests pin the survival path.
+  const SETTINGS_KEY = "chatterly:money-rail:settings:v1";
+  const SNAPSHOT_KEY = "chatterly:money-rail:snapshot:v1";
+  const quotaError = () => new DOMException("quota", "QuotaExceededError");
+
+  beforeEach(() => window.localStorage.clear());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    // A successful write clears the module-level in-memory fallback so later
+    // describe blocks read from (cleared) localStorage again.
+    writeSettings({ smallRows: 1, bigRows: 6, accounts: null, surfaces: null });
+    window.localStorage.clear();
+  });
+
+  it("keeps the new pick when every write fails — no snap-back to the saved value", async () => {
+    writeSettings({ smallRows: 1, bigRows: 6, accounts: null, surfaces: null });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw quotaError(); });
+
+    writeSettings({ smallRows: 3, bigRows: 8, accounts: ["a"], surfaces: null });
+    // Let the queued SETTINGS_EVENT fire — this is the re-read that used to
+    // restore the old value.
+    await new Promise<void>((r) => queueMicrotask(r));
+
+    expect(readSettings()).toEqual({ smallRows: 3, bigRows: 8, accounts: ["a"], surfaces: null });
+  });
+
+  it("evicts its own cold-start snapshot to make room, then persists for real", () => {
+    window.localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ big: "blob" }));
+    let threw = false;
+    const realSet = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, k, v) {
+      if (!threw) { threw = true; throw quotaError(); }
+      realSet.call(this, k, v);
+    });
+
+    writeSettings({ smallRows: 2, bigRows: 7, accounts: null, surfaces: null });
+
+    expect(window.localStorage.getItem(SNAPSHOT_KEY)).toBeNull();
+    expect(JSON.parse(window.localStorage.getItem(SETTINGS_KEY)!)).toMatchObject({ smallRows: 2, bigRows: 7 });
+  });
+
+  it("hands back to localStorage once a later write lands", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw quotaError(); });
+    writeSettings({ smallRows: 4, bigRows: 5, accounts: null, surfaces: null });
+    vi.restoreAllMocks();
+
+    writeSettings({ smallRows: 0, bigRows: 6, accounts: null, surfaces: null });
+    expect(readSettings().smallRows).toBe(0);
+    expect(JSON.parse(window.localStorage.getItem(SETTINGS_KEY)!).smallRows).toBe(0);
   });
 });
 
