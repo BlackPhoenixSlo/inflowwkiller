@@ -578,32 +578,65 @@ def _tier_folders(cfg: dict, tier_name: str) -> list[str]:
 
 
 def _pull_stages(client, stages: list[tuple[list[str], int]],
-                 seen: set[int]) -> tuple[list[list[int]], list[int]]:
+                 seen: set[int], *,
+                 repeat_ok: frozenset[int] | set[int] = frozenset(),
+                 never_repeat: frozenset[int] | set[int] = frozenset(),
+                 ) -> tuple[list[list[int]], list[int]]:
     """THE one folder-bundle composer: ordered stage pulls with cross-stage dedup
     + shortfall backfill. Each (folder_names, count) stage pulls up to `count`
     unseen items from its folders; a short stage does not shrink the bundle —
     the total shortfall is backfilled from ALL stages' folders at the end.
+
+    `repeat_ok` names stage INDICES whose folders hold tease/filler content
+    (operator ruling 07-23: filler may repeat, and a filler shortfall must
+    never shrink what tease-share we promised). When the unseen backfill still
+    leaves the bundle short, those stages' folders are re-pulled ignoring the
+    fan's send history — capped at the repeat_ok stages' OWN share (a payoff
+    shortfall keeps shrinking the bundle: the price is for the payoff, and a
+    priced send of 100% repeated tease is not a send), and deduped against
+    THIS bundle plus `never_repeat` (ids the CALLER will append itself, e.g.
+    tip_reward's context-matched photos) so a repeat never duplicates within
+    one send. Payoff stages are never repeated from.
+
     Returns (per_stage_ids, backfill_ids). Both the teaser composer and the tip
     reward's tease/normal split ride this. Sync (OF reads) — call via to_thread."""
+    stages = [([f for f in (fs or []) if str(f).strip()], int(n))
+              for fs, n in stages]
     taken = set(seen)
+    bundle: set[int] = set()
     picked: list[list[int]] = []
     for folders, n in stages:
-        folders = [f for f in (folders or []) if str(f).strip()]
         ids: list[int] = []
         if n > 0 and folders:
             by_name = _resolve_folders(client, folders)
             ids = _gather_unseen(client, folders, by_name, taken, n)
             taken.update(ids)
+            bundle.update(ids)
         picked.append(ids)
-    want = sum(max(0, int(n)) for _, n in stages)
+    want = sum(max(0, n) for _, n in stages)
     short = want - sum(len(p) for p in picked)
     extras: list[int] = []
     if short > 0:
-        all_folders = [f for folders, _ in stages
-                       for f in (folders or []) if str(f).strip()]
+        all_folders = [f for folders, _ in stages for f in folders]
         if all_folders:
             by_name = _resolve_folders(client, all_folders)
             extras = _gather_unseen(client, all_folders, by_name, taken, short)
+            bundle.update(extras)
+    short -= len(extras)
+    if short > 0 and repeat_ok:
+        # Repeats may only restore the repeat_ok stages' OWN share — a payoff
+        # shortfall keeps shrinking the bundle rather than becoming filler.
+        repeat_want = sum(max(0, n) for i, (_, n) in enumerate(stages)
+                          if i in repeat_ok)
+        repeat_have = sum(len(picked[i]) for i in repeat_ok if i < len(picked))
+        short = min(short, max(0, repeat_want - repeat_have))
+        r_folders = [f for i, (folders, _) in enumerate(stages)
+                     if i in repeat_ok for f in folders]
+        if short > 0 and r_folders:
+            by_name = _resolve_folders(client, r_folders)
+            extras = extras + _gather_unseen(
+                client, r_folders, by_name,
+                set(bundle) | set(never_repeat), short)
     return picked, extras
 
 
@@ -616,7 +649,8 @@ def _compose_bundle_ids(client, plan, seen: set[int],
     to_thread."""
     (prem, norm, free), extras = _pull_stages(
         client, [(premium_folders, plan.premium), (normal_folders, plan.normal),
-                 (free_folders, plan.free)], seen)
+                 (free_folders, plan.free)], seen,
+        repeat_ok={2})  # the free tier is tease filler — may repeat, never blocks
     out = prem + norm + free + extras
     weight = len(prem) * tip_ladder.WEIGHT_PREMIUM + len(norm) * tip_ladder.WEIGHT_STANDARD
     return out, {"premium": len(prem), "normal": len(norm), "free": len(free),
@@ -972,7 +1006,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         _pull_stages, client,
         [([tease_folder] if tease_n else [], tease_n),
          (folders, normal_n - len(matched))],
-        set(seen) | set(matched))
+        set(seen) | set(matched),
+        # Tease warm-up is filler — may repeat, never blocks the bundle; but
+        # never re-pick a photo the matcher already reserved for the payoff.
+        repeat_ok={0}, never_repeat=set(matched))
     # Escalating order: tease warm-up → tier shots (+ any backfill) → the
     # matched-to-his-ask photos land last (the payoff).
     media_ids = tease_ids + normal_ids + extras + matched

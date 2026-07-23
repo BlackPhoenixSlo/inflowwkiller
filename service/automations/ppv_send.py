@@ -69,12 +69,13 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 
+import ownership
 import vault_ai_to_chatter
 from automation_registry import register
 from db.engine import get_session
 from db.models import (
-    AccountAiConfig, AutomationRun, Blacklist, CatalogItem, ContentOffer, Fan,
-    LadderState, Message, Post, ScheduledJob, Transaction, VaultSend,
+    AccountAiConfig, AutomationRun, Blacklist, Fan,
+    LadderState, Post, ScheduledJob, Transaction,
 )
 from ._common import load_hard_skip_ids
 
@@ -881,72 +882,22 @@ async def _all_fan_ids(account_id: str) -> list[int]:
     return [int(x) for x in rows]
 
 
-def _item_media(item) -> list[int]:
-    """Media ids bound to a CatalogItem. Local mirror of ai_chatter._item_media, kept here to avoid
-    a circular import (ai_chatter imports _owners_of_media FROM this module)."""
-    try:
-        return [int(m) for m in json.loads(item.media_ids or "[]")]
-    except Exception:
-        return []
+# Media parsing + both ownership readers live in ownership.py (the one home
+# for owned-media semantics — this used to be a "local mirror to avoid a
+# circular import" situation; ownership.py is a dependency root, so the wart
+# is gone). The aliases keep this module's names for call sites and tests.
+_item_media = ownership.item_media
+_owners_of_media = ownership.owners_of_media
 
 
-async def _owners_of_media(account_id: str, media_ids: list[int]) -> set[int]:
-    """Fan ids who ALREADY own any of this media — so we never re-pitch/re-sell content a fan holds.
-    THREE signals:
-      1. a `VaultSend.was_purchased is True` row (a tip/PPV unlock in ANY lane — the reliable,
-         lane-independent signal; this is what makes an ai_chatter LADDER buy visible to THIS mass
-         lane and to the discount-resend guard at ai_chatter.py);
-      2. a NON-FREE delivered `content_offer` whose item media overlaps (durable item-level proof;
-         `resolved_by='free'` teasers are EXCLUDED — a teaser is resendable, not owned);
-      3. a paid `Message` whose per-message `media_ids` JSON overlaps (kept for inbound/real-id rows;
-         inert for pipeline PPVs, which store `media_ids='[]'`)."""
-    target = {int(x) for x in media_ids}
-    if not target:
-        return set()
-    owners: set[int] = set()
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(Message.fan_id, Message.media_ids).where(
-                Message.account_id == account_id,
-                Message.is_paid.is_(True),
-            )
-        )).all()
-        vs = (await s.execute(
-            select(VaultSend.fan_id).where(
-                VaultSend.account_id == str(account_id),
-                VaultSend.was_purchased.is_(True),
-                VaultSend.media_id.in_(list(target)),
-            )
-        )).scalars().all()
-        owners |= {int(x) for x in vs if x is not None}
-        co = (await s.execute(
-            select(ContentOffer.fan_id, ContentOffer.item_id).where(
-                ContentOffer.account_id == str(account_id),
-                ContentOffer.status == "delivered",
-                ContentOffer.resolved_by.in_(
-                    ("tip", "ppv_ledger", "ppv_txn", "ppv_fastpath", "manual")),
-            )
-        )).all()
-        item_media: dict[int, set[int]] = {}
-        if co:
-            for ci in (await s.execute(
-                select(CatalogItem).where(CatalogItem.id.in_(
-                    [int(i) for _, i in co if i is not None])))
-            ).scalars().all():
-                item_media[int(ci.id)] = set(_item_media(ci))
-    for fid, mids_json in rows:
-        if fid is None:
-            continue
-        try:
-            mids = {int(x) for x in json.loads(mids_json or "[]")}
-        except Exception:
-            continue
-        if mids & target:
-            owners.add(int(fid))
-    for fid, iid in co:
-        if fid is not None and iid is not None and item_media.get(int(iid), set()) & target:
-            owners.add(int(fid))
-    return owners
+async def _hero_media_ids(account_id: str, media_ids: list[int],
+                          preview_ids: list[int]) -> list[int]:
+    """Plain-id-list adapter over `ownership.hero_media_map` for the
+    PPV-library blob shape — see it for the operator's hero/filler ruling."""
+    return (await ownership.hero_media_map(
+        account_id,
+        {0: ([int(x) for x in media_ids],
+             [int(x) for x in (preview_ids or [])])}))[0]
 
 
 # ── Per-account cap: max PPV sends per rolling day / week / month ────────────
@@ -1224,7 +1175,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     #   fan already owns. force_ids bypasses GATES (cap, dup-fire) — it is not a
     #   whitelist, and ownership is not a gate, it is a fact about the fan.
     # Nobody owns the media ⇒ owners is empty ⇒ the audience is untouched.
-    owners = await _owners_of_media(account_id, media_ids)
+    #
+    # HERO media only (operator ruling 07-23): the previews pool is the free-
+    # visible tease slice, so a fan who merely owns a shared preview frame still
+    # gets the blast — only owning the payoff (a video, or a non-preview image)
+    # skips him. Preview-listed ids the vault mirror knows are VIDEOS stay hero
+    # (a video is never mere filler). No previews ⇒ hero == full media set.
+    hero_ids = await _hero_media_ids(account_id, media_ids, preview_pool)
+    owners = await _owners_of_media(account_id, hero_ids)
     if owners:
         before = len(fan_rows)
         fan_rows = [r for r in fan_rows if int(r[0]) not in owners]
