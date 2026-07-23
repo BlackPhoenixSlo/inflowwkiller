@@ -119,10 +119,10 @@ function StyleSection({ accountId }: { accountId: string | null }) {
           <span className="space-y-0.5">
             <span className="block text-sm">Cat stickers 🐱 (reaction gifs)</span>
             <span className="block text-[11px] text-fg-dim/70">
-              AI Chatter can end a reply with a cat reaction gif — and now and then the
-              gif IS the reply (he says goodnight → just a sleepy kitten), the way a real
-              girl texts. Hand-picked pack of 89 real-cat gifs across 22 moods. On by
-              default; untick to turn the pack off for this account.
+              AI Chatter and Auto Convo replies can end with a cat reaction gif — and now
+              and then the gif IS the reply (he says goodnight → just a sleepy kitten),
+              the way a real girl texts. Hand-picked pack of 89 real-cat gifs across 22
+              moods. On by default; untick to turn the pack off for this account.
             </span>
           </span>
         </label>

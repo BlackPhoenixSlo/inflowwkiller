@@ -81,6 +81,7 @@ from ._common import (
     build_facts_note, build_structured_nickname, build_tip_ask_block, coerce_ids,
     facts_from_fan, hold_with_typing, apply_typo_throttle, is_content_ask,
     is_substantive_msg,
+    load_cat_sticker_tuning, load_cat_stickers_flag,
     load_factground_flag, load_painful_texting_flag,
     load_nonnative_flags, load_strip_emojis, load_style_flags, load_tip_ask_config,
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
@@ -88,6 +89,7 @@ from ._common import (
     should_skip_muted_creator, skip_unreachable_fan, strip_emojis,
     typing_delay_seconds,
 )
+from . import cat_stickers  # reaction-gif pack (same roll/parse/send seam as ai_chatter)
 from . import gen_info  # profile_is_stale() — the refresh-if-stale hook below
 
 # A 200-from-OF without a message id can't be persisted (message_id is the PK),
@@ -838,7 +840,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
                     painful_on: bool = True,
                     lang: str = "en",
                     profile: "FanProfile | None" = None,
-                    clock: str = "") -> tuple[list[dict], list[str]]:
+                    clock: str = "",
+                    sticker_mode: str = "skip") -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — a faithful port of V1
     prompts.create_chat_response: a short, GIRLY, 100%-human reply that flirts
     WHILE gathering the one piece of info we still need. The 'still need' block is
@@ -987,8 +990,17 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # the reply's length), so replies mix one-liners with a couple of short texts.
     style_extra = ((STYLE_3LINE,) * 2 + (STYLE_BRIEF,) * 2) if style_on else ()
     style = random.choice(_STYLE_VARIANTS + style_extra)
+    # A "solo" sticker roll owns the per-message STYLE slot — a bullet buried
+    # mid-prompt loses to the goal/style lines (verified live in ai_chatter:
+    # 5/5 solo rolls yielded plain text until the directive moved here).
+    if sticker_mode == "solo":
+        style = ("a cat sticker says it all this time — if one of the CAT "
+                 "STICKERS below fits his last message, reply with ONLY the "
+                 "STICKER line, no text at all. Only write text if truly "
+                 "none fits.")
     # When selling, force a single teasing line — a multi-line/breather variant
-    # would fight the "ONE short line" tip-ask block.
+    # would fight the "ONE short line" tip-ask block. Beats a solo roll too: a
+    # tip-ask must carry text (the gif can still ride after it).
     if selling:
         style = "one short flirty line, teasing not needy, 0-1 emoji."
 
@@ -998,6 +1010,10 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # When the "non-native English" opt-in is ON, append the register block (the dict
     # in the send path guarantees the signature misspellings; this sets the grammar).
     nonnative = f"\n\n{NONNATIVE_REGISTER}" if nonnative_on else ""
+    # Sticker protocol enters the prompt only on an allow/solo roll — a model
+    # that can't see it can't over-use it (measured 48% attach when always on).
+    _sticker_block = cat_stickers.prompt_block(sticker_mode)
+    stickers = f"\n\n{_sticker_block}" if _sticker_block else ""
 
     # When selling (he asked for content), DROP the two clauses that forbid
     # offering — they'd contradict the tip-ask block. of_ai_chat still never names
@@ -1036,10 +1052,15 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"{_good_examples(f, asked, have_durable_name)}\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
         f"{LIVE_PROOF_GUARDRAIL}"
-        f"{humanizer}{nonnative}\n\n"
+        f"{humanizer}{nonnative}{stickers}\n\n"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
+        # Without this carve-out the contract line above suppresses the marker
+        # entirely — verified live in ai_chatter: 4/4 solo rolls produced no
+        # STICKER line until the exception was stated here.
+        + (" The final STICKER: <tag> line is ALSO allowed (stripped before "
+           "sending — he only sees the gif)." if _sticker_block else "")
         # OUTPUT-LANGUAGE block appended at the very END (prefix-cache safe); "" for en.
-        f"{_language.output_language_directive(lang)}"
+        + _language.output_language_directive(lang)
     )
     user = (
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
@@ -1435,6 +1456,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
     factground_on = await load_factground_flag(account_id)  # rich-profile grounding (default ON)
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
+    stickers_on = await load_cat_stickers_flag(account_id)    # cat reaction gifs (default ON)
+    sticker_skip_w, sticker_solo_w, sticker_gap_min = \
+        await load_cat_sticker_tuning(account_id)             # per-account rate knobs
     account_lang = await _language.load_account_language(account_id)  # output language + guard gate
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
@@ -1569,6 +1593,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if factground_on else {})
 
     sent = 0
+    stickers_sent = 0       # cat reaction gifs delivered (incl. sticker-only replies)
     skipped_locked = 0
     skipped_cooldown = 0
     errors = 0
@@ -1626,6 +1651,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Per-fan language: a manual pin or gen_info detection on this fan
             # (fans.language) overrides the account default; unset → account default.
             fan_lang = _language.resolve_language(account_lang, getattr(f, "language", None))
+            # Cat-sticker roll (code-side rate control, same seam as ai_chatter):
+            # deterministic per reply (fan + his latest text) so a re-run rolls
+            # the same. Cooldown (per-account gap knob) forces skip.
+            sticker_mode = "skip"
+            if stickers_on:
+                sticker_mode = cat_stickers.roll_mode(
+                    random.Random(f"sticker:{account_id}:{fan_id}:{c.last_body}"),
+                    cat_stickers.cooldown_active(account_id, fan_id,
+                                                 gap_min=sticker_gap_min),
+                    skip_w=sticker_skip_w, solo_w=sticker_solo_w)
             msgs, presented = _build_messages(
                 persona, f, c, asked, history_tail,
                 style_on=style_on, nonnative_on=nonnative_on,
@@ -1633,7 +1668,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 tip_ask_block=tip_ask_block,
                 painful_on=painful_on, lang=fan_lang,
                 profile=profiles.get(fan_id),
-                clock=_clock_line(clock_tz))
+                clock=_clock_line(clock_tz),
+                sticker_mode=sticker_mode)
             try:
                 res = await llm_client.chat(
                     model=model,
@@ -1655,6 +1691,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 continue
 
             raw = (res.content or "").strip()
+            # Sticker marker: ALWAYS strip protocol lines (a fan must never see
+            # them); honor the tag only when this reply's roll offered the pack.
+            raw, sticker_tag = cat_stickers.parse_marker(raw)
+            if sticker_mode == "skip":
+                sticker_tag = None
             # Deterministic floor under ONPLATFORM_GUARDRAIL: if the model still
             # leaked a number / off-platform handle / meetup arrangement, swap for
             # a warm on-platform deflection before it can be sent.
@@ -1690,7 +1731,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if style_on and parts:
                 recent_out = [b for d, b in c.messages if d == "out"]
                 parts = _dedupe_lead_reaction(parts, recent_out)
-            if not parts:
+            if not parts and sticker_tag is None:
                 errors += 1
                 log.debug("of_ai_chat dropped echo-only reply account=%s fan=%s",
                           account_id, fan_id)
@@ -1760,6 +1801,52 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     log.warning("of_ai_chat send returned no id account=%s fan=%s — paused %s",
                                 account_id, fan_id, _NOID_PAUSE)
                 continue
+            # ── Cat sticker — its own bubble after the text, or the WHOLE reply
+            # (parts empty). Empty text + top-level giphyId is the verified
+            # GIF-only wire shape; failure is non-fatal when text already landed.
+            sticker_sent = False
+            if sticker_tag is not None and not send_failed and not first_no_id:
+                gid = cat_stickers.pick_gif(
+                    sticker_tag,
+                    random.Random(f"gif:{account_id}:{fan_id}:{c.last_body}"))
+                if gid is not None:
+                    srng = random.Random(f"sdelay:{fan_id}:{gid}")
+                    await hold_with_typing(account_id, fan_id,
+                                           2.0 + 4.0 * srng.random(),
+                                           typing_indicator=typing_indicator)
+                    try:
+                        result = await asyncio.to_thread(
+                            lambda g=gid: client.send_message(fan_id, "",
+                                                              giphy_id=g))
+                    except Exception:
+                        result = None
+                        log.warning("of_ai_chat sticker send failed account=%s "
+                                    "fan=%s tag=%s", account_id, fan_id,
+                                    sticker_tag, exc_info=True)
+                    s_msg_id = result.get("id") if isinstance(result, dict) else None
+                    if s_msg_id:
+                        await write_outbound_attribution(
+                            account_id=account_id,
+                            fan_id=int(fan_id),
+                            message_id=int(s_msg_id),
+                            sent_by_employee_id=None,
+                            automation_kind=_PURPOSE,
+                            body=str(result.get("text") or ""),
+                            price_cents=0,
+                            created_at=ax._parse_iso(result.get("createdAt"))
+                            or datetime.utcnow(),
+                            emit_live=True,
+                        )
+                        cat_stickers.mark_sent(account_id, fan_id)
+                        sticker_sent = True
+                        sent_ok = True
+                        stickers_sent += 1
+                        log.info("of_ai_chat sticker sent account=%s fan=%s "
+                                 "tag=%s gif=%s solo=%s", account_id, fan_id,
+                                 sticker_tag, gid, not parts)
+            if not parts and not sticker_sent:
+                errors += 1     # sticker-only reply and the gif never landed
+                continue
             # At least one bubble landed → stamp the send (the turn was already
             # counted by _bump_attempt when the reply was generated).
             await _mark_reply_sent(account_id, fan_id, now)
@@ -1770,7 +1857,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # the poke-later-reordered front — that's what makes a still-empty core
             # fact escalate to ":2" and DROP after two asks (never a 3rd time), so a
             # dodgy fan graduates to deep_convo with a self-generated nickname.
-            target = _primary_ask_target(presented)
+            # A gif-only reply asked nothing — don't burn the topic's ask slot
+            # (":2" caps at two asks; a kitten gif must not count as one).
+            target = _primary_ask_target(presented) if parts else None
             if target:
                 await _mark_question_asked(account_id, fan_id, target, asked)
             # Keep stored info current: refresh the profile when the gate says stale.
@@ -1807,6 +1896,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     return {
         "candidates": len(candidates),
         "replies_sent": sent,
+        "stickers_sent": stickers_sent,
         "skipped_listed": skipped_listed,
         "skipped_not_turn": skipped_not_turn,
         "skipped_spam": skipped_spam,
