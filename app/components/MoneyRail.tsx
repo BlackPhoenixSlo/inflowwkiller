@@ -133,31 +133,44 @@ export function railVisibleOn(settings: RailSettings, surface: Surface): boolean
   return !settings.surfaces || settings.surfaces.includes(surface);
 }
 
+function normalizeSettings(p: Partial<RailSettings>): RailSettings {
+  return {
+    smallRows: clampChoice(p.smallRows, SMALL_ROW_CHOICES, DEFAULT_SETTINGS.smallRows),
+    bigRows: clampChoice(p.bigRows, BIG_ROW_CHOICES, DEFAULT_SETTINGS.bigRows),
+    // An EMPTY array would mean "no models", i.e. a permanently blank rail —
+    // never a thing the user meant. Treat it as "all", same as null.
+    accounts:
+      Array.isArray(p.accounts) && p.accounts.length > 0
+        ? p.accounts.filter((a): a is string => typeof a === "string")
+        : null,
+    // Three states on disk: an array = that pick; an explicit null = the
+    // user chose "everywhere"; MISSING = a save from before surfaces
+    // existed (or junk) → the house default, NOT "everywhere".
+    surfaces:
+      p.surfaces === null
+        ? null
+        : Array.isArray(p.surfaces)
+          ? parseSurfaces(p.surfaces)
+          : DEFAULT_SETTINGS.surfaces,
+  };
+}
+
+/** A write that couldn't land in localStorage. The react-query persister
+ *  mirrors chats + vault into the same origin's ~5MB, so on a busy account
+ *  setItem can throw QuotaExceededError — and since writeSettings queues a
+ *  SETTINGS_EVENT re-read, a swallowed write used to snap every ⚙ pick
+ *  straight back to the saved value. Held here so the pick still wins in this
+ *  tab; cleared as soon as any write lands. (If another tab saves while this
+ *  is set, this tab keeps its own pick — acceptable for a degraded mode.) */
+let quotaFallback: RailSettings | null = null;
+
 export function readSettings(): RailSettings {
   if (typeof window === "undefined") return DEFAULT_SETTINGS;
+  if (quotaFallback) return normalizeSettings(quotaFallback);
   try {
     const raw = window.localStorage.getItem(SETTINGS_KEY);
     if (!raw) return DEFAULT_SETTINGS;
-    const p = JSON.parse(raw) as Partial<RailSettings>;
-    return {
-      smallRows: clampChoice(p.smallRows, SMALL_ROW_CHOICES, DEFAULT_SETTINGS.smallRows),
-      bigRows: clampChoice(p.bigRows, BIG_ROW_CHOICES, DEFAULT_SETTINGS.bigRows),
-      // An EMPTY array would mean "no models", i.e. a permanently blank rail —
-      // never a thing the user meant. Treat it as "all", same as null.
-      accounts:
-        Array.isArray(p.accounts) && p.accounts.length > 0
-          ? p.accounts.filter((a): a is string => typeof a === "string")
-          : null,
-      // Three states on disk: an array = that pick; an explicit null = the
-      // user chose "everywhere"; MISSING = a save from before surfaces
-      // existed (or junk) → the house default, NOT "everywhere".
-      surfaces:
-        p.surfaces === null
-          ? null
-          : Array.isArray(p.surfaces)
-            ? parseSurfaces(p.surfaces)
-            : DEFAULT_SETTINGS.surfaces,
-    };
+    return normalizeSettings(JSON.parse(raw) as Partial<RailSettings>);
   } catch {
     return DEFAULT_SETTINGS;
   }
@@ -166,7 +179,20 @@ export function readSettings(): RailSettings {
 export const SETTINGS_EVENT = "chatterly:money-rail:settings";
 
 export function writeSettings(s: RailSettings): void {
-  try { window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* quota */ }
+  try {
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+    quotaFallback = null;
+  } catch {
+    // Storage is full. The rail's cold-start snapshot is a placeholder cache
+    // that's safe to lose — evict it and retry before falling back to memory.
+    try {
+      window.localStorage.removeItem(SNAPSHOT_KEY);
+      window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+      quotaFallback = null;
+    } catch {
+      quotaFallback = s;
+    }
+  }
   // Same-tab siblings (the bell's "show it here" restore button lives in a
   // different component) hear this and re-read; popout tabs get the native
   // storage event. Deferred so a subscriber's setState never fires inside
