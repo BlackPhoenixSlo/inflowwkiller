@@ -225,5 +225,29 @@ async def init_db() -> None:
                             "failed to create missing index %s on %s",
                             ix.name, table_name,
                         )
+
+            # One-way DATA catch-up (07-23 decline policy): nothing writes
+            # ladder status 'stopped' or skip_list('ladder_stop') anymore — a
+            # hard decline now takes a 72h offers-pause + a make_right apology.
+            # Convert the bot-era rows to the new shape so the fans they
+            # silenced re-open under the same policy. Idempotent: once no
+            # 'stopped'/'ladder_stop' rows remain this is a no-op forever (an
+            # operator hand-writing either state afterwards is honoured by the
+            # readers, but boot converts it — permanent stops belong in
+            # manual_restrict).
+            try:
+                with sync_engine.begin() as conn:
+                    r1 = conn.execute(text(
+                        "UPDATE ladder_state SET status='idle', "
+                        "offers_paused_until=datetime(COALESCE(updated_at, "
+                        "CURRENT_TIMESTAMP), '+72 hours') WHERE status='stopped'"))
+                    r2 = conn.execute(text(
+                        "DELETE FROM skip_list WHERE reason='ladder_stop'"))
+                    if r1.rowcount or r2.rowcount:
+                        _log.info("decline-policy catch-up: %s stopped ladders "
+                                  "reopened (72h pause), %s ladder_stop skip rows "
+                                  "cleared", r1.rowcount, r2.rowcount)
+            except Exception:
+                _log.exception("decline-policy data catch-up failed")
     finally:
         sync_engine.dispose()
