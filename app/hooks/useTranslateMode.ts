@@ -15,31 +15,47 @@ import { useEffect, useState } from "react";
 const STORAGE_KEY = "chatterly:translate-en";
 const EVENT = "chatterly-translate-mode-change";
 
+// Module-level source of truth. localStorage is best-effort persistence only —
+// if its write throws (quota / private mode), same-tab instances still agree
+// via this variable, so the button can never show ON while the thread stays
+// untranslated. null = not read yet this page load.
+let current: boolean | null = null;
+
 export function readTranslateMode(): boolean {
+  if (current !== null) return current;
   if (typeof window === "undefined") return false;
-  return window.localStorage.getItem(STORAGE_KEY) === "1";
+  try {
+    current = window.localStorage.getItem(STORAGE_KEY) === "1";
+  } catch {
+    current = false;
+  }
+  return current;
 }
 
 export function useTranslateMode(): [boolean, (next: boolean) => void] {
   const [val, setVal] = useState<boolean>(() => readTranslateMode());
 
   useEffect(() => {
-    const onChange = () => setVal(readTranslateMode());
-    window.addEventListener(EVENT, onChange);
-    window.addEventListener("storage", onChange);
+    const onLocal = () => setVal(readTranslateMode());
+    // Cross-tab flip: another tab wrote localStorage — invalidate the module
+    // cache so the re-read picks up the other tab's value.
+    const onStorage = () => { current = null; setVal(readTranslateMode()); };
+    window.addEventListener(EVENT, onLocal);
+    window.addEventListener("storage", onStorage);
     return () => {
-      window.removeEventListener(EVENT, onChange);
-      window.removeEventListener("storage", onChange);
+      window.removeEventListener(EVENT, onLocal);
+      window.removeEventListener("storage", onStorage);
     };
   }, []);
 
   function update(next: boolean) {
+    current = next;
     setVal(next);
     try {
       if (next) window.localStorage.setItem(STORAGE_KEY, "1");
       else window.localStorage.removeItem(STORAGE_KEY);
-      window.dispatchEvent(new Event(EVENT));
-    } catch { /* quota — silent */ }
+    } catch { /* quota — silent; module state still flipped */ }
+    window.dispatchEvent(new Event(EVENT));
   }
 
   return [val, update];

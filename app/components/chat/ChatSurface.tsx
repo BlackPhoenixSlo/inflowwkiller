@@ -31,6 +31,7 @@ import { useAccountLabel } from "@/hooks/useAccounts";
 import { useRosterCountActions } from "@/hooks/useRosterCounts";
 import { readFanDrawerDefault, useFanDrawerDefault } from "@/hooks/useFanDrawerDefault";
 import { useTranslateMode } from "@/hooks/useTranslateMode";
+import { useTranslateStatus } from "@/hooks/useTranslations";
 import {
   useServerScheduledSends,
   scheduledToPseudoMessage,
@@ -136,8 +137,10 @@ export function ChatSurface({
   const [quoted, setQuoted] = useState<QuotedReply | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   // 🌐 header toggle — persisted; MessageList reads the same hook and does
-  // the actual translation fetch/render.
+  // the actual translation fetch/render. Status feeds the button's
+  // "…" (fetching) / "⚠" (batch failed) indicators.
   const [translateOn, setTranslateOn] = useTranslateMode();
+  const translateStatus = useTranslateStatus();
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
@@ -784,12 +787,20 @@ export function ChatSurface({
           type="button"
           onClick={() => setTranslateOn(!translateOn)}
           className={cn(
-            "text-[11px] underline underline-offset-2",
-            translateOn ? "text-accent" : "text-fg-dim hover:text-fg",
+            "text-[11px]",
+            translateOn
+              ? "px-1.5 py-0.5 rounded-md bg-accent/15 text-accent border border-accent/40 font-medium"
+              : "text-fg-dim hover:text-fg underline underline-offset-2",
           )}
-          title="Translate non-English messages to English — tags each with its detected language, original on hover"
+          title={translateOn
+            ? "Translation ON — non-English messages show in English with a (lang) tag; original on hover. Click to turn off."
+            : "Translate non-English messages to English — tags each with its detected language, original on hover"}
         >
-          🌐 translate
+          🌐 translate{translateOn ? " ON" : ""}
+          {translateOn && translateStatus.busy && <span className="animate-pulse"> …</span>}
+          {translateOn && !translateStatus.busy && translateStatus.failed && (
+            <span title="Last translation batch failed — showing originals"> ⚠</span>
+          )}
         </button>
         <a
           href={`/chat/${encodeURIComponent(accountId)}/${fanId}`}

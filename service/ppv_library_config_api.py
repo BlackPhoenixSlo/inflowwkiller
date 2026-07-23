@@ -171,7 +171,9 @@ def _validate(cfg: dict) -> dict:
             raise HTTPException(422, "quiet_hours must be two hour numbers")
     # Per-account throttle: max PPV sends per day / week / month, EVEN-SPREAD — cap
     # N/window = one send every window/N (2/day → every 12h). A too-soon send is held
-    # to its slot. 0/absent = that cap is off.
+    # to its slot. Zeros are STORED, not dropped: a blob with no ppv_caps key runs
+    # the runtime house default (2/14/60 → 12h gap), so explicit zeros are the only
+    # way an operator can say "no spacing" and have it survive the save.
     caps = cfg.get("ppv_caps")
     if isinstance(caps, dict):
         clean_caps: dict[str, int] = {}
@@ -180,10 +182,8 @@ def _validate(cfg: dict) -> dict:
                 v = int(caps.get(k) or 0)
             except (TypeError, ValueError):
                 v = 0
-            if v > 0:
-                clean_caps[k] = min(v, 10_000)
-        if clean_caps:
-            out["ppv_caps"] = clean_caps
+            clean_caps[k] = max(0, min(v, 10_000))
+        out["ppv_caps"] = clean_caps
     # Global price limits: every COMPUTED send/post price (per-cell tier, the
     # everyone-broadcast, feed posts) is clamped into [min, max] at RUNTIME —
     # authored base prices are never rewritten. Always emitted (self-describing

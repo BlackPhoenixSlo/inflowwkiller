@@ -240,10 +240,14 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     } else {
       setQuietOn(false);
     }
-    const caps = c.ppv_caps ?? {};
-    setCapDay(caps.per_day ?? 0);
-    setCapWeek(caps.per_week ?? 0);
-    setCapMonth(caps.per_month ?? 0);
+    // No stored caps = the runtime applies the house default (2/14/60 → one
+    // blast per 12h) — show THAT, not 0s, so the tab reflects what actually
+    // runs. A stored dict is authoritative per key (explicit 0 = off).
+    const caps = c.ppv_caps;
+    const capDef = cfgQ.data?.defaults?.ppv_caps ?? {};
+    setCapDay(caps ? caps.per_day ?? 0 : capDef.per_day ?? 2);
+    setCapWeek(caps ? caps.per_week ?? 0 : capDef.per_week ?? 14);
+    setCapMonth(caps ? caps.per_month ?? 0 : capDef.per_month ?? 60);
     setReachAll(c.reach_all ?? true);
     const ph = c.pause_hours ?? 0;
     setPauseOn(ph > 0);
@@ -409,16 +413,29 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   const minCents = Math.max(PRICE_FLOOR, Math.min((priceMin || 3) * 100, PRICE_CEIL));
   const maxCents = Math.max(minCents, Math.min((priceMax || 200) * 100, PRICE_CEIL));
 
+  // Live translation of the caps into the gap the runtime enforces — each cap
+  // becomes window ÷ N and the WIDEST gap wins (mirror of ppv_send._cap_release),
+  // so the operator sees "every ~6h 43m" instead of doing the math per field.
+  const capGapH = Math.max(
+    capDay > 0 ? 24 / capDay : 0,
+    capWeek > 0 ? 168 / capWeek : 0,
+    capMonth > 0 ? 720 / capMonth : 0,
+  );
+  const fmtGap = (h: number) => {
+    let hh = Math.floor(h);
+    let mm = Math.round((h - hh) * 60);
+    if (mm === 60) { hh += 1; mm = 0; }
+    return mm ? `${hh}h ${mm}m` : `${hh}h`;
+  };
+
   const buildConfig = () => ({
     enabled,
     reach_all: reachAll,
     pause_hours: pauseOn ? Math.max(1, Math.min(pauseHours || 1, 168)) : 0,
     quiet_hours: quietOn ? ([quietStart, quietEnd] as [number, number]) : null,
-    ppv_caps: {
-      ...(capDay > 0 ? { per_day: capDay } : {}),
-      ...(capWeek > 0 ? { per_week: capWeek } : {}),
-      ...(capMonth > 0 ? { per_month: capMonth } : {}),
-    },
+    // Always all three keys, zeros included — an absent-key blob runs the house
+    // default (2/14/60), so explicit 0s are the only way "no limit" survives a save.
+    ppv_caps: { per_day: capDay, per_week: capWeek, per_month: capMonth },
     price_min_cents: minCents,
     price_max_cents: maxCents,
     ppvs: ppvs.map((p) => ({
@@ -532,14 +549,24 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
             checked={pauseOn}
             onChange={(e) => { markDirty(); setPauseOn(e.target.checked); }}
           />
-          <span>Pause — don&apos;t re-message the same fan for</span>
+          <span>Pause — skip fans we already talked to in the last</span>
           <input
             type="number" min={1} max={168} disabled={!pauseOn}
             className={`${INPUT} w-16`} value={pauseHours}
             onChange={(e) => { markDirty(); setPauseHours(Math.max(1, Math.min(Number(e.target.value) || 1, 168))); }}
           />
-          <span>hours {pauseOn ? "" : "(off = send to everyone, no pause)"}</span>
+          <span>hours {pauseOn ? "" : "(off)"}</span>
         </label>
+        <div className="text-[11px] text-fg-dim/80 leading-relaxed">
+          <b>Per-fan</b> — different from the account-wide caps above, which only space
+          the blasts themselves. At send time this builds an <b>exclude list</b>: every
+          fan <b>we</b> messaged inside the window — by anything (AI chatter, welcome,
+          follow-ups, nudges, other blasts) — or who <b>wrote to us</b>, is dropped from
+          this blast&apos;s audience. ⚠️ On a busy account almost everyone has some contact
+          within 12h, so this can gut the audience (−86% measured live). Fans mid-purchase
+          or in a hot 1:1 chat are skipped automatically anyway — most accounts should
+          leave this off.
+        </div>
       </div>
 
       <label className="flex items-center gap-2 text-xs cursor-pointer flex-wrap">
@@ -564,10 +591,12 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
         <span className="text-fg-dim">(creator-local hour, 0-23)</span>
       </label>
 
-      {/* Per-account send caps. 0 = no limit. A hit cap holds a PPV and releases
-          one when the window frees. */}
+      {/* Per-account send caps. Default 2/day · 14/week · 60/month (12h spacing);
+          0 = no limit. A hit cap holds a PPV and releases it when the window frees. */}
       <div className="rounded-lg border border-border p-3 space-y-2">
-        <div className="text-xs font-medium text-fg">Max PPVs sent (whole account) — 0 = no limit</div>
+        <div className="text-xs font-medium text-fg">
+          Max PPVs sent (whole account) — default 2 / 14 / 60 · 0 = no limit
+        </div>
         <div className="flex flex-wrap gap-4">
           {([
             ["per day", capDay, setCapDay],
@@ -586,9 +615,16 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
           ))}
         </div>
         <div className="text-[11px] text-fg-dim/70">
-          <b>Spreads sends evenly</b> across the window — e.g. 2 per day = at most one every
-          12h (24h ÷ 2), 3 per day = every 8h. The spacing restarts from the last send. A
-          PPV that comes due too soon waits its turn, then goes out.
+          <b>Spacing between blasts — whole account.</b> Each cap becomes a minimum gap
+          (window ÷ N: 2/day = every 12h, 25/wk = every ~6h 43m) and the <b>strictest one
+          wins</b>. A PPV that comes due too soon isn&apos;t dropped — it waits for its slot,
+          then goes out. Only these Library blasts count toward the gap; 1:1 selling,
+          welcomes and nudges don&apos;t (the Pause below handles those).{" "}
+          {capGapH > 0
+            ? <>Your current setting → <b>at most one blast every ~{fmtGap(capGapH)}</b>.</>
+            : <><b>All three at 0 → no spacing</b> — several PPVs can blast the same fan
+              minutes apart.</>}{" "}
+          Default 2/day · 14/wk · 60/mo (= every 12h).
         </div>
       </div>
 
