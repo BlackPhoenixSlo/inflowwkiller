@@ -53,6 +53,10 @@ export interface TipRewardConfig {
   teaser_convo_after_fan_msgs?: number; // his messages between rungs
   teaser_convo_count?: number; // vault items per tease
   teaser_convo_rungs?: { folder: string; price_cents: number }[];
+  // Adaptive climb (backend default ON): the rung climbs only when the LAST teaser
+  // actually sold; on a no-buy the ask softens to 65–73% and the rung holds.
+  // false → legacy climb-one-rung-every-send regardless of buying.
+  teaser_convo_adaptive?: boolean;
   // Item 42 — "tip request" follow-up: a fan buys a MASS PPV and goes quiet →
   // send one free teaser image + a "send me a tip?" caption. Its own automation
   // (`tip_request`), nested here because it shares this config column.

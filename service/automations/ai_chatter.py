@@ -1067,16 +1067,12 @@ _HAGGLE_DISCOUNT_PCT = 0.10
 # cheaper (up to this much off). cfg["teaser_discount_pct"].
 _TEASER_DISCOUNT_PCT = 0.20
 
-# Price haggling — "too expensive", "cheaper", "discount", a lowball counter. When a
-# fan balks like this on the pending piece, the SECOND offer may re-send it cheaper.
-# NOTE: "broke" / "can't afford" are deliberately NOT here — those are OUT-of-money
-# signals that must hit the broke PAUSE (stop selling), not a cheaper re-offer. This
-# is strictly "make it cheaper for THIS piece" haggling.
-_HAGGLE_RE = re.compile(
-    r"\b(too\s+(?:much|expensive|pricey|steep)|expensive|pricey|cheaper|cheap|"
-    r"discount|deal|lower(?:\s+price)?|less|"
-    r"how\s+about\s+\$?\d|\$?\d+\s*(?:instead|max|tops)|any\s+cheaper)\b",
-    re.IGNORECASE)
+# Price haggling — "too expensive", "cheaper", a lowball counter. When a fan balks
+# like this on the pending piece, the SECOND offer may re-send it cheaper. Detection
+# lives in _language.is_haggle (English + the fan-language packs — a Spanish fan's
+# "porque subió tanto el precio?" must reach the same discount, not a higher rung).
+# NOTE: "broke" / "can't afford" are deliberately NOT haggle — those are OUT-of-money
+# signals that must hit the broke PAUSE (stop selling), not a cheaper re-offer.
 
 
 async def _open_offer_count(account_id: str, fan_id: int) -> int:
@@ -4310,7 +4306,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # close on the 1st's heels, so relax the between-offers spacing for it.
             open_count = await _open_offer_count(account_id, fan_id) if pending is not None else 0
             second_offer = pending is not None and open_count < max_open_offers
-            haggling = bool(_HAGGLE_RE.search(c.last_body or ""))
+            # Per-fan language: fans.language (manual pin or gen_info detection)
+            # overrides the account default; unset → account default. Resolved HERE
+            # (not at the prompt-build below) because the haggle detector needs it —
+            # a fan balking in his own language must earn the discount re-tease.
+            fan_lang = _language.resolve_language(account_lang, getattr(f, "language", None))
+            haggling = _language.is_haggle(c.last_body, fan_lang)
             if second_offer:
                 caps_cfg = {**caps_cfg, "min_fan_msgs_between_offers": 1}
 
@@ -4503,10 +4504,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         sell_block = _manifest_block(offerable, scripts, cfg_offer_mode,
                                                      quotes=quotes or None)
 
-            # Per-fan language: fans.language (manual pin or gen_info detection)
-            # overrides the account default; unset → account default. Drives both the
-            # reply language AND the bilingual buy-signal detectors below.
-            fan_lang = _language.resolve_language(account_lang, getattr(f, "language", None))
+            # fan_lang resolved above (haggle detection) — drives the reply language
+            # AND the bilingual buy-signal detectors below.
             content_ask = bool(offerable) and _language.is_content_ask(c.last_body, fan_lang)
             # Lean-in pivot: he's getting physical/horny (ESCALATION) with a live
             # manifest and HAS chatted a bit — ride it as an offer instead of teasing

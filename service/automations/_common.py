@@ -544,6 +544,25 @@ def strip_emojis(s: str) -> str:
     return _EMOJI_WS_RE.sub(" ", _EMOJI_STRIP_RE.sub("", s or "")).strip()
 
 
+# Inverted Spanish punctuation ("¿", "¡") — correct ORTHOGRAPHY, wrong REGISTER.
+# Casual native texters drop the openers and just close with ?/! ("y cuando vas
+# a grabar...?"), so a model "¿Y cuándo...?" reads edited/proper — a bot tell in
+# a DM. The model always emits them (trained on edited prose) and ignores a
+# prompt not to, so — like emojis — remove IN CODE. Unconditional, no toggle:
+# deleting the opener can never change meaning (the closing ?/! carries it), and
+# the chars never occur in en/sl output, so outside the es lane the fast path
+# below makes this a byte-for-byte no-op. Rides inside apply_word_restriction
+# (both variants) — the one last-mile pass every sender already runs — so no
+# per-sender wiring and future senders inherit it.
+
+def strip_inverted_punct(s: str) -> str:
+    """Drop inverted ¿/¡ and tidy any double space left behind ("hola ¿ como" →
+    "hola como"). Text without the chars passes through byte-identical."""
+    if not s or ("¿" not in s and "¡" not in s):
+        return s or ""
+    return _EMOJI_WS_RE.sub(" ", s.replace("¿", "").replace("¡", "")).strip()
+
+
 def is_substantive_msg(text: str | None) -> bool:
     """True if an inbound carries real conversational content — at least one
     alphanumeric char once emoji are stripped. Pure reactions ('😍', '🔥🔥', '...')
@@ -1652,10 +1671,12 @@ def _double_first_vowel(m: "re.Match") -> str:
 
 def apply_word_restriction(text: str) -> str:
     """Double the first vowel of any OnlyFans-restricted word, whole-word,
-    case-insensitive ("Let's meet" → "Let's meeet"). Empty/None passes through."""
+    case-insensitive ("Let's meet" → "Let's meeet"). Empty/None passes through.
+    Also carries the register floor: inverted ¿/¡ are stripped here because this
+    is the one pass every sender runs on outbound (see strip_inverted_punct)."""
     if not text:
         return text
-    return _RESTRICTED_RE.sub(_double_first_vowel, text)
+    return _RESTRICTED_RE.sub(_double_first_vowel, strip_inverted_punct(text))
 
 
 # ── Deterministic off-platform / contact / meetup guard ──────────────
