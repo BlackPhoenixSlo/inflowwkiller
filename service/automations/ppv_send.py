@@ -75,7 +75,7 @@ from automation_registry import register
 from db.engine import get_session
 from db.models import (
     AccountAiConfig, AutomationRun, Blacklist, Fan,
-    LadderState, Post, ScheduledJob, Transaction,
+    Post, ScheduledJob, Transaction,
 )
 from ._common import load_hard_skip_ids
 
@@ -775,103 +775,26 @@ def _segments(fan_rows: list, last_purchase: dict, now: datetime) -> dict[str, d
     return cells
 
 
-# How long after the last PAID rung a fan still counts as "mid-sell". The ladder's
-# own hot window is 45min (upsell.HOT_WINDOW_M) and it re-arms on every rung, so a
-# 120min tail leaves room for the whole hot session to play out plus a slow reply —
-# a mass blast landing 50min after he unlocked would still be talking over her.
-_LADDER_HOT_TAIL_MIN = 120
-
-
-async def _hot_ladder_fans(account_id: str, now: datetime) -> set[int]:
-    """Fans the Offer Engine is CURRENTLY selling to 1:1 — status open/hot, or still
-    inside the post-purchase hot tail. A mass PPV must not land on top of a live
-    ladder: she is mid-negotiation at a fan-specific price, and a $12.99 blast of a
-    different clip is the cheapest possible way to break that thread's momentum
-    (worse: it re-anchors him low while she's asking for the escalated rung).
-
-    The ladder is a NEW table. On an un-migrated prod DB (init_db's create_all vs
-    alembic — the two diverge, see the migration notes) a missing `ladder_state`
-    must degrade to "no ladder ⇒ no skips", never to a raised query that kills every
-    PPV send on the account. Empty set = today's behavior, exactly."""
-    cutoff = now - timedelta(minutes=_LADDER_HOT_TAIL_MIN)
-    try:
-        async with get_session() as s:
-            rows = (await s.execute(
-                select(LadderState.fan_id).where(
-                    LadderState.account_id == account_id,
-                    # BOTH halves are time-bounded, and that is load-bearing. An
-                    # unbounded `status IN ('open','hot')` looks harmless but is a
-                    # permanent revenue leak: a fan pays a rung → status='hot' → we
-                    # deliver the unlocked media → the thread's last message is OURS →
-                    # he never becomes an ai_chatter candidate again (the loop requires
-                    # `last_dir == 'in'`) → nothing ever closes his ladder. He sits at
-                    # 'hot' forever and is silently dropped from EVERY future mass PPV.
-                    # He is a PROVEN PAYER — the exact fan the blast exists to reach.
-                    # A ladder nobody has touched in _LADDER_HOT_TAIL_MIN is not live.
-                    (LadderState.status.in_(("open", "hot"))
-                     & LadderState.updated_at.is_not(None)
-                     & (LadderState.updated_at > cutoff))
-                    | (LadderState.hot_until.is_not(None) & (LadderState.hot_until > cutoff)),
-                )
-            )).scalars().all()
-    except Exception as e:  # noqa: BLE001 — missing table / un-migrated DB
-        log.warning("ppv_send ladder_state unreadable account=%s (%r) — "
-                    "treating as no live ladders", account_id, e)
-        return set()
-    return {int(x) for x in rows if x is not None}
-
-
-async def _offers_paused_fans(account_id: str, now: datetime) -> set[int]:
-    """Fans whose 1:1 ladder is inside an offers-pause — a VOICED decline (soft
-    'i'm broke' = 24h; hard chargeback/report/unsubscribe words = 72h, which since
-    07-23 replaced the permanent skip_list('ladder_stop') row). "Stop selling to
-    him for a while" must bind the blast too, or the pause is theatre: the
-    hard-declining fan would simply get his next price from the mass lane instead.
-    Same missing-table degradation as _hot_ladder_fans."""
-    try:
-        async with get_session() as s:
-            rows = (await s.execute(
-                select(LadderState.fan_id).where(
-                    LadderState.account_id == account_id,
-                    LadderState.offers_paused_until.is_not(None),
-                    LadderState.offers_paused_until > now,
-                )
-            )).scalars().all()
-    except Exception as e:  # noqa: BLE001 — missing table / un-migrated DB
-        log.warning("ppv_send ladder_state unreadable account=%s (%r) — "
-                    "treating as no offer pauses", account_id, e)
-        return set()
-    return {int(x) for x in rows if x is not None}
-
-
 async def _eligible_fans(account_id: str):
-    """All non-bot, non-blacklisted fans for the account + their last-PURCHASE time,
-    MINUS anyone with a live 1:1 ladder. We filter bots/blacklisted HERE because
-    ppv_send passes explicit included_users, and the send-side contact guard does NOT
-    bot/blacklist-filter an explicit set. Recency is last purchase
-    (Transaction.occurred_at), not last message.
+    """All non-bot, non-blacklisted fans for the account + their last-PURCHASE time.
+    We filter bots/blacklisted HERE because ppv_send passes explicit included_users,
+    and the send-side contact guard does NOT bot/blacklist-filter an explicit set.
+    Recency is last purchase (Transaction.occurred_at), not last message.
 
-    Returns (fan_rows, last_purchase, skipped_hot_ladder, skipped_offers_paused).
-    The two counters are COUNTED and surfaced in the run stats on purpose: these
-    filters silently remove paying fans from a blast, and nobody should have to
-    attribute a revenue dip to an invisible line in here. cells_sent dropping while
-    skipped_hot_ladder / skipped_offers_paused climb is the ladder doing its job;
-    everything dropping together is a bug. skipped_offers_paused is TIME-VARYING
-    (every soft decline parks a fan 24h, a hard decline 72h) — when declines spike,
-    this counter is the explanation for the audience dip."""
+    USER RULING (07-23): the blast audience is everyone in the matrix minus
+    OPERATOR stops only — restricted / automation-off fans (hard skip_list reasons
+    + blacklist + bots). AI-inferred 1:1 state must never shrink a blast: no
+    offers-pause dedup, no mid-sale (hot-ladder) dedup. The blast is the money
+    lane; the 1:1 engine's own pauses bind the 1:1 engine, not this one.
+    (The measured history behind the ruling: gating ppv_send on chat signals cost
+    −86% of sends. Ownership dedup — never re-sell what he already unlocked —
+    is NOT audience gating and stays, in the send path below.)"""
     blacklisted = select(Blacklist.fan_id)
-    now = datetime.utcnow()
-    hot_ladder = await _hot_ladder_fans(account_id, now)
-    # Hard skips (muted_creator / manual_restrict / of_restricted / ladder_stop).
-    # ppv_send read NONE of these before — it filtered only bots + blacklist — so a
-    # fan who told us "im disputing this charge, im reporting you" kept receiving
-    # priced blasts, and as a past payer he landed in the HIGHEST spend-band cell.
-    # A chargeback can take the whole OF account down; this is the cheapest possible
-    # place to stop it. Since 07-23 the hard decline writes a 72h ladder
-    # offers-pause instead of a skip_list row — filtered (and COUNTED) separately
-    # below: same fan, same danger, different (now temporary) bookkeeping.
+    # Operator stops (muted_creator / manual_restrict / of_restricted, plus any
+    # hand-written ladder_stop). ppv_send read NONE of these before 07-23 — a
+    # hand-restricted fan kept receiving priced blasts, and as a past payer he
+    # landed in the HIGHEST spend-band cell.
     hard_skip = await load_hard_skip_ids(account_id)
-    offers_paused = await _offers_paused_fans(account_id, now)
     async with get_session() as s:
         fan_rows = (await s.execute(
             select(Fan.fan_id, Fan.lifetime_spend_cents).where(
@@ -889,18 +812,8 @@ async def _eligible_fans(account_id: str):
         )).all()
     if hard_skip:
         fan_rows = [r for r in fan_rows if int(r[0]) not in hard_skip]
-    skipped_offers_paused = 0
-    if offers_paused:
-        kept = [r for r in fan_rows if int(r[0]) not in offers_paused]
-        skipped_offers_paused = len(fan_rows) - len(kept)
-        fan_rows = kept
-    skipped_hot_ladder = 0
-    if hot_ladder:
-        kept = [r for r in fan_rows if int(r[0]) not in hot_ladder]
-        skipped_hot_ladder = len(fan_rows) - len(kept)
-        fan_rows = kept
     last_purchase = {int(fid): dt for fid, dt in purchases if fid is not None}
-    return fan_rows, last_purchase, skipped_hot_ladder, skipped_offers_paused
+    return fan_rows, last_purchase
 
 
 async def _all_fan_ids(account_id: str) -> list[int]:
@@ -1048,8 +961,7 @@ async def segment_preview(account_id: str, base_price_cents: int,
             except Exception:
                 stored = {}
         bounds = price_bounds(stored)
-    fan_rows, last_purchase, skipped_hot_ladder, skipped_offers_paused = \
-        await _eligible_fans(account_id)
+    fan_rows, last_purchase = await _eligible_fans(account_id)
     base = max(bounds[0], min(int(base_price_cents or 0), bounds[1]))
     cells = _segments(fan_rows, last_purchase, now)
     plan = [
@@ -1060,9 +972,7 @@ async def segment_preview(account_id: str, base_price_cents: int,
         }
         for key, c in sorted(cells.items())
     ]
-    return {"total_fans": len(fan_rows), "cells": plan,
-            "skipped_hot_ladder": skipped_hot_ladder,
-            "skipped_offers_paused": skipped_offers_paused}
+    return {"total_fans": len(fan_rows), "cells": plan}
 
 
 def _load_ppv(cfg_json: str | None, ppv_id: str) -> tuple[dict, dict] | tuple[None, dict]:
@@ -1192,8 +1102,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     "ppv_id": ppv_id, "last_sent_at": last.isoformat() + "Z",
                     "gap_minutes": dup_gap_min}
 
-    fan_rows, last_purchase, skipped_hot_ladder, skipped_offers_paused = \
-        await _eligible_fans(account_id)
+    fan_rows, last_purchase = await _eligible_fans(account_id)
     if force_ids:
         fan_rows = [r for r in fan_rows if int(r[0]) in force_ids]
     if only_fan_ids:
@@ -1233,16 +1142,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # a scope is that the audience is those fans and nobody else.
     broadcasting = reach_all and not force_ids and not only_fan_ids
     if not fan_rows and not broadcasting:
-        # Carry the counters even here — the ladder eating the ENTIRE audience is the
-        # single most expensive way these filters can misfire, and it lands exactly on
-        # this branch. A bare "no_fans" would look identical to an empty account.
-        if skipped_hot_ladder or skipped_offers_paused:
-            log.info("ppv_send account=%s ppv=%s no_fans — %d skipped mid-ladder, "
-                     "%d offers-paused", account_id, ppv_id, skipped_hot_ladder,
-                     skipped_offers_paused)
-        return {"status": "skipped", "reason": "no_fans",
-                "skipped_hot_ladder": skipped_hot_ladder,
-                "skipped_offers_paused": skipped_offers_paused}
+        return {"status": "skipped", "reason": "no_fans"}
 
     cells = _segments(fan_rows, last_purchase, now)
 
@@ -1261,9 +1161,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 "cells": len(plan), "fans": len(fan_rows), "plan": plan, "sent": 0,
                 "broadcast_all": broadcasting,
                 "broadcast_price": (bcast_cents / 100) if broadcasting else None,
-                "pause_hours": pause_hours,
-                "skipped_hot_ladder": skipped_hot_ladder,
-                "skipped_offers_paused": skipped_offers_paused}
+                "pause_hours": pause_hours}
 
     # ── send: one mass call per non-empty cell, matrix price + rotated preview
     from automations.send_mass_message import run as send_mass_run
@@ -1370,13 +1268,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             run_at=now + timedelta(days=30),
         )
 
-    # The audience-shrink counters are logged on EVERY run, including 0 — a counter
-    # you only see when it's non-zero is a counter nobody has a baseline for.
     log.info("ppv_send account=%s ppv=%s cells=%d recipients=%d errors=%d broadcast=%s "
-             "resend_job=%s feed=%s hot_ladder_skipped=%d offers_paused_skipped=%d",
+             "resend_job=%s feed=%s",
              account_id, ppv_id, sent_cells, total_recipients, send_errors, broadcast,
-             resend_job_id, (feed_post or {}).get("status"), skipped_hot_ladder,
-             skipped_offers_paused)
+             resend_job_id, (feed_post or {}).get("status"))
     # NOTE: an all-failed run returns status 'error' in the STATS only — it must
     # not raise, or the executor's job retry would re-broadcast any cell that
     # did go out. The failed cells simply wait for the next cadence fire.
@@ -1387,10 +1282,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "ppv_id": ppv_id, "is_resend": is_resend,
         "cells_sent": sent_cells, "recipients": total_recipients,
         "send_errors": send_errors,
-        # Persisted into AutomationRun.stats_json → the ONLY way an operator can see
-        # that a blast was quietly shrunk by the ladder rather than by a send failure.
-        "skipped_hot_ladder": skipped_hot_ladder,
-        "skipped_offers_paused": skipped_offers_paused,
         "broadcast": broadcast, "pause_hours": pause_hours,
         "resend_job_id": resend_job_id, "feed_post": feed_post, "results": results,
     }
