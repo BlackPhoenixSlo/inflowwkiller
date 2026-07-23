@@ -138,15 +138,17 @@ _DEFAULTS: dict = {
         {"folder": "", "price_cents": 16000},   # $160
         {"folder": "", "price_cents": 20000},   # $200
     ],
-    # ── ADAPTIVE convo teaser (opt-in; ships OFF like the ladder itself) ──────
-    # When on, the ladder climbs ONLY when the teaser she sent actually SELLS
-    # (her own teaser unlock — NEVER an ai_chatter catalog buy), and on a no-buy
-    # it SOFTENS the ask to 65–73% of the last price (floored at 0 → down to a
+    # ── ADAPTIVE convo teaser (DEFAULT ON since a live incident where legacy
+    # climb-every-send walked an unbought fan $40→$80→$120→$160→$200 overnight,
+    # with the fan complaining about the price in-thread) ─────────────────────
+    # The ladder climbs ONLY when the teaser she sent actually SELLS (her own
+    # teaser unlock — NEVER an ai_chatter catalog buy), and on a no-buy it
+    # SOFTENS the ask to 65–73% of the last price (floored at 0 → down to a
     # free tease), holding the rung. Photos come from a price-scaled WEIGHTED
     # BUNDLE (bundle_plan → the same premium/normal/free tiers the hot teaser
-    # uses) instead of a single folder. Legacy behavior (climb-every-send, single
-    # folder) stays intact when this is off.
-    "teaser_convo_adaptive": False,
+    # uses); when no tier folders are configured it falls back to the rung's own
+    # folder. An explicit stored `false` restores legacy climb-every-send.
+    "teaser_convo_adaptive": True,
     "teaser_convo_cut_lo": 0.65,           # no-buy soften keeps 65–73% of last ask
     "teaser_convo_cut_hi": 0.73,
     "teaser_convo_floor_cents": 0,         # soften floor ($0 → eases to a free tease)
@@ -821,7 +823,23 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
         list(tcfg.get("bundle_normal_folders") or []),
         list(tcfg.get("bundle_free_folders") or []))
     if not media_ids:
-        return None
+        # No tier folders configured (or all exhausted). Adaptive is the house
+        # default now, and an account whose media lives in the per-rung folders
+        # must not go silent — pull from the rung's own folder instead; only
+        # the PHOTO SOURCE falls back, the price stays adaptive.
+        r = rungs[new_idx] if isinstance(rungs[new_idx], dict) else {}
+        folder = str(r.get("folder") or "").strip()
+        if not folder:
+            return None
+        count = max(1, int(r.get("count") or 0) or int(tcfg.get("count") or 1))
+        by_name = await asyncio.to_thread(_resolve_folders, client, [folder])
+        media_ids = await asyncio.to_thread(
+            _gather_unseen, client, [folder], by_name, seen, count)
+        if not media_ids:
+            return None
+        return {"media_ids": media_ids, "price_cents": int(price),
+                "is_free": price <= 0, "folder": folder, "rung": new_idx,
+                "next_rung": new_idx, "convo": True, "softened": softened}
     return {"media_ids": media_ids, "price_cents": int(price),
             "is_free": price <= 0, "folder": "composed", "rung": new_idx,
             "next_rung": new_idx, "convo": True, "softened": softened,

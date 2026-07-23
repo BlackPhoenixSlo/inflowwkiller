@@ -94,6 +94,8 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   const [cvEnabled, setCvEnabled] = useState(false);
   const [cvAfter, setCvAfter] = useState(20);
   const [cvCount, setCvCount] = useState(1);
+  const [cvAdaptive, setCvAdaptive] = useState(true); // backend default ON
+
   const [cvRungs, setCvRungs] = useState<{ folder: string; price: number }[]>([]);
   const [cvPicker, setCvPicker] = useState<number | null>(null); // which rung's folder
 
@@ -131,6 +133,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setCvEnabled(!!eff.teaser_convo_enabled);
     setCvAfter(eff.teaser_convo_after_fan_msgs ?? 20);
     setCvCount(eff.teaser_convo_count ?? 1);
+    setCvAdaptive(eff.teaser_convo_adaptive !== false); // unset → backend default ON
     setCvRungs(
       (eff.teaser_convo_rungs ?? []).map((r) => ({
         folder: r.folder ?? "",
@@ -212,6 +215,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       teaser_convo_enabled: cvEnabled,
       teaser_convo_after_fan_msgs: cvAfter,
       teaser_convo_count: cvCount,
+      teaser_convo_adaptive: cvAdaptive,
       teaser_convo_rungs: cvRungs.map((r) => ({
         folder: r.folder.trim(),
         price_cents: Math.max(0, Math.round(r.price * 100)),
@@ -623,7 +627,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       <Section
         icon={<Flame size={15} />}
         title="Escalating teases during normal chat"
-        subtitle="Even when it isn’t sexual yet: after every N of his messages, drop the next rung — a free tease first, then the $10 one, then the $50 one. The price climbs as the conversation goes. Rides her reply, so it’s never an extra message."
+        subtitle="Even when it isn’t sexual yet: after every N of his messages, drop the next rung — a free tease first, then the $10 one, then the $50 one. The price climbs as he actually buys (see the checkbox below). Rides her reply, so it’s never an extra message."
         toggle={
           <Toggle
             checked={cvEnabled}
@@ -648,6 +652,29 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
                 onChange={(n) => { markDirty(); setCvCount(n); }}
               />
             </div>
+
+            {/* Adaptive climb — the price only escalates on an actual sale. */}
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                className="h-4 w-4 mt-0.5 accent-[var(--accent)]"
+                checked={cvAdaptive}
+                onChange={(e) => {
+                  markDirty();
+                  setCvAdaptive(e.target.checked);
+                }}
+              />
+              <span className="space-y-0.5">
+                <span className="block text-sm">Climb only when he buys (recommended)</span>
+                <span className="block text-[11px] text-fg-dim/80 leading-relaxed">
+                  The next rung fires only after he <b>unlocked</b> the last tease; if he
+                  didn&apos;t, the next ask <b>drops to 65–73%</b> of the price he saw and
+                  the rung holds. Off = the old behavior: the price climbs one rung on
+                  every send whether he bought or not — a chatty fan who never buys still
+                  gets walked up to the top rung.
+                </span>
+              </span>
+            </label>
 
             <div className="space-y-2">
               <div className="text-xs font-medium text-fg">Rungs (climb in order)</div>

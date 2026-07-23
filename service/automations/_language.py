@@ -173,6 +173,27 @@ _ES_BOT = re.compile(
     r"esto es (un[ao]? )?(bot|ia|autom[aá]tico)"
     r")(?!\w)", re.IGNORECASE)
 
+# Haggle — a price objection / asking for a cheaper number. This is the discount-
+# resend trigger, NOT the poverty brake: "why so expensive?" earns a real discount,
+# "I have no money" earns a pause. A live fan haggled twice in Spanish ("porque
+# subió tanto el precio? cada vez se sube más y más") and the English-only regex
+# never fired — the AI answered with chat while the ladder kept climbing.
+_ES_HAGGLE = re.compile(
+    r"(?<!\w)("
+    r"por ?qu[eé] tan car[oa]|(por ?qu[eé]|porque) tanto|"
+    r"sub(i[oó]|e) (tanto )?(el )?precio|el precio sub(i[oó]|e)|se sube m[aá]s|"
+    r"(muy|demasiado|bien) car[oa]|est[aá] (muy |bien )?car[oa]|"
+    r"m[aá]s barat[oa]|descuent(o|ito)|rebaj(a|ita)|b[aá]jale|"
+    r"mejor precio|(un )?precio m[aá]s bajo|m[aá]s econ[oó]mico"
+    r")(?!\w)", re.IGNORECASE)
+
+# The English haggle detector (moved here from ai_chatter so both packs live together).
+_EN_HAGGLE = re.compile(
+    r"\b(too\s+(?:much|expensive|pricey|steep)|expensive|pricey|cheaper|cheap|"
+    r"discount|deal|lower(?:\s+price)?|less|"
+    r"how\s+about\s+\$?\d|\$?\d+\s*(?:instead|max|tops)|any\s+cheaper)\b",
+    re.IGNORECASE)
+
 # OF ToS / restricted vocabulary in Spanish (the English list can't cover it). Doubled
 # like the English list to soften OF's own filter.
 _ES_RESTRICTED = (
@@ -294,12 +315,28 @@ def detect_bot_accusation(text, lang="en") -> bool:
     return bool(_common.detect_bot_accusation(text))
 
 
+def is_haggle(text, lang="en") -> bool:
+    """Price objection / cheaper-please — routes to the discount-resend paths.
+    Unlike the replace-style detectors above, a guarded lang runs BOTH packs:
+    Spanish-speaking fans code-switch price words ("discount", "$20 instead")
+    freely, and a missed haggle answers a price complaint with a HIGHER rung."""
+    if not text:
+        return False
+    if _es(lang) and _ES_HAGGLE.search(text):
+        return True
+    return bool(_EN_HAGGLE.search(text))
+
+
 def apply_word_restriction(text, lang="en") -> str:
     """OF banned-word softening. English delegates to the existing filter (unchanged).
     Spanish runs the SPANISH banned list (the English list both misses Spanish ToS terms
     AND mangles Spanish homographs, so it must NOT run on es)."""
     if not text:
         return text
+    # Register floor for BOTH branches — the en branch would inherit the ¿/¡
+    # strip via _common.apply_word_restriction, but the es branch (the one that
+    # actually sees the chars) would not, so strip up front.
+    text = _common.strip_inverted_punct(text)
     if _es(lang):
         return _ES_RESTRICTED_RE.sub(lambda m: _common._double_first_vowel(m), text)
     return _common.apply_word_restriction(text)
