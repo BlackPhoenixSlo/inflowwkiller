@@ -520,11 +520,16 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
         if cand is not None:
             payers = await ac.recent_payer_fans(account_id, [int(fan_id)])
             money = (await ac._last_money_at(account_id, [int(fan_id)])).get(int(fan_id))
-            stop, tier = ac._cadence_gate(
+            # Proven-spender floor (item 21b): pass the fan's rolling-window spend cap
+            # in, then trust the cap the GATE reports — the effective-cap formula lives
+            # in _cadence_gate alone, so this status never drifts from the real leash.
+            spend_cap = (await ac._spend_caps(
+                account_id, [int(fan_id)],
+                cfg.get("msg_limits_by_spend") or [], now)).get(int(fan_id), 0)
+            stop, tier, cap = ac._cadence_gate(
                 cand, pending=(open_offers[0] if open_offers else None),
                 recent_payer=int(fan_id) in payers, money_at=money,
-                pic=False, now=now, cad=cfg)
-            cap = int((cfg.get("msg_limits_by_signal") or {}).get(tier) or 0)
+                pic=False, now=now, cad=cfg, spend_cap=spend_cap)
             used = int(cand.session_out_n or 0)
             cadence = {
                 "enabled": True,

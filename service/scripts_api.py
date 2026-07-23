@@ -268,6 +268,27 @@ def _validate_cfg(cfg: dict) -> dict:
                 except (TypeError, ValueError):
                     raise HTTPException(422, f"msg_limits_by_signal.{tier} must be a number")
         out["msg_limits_by_signal"] = merged   # always complete → shallow-merge safe
+    # Proven-spender cap floor (item 21b): a LIST of {days, min_cents, cap}. Each field
+    # is a bounded non-negative int; a rule with a 0 cap/threshold is kept but is inert
+    # in the gate (never caps at 0). Emitted whole so _load_config's shallow merge stores
+    # the complete list, and only when the key is present (absent ⇒ keep the default).
+    msp = cfg.get("msg_limits_by_spend")
+    if msp is not None:
+        if not isinstance(msp, (list, tuple)):
+            raise HTTPException(422, "msg_limits_by_spend must be a list")
+        rules: list[dict] = []
+        for i, r in enumerate(msp):
+            if not isinstance(r, dict):
+                raise HTTPException(422, f"msg_limits_by_spend[{i}] must be an object")
+            try:
+                days = max(0, min(int(r.get("days") or 0), 365))
+                min_cents = max(0, min(int(r.get("min_cents") or 0), 10_000_000))
+                cap = max(0, min(int(r.get("cap") or 0), _MSG_LIMIT_MAX))
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    422, f"msg_limits_by_spend[{i}] days/min_cents/cap must be numbers")
+            rules.append({"days": days, "min_cents": min_cents, "cap": cap})
+        out["msg_limits_by_spend"] = rules
     return out
 
 
