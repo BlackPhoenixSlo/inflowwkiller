@@ -821,6 +821,50 @@ async def _do_step(client, account_id: str, fan_id: int, action: str, cfg: dict,
     return False, []
 
 
+async def _open_exchange(client, account_id: str, fan_id: int, incident: dict,
+                         steps: list[str], cfg: dict, tip_cfg: dict, fan,
+                         wpm, indicator, now: datetime, *, rem_extra: dict) -> str:
+    """Open ONE exchange: acquire the fan lease, send step 0, write the ledger
+    row. Returns 'opened' | 'lease_busy' | 'send_failed'; exceptions propagate
+    (the lease is still released) so each caller keeps its own error accounting.
+
+    This is the ONE writer of the persisted `rem` contract that _advance_phase
+    later parses back out of resolution_log.remediation_json (steps / step /
+    last_step_at / nudged / kind / gift_history). The scanner lane and the
+    hard-decline lane differ in gates and steps — never in how a first turn is
+    sent and recorded. `incident` must carry kind / incident_key /
+    wrongful_cents; `rem_extra` is the lane's own ledger fields
+    (refund_flagged+message_ids+overlap_media, or trigger_message_id).
+
+    The rng is seeded HERE, from fan+incident_key at draw index 0 — so the
+    frame a preview shows for this incident is the frame the real open sends
+    (the seeding contract documented on _APOLOGY_FRAMES). A one-turn `steps`
+    closes resolved immediately; otherwise the row opens in_progress and the
+    silence self-check is scheduled."""
+    if not await ax.acquire_fan_lease(account_id, fan_id, "make_right"):
+        return "lease_busy"
+    try:
+        rng = Random(f"make_right:{account_id}:{incident['incident_key']}:0")
+        ok, media = await _do_step(client, account_id, fan_id, steps[0], cfg,
+                                   tip_cfg, rng, fan, wpm, indicator, now,
+                                   kind=incident["kind"])
+        if not ok:
+            return "send_failed"
+        rem = {"steps": steps, "step": 1, "incident_key": incident["incident_key"],
+               "kind": incident["kind"], "wrongful_cents": incident["wrongful_cents"],
+               "gift_history": ([{"step": 0, "media": media}] if media else []),
+               "last_step_at": now.isoformat(), "nudged": False, **rem_extra}
+        done = rem["step"] >= len(steps)
+        await _log_incident(account_id, fan_id, incident,
+                            status="resolved" if done else "in_progress",
+                            remediation=rem, now=now)
+        if not done:
+            await _enqueue_silence_check(account_id, fan_id, cfg, now)
+        return "opened"
+    finally:
+        await ax.release_fan_lease(account_id, fan_id)
+
+
 async def _advance_phase(account_id: str, cfg: dict, tip_cfg: dict, client, wpm,
                          indicator, now: datetime, only_fan_ids: set[int] | None,
                          stats: dict) -> None:
@@ -939,11 +983,10 @@ async def _run_hard_decline(account_id: str, cfg: dict, hd: dict, *,
     if await _incident_seen(account_id, incident_key):
         return {**base, "action": "already_handled"}
 
+    # Only what _log_incident / _open_exchange actually read (kind, incident_key,
+    # wrongful_cents) — the trigger message rides in rem_extra into the ledger.
     incident = {"kind": "hard_decline", "fan_id": fan_id,
-                "incident_key": incident_key,
-                "message_ids": [int(trigger_mid)] if trigger_mid else [],
-                "item_ids": [], "overlap_media": [], "wrongful_cents": 0,
-                "evidence": {"trigger_message_id": trigger_mid}}
+                "incident_key": incident_key, "wrongful_cents": 0}
     cap = max(1, int(cfg.get("per_fan_cap") or 2))
     if await _resolved_count(account_id, fan_id) >= cap:
         if not dry_run:
@@ -961,34 +1004,24 @@ async def _run_hard_decline(account_id: str, cfg: dict, hd: dict, *,
 
     tip_cfg = await tip_reward._load_config(account_id)
     steps = ["apology_gift" if cfg.get("open_with_gift") else "apology"]
-    rng = Random(f"make_right:{account_id}:{incident_key}:0")
     if dry_run:
+        rng = Random(f"make_right:{account_id}:{incident_key}:0")
         return {**base, "dry_run": True, "action": "would_open", "steps": steps,
                 "apology": _apology_bubbles(fan, cfg, rng, "hard_decline")[0]}
 
     client = await asyncio.to_thread(ax._make_client, account_id)
     wpm = await load_typing_wpm(account_id)
     indicator = await load_typing_indicator(account_id)
-    if not await ax.acquire_fan_lease(account_id, fan_id, "make_right"):
+    outcome = await _open_exchange(client, account_id, fan_id, incident, steps,
+                                   cfg, tip_cfg, fan, wpm, indicator, now,
+                                   rem_extra={"trigger_message_id": trigger_mid})
+    if outcome == "opened":
+        log.info("make_right hard-decline apology sent account=%s fan=%s key=%s",
+                 account_id, fan_id, incident_key)
+        return {**base, "action": "opened", "resolved": True}
+    if outcome == "lease_busy":
         return {**base, "action": "lease_busy"}
-    try:
-        ok, media = await _do_step(client, account_id, fan_id, steps[0], cfg,
-                                   tip_cfg, rng, fan, wpm, indicator, now,
-                                   kind="hard_decline")
-        if not ok:
-            return {**base, "status": "error", "action": "send_failed"}
-        rem = {"steps": steps, "step": 1, "incident_key": incident_key,
-               "kind": "hard_decline", "wrongful_cents": 0,
-               "trigger_message_id": trigger_mid,
-               "gift_history": ([{"step": 0, "media": media}] if media else []),
-               "last_step_at": now.isoformat(), "nudged": False}
-        await _log_incident(account_id, fan_id, incident, status="resolved",
-                            remediation=rem, now=now)
-        log.info("make_right hard-decline apology sent account=%s fan=%s key=%s "
-                 "gift=%s", account_id, fan_id, incident_key, media)
-        return {**base, "action": "opened", "resolved": True, "gift_media": media}
-    finally:
-        await ax.release_fan_lease(account_id, fan_id)
+    return {**base, "status": "error", "action": "send_failed"}
 
 
 @register("make_right")
@@ -1000,7 +1033,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     # Payload-triggered hard-decline apology — its own lane, its own gates.
     if payload.get("hard_decline"):
-        return await _run_hard_decline(account_id, cfg, dict(payload["hard_decline"]),
+        return await _run_hard_decline(account_id, cfg, payload["hard_decline"],
                                        dry_run=dry_run, now=now)
 
     # SENDING requires BOTH the master switch AND the auto-send opt-in. Detection
@@ -1080,54 +1113,44 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 continue
 
             steps = _build_steps(cfg)
-            rng = Random(f"make_right:{account_id}:{inc['incident_key']}:0")
-            apology = _apology_bubbles(fan, cfg, rng, inc["kind"])[0]
             refund_flag = bool(cfg.get("flag_refund")) and int(inc["wrongful_cents"] or 0) > 0
-            gift_preview = await _pull_unseen(
-                client, account_id, fid, _free_folders(cfg, tip_cfg, inc["wrongful_cents"]),
-                max(1, int(cfg.get("gift_pieces_per_step") or 1))) if client else []
 
             if not send_mode:
+                # Same rng seed as _open_exchange, so the preview shows the exact
+                # frame a real open would send. Both draws live ONLY here — a real
+                # open must not burn a vault lookup (gift_preview) it never uses.
+                rng = Random(f"make_right:{account_id}:{inc['incident_key']}:0")
+                apology = _apology_bubbles(fan, cfg, rng, inc["kind"])[0]
+                gift_preview = await _pull_unseen(
+                    client, account_id, fid,
+                    _free_folders(cfg, tip_cfg, inc["wrongful_cents"]),
+                    max(1, int(cfg.get("gift_pieces_per_step") or 1))) if client else []
                 preview.append({**base, "apology": apology, "steps": steps,
                                 "gift_media_ids": gift_preview, "refund_flagged": refund_flag,
                                 "action": "would_open"})
                 continue
 
-            # OPEN for real: send step 0 (apology / apology+free #1), write in_progress.
-            if not await ax.acquire_fan_lease(account_id, fid, "make_right"):
-                continue
+            # OPEN for real: send step 0 (apology / apology+free #1), write the ledger.
             try:
-                rem = {"steps": steps, "step": 1, "incident_key": inc["incident_key"],
-                       "kind": inc["kind"], "wrongful_cents": inc["wrongful_cents"],
-                       "refund_flagged": refund_flag, "message_ids": inc["message_ids"],
-                       "overlap_media": inc["overlap_media"], "gift_history": [],
-                       "last_step_at": now.isoformat(), "nudged": False}
-                ok, media = await _do_step(client, account_id, fid, steps[0], cfg,
-                                           tip_cfg, rng, fan, wpm, indicator, now,
-                                           kind=inc["kind"])
-                if ok:
+                outcome = await _open_exchange(
+                    client, account_id, fid, inc, steps, cfg, tip_cfg, fan,
+                    wpm, indicator, now,
+                    rem_extra={"refund_flagged": refund_flag,
+                               "message_ids": inc["message_ids"],
+                               "overlap_media": inc["overlap_media"]})
+                if outcome == "opened":
                     opened_fids.add(fid)
-                    if media:
-                        rem["gift_history"].append({"step": 0, "media": media})
-                    done = rem["step"] >= len(steps)
-                    await _log_incident(account_id, fid, inc,
-                                        status="resolved" if done else "in_progress",
-                                        remediation=rem, now=now)
                     stats["opened"] += 1
-                    if done:
+                    if len(steps) <= 1:
                         stats["resolved"] += 1
-                    else:
-                        await _enqueue_silence_check(account_id, fid, cfg, now)
                     log.info("make_right opened account=%s fan=%s key=%s steps=%s refund=%s",
                              account_id, fid, inc["incident_key"], steps, refund_flag)
-                else:
+                elif outcome == "send_failed":
                     stats["errors"] += 1
             except Exception:
                 stats["errors"] += 1
                 log.warning("make_right open failed account=%s fan=%s key=%s",
                             account_id, fid, inc["incident_key"], exc_info=True)
-            finally:
-                await ax.release_fan_lease(account_id, fid)
 
     if not send_mode:
         # Surface active exchanges too, so the operator sees the whole picture.

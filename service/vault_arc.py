@@ -56,6 +56,18 @@ _BAND_WALL = (10 * 60, 15 * 60)     # feed posts + free nudges
 _BAND_CLOSE = (18 * 60, 23 * 60)    # the priced ask
 _DEFAULT_SLEEP = ("03:00", "10:00")
 
+# The tease audience: OF's built-in fans+following lists (server-side fan-out,
+# the same audience the daily premade blasts name) with the default 6h/2h
+# re-touch guards explicitly disarmed — a wall tease goes to EVERYONE. Without
+# an audience `send_mass_message` refuses the payload (empty_audience skip)
+# while the one-shot job is stamped done: a silent no-send. A free mass never
+# counts toward ppv_caps (those count only ppv_send fires).
+TEASE_AUDIENCE: dict[str, Any] = {
+    "user_lists": ["fans", "following"],
+    "exclude_replied_hours": 0,
+    "exclude_inbound_hours": 0,
+}
+
 
 def _sleep_window(cfg: dict | None) -> tuple[str, str]:
     win = ((cfg or {}).get("rhythm") or {}).get("sleep_window")
@@ -201,16 +213,8 @@ def plan_jobs(plan: dict[str, Any], *, arc_id: str, start_date: datetime,
                 "price_cents": 0, "entry": None,
                 # OF's send body must be html-wrapped to match what the web client
                 # posts; a bare string renders without the paragraph break.
-                # The tease goes to EVERYONE: `send_mass_message` refuses an
-                # audience-less payload (empty_audience skip), so name the same
-                # built-in OF lists the daily premade blasts. Explicit 0s disarm
-                # the 6h/2h re-touch guards — a wall tease is not a conversation
-                # touch, and it never counts toward ppv_caps (those count
-                # ppv_send fires only).
                 "payload": {"text": f"<p>{text}</p>", "price": 0,
-                            "user_lists": ["fans", "following"],
-                            "exclude_replied_hours": 0,
-                            "exclude_inbound_hours": 0},
+                            **TEASE_AUDIENCE},
             })
 
     jobs.sort(key=lambda j: (j["run_at"], j["seq"]))
@@ -343,6 +347,65 @@ async def approve(account_id: str, plan: dict[str, Any], *,
              account_id, arc_id, len(booked),
              booked[0]["run_at"], booked[-1]["run_at"])
     return {"status": "armed", "arc_id": arc_id, "drops": booked}
+
+
+async def heal_armed_arcs() -> None:
+    """One-way data heal (07-23), run at startup after init_db. Arcs approved
+    before the TEASE_AUDIENCE fix booked mass_free drops as bare {text, price}
+    payloads that `send_mass_message` skips (empty_audience) while the job is
+    stamped done — the teases silently never left. New arcs enqueue the
+    audience at booking; this patches the jobs already booked.
+
+    Which jobs are arc teases is not inferred from the payload: every approve()
+    records its booked job ids in `active_arc.drops`, and that registry is the
+    match key. A tease that skipped within the last 24h is re-opened — an
+    audience-less payload can never have sent, so the flip cannot double-send;
+    older misses stay done (a days-old wall tease is stale). Idempotent:
+    patched payloads carry user_lists and are never touched again.
+
+    Dead code once every pre-fix arc has played out (last booked tease
+    2026-08-18) — delete it then."""
+    from sqlalchemy import select
+
+    from db.engine import get_session
+    from db.models import AccountAiConfig, ScheduledJob
+
+    async with get_session() as s:
+        blobs = (await s.execute(
+            select(AccountAiConfig.vault_ai_config_json)
+            .where(AccountAiConfig.vault_ai_config_json.is_not(None)))).scalars().all()
+        tease_ids: list[int] = []
+        for blob in blobs:
+            try:
+                cfg = json.loads(blob) if blob else {}
+            except Exception:
+                continue
+            drops = (((cfg.get("ppv_week") or {}).get("active_arc") or {})
+                     .get("drops")) or []
+            tease_ids += [int(d["job_id"]) for d in drops
+                          if d.get("kind") == "send_mass_message" and d.get("job_id")]
+        if not tease_ids:
+            return
+
+        jobs = (await s.execute(
+            select(ScheduledJob).where(ScheduledJob.id.in_(tease_ids)))).scalars().all()
+        patched = reopened = 0
+        fresh_since = datetime.utcnow() - timedelta(hours=24)
+        for j in jobs:
+            try:
+                payload = json.loads(j.payload_json or "{}")
+            except Exception:
+                continue
+            if "user_lists" in payload:
+                continue
+            if j.status == "done" and j.run_at and j.run_at >= fresh_since:
+                j.status = "pending"
+                j.attempts = 0
+                reopened += 1
+            j.payload_json = json.dumps({**payload, **TEASE_AUDIENCE})
+            patched += 1
+    if patched:
+        log.info("arc_tease_heal patched=%d reopened=%d", patched, reopened)
 
 
 async def cancel(account_id: str, *, _reason: str = "cancelled") -> dict[str, Any]:
