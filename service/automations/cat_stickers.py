@@ -10,8 +10,9 @@ GIF-only empty-text sends verified live 2026-05-23).
 
 Rate control is CODE-SIDE, not trust: measured on real convos (07-23),
 DeepSeek attaches a sticker to ~48% of replies whenever the block is visible —
-double what the prompt asks for — so most replies never see the block at all
-(`roll_mode` → "skip"). A model that can't see the protocol can't over-use it.
+double what the prompt asks for. `roll_mode` can hide the block ("skip") to
+thin that out; the skip weight is currently 0 (block always visible) while
+volume is tuned live, leaving MIN_GAP as the only per-fan brake.
 "solo" injects a sticker-ONLY nudge (measured ~46% pure-sticker obedience).
 
 Catalog: 89 real-cat giphy gifs across 22 emotion tags, hand-picked in
@@ -73,14 +74,16 @@ _CATALOG: dict[str, tuple[str, tuple[str, ...]]] = {
 
 TAGS = frozenset(_CATALOG)
 
-# Per-reply roll weights. "skip" hides the protocol entirely (the common case);
+# Per-reply roll weights. "skip" hides the protocol entirely;
 # "allow" shows it and lets the model judge; "solo" nudges a sticker-ONLY reply.
-_W_ALLOW, _W_SOLO = 0.25, 0.05        # skip = the remaining 0.70
+# Wide open since 07-23 (skip=0, every reply sees the block) — volume is being
+# tuned by watching prod; the fan-facing brake is MIN_GAP below.
+_W_ALLOW, _W_SOLO = 0.95, 0.05        # skip = the remaining 0.00
 
 # Per-fan floor between stickers — two gifs in back-to-back replies is a bot
-# tell. In-memory (restart = clean slate): the roll already makes a repeat
-# unlikely, this floor just kills the worst case.
-MIN_GAP = timedelta(hours=6)
+# tell. In-memory (restart = clean slate). With skip=0 the roll no longer
+# thins sends, so this floor is the only per-fan brake.
+MIN_GAP = timedelta(minutes=30)
 _last_sent: dict[tuple[str, int], datetime] = {}
 
 # A well-formed marker (capture the tag) vs ANY marker-ish line (strip-all —
