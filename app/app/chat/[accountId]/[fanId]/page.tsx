@@ -113,13 +113,16 @@ export default function ChatPopoutPage({
     if (!hidden) setUnreadHidden(0);
   }, [hidden]);
 
-  // One-shot `?refresh=media`: tip/purchase notification toasts append it
-  // (NotificationToaster.withRefreshFlag) because the fan just moved money,
-  // so this tab's localStorage-rehydrated drawer caches are stale by
-  // seconds. Invalidate the same five keys as FanDrawer's manual ↻
-  // (refreshChatMedia), then strip the param so a plain reload doesn't
-  // re-fire. Must wait out the persister's restore — invalidating mid-restore
-  // would let the rehydrated snapshot land on top of the fresh refetch.
+  // One-shot `?refresh=media`: tip/purchase toasts and Buys & tips rail rows
+  // append it because the fan just moved money, so this tab's
+  // localStorage-rehydrated caches are stale by seconds. Invalidate the
+  // THREAD too, not just the drawer set — the persisted ["messages"]
+  // snapshot is what paints first, and a money event changes it (PPV flips
+  // locked→purchased, ledger tip rows land) — mirroring the header's manual
+  // ↻ (ChatSurface.handleRefresh). Then strip the param so a plain reload
+  // doesn't re-fire. Must wait out the persister's restore — invalidating
+  // mid-restore would let the rehydrated snapshot land on top of the fresh
+  // refetch.
   const qc = useQueryClient();
   const isRestoring = useIsRestoring();
   const refreshFiredRef = useRef(false);
@@ -129,6 +132,7 @@ export default function ChatPopoutPage({
     const url = new URL(window.location.href);
     if (url.searchParams.get("refresh") !== "media") return;
     refreshFiredRef.current = true;
+    void qc.invalidateQueries({ queryKey: ["messages", accountId, fanId] });
     void qc.invalidateQueries({ queryKey: ["fan-chat-media", accountId, fanId], exact: false });
     void qc.invalidateQueries({ queryKey: ["fan-ppv-history", accountId, fanId], exact: false });
     void qc.invalidateQueries({ queryKey: ["last-purchases", accountId] });

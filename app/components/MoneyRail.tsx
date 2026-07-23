@@ -43,12 +43,16 @@
  * tapping the header toggles it. Rows deep-link to the fan's chat with
  * the one-shot ?refresh=media flag (same as money toasts) since the fan
  * just moved money and the popout's persisted caches are stale by seconds.
+ * Each fan gets ONE named popout tab (lib/chatPopout) — re-clicking a row
+ * re-navigates + focuses that tab with a fresh load instead of stacking
+ * another _blank tab that paints the stale localStorage snapshot.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 
+import { chatTabName, openChatTab } from "@/lib/chatPopout";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { relay, proxyImage, type OFChatItem } from "@/lib/relay";
 import { stripHtmlPreview } from "@/lib/htmlPreview";
@@ -956,7 +960,13 @@ function Row({
   );
   if (href) {
     return (
-      <a href={href} target="_blank" rel="noreferrer" className={cls} title={text}>
+      <a
+        href={href}
+        target={chatTabName(href)}
+        className={cls}
+        title={text}
+        onClick={(e) => openChatTab(e, href)}
+      >
         {body}
       </a>
     );

@@ -22,6 +22,7 @@ import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useDeferredMount } from "@/hooks/useDeferredMount";
 import { useNotificationSettings } from "@/hooks/useNotificationSettings";
+import { chatTabName, openChatTab } from "@/lib/chatPopout";
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { resolveChatTarget, toUtcIso, type ChatTarget } from "@/hooks/useInboxRealtime";
 import { relay, proxyImage } from "@/lib/relay";
@@ -215,9 +216,9 @@ function hrefFor(n: NotificationItem, accountId: string): string | null {
 /** Tip / purchase toasts deep-link with a one-shot `?refresh=media` flag.
  *  The fan just moved money, so the popout's rehydrated persisted caches
  *  (PPV ledger, last-purchases, gallery, profile) are stale by seconds —
- *  the popout chat page reads the flag on mount and refetches the
- *  FanDrawer's manual-↻ set. Other types link plain: no reason to burn
- *  five refetches on a like or a comment. */
+ *  the popout chat page reads the flag on mount and refetches the thread
+ *  plus the FanDrawer's manual-↻ set. Other types link plain: no reason
+ *  to burn the refetches on a like or a comment. */
 function withRefreshFlag(href: string, typeKey: NotifTypeKey | null): string {
   if (typeKey !== "tip" && typeKey !== "purchases") return href;
   return `${href}${href.includes("?") ? "&" : "?"}refresh=media`;
@@ -590,13 +591,14 @@ function ToastCard({ t }: { t: Toast }) {
     </div>
   );
   if (t.href) {
+    const href = t.href;
     return (
       <a
-        href={t.href}
-        target="_blank"
-        rel="noreferrer"
+        href={href}
+        target={chatTabName(href)}
         className="block animate-toast-in"
-        onClick={() => {
+        onClick={(e) => {
+          openChatTab(e, href);
           dispatchNotifCleared();
           dismissToast(t.accountId, t.id);
         }}
