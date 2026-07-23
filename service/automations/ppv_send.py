@@ -851,11 +851,14 @@ async def _eligible_fans(account_id: str):
     bot/blacklist-filter an explicit set. Recency is last purchase
     (Transaction.occurred_at), not last message.
 
-    Returns (fan_rows, last_purchase, skipped_hot_ladder). The third value is COUNTED
-    and surfaced in the run stats on purpose: this filter silently removes paying fans
-    from a blast, and nobody should have to attribute a revenue dip to an invisible
-    line in here. cells_sent dropping while skipped_hot_ladder climbs is the ladder
-    doing its job; both dropping is a bug."""
+    Returns (fan_rows, last_purchase, skipped_hot_ladder, skipped_offers_paused).
+    The two counters are COUNTED and surfaced in the run stats on purpose: these
+    filters silently remove paying fans from a blast, and nobody should have to
+    attribute a revenue dip to an invisible line in here. cells_sent dropping while
+    skipped_hot_ladder / skipped_offers_paused climb is the ladder doing its job;
+    everything dropping together is a bug. skipped_offers_paused is TIME-VARYING
+    (every soft decline parks a fan 24h, a hard decline 72h) — when declines spike,
+    this counter is the explanation for the audience dip."""
     blacklisted = select(Blacklist.fan_id)
     now = datetime.utcnow()
     hot_ladder = await _hot_ladder_fans(account_id, now)
@@ -865,10 +868,10 @@ async def _eligible_fans(account_id: str):
     # priced blasts, and as a past payer he landed in the HIGHEST spend-band cell.
     # A chargeback can take the whole OF account down; this is the cheapest possible
     # place to stop it. Since 07-23 the hard decline writes a 72h ladder
-    # offers-pause instead of a skip_list row, so the pause set rides along here —
-    # same fan, same danger, different (now temporary) bookkeeping.
+    # offers-pause instead of a skip_list row — filtered (and COUNTED) separately
+    # below: same fan, same danger, different (now temporary) bookkeeping.
     hard_skip = await load_hard_skip_ids(account_id)
-    hard_skip |= await _offers_paused_fans(account_id, now)
+    offers_paused = await _offers_paused_fans(account_id, now)
     async with get_session() as s:
         fan_rows = (await s.execute(
             select(Fan.fan_id, Fan.lifetime_spend_cents).where(
@@ -886,13 +889,18 @@ async def _eligible_fans(account_id: str):
         )).all()
     if hard_skip:
         fan_rows = [r for r in fan_rows if int(r[0]) not in hard_skip]
+    skipped_offers_paused = 0
+    if offers_paused:
+        kept = [r for r in fan_rows if int(r[0]) not in offers_paused]
+        skipped_offers_paused = len(fan_rows) - len(kept)
+        fan_rows = kept
     skipped_hot_ladder = 0
     if hot_ladder:
         kept = [r for r in fan_rows if int(r[0]) not in hot_ladder]
         skipped_hot_ladder = len(fan_rows) - len(kept)
         fan_rows = kept
     last_purchase = {int(fid): dt for fid, dt in purchases if fid is not None}
-    return fan_rows, last_purchase, skipped_hot_ladder
+    return fan_rows, last_purchase, skipped_hot_ladder, skipped_offers_paused
 
 
 async def _all_fan_ids(account_id: str) -> list[int]:
@@ -1040,7 +1048,8 @@ async def segment_preview(account_id: str, base_price_cents: int,
             except Exception:
                 stored = {}
         bounds = price_bounds(stored)
-    fan_rows, last_purchase, skipped_hot_ladder = await _eligible_fans(account_id)
+    fan_rows, last_purchase, skipped_hot_ladder, skipped_offers_paused = \
+        await _eligible_fans(account_id)
     base = max(bounds[0], min(int(base_price_cents or 0), bounds[1]))
     cells = _segments(fan_rows, last_purchase, now)
     plan = [
@@ -1052,7 +1061,8 @@ async def segment_preview(account_id: str, base_price_cents: int,
         for key, c in sorted(cells.items())
     ]
     return {"total_fans": len(fan_rows), "cells": plan,
-            "skipped_hot_ladder": skipped_hot_ladder}
+            "skipped_hot_ladder": skipped_hot_ladder,
+            "skipped_offers_paused": skipped_offers_paused}
 
 
 def _load_ppv(cfg_json: str | None, ppv_id: str) -> tuple[dict, dict] | tuple[None, dict]:
@@ -1182,7 +1192,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     "ppv_id": ppv_id, "last_sent_at": last.isoformat() + "Z",
                     "gap_minutes": dup_gap_min}
 
-    fan_rows, last_purchase, skipped_hot_ladder = await _eligible_fans(account_id)
+    fan_rows, last_purchase, skipped_hot_ladder, skipped_offers_paused = \
+        await _eligible_fans(account_id)
     if force_ids:
         fan_rows = [r for r in fan_rows if int(r[0]) in force_ids]
     if only_fan_ids:
@@ -1222,14 +1233,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # a scope is that the audience is those fans and nobody else.
     broadcasting = reach_all and not force_ids and not only_fan_ids
     if not fan_rows and not broadcasting:
-        # Carry the counter even here — the ladder eating the ENTIRE audience is the
-        # single most expensive way this filter can misfire, and it lands exactly on
+        # Carry the counters even here — the ladder eating the ENTIRE audience is the
+        # single most expensive way these filters can misfire, and it lands exactly on
         # this branch. A bare "no_fans" would look identical to an empty account.
-        if skipped_hot_ladder:
-            log.info("ppv_send account=%s ppv=%s no_fans — %d skipped mid-ladder",
-                     account_id, ppv_id, skipped_hot_ladder)
+        if skipped_hot_ladder or skipped_offers_paused:
+            log.info("ppv_send account=%s ppv=%s no_fans — %d skipped mid-ladder, "
+                     "%d offers-paused", account_id, ppv_id, skipped_hot_ladder,
+                     skipped_offers_paused)
         return {"status": "skipped", "reason": "no_fans",
-                "skipped_hot_ladder": skipped_hot_ladder}
+                "skipped_hot_ladder": skipped_hot_ladder,
+                "skipped_offers_paused": skipped_offers_paused}
 
     cells = _segments(fan_rows, last_purchase, now)
 
@@ -1249,7 +1262,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 "broadcast_all": broadcasting,
                 "broadcast_price": (bcast_cents / 100) if broadcasting else None,
                 "pause_hours": pause_hours,
-                "skipped_hot_ladder": skipped_hot_ladder}
+                "skipped_hot_ladder": skipped_hot_ladder,
+                "skipped_offers_paused": skipped_offers_paused}
 
     # ── send: one mass call per non-empty cell, matrix price + rotated preview
     from automations.send_mass_message import run as send_mass_run
@@ -1356,12 +1370,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             run_at=now + timedelta(days=30),
         )
 
-    # skipped_hot_ladder is logged on EVERY run, including 0 — a counter you only see
-    # when it's non-zero is a counter nobody has a baseline for.
+    # The audience-shrink counters are logged on EVERY run, including 0 — a counter
+    # you only see when it's non-zero is a counter nobody has a baseline for.
     log.info("ppv_send account=%s ppv=%s cells=%d recipients=%d errors=%d broadcast=%s "
-             "resend_job=%s feed=%s hot_ladder_skipped=%d",
+             "resend_job=%s feed=%s hot_ladder_skipped=%d offers_paused_skipped=%d",
              account_id, ppv_id, sent_cells, total_recipients, send_errors, broadcast,
-             resend_job_id, (feed_post or {}).get("status"), skipped_hot_ladder)
+             resend_job_id, (feed_post or {}).get("status"), skipped_hot_ladder,
+             skipped_offers_paused)
     # NOTE: an all-failed run returns status 'error' in the STATS only — it must
     # not raise, or the executor's job retry would re-broadcast any cell that
     # did go out. The failed cells simply wait for the next cadence fire.
@@ -1375,6 +1390,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # Persisted into AutomationRun.stats_json → the ONLY way an operator can see
         # that a blast was quietly shrunk by the ladder rather than by a send failure.
         "skipped_hot_ladder": skipped_hot_ladder,
+        "skipped_offers_paused": skipped_offers_paused,
         "broadcast": broadcast, "pause_hours": pause_hours,
         "resend_job_id": resend_job_id, "feed_post": feed_post, "results": results,
     }
