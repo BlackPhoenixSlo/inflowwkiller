@@ -2772,17 +2772,19 @@ async def _save_ladder(account_id: str, fan_id: int, **vals) -> None:
         )
 
 
-async def _close_ladder(account_id: str, fan_id: int, status: str) -> None:
+async def _close_ladder(account_id: str, fan_id: int, status: str, **extra) -> None:
     """The ONE way a ladder ends — hard stop, tap-out, session TTL, a skip_list row
     (of_restricted / manual_restrict / unreachable all land there), or the account's
     dead-session flag. Resets the rung so a fan who comes back years later opens
     COLD instead of resuming at rung 4 with a $79 ask. Also clears the §5 objection/
     discount state — a new session earns its own cut, it does not inherit the last
     one's 'already cut' bar. companion/cooldown windows are time-based and left to
-    lapse on their own (a close must not un-companion a fan who asked to just talk)."""
+    lapse on their own (a close must not un-companion a fan who asked to just talk).
+    `extra` rides in the SAME upsert — a close that must also stamp a pause (the
+    hard decline) stays one atomic write, never close-then-pause in two."""
     await _save_ladder(account_id, fan_id, status=status, rung_index=0,
                        hot_until=None, unpaid_rungs=0, session_idle_at=None,
-                       objection_at=None, discount_count=0)
+                       objection_at=None, discount_count=0, **extra)
 
 
 async def _park_pending_offer(account_id: str, fan_id: int,
@@ -3194,25 +3196,27 @@ async def _mark_quote_paid(account_id: str, fan_id: int, message_id: int | None,
 
 
 async def _handle_decline(account_id: str, fan_id: int, kind: str,
-                          now: datetime, *, dry_run: bool = False) -> None:
+                          now: datetime) -> None:
     """Three declines, three consequences — never one broad regex with one broad
     pause. (A single _DECLINE_RE scored against the real inbound corpus matched
     4.05% of ALL inbounds and would have tapped out 37.9% of threads on lines like
-    "No problem!" and "talk to you a lil bit later beautiful 🥰".)"""
+    "No problem!" and "talk to you a lil bit later beautiful 🥰".)
+
+    Pure state transition — the hard decline's OTHER consequence (the make_right
+    apology) is enqueued by the caller, which owns dry_run."""
     if kind == upsell.DECLINE_HARD:
         # Chargeback / report / unsubscribe words. POLICY (07-23): the bot never
         # ghosts a fan over its own classifier verdict — this regex once read a
         # forwarded "unsubscribe and block anyone who…" game as a threat and
         # skip-listed a real fan into permanent silence. The consequence now: the
         # ladder closes to IDLE with a 72h offers-pause (selling stops, talking
-        # doesn't — the pause is ladder-scoped and liftable by an explicit pull),
-        # and make_right sends ONE de-escalation apology. A PERMANENT stop is an
-        # OPERATOR's move (a hand-written skip_list row), never the bot's.
-        await _close_ladder(account_id, fan_id, upsell.STATUS_IDLE)
-        await _save_ladder(account_id, fan_id,
-                           offers_paused_until=now + timedelta(hours=72))
-        if not dry_run:
-            await _trigger_make_right_apology(account_id, fan_id)
+        # doesn't — the pause is ladder-scoped and liftable by an explicit pull).
+        # ONE upsert: close-then-pause as two writes would leave a crash window
+        # where the ladder is idle and UNPAUSED — the exact state the policy
+        # forbids. A PERMANENT stop is an OPERATOR's move (a hand-written
+        # skip_list row), never the bot's.
+        await _close_ladder(account_id, fan_id, upsell.STATUS_IDLE,
+                            offers_paused_until=now + timedelta(hours=72))
     elif kind == upsell.DECLINE_SOFT:
         # A poverty plea. Stop SELLING for 24h, KEEP TALKING — he is still here, he
         # is just broke this week, and this is the highest-value moment to be a
@@ -4078,8 +4082,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             hard_decline = (gate_on and
                             upsell.classify_decline(c.last_body) == upsell.DECLINE_HARD)
             if hard_decline:
-                await _handle_decline(account_id, fan_id, upsell.DECLINE_HARD, now,
-                                      dry_run=dry_run)
+                await _handle_decline(account_id, fan_id, upsell.DECLINE_HARD, now)
+                if not dry_run:
+                    await _trigger_make_right_apology(account_id, fan_id)
                 hard_stops += 1
                 log.info("ai_chatter HARD decline account=%s fan=%s — 72h offers-pause "
                          "+ make_right apology (never a permanent bot stop)",

@@ -234,21 +234,24 @@ async def init_db() -> None:
             # 'stopped'/'ladder_stop' rows remain this is a no-op forever (an
             # operator hand-writing either state afterwards is honoured by the
             # readers, but boot converts it — permanent stops belong in
-            # manual_restrict).
-            try:
-                with sync_engine.begin() as conn:
-                    r1 = conn.execute(text(
-                        "UPDATE ladder_state SET status='idle', "
-                        "offers_paused_until=datetime(COALESCE(updated_at, "
-                        "CURRENT_TIMESTAMP), '+72 hours') WHERE status='stopped'"))
-                    r2 = conn.execute(text(
-                        "DELETE FROM skip_list WHERE reason='ladder_stop'"))
-                    if r1.rowcount or r2.rowcount:
-                        _log.info("decline-policy catch-up: %s stopped ladders "
-                                  "reopened (72h pause), %s ladder_stop skip rows "
-                                  "cleared", r1.rowcount, r2.rowcount)
-            except Exception:
-                _log.exception("decline-policy data catch-up failed")
+            # manual_restrict). SQLite-dialect SQL (datetime modifier), hence
+            # the gate. Ran on prod 2026-07-23 — DELETE this block once every
+            # box has booted the new code (it earns nothing after that).
+            if _is_sqlite:
+                try:
+                    with sync_engine.begin() as conn:
+                        r1 = conn.execute(text(
+                            "UPDATE ladder_state SET status='idle', "
+                            "offers_paused_until=datetime(COALESCE(updated_at, "
+                            "CURRENT_TIMESTAMP), '+72 hours') WHERE status='stopped'"))
+                        r2 = conn.execute(text(
+                            "DELETE FROM skip_list WHERE reason='ladder_stop'"))
+                        if r1.rowcount or r2.rowcount:
+                            _log.info("decline-policy catch-up: %s stopped ladders "
+                                      "reopened (72h pause), %s ladder_stop skip rows "
+                                      "cleared", r1.rowcount, r2.rowcount)
+                except Exception:
+                    _log.exception("decline-policy data catch-up failed")
 
             # One-way DATA catch-up (07-23 arc mass audience): vault_arc used
             # to book mass_free drops as bare {"text","price"} — no audience —
