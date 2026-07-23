@@ -821,6 +821,29 @@ async def _hot_ladder_fans(account_id: str, now: datetime) -> set[int]:
     return {int(x) for x in rows if x is not None}
 
 
+async def _offers_paused_fans(account_id: str, now: datetime) -> set[int]:
+    """Fans whose 1:1 ladder is inside an offers-pause — a VOICED decline (soft
+    'i'm broke' = 24h; hard chargeback/report/unsubscribe words = 72h, which since
+    07-23 replaced the permanent skip_list('ladder_stop') row). "Stop selling to
+    him for a while" must bind the blast too, or the pause is theatre: the
+    hard-declining fan would simply get his next price from the mass lane instead.
+    Same missing-table degradation as _hot_ladder_fans."""
+    try:
+        async with get_session() as s:
+            rows = (await s.execute(
+                select(LadderState.fan_id).where(
+                    LadderState.account_id == account_id,
+                    LadderState.offers_paused_until.is_not(None),
+                    LadderState.offers_paused_until > now,
+                )
+            )).scalars().all()
+    except Exception as e:  # noqa: BLE001 — missing table / un-migrated DB
+        log.warning("ppv_send ladder_state unreadable account=%s (%r) — "
+                    "treating as no offer pauses", account_id, e)
+        return set()
+    return {int(x) for x in rows if x is not None}
+
+
 async def _eligible_fans(account_id: str):
     """All non-bot, non-blacklisted fans for the account + their last-PURCHASE time,
     MINUS anyone with a live 1:1 ladder. We filter bots/blacklisted HERE because
@@ -841,8 +864,11 @@ async def _eligible_fans(account_id: str):
     # fan who told us "im disputing this charge, im reporting you" kept receiving
     # priced blasts, and as a past payer he landed in the HIGHEST spend-band cell.
     # A chargeback can take the whole OF account down; this is the cheapest possible
-    # place to stop it.
+    # place to stop it. Since 07-23 the hard decline writes a 72h ladder
+    # offers-pause instead of a skip_list row, so the pause set rides along here —
+    # same fan, same danger, different (now temporary) bookkeeping.
     hard_skip = await load_hard_skip_ids(account_id)
+    hard_skip |= await _offers_paused_fans(account_id, now)
     async with get_session() as s:
         fan_rows = (await s.execute(
             select(Fan.fan_id, Fan.lifetime_spend_cents).where(

@@ -160,17 +160,23 @@ async def _skip_and_rest(account_id, fan_id, now) -> None:
 MUTED_CREATOR_REASON = "muted_creator"
 MANUAL_RESTRICT_REASON = "manual_restrict"
 OF_RESTRICTED_REASON = "of_restricted"
-# The offer engine's HARD stop: he threatened a chargeback / called it a scam /
-# said he's reporting us. A fan who is one click from a dispute must never receive
-# another PRICED message from ANY sender — and a chargeback can take the whole OF
-# account down, so this is the one skip reason where being wrong is cheap and being
-# right is existential. It belongs in the hard set, not just in ai_chatter's own
-# gate: the mass PPV blast would otherwise keep quoting him (as a past payer he
-# lands in the HIGHEST spend band, i.e. the most expensive cell we have).
+# The offer engine's HARD stop reason. Since 07-23 the BOT no longer writes it:
+# a hard decline (chargeback / report / unsubscribe language) now takes a 72h
+# ladder offers-pause + a make_right apology instead of permanent silence — the
+# classifier misread a forwarded "unsubscribe and block anyone who…" game as a
+# threat and ghosted a real fan forever. The reason stays in the hard set so a
+# row an OPERATOR writes by hand (or a legacy row) is still honoured everywhere.
 LADDER_STOP_REASON = "ladder_stop"
 HARD_SKIP_REASONS = frozenset(
     {MUTED_CREATOR_REASON, MANUAL_RESTRICT_REASON, OF_RESTRICTED_REASON,
      LADDER_STOP_REASON}
+)
+# The subset a HUMAN (or OF itself) put there — "stop automation for this fan".
+# The always-answer touches (tip_reward's tip reward + image_reply, make_right's
+# hard-decline apology) gate on THIS, never on a bot-inferred ladder reason:
+# policy is that nothing the bot concluded on its own may silence them.
+OPERATOR_STOP_REASONS = frozenset(
+    {MUTED_CREATOR_REASON, MANUAL_RESTRICT_REASON, OF_RESTRICTED_REASON}
 )
 
 
@@ -236,12 +242,23 @@ def should_skip_muted_creator(fan) -> bool:
 async def load_hard_skip_ids(account_id) -> set[int]:
     """fan_ids this account has on skip_list under a HARD reason (muted_creator /
     manual_restrict) — for the senders that don't already gate on skip_list."""
+    return await _load_skip_ids(account_id, HARD_SKIP_REASONS)
+
+
+async def load_operator_stop_ids(account_id) -> set[int]:
+    """fan_ids under an OPERATOR-made stop only (muted_creator / manual_restrict /
+    of_restricted) — the gate for the touches that must ALWAYS answer a fan unless
+    a human said stop (tip rewards, image_reply, the hard-decline apology)."""
+    return await _load_skip_ids(account_id, OPERATOR_STOP_REASONS)
+
+
+async def _load_skip_ids(account_id, reasons: frozenset) -> set[int]:
     from sqlalchemy import select
     async with get_session() as s:
         rows = (await s.execute(
             select(SkipList.fan_id).where(
                 SkipList.account_id == str(account_id),
-                SkipList.reason.in_(tuple(HARD_SKIP_REASONS)),
+                SkipList.reason.in_(tuple(reasons)),
             )
         )).all()
     return {int(r[0]) for r in rows}
