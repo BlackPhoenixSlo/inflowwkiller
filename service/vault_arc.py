@@ -16,7 +16,7 @@ caps, the contact guard, exclude lists:
     mass_ppv (+ its paired feed_paid) → `ppv_send`        one job, `also_post_to_feed`
     feed_paid alone (the opener)      → `auto_posts`      priced wall post
     feed_free (the recap)             → `auto_posts`      price 0
-    mass_free (nudge / free taste)    → `send_mass_message`
+    mass_free (nudge / free taste)    → `arc_tease`       resolved at fire time
 
 Each becomes ONE future-dated `scheduled_jobs` row. `_due_job_pairs` claims those
 straight off the table, so a one-shot needs no `AutomationRule` behind it and
@@ -209,12 +209,15 @@ def plan_jobs(plan: dict[str, Any], *, arc_id: str, start_date: datetime,
                 continue
             jobs.append({
                 "seq": seq, "weekday": day.get("weekday"), "channel": "mass_free",
-                "kind": "send_mass_message", "run_at": _at(_BAND_WALL, "dm"),
+                "kind": "arc_tease", "run_at": _at(_BAND_WALL, "dm"),
                 "price_cents": 0, "entry": None,
-                # OF's send body must be html-wrapped to match what the web client
-                # posts; a bare string renders without the paragraph break.
-                "payload": {"text": f"<p>{text}</p>", "price": 0,
-                            **TEASE_AUDIENCE},
+                # A REFERENCE, like a priced day's {"ppv_id"}: the tease line
+                # rides the active_arc registry (approve() copies `text` into
+                # the booked drop) and `automations/arc_tease.py` materializes
+                # text + TEASE_AUDIENCE when the job fires — never frozen into
+                # the job row a month ahead.
+                "text": text,
+                "payload": {"arc_id": arc_id, "seq": seq},
             })
 
     jobs.sort(key=lambda j: (j["run_at"], j["seq"]))
@@ -321,12 +324,15 @@ async def approve(account_id: str, plan: dict[str, Any], *,
         job_id = await enqueue_job(account_id, j["kind"], payload=j["payload"],
                                    run_at=j["run_at"],
                                    created_by_employee_id=employee_id)
-        booked.append({
+        drop = {
             "job_id": job_id, "seq": j["seq"], "weekday": j["weekday"],
             "channel": j["channel"], "kind": j["kind"],
             "price_cents": j["price_cents"],
             "run_at": j["run_at"].replace(tzinfo=_tz.utc).isoformat(),
-        })
+        }
+        if "text" in j:  # the tease line arc_tease resolves at fire time
+            drop["text"] = j["text"]
+        booked.append(drop)
 
     _, vai_now, _, _ = await _load_configs(account_id)
     vai_now.setdefault("ppv_week", {})["active_arc"] = {
@@ -347,6 +353,13 @@ async def approve(account_id: str, plan: dict[str, Any], *,
              account_id, arc_id, len(booked),
              booked[0]["run_at"], booked[-1]["run_at"])
     return {"status": "armed", "arc_id": arc_id, "drops": booked}
+
+
+async def active_arc(account_id: str) -> dict[str, Any] | None:
+    """The account's armed arc registry, or None. The one read path for
+    `arc_tease` resolution and `status()`."""
+    _, vai, _, _ = await _load_configs(account_id)
+    return (vai.get("ppv_week") or {}).get("active_arc") or None
 
 
 async def heal_armed_arcs() -> None:
@@ -382,8 +395,16 @@ async def heal_armed_arcs() -> None:
                 continue
             drops = (((cfg.get("ppv_week") or {}).get("active_arc") or {})
                      .get("drops")) or []
-            tease_ids += [int(d["job_id"]) for d in drops
-                          if d.get("kind") == "send_mass_message" and d.get("job_id")]
+            # Pre-fix arcs booked teases as kind send_mass_message; post-fix
+            # arcs book kind arc_tease and never need healing. One malformed
+            # entry must not abort the heal for every other account.
+            for d in drops:
+                if d.get("kind") != "send_mass_message":
+                    continue
+                try:
+                    tease_ids.append(int(d["job_id"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
         if not tease_ids:
             return
 
@@ -475,8 +496,7 @@ async def status(account_id: str) -> dict[str, Any]:
     from db.engine import get_session
     from db.models import ScheduledJob
 
-    _, vai, _, _ = await _load_configs(account_id)
-    arc = (vai.get("ppv_week") or {}).get("active_arc") or None
+    arc = await active_arc(account_id)
     if not arc:
         return {"active": False}
 
