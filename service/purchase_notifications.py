@@ -54,9 +54,13 @@ FIRST (`paid_by="ppv_ledger"`), so a flipped message resolves on the next tick
 through the existing, tested path rather than a second copy of that logic
 here.
 
-Idempotent by construction: the UPDATE only matches rows that are still unpaid,
-so re-seeing the same notification (every 30s, until it ages out of the feed) is
-a no-op and needs no seen-id bookkeeping.
+Idempotent by construction: the UPDATE only matches rows that are still
+unpaid, and every ownership stamp is SELECT-first, so re-seeing the same
+notification (every 30s, until it ages out of the feed) can never
+double-apply anything. `_DONE_NOTIFS` below is NOT a correctness mechanism —
+it only spares a re-sighting's repeat queries (and, for posts, repeat OF
+fetches); it is process-local, and a restart simply reprocesses each
+notification once.
 """
 from __future__ import annotations
 
@@ -235,11 +239,14 @@ async def _message_paid(account_id: str, fan_id: int, message_id: int) -> bool:
 async def _handle_items(account_id: str, client: Any, items: list) -> dict[str, int]:
     """Shared per-notification dispatch for the 30s poll and the deep backfill.
     Chat purchase → flip is_paid + stamp the message's media as owned. Post
-    purchase → stamp the post's media as owned. Each notification is isolated
-    (one bad stamp must not abort the rest of the batch) and remembered once
-    fully handled, so re-sightings stop costing queries; an event whose
-    message row hasn't landed yet (scrape lag) or whose post can't be resolved
-    yet (wall scan lag) is NOT marked done and retries on the next poll."""
+    purchase → stamp the post's media as owned. The STAMP legs are isolated
+    (the try_stamp_* wrappers swallow and leave the notification retryable);
+    an error in the is_paid flip or paid-check propagates to the caller — the
+    30s poll swallows it there and unfinished notifications retry on the next
+    sighting. Fully-handled events are remembered so re-sightings stop
+    costing queries; an event whose message row hasn't landed yet (scrape
+    lag) or whose post can't be resolved yet (wall scan lag) is NOT marked
+    done and retries on the next poll."""
     out = {"seen": 0, "flipped": 0, "posts": 0, "stamped": 0}
     for n in (items or []):
         parsed = parse_purchase(n)

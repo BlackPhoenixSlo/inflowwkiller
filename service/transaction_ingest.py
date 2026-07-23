@@ -81,6 +81,11 @@ _FAILS_BEFORE_PAUSE = 3
 # Per-tick orphan-attribution sweep window (see attribution_backfill). Covers
 # a refresh scan's 7-day window plus slack for late-clearing pending rows.
 _ATTR_SWEEP_SINCE_DAYS = 14
+# Wall-post ownership belt: keep re-reading the purchases feed this long after
+# the account's last ppv_post sale (cost gate for _has_recent_post_txn;
+# stamping is idempotent). Deliberately its own knob — tuning the attribution
+# window above must not silently retune this safety gate.
+_POST_OWNERSHIP_SINCE_DAYS = 14
 _STALE_INFLIGHT_S = 900                 # 15 min — escape valve for crashed ticks (see _tick_locks comment)
 
 # Gated dead code. Flip to True when Planner B's WS dispatcher PR starts
@@ -1311,7 +1316,8 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
             try:
                 recent_post_buy = await _has_recent_post_txn(
                     account_id,
-                    since=datetime.utcnow() - timedelta(days=_ATTR_SWEEP_SINCE_DAYS),
+                    since=datetime.utcnow()
+                    - timedelta(days=_POST_OWNERSHIP_SINCE_DAYS),
                 )
                 if recent_post_buy:
                     pn = await purchase_notifications.poll_purchases(

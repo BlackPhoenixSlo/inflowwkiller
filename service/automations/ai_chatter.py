@@ -801,12 +801,14 @@ async def _drop_owned(account_id: str, fan_id: int,
     a fan who bought a clip in a MASS blast has no content_offers row, so a
     catalog-keyed check would cheerfully re-sell him what he already owns;
     hero-only so a shared free-preview frame never kills a sellable item.
-    Mutates `offerable` in place."""
+    Same BOUGHT-only ∩ HERO rule `_offerable_for_fan` applies, re-run here
+    for freshness before each rung. Mutates `offerable` in place."""
     if not offerable:
         return
     hero = await _hero_media_map(account_id, list(offerable.values()))
+    owned = await _owned_or_seen_media(account_id, fan_id)
     for iid in list(offerable):
-        if fan_id in await _owners_of_media(account_id, hero[int(iid)]):
+        if owned & set(hero[int(iid)]):
             offerable.pop(iid, None)
 
 
