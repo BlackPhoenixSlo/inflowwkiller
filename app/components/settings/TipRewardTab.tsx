@@ -63,6 +63,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
 
   const [enabled, setEnabled] = useState(false);
   const [alwaysReward, setAlwaysReward] = useState(false);
+  const [ctxPickEnabled, setCtxPickEnabled] = useState(true); // backend default ON
   const [dollarsPerImage, setDollarsPerImage] = useState(10);
   const [minImages, setMinImages] = useState(1);
   const [maxImages, setMaxImages] = useState(5);
@@ -110,13 +111,14 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   useEffect(() => {
     setEnabled(!!eff.enabled);
     setAlwaysReward(!!eff.always_reward);
-    setDollarsPerImage(eff.dollars_per_image ?? 10);
+    setCtxPickEnabled(eff.context_pick_enabled !== false); // backend default ON
+    setDollarsPerImage(eff.dollars_per_image ?? 5);
     setMinImages(eff.min_images ?? 1);
-    setMaxImages(eff.max_images ?? 5);
+    setMaxImages(eff.max_images ?? 12);
     setWindowHours(eff.window_hours ?? 72);
     setCaption(eff.caption ?? "");
     setTiers(tiersToForm(eff.tiers));
-    setAskEnabled(eff.ask_enabled !== false); // default ON when unset
+    setAskEnabled(!!eff.ask_enabled); // default OFF when unset (PPV-first)
     setAskAmount(eff.ask_amount_dollars == null ? "" : String(eff.ask_amount_dollars));
     setAskTemplate(eff.ask_template ?? "");
     setImageReplyEnabled(!!eff.image_reply_enabled);
@@ -189,6 +191,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     return {
       enabled,
       always_reward: alwaysReward,
+      context_pick_enabled: ctxPickEnabled,
       dollars_per_image: dollarsPerImage,
       min_images: minImages,
       max_images: maxImages,
@@ -254,17 +257,19 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
 
       <p className="text-xs text-fg-dim leading-relaxed">
         Independent switches around the tip loop: get the AI to <b>ask</b> fans for a
-        tip when they beg to see content, <b>reward</b> fans who tip with free vault
-        media, and react when a fan <b>sends you a photo</b> (a buying signal) — send
-        one back and/or hand them to the AI closer. Each works on its own.
+        tip when they beg to see content (off by default — PPV-first), <b>reward</b>
+        fans who tip with free vault media (matched to what they asked for), and
+        react when a fan <b>sends you a photo</b> (a buying signal) — send one back
+        and/or hand them to the AI closer. Each works on its own.
       </p>
 
       {/* ── ASK ───────────────────────────────────────────────────────────
-          The AI can ask for a tip even when reward delivery is off. */}
+          Default OFF since 2026-07-23 (house rule is PPV-first: a tip-ask near
+          a priced offer let a fan pay twice for one promise). Opt-in per account. */}
       <Section
         icon={<MessageCircle size={15} />}
         title="Ask fans to tip for content"
-        subtitle="When a fan asks to see something in chat (“can i see…”, “send me something”), the AI teases “tip me and I’ll send you something” instead of a normal reply."
+        subtitle="Off by default — the AI sells via priced PPV unlocks. Turn on to have the AI answer “can i see…” asks with a natural “tip me and I’ll send you something” instead."
         toggle={
           <Toggle
             checked={askEnabled}
@@ -378,6 +383,29 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
                   the fan doesn&apos;t get free media on top of what they paid for. Turn
                   this on to <b>always</b> send the reward anyway — the paid offer is
                   still credited, the fan just also gets the thank-you media.
+                </span>
+              </span>
+            </label>
+
+            {/* Context matcher — swap bundle slots for what he asked for */}
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                className="h-4 w-4 mt-0.5 accent-[var(--accent)]"
+                checked={ctxPickEnabled}
+                onChange={(e) => {
+                  markDirty();
+                  setCtxPickEnabled(e.target.checked);
+                }}
+              />
+              <span className="space-y-0.5">
+                <span className="block text-sm">Match the reward to what he asked for</span>
+                <span className="block text-[11px] text-fg-dim/80 leading-relaxed">
+                  Reads the last 20 messages of the thread and swaps up to 3 of the
+                  reward photos for vault photos whose AI descriptions match what the
+                  fan asked to see or was promised (needs the Vault AI describe pass).
+                  If nothing clearly matches, the reward falls back to the folders
+                  below unchanged.
                 </span>
               </span>
             </label>

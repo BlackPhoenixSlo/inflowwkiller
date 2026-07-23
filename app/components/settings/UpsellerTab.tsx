@@ -297,11 +297,13 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <label className="space-y-1">
             <div className="text-fg-dim text-xs">Offer mode</div>
-            <select className={`${INPUT} w-full`} value={cfg.offer_mode ?? "both"}
+            {/* Default flipped both→ppv (2026-07-23): a "both" message (priced
+                + tip-ask) let a fan pay twice for one promise. */}
+            <select className={`${INPUT} w-full`} value={cfg.offer_mode ?? "ppv"}
               onChange={(e) => set({ offer_mode: e.target.value as AiChatterConfig["offer_mode"] })}>
-              <option value="both">tip or PPV</option>
+              <option value="ppv">PPV only (default)</option>
               <option value="tip">tip only</option>
-              <option value="ppv">PPV only</option>
+              <option value="both">tip or PPV</option>
             </select>
           </label>
           <label className="space-y-1">

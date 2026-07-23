@@ -43,7 +43,8 @@ function settingsWith(over: {
     ...DEFAULT_NOTIF_SETTINGS,
     enabled: true,
     osPing: false,
-    toast: { ...DEFAULT_NOTIF_SETTINGS.toast, message: over.toastMessage },
+    // Pin the types these tests render so they don't track shipped defaults.
+    toast: { ...DEFAULT_NOTIF_SETTINGS.toast, subscribed: true, message: over.toastMessage },
     bubble: { ...DEFAULT_NOTIF_SETTINGS.bubble, message: over.bubbleMessage },
   };
 }

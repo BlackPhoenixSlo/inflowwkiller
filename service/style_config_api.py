@@ -28,14 +28,30 @@ from db.engine import get_session
 from db.models import AccountAiConfig
 from automations._common import (
     STYLE_AUTOMATIONS, typo_flag_key, nonnative_flag_key, FACTGROUND_KEY,
-    PAINFUL_TEXTING_KEY, CAT_STICKERS_KEY)
+    PAINFUL_TEXTING_KEY, CAT_STICKERS_KEY, CAT_STICKER_SKIP_PCT_KEY,
+    CAT_STICKER_SOLO_PCT_KEY, CAT_STICKER_GAP_MIN_KEY)
+
+# NUMERIC knobs (not checkboxes): key → (default, max). Persisted as numbers —
+# the bool coercion in _persist must never touch these.
+_NUMERIC_KNOBS: dict[str, tuple[float, float]] = {
+    CAT_STICKER_SKIP_PCT_KEY: (0.0, 100.0),   # % of replies that hide the pack
+    CAT_STICKER_SOLO_PCT_KEY: (5.0, 100.0),   # % nudged to a gif-only reply
+    CAT_STICKER_GAP_MIN_KEY: (0.0, 7 * 24 * 60.0),  # per-fan minutes between gifs
+}
+
+
+def _clamp_num(key: str, v) -> float:
+    default, hi = _NUMERIC_KNOBS[key]
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return default
+    return min(max(float(v), 0.0), hi)
 
 log = logging.getLogger("of-relay.style_config_api")
 
 router = APIRouter()
 
 
-def _defaults() -> dict[str, bool]:
+def _defaults() -> dict[str, Any]:
     """All-OFF — every automation keeps its current behavior until ticked on.
     Three independent toggle sets per automation: the humanizer (`<automation>`), the
     thumb-typo injector (`typos_<automation>`), and the non-native English layer
@@ -56,10 +72,12 @@ def _defaults() -> dict[str, bool]:
     out[PAINFUL_TEXTING_KEY] = True
     # Cat-sticker reaction pack — DEFAULT ON (see load_cat_stickers_flag).
     out[CAT_STICKERS_KEY] = True
+    # Sticker rate knobs — numeric (see load_cat_sticker_tuning).
+    out.update({k: d for k, (d, _) in _NUMERIC_KNOBS.items()})
     return out
 
 
-def _resolved_view(stored: dict) -> dict[str, bool]:
+def _resolved_view(stored: dict) -> dict[str, Any]:
     """The RENDERED view: each known flag as the loader would resolve it — the explicit
     stored value if present, else the tri-state default. Used by GET so the UI shows
     ai_chatter's realism checked-by-default, and so a save doesn't flip an implicit-ON
@@ -81,10 +99,12 @@ def _resolved_view(stored: dict) -> dict[str, bool]:
     out[PAINFUL_TEXTING_KEY] = bool(stored.get(PAINFUL_TEXTING_KEY, True))
     # DEFAULT ON (matches load_cat_stickers_flag) — same absent → True contract.
     out[CAT_STICKERS_KEY] = bool(stored.get(CAT_STICKERS_KEY, True))
+    # Numeric knobs: stored value clamped, absent/garbage → the default.
+    out.update({k: _clamp_num(k, stored.get(k)) for k in _NUMERIC_KNOBS})
     return out
 
 
-def _persist(cfg: dict) -> dict[str, bool]:
+def _persist(cfg: dict) -> dict[str, Any]:
     """What we WRITE back. ONLY the keys explicitly present in the merged config —
     absent keys are LEFT ABSENT so they keep resolving to the tri-state default at load
     time. Materializing every absent key to False (the old bug) stamped ai_chatter:false
@@ -95,7 +115,10 @@ def _persist(cfg: dict) -> dict[str, bool]:
         | {typo_flag_key(k) for k in STYLE_AUTOMATIONS} \
         | {nonnative_flag_key(k) for k in STYLE_AUTOMATIONS} \
         | {"strip_emojis", FACTGROUND_KEY, PAINFUL_TEXTING_KEY, CAT_STICKERS_KEY}
-    return {k: bool(v) for k, v in cfg.items() if k in known}
+    out: dict[str, Any] = {k: bool(v) for k, v in cfg.items() if k in known}
+    # Numeric knobs keep their number — bool() would turn "skip 30%" into True.
+    out.update({k: _clamp_num(k, cfg[k]) for k in _NUMERIC_KNOBS if k in cfg})
+    return out
 
 
 @router.get("/admin/style-config")

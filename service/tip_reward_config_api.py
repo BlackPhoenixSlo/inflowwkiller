@@ -51,6 +51,9 @@ _INT_KNOBS = {
     # Conversational teaser ladder (the rungs list is validated separately below).
     "teaser_convo_after_fan_msgs": (1, 1000),
     "teaser_convo_count": (1, 50),
+    # Context-aware picking (matched-to-his-ask swaps in the reward bundle).
+    "context_pick_max": (0, 10),
+    "context_pick_messages": (1, 100),
 }
 _MAX_TEASER_RUNGS = 10
 _MAX_TIERS = 10
@@ -164,6 +167,10 @@ def _validate(cfg: dict) -> dict:
     # delivery side) — the ask can be on while reward delivery is off, or vice versa.
     if "ask_enabled" in cfg:
         out["ask_enabled"] = bool(cfg["ask_enabled"])
+    # Context matcher (reads the thread, swaps in photos matching his ask).
+    # Default TRUE in the automation; an explicit false here turns it off.
+    if "context_pick_enabled" in cfg:
+        out["context_pick_enabled"] = bool(cfg["context_pick_enabled"])
     for k, (lo, hi) in _INT_KNOBS.items():
         if k in cfg and cfg[k] is not None:
             try:

@@ -83,6 +83,7 @@ from ._common import (
     STYLE_MAX_BUBBLES,
     apply_nonnative_style, apply_word_restriction, coerce_ids, guard_offplatform,
     hold_with_typing, apply_typo_throttle, load_cat_stickers_flag,
+    load_cat_sticker_tuning,
     load_nonnative_flags,
     load_painful_texting_flag, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags,
@@ -165,7 +166,14 @@ _DEFAULTS: dict = {
                                          # the fans it skips.
     "sla_minutes": 10,                   # backup: how slow is "slow"
     "max_lifetime_spend_cents": 100_000, # the whale gate ($1000)
-    "offer_mode": "both",                # M3: "tip" | "ppv" | "both"
+    "offer_mode": "ppv",                 # M3: "tip" | "ppv" | "both". Default
+                                         # flipped both→ppv 2026-07-23: a "both"
+                                         # message (priced + tip-ask) let a fan
+                                         # pay twice for one promise — a live
+                                         # incident paid the unlock AND the tip.
+                                         # tip/both remain selectable per-account
+                                         # in the Upseller tab for operators who
+                                         # want the tip-unlock lane.
     # Tip ladder (workstream 3): TIP-ONLY offers get an INDEPENDENT adaptive ask
     # (escalate when he unlocked his last tip, soften 40–60% when he didn't,
     # floored at his biggest-ever tip) instead of riding the PPV quote. Needs
@@ -788,7 +796,11 @@ def _effective_mode(item: CatalogItem, cfg_mode: str) -> str | None:
     """Intersect the account's offer_mode with the item's terms. None = not
     sellable (a free teaser is deliverable regardless — see is_free_teaser)."""
     tip_ok = int(item.tip_unlock_cents or 0) > 0 and cfg_mode in ("tip", "both")
-    ppv_ok = int(item.price_cents or 0) > 0 and cfg_mode in ("ppv", "both")
+    # Default-ppv world: an item configured tip-only (tip_unlock set, price 0)
+    # must stay sellable on a ppv-mode account — its tip_unlock amount stands in
+    # as the price floor; smart pricing owns the actual quote either way.
+    ppv_ok = (int(item.price_cents or 0) > 0
+              or int(item.tip_unlock_cents or 0) > 0) and cfg_mode in ("ppv", "both")
     if tip_ok and ppv_ok:
         return "both"
     if tip_ok:
@@ -2385,7 +2397,7 @@ async def _fire_post_buy_rung(client, account_id: str, cfg: dict, fan_id: int,
             account_id, fan_id, {**cfg, "min_fan_msgs_between_offers": 0}):
         return 0
     offerable = await _offerable_for_fan(account_id, fan_id,
-                                         str(cfg.get("offer_mode") or "both"),
+                                         str(cfg.get("offer_mode") or "ppv"),
                                          scripts, catalog_items)
     # Ownership re-check, media-keyed (a mass-blast buy has no content_offers row).
     for iid in list(offerable):
@@ -2431,7 +2443,7 @@ async def _fire_post_buy_rung(client, account_id: str, cfg: dict, fan_id: int,
                    key=lambda it: int(it.price_cents or 0), default=None)
         if item is None:
             return 0
-    mode_eff = _effective_mode(item, str(cfg.get("offer_mode") or "both"))
+    mode_eff = _effective_mode(item, str(cfg.get("offer_mode") or "ppv"))
     if mode_eff not in ("ppv", "both"):
         return 0                       # tip-only post-buy rung not fired here
     media = _item_media(item)
@@ -3692,6 +3704,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
     stickers_on = await load_cat_stickers_flag(account_id)    # cat reaction gifs (default ON)
+    sticker_skip_w, sticker_solo_w, sticker_gap_min = \
+        await load_cat_sticker_tuning(account_id)             # per-account rate knobs
     account_lang = await _language.load_account_language(account_id)  # output language + guard gate
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     persona = await _load_persona(account_id)
@@ -3758,7 +3772,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     # ── M3 offer layer: resolve unlocks FIRST (a fan doesn't have to speak to
     # buy), then load the catalog + the open-offer map the prompts read.
-    cfg_offer_mode = str(cfg.get("offer_mode") or "both")
+    cfg_offer_mode = str(cfg.get("offer_mode") or "ppv")
     intent_only = bool(cfg.get("intent_only"))
     pivot_on_escalation = bool(cfg.get("pivot_on_escalation"))
     esc_min_msgs = int(cfg.get("min_fan_msgs_before_escalation_pitch") or 0)
@@ -4559,7 +4573,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if stickers_on:
                 sticker_mode = cat_stickers.roll_mode(
                     random.Random(f"sticker:{account_id}:{fan_id}:{c.last_body}"),
-                    cat_stickers.cooldown_active(account_id, fan_id))
+                    cat_stickers.cooldown_active(account_id, fan_id,
+                                                 gap_min=sticker_gap_min),
+                    skip_w=sticker_skip_w, solo_w=sticker_solo_w)
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
                                               sticker_mode=sticker_mode,
                                               style_on=style_on,

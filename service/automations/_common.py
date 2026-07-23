@@ -796,6 +796,34 @@ async def load_cat_stickers_flag(account_id: str) -> bool:
     return True if val is None else bool(val)
 
 
+async def load_cat_sticker_tuning(account_id: str) -> tuple[float, float, float]:
+    """Per-account cat-sticker rate knobs → (skip_w 0-1, solo_w 0-1, gap_min).
+    Reads the cat_sticker_*_pct/_gap_min keys of style_config_json; absent/
+    NULL/parse-error/non-numeric → the house defaults in cat_stickers.py
+    (wide open: skip 0, solo 5%, gap 0)."""
+    from . import cat_stickers as _cs
+    defaults = (_cs.DEFAULT_SKIP, _cs.DEFAULT_SOLO, _cs.DEFAULT_GAP_MIN)
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    raw = getattr(cfg, "style_config_json", None) if cfg else None
+    if not raw:
+        return defaults
+    try:
+        stored = json.loads(raw) or {}
+    except Exception:
+        return defaults
+
+    def _num(key: str, default: float, scale: float, hi: float) -> float:
+        v = stored.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return default
+        return min(max(float(v) * scale, 0.0), hi)
+
+    return (_num(CAT_STICKER_SKIP_PCT_KEY, defaults[0], 0.01, 1.0),
+            _num(CAT_STICKER_SOLO_PCT_KEY, defaults[1], 0.01, 1.0),
+            _num(CAT_STICKER_GAP_MIN_KEY, defaults[2], 1.0, 7 * 24 * 60))
+
+
 async def load_strip_emojis(account_id: str) -> bool:
     """Read account_ai_config.style_config_json → the account-wide 'strip_emojis'
     bool. Absent/NULL/parse-error → False (the safe default: emojis kept, current
@@ -965,6 +993,12 @@ FACTGROUND_KEY = "factground_of_ai_chat"
 PAINFUL_TEXTING_KEY = "painful_texting"
 # Account-wide toggle key (style_config_json) for the cat-sticker reaction pack.
 CAT_STICKERS_KEY = "cat_stickers"
+# Cat-sticker rate knobs (style_config_json, account-wide, NUMERIC not bool —
+# the style API persists these through its numeric lane). Percents are 0-100
+# in storage/UI; the loader hands the roll 0-1 weights.
+CAT_STICKER_SKIP_PCT_KEY = "cat_sticker_skip_pct"  # % of replies that hide the pack
+CAT_STICKER_SOLO_PCT_KEY = "cat_sticker_solo_pct"  # % nudged to a gif-ONLY reply
+CAT_STICKER_GAP_MIN_KEY = "cat_sticker_gap_min"    # per-fan minutes between stickers
 
 
 async def load_factground_flag(account_id: str) -> bool:
@@ -2018,12 +2052,14 @@ async def recent_payer_fans(account_id: str, fan_ids,
     return {int(r[0]) for r in rows}
 
 
-# The content-ask tip-ask ships ON by default (ask_enabled); an owner can flip it
-# off per-account via tip_reward_config_json.ask_enabled. By design it names NO
-# fixed dollar amount — she asks for a tip naturally — UNLESS an owner sets
-# ask_amount_dollars (then she suggests that figure). `ask_template` (optional)
-# seeds the phrasing in her voice. The whole tip loop lives in one config home.
-DEFAULT_TIP_ASK_ENABLED = True
+# The content-ask tip-ask ships OFF by default (flipped ON→OFF 2026-07-23: the
+# house rule is PPV-first — a tip-ask near a priced offer let a fan pay TWICE
+# for one promise (a live incident: a PPV unlock AND its tip-ask paid on one
+# message), and the promised content had no delivery owner). An owner can opt a
+# single account IN via tip_reward_config_json.ask_enabled (Tip Reward tab). By
+# design it names NO fixed dollar amount — she asks naturally — UNLESS
+# ask_amount_dollars is set; `ask_template` (optional) seeds the phrasing.
+DEFAULT_TIP_ASK_ENABLED = False
 _TIP_ASK_TEMPLATE_MAX = 300
 
 
@@ -2031,9 +2067,8 @@ async def load_tip_ask_config(account_id: str) -> tuple[bool, int | None, str]:
     """(ask_enabled, suggested_tip_dollars_or_None, optional_template) for the
     content-ask tip-ask, read from account_ai_config.tip_reward_config_json (one
     home for the whole tip loop — the ask reads it independently of tip_reward's
-    own `enabled` flag). The ask is ON by default and names NO specific dollar
-    amount unless `ask_amount_dollars` is set. Absent/NULL/parse-error →
-    (DEFAULT_TIP_ASK_ENABLED, None, '')."""
+    own `enabled` flag). OFF by default (see DEFAULT_TIP_ASK_ENABLED); a stored
+    ask_enabled opts an account in/out. Absent/NULL/parse-error → (False, None, '')."""
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, str(account_id))
     raw = getattr(cfg, "tip_reward_config_json", None) if cfg else None
