@@ -25,7 +25,11 @@ The writers, which every lane calls:
     `Message.is_paid` flips (ledger linker, relink sweep, purchase
     notifications): media from the row's `media_ids` JSON when real, else the
     VaultSend rows the send recorded (teaser/offer lanes), else the mass
-    broadcast cache for placeholder rows.
+    broadcast cache for placeholder rows;
+  • direct media-id stamps (`stamp_media_owned`) — the primitive the writers
+    above resolve into, and itself a lane entry: the offer-delivery lane
+    (`ai_chatter._mark_media_purchased`) calls it directly when the caller
+    already holds the real media ids.
 
 Stamps are per-media VaultSend rows with `was_purchased=True`. The table has
 NO unique key, so idempotency is SELECT-first: existing (account, fan, media)
@@ -193,7 +197,7 @@ async def owners_of_media(account_id: str, media_ids: list[int]) -> set[int]:
     async with get_session() as s:
         rows = (await s.execute(
             select(Message.fan_id, Message.media_ids).where(
-                Message.account_id == account_id,
+                Message.account_id == str(account_id),
                 Message.is_paid.is_(True),
             )
         )).all()
@@ -207,7 +211,7 @@ async def owners_of_media(account_id: str, media_ids: list[int]) -> set[int]:
         owners |= {int(x) for x in vs if x is not None}
         co = (await s.execute(
             select(ContentOffer.fan_id, ContentOffer.item_id).where(
-                ContentOffer.account_id == account_id,
+                ContentOffer.account_id == str(account_id),
                 ContentOffer.status == "delivered",
                 ContentOffer.resolved_by.in_(OWNED_RESOLVED_BY),
             )

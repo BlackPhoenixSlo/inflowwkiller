@@ -885,8 +885,8 @@ async def _all_fan_ids(account_id: str) -> list[int]:
 # Media parsing + both ownership readers live in ownership.py (the one home
 # for owned-media semantics — this used to be a "local mirror to avoid a
 # circular import" situation; ownership.py is a dependency root, so the wart
-# is gone). The aliases keep this module's names for call sites and tests.
-_item_media = ownership.item_media
+# is gone). The `_owners_of_media` alias keeps this module's name for its
+# call site and tests.
 _owners_of_media = ownership.owners_of_media
 
 

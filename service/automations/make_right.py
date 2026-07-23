@@ -506,11 +506,10 @@ def _free_folders(cfg: dict, tip_cfg: dict, wrongful_cents: int) -> list[str]:
 async def _exclude_media(account_id: str, fan_id: int) -> set[int]:
     """Media the fan already OWNS or has SEEN — the gift must avoid all of it, so
     the apology is never itself a repeat of the mistake. Union of tip_reward's
-    seen-set (every VaultSend) with ai_chatter's owned-set (purchased VaultSend +
-    paid-message media). Imported lazily to avoid any import-order coupling."""
-    from automations.ai_chatter import _owned_or_seen_media  # local: decouple
+    seen-set (every VaultSend) with ownership.py's owned-set (purchased
+    VaultSend + paid-message media + non-free delivered offers)."""
     seen = await tip_reward._seen_media(account_id, fan_id)
-    owned = await _owned_or_seen_media(account_id, fan_id)
+    owned = await ownership.owned_or_seen_media(account_id, fan_id)
     return seen | owned
 
 
