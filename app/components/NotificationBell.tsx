@@ -34,7 +34,7 @@ import {
   readSettings as readRailSettings,
   surfaceOf,
   writeSettings as writeRailSettings,
-} from "@/components/MoneyRail";
+} from "@/lib/moneyRailStorage";
 import { relay, proxyImage } from "@/lib/relay";
 import {
   NOTIF_ARRIVED_EVENT,

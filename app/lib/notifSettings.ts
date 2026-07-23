@@ -13,6 +13,8 @@
  *               (used to make tips/purchases pop relative to chatter)
  */
 
+import { persistJSON, readJSON } from "./persist";
+
 export type NotifTypeKey =
   | "message"
   | "purchases"
@@ -69,24 +71,18 @@ export const DEFAULT_NOTIF_SETTINGS: NotifSettings = {
 const STORAGE_KEY = "chatterly:notif-settings:v1";
 
 export function readNotifSettings(): NotifSettings {
-  if (typeof window === "undefined") return DEFAULT_NOTIF_SETTINGS;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_NOTIF_SETTINGS;
-    const parsed = JSON.parse(raw) as Partial<NotifSettings>;
-    return {
-      enabled: parsed.enabled ?? DEFAULT_NOTIF_SETTINGS.enabled,
-      toast: { ...DEFAULT_NOTIF_SETTINGS.toast, ...(parsed.toast ?? {}) },
-      bubble: { ...DEFAULT_NOTIF_SETTINGS.bubble, ...(parsed.bubble ?? {}) },
-      osPing: parsed.osPing ?? DEFAULT_NOTIF_SETTINGS.osPing,
-    };
-  } catch {
-    return DEFAULT_NOTIF_SETTINGS;
-  }
+  const parsed = readJSON<Partial<NotifSettings>>(STORAGE_KEY);
+  if (!parsed) return DEFAULT_NOTIF_SETTINGS;
+  return {
+    enabled: parsed.enabled ?? DEFAULT_NOTIF_SETTINGS.enabled,
+    toast: { ...DEFAULT_NOTIF_SETTINGS.toast, ...(parsed.toast ?? {}) },
+    bubble: { ...DEFAULT_NOTIF_SETTINGS.bubble, ...(parsed.bubble ?? {}) },
+    osPing: parsed.osPing ?? DEFAULT_NOTIF_SETTINGS.osPing,
+  };
 }
 
 export function writeNotifSettings(s: NotifSettings): void {
-  try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch { /* ignore */ }
+  persistJSON(STORAGE_KEY, s);
   // Defer the dispatch so subscribers (other instances of the hook in
   // the bell + toaster) don't run their setSettings while the original
   // caller is still inside React's render/commit phase. queueMicrotask
@@ -180,23 +176,17 @@ function prune(items: CachedNotification[]): CachedNotification[] {
 }
 
 export function readNotifHistory(): HistoryMap {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(HISTORY_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as HistoryMap;
-    const out: HistoryMap = {};
-    for (const [aid, list] of Object.entries(parsed)) {
-      if (Array.isArray(list)) out[aid] = prune(list);
-    }
-    return out;
-  } catch {
-    return {};
+  const parsed = readJSON<HistoryMap>(HISTORY_KEY);
+  if (!parsed || typeof parsed !== "object") return {};
+  const out: HistoryMap = {};
+  for (const [aid, list] of Object.entries(parsed)) {
+    if (Array.isArray(list)) out[aid] = prune(list);
   }
+  return out;
 }
 
 function writeNotifHistory(h: HistoryMap): void {
-  try { window.localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); } catch { /* ignore */ }
+  persistJSON(HISTORY_KEY, h);
   try {
     queueMicrotask(() => {
       try { window.dispatchEvent(new CustomEvent("chatterly:notif-history")); } catch { /* ignore */ }
