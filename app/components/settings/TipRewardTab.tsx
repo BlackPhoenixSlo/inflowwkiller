@@ -113,7 +113,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setAlwaysReward(!!eff.always_reward);
     setCtxPickEnabled(eff.context_pick_enabled !== false); // backend default ON
     setDollarsPerImage(eff.dollars_per_image ?? 5);
-    setMinImages(eff.min_images ?? 1);
+    setMinImages(eff.min_images ?? 2);
     setMaxImages(eff.max_images ?? 12);
     setWindowHours(eff.window_hours ?? 72);
     setCaption(eff.caption ?? "");
