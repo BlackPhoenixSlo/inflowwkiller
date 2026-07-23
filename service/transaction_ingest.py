@@ -63,6 +63,7 @@ from db.models import (
     UserAccount,
 )
 from of_client import OFClient
+import ownership
 import purchase_notifications
 
 log = logging.getLogger("of-relay.ingest_tx")
@@ -555,6 +556,14 @@ async def relink_orphan_ppvs(
                     "relink_ppv_linked tx=%d account=%s fan=%s msg=%d cents=%d stamp_paid=%s",
                     tx_id, aid, fid, int(msg.message_id), int(cents or 0), stamp_paid,
                 )
+                # Paid → owned. Only on stamp_paid runs: the attribution-only
+                # backfill promises zero downstream side effects. After the
+                # commit above, so no lock is held.
+                if stamp_paid:
+                    await ownership.try_stamp_message(
+                        str(aid), int(fid), int(msg.message_id),
+                        price_cents=int(cents or 0),
+                        context=f"relink tx={tx_id}")
             except IntegrityError:
                 await s.rollback()
                 stats["conflict_skipped"] += 1
@@ -563,6 +572,21 @@ async def relink_orphan_ppvs(
         last = rows[-1]
         stats["next_after"] = (last.occurred_at.isoformat(), int(last.id))
     return stats
+
+
+async def _has_recent_post_txn(account_id: str, *, since: datetime) -> bool:
+    """Any wall-post purchase on the ledger recently? Cheap gate for the
+    per-tick post-ownership sweep — most accounts sell nothing off the wall
+    and should not pay a notifications fetch every 5 minutes."""
+    async with get_session() as s:
+        row = (await s.execute(
+            select(Transaction.id).where(
+                Transaction.account_id == account_id,
+                Transaction.kind == "ppv_post",
+                Transaction.occurred_at >= since,
+            ).limit(1)
+        )).scalar_one_or_none()
+    return row is not None
 
 
 async def _bump_lifetime(s, account_id: str, fan_id: int, amount_cents: int) -> None:
@@ -651,6 +675,7 @@ async def _write_one(account_id: str, raw: dict) -> tuple[int, int]:
 
     refund_flip_pending: tuple[int, int] | None = None  # (fan_id, prev_amount)
     lifetime_delta_pending: tuple[int, int] | None = None  # (fan_id, delta_cents)
+    ownership_stamp_pending: tuple[int, int, int] | None = None  # (fan_id, message_id, cents)
     broadcast_reason: str | None = None  # set when the row is news, not a re-poll
 
     async with get_session() as s:
@@ -772,6 +797,17 @@ async def _write_one(account_id: str, raw: dict) -> tuple[int, int]:
                     occurred_at=parsed["occurred_at"],
                     tx=new_tx,
                 )
+                # The linked message is PAID → its media is OWNED. Deferred to
+                # after this session commits (ownership opens its own session;
+                # running it here would write-deadlock against ours). Covers
+                # every lane the linker reaches: catalog offers, priced
+                # teasers (VaultSend rows keyed by message id) and mass
+                # placeholders (media via the broadcast cache).
+                if new_tx.message_id is not None:
+                    ownership_stamp_pending = (
+                        int(parsed["fan_id"]), int(new_tx.message_id),
+                        int(parsed["amount_cents"] or 0),
+                    )
             if (
                 parsed["fan_id"]
                 and parsed["status"] not in _NON_REVENUE_STATUSES
@@ -808,6 +844,14 @@ async def _write_one(account_id: str, raw: dict) -> tuple[int, int]:
     if lifetime_delta_pending is not None:
         fan_id, delta = lifetime_delta_pending
         await _apply_lifetime_delta(account_id, fan_id, delta)
+
+    # Ownership stamp for the freshly-linked PPV buy (best-effort by contract —
+    # see ownership.try_stamp_message; the purchases-notification poll re-stamps
+    # the same message idempotently on its next sighting anyway).
+    if ownership_stamp_pending is not None:
+        fan_id, msg_id, cents = ownership_stamp_pending
+        await ownership.try_stamp_message(
+            account_id, fan_id, msg_id, price_cents=cents, context="ingest")
 
     # Announce news (insert / promote / status flip) to SSE subscribers AFTER
     # the commit, so the browser's refetch can't race the write. The frontend
@@ -1257,6 +1301,32 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                     exc_info=True,
                 )
 
+            # Wall-POST ownership belt: the ledger's ppv_post row names WHO and
+            # HOW MUCH but never WHICH post — only the purchases-notification
+            # feed carries the post id. The 30s fast poll parses it live, but
+            # that loop is GATED (selling automations ∪ online principals), so
+            # an account selling only off its wall would never stamp. Whenever
+            # this account has a recent ppv_post txn, re-read the feed here —
+            # stamping is idempotent, so overlap with the fast poll is free.
+            try:
+                recent_post_buy = await _has_recent_post_txn(
+                    account_id,
+                    since=datetime.utcnow() - timedelta(days=_ATTR_SWEEP_SINCE_DAYS),
+                )
+                if recent_post_buy:
+                    pn = await purchase_notifications.poll_purchases(
+                        account_id, client, limit=50)
+                    if pn.get("posts") or pn.get("stamped"):
+                        log.info(
+                            "ingest_tx_post_ownership_sweep account=%s %s",
+                            account_id, pn,
+                        )
+            except Exception:
+                log.warning(
+                    "ingest_tx_post_ownership_sweep_failed account=%s",
+                    account_id, exc_info=True,
+                )
+
             # Auto-assign: credit the last-toucher (human OR Automation) for
             # any sale this scan surfaced that still resolves to no employee,
             # so the per-employee stats never leave revenue in "Unattributed".
@@ -1439,8 +1509,8 @@ async def _online_account_ids() -> set[str]:
       • ADMINS (users.is_admin + last_seen_at) → EVERY account. An admin sees
         the whole roster in the UI, so scoping their tick to the accounts they
         happen to be listed against in `user_accounts` silently starves the
-        rest. That is not hypothetical: SofiaPaid had NO user_accounts row at
-        all and AriaPaid's owner was offline, so neither account's ledger was
+        rest. That is not hypothetical: the graded vault had NO user_accounts row at
+        all and the graded vault's owner was offline, so neither account's ledger was
         ever scanned — no `transactions` rows, an empty PPV chart on every one
         of their fans, and `fans.lifetime_spend_cents` frozen at 0 (which also
         starves the of_ai_chat "hand payers to humans" gate). Ownership is NOT

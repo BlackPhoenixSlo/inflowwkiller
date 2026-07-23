@@ -60,6 +60,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / lease / cooldown seams
 import llm_client                  # call .chat at runtime so tests can patch it
+import ownership                   # the one home for owned-media semantics
 from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
@@ -72,11 +73,13 @@ from db.models import (
 from llm_client import LLMCapExceeded
 from . import cat_stickers, rhythm, script_packs, tip_ladder, upsell
 from . import _language
-# ppv_send owns the ONE price authority (`price_bounds`) and the ONE ownership
-# check (`_owners_of_media`, keyed on MEDIA — a fan who bought a clip in a mass
-# blast has no content_offers row at all). Importing them rather than growing a
-# second ceiling / a second ownership notion here is deliberate.
-from .ppv_send import _owners_of_media, price_bounds
+# ppv_send owns the ONE price authority (`price_bounds`); ownership.py owns
+# the ONE ownership check (`owners_of_media`, keyed on MEDIA — a fan who
+# bought a clip in a mass blast has no content_offers row at all). Importing
+# them rather than growing a second ceiling / a second ownership notion here
+# is deliberate.
+from .ppv_send import price_bounds
+from ownership import owners_of_media as _owners_of_media
 from ._common import (
     CONTENT_ASK_RE, ESCALATION_RE, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER,
     ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING, STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER,
@@ -776,20 +779,35 @@ except Exception:  # pragma: no cover - fallback until the sibling lands it
         return bool(text) and bool(_BOT_ACCUSED_RE.search(text))
 
 
-def _item_media(item: CatalogItem) -> list[int]:
-    try:
-        return [int(m) for m in json.loads(item.media_ids or "[]")]
-    except Exception:
-        return []
+# Media parsing + the hero/filler split live in ownership.py (the one home
+# for owned-media semantics); these are the item-shaped entry points.
+_item_media = ownership.item_media
+_item_previews = ownership.item_previews
 
 
-def _item_previews(item: CatalogItem) -> list[int]:
-    try:
-        ids = [int(m) for m in json.loads(item.preview_media_ids or "[]")]
-    except Exception:
-        return []
-    media = set(_item_media(item))
-    return [m for m in ids if m in media]
+async def _hero_media_map(account_id: str,
+                          items: list[CatalogItem]) -> dict[int, list[int]]:
+    """CatalogItem adapter over `ownership.hero_media_map` (see it for the
+    operator's hero/filler ruling). Total: every input item gets a non-empty
+    entry — call sites index it directly."""
+    return await ownership.hero_media_map(
+        account_id,
+        {int(it.id): (_item_media(it), _item_previews(it)) for it in items})
+
+
+async def _drop_owned(account_id: str, fan_id: int,
+                      offerable: dict[int, CatalogItem]) -> None:
+    """Pop every item whose HERO media this fan already owns. Media-keyed —
+    a fan who bought a clip in a MASS blast has no content_offers row, so a
+    catalog-keyed check would cheerfully re-sell him what he already owns;
+    hero-only so a shared free-preview frame never kills a sellable item.
+    Mutates `offerable` in place."""
+    if not offerable:
+        return
+    hero = await _hero_media_map(account_id, list(offerable.values()))
+    for iid in list(offerable):
+        if fan_id in await _owners_of_media(account_id, hero[int(iid)]):
+            offerable.pop(iid, None)
 
 
 def _effective_mode(item: CatalogItem, cfg_mode: str) -> str | None:
@@ -854,54 +872,10 @@ async def _seen_media(account_id: str, fan_id: int) -> set[int]:
     return {int(x) for x in ids}
 
 
-async def _owned_or_seen_media(account_id: str, fan_id: int) -> set[int]:
-    """Media we must NOT re-offer this fan: only what he actually OWNS — a tip/PPV
-    unlock (VaultSend.was_purchased) or a paid Message whose media JSON overlaps.
-    Deliberately EXCLUDES anything merely SENT: a free teaser AND an offered-but-
-    UNBOUGHT PPV (whose VaultSend carries price_cents>0 as the ASKED price, not proof
-    of purchase) can both ride again in a future offer. (Product rule: dedup bought,
-    never sent-that-can-be-resent.)"""
-    out: set[int] = set()
-    async with get_session() as s:
-        seen_ids = (await s.execute(
-            select(VaultSend.media_id).where(
-                VaultSend.account_id == str(account_id),
-                VaultSend.fan_id == int(fan_id),
-                VaultSend.was_purchased.is_(True))
-        )).scalars().all()
-        paid_rows = (await s.execute(
-            select(Message.media_ids).where(
-                Message.account_id == str(account_id),
-                Message.fan_id == int(fan_id),
-                Message.is_paid.is_(True))
-        )).all()
-        # A NON-FREE delivered content_offer is durable item-level proof of purchase — it survives a
-        # missed/crashed was_purchased flip and covers gate-off accounts (which write no ladder_quote).
-        # EXCLUDE resolved_by='free': a free teaser is ALSO a delivered offer, and a teaser is
-        # "sent, can be resent", NOT owned — unioning it would make paid items that reuse that media
-        # unsellable (product rule above: dedup BOUGHT, never sent-that-can-be-resent).
-        delivered_items = (await s.execute(
-            select(ContentOffer.item_id).where(
-                ContentOffer.account_id == str(account_id),
-                ContentOffer.fan_id == int(fan_id),
-                ContentOffer.status == "delivered",
-                ContentOffer.resolved_by.in_(
-                    ("tip", "ppv_ledger", "ppv_txn", "ppv_fastpath", "manual")))
-        )).scalars().all()
-        owned_items = (await s.execute(
-            select(CatalogItem).where(
-                CatalogItem.id.in_([int(i) for i in delivered_items])))
-        ).scalars().all() if delivered_items else []
-        s.expunge_all()
-    out |= {int(x) for x in seen_ids}
-    for (mids_json,) in paid_rows:
-        try:
-            out |= {int(x) for x in json.loads(mids_json or "[]")}
-        except Exception:
-            continue
-    for it in owned_items:
-        out |= set(_item_media(it))
-    return out
+# The fan → owned-media reader lives in ownership.py beside its inverse
+# (`owners_of_media`); this alias keeps the module-local name every call
+# site and test uses.
+_owned_or_seen_media = ownership.owned_or_seen_media
 
 
 async def _open_offers(account_id: str, fan_id: int | None = None) -> list[ContentOffer]:
@@ -925,8 +899,12 @@ async def _offerable_for_fan(account_id: str, fan_id: int, cfg_mode: str,
 
     Dedup is BOUGHT-or-SEEN only (see `_owned_or_seen_media`): a piece he merely
     received as a free teaser/preview is NOT filtered out — it can be re-offered as
-    part of a real PPV."""
+    part of a real PPV. And it blocks on HERO media only (`_hero_media_map`):
+    owning an item's free-preview tease frames never kills the item — the
+    operator's 07-23 ruling is that filler may repeat; only the payoff (videos +
+    non-preview images) must be media the fan was never sold."""
     seen = await _owned_or_seen_media(account_id, fan_id)
+    hero = await _hero_media_map(account_id, items)
     async with get_session() as s:
         prog_rows = (await s.execute(
             select(CatalogProgress).where(
@@ -948,7 +926,7 @@ async def _offerable_for_fan(account_id: str, fan_id: int, cfg_mode: str,
             pos = int(p.position) if p is not None else 0
             if int(it.position or 0) != pos:
                 continue
-        if any(m in seen for m in _item_media(it)):
+        if any(m in seen for m in hero[int(it.id)]):
             continue
         if not it.is_free_teaser and _effective_mode(it, cfg_mode) is None:
             continue
@@ -1234,22 +1212,17 @@ async def _record_vault_sends(account_id: str, fan_id: int, media: list[int],
 
 
 async def _mark_media_purchased(account_id: str, fan_id: int, media: list[int]) -> None:
-    """Paid truth, item-level, idempotent. Flip was_purchased=True on the VaultSend rows the
-    offer-send already wrote (was_purchased=False) for this item's media, so BOTH dedup readers
-    (_owned_or_seen_media here, ppv_send._owners_of_media) treat a PPV/tip buy as OWNED and no
-    ladder path can re-pick it. The PPV media rides inside the locked box (Message.media_ids='[]')
-    and the tip-only flip in _deliver_unlocked never covers it, so a ladder reset would re-sell a
-    bought single that was never recorded as owned. UPDATE only — VaultSend has no unique key, so an
-    INSERT here dups rows on a re-run."""
-    ids = [int(m) for m in media]
-    if not ids:
-        return
-    async with get_session() as s:
-        await s.execute(update(VaultSend).where(
-            VaultSend.account_id == str(account_id),
-            VaultSend.fan_id == int(fan_id),
-            VaultSend.media_id.in_(ids),
-        ).values(was_purchased=True))
+    """Paid truth, item-level, idempotent — the offer lane's entry into the ONE
+    ownership writer (ownership.stamp_media_owned: SELECT-first, flip-don't-dup),
+    so BOTH dedup readers treat a PPV/tip buy as OWNED and no ladder path can
+    re-pick it. The PPV media rides inside the locked box (Message.media_ids='[]')
+    and the tip-only flip in _deliver_unlocked never covers it, so a ladder reset
+    would re-sell a bought single that was never recorded as owned. One delta vs
+    the old UPDATE-only stamp: an offer whose VaultSend rows were never recorded
+    (crash between send and record) now gets first-time True rows instead of a
+    silent no-op."""
+    await ownership.stamp_media_owned(
+        account_id, fan_id, [int(m) for m in media], source="offer_delivery")
 
 
 async def _ensure_progress(account_id: str, fan_id: int, item: CatalogItem) -> None:
@@ -1680,8 +1653,10 @@ async def _maybe_discount_resend(client, account_id: str, cfg: dict,
         return False
     media = _item_media(item)
     # He may have bought this exact media somewhere else entirely (a mass blast has
-    # no content_offers row at all) — media-keyed, never catalog-keyed.
-    if fan_id in await _owners_of_media(account_id, media):
+    # no content_offers row at all) — media-keyed, never catalog-keyed. HERO media
+    # only: owning the free tease frames doesn't make the discounted payoff his.
+    hero = (await _hero_media_map(account_id, [item]))[int(item.id)]
+    if fan_id in await _owners_of_media(account_id, hero):
         await _resolve_offer(int(offer.id), status="cancelled", resolved_by="owned")
         await _close_ladder(account_id, fan_id, upsell.STATUS_TAPPED)
         return False
@@ -2399,10 +2374,7 @@ async def _fire_post_buy_rung(client, account_id: str, cfg: dict, fan_id: int,
     offerable = await _offerable_for_fan(account_id, fan_id,
                                          str(cfg.get("offer_mode") or "ppv"),
                                          scripts, catalog_items)
-    # Ownership re-check, media-keyed (a mass-blast buy has no content_offers row).
-    for iid in list(offerable):
-        if fan_id in await _owners_of_media(account_id, _item_media(offerable[iid])):
-            offerable.pop(iid, None)
+    await _drop_owned(account_id, fan_id, offerable)
     if not offerable:
         return 0
     rung_index = int(lad.rung_index or 0) if lad is not None else 0
@@ -4454,13 +4426,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         # never re-sell what he already owns.
                         if explicit_ask and not seller_off and offerable:
                             ask_override = True
-                            owned_ov: dict[int, CatalogItem] = {}
-                            for iid, it in offerable.items():
-                                if fan_id in await _owners_of_media(
-                                        account_id, _item_media(it)):
-                                    owned_ov[iid] = it
-                            for iid in owned_ov:
-                                offerable.pop(iid, None)
+                            await _drop_owned(account_id, fan_id, offerable)
                             log.info("ai_chatter explicit-ask gate override "
                                      "account=%s fan=%s why=%s", account_id, fan_id, why)
                         else:
@@ -4482,17 +4448,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         parked_id = await _clear_pending_offer(account_id, fan_id)
                         if parked_id is not None and parked_id in offerable:
                             offerable = {parked_id: offerable[parked_id]}
-                        # Ownership, keyed on MEDIA and re-checked before EVERY rung:
-                        # a fan who bought this clip in a MASS blast has no
-                        # content_offers row at all, so a catalog-keyed check would
-                        # cheerfully re-sell him what he already owns.
-                        owned: dict[int, CatalogItem] = {}
-                        for iid, it in offerable.items():
-                            if fan_id in await _owners_of_media(account_id,
-                                                                _item_media(it)):
-                                owned[iid] = it
-                        for iid in owned:
-                            offerable.pop(iid, None)
+                        # Re-checked before EVERY rung — see _drop_owned.
+                        await _drop_owned(account_id, fan_id, offerable)
                 if pricing_on and offerable:
                     fstate = await _fan_ladder_state(account_id, fan_id, f, fan_ladder)
                     pfloor = _proven_floor_cents(fstate, cfg)

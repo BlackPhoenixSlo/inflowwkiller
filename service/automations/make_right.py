@@ -49,6 +49,7 @@ import automation_executor as ax
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes
 from automation_registry import register
+import ownership
 from db.engine import get_session
 from db.models import (
     AccountAiConfig, Blacklist, CatalogItem, ContentOffer, Fan, LadderQuote,
@@ -68,8 +69,8 @@ log = logging.getLogger("of-relay.automation.make_right")
 _CHARGE_TX_KINDS = ("ppv_message", "ppv_post", "tip")
 # A delivered offer counts as a paid charge only when the money was real — NEVER a
 # free teaser (resolved_by='free'), or every reused-media item becomes a false
-# "double sale". Mirrors the prevention fix's non-free predicate.
-_PAID_RESOLVED_BY = ("tip", "ppv_ledger", "ppv_txn", "ppv_fastpath", "manual")
+# "double sale". The one copy of the predicate lives with the ownership readers.
+_PAID_RESOLVED_BY = ownership.OWNED_RESOLVED_BY
 
 # Built-in defaults — DISABLED + preview-only so the agent is inert until a creator
 # enables it AND opts into auto-send. Every numeric knob is operator-tunable.
