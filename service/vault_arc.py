@@ -201,7 +201,16 @@ def plan_jobs(plan: dict[str, Any], *, arc_id: str, start_date: datetime,
                 "price_cents": 0, "entry": None,
                 # OF's send body must be html-wrapped to match what the web client
                 # posts; a bare string renders without the paragraph break.
-                "payload": {"text": f"<p>{text}</p>", "price": 0},
+                # The tease goes to EVERYONE: `send_mass_message` refuses an
+                # audience-less payload (empty_audience skip), so name the same
+                # built-in OF lists the daily premade blasts. Explicit 0s disarm
+                # the 6h/2h re-touch guards — a wall tease is not a conversation
+                # touch, and it never counts toward ppv_caps (those count
+                # ppv_send fires only).
+                "payload": {"text": f"<p>{text}</p>", "price": 0,
+                            "user_lists": ["fans", "following"],
+                            "exclude_replied_hours": 0,
+                            "exclude_inbound_hours": 0},
             })
 
     jobs.sort(key=lambda j: (j["run_at"], j["seq"]))
