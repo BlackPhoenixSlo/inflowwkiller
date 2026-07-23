@@ -456,6 +456,12 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
               onChange={(e) => style.setNonnativeOn(e.target.checked)} />
             Non-native English
           </label>
+          <label className="flex items-center gap-1.5"
+            title="Some replies end with a cat reaction gif — occasionally the gif IS the reply. Hand-picked pack, capped in code to one per fan every few hours.">
+            <input type="checkbox" checked={style.catStickers}
+              onChange={(e) => style.setCatStickers(e.target.checked)} />
+            Cat stickers 🐱
+          </label>
           <Button size="sm" variant="ghost" disabled={style.saveStyleM.isPending}
             onClick={style.saveStyle}>
             Save style

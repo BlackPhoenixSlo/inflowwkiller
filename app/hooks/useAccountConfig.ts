@@ -18,6 +18,8 @@ export interface BrainConfig {
   location: string | null;
   /** ISO 639-1 the creator writes in; "en" default. Gates output language + guard vocab. */
   language: string;
+  /** IANA zone (e.g. America/Vancouver). Wins over utc_offset; DST-correct. */
+  timezone: string | null;
   utc_offset: number;
   daily_cost_cap_cents: number;
   model: string | null;

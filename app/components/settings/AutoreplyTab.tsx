@@ -111,6 +111,21 @@ function StyleSection({ accountId }: { accountId: string | null }) {
           </span>
         </span>
       </label>
+      <label className="flex items-start gap-2.5 cursor-pointer rounded-lg border border-border bg-bg-elev-1 px-3 py-2.5">
+        <input type="checkbox" className="h-4 w-4 mt-0.5 accent-[var(--accent)] cursor-pointer"
+          checked={form.cat_stickers ?? true}
+          onChange={(e) => set({ cat_stickers: e.target.checked })} />
+        <span className="space-y-0.5">
+          <span className="block text-sm">Cat stickers 🐱 (reaction gifs)</span>
+          <span className="block text-[11px] text-fg-dim/70">
+            AI Chatter can end a reply with a cat reaction gif — and now and then the
+            gif IS the reply (he says goodnight → just a sleepy kitten), the way a real
+            girl texts. Hand-picked pack of 89 real-cat gifs across 22 moods; capped in
+            code to at most one per fan every few hours. On by default; untick to
+            turn the pack off for this account.
+          </span>
+        </span>
+      </label>
       <div className="space-y-2">
         <div className="flex items-center gap-3 text-[11px] text-fg-dim/70 pl-0">
           <span className="w-28">Automation</span>

@@ -55,6 +55,32 @@ export function fmtClock(hhmm: string): string {
 
 /** The creator timezones this agency actually books. Any zone already stored on the
  *  account is appended, so a hand-set value can never be silently dropped by the UI. */
+/** "-8/-7" — the zone's winter/summer UTC offsets ("-3" alone when it doesn't
+ *  observe DST). Computed via Intl at Jan 1 / Jul 1 so labels never go stale. */
+export function zoneOffsets(tz: string): string {
+  const at = (d: Date) => {
+    const v = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" })
+      .formatToParts(d)
+      .find((p) => p.type === "timeZoneName")?.value ?? "GMT";
+    return v.replace("GMT", "") || "+0";
+  };
+  try {
+    const y = new Date().getFullYear();
+    const jan = at(new Date(Date.UTC(y, 0, 1)));
+    const jul = at(new Date(Date.UTC(y, 6, 1)));
+    return jan === jul ? jan : `${jan}/${jul}`;
+  } catch {
+    return "";
+  }
+}
+
+/** Dropdown label: "America/Vancouver" → "America Vancouver (-8/-7)". */
+export function zoneLabel(z: string): string {
+  const off = zoneOffsets(z);
+  const name = z.replace(/_/g, " ");
+  return off ? `${name} (${off})` : name;
+}
+
 export const TIMEZONES: string[] = [
   "America/Los_Angeles", "America/Denver", "America/Phoenix", "America/Chicago",
   "America/New_York", "America/Toronto", "America/Vancouver", "America/Mexico_City",
@@ -558,7 +584,7 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
             onChange={(e) => setTz(e.target.value)}>
             <option value="">— not set —</option>
             {zones.map((z) => (
-              <option key={z} value={z}>{z.replace(/_/g, " ")}</option>
+              <option key={z} value={z}>{zoneLabel(z)}</option>
             ))}
           </select>
           {!tz && utcOffset !== 0 && (
@@ -897,14 +923,19 @@ export function useSellerStyle(accountId: string | null) {
   const [girlStyle, setGirlStyle] = useState(false);
   const [typosOn, setTyposOn] = useState(false);
   const [nonnativeOn, setNonnativeOn] = useState(false);
+  const [catStickers, setCatStickers] = useState(true);
   useEffect(() => {
     const c = { ...(styleQ.data?.defaults ?? {}), ...(styleQ.data?.config ?? {}) } as Record<string, unknown>;
     setGirlStyle(Boolean(c["ai_chatter"]));
     setTyposOn(Boolean(c["typos_ai_chatter"]));
     setNonnativeOn(Boolean(c["nonnative_ai_chatter"]));
+    // account-wide, default ON — absent (older relay) still renders checked
+    setCatStickers(c["cat_stickers"] !== false);
   }, [styleQ.data]);
   const saveStyle = () => saveStyleM.mutate({
     ai_chatter: girlStyle, typos_ai_chatter: typosOn, nonnative_ai_chatter: nonnativeOn,
+    cat_stickers: catStickers,
   });
-  return { saveStyleM, girlStyle, setGirlStyle, typosOn, setTyposOn, nonnativeOn, setNonnativeOn, saveStyle };
+  return { saveStyleM, girlStyle, setGirlStyle, typosOn, setTyposOn, nonnativeOn, setNonnativeOn,
+           catStickers, setCatStickers, saveStyle };
 }

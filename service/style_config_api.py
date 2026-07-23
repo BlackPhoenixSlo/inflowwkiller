@@ -28,7 +28,7 @@ from db.engine import get_session
 from db.models import AccountAiConfig
 from automations._common import (
     STYLE_AUTOMATIONS, typo_flag_key, nonnative_flag_key, FACTGROUND_KEY,
-    PAINFUL_TEXTING_KEY)
+    PAINFUL_TEXTING_KEY, CAT_STICKERS_KEY)
 
 log = logging.getLogger("of-relay.style_config_api")
 
@@ -54,6 +54,8 @@ def _defaults() -> dict[str, bool]:
     out[FACTGROUND_KEY] = True
     # Account-wide brevity/emotion framing — DEFAULT ON (see load_painful_texting_flag).
     out[PAINFUL_TEXTING_KEY] = True
+    # Cat-sticker reaction pack — DEFAULT ON (see load_cat_stickers_flag).
+    out[CAT_STICKERS_KEY] = True
     return out
 
 
@@ -77,6 +79,8 @@ def _resolved_view(stored: dict) -> dict[str, bool]:
     # DEFAULT ON (matches load_painful_texting_flag): absent → True, so the box renders
     # checked and a save never flips the implicit-ON to explicit-OFF.
     out[PAINFUL_TEXTING_KEY] = bool(stored.get(PAINFUL_TEXTING_KEY, True))
+    # DEFAULT ON (matches load_cat_stickers_flag) — same absent → True contract.
+    out[CAT_STICKERS_KEY] = bool(stored.get(CAT_STICKERS_KEY, True))
     return out
 
 
@@ -90,7 +94,7 @@ def _persist(cfg: dict) -> dict[str, bool]:
     known = set(STYLE_AUTOMATIONS) \
         | {typo_flag_key(k) for k in STYLE_AUTOMATIONS} \
         | {nonnative_flag_key(k) for k in STYLE_AUTOMATIONS} \
-        | {"strip_emojis", FACTGROUND_KEY, PAINFUL_TEXTING_KEY}
+        | {"strip_emojis", FACTGROUND_KEY, PAINFUL_TEXTING_KEY, CAT_STICKERS_KEY}
     return {k: bool(v) for k, v in cfg.items() if k in known}
 
 

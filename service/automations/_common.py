@@ -774,6 +774,28 @@ async def load_painful_texting_flag(account_id: str) -> bool:
     return True if val is None else bool(val)
 
 
+async def load_cat_stickers_flag(account_id: str) -> bool:
+    """Account-wide toggle for the cat-sticker reaction pack (ai_chatter may end
+    a reply with a cat gif, occasionally sending JUST the gif — see
+    automations/cat_stickers.py). Reads the 'cat_stickers' key of
+    account_ai_config.style_config_json. DEFAULT ON (absent/NULL/parse-error →
+    True); an explicit stored False opts the account out. STYLE_FORCE_OFF kills
+    it with the rest of the realism stack."""
+    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+        return False
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    raw = getattr(cfg, "style_config_json", None) if cfg else None
+    if not raw:
+        return True
+    try:
+        stored = json.loads(raw) or {}
+    except Exception:
+        return True
+    val = stored.get(CAT_STICKERS_KEY)
+    return True if val is None else bool(val)
+
+
 async def load_strip_emojis(account_id: str) -> bool:
     """Read account_ai_config.style_config_json → the account-wide 'strip_emojis'
     bool. Absent/NULL/parse-error → False (the safe default: emojis kept, current
@@ -941,6 +963,8 @@ async def load_nonnative_flags(account_id: str) -> dict[str, bool]:
 FACTGROUND_KEY = "factground_of_ai_chat"
 # Account-wide toggle key (style_config_json) for the PAINFUL_TEXTING framing block.
 PAINFUL_TEXTING_KEY = "painful_texting"
+# Account-wide toggle key (style_config_json) for the cat-sticker reaction pack.
+CAT_STICKERS_KEY = "cat_stickers"
 
 
 async def load_factground_flag(account_id: str) -> bool:

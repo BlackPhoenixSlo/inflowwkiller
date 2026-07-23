@@ -64,7 +64,8 @@ from ._common import (
     skip_unreachable_fan, strip_emojis, typing_delay_seconds,
 )
 from .of_ai_chat import (_is_info_complete, _strip_html,
-                         split_for_bubbles, _dedupe_lead_reaction)
+                         split_for_bubbles, _dedupe_lead_reaction,
+                         _clock_line, _load_clock_tz)
 
 log = logging.getLogger("of-relay.automation.autoreply")
 
@@ -150,7 +151,8 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
                     content_ask: bool = False,
                     tip_ask_block: str = "",
                     painful_on: bool = True,
-                    lang: str = "en") -> list[dict]:
+                    lang: str = "en",
+                    clock: str = "") -> list[dict]:
     facts = []
     nm = resolve_fan_name(f)
     if nm:
@@ -196,12 +198,19 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
             "paragraphs, no narrating.\n"
         )
 
+    # The prompt clock ("" when the account has no tz configured → byte-equal
+    # prompt) — same block as of_ai_chat. A model with no clock invents one.
+    clock_block = (
+        f"RIGHT NOW for you it is {clock}. If the time, your day, or what "
+        "you're doing comes up, stay consistent with this clock — never claim "
+        "a different time of day.\n\n" if clock else "")
     system = (
         f"{persona}\n"
         "A fan you've already been chatting with MESSAGED YOU and is waiting for a "
         "reply — keep the conversation going naturally. Reply to his last message "
         "like you just got back to your phone. You are 100% human, never a bot.\n\n"
         f"{PAINFUL_TEXTING + chr(10) + chr(10) if painful_on else ''}"
+        f"{clock_block}"
         f"{directive}\n\n"
         f"{hard_rules}\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
@@ -432,6 +441,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     spend = await _spend_and_last_purchase(account_id, cand_ids, win_start)
 
     persona = await _load_persona(account_id)
+    clock_tz = await _load_clock_tz(account_id)  # None ⇒ no clock line in the prompt
     # Content-ask tip-ask: when a fan asks to SEE content, Auto Convo answers with a
     # natural "tip me $X" line instead of pure keep-warm banter (tip_reward delivers
     # once he tips), NEVER the bare word "tip". Account-level → build once.
@@ -519,7 +529,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         msgs = _build_messages(persona, f, history, style, style_on=style_on,
                                nonnative_on=nonnative_on, lang=fan_lang,
                                content_ask=content_ask, tip_ask_block=tip_ask_block,
-                               painful_on=painful_on)
+                               painful_on=painful_on, clock=_clock_line(clock_tz))
         try:
             res = await llm_client.chat(model=model, messages=msgs, purpose=_PURPOSE,
                                         account_id=account_id, fan_id=fid,

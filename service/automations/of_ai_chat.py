@@ -65,6 +65,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from . import _language
+from . import rhythm  # tz_offset_for — the prompt clock (creator-local time)
 from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
@@ -527,6 +528,35 @@ async def _load_persona(account_id: str) -> str:
     )
 
 
+async def _load_clock_tz(account_id: str) -> int | None:
+    """Creator-local offset in MINUTES for the prompt clock. IANA `timezone`
+    wins (DST-correct); legacy `utc_offset` hours is the fallback; None when
+    neither is set — and None means NO clock line, never the server's clock."""
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, account_id)
+    if cfg is None:
+        return None
+    return rhythm.tz_offset_for(getattr(cfg, "timezone", None),
+                                getattr(cfg, "utc_offset", None))
+
+
+def _clock_line(tz_offset_minutes: int | None,
+                now: datetime | None = None) -> str:
+    """Creator-local wall clock for the chat prompt, e.g.
+    'Thursday, July 23 — 12:32 AM (late night)'. Returns '' when the account
+    has no timezone/utc_offset configured: the model must be told NOTHING
+    rather than the server's clock — a fan asking "what time is it where you
+    are?" caught the bot claiming 10am at 12:30am creator-time, then burning
+    the thread trying to talk its way out."""
+    if tz_offset_minutes is None:
+        return ""
+    local = (now or datetime.utcnow()) + timedelta(minutes=int(tz_offset_minutes))
+    h = local.hour
+    tod = ("late night" if h < 5 else "morning" if h < 12 else
+           "afternoon" if h < 18 else "evening" if h < 22 else "late night")
+    return f"{local.strftime('%A, %B %d — %I:%M %p')} ({tod})"
+
+
 # ── Stop-lists + candidate gathering ─────────────────────────────────
 
 async def _load_stop_lists(account_id: str) -> tuple[set[int], set[int]]:
@@ -807,7 +837,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
                     tip_ask_block: str = "",
                     painful_on: bool = True,
                     lang: str = "en",
-                    profile: "FanProfile | None" = None) -> tuple[list[dict], list[str]]:
+                    profile: "FanProfile | None" = None,
+                    clock: str = "") -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — a faithful port of V1
     prompts.create_chat_response: a short, GIRLY, 100%-human reply that flirts
     WHILE gathering the one piece of info we still need. The 'still need' block is
@@ -976,6 +1007,13 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "- If he gets explicit early or asks for nudes/pics: don't go along with it "
         "and don't offer anything — playfully tease and slow it down, then steer "
         "back to getting to know him. Warm and flirty, never cold or preachy.\n")
+    # The prompt clock ("" when the account has no tz configured → byte-equal
+    # prompt). One hard consistency rule: "what time is it where you are?" is
+    # the classic bot trap, and a model with no clock invents one.
+    clock_block = (
+        f"RIGHT NOW for you it is {clock}. If the time, your day, or what "
+        "you're doing comes up, stay consistent with this clock — never claim "
+        "a different time of day.\n\n" if clock else "")
     system = (
         f"{persona}\n"
         "You're texting a fan to get to know him while flirting. You are 100% human "
@@ -983,6 +1021,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"about him; don't share your own info unless he asks; {offer_clause}he may "
         "send several texts in a row — read them all, reply to the latest.\n\n"
         f"{PAINFUL_TEXTING + chr(10) + chr(10) if painful_on else ''}"
+        f"{clock_block}"
         f"{need_block}{dodge_note}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         "HOW YOU TEXT (a real 22yo girl, not an assistant):\n"
@@ -1410,6 +1449,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     tip_ask_block = (build_tip_ask_block(tip_ask_amount, tip_ask_template)
                      if tip_ask_enabled else "")
     persona = await _load_persona(account_id)
+    clock_tz = await _load_clock_tz(account_id)  # None ⇒ no clock line in the prompt
     blacklist, skip_list = await _load_stop_lists(account_id)
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)  # W7 cross-tick ownership
     by_fan = await _gather(account_id, only_fan_ids or None)
@@ -1592,7 +1632,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 content_ask=_language.is_content_ask(c.last_body, fan_lang),
                 tip_ask_block=tip_ask_block,
                 painful_on=painful_on, lang=fan_lang,
-                profile=profiles.get(fan_id))
+                profile=profiles.get(fan_id),
+                clock=_clock_line(clock_tz))
             try:
                 res = await llm_client.chat(
                     model=model,

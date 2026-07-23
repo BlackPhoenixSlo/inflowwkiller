@@ -95,6 +95,7 @@ from ._common import (
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
     should_skip_muted_creator, skip_unreachable_fan, typing_delay_seconds,
 )
+from .of_ai_chat import _clock_line, _load_clock_tz  # the prompt clock
 
 log = logging.getLogger("of-relay.automation.deep_convo")
 
@@ -309,7 +310,8 @@ async def _gather_messages(account_id: str, fan_ids: set[int]) -> dict[int, _Can
 
 def _build_messages(persona: str, f: Fan, c: _Candidate,
                     style_on: bool = False, nonnative_on: bool = False,
-                    painful_on: bool = True, lang: str = "en") -> list[dict]:
+                    painful_on: bool = True, lang: str = "en",
+                    clock: str = "") -> list[dict]:
     """Compose the (system, user) pair for an in-between reply during the drill
     (the Q + Tease themselves are sent verbatim from the profile — not generated)."""
     facts = []
@@ -329,6 +331,12 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"{'FAN' if d == 'in' else 'YOU'}: {b}" for d, b in history if b
     )
 
+    # The prompt clock ("" when the account has no tz configured → byte-equal
+    # prompt) — same block as of_ai_chat. A model with no clock invents one.
+    clock_block = (
+        f"RIGHT NOW for you it is {clock}. If the time, your day, or what "
+        "you're doing comes up, stay consistent with this clock — never claim "
+        "a different time of day.\n\n" if clock else "")
     system = (
         f"{persona}\n"
         "You're deepening things with a fan you already know well — you're past the "
@@ -338,6 +346,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "you are 100% human, girly, warm. Don't offer pics or videos. Do NOT use any "
         "emojis in this reply.\n\n"
         f"{PAINFUL_TEXTING + chr(10) + chr(10) if painful_on else ''}"
+        f"{clock_block}"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
         f"{LIVE_PROOF_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
@@ -511,6 +520,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typing_wpm = await load_typing_wpm(account_id)            # per-bubble pacing
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     persona = await _load_persona(account_id)
+    clock_tz = await _load_clock_tz(account_id)  # None ⇒ no clock line in the prompt
     blacklist = await _load_blacklist()
     stop_skips = await _load_stop_skips(account_id)  # skip_list, reason ≠ 'info'
     profiles, skipped_no_qtease = await _load_profiles(account_id)  # both present
@@ -677,7 +687,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 if _fan_asked(c):
                     lead = await _generate_leadin(model, persona, f, c, account_id, fan_id,
                                                   style_on=style_on, nonnative_on=nonnative_on,
-                                                  lang=fan_lang)
+                                                  lang=fan_lang, clock=_clock_line(clock_tz))
                     if lead:
                         await _send(client, account_id, fan_id, lead,
                                     typing_wpm=typing_wpm, typing_indicator=typing_indicator,
@@ -702,7 +712,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             elif state == _S_Q_SENT:
                 reply = await _generate(model, persona, f, c, account_id, fan_id,
                                        style_on=style_on, nonnative_on=nonnative_on,
-                                       painful_on=painful_on, lang=fan_lang)
+                                       painful_on=painful_on, lang=fan_lang,
+                                       clock=_clock_line(clock_tz))
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -725,7 +736,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             elif state == _S_CHATTED_1:
                 reply = await _generate(model, persona, f, c, account_id, fan_id,
                                        style_on=style_on, nonnative_on=nonnative_on,
-                                       painful_on=painful_on, lang=fan_lang)
+                                       painful_on=painful_on, lang=fan_lang,
+                                       clock=_clock_line(clock_tz))
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -826,7 +838,8 @@ _CAP = object()
 async def _generate(model: str, persona: str, f: Fan, c: _Candidate,
                     account_id: str, fan_id: int,
                     style_on: bool = False, nonnative_on: bool = False,
-                    painful_on: bool = True, lang: str = "en") -> str | object:
+                    painful_on: bool = True, lang: str = "en",
+                    clock: str = "") -> str | object:
     """Generate ONE in-between reply. Returns the text, '' on a generation error,
     or the _CAP sentinel when the daily LLM cap is hit (caller stops the run)."""
     try:
@@ -834,7 +847,7 @@ async def _generate(model: str, persona: str, f: Fan, c: _Candidate,
             model=model,
             messages=_build_messages(persona, f, c, style_on=style_on,
                                      nonnative_on=nonnative_on, painful_on=painful_on,
-                                     lang=lang),
+                                     lang=lang, clock=clock),
             purpose=_PURPOSE,
             account_id=account_id,
             fan_id=fan_id,
@@ -863,9 +876,15 @@ def _fan_asked(c: _Candidate) -> bool:
 
 def _leadin_messages(persona: str, f: Fan, c: _Candidate,
                      style_on: bool = False, nonnative_on: bool = False,
-                     lang: str = "en") -> list[dict]:
+                     lang: str = "en", clock: str = "") -> list[dict]:
     history = c.messages[-_HISTORY_TAIL:]
     convo = "\n".join(f"{'FAN' if d == 'in' else 'YOU'}: {b}" for d, b in history if b)
+    # The lead-in DIRECTLY answers his last message — "what time is it there?"
+    # lands exactly here, so it needs the prompt clock most of all.
+    clock_block = (
+        f"RIGHT NOW for you it is {clock}. If the time, your day, or what "
+        "you're doing comes up, stay consistent with this clock — never claim "
+        "a different time of day.\n\n" if clock else "")
     system = (
         f"{persona}\n"
         "He just said something (maybe asked you a question). Reply in ONE short, warm, "
@@ -873,6 +892,7 @@ def _leadin_messages(persona: str, f: Fan, c: _Candidate,
         "ask a question yourself (you'll ask one separately next). If his message is "
         "explicit or asks for nudes/pics, do NOT go along with it — tease and slow it "
         "down warmly instead. No emojis. Output ONLY the message text.\n\n"
+        f"{clock_block}"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
         f"{LIVE_PROOF_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
@@ -886,14 +906,15 @@ def _leadin_messages(persona: str, f: Fan, c: _Candidate,
 async def _generate_leadin(model: str, persona: str, f: Fan, c: _Candidate,
                            account_id: str, fan_id: int,
                            style_on: bool = False, nonnative_on: bool = False,
-                           lang: str = "en") -> str:
+                           lang: str = "en", clock: str = "") -> str:
     """A short bubble that answers the fan's question BEFORE the scripted Q goes out,
     so the Q doesn't read like a bot talking past him. Best-effort — any failure
     (incl. the LLM cap) just skips the lead-in and we send the Q alone."""
     try:
         res = await llm_client.chat(
             model=model, messages=_leadin_messages(persona, f, c, style_on=style_on,
-                                                    nonnative_on=nonnative_on, lang=lang),
+                                                    nonnative_on=nonnative_on, lang=lang,
+                                                    clock=clock),
             purpose=_PURPOSE,
             account_id=account_id, fan_id=fan_id, temperature=_REPLY_TEMPERATURE,
         )
