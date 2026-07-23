@@ -39,7 +39,9 @@ export interface PpvLibraryConfig {
   enabled?: boolean;
   /** Creator-local quiet window [startHour, endHour] (0-23); null = 24/7. */
   quiet_hours?: [number, number] | null;
-  /** Max PPV sends per rolling day/week/month; a hit cap holds + releases later. */
+  /** Max PPV sends per rolling day/week/month; a hit cap holds + releases later.
+   *  ABSENT = the runtime house default (2/14/60 → one blast per 12h); an explicit
+   *  all-zero dict = spacing off. The tab always saves all three keys. */
   ppv_caps?: PpvCaps;
   /** Also broadcast each PPV to ALL subscribers at the default price (known fans excluded). */
   reach_all?: boolean;

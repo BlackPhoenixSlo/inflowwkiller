@@ -37,9 +37,10 @@ Idempotency / duplicate-fire protection:
     stats (status 'error' per cell), never raised, so the executor NEVER
     retries a partially-sent batch wholesale. A failed cell's fans catch the
     next cadence fire instead.
-  • the contact guard (`pause_hours` > 0) and ppv_caps spacing still apply on
-    top when configured — but the default `pause_hours=0` turns the guard OFF,
-    so the gate above is the one that actually holds.
+  • ppv_caps even-spread spacing is ON BY DEFAULT (2/day, 14/week, 60/month —
+    a 12h minimum gap between ANY two PPV sends on the account); saving explicit
+    zeros in the PPV Library tab turns it off. The contact guard (`pause_hours`
+    > 0) still applies on top, but its default 0 keeps it OFF.
 
 Payload shape::
 
@@ -120,7 +121,16 @@ def price_bounds(cfg: dict | None) -> tuple[int, int]:
     hi = max(lo, min(hi, _PRICE_CEIL_CENTS))
     return lo, hi
 
-_DEFAULTS = {"enabled": False, "ppvs": []}
+# House-default spacing between PPV blasts: 2/day, 14/week, 60/month — all three
+# even-spread to the SAME 12h minimum gap. Rides into runtime via the _DEFAULTS
+# merge in _load_ppv, so it covers every account whose blob has no ppv_caps key
+# (nothing ever wrote one before 2026-07). An explicitly SAVED caps dict — even
+# all-zero = spacing off — always wins over this. Born after three Library PPVs
+# hit the same fan at 06:43/06:48/06:51: the dup-fire gate is per-ppv and the
+# sibling rules share a creation moment, so nothing else spaces them.
+_DEFAULT_PPV_CAPS = {"per_day": 2, "per_week": 14, "per_month": 60}
+
+_DEFAULTS = {"enabled": False, "ppvs": [], "ppv_caps": _DEFAULT_PPV_CAPS}
 
 # ── Caption pools (mirror of library/PPV_CAPTIONS.md) ────────────────────────
 # The library JSON stores a pool KEY per PPV (captions are global, not per-account);
@@ -1153,6 +1163,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     # ── per-account cap: even-spread the day/week/month limit (one send every
     #    window/N, re-scheduling a too-soon send to its slot).
+    # A blob with no ppv_caps key carries the house default (2/14/60 → 12h gap)
+    # via the _DEFAULTS merge; an explicit all-zero save is the operator's off
+    # switch and makes every any() below False.
     # (force_ids = an explicit live-test scope, bypasses the cap.)
     caps = cfg.get("ppv_caps") or {}
     if not dry_run and not force_ids and any((caps.get(k) or 0) for k in
