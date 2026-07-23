@@ -15,8 +15,10 @@
  */
 
 import { useEffect, useState } from "react";
+import { FolderOpen } from "lucide-react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
+import { VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
 import { relay } from "@/lib/relay";
 import { useEmployee } from "@/contexts/EmployeeContext";
 
@@ -76,6 +78,7 @@ export default function MakeRightTab({ accountId }: { accountId: string | null }
   const [busy, setBusy] = useState<"" | "save" | "preview" | "run">("");
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
+  const [pickPpvFolder, setPickPpvFolder] = useState(false);
 
   useEffect(() => {
     if (!accountId) return;
@@ -232,11 +235,26 @@ export default function MakeRightTab({ accountId }: { accountId: string | null }
               <span className="text-sm">Send the first free piece with the apology</span>
             </label>
             <div className="flex flex-wrap gap-4 items-end">
-              <label className="space-y-1 block">
-                <div className="text-xs text-fg-dim">PPV folder <span className="opacity-60">(tip-library folder; blank = no PPV)</span></div>
-                <Input value={form.ppv_folder ?? ""} placeholder="e.g. premium"
-                  onChange={(e) => set({ ppv_folder: e.target.value })} />
-              </label>
+              <div className="space-y-1">
+                <div className="text-xs text-fg-dim">PPV folder <span className="opacity-60">(vault folder; none = no PPV, just close)</span></div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {form.ppv_folder ? (
+                    <span className="inline-flex items-center gap-1 text-xs bg-bg-elev-1 border border-border rounded-full px-2 py-0.5">
+                      {form.ppv_folder}
+                      <button type="button" title="Remove folder"
+                        className="text-fg-dim hover:text-err leading-none"
+                        onClick={() => set({ ppv_folder: "" })}>
+                        ×
+                      </button>
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-fg-dim italic">No folder.</span>
+                  )}
+                  <Button size="sm" variant="secondary" onClick={() => setPickPpvFolder(true)}>
+                    <FolderOpen size={13} /> Pick from vault
+                  </Button>
+                </div>
+              </div>
               <NumField label="PPV price" value={dollars(form.ppv_price_cents ?? 1500)} min={0} max={10000} step={0.01} suffix="$"
                 onChange={(n) => set({ ppv_price_cents: cents(n) })} />
             </div>
@@ -313,6 +331,18 @@ export default function MakeRightTab({ accountId }: { accountId: string | null }
             </ul>
           )}
         </Card>
+      )}
+
+      {/* Single-folder vault picker for the PPV pivot (same idiom as the
+          hot-teaser branches in TipRewardTab — one folder, take the first). */}
+      {pickPpvFolder && (
+        <VaultFolderPicker
+          open
+          accountId={accountId}
+          initialSelected={form.ppv_folder ? [form.ppv_folder] : []}
+          onClose={() => setPickPpvFolder(false)}
+          onConfirm={(folders) => set({ ppv_folder: folders[0] ?? "" })}
+        />
       )}
     </div>
   );
