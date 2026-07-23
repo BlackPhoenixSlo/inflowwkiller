@@ -48,7 +48,7 @@ import automation_executor as ax        # _make_client / _parse_iso seams
 from attribution import write_outbound_attribution
 from automation_registry import register
 from automations._common import (
-    DEFAULT_TIP_ASK_ENABLED, apply_word_restriction, load_hard_skip_ids,
+    DEFAULT_TIP_ASK_ENABLED, apply_word_restriction, load_operator_stop_ids,
     should_skip_muted_creator,
 )
 import random
@@ -449,11 +449,14 @@ async def _run_image_reply(account_id: str, payload: dict, cfg: dict, *,
     force = bool(payload.get("force"))
     base = {"fan_id": fan_id, "image_reply": True, "dry_run": dry_run}
 
-    # Durably restricted (muted peer-creator / hand-restricted) → never auto-reply.
+    # ONLY an operator stop blocks the pic-back (hand-restrict / OF-restrict /
+    # muted peer-creator). Deliberately NOT the bot-inferred ladder reasons and
+    # NOT automation_paused_until (that column is a routine send cooldown):
+    # policy (07-23) — a fan's photo is ALWAYS answered unless a human said stop.
     if not force:
         async with get_session() as s:
             fan = await s.get(Fan, (str(account_id), fan_id))
-        if fan_id in await load_hard_skip_ids(account_id) or should_skip_muted_creator(fan):
+        if fan_id in await load_operator_stop_ids(account_id) or should_skip_muted_creator(fan):
             return {**base, "status": "skipped", "reason": "restricted"}
 
     # Per-fan cooldown (also dedups webhook replays of the same image). `force`
@@ -948,12 +951,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if not cfg.get("enabled"):
         return {"status": "skipped", "reason": "disabled"}
 
-    # Durably restricted (muted peer-creator / hand-restricted "no automations")
-    # → never auto-reward, even on a real tip. `force` (manual re-reward) bypasses.
+    # ONLY an operator stop blocks a reward (hand-restrict / OF-restrict / muted
+    # peer-creator) — a man who just PAID gets his reward regardless of what the
+    # ladder classifier concluded about him. `force` (manual re-reward) bypasses.
     if not force:
         async with get_session() as s:
             fan = await s.get(Fan, (str(account_id), fan_id))
-        if fan_id in await load_hard_skip_ids(account_id) or should_skip_muted_creator(fan):
+        if fan_id in await load_operator_stop_ids(account_id) or should_skip_muted_creator(fan):
             return {"status": "skipped", "reason": "restricted", "fan_id": fan_id}
 
     # Idempotency: one reward per tip (webhooks replay). `force` re-rewards.

@@ -57,8 +57,9 @@ from db.models import (
 )
 from automations import tip_reward
 from ._common import (
-    hold_with_typing, load_hard_skip_ids, load_typing_indicator, load_typing_wpm,
-    resolve_fan_name, should_skip_muted_creator, typing_delay_seconds,
+    hold_with_typing, load_hard_skip_ids, load_operator_stop_ids,
+    load_typing_indicator, load_typing_wpm, resolve_fan_name,
+    should_skip_muted_creator, typing_delay_seconds,
 )
 
 log = logging.getLogger("of-relay.automation.make_right")
@@ -101,6 +102,11 @@ _DEFAULTS: dict = {
     # Mistake class #2 — "paid but got nothing" (opt-in; fuzzier than a double-charge).
     "detect_undelivered": False,
     "undelivered_grace_hours": 2,  # a payment must be at least this old with no delivery
+    # ── Hard-decline apology (payload-triggered by ai_chatter, NOT a detector) ──
+    # Default ON, and INDEPENDENT of `enabled`/`auto_send` above: those two gate
+    # the dup-charge SCANNER; this is the decline-policy consequence — the fan is
+    # never ghosted over a classifier verdict, he gets a de-escalation apology.
+    "on_hard_decline": True,
 }
 
 # Warm, human apology openers (bubble 1), keyed to the MISTAKE so the words match
@@ -116,6 +122,13 @@ _APOLOGY_FRAMES = {
         "hey {name} 🙈 i just saw you paid and i never sent you anything back — that's completely on me, i'm so sorry",
         "omg {name} you supported me and got NOTHING in return?? 🥺 that's my fault, let me fix it right now",
         "{name} i owe you an apology — you paid and i left you hanging with nothing. so not okay of me 💕",
+    ],
+    # He pushed back HARD (chargeback / report / unsubscribe words). De-escalate:
+    # own it, drop the selling, stay a person. NEVER a price in this exchange.
+    "hard_decline": [
+        "{name} i'm sorry, i hear you 🥺 i got carried away with the paid stuff and that's on me. no more of that — i just like talking to you",
+        "ok {name} you're right and i'm sorry 💕 forget the unlocks, that was pushy of me. i'd rather just have you here",
+        "hey {name}, i'm sorry if i made this feel like a cash grab 🙈 that's not what i want with you. no more pushing, promise",
     ],
 }
 _DEFAULT_APOLOGY_KIND = "dup_charge"
@@ -900,12 +913,95 @@ async def _advance_phase(account_id: str, cfg: dict, tip_cfg: dict, client, wpm,
                 await ax.release_fan_lease(account_id, fid)
 
 
+async def _run_hard_decline(account_id: str, cfg: dict, hd: dict, *,
+                            dry_run: bool, now: datetime) -> dict:
+    """The decline-policy consequence (07-23): a fan the classifier read as
+    chargeback/report/unsubscribe gets ONE de-escalation apology turn (+ the
+    usual free piece), never permanent silence. Payload-triggered by ai_chatter's
+    hard-decline handler — there is no detector; the classifier verdict IS the
+    incident. One turn, closes immediately: no nudges, no PPV pivot (a priced
+    tease at a man who just said "scam" would be the mistake, not the fix).
+
+    Runs INDEPENDENT of `enabled`/`auto_send` (those gate the dup-charge
+    scanner); its own gate is `on_hard_decline` (default ON). Idempotent per
+    triggering message, honours the per-fan resolved cap (anti-milking: "say
+    'unsubscribe', farm a freebie" stops at the cap), and is blocked ONLY by an
+    operator stop (hand-restrict / OF-restrict / muted / blacklist / bot) — the
+    contact guard and the routine pause column must not eat the apology."""
+    fan_id = int(hd["fan_id"])
+    trigger_mid = hd.get("message_id")
+    incident_key = (f"hard_decline:{int(trigger_mid)}" if trigger_mid
+                    else "hard_decline:{}:{}".format(fan_id, now.strftime("%Y%m%d%H")))
+    base = {"status": "ok", "mode": "hard_decline", "fan_id": fan_id,
+            "incident_key": incident_key}
+    if not cfg.get("on_hard_decline", True):
+        return {**base, "action": "disabled"}
+    if await _incident_seen(account_id, incident_key):
+        return {**base, "action": "already_handled"}
+
+    incident = {"kind": "hard_decline", "fan_id": fan_id,
+                "incident_key": incident_key,
+                "message_ids": [int(trigger_mid)] if trigger_mid else [],
+                "item_ids": [], "overlap_media": [], "wrongful_cents": 0,
+                "evidence": {"trigger_message_id": trigger_mid}}
+    cap = max(1, int(cfg.get("per_fan_cap") or 2))
+    if await _resolved_count(account_id, fan_id) >= cap:
+        if not dry_run:
+            await _log_incident(account_id, fan_id, incident, status="operator_only",
+                                remediation={"reason": "per_fan_cap"}, now=now)
+        return {**base, "action": "operator_only", "reason": "per_fan_cap"}
+
+    fan = await _get_fan(account_id, fan_id)
+    async with get_session() as s:
+        blacklisted = (await s.execute(select(Blacklist.fan_id).where(
+            Blacklist.fan_id == int(fan_id)))).first() is not None
+    if (fan_id in await load_operator_stop_ids(account_id) or blacklisted
+            or should_skip_muted_creator(fan) or bool(getattr(fan, "is_bot", False))):
+        return {**base, "action": "excluded"}
+
+    tip_cfg = await tip_reward._load_config(account_id)
+    steps = ["apology_gift" if cfg.get("open_with_gift") else "apology"]
+    rng = Random(f"make_right:{account_id}:{incident_key}:0")
+    if dry_run:
+        return {**base, "dry_run": True, "action": "would_open", "steps": steps,
+                "apology": _apology_bubbles(fan, cfg, rng, "hard_decline")[0]}
+
+    client = await asyncio.to_thread(ax._make_client, account_id)
+    wpm = await load_typing_wpm(account_id)
+    indicator = await load_typing_indicator(account_id)
+    if not await ax.acquire_fan_lease(account_id, fan_id, "make_right"):
+        return {**base, "action": "lease_busy"}
+    try:
+        ok, media = await _do_step(client, account_id, fan_id, steps[0], cfg,
+                                   tip_cfg, rng, fan, wpm, indicator, now,
+                                   kind="hard_decline")
+        if not ok:
+            return {**base, "status": "error", "action": "send_failed"}
+        rem = {"steps": steps, "step": 1, "incident_key": incident_key,
+               "kind": "hard_decline", "wrongful_cents": 0,
+               "trigger_message_id": trigger_mid,
+               "gift_history": ([{"step": 0, "media": media}] if media else []),
+               "last_step_at": now.isoformat(), "nudged": False}
+        await _log_incident(account_id, fan_id, incident, status="resolved",
+                            remediation=rem, now=now)
+        log.info("make_right hard-decline apology sent account=%s fan=%s key=%s "
+                 "gift=%s", account_id, fan_id, incident_key, media)
+        return {**base, "action": "opened", "resolved": True, "gift_media": media}
+    finally:
+        await ax.release_fan_lease(account_id, fan_id)
+
+
 @register("make_right")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     cfg = await _load_config(account_id)
     payload = payload or {}
     dry_run = bool(payload.get("dry_run"))
     now = datetime.utcnow()
+
+    # Payload-triggered hard-decline apology — its own lane, its own gates.
+    if payload.get("hard_decline"):
+        return await _run_hard_decline(account_id, cfg, dict(payload["hard_decline"]),
+                                       dry_run=dry_run, now=now)
 
     # SENDING requires BOTH the master switch AND the auto-send opt-in. Detection
     # still runs so a preview always works — but a real run with either flag off is

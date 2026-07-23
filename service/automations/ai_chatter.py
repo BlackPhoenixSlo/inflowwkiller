@@ -3194,23 +3194,25 @@ async def _mark_quote_paid(account_id: str, fan_id: int, message_id: int | None,
 
 
 async def _handle_decline(account_id: str, fan_id: int, kind: str,
-                          now: datetime) -> None:
+                          now: datetime, *, dry_run: bool = False) -> None:
     """Three declines, three consequences — never one broad regex with one broad
     pause. (A single _DECLINE_RE scored against the real inbound corpus matched
     4.05% of ALL inbounds and would have tapped out 37.9% of threads on lines like
     "No problem!" and "talk to you a lil bit later beautiful 🥰".)"""
     if kind == upsell.DECLINE_HARD:
-        # Angry or gone: chargeback / report / unsubscribe. No paid message to him
-        # again until an OPERATOR clears the skip_list row. skip_list (not the
-        # shared pause column) is what every sender already honours.
-        async with get_session() as s:
-            await s.execute(
-                sqlite_insert(SkipList)
-                .values(account_id=str(account_id), fan_id=int(fan_id),
-                        reason="ladder_stop", added_at=now)
-                .on_conflict_do_nothing(index_elements=["account_id", "fan_id"])
-            )
-        await _close_ladder(account_id, fan_id, upsell.STATUS_STOPPED)
+        # Chargeback / report / unsubscribe words. POLICY (07-23): the bot never
+        # ghosts a fan over its own classifier verdict — this regex once read a
+        # forwarded "unsubscribe and block anyone who…" game as a threat and
+        # skip-listed a real fan into permanent silence. The consequence now: the
+        # ladder closes to IDLE with a 72h offers-pause (selling stops, talking
+        # doesn't — the pause is ladder-scoped and liftable by an explicit pull),
+        # and make_right sends ONE de-escalation apology. A PERMANENT stop is an
+        # OPERATOR's move (a hand-written skip_list row), never the bot's.
+        await _close_ladder(account_id, fan_id, upsell.STATUS_IDLE)
+        await _save_ladder(account_id, fan_id,
+                           offers_paused_until=now + timedelta(hours=72))
+        if not dry_run:
+            await _trigger_make_right_apology(account_id, fan_id)
     elif kind == upsell.DECLINE_SOFT:
         # A poverty plea. Stop SELLING for 24h, KEEP TALKING — he is still here, he
         # is just broke this week, and this is the highest-value moment to be a
@@ -3221,6 +3223,30 @@ async def _handle_decline(account_id: str, fan_id: int, kind: str,
                            offers_paused_until=now + timedelta(hours=24))
     elif kind == upsell.DECLINE_BARE_NO:
         await _close_ladder(account_id, fan_id, upsell.STATUS_TAPPED)
+
+
+async def _trigger_make_right_apology(account_id: str, fan_id: int) -> None:
+    """Hand a hard-declining fan to make_right for the ONE de-escalation apology
+    turn. The latest inbound message id keys the incident, so a webhook replay or
+    the next sweep classifying the same message can't double-apologise.
+    Best-effort: losing the apology must never lose the decline handling."""
+    try:
+        async with get_session() as s:
+            mid = (await s.execute(
+                select(Message.message_id)
+                .where(Message.account_id == str(account_id),
+                       Message.fan_id == int(fan_id),
+                       Message.direction == "in")
+                .order_by(Message.created_at.desc(), Message.message_id.desc())
+                .limit(1))).scalar_one_or_none()
+        await ax.enqueue_job(
+            account_id, "make_right",
+            payload={"hard_decline": {"fan_id": int(fan_id),
+                                      "message_id": int(mid) if mid else None}})
+        ax.wake_supervisor()
+    except Exception:
+        log.warning("hard-decline make_right enqueue failed account=%s fan=%s",
+                    account_id, fan_id, exc_info=True)
 
 
 def _pack_line(slot: str, cfg: dict, fan_id: int, *, name: str = "babe",
@@ -4046,18 +4072,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # A HARD decline WINS over the poverty/companion brakes — always. Otherwise a
             # message that carries both a distress token and a chargeback ("im tapped out,
             # im disputing this charge and reporting you") hits detect_spend_regret first
-            # and takes a DECAYING 24h companion pause instead of the PERMANENT
-            # skip_list('ladder_stop')+STATUS_STOPPED. That would (a) leave no skip_list
-            # row, so welcome/followup/mass keep billing a man demanding a chargeback, and
-            # (b) make his stop decay after 24h — violating "STOPPED never decays". The
-            # HARD signal is the one that must never be softened.
+            # and takes the 24h regret pause instead of the HARD consequence — the 72h
+            # offers-pause + the make_right de-escalation apology. The hard signal must
+            # keep its own, stronger handling even when softer tokens ride along.
             hard_decline = (gate_on and
                             upsell.classify_decline(c.last_body) == upsell.DECLINE_HARD)
             if hard_decline:
-                await _handle_decline(account_id, fan_id, upsell.DECLINE_HARD, now)
+                await _handle_decline(account_id, fan_id, upsell.DECLINE_HARD, now,
+                                      dry_run=dry_run)
                 hard_stops += 1
-                log.info("ai_chatter HARD stop account=%s fan=%s — skip_list('ladder_stop'), "
-                         "ladder stopped (chargeback/report wins over regret/companion)",
+                log.info("ai_chatter HARD decline account=%s fan=%s — 72h offers-pause "
+                         "+ make_right apology (never a permanent bot stop)",
                          account_id, fan_id)
                 continue
             if gate_on and upsell.detect_spend_regret(c.last_body):
