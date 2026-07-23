@@ -67,7 +67,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import or_, select, update
@@ -145,6 +145,9 @@ def parse_purchase(n: Any) -> dict[str, Any] | None:
         "message_id": message_id,
         "amount_cents": amount,
         "created_at": n.get("createdAt"),
+        # OF names the payer right here; the live announce puts it on the
+        # toast so a chatter sees WHO bought without a lookup.
+        "name": (pairs or {}).get("{NAME}") if isinstance(pairs, dict) else None,
     }
 
 
@@ -220,6 +223,84 @@ _DONE_NOTIFS: dict[tuple[str, str, Any], None] = {}
 _DONE_NOTIFS_MAX = 4096
 
 
+# Notifications already ANNOUNCED to the browser. Deliberately separate from
+# _DONE_NOTIFS: "resolved" and "announced" are different questions. A purchase
+# whose message row hasn't been scraped yet stays un-done and retries every
+# poll — but it must not re-toast on each of those retries, and conversely a
+# purchase somebody else flipped first is still news worth announcing.
+_ANNOUNCED_NOTIFS: dict[tuple[str, str, Any], None] = {}
+# Only announce purchases this fresh. Bounds the noise when the relay restarts
+# and re-walks a feed page it already announced (same rationale as the ledger's
+# 48h insert cap), without needing durable state. Generous next to the 30s
+# poll, so an ordinary gap or a slow tick still notifies.
+_ANNOUNCE_MAX_AGE_S = 2 * 60 * 60
+
+
+def _is_fresh(created_at: Any) -> bool:
+    """Is this notification recent enough to be worth a live ping? An
+    unparseable timestamp counts as fresh: going silent on an OF format change
+    is a worse failure than an occasional stale toast, and the browser dedupes
+    on the notification id anyway."""
+    raw = str(created_at or "").strip()
+    if not raw:
+        return True
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - ts).total_seconds() <= _ANNOUNCE_MAX_AGE_S
+
+
+def _should_announce(key: tuple[str, str, Any], parsed: dict[str, Any]) -> bool:
+    """Does this purchase warrant a live ping — and is this the first time we
+    have asked? Stateful on purpose: a True answer CLAIMS the announcement, so
+    the caller must broadcast. Says no to an id-less notification (nothing the
+    browser could dedupe on) and to anything stale."""
+    if parsed["notif_id"] is None or not _is_fresh(parsed["created_at"]):
+        return False
+    if key in _ANNOUNCED_NOTIFS:
+        return False
+    while len(_ANNOUNCED_NOTIFS) >= _DONE_NOTIFS_MAX:
+        _ANNOUNCED_NOTIFS.pop(next(iter(_ANNOUNCED_NOTIFS)))
+    _ANNOUNCED_NOTIFS[key] = None
+    return True
+
+
+async def _broadcast_purchase(account_id: str, p: dict[str, Any]) -> None:
+    """Tell every open browser a PPV was just unlocked.
+
+    OF pushes no purchase event and its own `toasts` feed carries none either,
+    so without this a sale is invisible until something refetches. The ledger
+    can't do this job: it is the money record, but it lands late and by its own
+    measurement sometimes hours late.
+
+    `notif_id` is OF's REAL notification id — the same id the browser sees when
+    it lists `users/notifications?type=purchases`. That's the point: the client
+    can key on it, so the live ping and the eventual feed row dedupe against
+    each other instead of showing one sale twice.
+
+    Never raises: a broadcast failure must not cost us the is_paid flip.
+    """
+    try:
+        from events import broadcast as _sse_broadcast
+        await _sse_broadcast({
+            "purchase_notified": {
+                "notif_id": str(p["notif_id"]),
+                "fan_id": int(p["fan_id"]),
+                "message_id": int(p["message_id"]),
+                "amount_cents": int(p["amount_cents"] or 0),
+                "created_at": p.get("created_at"),
+                "name": p.get("name") or None,
+            },
+            "__account_id": str(account_id),
+        })
+    except Exception:  # noqa: BLE001
+        log.debug("purchase_notified broadcast failed account=%s", account_id,
+                  exc_info=True)
+
+
 def _mark_done(key: tuple[str, str, Any]) -> None:
     while len(_DONE_NOTIFS) >= _DONE_NOTIFS_MAX:
         _DONE_NOTIFS.pop(next(iter(_DONE_NOTIFS)))
@@ -236,7 +317,8 @@ async def _message_paid(account_id: str, fan_id: int, message_id: int) -> bool:
         )).scalar_one_or_none())
 
 
-async def _handle_items(account_id: str, client: Any, items: list) -> dict[str, int]:
+async def _handle_items(account_id: str, client: Any, items: list,
+                        *, announce: bool = False) -> dict[str, int]:
     """Shared per-notification dispatch for the 30s poll and the deep backfill.
     Chat purchase → flip is_paid + stamp the message's media as owned. Post
     purchase → stamp the post's media as owned. The STAMP legs are isolated
@@ -255,6 +337,12 @@ async def _handle_items(account_id: str, client: Any, items: list) -> dict[str, 
             key = ("msg", str(account_id), parsed["notif_id"])
             if parsed["notif_id"] is not None and key in _DONE_NOTIFS:
                 continue
+            # Announce BEFORE the flip, and independently of it: a purchase is
+            # news whether or not this call is the one that flips is_paid (the
+            # ledger linker may have got there first), and a message row that
+            # hasn't been scraped yet must still ping now rather than never.
+            if announce and _should_announce(key, parsed):
+                await _broadcast_purchase(account_id, parsed)
             flipped = await _flip_paid(
                 account_id, parsed["fan_id"], parsed["message_id"])
             if flipped:
@@ -313,7 +401,8 @@ async def poll_purchases(account_id: str, client: Any, *, limit: int = 10) -> di
     """
     try:
         items = await asyncio.to_thread(_fetch_feed, client, limit, 0)
-        return await _handle_items(account_id, client, items)
+        # The live tick is the only announcing caller — see backfill below.
+        return await _handle_items(account_id, client, items, announce=True)
     except Exception:  # noqa: BLE001
         log.debug("purchase_notif_poll_failed account=%s", account_id, exc_info=True)
         return {"seen": 0, "flipped": 0, "posts": 0, "stamped": 0}
@@ -350,6 +439,8 @@ async def backfill_purchases(
         if not fresh:
             break
         seen_ids.update(n.get("id") for n in fresh)
+        # Silent by construction: a deep repair walks months of purchases, and
+        # announcing them would fire hundreds of toasts for sales long past.
         got = await _handle_items(account_id, client, fresh)
         for k, v in got.items():
             totals[k] += v

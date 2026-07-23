@@ -325,3 +325,201 @@ describe("NotificationToaster — tip/purchase toast href carries ?refresh=media
     expect(a!.getAttribute("href")).toBe("/chat/302/557");
   });
 });
+
+// Every lane mirrors history unconditionally but they do NOT agree on when to
+// refetch the notif-list, and the difference is deliberate:
+//
+//   • `toasts` refetches for anything it takes in, muted or not — OF's feed is
+//     the canonical row for those, so the rail should pull it either way.
+//   • the DM and purchase lanes refetch only when they ping.
+//
+// Pinned here because it is invisible: a refactor that routes all three lanes
+// through one helper will happily "tidy" the toasts lane into gating on the
+// ping, and nothing else in this suite notices.
+describe("NotificationToaster — muted arrivals still refresh the notif-list", () => {
+  function spyInvalidate() {
+    return vi.spyOn(QueryClient.prototype, "invalidateQueries")
+      .mockImplementation(() => Promise.resolve());
+  }
+
+  it("toasts lane: master OFF → no toast, but the list is still refetched", async () => {
+    mockAccountId = "700";
+    mockSettings = { ...DEFAULT_NOTIF_SETTINGS, enabled: false };
+    const spy = spyInvalidate();
+    try {
+      const Comp = await loadComponent();
+      const { container } = renderToaster(Comp);
+
+      fire("toasts", {
+        __account_id: "700",
+        toasts: [{
+          id: 7001, type: "tip", text: "tipped you $10",
+          data: { relatedUser: { id: 771, name: "Muted" } },
+        }],
+      });
+
+      expect(container.querySelector("div.bg-panel")).toBeNull();  // silenced
+      expect(readNotifHistory()["700"]?.length).toBe(1);           // but recorded
+      expect(spy.mock.calls.some(
+        ([arg]) => JSON.stringify((arg as { queryKey?: unknown })?.queryKey)
+          === JSON.stringify(["notif-list", "700"]),
+      )).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("purchase lane: master OFF → history only, no refetch", async () => {
+    mockAccountId = "701";
+    mockSettings = { ...DEFAULT_NOTIF_SETTINGS, enabled: false };
+    const spy = spyInvalidate();
+    try {
+      const Comp = await loadComponent();
+      renderToaster(Comp);
+
+      fire("purchase_notified", {
+        __account_id: "701",
+        purchase_notified: {
+          notif_id: "7002", fan_id: 772, message_id: 9, amount_cents: 500,
+          created_at: "2026-07-23T21:28:24+00:00", name: "Quiet",
+        },
+      });
+
+      expect(readNotifHistory()["701"]?.length).toBe(1);
+      expect(spy.mock.calls.some(
+        ([arg]) => JSON.stringify((arg as { queryKey?: unknown })?.queryKey)
+          === JSON.stringify(["notif-list", "701"]),
+      )).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+// The `purchase_notified` SSE path — a PPV unlock, announced by the relay off
+// OF's purchases-notification feed. OF pushes NO purchase frame and no
+// purchase toast, so this is the only thing that can tell a chatter a sale
+// landed; before it, a buy produced no toast, no bell entry, and no rail row
+// until someone reloaded the page.
+//
+// The load-bearing detail is the ID. The rail and bell list that same OF feed
+// and dedupe on the notification id, so this ping must carry OF's REAL id
+// verbatim — prefix it, synthesise it, or key it on anything else, and every
+// sale shows up twice. The id cases below exist to catch exactly that.
+describe("NotificationToaster — purchase_notified PPV unlock", () => {
+  function settingsForPurchases(on: boolean): NotifSettings {
+    return {
+      ...DEFAULT_NOTIF_SETTINGS,
+      enabled: true,
+      osPing: false,
+      toast: { ...DEFAULT_NOTIF_SETTINGS.toast, purchases: on },
+      bubble: { ...DEFAULT_NOTIF_SETTINGS.bubble, purchases: false },
+    };
+  }
+
+  function fireBuy(aid: string, p: Record<string, unknown>) {
+    fire("purchase_notified", { __account_id: aid, purchase_notified: p });
+  }
+
+  // Shaped like the real payload in service/purchase_notifications.py — OF's
+  // notification id, and OF's zoned createdAt.
+  const unlock = (over: Record<string, unknown> = {}) => ({
+    notif_id: "117301756206",
+    fan_id: 4242,
+    message_id: 10491720677794,
+    amount_cents: 820,
+    created_at: "2026-07-23T21:28:24+00:00",
+    name: "Daniel",
+    ...over,
+  });
+
+  it("PPV unlock → money toast with the dollar amount + ?refresh=media href", async () => {
+    mockAccountId = "400";
+    mockSettings = settingsForPurchases(true);
+    const Comp = await loadComponent();
+    const { container } = renderToaster(Comp);
+
+    fireBuy("400", unlock());
+
+    expect(findToastByText(container, "Unlocked your PPV — $8.20")).not.toBeNull();
+    const a = container.querySelector<HTMLAnchorElement>('a[href*="4242"]');
+    expect(a!.getAttribute("href")).toBe("/chat/400/4242?refresh=media");
+  });
+
+  // THE contract: same id as the feed row ⇒ the rail/bell merge collapses the
+  // two into one. A prefixed or synthesised id silently double-lists the sale.
+  it("history id is OF's notification id verbatim, so the feed row dedupes", async () => {
+    mockAccountId = "401";
+    mockSettings = settingsForPurchases(true);
+    const Comp = await loadComponent();
+    renderToaster(Comp);
+
+    fireBuy("401", unlock({ notif_id: "117301756206" }));
+
+    const [row] = readNotifHistory()["401"] ?? [];
+    expect(row?.id).toBe("117301756206");
+    expect(row?.typeKey).toBe("purchases");
+    expect(row?.createdAt).toBe("2026-07-23T21:28:24.000Z");
+    expect(row?.user?.name).toBe("Daniel");
+  });
+
+  it("history is mirrored even with the purchases toast muted (rail must not go deaf)", async () => {
+    mockAccountId = "402";
+    mockSettings = settingsForPurchases(false);
+    const Comp = await loadComponent();
+    const { container } = renderToaster(Comp);
+
+    fireBuy("402", unlock({ notif_id: "222" }));
+
+    expect(findToastByText(container, "Unlocked your PPV — $8.20")).toBeNull();
+    expect(readNotifHistory()["402"]?.length).toBe(1);
+  });
+
+  it("a re-announce of the same notification is deduped", async () => {
+    mockAccountId = "403";
+    mockSettings = settingsForPurchases(true);
+    const Comp = await loadComponent();
+    renderToaster(Comp);
+
+    fireBuy("403", unlock({ notif_id: "333" }));
+    fireBuy("403", unlock({ notif_id: "333" }));
+
+    expect(readNotifHistory()["403"]?.length).toBe(1);
+  });
+
+  it("two different purchases by the same fan both land", async () => {
+    mockAccountId = "404";
+    mockSettings = settingsForPurchases(true);
+    const Comp = await loadComponent();
+    renderToaster(Comp);
+
+    fireBuy("404", unlock({ notif_id: "444", fan_id: 90 }));
+    fireBuy("404", unlock({ notif_id: "445", fan_id: 90, amount_cents: 1500 }));
+
+    expect(readNotifHistory()["404"]?.length).toBe(2);
+  });
+
+  it("an out-of-scope account never pings", async () => {
+    mockAccountId = "405";
+    mockSettings = settingsForPurchases(true);
+    const Comp = await loadComponent();
+    const { container } = renderToaster(Comp);
+
+    fireBuy("999", unlock({ notif_id: "555" }));
+
+    expect(container.querySelector("div.bg-panel")).toBeNull();
+    expect(readNotifHistory()["999"]).toBeUndefined();
+  });
+
+  it("a payload with no notification id is ignored — it could not dedupe", async () => {
+    mockAccountId = "406";
+    mockSettings = settingsForPurchases(true);
+    const Comp = await loadComponent();
+    const { container } = renderToaster(Comp);
+
+    fireBuy("406", unlock({ notif_id: undefined }));
+
+    expect(container.querySelector("div.bg-panel")).toBeNull();
+    expect(readNotifHistory()["406"]).toBeUndefined();
+  });
+});

@@ -86,6 +86,7 @@ from ._common import (
     load_nonnative_flags, load_strip_emojis, load_style_flags, load_tip_ask_config,
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
+    load_promo_spam_ids,
     should_skip_muted_creator, skip_unreachable_fan, strip_emojis,
     typing_delay_seconds,
 )
@@ -1476,6 +1477,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     clock_tz = await _load_clock_tz(account_id)  # None ⇒ no clock line in the prompt
     blacklist, skip_list = await _load_stop_lists(account_id)
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)  # W7 cross-tick ownership
+    promo_spam = await load_promo_spam_ids(account_id)
     by_fan = await _gather(account_id, only_fan_ids or None)
 
     # Closer-mode ai_chatter owns only the fans it will answer (open offer / buying
@@ -1502,7 +1504,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     candidates: list[_Candidate] = []
     skipped_listed = 0      # blacklist / skip_list / paused
     skipped_not_turn = 0    # we (or nobody) spoke last
-    skipped_spam = 0        # promo-spam: $0 spend + creator_we_follow (peer creator)
+    skipped_spam = 0        # promo-spam: creator_we_follow + $0 + no exchange + blasted
     skipped_muted_creator = 0  # muted creator we follow — HARD skip (durable)
     skipped_ai_chatter = 0  # closer-mode ai_chatter owns this fan (buyer/open offer)
     newly_skiplisted = 0    # spent / too_long / info this tick
@@ -1539,16 +1541,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
         if not forced and f is not None:
             # Promo-spam guard: peer creators who blast the inbox (mutual-promo
-            # spam — the jaka problem). `source == "creator_we_follow"` means WE
-            # subscribed to THEM (subscribedBy), i.e. they're a creator, never a
-            # fan of ours. Live data: real fans are NEVER this value, while ~3/4 of
-            # jaka's stranger inbound is. Gated on $0 spend so a paying collab is
-            # never silenced. REVERSIBLE skip (no skip_list / gen_info write) — if
-            # they ever spend, the next tick reconsiders them.
-            if (
-                int(f.lifetime_spend_cents or 0) == 0
-                and (f.source or "") == "creator_we_follow"
-            ):
+            # spam — the jaka problem). The old test was `creator_we_follow` + $0,
+            # on the belief that "real fans are NEVER this value". That was wrong —
+            # the flag only means OF says we're subscribed to THEM, which is true of
+            # any fan a free page followed back, and it silenced 71 real fans on one
+            # account for five weeks. load_promo_spam_ids() now demands actual promo
+            # evidence too. REVERSIBLE skip (no skip_list / gen_info write) — if they
+            # ever spend or we get a real exchange, the next tick reconsiders them.
+            if fan_id in promo_spam:
                 skipped_spam += 1
                 continue
             if int(f.lifetime_spend_cents or 0) > _SPEND_GATE_CENTS:

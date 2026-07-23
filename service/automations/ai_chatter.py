@@ -90,6 +90,7 @@ from ._common import (
     load_nonnative_flags,
     load_painful_texting_flag, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags,
+    load_promo_spam_ids,
     quarantine_if_undeliverable, recent_payer_fans, resolve_fan_name, resolve_model,
     should_skip_muted_creator, skip_unreachable_fan, thread_heat, typing_delay_seconds,
 )
@@ -3861,6 +3862,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         media_asks, acct_median, lib_bounds = await _price_context(account_id, cfg_row)
 
     blacklist, skip_reasons = await _load_stop_lists(account_id)
+    promo_spam = await load_promo_spam_ids(account_id)
     old_fan_ids: set[int] = ({fid for fid, r in skip_reasons.items()
                               if r == _OLD_FAN_SKIP} if engage_old else set())
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)
@@ -4033,8 +4035,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             continue
         if not forced:
             if f is not None:
-                if (int(f.lifetime_spend_cents or 0) == 0
-                        and (f.source or "") == "creator_we_follow"):
+                if fan_id in promo_spam:
                     skipped_spam += 1
                     continue
                 if int(f.lifetime_spend_cents or 0) >= gate_cents:

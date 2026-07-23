@@ -61,8 +61,10 @@ from ._common import (
     build_structured_nickname,
     coerce_ids,
     is_substantive_msg,
+    load_promo_spam_ids,
     push_nick_and_notes,
     resolve_model,
+    should_skip_muted_creator,
 )
 
 log = logging.getLogger("of-relay.automation.gen_info")
@@ -547,6 +549,7 @@ async def _gather_candidates(
                 if c is not None:
                     c.recent_spend_cents = int(total or 0)
 
+    promo_spam = await load_promo_spam_ids(account_id)
     qualifying: list[_Candidate] = []
     for fan_id, c in counts.items():
         info = prior.get(fan_id) or {}
@@ -557,17 +560,26 @@ async def _gather_candidates(
         c.subscribed_at = subdates.get(fan_id)
         c.known = info
         forced = fan_id in force_ids
-        # Promo-spam guard (mirrors of_ai_chat): don't waste an LLM profile on
-        # peer creators who blast the inbox. `source == "creator_we_follow"` =
-        # WE subscribed to THEM (subscribedBy), i.e. a creator, never a fan of
-        # ours — real fans are NEVER this value in the live data. Spam when EITHER
-        # they've spent $0 (an unproven collab) OR we've muted their chat (a
-        # deliberate "silence this creator" — never profile a muted creator even
-        # if they once paid). Re-evaluated each run.
-        is_spam = (
-            not forced
-            and c.source == "creator_we_follow"
-            and (c.spend_cents == 0 or c.is_muted)
+        # Promo-spam guard (shares of_ai_chat's rule): don't waste an LLM profile
+        # on peer creators who blast the inbox. Either we've MUTED their chat (a
+        # deliberate "silence this creator" — never profile one even if they once
+        # paid), or they're in the account's promo-blaster set.
+        #
+        # The old test was `creator_we_follow` + $0, on the belief that "real fans
+        # are NEVER this value". That was false — the flag only means OF says we're
+        # subscribed to them, which is true of any fan a free page followed back —
+        # and it silently stopped profiling 71 real fans on one live account.
+        # Re-evaluated each run.
+        #
+        # `c.spend_cents` re-checks the spend the SET already tested, deliberately:
+        # the set reads `fans.lifetime_spend_cents`, which LAGS ingest, while
+        # c.spend_cents is the fresher max(ledger, paid-PPV) this pass already
+        # computed. Live now: 9 of Ava's fans have real spend the column still
+        # reports as $0. Narrowing here can only ever RESCUE a payer from the guard,
+        # never silence one — the direction a spam gate must always fail in.
+        is_spam = not forced and (
+            should_skip_muted_creator(c)
+            or (fan_id in promo_spam and c.spend_cents == 0)
         )
         qualified = forced or (
             not is_spam
