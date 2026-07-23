@@ -249,5 +249,43 @@ async def init_db() -> None:
                                   "cleared", r1.rowcount, r2.rowcount)
             except Exception:
                 _log.exception("decline-policy data catch-up failed")
+
+            # One-way DATA catch-up (07-23 arc mass audience): vault_arc used
+            # to book mass_free drops as bare {"text","price"} — no audience —
+            # and `send_mass_message` refuses those (empty_audience) while the
+            # job is still stamped done, so an armed arc's teases silently
+            # never left. New arcs enqueue user_lists + explicit-0 guards;
+            # this heals the jobs already booked. The bare two-key payload is
+            # the match key (vault_arc is the only producer of rule-less
+            # send_mass_message one-shots), so patched rows stop matching and
+            # boot is a no-op forever after. A row that skipped in the last
+            # 24h is re-opened first — an audience-less payload can never have
+            # sent, so the flip cannot double-send; older misses stay dead
+            # (a days-old wall tease is stale).
+            try:
+                with sync_engine.begin() as conn:
+                    shape = (
+                        "kind='send_mass_message' AND rule_id IS NULL "
+                        "AND json_extract(payload_json,'$.text') IS NOT NULL "
+                        "AND (SELECT COUNT(*) FROM "
+                        "json_each(scheduled_jobs.payload_json)) = 2"
+                    )
+                    r1 = conn.execute(text(
+                        "UPDATE scheduled_jobs SET status='pending', attempts=0 "
+                        f"WHERE {shape} AND status='done' "
+                        "AND run_at >= datetime('now','-24 hours')"))
+                    r2 = conn.execute(text(
+                        "UPDATE scheduled_jobs SET payload_json=json_set("
+                        "payload_json,"
+                        "'$.user_lists', json('[\"fans\",\"following\"]'),"
+                        "'$.exclude_replied_hours', 0,"
+                        "'$.exclude_inbound_hours', 0) "
+                        f"WHERE {shape} AND status='pending'"))
+                    if r1.rowcount or r2.rowcount:
+                        _log.info("arc-mass-audience catch-up: %s skipped teases "
+                                  "re-opened, %s audience-less mass jobs patched",
+                                  r1.rowcount, r2.rowcount)
+            except Exception:
+                _log.exception("arc-mass-audience data catch-up failed")
     finally:
         sync_engine.dispose()
