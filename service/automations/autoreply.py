@@ -60,6 +60,7 @@ from ._common import (
     load_nonnative_flags, load_painful_texting_flag,
     load_strip_emojis, load_style_flags, load_tip_ask_config,
     load_typing_indicator, load_typing_wpm, load_typo_flags, load_hard_skip_ids,
+    load_promo_spam_ids,
     recent_payer_fans, resolve_fan_name, resolve_model, should_skip_muted_creator,
     skip_unreachable_fan, strip_emojis, typing_delay_seconds,
 )
@@ -420,6 +421,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # HARD skips (muted_creator / manual "restrict this fan") explicitly and skip
     # them here too, so a restricted fan is silenced on EVERY automation.
     hard_skip = await load_hard_skip_ids(account_id)
+    promo_spam = await load_promo_spam_ids(account_id)
     # The info-complete gate used to ACCIDENTALLY shield no-info / promo /
     # unreachable fans from Auto Convo. With info_not_required widening coverage,
     # those exclusions must be explicit — mirror what every other chat sender does
@@ -462,7 +464,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     sent = skipped_spend = skipped_cap = skipped_raced = errors = 0
     skipped_restricted = 0   # muted creator / manual "restrict from automations"
     skipped_unreachable = 0  # skip_list 'unreachable' (dead/blocked → send 404s)
-    skipped_spam = 0         # $0-spend creator_we_follow (peer-creator promo)
+    skipped_spam = 0         # peer-creator promo: creator_we_follow + $0 + blasted
     skipped_hot_lead = 0     # tipped/unlocked recently → closer's moment
     skipped_cooldown = 0     # a sibling sender paused him this tick
     skipped_locked = 0       # another sender holds the fan-lease
@@ -479,8 +481,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if fid in unreachable:
             skipped_unreachable += 1
             continue
-        # Peer-creator promo spam ($0 spend + creator_we_follow) — the jaka problem.
-        if int(f.lifetime_spend_cents or 0) == 0 and (f.source or "") == "creator_we_follow":
+        # Peer-creator promo spam — the jaka problem. Needs real promo evidence,
+        # not just OF's creator_we_follow flag (see load_promo_spam_ids).
+        if fid in promo_spam:
             skipped_spam += 1
             continue
         # Just-paid hot lead → the closer (ai_chatter) owns the moment, not us.

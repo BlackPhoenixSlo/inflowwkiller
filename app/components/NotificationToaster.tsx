@@ -32,6 +32,7 @@ import {
   dispatchNotifCleared,
   mapOfTypeToKey,
   patchNotifHistoryUser,
+  type NotifSettings,
   type NotifTypeKey,
 } from "@/lib/notifSettings";
 
@@ -224,6 +225,85 @@ function withRefreshFlag(href: string, typeKey: NotifTypeKey | null): string {
   return `${href}${href.includes("?") ? "&" : "?"}refresh=media`;
 }
 
+/** One arrival, delivered. Every SSE lane below — OF's `toasts` feed, inbound
+ *  DMs, PPV unlocks — differs only in how it parses its envelope; from here on
+ *  the policy is identical, so it lives here once instead of three times.
+ *
+ *  The contract that must not drift: history is mirrored ALWAYS, pings are
+ *  GATED. A muted arrival (master off, or its type toggled off) still reaches
+ *  the bell dropdown and the money rail — muting popups must not make those go
+ *  deaf — but produces no badge bump, no popup and no OS notification.
+ *
+ *  Returns whether it pinged, so a caller that batches (the `toasts` loop) can
+ *  tell whether anything in the batch was user-visible.
+ */
+function deliverNotification(
+  qc: QueryClient,
+  settings: NotifSettings,
+  n: {
+    id: string;
+    accountId: string;
+    typeKey: NotifTypeKey | null;
+    /** OF's own type string, kept verbatim for the history row. */
+    rawType: string;
+    user: NotificationUser;
+    /** Rendered, for the toast. */
+    text: string;
+    /** Stored, for the history row — OF's lanes keep the raw HTML so the
+     *  dropdown can re-render it. Defaults to `text`. */
+    historyText?: string;
+    replacePairs?: Record<string, string>;
+    createdMs: number;
+    href: string | null;
+  },
+): boolean {
+  appendNotifHistory({
+    id: n.id,
+    accountId: n.accountId,
+    type: n.rawType,
+    typeKey: n.typeKey,
+    user: {
+      id: n.user.id,
+      name: n.user.name,
+      username: n.user.username,
+      avatar: n.user.avatar,
+    },
+    text: n.historyText ?? n.text,
+    replacePairs: n.replacePairs,
+    createdAt: new Date(n.createdMs).toISOString(),
+  });
+
+  if (!settings.enabled || (n.typeKey && !settings.toast[n.typeKey])) return false;
+
+  dispatchNotifArrived();
+  pushToast({
+    id: n.id,
+    accountId: n.accountId,
+    typeKey: n.typeKey,
+    rawType: n.rawType,
+    user: n.user,
+    text: n.text,
+    createdAt: n.createdMs,
+    bubble: n.typeKey ? !!settings.bubble[n.typeKey] : false,
+    href: n.href,
+    expiresAt: Date.now() + TOAST_TTL_MS,
+  });
+
+  const focused = typeof document !== "undefined" ? document.hasFocus() : true;
+  const perm = typeof Notification !== "undefined" ? Notification.permission : "unsupported";
+  if (settings.osPing && typeof Notification !== "undefined" && !focused && perm === "granted") {
+    try {
+      new Notification(n.user.name || n.user.username || "Fastt", {
+        body: n.text || n.rawType || "New activity",
+        tag: n.id,
+      });
+    } catch (err) {
+      console.warn("[toaster] OS Notification threw:", err);
+    }
+  }
+  return true;
+}
+
 function NotificationDeltaPoller() {
   const { accountId } = useScope();
   const active = useActiveAccounts();
@@ -252,7 +332,7 @@ function NotificationDeltaPoller() {
       const arr = (env as { toasts?: unknown }).toasts;
       if (!Array.isArray(arr)) return;
 
-      let pushedAny = false;
+      let handledAny = false;
       for (const raw of arr) {
         if (!raw || typeof raw !== "object") continue;
         const t = raw as Record<string, unknown>;
@@ -336,62 +416,29 @@ function NotificationDeltaPoller() {
           ? Date.parse(t.createdAt) || Date.now()
           : Date.now();
 
-        // Always mirror into history — independent of the per-type toggle,
-        // so the feed dropdown still lists everything (incl. likes). The
-        // badge bump + toast popup are gated by the per-type filter below.
-        appendNotifHistory({
-          id,
-          accountId: aid,
-          type: typeof t.type === "string" ? t.type : "",
-          typeKey,
-          user: {
-            id: user.id,
-            name: user.name,
-            username: user.username,
-            avatar: user.avatar,
-          },
-          text: rawText,
-          replacePairs: repl ?? (t.replacePairs as Record<string, string> | undefined),
-          createdAt: new Date(createdMs).toISOString(),
-        });
-        pushedAny = true;
-
-        // Master + per-type filter for the visible toast popup AND the
-        // unread badge. A muted arrival (master off, or e.g. Likes toggled
-        // off) is still recorded to history above — so it shows in the feed
-        // dropdown and the money rail — but does NOT ping: no popup, no OS
-        // notification, no badge increment.
-        if (!settings.enabled || (typeKey && !settings.toast[typeKey])) {
-          // Resolve username → id in the background even if we didn't
-          // toast — the history entry will be patched.
-          if (!user.id && user.username) {
-            const uname = user.username;
-            resolveUsernameId(aid, uname, qc).then((resolvedId) => {
-              if (resolvedId == null) return;
-              patchNotifHistoryUser(aid, id, { id: resolvedId });
-            }).catch(() => { /* ignore */ });
-          }
-          continue;
-        }
-
-        // Passed the per-type gate → this one is allowed to ping.
-        dispatchNotifArrived();
-
-        const now = Date.now();
         const baseHref = hrefFor({ user } as NotificationItem, aid);
-        pushToast({
+        // History always, pings gated — the money rail and the feed dropdown
+        // must still list a muted arrival (incl. likes).
+        deliverNotification(qc, settings, {
           id,
           accountId: aid,
           typeKey,
           rawType: typeof t.type === "string" ? t.type : "",
           user,
           text,
-          createdAt: createdMs,
-          bubble: typeKey ? !!settings.bubble[typeKey] : false,
+          historyText: rawText,
+          replacePairs: repl ?? (t.replacePairs as Record<string, string> | undefined),
+          createdMs,
           href: baseHref ? withRefreshFlag(baseHref, typeKey) : null,
-          expiresAt: now + TOAST_TTL_MS,
         });
+        // Deliberately NOT gated on whether it pinged: this lane refetches the
+        // notif-list for anything it took in, muted or not, so a silenced
+        // arrival still refreshes the rail from OF's own feed.
+        handledAny = true;
 
+        // Resolve username → id in the background whether or not it pinged;
+        // the history entry gets patched either way. Only OF's own toasts
+        // arrive without a user id, which is why this lane alone needs it.
         if (!user.id && user.username) {
           const uname = user.username;
           resolveUsernameId(aid, uname, qc).then((resolvedId) => {
@@ -404,27 +451,14 @@ function NotificationDeltaPoller() {
             patchNotifHistoryUser(aid, id, { id: resolvedId });
           }).catch(() => { /* ignore */ });
         }
-
-        const focused = typeof document !== "undefined" ? document.hasFocus() : true;
-        const perm = typeof Notification !== "undefined" ? Notification.permission : "unsupported";
-        if (settings.osPing && typeof Notification !== "undefined" && !focused && perm === "granted") {
-          try {
-            new Notification(user.name || user.username || "Fastt", {
-              body: text || (typeof t.type === "string" ? t.type : "New activity"),
-              tag: id,
-            });
-          } catch (err) {
-            console.warn("[toaster] OS Notification threw:", err);
-          }
-        }
       }
 
-      if (pushedAny) {
+      if (handledAny) {
         qc.invalidateQueries({ queryKey: ["notif-list", aid], exact: false });
       }
     });
     return off;
-  }, [qc, settings.enabled, settings.toast, settings.bubble, settings.osPing, ready, targetIds]);
+  }, [qc, settings, ready, targetIds]);
 
   // SSE: inbound chat messages — OF's native `toasts` feed does NOT carry
   // DMs (those arrive on `api2_chat_message`, consumed by useInboxRealtime
@@ -479,55 +513,97 @@ function NotificationDeltaPoller() {
         ? Date.parse(toUtcIso(msg.createdAt)) || Date.now()
         : Date.now();
 
-      // Mirror into the bell's history so opening the dropdown reflects the
-      // badge bump (OF's /notifications feed lists DMs inconsistently).
-      appendNotifHistory({
-        id,
-        accountId: aid,
-        type: "message",
-        typeKey: "message",
-        user: { id: user.id, name: user.name, username: user.username, avatar: user.avatar },
-        text: rawText || text,
-        createdAt: new Date(createdMs).toISOString(),
-      });
-
-      // History is mirrored above REGARDLESS of the master + per-type
-      // toggles, so the bell dropdown still lists DMs even with toasts off.
-      // The badge bump + toast popup + OS ping ARE gated — mirroring the
-      // `toasts` handler, so muting toasts no longer drops DMs from the
-      // feed dropdown.
-      if (!settings.enabled || !settings.toast.message) return;
-
-      dispatchNotifArrived();
-
-      const now = Date.now();
-      pushToast({
+      // History is mirrored REGARDLESS of the toggles (see deliverNotification),
+      // so the bell dropdown still lists DMs with toasts off — OF's
+      // /notifications feed lists them inconsistently, so this is their only
+      // reliable route into the dropdown.
+      const pinged = deliverNotification(qc, settings, {
         id,
         accountId: aid,
         typeKey: "message",
         rawType: "message",
         user,
         text,
-        createdAt: createdMs,
-        bubble: !!settings.bubble.message,
+        historyText: rawText || text,
+        createdMs,
         href: `/chat/${encodeURIComponent(aid)}/${fanId}`,
-        expiresAt: now + TOAST_TTL_MS,
       });
-
-      const focused = typeof document !== "undefined" ? document.hasFocus() : true;
-      const perm = typeof Notification !== "undefined" ? Notification.permission : "unsupported";
-      if (settings.osPing && typeof Notification !== "undefined" && !focused && perm === "granted") {
-        try {
-          new Notification(user.name || user.username || "Fastt", { body: text, tag: id });
-        } catch (err) {
-          console.warn("[toaster] OS Notification threw:", err);
-        }
-      }
-
-      qc.invalidateQueries({ queryKey: ["notif-list", aid], exact: false });
+      if (pinged) qc.invalidateQueries({ queryKey: ["notif-list", aid], exact: false });
     });
     return off;
-  }, [qc, settings.enabled, settings.toast.message, settings.bubble.message, settings.osPing, ready, targetIds]);
+  }, [qc, settings, ready, targetIds]);
+
+  // SSE: a PPV unlock. The ONLY money event with no push path of its own —
+  // OF sends no purchase frame and no purchase toast (verified against the
+  // full raw-event window), so the `toasts` handler above never fires for a
+  // buy and, before this, a sale produced no toast, no badge, no bell entry,
+  // and no rail row until someone reloaded the page.
+  //
+  // The relay announces it off OF's purchases-notification feed — the fresh
+  // source (~30s). Deliberately NOT the transactions ledger: that is the money
+  // record, but it lands late and by its own measurement sometimes hours late,
+  // which is useless for "he just bought".
+  //
+  // `notif_id` is OF's REAL notification id, which is what makes this safe:
+  // the rail and bell list that same feed, and both dedupe on the id, so this
+  // live ping and the eventual feed row collapse into ONE row instead of
+  // showing the sale twice.
+  useEffect(() => {
+    if (!ready) return;
+    const off = eventBus.on("purchase_notified", (env: EventEnvelope) => {
+      const aid = env.__account_id;
+      if (!aid || !targetIds.includes(aid)) return;
+      const p = env.purchase_notified as {
+        notif_id?: string; fan_id?: number; amount_cents?: number;
+        created_at?: string | null; name?: string | null;
+      } | undefined;
+      const fanId = Number(p?.fan_id);
+      if (!p?.notif_id || !Number.isFinite(fanId)) return;
+
+      // OF's own id, unprefixed — it MUST equal the id the feed will carry
+      // for this purchase, or the dedupe this whole design rests on fails.
+      const id = String(p.notif_id);
+      const seen = seenIdsByAccount.get(aid) ?? new Set<string>();
+      if (seen.has(id)) return;
+      markSeen(seen, id);
+      seenIdsByAccount.set(aid, seen);
+
+      // The notification names the payer; fall back to the ["of-user"] cache
+      // the message handler above populates.
+      const cached = qc.getQueryData(["of-user", aid, fanId]) as NotificationUser | undefined;
+      const user: NotificationUser = {
+        id: fanId,
+        name: p.name || cached?.name,
+        username: cached?.username,
+        avatar: cached?.avatar,
+      };
+
+      const cents = Number(p.amount_cents);
+      const text = Number.isFinite(cents) && cents > 0
+        ? `Unlocked your PPV — $${(cents / 100).toFixed(2)}`
+        : "Unlocked your PPV";
+      // OF stamps these with an explicit offset ("…+00:00"); toUtcIso passes
+      // a zoned timestamp through untouched.
+      const createdMs = p.created_at
+        ? Date.parse(toUtcIso(p.created_at)) || Date.now()
+        : Date.now();
+
+      const pinged = deliverNotification(qc, settings, {
+        id,
+        accountId: aid,
+        typeKey: "purchases",
+        rawType: "purchases",
+        user,
+        text,
+        createdMs,
+        // Same one-shot refresh flag the money toasts and rail rows carry —
+        // the fan just moved money, so the popout's caches are stale.
+        href: withRefreshFlag(`/chat/${encodeURIComponent(aid)}/${fanId}`, "purchases"),
+      });
+      if (pinged) qc.invalidateQueries({ queryKey: ["notif-list", aid], exact: false });
+    });
+    return off;
+  }, [qc, settings, ready, targetIds]);
 
   // Request OS permission lazily once the user has flipped osPing on.
   useEffect(() => {

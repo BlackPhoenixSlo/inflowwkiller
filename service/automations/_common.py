@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 import llm_client
 from db.engine import get_session
 from db.models import AccountAiConfig, Fan, Message, SkipList
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 log = logging.getLogger("of-relay.automation.common")
@@ -211,12 +211,24 @@ def classify_source(subscribed_on, subscribed_by) -> str | None:
 
 def source_self_heal_set(subscribed_on, subscribed_by) -> dict:
     """An on-conflict SET fragment (mergeable into an upsert's `set_`/`update_set`)
-    that upgrades a weak/unknown `source` to the class OF's flags imply and leaves
-    an already-strong value untouched. Returns {} when the payload has no
-    authoritative flag, so callers can splat it unconditionally."""
+    that upgrades `source` to the class OF's flags imply. Returns {} when the
+    payload has no authoritative flag, so callers can splat it unconditionally.
+
+    The lattice is fan > creator_we_follow > weak, and 'fan' HEALS DOWNWARD over
+    'creator_we_follow' — it is not merely upgrade-only. `subscribedBy` says
+    nothing about who someone is: OF hands creator status to anyone, and on a
+    free page the model follows fans back, so ordinary fans carry the flag. The
+    original upgrade-only rule made that label permanent (`creator_we_follow` is
+    not in _WEAK_SOURCES), and a fan who later subscribed could never wash it
+    off. Live fallout: 71 of Ava's 73 so-labelled fans were real, and the
+    promo-spam guards had been refusing to answer them since 2026-06-17 — one had
+    86 inbound messages and was asking "why you ignore me?". `subscribedOn` is
+    proof he is OUR fan, so it always wins. We still never downgrade 'fan'."""
     strong = classify_source(subscribed_on, subscribed_by)
     if strong is None:
         return {}
+    if strong == "fan":
+        return {"source": "fan"}
     from sqlalchemy import case
     return {
         "source": case(
@@ -225,6 +237,50 @@ def source_self_heal_set(subscribed_on, subscribed_by) -> dict:
             else_=Fan.source,
         )
     }
+
+
+# ── peer-creator promo spam ─────────────────────────────────────────────────
+# What a promo blast actually looks like on the wire. Peer creators compose in
+# OF's rich-text mass-message editor, so their sends carry editor spans, bold/
+# italic sales copy, or a link back to their page ("FLASH SALE!!", "UNLOCK THIS
+# BUNDLE", onlyfans.com/…). A real fan types into the plain chat box and his
+# message arrives as bare <p>text</p> — across 73 of Ava's flagged fans only 3
+# ever emitted one of these, against 44 of jaka's 63 known blasters.
+_PROMO_MARKERS = ("m-editor-", "onlyfans.com", "<strong>", "<em>")
+
+
+async def load_promo_spam_ids(account_id) -> set[int]:
+    """fan_ids this account should treat as peer-creator promo blasters — the jaka
+    problem. Same id-set shape as load_hard_skip_ids/load_operator_stop_ids, so a
+    caller gates with a plain `fid in promo_spam`.
+
+    ALL of: OF says we follow them, they never paid, we never got a real exchange
+    out of them (turn_counter), and they have ACTUALLY blasted promo at us.
+
+    `source == 'creator_we_follow'` alone was the whole test until 2026-07-24, and
+    it was far too blunt — it only means OF told us we're subscribed to them, which
+    is true of any fan the model followed back on a free page. It silenced 71 real
+    fans on one account for five weeks (see source_self_heal_set).
+
+    Deliberately CONSERVATIVE: a chatty creator-bot that types plain text is not
+    caught and costs a few LLM cents, which is far cheaper than ignoring a real
+    fan's "why are you ignoring me?" for a month. Muting the chat remains the
+    operator's durable override (skip_list 'muted_creator')."""
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Fan.fan_id)
+            .where(Fan.account_id == str(account_id),
+                   Fan.source == "creator_we_follow",
+                   func.coalesce(Fan.lifetime_spend_cents, 0) == 0,
+                   func.coalesce(Fan.turn_counter, 0) == 0,
+                   select(Message.message_id).where(
+                       Message.account_id == Fan.account_id,
+                       Message.fan_id == Fan.fan_id,
+                       Message.direction == "in",
+                       or_(*[Message.body.contains(m) for m in _PROMO_MARKERS]),
+                   ).exists())
+        )).all()
+    return {int(r[0]) for r in rows}
 
 
 def should_skip_muted_creator(fan) -> bool:
