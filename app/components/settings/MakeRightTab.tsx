@@ -15,10 +15,9 @@
  */
 
 import { useEffect, useState } from "react";
-import { FolderOpen } from "lucide-react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
-import { VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
+import { SingleFolderRow, VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
 import { relay } from "@/lib/relay";
 import { useEmployee } from "@/contexts/EmployeeContext";
 
@@ -237,23 +236,9 @@ export default function MakeRightTab({ accountId }: { accountId: string | null }
             <div className="flex flex-wrap gap-4 items-end">
               <div className="space-y-1">
                 <div className="text-xs text-fg-dim">PPV folder <span className="opacity-60">(vault folder; none = no PPV, just close)</span></div>
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {form.ppv_folder ? (
-                    <span className="inline-flex items-center gap-1 text-xs bg-bg-elev-1 border border-border rounded-full px-2 py-0.5">
-                      {form.ppv_folder}
-                      <button type="button" title="Remove folder"
-                        className="text-fg-dim hover:text-err leading-none"
-                        onClick={() => set({ ppv_folder: "" })}>
-                        ×
-                      </button>
-                    </span>
-                  ) : (
-                    <span className="text-[11px] text-fg-dim italic">No folder.</span>
-                  )}
-                  <Button size="sm" variant="secondary" onClick={() => setPickPpvFolder(true)}>
-                    <FolderOpen size={13} /> Pick from vault
-                  </Button>
-                </div>
+                <SingleFolderRow folder={form.ppv_folder ?? ""}
+                  onPick={() => setPickPpvFolder(true)}
+                  onClear={() => set({ ppv_folder: "" })} />
               </div>
               <NumField label="PPV price" value={dollars(form.ppv_price_cents ?? 1500)} min={0} max={10000} step={0.01} suffix="$"
                 onChange={(n) => set({ ppv_price_cents: cents(n) })} />

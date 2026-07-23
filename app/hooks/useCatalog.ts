@@ -76,6 +76,11 @@ export interface AiChatterConfig {
     no_signal?: number;
     pic_sent?: number;
   };
+  /** Proven-spender cap FLOOR (item 21b): each rule lifts a fan's burst cap when his
+   *  PAID spend (PPV unlocks + tips) over the last `days` is >= `min_cents`. Only ever
+   *  RAISES the cap — effective cap = max(signal cap, best-matching spend cap). Highest
+   *  matching rule wins; [] ⇒ spend never lifts the cap (signal-only). */
+  msg_limits_by_spend?: Array<{ days: number; min_cents: number; cap: number }>;
   /** Silence gap (min) that starts a fresh burst for the caps above. */
   session_gap_minutes?: number;
   /** Keep chatting a just-paid fan this long (min); past it with no new spend, hand off. */

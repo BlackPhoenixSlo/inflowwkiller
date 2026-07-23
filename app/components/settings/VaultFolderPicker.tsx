@@ -22,7 +22,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { Library, ChevronRight, Check, Film, Image as ImageIcon } from "lucide-react";
+import { Library, ChevronRight, Check, Film, FolderOpen, Image as ImageIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
@@ -313,6 +313,40 @@ function MediaTile({ media, accountId }: { media: VaultMedia; accountId: string 
           {isDrmOnlyVideo(media) ? "DRM" : "▶"}
         </span>
       )}
+    </div>
+  );
+}
+
+/** One vault folder as a removable chip + a "Pick from vault" button — THE shared
+ *  field body for configs that hold a SINGLE folder name (tip-reward hot-teaser
+ *  branches, make_right's PPV pivot, …). Callers own the label and the picker
+ *  mount; this owns only the chip/button row so the markup has one home. */
+export function SingleFolderRow({ folder, onPick, onClear, emptyText = "No folder." }: {
+  folder: string;
+  onPick: () => void;
+  onClear: () => void;
+  emptyText?: string;
+}) {
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {folder ? (
+        <span className="inline-flex items-center gap-1 text-xs bg-bg-elev-1 border border-border rounded-full px-2 py-0.5">
+          {folder}
+          <button
+            type="button"
+            title="Remove folder"
+            className="text-fg-dim hover:text-err leading-none"
+            onClick={onClear}
+          >
+            ×
+          </button>
+        </span>
+      ) : (
+        <span className="text-[11px] text-fg-dim italic">{emptyText}</span>
+      )}
+      <Button size="sm" variant="secondary" onClick={onPick}>
+        <FolderOpen size={13} /> Pick from vault
+      </Button>
     </div>
   );
 }

@@ -24,7 +24,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Gift, FolderOpen, MessageCircle, Image as ImageIcon, Flame, HandCoins } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/primitives";
-import { VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
+import { SingleFolderRow, VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import {
   useTipRewardConfig,
@@ -914,24 +914,8 @@ function FolderRow({
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <span className="text-xs text-fg-dim w-20 shrink-0">{label}</span>
-      {folder ? (
-        <span className="inline-flex items-center gap-1 text-xs bg-bg-elev-1 border border-border rounded-full px-2 py-0.5">
-          {folder}
-          <button
-            type="button"
-            onClick={onClear}
-            className="text-fg-dim hover:text-err leading-none"
-            title="Remove folder"
-          >
-            ×
-          </button>
-        </span>
-      ) : (
-        <span className="text-[11px] text-fg-dim italic">No folder yet.</span>
-      )}
-      <Button size="sm" variant="secondary" onClick={onPick}>
-        <FolderOpen size={13} /> Pick from vault
-      </Button>
+      <SingleFolderRow folder={folder} onPick={onPick} onClear={onClear}
+        emptyText="No folder yet." />
     </div>
   );
 }

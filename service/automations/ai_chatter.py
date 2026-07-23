@@ -244,6 +244,21 @@ _DEFAULTS: dict = {
         "no_signal": 5,          # offered but stalled (no buy, gone cold) — short leash
         "pic_sent": 25,          # he sent US a photo — hottest lead, longest runway
     },
+    # Item 21b — proven-spend cap floor. The signal tiers above read what a fan is
+    # doing THIS tick; these read what he has PAID in a rolling window, so a man who
+    # has put real money down never gets the same short leash as a stranger even when
+    # he's momentarily gone quiet. Each rule is {days, min_cents, cap}: if his PAID
+    # spend (PPV unlocks + tips) over the last `days` is at or above `min_cents`, that
+    # rule's `cap` applies. The floor only ever RAISES the burst cap — the fan's real
+    # cap is max(signal-tier cap, best-matching spend cap) — so a hot live signal
+    # (pic_sent 25) still wins if it's higher, and this never SHORTENS a leash.
+    # When several rules match (a big weekly spender also clears the 30-day rule),
+    # the HIGHEST cap wins. Empty list ⇒ spend never lifts the cap (signal-only, the
+    # historical behavior). Rolling windows, not calendar days.
+    "msg_limits_by_spend": [
+        {"days": 30, "min_cents": 1000, "cap": 10},   # ≥ $10 in 30d → at least 10
+        {"days": 7,  "min_cents": 10000, "cap": 15},  # ≥ $100 in 7d → at least 15
+    ],
     "session_gap_minutes": 60,           # gap that starts a fresh burst for the caps
     # Item 17 — post-purchase talk window: keep chatting a just-paid fan this long
     # after his last money event; past it with no NEW spend, hand off (stop + cool
@@ -2009,6 +2024,73 @@ async def _last_money_at(account_id: str, fan_ids) -> dict[int, datetime]:
     return {int(fid): ts for fid, ts in rows if ts is not None}
 
 
+async def _spend_caps(account_id: str, fan_ids, rules: list[dict],
+                      now: datetime) -> dict[int, int]:
+    """{fan_id: the highest burst cap his ROLLING-WINDOW paid spend earns} for the
+    item-21b spend floor. `rules` is msg_limits_by_spend — [{days, min_cents, cap}].
+    Only fans that clear at least one rule appear; the rest keep their signal cap.
+
+    Spend = PPV unlocks (paid outbound messages, priced by purchased_at/created_at)
+    PLUS tips (the transactions ledger, by occurred_at) — the same two sources
+    _buyer_facts and _paid_cents_7d already trust, so 'spend' here means the same
+    thing it does everywhere else. One window is opened per DISTINCT `days` value in
+    the rules (usually 2), each a single batched group-by, so cost is flat in fans.
+
+    A rule with no positive cap or a non-positive window/threshold is inert — an
+    operator zeroing a rung turns it off rather than capping anyone at 0."""
+    ids = [int(x) for x in fan_ids]
+    rules = [r for r in (rules or [])
+             if int(r.get("cap") or 0) > 0
+             and int(r.get("days") or 0) > 0
+             and int(r.get("min_cents") or 0) > 0]
+    if not ids or not rules:
+        return {}
+    # Sum each fan's paid spend once per distinct window, then let every rule that
+    # shares that window read the same total — n distinct windows, not n rules.
+    windows = sorted({int(r["days"]) for r in rules})
+    spend_by_window: dict[int, dict[int, int]] = {}
+    async with get_session() as s:
+        for days in windows:
+            since = now - timedelta(days=days)
+            ppv = (await s.execute(
+                select(Message.fan_id,
+                       func.coalesce(func.sum(Message.price_cents), 0))
+                .where(Message.account_id == str(account_id),
+                       Message.fan_id.in_(ids),
+                       Message.direction == "out",
+                       Message.is_paid.is_(True),
+                       Message.price_cents > 0,
+                       func.coalesce(Message.purchased_at, Message.created_at) >= since)
+                .group_by(Message.fan_id)
+            )).all()
+            tips = (await s.execute(
+                select(Transaction.fan_id,
+                       func.coalesce(func.sum(Transaction.amount_cents), 0))
+                .where(Transaction.account_id == str(account_id),
+                       Transaction.fan_id.in_(ids),
+                       Transaction.kind.in_(_TIP_KINDS),
+                       Transaction.status.in_(("cleared", "pending")),
+                       Transaction.occurred_at >= since)
+                .group_by(Transaction.fan_id)
+            )).all()
+            tot: dict[int, int] = {}
+            for fid, cents in ppv:
+                tot[int(fid)] = tot.get(int(fid), 0) + int(cents or 0)
+            for fid, cents in tips:
+                tot[int(fid)] = tot.get(int(fid), 0) + int(cents or 0)
+            spend_by_window[days] = tot
+    out: dict[int, int] = {}
+    for fid in ids:
+        best = 0
+        for r in rules:
+            spent = spend_by_window[int(r["days"])].get(fid, 0)
+            if spent >= int(r["min_cents"]):
+                best = max(best, int(r["cap"]))
+        if best > 0:
+            out[fid] = best
+    return out
+
+
 # How long a human chatter's unpaid PPV stays a LIVE ask for PACING purposes — i.e. how
 # long we refuse to stack another price on top of it. Long, because asking a man for
 # money twice while his first locked box is still sitting there unopened is the fastest
@@ -2123,19 +2205,28 @@ def _breakproof(ask_at: datetime | None, now: datetime) -> bool:
 
 def _cadence_gate(c: "_Cand", *, pending: ContentOffer | None, recent_payer: bool,
                   money_at: datetime | None, pic: bool,
-                  now: datetime, cad: dict) -> tuple[bool, str]:
+                  now: datetime, cad: dict,
+                  spend_cap: int = 0) -> tuple[bool, str, int]:
     """Decide whether ai_chatter should keep engaging this fan THIS tick, and under
-    which signal tier. Returns (stop, tier) — a pure function of the fan's live
-    state; every limit comes from `cad` (the config). A "stop" means skip the reply
-    this tick (no LLM, no pause): the fan reopens on a real buying signal (tier
-    upgrade) or after a session-gap of silence resets his burst count.
+    which signal tier. Returns (stop, tier, cap) — a pure function of the fan's live
+    state; every limit comes from `cad` (the config). `cap` is the EFFECTIVE reply
+    cap that decided `stop` (0 = uncapped, e.g. the post-purchase window); it is the
+    single source of truth for "how many replies is she allowed here", so the status
+    endpoint shows the same number the bot ran on instead of recomputing it. A "stop"
+    means skip the reply this tick (no LLM, no pause): the fan reopens on a real
+    buying signal (tier upgrade) or after a session-gap of silence resets his burst.
 
       • Post-purchase window (item 17): a fan who paid within post_purchase_minutes
         stays engaged with no cap; once that window lapses with no newer money event
         AND no live buying signal, stop and hand off (of_ai_chat keeps him warm in
         closer mode).
       • Otherwise classify the signal (item 21) and stop once the burst reply count
-        (`session_out_n`) reaches that tier's cap (item 10 / "selling stops")."""
+        (`session_out_n`) reaches that tier's cap (item 10 / "selling stops").
+
+    `spend_cap` (item 21b) is the floor his rolling-window PAID spend earns, precomputed
+    by _spend_caps. It only ever RAISES the leash: the effective cap is the MAX of the
+    live signal tier's cap and the spend cap, so a proven spender is never cut off as
+    short as a stranger, but a hotter live signal still wins if it's higher."""
     body = c.last_body or ""
     live_signal = bool(pic or _CONTENT_ASK_RE.search(body) or ESCALATION_RE.search(body))
 
@@ -2145,9 +2236,9 @@ def _cadence_gate(c: "_Cand", *, pending: ContentOffer | None, recent_payer: boo
     ppm = int(cad.get("post_purchase_minutes") or 0)
     if money_at is not None and ppm and (now - money_at) < timedelta(hours=1):
         if now - money_at <= timedelta(minutes=ppm):
-            return (False, "post_purchase")          # still warm — keep talking
+            return (False, "post_purchase", 0)        # still warm — keep talking, no cap
         if not live_signal:
-            return (True, "post_purchase_done")       # quiet after the window → hand off
+            return (True, "post_purchase_done", 0)    # quiet after the window → hand off
         # he's asking for more AFTER the window → a fresh sale opportunity, keep going
 
     limits = cad.get("msg_limits_by_signal") or {}
@@ -2166,9 +2257,13 @@ def _cadence_gate(c: "_Cand", *, pending: ContentOffer | None, recent_payer: boo
         tier = "baseline"
 
     cap = int(limits.get(tier) or 0)
-    if cap and c.session_out_n >= cap:
-        return (True, tier)
-    return (False, tier)
+    # A proven spender's floor lifts the leash but never lowers it: take whichever
+    # cap is larger. (A spend_cap of 0 — no rule matched — leaves the signal cap as
+    # is; a signal cap of 0, i.e. an unconfigured tier, means "no cap" and must stay
+    # uncapped, so only fold in spend_cap when there IS a signal cap to raise.)
+    if cap:
+        cap = max(cap, int(spend_cap or 0))
+    return (bool(cap and c.session_out_n >= cap), tier, cap)
 
 
 # One gentle re-engage opener (item 18). {name} → his greetable name (or "babe").
@@ -3817,6 +3912,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     recent_payers = await recent_payer_fans(account_id, list(by_fan.keys()))
     # Newest money-event time per fan — the post-purchase talk window (item 17).
     money_at = await _last_money_at(account_id, by_fan.keys()) if cadence_on else {}
+    # Proven-spend cap floor per fan (item 21b) — {fid: highest cap his rolling-window
+    # paid spend earns}, folded into the cadence gate. Only computed when cadence is on
+    # AND at least one spend rule is configured, so an off flag / empty list costs nil.
+    spend_caps = (await _spend_caps(account_id, by_fan.keys(),
+                                    cfg.get("msg_limits_by_spend") or [], datetime.utcnow())
+                  if cadence_on else {})
     # Ladder + rhythm state for this sweep — one query each, and NOT EVEN READ when
     # the lanes are off (an off flag must cost nothing, not just change nothing).
     ladders = await _load_ladders(account_id, by_fan.keys()) if gate_on else {}
@@ -4026,11 +4127,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # fan reopens on a real buying signal (tier upgrade) or after a session-gap
         # of silence resets his burst. OFF unless the account enabled cadence.
         if cadence_on:
-            cad_stop, _cad_tier = _cadence_gate(
+            cad_stop, _cad_tier, _cad_cap = _cadence_gate(
                 c, pending=open_by_fan.get(fan_id),
                 recent_payer=fan_id in recent_payers,
                 money_at=money_at.get(fan_id),
-                pic=fan_id in intent_fan_ids, now=now, cad=cfg)
+                pic=fan_id in intent_fan_ids, now=now, cad=cfg,
+                spend_cap=spend_caps.get(fan_id, 0))
             if cad_stop:
                 skipped_cadence += 1
                 continue
