@@ -18,6 +18,9 @@ export interface TipRewardConfig {
   // Fire the reward on every tip even when an ai_chatter PPV offer is open for
   // the fan (overrides the standdown; the offer is still credited).
   always_reward?: boolean;
+  /** Context matcher: swap up to 3 reward photos for vault photos matching the
+   *  fan's recent asks (last 20 msgs, vault-AI descriptions). Backend default ON. */
+  context_pick_enabled?: boolean;
   dollars_per_image?: number;
   min_images?: number;
   max_images?: number;

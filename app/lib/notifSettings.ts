@@ -48,11 +48,11 @@ export interface NotifSettings {
 export const DEFAULT_NOTIF_SETTINGS: NotifSettings = {
   enabled: true,
   toast: {
-    message: true,
+    message: false,
     purchases: true,
     tip: true,
-    subscribed: true,
-    mentioned: true,
+    subscribed: false,
+    mentioned: false,
     commented: false,
     favorited: false,
   },
@@ -65,7 +65,7 @@ export const DEFAULT_NOTIF_SETTINGS: NotifSettings = {
     commented: false,
     favorited: false,
   },
-  osPing: false,
+  osPing: true,
 };
 
 const STORAGE_KEY = "chatterly:notif-settings:v1";

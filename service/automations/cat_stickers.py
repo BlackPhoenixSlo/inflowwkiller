@@ -11,8 +11,9 @@ GIF-only empty-text sends verified live 2026-05-23).
 Rate control is CODE-SIDE, not trust: measured on real convos (07-23),
 DeepSeek attaches a sticker to ~48% of replies whenever the block is visible —
 double what the prompt asks for. `roll_mode` can hide the block ("skip") to
-thin that out; the skip weight is currently 0 (block always visible) while
-volume is tuned live, leaving MIN_GAP as the only per-fan brake.
+thin that out, and a per-fan minute floor can space sends. All three knobs
+(skip %, solo %, gap minutes) are per-account in the Styles card; the house
+defaults below run wide open (skip 0, gap 0).
 "solo" injects a sticker-ONLY nudge (measured ~46% pure-sticker obedience).
 
 Catalog: 89 real-cat giphy gifs across 22 emotion tags, hand-picked in
@@ -74,16 +75,18 @@ _CATALOG: dict[str, tuple[str, tuple[str, ...]]] = {
 
 TAGS = frozenset(_CATALOG)
 
-# Per-reply roll weights. "skip" hides the protocol entirely;
-# "allow" shows it and lets the model judge; "solo" nudges a sticker-ONLY reply.
-# Wide open since 07-23 (skip=0, every reply sees the block) — volume is being
-# tuned by watching prod; the fan-facing brake is MIN_GAP below.
-_W_ALLOW, _W_SOLO = 0.95, 0.05        # skip = the remaining 0.00
+# Per-reply roll knobs — house defaults, overridable PER ACCOUNT via
+# style_config_json (cat_sticker_skip_pct / cat_sticker_solo_pct /
+# cat_sticker_gap_min — see _common.load_cat_sticker_tuning); the resolved
+# values arrive here as call args. "skip" hides the protocol entirely,
+# "allow" shows it and lets the model judge, "solo" nudges a sticker-ONLY
+# reply (the gif replaces the text). Wide open since 07-23: skip=0 and no
+# per-fan gap — volume is tuned live from the Styles card.
+DEFAULT_SKIP = 0.0     # chance a reply never sees the sticker block
+DEFAULT_SOLO = 0.05    # chance of the gif-replaces-the-text nudge
+DEFAULT_GAP_MIN = 0.0  # per-fan minutes between stickers (0 = no floor)
 
-# Per-fan floor between stickers — two gifs in back-to-back replies is a bot
-# tell. In-memory (restart = clean slate). With skip=0 the roll no longer
-# thins sends, so this floor is the only per-fan brake.
-MIN_GAP = timedelta(minutes=30)
+# Per-fan floor state — in-memory (restart = clean slate).
 _last_sent: dict[tuple[str, int], datetime] = {}
 
 # A well-formed marker (capture the tag) vs ANY marker-ish line (strip-all —
@@ -104,24 +107,32 @@ def parse_marker(raw: str) -> tuple[str, str | None]:
     return clean, tag
 
 
-def roll_mode(rng, on_cooldown: bool) -> str:
+def roll_mode(rng, on_cooldown: bool,
+              skip_w: float = DEFAULT_SKIP,
+              solo_w: float = DEFAULT_SOLO) -> str:
     """Per-reply dice: 'skip' | 'allow' | 'solo'. A cooldown forces 'skip' so
-    the prompt never even offers a sticker the gate would drop."""
+    the prompt never even offers a sticker the gate would drop. Weights are
+    0..1; solo is carved out first, allow fills the rest up to 1-skip."""
     if on_cooldown:
         return "skip"
+    skip_w = min(max(float(skip_w), 0.0), 1.0)
+    solo_w = min(max(float(solo_w), 0.0), 1.0 - skip_w)
     r = rng.random()
-    if r < _W_SOLO:
+    if r < solo_w:
         return "solo"
-    if r < _W_SOLO + _W_ALLOW:
+    if r < 1.0 - skip_w:
         return "allow"
     return "skip"
 
 
 def cooldown_active(account_id: str, fan_id: int,
-                    now: datetime | None = None) -> bool:
+                    now: datetime | None = None,
+                    gap_min: float = DEFAULT_GAP_MIN) -> bool:
+    if gap_min <= 0:
+        return False
     last = _last_sent.get((str(account_id), int(fan_id)))
     return (last is not None
-            and (now or datetime.utcnow()) - last < MIN_GAP)
+            and (now or datetime.utcnow()) - last < timedelta(minutes=gap_min))
 
 
 def mark_sent(account_id: str, fan_id: int,

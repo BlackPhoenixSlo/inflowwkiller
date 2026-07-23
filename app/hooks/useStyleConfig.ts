@@ -30,6 +30,11 @@ export interface StyleConfig {
   painful_texting?: boolean;
   // cat-sticker reaction pack (AI Chatter ends some replies with a cat gif) — default ON
   cat_stickers?: boolean;
+  // sticker rate knobs (numeric): % of replies that never see the pack (default 0),
+  // % nudged to a gif-ONLY reply (default 5), per-fan minutes between gifs (default 0)
+  cat_sticker_skip_pct?: number;
+  cat_sticker_solo_pct?: number;
+  cat_sticker_gap_min?: number;
   // independent thumb-typo injector toggle, per automation
   typos_of_ai_chat?: boolean;
   typos_autoreply?: boolean;

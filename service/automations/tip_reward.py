@@ -11,7 +11,12 @@ browser but ARE valid vault attachments, so they're included like any other item
 
 The reward rule (all knobs in account_ai_config.tip_reward_config_json):
   • COUNT  = clamp(min_images, tip_dollars // dollars_per_image, max_images).
-             A $25 tip at $10/image → 2 media items; a $3 tip still gets `min_images`.
+             At the $5/item default a $25 tip → 5 media items ($/5); a $3 tip
+             still gets `min_images`.
+  • BUNDLE = a tease warm-up share (_TEASE_SHARE from hot_teaser_free_folder,
+             2 of 5) + the rest from the tier folders — with up to
+             `context_pick_max` of those swapped for photos the LLM matched to
+             what the fan asked for in the thread (context_pick_enabled, ON).
   • FOLDER = picked by a TIER. The tier basis is max(this tip, the fan's tip sum
              over the last `window_hours`) — so a fan who has tipped past the
              premium threshold in the window gets premium folders even on a small
@@ -49,6 +54,7 @@ from automations._common import (
 import random
 from db.engine import get_session
 from automations import tip_ladder
+from automations.tip_context import pick_context_media
 from db.models import AccountAiConfig, Fan, TipRewardLog, Transaction, VaultSend
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -67,11 +73,24 @@ _DEFAULTS: dict = {
     # bonus media on top of the unlock). The offer is STILL credited; the reward
     # just also fires. Default OFF (keep the standdown). See webhook_dispatch.
     "always_reward": False,
-    "dollars_per_image": 10,   # 1 image per $10 of the tip
+    "dollars_per_image": 5,    # 1 media item per $5 of the tip ($25 → 5 photos)
     "min_images": 1,           # any tip ≥ $0.01 still gets at least this many
-    "max_images": 5,           # cap so a whale tip can't drain a folder in one shot
+    "max_images": 12,          # cap so a whale tip can't drain a folder in one shot
+                               # (12 = the bundle hard cap; $60 → the full 12)
     "caption": "",             # optional thank-you text ('' → media-only message)
     "window_hours": 72,        # rolling window for the cumulative tier basis
+    # ── Context-aware picking (2026-07-23, the off-promise reward incident) ──
+    # The seller's LLM promises SPECIFIC content ("the whole lingerie set") but
+    # the reward used to pull blindly from the tier folder — off-promise every
+    # time the promise wasn't that folder. When ON, the reward reads the last
+    # `context_pick_messages` thread messages, matches them against the local
+    # vault-AI descriptions (VaultItem.search_text / describe fields) and swaps
+    # up to `context_pick_max` of the bundle's normal slots for photos that
+    # match what he asked for / was promised. No candidates or any LLM failure
+    # → clean fallback to the pure folder pull (never blocks a reward).
+    "context_pick_enabled": True,
+    "context_pick_max": 3,         # at most this many matched swaps per reward
+    "context_pick_messages": 20,   # thread messages the matcher reads
     # The ASK side of the loop (read by of_ai_chat/autoreply, not tip_reward itself):
     # when a fan asks to SEE content via text, those senders ask him to tip. ON by
     # default; ask_amount_dollars=None → she asks naturally WITHOUT naming a price
@@ -166,6 +185,12 @@ _VAULT_SCAN_LIMIT = 100
 # Vault item types we reward with. Photos, videos (incl. DRM-only — still sendable
 # as a vault attachment) and gifs; audio is excluded (not a "reward image/clip").
 _REWARD_MEDIA_TYPES = ("photo", "video", "gif")
+
+# Bundle composition: this share of the reward comes from the TEASE folder
+# (hot_teaser_free_folder — the warm-up shots), the rest from the basis tier's
+# folders. $25 → 5 items = 2 tease + 3 normal. No tease folder configured →
+# the whole bundle stays a tier pull (legacy).
+_TEASE_SHARE = 0.4
 
 
 async def _load_config(account_id: str) -> dict:
@@ -550,36 +575,49 @@ def _tier_folders(cfg: dict, tier_name: str) -> list[str]:
     return []
 
 
+def _pull_stages(client, stages: list[tuple[list[str], int]],
+                 seen: set[int]) -> tuple[list[list[int]], list[int]]:
+    """THE one folder-bundle composer: ordered stage pulls with cross-stage dedup
+    + shortfall backfill. Each (folder_names, count) stage pulls up to `count`
+    unseen items from its folders; a short stage does not shrink the bundle —
+    the total shortfall is backfilled from ALL stages' folders at the end.
+    Returns (per_stage_ids, backfill_ids). Both the teaser composer and the tip
+    reward's tease/normal split ride this. Sync (OF reads) — call via to_thread."""
+    taken = set(seen)
+    picked: list[list[int]] = []
+    for folders, n in stages:
+        folders = [f for f in (folders or []) if str(f).strip()]
+        ids: list[int] = []
+        if n > 0 and folders:
+            by_name = _resolve_folders(client, folders)
+            ids = _gather_unseen(client, folders, by_name, taken, n)
+            taken.update(ids)
+        picked.append(ids)
+    want = sum(max(0, int(n)) for _, n in stages)
+    short = want - sum(len(p) for p in picked)
+    extras: list[int] = []
+    if short > 0:
+        all_folders = [f for folders, _ in stages
+                       for f in (folders or []) if str(f).strip()]
+        if all_folders:
+            by_name = _resolve_folders(client, all_folders)
+            extras = _gather_unseen(client, all_folders, by_name, taken, short)
+    return picked, extras
+
+
 def _compose_bundle_ids(client, plan, seen: set[int],
                         premium_folders: list[str], normal_folders: list[str],
                         free_folders: list[str]) -> tuple[list[int], dict]:
-    """Pull the plan's premium/normal/free photo ids from their tier folders,
-    deduping across tiers and against `seen`. If a tier is short (empty/exhausted
-    folder), backfill the shortfall from ANY tier so the bundle still reaches
-    plan.total where the vault allows. Returns (media_ids, breakdown). Sync (OF
-    folder reads) — call via to_thread."""
-    taken = set(seen)
-    out: list[int] = []
-
-    def pull(folders: list[str], n: int) -> int:
-        folders = [f for f in (folders or []) if str(f).strip()]
-        if n <= 0 or not folders:
-            return 0
-        by_name = _resolve_folders(client, folders)
-        ids = _gather_unseen(client, folders, by_name, taken, n)
-        for mid in ids:
-            taken.add(mid)
-            out.append(mid)
-        return len(ids)
-
-    gp = pull(premium_folders, plan.premium)
-    gn = pull(normal_folders, plan.normal)
-    gf = pull(free_folders, plan.free)
-    short = plan.total - len(out)
-    if short > 0:
-        pull(list(premium_folders) + list(normal_folders) + list(free_folders), short)
-    weight = gp * tip_ladder.WEIGHT_PREMIUM + gn * tip_ladder.WEIGHT_STANDARD
-    return out, {"premium": gp, "normal": gn, "free": gf,
+    """Teaser adapter over _pull_stages: pull the plan's premium/normal/free photo
+    ids from their tier folders (dedup + backfill live in _pull_stages) and keep
+    the breakdown/weight shape the teaser callers report. Sync — call via
+    to_thread."""
+    (prem, norm, free), extras = _pull_stages(
+        client, [(premium_folders, plan.premium), (normal_folders, plan.normal),
+                 (free_folders, plan.free)], seen)
+    out = prem + norm + free + extras
+    weight = len(prem) * tip_ladder.WEIGHT_PREMIUM + len(norm) * tip_ladder.WEIGHT_STANDARD
+    return out, {"premium": len(prem), "normal": len(norm), "free": len(free),
                  "total": len(out), "weight": weight}
 
 
@@ -909,9 +947,36 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         return {**base, "status": "skipped", "reason": "no_folders", "images_sent": 0}
 
     client = await asyncio.to_thread(ax._make_client, account_id)
-    by_name = await asyncio.to_thread(_resolve_folders, client, folders)
     seen = await _seen_media(account_id, fan_id)
-    media_ids = await asyncio.to_thread(_gather_unseen, client, folders, by_name, seen, count)
+
+    # ── Bundle plan (2026-07-23): tip$/5 items total. A tease warm-up share
+    # comes from the free-tease folder (2 of 5), the rest ("normal" slots) from
+    # the basis tier's folders — and when the context matcher is on, up to
+    # context_pick_max of those normal slots are swapped for photos matching
+    # what he asked for in the thread. Total NEVER exceeds `count`.
+    tease_folder = str(cfg.get("hot_teaser_free_folder") or "").strip()
+    tease_n = (min(count - 1, round(count * _TEASE_SHARE))
+               if (count >= 2 and tease_folder) else 0)
+    normal_n = count - tease_n
+
+    matched: list[int] = []
+    if cfg.get("context_pick_enabled"):
+        matched = await pick_context_media(
+            account_id, fan_id, seen=seen,
+            limit=min(int(cfg.get("context_pick_max") or 0), normal_n),
+            n_msgs=int(cfg.get("context_pick_messages") or 20))
+
+    (tease_ids, normal_ids), extras = await asyncio.to_thread(
+        _pull_stages, client,
+        [([tease_folder] if tease_n else [], tease_n),
+         (folders, normal_n - len(matched))],
+        set(seen) | set(matched))
+    # Escalating order: tease warm-up → tier shots (+ any backfill) → the
+    # matched-to-his-ask photos land last (the payoff).
+    media_ids = tease_ids + normal_ids + extras + matched
+    base["bundle"] = {"tease": len(tease_ids),
+                      "normal": len(normal_ids) + len(extras),
+                      "matched": list(matched)}
 
     if not media_ids:
         # Fan has already received every item in the tier's folders. Record a
