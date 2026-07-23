@@ -283,6 +283,11 @@ describe("NotificationToaster — tip/purchase toast href carries ?refresh=media
     const a = findChatAnchor(container, 555);
     expect(a).not.toBeNull();
     expect(a!.getAttribute("href")).toBe("/chat/300/555?refresh=media");
+    // One named tab per fan (lib/chatPopout): _blank would stack a new
+    // stale-snapshot tab per click, and rel=noreferrer would downgrade the
+    // named target back to _blank.
+    expect(a!.getAttribute("target")).toBe("fastt-/chat/300/555");
+    expect(a!.getAttribute("rel")).toBeNull();
   });
 
   it("purchase toast (paided_message) → href ends with ?refresh=media", async () => {
