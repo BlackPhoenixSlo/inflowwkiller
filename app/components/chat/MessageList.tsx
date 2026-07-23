@@ -24,6 +24,8 @@ import { proxyImage, type OFMedia, type OFMessage } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { blurImageClass, useBlurMode } from "@/hooks/useBlurMode";
 import { useCompactMedia } from "@/hooks/useCompactMedia";
+import { useTranslateMode } from "@/hooks/useTranslateMode";
+import { useTranslations, type BubbleTranslation } from "@/hooks/useTranslations";
 import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { MediaTile, pickEagerMediaIds } from "@/components/chat/MediaTile";
 import { automationLabel } from "@/components/messages/MessageRowGeneric";
@@ -95,6 +97,16 @@ export function MessageList(props: MessageListProps) {
     highlightId, lastReadByPeerId,
     attribution, currentEmployeeName,
   } = props;
+
+  // 🌐 translate-to-English mode: batch-fetch translations for every loaded
+  // text (keyed by stripped text, so optimistic-id churn is free) and hand
+  // each Bubble its entry. Off (default) costs nothing — empty deps, no fetch.
+  const [translateOn] = useTranslateMode();
+  const translatableTexts = useMemo(
+    () => (translateOn ? messages.filter((m) => m.text).map((m) => stripHtml(m.text)) : []),
+    [messages, translateOn],
+  );
+  const translations = useTranslations(translatableTexts, translateOn);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const topSentinelRef = useRef<HTMLDivElement | null>(null);
@@ -496,6 +508,7 @@ export function MessageList(props: MessageListProps) {
             seenByPeer={seenByPeer}
             eagerMediaIds={eagerMediaIds}
             employeeLabel={employeeLabel}
+            translation={translateOn && m.text ? translations.get(stripHtml(m.text)) ?? null : null}
           />
         );
         if (!showDateSep) return [bubble];
@@ -517,7 +530,7 @@ function Bubble({
   onRetry, onCancelScheduled,
   onToggleLike, onQuoteReply, onTogglePin, onUnsend, onSendReward, onJumpTo,
   highlighted, isRealOutgoing, seenByPeer,
-  eagerMediaIds, employeeLabel,
+  eagerMediaIds, employeeLabel, translation,
 }: {
   msg: OFMessage;
   replyTo: OFMessage["replyToMessage"] | null;
@@ -539,6 +552,9 @@ function Bubble({
   seenByPeer?: boolean;
   eagerMediaIds: Set<number>;
   employeeLabel?: string | null;
+  /** English translation of this bubble's text (null = none/failed/off).
+   *  Only rendered when the detected language isn't already English. */
+  translation?: BubbleTranslation | null;
 }) {
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   // Touch reveal for the per-message toolbar. On phones there is no hover, so
@@ -747,7 +763,7 @@ function Bubble({
                   {msg.lockedText ? "PAID" : "FREE"}
                 </span>
               )}
-              <span>{stripHtml(msg.text)}</span>
+              <TranslatableText raw={msg.text} translation={translation} />
             </span>
           )}
           {msg.media?.length ? <MediaStrip msg={msg} locked={locked} accountId={accountId} fanId={fanId} isOutgoing={isOutgoing || isOptimisticOutgoing} eagerMediaIds={eagerMediaIds} /> : null}
@@ -1332,6 +1348,45 @@ function stripHtml(s: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, "\"")
     .replace(/&#39;/g, "'");
+}
+
+// Per-language color for the "(es)" tag — same code, same color everywhere so
+// a chatter learns "amber = Spanish" at a glance. Unknown codes fall back to sky.
+const LANG_TAG_COLOR: Record<string, string> = {
+  es: "text-amber-400",
+  sl: "text-violet-400",
+  pt: "text-emerald-400",
+  fr: "text-sky-400",
+  de: "text-orange-400",
+  it: "text-teal-400",
+};
+
+/** Bubble text with the 🌐 translate layer. When a translation exists and the
+ *  detected language isn't English, render "(es)" (colored by language) + the
+ *  English text; the original stays one hover away in the title tooltip.
+ *  English / untranslated / toggle-off all render the plain original. */
+function TranslatableText({ raw, translation }: {
+  raw: string;
+  translation?: BubbleTranslation | null;
+}) {
+  const original = stripHtml(raw);
+  const t = translation;
+  const show = !!t?.text && t.lang !== "en"
+    && t.text.trim().toLowerCase() !== original.trim().toLowerCase();
+  if (!show) return <span>{original}</span>;
+  return (
+    <>
+      <span
+        className={cn(
+          "text-[9px] font-bold self-center tracking-wide",
+          LANG_TAG_COLOR[t.lang] ?? "text-sky-400",
+        )}
+      >
+        ({t.lang})
+      </span>
+      <span title={original}>{t.text}</span>
+    </>
+  );
 }
 
 function fmtTime(iso?: string): string {

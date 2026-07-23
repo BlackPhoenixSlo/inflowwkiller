@@ -67,6 +67,7 @@ from posts import router as _posts_router  # noqa: E402
 from lists import router as _lists_router  # noqa: E402
 from automation_rules_api import router as _automation_rules_router  # noqa: E402
 from automation_preview_api import router as _automation_preview_router  # noqa: E402
+from translate_api import router as _translate_router  # noqa: E402
 from funnels_api import router as _funnels_router  # noqa: E402
 from nudge_config_api import router as _nudge_config_router  # noqa: E402
 from webhook_config_api import router as _webhook_config_router  # noqa: E402
@@ -172,6 +173,7 @@ app.include_router(_posts_router)
 app.include_router(_lists_router)
 app.include_router(_automation_rules_router)
 app.include_router(_automation_preview_router)
+app.include_router(_translate_router)
 app.include_router(_funnels_router)
 app.include_router(_nudge_config_router)
 app.include_router(_webhook_config_router)
