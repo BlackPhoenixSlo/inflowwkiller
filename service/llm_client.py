@@ -76,11 +76,12 @@ class LLMProvider:
 class LLMModel:
     id: str                           # OUR internal id (audit + config key)
     provider: str                     # -> LLMProvider.name
-    # The name the PROVIDER expects on the wire. Our internal id is a stable
-    # handle; the provider's real model name can differ (and change). DeepSeek
-    # V4 is one physical model selected by NAME: "deepseek-chat" = thinking OFF,
-    # "deepseek-reasoner" = thinking ON — both echo back model="deepseek-v4-flash".
-    # Empty → send `id` verbatim. Verified live 2026-06-05 (19 §4).
+    # The name the PROVIDER expects on the wire, when it differs from our id
+    # (DeepInfra publishes vendor-prefixed paths like "Qwen/Qwen3-VL-30B-…").
+    # Empty → send `id` verbatim, which is the case for every model whose
+    # provider names it the way we do. NEVER encode a MODE here: the thinking
+    # flag below is the single source of truth for reasoning on/off — see the
+    # comment above MODELS for the outage that rule was written from.
     api_model: str = ""
     # Pricing is cents per 1k tokens; the cost path multiplies by 100 and counts
     # in MILLICENTS so sub-cent DeepSeek calls don't floor to 0 (model_pricing
@@ -92,7 +93,9 @@ class LLMModel:
     input_per_1k_cents: float = 0.0
     input_cache_hit_per_1k_cents: float = 0.0
     output_per_1k_cents: float = 0.0
-    thinking: bool = False            # DeepSeek v4-pro reasoning mode
+    # Reasoning on/off. The ONE representation of that mode — the request
+    # builder turns it into an explicit `thinking` body flag (both ways).
+    thinking: bool = False
 
     def wire_model(self) -> str:
         """The model name to put on the request body (provider's real name)."""
@@ -117,21 +120,26 @@ PROVIDERS: dict[str, LLMProvider] = {
 # hit rate (verified against the DeepSeek dashboard, where blended spend is far
 # below the cache-miss rate). Grok-4.1-fast: ~$0.20/1M in, ~$0.50/1M out.
 #
-# api_model is the name DeepSeek actually wants: "deepseek-v4-flash" exists but
-# REASONS by default; our non-thinking flash must send "deepseek-chat" (thinking
-# off) and the thinking pro must send "deepseek-reasoner" (verified live).
+# DeepSeek model names: our ids ARE the wire names, so no api_model remap. They
+# once weren't — until 2026-07-24 the mode was picked by NAME ("deepseek-chat" =
+# thinking off, "deepseek-reasoner" = thinking on). DeepSeek retired both
+# aliases with no notice and every call started 400-ing ("supported API model
+# names are deepseek-v4-pro or deepseek-v4-flash"), which killed every LLM
+# automation on every account for 35 minutes. Encoding a MODE as a model name
+# gave us two sources of truth for one bit; `thinking` is now the only one, and
+# the request builder always states it explicitly (see the body build below).
 MODELS: dict[str, LLMModel] = {
     "grok-4-1-fast-non-reasoning": LLMModel(
         "grok-4-1-fast-non-reasoning", "grok",
         input_per_1k_cents=0.02, output_per_1k_cents=0.05,
     ),
-    "deepseek-v4-flash": LLMModel(  # non-thinking → deepseek-chat on the wire
-        "deepseek-v4-flash", "deepseek", api_model="deepseek-chat",
+    "deepseek-v4-flash": LLMModel(
+        "deepseek-v4-flash", "deepseek",
         input_per_1k_cents=0.014, input_cache_hit_per_1k_cents=0.00028,
         output_per_1k_cents=0.028,
     ),
-    "deepseek-v4-pro": LLMModel(  # thinking-capable → deepseek-reasoner on the wire
-        "deepseek-v4-pro", "deepseek", api_model="deepseek-reasoner",
+    "deepseek-v4-pro": LLMModel(
+        "deepseek-v4-pro", "deepseek",
         input_per_1k_cents=0.0435, input_cache_hit_per_1k_cents=0.0003625,
         output_per_1k_cents=0.087, thinking=True,
     ),
@@ -568,18 +576,26 @@ async def chat(
 
     # ── Build the OpenAI-compatible body ────────────────────────────────
     body: dict[str, Any] = {
-        "model": mdl.wire_model(),  # provider's real name (≠ our internal id for DeepSeek)
+        "model": mdl.wire_model(),  # provider's real name (≠ our id for DeepInfra)
         "messages": messages,
         "temperature": temperature,
         "stream": False,
     }
     if response_format is not None:
         body["response_format"] = response_format
-    if mdl.thinking:
-        # DeepSeek v4-pro thinking mode (19 §2). reasoning_content comes back in
-        # a separate field; we strip it before any JSON parse.
-        body["thinking"] = {"type": "enabled"}
-        body["reasoning_effort"] = reasoning_effort
+    if prov.name == "deepseek":
+        # State the mode BOTH ways, always. DeepSeek V4 reasons by default, so
+        # an absent `thinking` field means "whatever the provider defaults to
+        # today" — and that default is exactly what moved under us (see MODELS).
+        # Omitting it on the flash model burns the whole output budget on
+        # reasoning and returns content="" — a silent empty reply, worse than a
+        # 400. `enable_thinking: false` is the obvious-looking alternative and
+        # is SILENTLY IGNORED; only this shape works (verified live 2026-07-24).
+        # reasoning_content comes back in its own field; we strip it before any
+        # JSON parse.
+        body["thinking"] = {"type": "enabled" if mdl.thinking else "disabled"}
+        if mdl.thinking:
+            body["reasoning_effort"] = reasoning_effort
 
     # ── 3. Pending audit row ────────────────────────────────────────────
     call_id = await _insert_pending_call(
