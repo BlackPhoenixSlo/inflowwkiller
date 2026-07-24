@@ -42,6 +42,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax
 import llm_client
+import vault_ai_config
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import (
@@ -438,106 +439,22 @@ async def put_ai_chatter_config(body: _ConfigBody = Body(...)) -> dict[str, Any]
 
 
 # ── vault-ai config (account_ai_config.vault_ai_config_json) ─────────────────
-# Shape frozen in plans/VAULT_AI_ACTIONS_CONTRACT.md §1. Absent/NULL → these
-# defaults, master OFF. Own the whole blob (no shallow-merge with other
-# `*_config_json`). GET returns the EFFECTIVE view (defaults + stored); PATCH
-# deep-merges a partial into the stored blob and returns the new effective view.
-
-_VAULT_AI_DEFAULTS: dict[str, Any] = {
-    "enabled": False,
-    "suggest_only": True,
-    "models": {
-        "describe": "qwen3-vl-30b",
-        "escalation": "qwen3-vl-235b",
-        "caption": "deepseek-chat",
-        "script": "deepseek-chat",
-        "escalate_below_confidence": 65,
-    },
-    "describe": {
-        "cadence_hours": 6,
-        "describe_all_cap_percent": 80,
-        "max_items_per_run": 40,
-        "images": True,
-        "videos": True,
-    },
-    "pricing": {
-        "enabled": True,
-        "bands_by_tier": {
-            "safe":       [300, 800],
-            "suggestive": [500, 1500],
-            "explicit":   [1000, 3000],
-            "graphic":    [2000, 6000],
-            "unknown":    [500, 1500],
-        },
-    },
-    "tier_labels": {
-        "safe": "Safe", "suggestive": "Suggestive", "explicit": "Explicit",
-        "graphic": "Graphic", "unknown": "Unclassified",
-    },
-    "folders": {
-        "mode": "internal",
-        "taxonomy": [],
-        "max_folders_per_item": 3,
-    },
-    "scoring": {"story": True, "tip": True},
-    "daily_reminder": {
-        "enabled": False,
-        "auto_post": False,
-        "auto_mass_message": False,
-        "folder_name": "",
-        "lines": [],
-        "images_per_day": 2,
-        "on_under_min_unseen": "use_fewer",
-        "repeat_after_days": 30,
-        "per_fan_cooldown_hours": 48,
-        "daily_at": ["10:00"],
-        "tz_offset_minutes": 0,
-    },
-    # ── PPV week/month arc (service/vault_ppv_week.py) ────────────────────────
-    # Assembles a story-shaped WEEK (soft→payoff, copy references yesterday) from
-    # already-derived vault content, repeated as exclusive waves across the month.
-    # Every day hits the feed AND DMs (combine). Still suggest-only: the operator
-    # generates a preview and confirms before anything is armed.
-    "ppv_week": {
-        "enabled": False,          # arc automation on (still nothing auto-sends)
-        "weeks": 4,                # 1 = a single week, 4 = a month of waves
-        "combine_feed_and_dm": True,   # each drop = paid post (feed) + mass PPV (DM)
-        "in_voice_copy": True,     # captions written via PAINFUL_TEXTING, not template
-    },
-}
-
-
-def _clone_defaults() -> dict:
-    return json.loads(json.dumps(_VAULT_AI_DEFAULTS))
-
-
-def _deep_merge(dst: dict, src: dict) -> dict:
-    """In-place recursive dict merge; non-dict values (incl. lists) REPLACE.
-
-    Lists replace so a taxonomy edit / band change stores exactly what the
-    operator typed (a per-index merge would trap old items in an updated list).
-    """
-    for k, v in src.items():
-        if isinstance(v, dict) and isinstance(dst.get(k), dict):
-            _deep_merge(dst[k], v)
-        else:
-            dst[k] = v
-    return dst
+# The default blob and the merge live in `vault_ai_config` — the ONE home, shared
+# with `automations/describe_media` so the GET view and the sweep's view can't
+# drift. GET returns the EFFECTIVE view (defaults + stored); PATCH deep-merges a
+# partial into the stored blob and returns the new effective view.
 
 
 def _load_vault_ai_stored(row: AccountAiConfig | None) -> dict:
-    if row is None or not row.vault_ai_config_json:
+    """The operator's stored partial ({} when absent or unreadable)."""
+    if row is None:
         return {}
-    try:
-        val = json.loads(row.vault_ai_config_json)
-    except (TypeError, ValueError):
-        return {}
-    return val if isinstance(val, dict) else {}
+    return vault_ai_config.parse_stored(row.vault_ai_config_json) or {}
 
 
 def _effective_vault_ai(stored: dict) -> dict:
     """Defaults + operator overrides = the blob the UI + consumers see."""
-    return _deep_merge(_clone_defaults(), stored or {})
+    return vault_ai_config.effective(stored)
 
 
 @router.get("/admin/account-ai-config/vault-ai")
@@ -561,8 +478,9 @@ async def patch_vault_ai_config(body: _VaultAiPatchBody = Body(...)) -> dict[str
     now = datetime.utcnow()
     async with get_session() as s:
         row = await s.get(AccountAiConfig, body.account_id)
-        stored = _load_vault_ai_stored(row)
-        _deep_merge(stored, body.config)
+        # Persist the operator's PARTIAL (stored ∪ patch), never the effective
+        # view — baking defaults into the row would freeze today's defaults.
+        stored = vault_ai_config.deep_merge(_load_vault_ai_stored(row), body.config)
         payload = json.dumps(stored)
         await s.execute(
             sqlite_insert(AccountAiConfig)

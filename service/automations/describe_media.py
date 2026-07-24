@@ -31,10 +31,11 @@ dedupe. Locked fields (`locked_fields_json`) are ALWAYS respected on write —
 same for caption/script.
 
 Models come from `vault_ai_config.models`: describe from `models.describe`
-(default `qwen3-vl-30b`); copy from `models.caption` (default `deepseek-chat`,
-coerced to a valid MODELS key at runtime so a bake-off-ready wire name doesn't
-wedge the sweep). One text call per item emits BOTH caption + script (single
-JSON body); later bake-off wiring can split per-field if that ever pays.
+(default `qwen3-vl-30b`); copy from `models.caption` (default `deepseek-v4-flash`),
+each coerced to a valid `llm_client.MODELS` key at runtime so a mistyped
+bake-off row can't wedge the sweep. One text call per item emits BOTH caption +
+script (single JSON body); later bake-off wiring can split per-field if that
+ever pays.
 
 Config master `enabled=false` (default) ⇒ no-op — the automation is safe to
 schedule with an accountaiconfig row that hasn't opted in.
@@ -54,6 +55,7 @@ from db.engine import get_session
 from db.models import AccountAiConfig, VaultItem
 import llm_client
 import vault_ai_brief
+import vault_ai_config
 from llm_client import LLMCapExceeded, LLMError
 from vault_ai_api import _describe_one as _vault_describe_one
 from vault_ai_api import _DRM_RETRY_AFTER  # shared DRM re-attempt cooldown
@@ -63,26 +65,11 @@ log = logging.getLogger("of-relay.automation.describe_media")
 
 _PURPOSE_COPY = "describe_media_copy"
 
-# Built-in defaults (mirror plans/VAULT_AI_ACTIONS_CONTRACT.md §1). The effective
-# config = deep-merge of the stored blob over these. Master `enabled=false` so a
-# freshly-scheduled account never describes until an operator opts in.
-_DEFAULT_CONFIG: dict[str, Any] = {
-    "enabled": False,
-    "models": {
-        "describe":   "qwen3-vl-30b",
-        "escalation": "qwen3-vl-235b",
-        "caption":    "deepseek-chat",
-        "script":     "deepseek-chat",
-        "escalate_below_confidence": 65,
-    },
-    "describe": {
-        "cadence_hours": 6,
-        "describe_all_cap_percent": 80,
-        "max_items_per_run": 40,
-        "images": True,
-        "videos": True,
-    },
-}
+# Defaults + merge come from `vault_ai_config` (the contract's one home) — this
+# module used to keep a partial hand-copy, which meant the API's effective view
+# and the sweep's were two blobs that only happened to agree. Master
+# `enabled=false` there, so a freshly-scheduled account never describes until an
+# operator opts in.
 
 # Kinds the sweep can process (`vault_ai_api._upsert_from_media` writes these).
 # Photos + gifs go through the image branch of `_describe_one`; videos go
@@ -110,53 +97,27 @@ _JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 # ── Config ──────────────────────────────────────────────────────────
 
-def _deep_merge(base: dict, over: dict) -> dict:
-    """Recursive dict merge: `over` beats `base` per key; nested dicts merge."""
-    out = dict(base)
-    for k, v in (over or {}).items():
-        if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = _deep_merge(out[k], v)
-        else:
-            out[k] = v
-    return out
-
-
 async def _load_effective_config(account_id: str) -> dict:
-    """Merge stored `vault_ai_config_json` onto `_DEFAULT_CONFIG`. Missing /
-    unparseable JSON ⇒ pure defaults (master `enabled=false`)."""
+    """The account's effective vault-ai config. Missing / unparseable JSON ⇒
+    pure defaults (master `enabled=false`) — `vault_ai_config.effective` owns
+    that degradation, so a bad blob can never wedge the sweep."""
     async with get_session() as s:
         raw = await s.scalar(
             select(AccountAiConfig.vault_ai_config_json).where(
                 AccountAiConfig.account_id == account_id
             )
         )
-    stored: dict = {}
-    if raw:
-        try:
-            parsed = json.loads(raw)
-        except (TypeError, ValueError):
-            parsed = None
-            log.warning("vault_ai_config_json_bad_json account=%s", account_id)
-        if isinstance(parsed, dict):
-            stored = parsed
-    return _deep_merge(_DEFAULT_CONFIG, stored)
+    stored = vault_ai_config.parse_stored(raw)
+    if raw and stored is None:
+        log.warning("vault_ai_config_json_bad_json account=%s", account_id)
+    return vault_ai_config.effective(stored)
 
 
-def _resolve_model(name: str, *, fallback: str) -> str:
-    """Coerce a config-declared model to a valid `llm_client.MODELS` key.
-
-    The contract exposes wire names like `deepseek-chat`; MODELS is keyed by
-    our internal id (`deepseek-v4-flash`). Map wire names back to the internal
-    id, and fall back to a known-safe id for anything unrecognised — a mistyped
-    bake-off row must NEVER wedge the whole sweep with an LLMConfigError.
-    """
-    if name in llm_client.MODELS:
-        return name
-    if name == "deepseek-chat":
-        return "deepseek-v4-flash"
-    if name == "deepseek-reasoner":
-        return "deepseek-v4-pro"
-    return fallback
+def _resolve_model(name: Any, *, fallback: str) -> str:
+    """Coerce a config-declared model to a valid `llm_client.MODELS` key. The
+    contract speaks internal ids, so this is only a typo guard — a mistyped
+    bake-off row must NEVER wedge the whole sweep with an LLMConfigError."""
+    return str(name) if str(name or "") in llm_client.MODELS else fallback
 
 
 async def _budget_millicents(account_id: str, cap_percent: int) -> int:
@@ -368,12 +329,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     d = cfg.get("describe") or {}
     models = cfg.get("models") or {}
-    describe_model = _resolve_model(
-        str(models.get("describe") or "qwen3-vl-30b"), fallback="qwen3-vl-30b")
-    caption_model = _resolve_model(
-        str(models.get("caption") or "deepseek-chat"), fallback="deepseek-v4-flash")
-    script_model = _resolve_model(
-        str(models.get("script") or "deepseek-chat"), fallback="deepseek-v4-flash")
+    describe_model = _resolve_model(models.get("describe"), fallback="qwen3-vl-30b")
+    caption_model = _resolve_model(models.get("caption"), fallback="deepseek-v4-flash")
+    script_model = _resolve_model(models.get("script"), fallback="deepseek-v4-flash")
 
     max_items = int(payload.get("limit") or d.get("max_items_per_run") or 40)
     cap_percent = int(d.get("describe_all_cap_percent") or 80)
