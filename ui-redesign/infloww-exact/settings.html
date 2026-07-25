@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1440, initial-scale=1">
+<title>Infloww — Settings</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --canvas:#1e1e1e; --card:#262626; --black:#000000;
+    --border:#333333; --border-soft:#2c2c2c;
+    --accent:#4166f6; --green:#67d1ae; --text:#ffffff;
+    --muted:#8a8a8a; --muted2:#6a6a6a; --nav:#b9b9b9;
+    font-synthesis:none;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#050505;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  body{display:flex;justify-content:center;align-items:flex-start;min-height:100vh}
+  a{text-decoration:none;color:inherit}
+  .app{position:relative;width:1440px;height:900px;overflow:hidden;background:#161616;color:var(--text);display:flex;flex-direction:column}
+
+  /* ============ TOP BAR (verbatim from shell) ============ */
+  .topbar{height:52px;flex:0 0 52px;background:var(--black);display:flex;align-items:center;padding:0 18px 0 20px;gap:14px}
+  .traffic{display:flex;gap:8px;align-items:center}
+  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
+  .traffic .r{background:#ff5f57}.traffic .y{background:#febc2e}.traffic .g{background:#28c840}
+  .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
+  .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
+  .trial b{font-size:13px;font-weight:600;color:#fff}
+  .trial span{font-size:12px;color:var(--muted)}
+  .top-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .pill{display:flex;align-items:center;gap:8px;height:36px;padding:0 15px;border:1px solid #2b2b2b;border-radius:20px;background:#111214;font-size:13.5px;font-weight:500;color:#f0f0f0;white-space:nowrap}
+  .pill svg{flex:0 0 auto}
+  .dot-green{width:9px;height:9px;border-radius:50%;background:#3ec46a;display:inline-block}
+  .pill .info{color:var(--muted);display:flex;align-items:center}
+  .sfw{display:flex;flex-direction:column;align-items:center;gap:3px;margin:0 4px 0 6px}
+  .sfw label{font-size:10.5px;font-weight:600;color:#cfcfcf;letter-spacing:.3px}
+  .toggle{width:26px;height:14px;border-radius:8px;background:#3a3a3a;position:relative}
+  .toggle::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:#e6e6e6}
+  .iconbtn{width:36px;height:36px;display:flex;align-items:center;justify-content:center;color:#e6e6e6;border-radius:50%}
+  .iconbtn:hover{background:#1c1c1c}
+  .avatar-top{width:34px;height:34px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#fff}
+
+  /* ============ SHELL ============ */
+  .shell{flex:1;display:flex;min-height:0}
+
+  /* ============ COLLAPSED ICON RAIL ============ */
+  .railbar{width:70px;flex:0 0 70px;background:#000;display:flex;flex-direction:column;align-items:center;padding:14px 0 12px}
+  .rail-logo{width:42px;height:42px;border-radius:12px;background:#141821;display:flex;align-items:center;justify-content:center;position:relative;margin-bottom:12px}
+  .rail-logo .pink{position:absolute;top:-1px;right:-1px;width:10px;height:10px;border-radius:50%;background:#ec4b9b;border:2px solid #000}
+  .rail-icons{display:flex;flex-direction:column;align-items:center;gap:5px;width:100%}
+  .rail-item{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#787878}
+  .rail-item:hover{background:#141414;color:#cfcfcf}
+  .rail-item.active{background:#1f1f1f;color:#fff}
+  .rail-item.cur{background:#171a24;color:var(--accent)}
+  .rail-div{width:26px;height:1px;background:#242424;margin:9px 0}
+  .rail-spacer{flex:1}
+
+  /* ============ OVERLAY ============ */
+  .overlay{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;background:#161616}
+  .ov-head{height:60px;flex:0 0 60px;display:flex;align-items:center;padding:0 24px;border-bottom:1px solid #262626}
+  .ov-title{font-size:20px;font-weight:600;color:#fff}
+  .ov-close{margin-left:auto;color:#c0c0c0;width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:9px}
+  .ov-close:hover{background:#242424;color:#fff}
+
+  .ov-body{flex:1;display:flex;min-height:0}
+  .tablist{width:320px;flex:0 0 320px;border-right:1px solid #222;padding:14px 0;overflow-y:auto}
+  .tab{display:flex;align-items:center;gap:15px;height:54px;padding:0 26px;color:#9a9a9a;font-size:15.5px;font-weight:500;cursor:pointer}
+  .tab .tico{width:22px;display:flex;align-items:center;justify-content:center;color:#8a8a8a;flex:0 0 22px}
+  .tab:hover{color:#cfcfcf}
+  .tab.active{color:var(--accent);background:linear-gradient(180deg,#202127,#191a1e)}
+  .tab.active .tico{color:var(--accent)}
+
+  .panelwrap{flex:1;min-width:0;overflow-y:auto;padding:28px 44px 60px}
+  .panel{display:none}
+  .panel.show{display:block}
+
+  .panel-head{display:flex;align-items:center;margin-bottom:24px}
+  .panel-head.line{padding-bottom:18px;border-bottom:1px solid #242424}
+  .panel-title{font-size:24px;font-weight:600;color:#fff}
+  .panel-actions{margin-left:auto;display:flex;gap:12px;align-items:center}
+
+  .btn{height:42px;padding:0 20px;border-radius:9px;font-size:14.5px;font-weight:600;font-family:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:8px;border:1px solid transparent;white-space:nowrap}
+  .btn-primary{background:var(--accent);color:#fff}
+  .btn-outline{background:#1c1c1c;border-color:#3a3a3a;color:#e8e8e8}
+  .btn-ghost{background:transparent;color:var(--accent);font-weight:500;height:auto;padding:0}
+  .btn-orange{background:#f0a072;color:#1a1a1a}
+
+  .subhead{font-size:15px;font-weight:600;color:#fff;margin:4px 0 20px}
+  .field{margin-bottom:24px;max-width:640px}
+  .flabel{font-size:14px;color:#cfcfcf;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+  .flabel .req{color:#e5735b;margin-right:1px}
+  .flabel .info{color:var(--muted);display:flex}
+  .finput{width:100%;height:54px;background:#1b1b1b;border:1px solid #333;border-radius:10px;color:#fff;font-size:15px;font-family:inherit;padding:0 16px}
+  .finput::placeholder{color:#666}
+  .fselect{width:100%;height:54px;background:#1b1b1b;border:1px solid #333;border-radius:10px;color:#eaeaea;font-size:15px;padding:0 16px;display:flex;align-items:center;justify-content:space-between}
+  .fselect .cv{color:var(--muted);display:flex}
+  .picbox{width:150px;height:150px;border-radius:12px;background:#3a3a3a;display:flex;align-items:center;justify-content:center;color:#6f6f6f;font-size:66px;font-weight:700;letter-spacing:-2px;margin-bottom:8px}
+
+  .beta{font-size:12px;color:#7a7a7a;font-weight:500;margin-left:6px}
+
+  /* toggles */
+  .sw{width:46px;height:25px;border-radius:13px;background:#3a3a3a;position:relative;flex:0 0 auto;cursor:pointer}
+  .sw::after{content:"";position:absolute;top:3px;left:3px;width:19px;height:19px;border-radius:50%;background:#fff;transition:.15s}
+  .sw.on{background:var(--accent)}
+  .sw.on::after{left:24px}
+  .sw.orange{background:#f0824d}
+  .sw.orange::after{left:24px}
+  .sw.lock{background:#3a56b8}
+  .sw.lock::after{left:24px;background:#9a9a9a}
+  .sw.sm{width:40px;height:22px}
+  .sw.sm::after{width:16px;height:16px}
+  .sw.sm.on::after,.sw.sm.orange::after,.sw.sm.lock::after{left:21px}
+
+  /* setting rows / cards */
+  .setrow{display:flex;align-items:center;gap:16px;background:#1c1c1c;border:1px solid #2a2a2a;border-radius:12px;padding:22px 24px}
+  .setrow .txt .t{font-size:17px;font-weight:600;color:#fff}
+  .setrow .txt .d{font-size:14px;color:#8a8a8a;margin-top:6px}
+  .setrow .sw{margin-left:auto}
+  .setrow .lead{display:flex;align-items:center;gap:14px}
+  .setrow .lead .ic{color:#cfcfcf;display:flex}
+
+  /* tables */
+  .tbl{width:100%;border-collapse:collapse;font-size:14.5px}
+  .tbl thead th{text-align:left;font-weight:600;color:#e0e0e0;padding:16px 18px;background:#212121}
+  .tbl thead th:first-child{border-radius:10px 0 0 10px}
+  .tbl thead th:last-child{border-radius:0 10px 10px 0}
+  .tbl td{padding:20px 18px;color:#d0d0d0;border-bottom:1px solid #222;vertical-align:middle}
+  .tbl .type{color:#fff}
+  .tbl .sub{color:#cfcfcf;padding-left:32px}
+  .muted{color:#8a8a8a}
+  .numchip{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:26px;padding:0 6px;border:1px solid #3a3a3a;border-radius:6px;background:#1b1b1b;color:#fff;margin:0 3px}
+  .ops a{color:var(--accent);margin-right:18px;font-weight:500}
+  .ops .trash{color:#8a8a8a;display:inline-flex;vertical-align:middle}
+
+  /* filter bar */
+  .filterbar{display:flex;align-items:center;gap:14px;margin-bottom:24px}
+  .filterbar .lb{font-size:14.5px;color:#cfcfcf}
+  .filterbar .fi{height:44px;background:#1b1b1b;border:1px solid #333;border-radius:9px;color:#eaeaea;font-size:14.5px;padding:0 14px;display:flex;align-items:center;min-width:220px}
+  .filterbar .fi.sel{justify-content:space-between}
+  .filterbar .fi .cv{color:var(--muted);display:flex}
+  .filterbar .sp{flex:1}
+
+  /* subtabs (billing) */
+  .subtabs{display:flex;gap:30px;border-bottom:1px solid #262626;margin-bottom:26px}
+  .subtab{padding:2px 2px 14px;font-size:15.5px;color:#8a8a8a;cursor:pointer;position:relative}
+  .subtab.on{color:var(--accent);font-weight:500}
+  .subtab.on::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--accent)}
+
+  .daterow{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-bottom:22px}
+  .refbtn{width:44px;height:44px;border:1px solid #333;border-radius:9px;background:#1b1b1b;display:flex;align-items:center;justify-content:center;color:#cfcfcf}
+  .drange{display:flex;align-items:center;height:44px;border:1px solid #333;border-radius:9px;background:#1b1b1b;color:#8a8a8a;font-size:14.5px}
+  .drange span{padding:0 16px}
+  .drange .arw{color:#6a6a6a}
+  .drange .cal{padding:0 14px;border-left:1px solid #2e2e2e;color:#8a8a8a;display:flex;align-items:center;height:100%}
+
+  /* empty states */
+  .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:50px 0;color:#8a8a8a;font-size:15px}
+
+  /* info banner */
+  .infobanner{display:flex;align-items:center;gap:13px;background:#14171f;border:1px solid #26314f;border-radius:12px;padding:16px 20px;font-size:14.5px;color:#c7cfdd;line-height:1.5}
+  .infobanner .ic{color:var(--accent);flex:0 0 auto;display:flex}
+  .infobanner a{color:#6d8bfb}
+
+  /* balance */
+  .bal-center{text-align:center;padding:80px 0 60px}
+  .bal-center .lbl{font-size:15px;color:#cfcfcf;margin-bottom:16px}
+  .bal-center .amt{font-size:42px;font-weight:700;color:#fff;display:inline-flex;align-items:center;gap:12px}
+
+  /* display cards (preferences) */
+  .disprow{display:flex;gap:20px;max-width:760px;margin-top:6px}
+  .discard{flex:1;background:#181818;border:1px solid #2b2b2b;border-radius:12px;overflow:hidden}
+  .discard.sel{border-color:var(--accent)}
+  .discard .prev{padding:26px 22px;display:flex;flex-direction:column;gap:14px;background:#191919}
+  .discard.dark .prev{background:#111}
+  .prow{display:flex;align-items:center;gap:14px}
+  .pdot{width:26px;height:26px;border-radius:50%;background:#dcdcdc;flex:0 0 auto}
+  .discard.dark .pdot{background:#3a3a3a}
+  .pbar{height:26px;border-radius:6px;background:#e9e9e9;flex:1}
+  .pbar.sm{max-width:150px}
+  .pbar.b{background:#c9d4f7}
+  .discard.dark .pbar{background:#333}
+  .discard.dark .pbar.b{background:#3a56d0}
+  .discard .foot{border-top:1px solid #2b2b2b;padding:16px 20px;display:flex;align-items:center;gap:11px;font-size:15px;color:#eee}
+  .radio{width:18px;height:18px;border-radius:50%;border:2px solid #666;flex:0 0 auto}
+  .radio.on{border-color:var(--accent);box-shadow:inset 0 0 0 3px #181818, inset 0 0 0 6px var(--accent)}
+
+  /* about */
+  .about-center{display:flex;flex-direction:column;align-items:center;gap:16px;padding:60px 0}
+  .iflogo{width:120px;height:120px;border-radius:26px;background:#0c0c0c;display:flex;align-items:center;justify-content:center}
+  .about-center .ver{font-size:16px;font-weight:600;color:#fff;margin-top:6px}
+  .about-center .cli{font-size:12.5px;color:#8a8a8a}
+  .synccard{max-width:760px;margin-top:26px;background:#191919;border:1px solid #2b2b2b;border-radius:12px;padding:22px 24px}
+  .synccard .t{font-size:16px;font-weight:600;color:#fff}
+  .synccard .d{font-size:14px;color:#8a8a8a;margin-top:6px;margin-bottom:18px}
+  .syncrow{display:flex;align-items:center;padding:14px 0;border-top:1px solid #262626}
+  .syncrow .nm{font-size:15px;color:#eee}
+  .syncrow .sw{margin-left:auto}
+
+  .lastupd{font-size:13.5px;color:#8a8a8a}
+
+  /* help fab */
+  .help{position:absolute;right:26px;bottom:22px;width:52px;height:52px;border-radius:50%;background:#111;border:1px solid #2a2a2a;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 20px rgba(0,0,0,.5);color:#eaeaea}
+</style>
+<style id="ms-css">
+  .modelswap{position:relative;margin-left:14px;z-index:60}
+  .ms-btn{display:flex;align-items:center;gap:8px;height:36px;padding:0 12px 0 8px;border:1px solid #2b2b2b;
+    border-radius:20px;background:#111214;color:#f0f0f0;font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer}
+  .ms-btn:hover{border-color:#3a3a3a}
+  .ms-av{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:700;color:#fff;flex:0 0 auto}
+  .ms-cv{color:#8a8a8a;transition:transform .15s}
+  .modelswap.open .ms-cv{transform:rotate(180deg)}
+  .ms-menu{position:absolute;top:44px;left:0;min-width:216px;background:#1b1b1d;border:1px solid #333;
+    border-radius:12px;padding:6px;box-shadow:0 12px 34px rgba(0,0,0,.55);display:none}
+  .modelswap.open .ms-menu{display:block}
+  .ms-head{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6a6a6a;padding:8px 10px 6px}
+  .ms-item{display:flex;align-items:center;gap:10px;height:40px;padding:0 10px;border-radius:9px;
+    color:#e6e6e6;font-size:14px;font-weight:500;cursor:pointer;text-decoration:none}
+  .ms-item:hover{background:#242424}
+  .ms-item.active{background:#242424}
+  .ms-dot{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:700;color:#fff;flex:0 0 auto}
+  .ms-nm{flex:1}
+  .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
+  .ms-item:not(.active) .ms-on{visibility:hidden}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= TOP BAR ================= -->
+  <div class="topbar">
+    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+    <div class="panel-btn">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
+    </div>
+    <div class="trial"><b>You're on a free trial</b><span>7 days left</span></div>
+    <div class="modelswap" id="modelswap">
+      <button class="ms-btn" type="button">
+        <span class="ms-av" style="background:#e0679b">L</span>
+        <span class="ms-name">Ava</span>
+        <svg class="ms-cv" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="ms-menu">
+        <div class="ms-head">Switch model</div>
+        <a class="ms-item active"><span class="ms-dot" style="background:#e0679b">L</span><span class="ms-nm">Ava</span><span class="ms-on"></span></a>
+        <a class="ms-item"><span class="ms-dot" style="background:#5b8def">I</span><span class="ms-nm">Isabelle</span><span class="ms-on"></span></a>
+        <a class="ms-item"><span class="ms-dot" style="background:#67d1ae">A</span><span class="ms-nm">the graded vault</span><span class="ms-on"></span></a>
+        <a class="ms-item"><span class="ms-dot" style="background:#a78bfa">A</span><span class="ms-nm">the graded vault</span><span class="ms-on"></span></a>
+        <a class="ms-item"><span class="ms-dot" style="background:#e5a35b">S</span><span class="ms-nm">the graded vault</span><span class="ms-on"></span></a>
+      </div>
+    </div>
+    <div class="top-right">
+      <div class="pill"><span class="dot-green"></span>Operational</div>
+      <div class="pill">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg>
+        UTC-10:00
+        <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
+      </div>
+      <a class="pill" href="referrals.html">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3.2 2.9-5 5.5-5s4.9 1.8 5.5 5"/><path d="M16 6.5a2.7 2.7 0 0 1 0 5M18.5 19c-.3-2-1.1-3.6-2.3-4.6" stroke-linecap="round"/></svg>
+        Referrals
+      </a>
+      <a class="pill" href="leaderboard.html">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7"><path d="M7 4h10v4a5 5 0 0 1-10 0V4z"/><path d="M7 5H4v2a3 3 0 0 0 3 3M17 5h3v2a3 3 0 0 1-3 3" stroke-linecap="round"/><path d="M10 13.5V17M14 13.5V17M8 20h8" stroke-linecap="round"/></svg>
+        Leaderboard
+      </a>
+      <div class="sfw"><label>SFW</label><div class="toggle"></div></div>
+      <a class="iconbtn" href="notifications.html">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10.5 19a2 2 0 0 0 3 0" stroke-linecap="round"/></svg>
+      </a>
+      <div class="avatar-top">Aa</div>
+    </div>
+  </div>
+
+  <!-- ================= SHELL ================= -->
+  <div class="shell">
+
+    <!-- ===== COLLAPSED ICON RAIL ===== -->
+    <aside class="railbar">
+      <a class="rail-logo" href="dashboard.html">
+        <svg width="22" height="22" viewBox="0 0 28 28" fill="none"><circle cx="15" cy="14" r="7.5" stroke="#4166f6" stroke-width="3"/><circle cx="15" cy="14" r="2.5" fill="#4166f6"/><path d="M7.5 14 H2.5" stroke="#4166f6" stroke-width="3" stroke-linecap="round"/></svg>
+        <span class="pink"></span>
+      </a>
+      <div class="rail-icons">
+        <a class="rail-item" href="dashboard.html" title="Dashboard"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></a>
+        <a class="rail-item" href="ofmanager.html" title="OF Manager"><svg width="21" height="21" viewBox="0 0 24 24" fill="none"><path d="M12 3c-4 0-8 3-9 8 5 0 9-3 9-8z" fill="currentColor"/><circle cx="15" cy="14" r="5.5" stroke="currentColor" stroke-width="2"/><circle cx="15" cy="14" r="1.8" fill="currentColor"/></svg></a>
+        <a class="rail-item" href="analytics-creator-reports.html" title="Analytics"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 20V10M12 20V4M18 20v-7" stroke-linecap="round"/></svg></a>
+        <a class="rail-item" href="messages.html" title="Messages Pro"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3l3.2 5.6L21 12l-5.8 3.4L12 21l-3.2-5.6L3 12l5.8-3.4L12 3z" stroke-linejoin="round"/></svg></a>
+        <a class="rail-item" href="growth-smart-messages.html" title="Growth"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M4 17l5-4 4 3 3-3 4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        
+      </div>
+      <div class="rail-div"></div>
+      <div class="rail-icons">
+        <a class="rail-item" href="creators-manage.html" title="Creators"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="12" cy="10" r="2.4"/><path d="M8 16c.6-2 2.2-2.8 4-2.8s3.4.8 4 2.8" stroke-linecap="round"/></svg></a>
+        <a class="rail-item" href="employees-manage.html" title="Employees"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="2.5"/><circle cx="12" cy="10" r="2.2"/><path d="M8.5 16c.6-1.8 2-2.5 3.5-2.5s2.9.7 3.5 2.5" stroke-linecap="round"/></svg></a>
+      </div>
+      <div class="rail-spacer"></div>
+      <div class="rail-icons">
+        <a class="rail-item cur" href="settings.html" title="Settings"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h10M18 7h2M4 17h2M10 17h10" stroke-linecap="round"/><circle cx="15" cy="7" r="2.4"/><circle cx="8" cy="17" r="2.4"/></svg></a>
+        <a class="rail-item" href="#" title="Help center"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.8 2.8 0 0 1 5.3 1c0 1.8-2.7 2.2-2.7 3.8" stroke-linecap="round"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg></a>
+      </div>
+    </aside>
+
+    <!-- ===== OVERLAY ===== -->
+    <main class="overlay">
+      <div class="ov-head">
+        <div class="ov-title">Settings</div>
+        <a class="ov-close" href="dashboard.html" title="Close">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
+        </a>
+      </div>
+
+      <div class="ov-body">
+        <!-- ===== TAB LIST ===== -->
+        <div class="tablist" id="tablist">
+          <div class="tab active" data-tab="account"><span class="tico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3.4"/><path d="M5.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5" stroke-linecap="round"/></svg></span>Your Account</div>
+          <div class="tab" data-tab="preferences"><span class="tico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20s-7-4.3-7-9.3A3.7 3.7 0 0 1 12 8a3.7 3.7 0 0 1 7 2.7C19 15.7 12 20 12 20z" stroke-linejoin="round"/></svg></span>Your Preferences</div>
+          <div class="tab" data-tab="secorg"><span class="tico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>Security (organization)</div>
+          <div class="tab" data-tab="secpers"><span class="tico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="6" width="17" height="12" rx="3"/><circle cx="8" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="1" fill="currentColor" stroke="none"/></svg></span>Security&nbsp;&nbsp;(personal)</div>
+          <div class="tab" data-tab="billing"><span class="tico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="7" ry="2.8"/><path d="M5 6v6c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8V6M5 12v6c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8v-6"/></svg></span>Billing</div>
+          <div class="tab" data-tab="balance"><span class="tico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h13a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/><path d="M3 7l2.5-3H16l1 3" stroke-linejoin="round"/><circle cx="16" cy="13" r="1.4" fill="currentColor" stroke="none"/></svg></span>Your Balance</div>
+          <div class="tab" data-tab="role"><span class="tico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="9" r="3"/><path d="M3.5 19c.6-3.2 2.9-5 5.5-5s4.9 1.8 5.5 5" stroke-linecap="round"/><path d="M16 7a3 3 0 0 1 0 6M18.5 19c-.3-2.4-1.3-4-2.6-4.6" stroke-linecap="round"/></svg></span>Role Settings</div>
+          <div class="tab" data-tab="sales"><span class="tico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 20V11M12 20V4M18 20v-6" stroke-linecap="round"/></svg></span>Sales Settings</div>
+          <div class="tab" data-tab="time"><span class="tico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M5 5L8 7M19 5l-3 2" stroke-linecap="round"/></svg></span>Time tracking</div>
+          <div class="tab" data-tab="messaging"><span class="tico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a7.5 7.5 0 0 1-10.6 6.8L4 20l1.3-4.2A7.5 7.5 0 1 1 20 12z" stroke-linejoin="round"/></svg></span>Messaging settings</div>
+          <div class="tab" data-tab="about"><span class="tico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>About Infloww</div>
+        </div>
+
+        <!-- ===== PANELS ===== -->
+        <div class="panelwrap">
+
+          <!-- YOUR ACCOUNT -->
+          <section class="panel show" data-panel="account">
+            <div class="panel-head line">
+              <div class="panel-title">Your account</div>
+              <div class="panel-actions">
+                <button class="btn btn-outline">Change password</button>
+                <button class="btn btn-primary">Edit</button>
+              </div>
+            </div>
+            <div class="subhead">Personal info</div>
+            <div class="field">
+              <span class="flabel">Picture</span>
+              <div class="picbox">if</div>
+            </div>
+            <div class="field">
+              <label class="flabel"><span class="req">*</span>Name</label>
+              <input class="finput" value="Alex Morgan" readonly>
+            </div>
+            <div class="field">
+              <label class="flabel">Email</label>
+              <input class="finput" value="chatter@agency.com" readonly>
+            </div>
+            <div class="field">
+              <label class="flabel"><span class="req">*</span>Team name</label>
+              <input class="finput" value="Aurora Agency" readonly>
+            </div>
+            <div class="field">
+              <label class="flabel">Telegram username (recommended)</label>
+              <input class="finput" placeholder="" >
+            </div>
+          </section>
+
+          <!-- YOUR PREFERENCES -->
+          <section class="panel" data-panel="preferences">
+            <div class="panel-head line"><div class="panel-title">Your preferences</div></div>
+            <div class="subhead">Time settings</div>
+            <div class="field">
+              <label class="flabel">Regular time zone</label>
+              <div class="fselect">(UTC-10:00) Hawaii<span class="cv"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+            </div>
+            <div class="field">
+              <label class="flabel">Agency's time zone for creator reports, fan reports, tracking links and free trial links <span class="info"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span></label>
+              <div class="fselect">(UTC-10:00) Hawaii<span class="cv"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+            </div>
+            <div class="field">
+              <label class="flabel">Start weekly reports on</label>
+              <div class="fselect">Sunday<span class="cv"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+            </div>
+            <div class="field">
+              <label class="flabel">Language Settings <span class="beta">Beta</span></label>
+              <div class="fselect">English<span class="cv"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+            </div>
+            <div class="field" style="max-width:760px">
+              <label class="flabel">Display</label>
+              <div class="disprow">
+                <div class="discard">
+                  <div class="prev"><div class="prow"><span class="pdot"></span><span class="pbar"></span></div><div class="prow"><span class="pdot"></span><span class="pbar sm b"></span></div></div>
+                  <div class="foot"><span class="radio"></span>Light mode</div>
+                </div>
+                <div class="discard dark sel">
+                  <div class="prev"><div class="prow"><span class="pdot"></span><span class="pbar"></span></div><div class="prow"><span class="pdot"></span><span class="pbar sm b"></span></div></div>
+                  <div class="foot"><span class="radio on"></span>Dark mode</div>
+                </div>
+              </div>
+            </div>
+            <div class="synccard">
+              <div class="t">Synchronize platform display settings</div>
+              <div class="d">Update your platform's display settings to match your chosen preferences on Infloww</div>
+              <div class="syncrow"><span class="nm">OnlyFans</span><span class="sw on"></span></div>
+            </div>
+          </section>
+
+          <!-- SECURITY (ORG) -->
+          <section class="panel" data-panel="secorg">
+            <div class="panel-head"><div class="panel-title">Security (organization)</div></div>
+            <div class="setrow">
+              <div class="txt"><div class="t">Two-factor authentication</div><div class="d">Not enabled</div></div>
+              <span class="sw sm"></span>
+            </div>
+          </section>
+
+          <!-- SECURITY (PERSONAL) -->
+          <section class="panel" data-panel="secpers">
+            <div class="empty" style="padding:150px 0">
+              <div style="width:64px;height:64px;border-radius:50%;background:#3a3a3a;display:flex;align-items:center;justify-content:center;color:#0a0a0a;font-size:34px;font-weight:700">!</div>
+              <div style="font-size:19px;color:#fff;font-weight:500">Two-factor authentication is not required for your organization</div>
+            </div>
+          </section>
+
+          <!-- BILLING -->
+          <section class="panel" data-panel="billing">
+            <div class="panel-head">
+              <div class="panel-title">Billing</div>
+              <div class="panel-actions">
+                <button class="btn btn-outline">Pricing plans</button>
+                <button class="btn btn-outline">Update card</button>
+                <button class="btn btn-outline">Cancel subscription</button>
+                <button class="btn btn-primary">Billing information</button>
+              </div>
+            </div>
+            <div class="subtabs"><div class="subtab on">Infloww subscription</div><div class="subtab">AI Copilot</div></div>
+            <div class="daterow">
+              <div class="refbtn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.7L4 16M4 20v-4h4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+              <div class="drange"><span>Start month</span><span class="arw">→</span><span>End month</span><span class="cal"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 9h16M8 3v4M16 3v4" stroke-linecap="round"/></svg></span></div>
+            </div>
+            <table class="tbl">
+              <thead><tr><th>Invoice ID</th><th>Period</th><th>Subscription fee</th><th>Discount</th><th>IGIC</th><th>Total amount</th><th>Operations</th></tr></thead>
+            </table>
+            <div class="empty" style="padding:60px 0">
+              <svg width="72" height="80" viewBox="0 0 72 80" fill="none"><path d="M14 8h30l14 14v46a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4z" fill="#5a5a5a"/><path d="M44 8v10a4 4 0 0 0 4 4h10z" fill="#6f6f6f"/><rect x="22" y="38" width="20" height="4.5" rx="2.25" fill="#4166f6"/><rect x="22" y="48" width="12" height="4.5" rx="2.25" fill="#4166f6"/></svg>
+              You don't have any invoices yet
+            </div>
+          </section>
+
+          <!-- YOUR BALANCE -->
+          <section class="panel" data-panel="balance">
+            <div class="panel-head line"><div class="panel-title">Your Balance</div></div>
+            <div class="infobanner">
+              <span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
+              Your balance will be automatically applied towards your next invoice. For more information, please contact our finance team at <a href="#">support@infloww.com</a>.
+            </div>
+            <div class="bal-center">
+              <div class="lbl">Balance</div>
+              <div class="amt">💰 $0.00</div>
+            </div>
+            <div style="font-size:19px;font-weight:600;color:#fff;margin-bottom:8px">Transaction History</div>
+            <div class="empty" style="padding:40px 0">
+              <svg width="86" height="80" viewBox="0 0 86 80" fill="none"><rect x="20" y="34" width="46" height="26" rx="3" fill="#cfcfcf"/><rect x="26" y="20" width="34" height="20" rx="2" fill="#e6e6e6"/><rect x="30" y="52" width="26" height="16" rx="2" fill="#f0f0f0"/><circle cx="63" cy="24" r="8" fill="#dcdcdc"/><path d="M60 24h6M63 21v6" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>
+              You don't have any transactions yet
+            </div>
+          </section>
+
+          <!-- ROLE SETTINGS -->
+          <section class="panel" data-panel="role">
+            <div class="panel-head">
+              <div class="panel-title">Role settings</div>
+              <div class="panel-actions"><button class="btn btn-primary">Add role</button></div>
+            </div>
+            <div class="filterbar">
+              <span class="lb">By role :</span><div class="fi"><span class="muted">Role name</span></div>
+              <span class="lb">By status :</span><div class="fi sel">Status<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+              <div class="sp"></div>
+              <button class="btn btn-outline">Reset</button>
+              <button class="btn btn-primary">Search</button>
+            </div>
+            <table class="tbl">
+              <thead><tr><th>Role</th><th>Description</th><th>Users</th><th>Status</th><th>Operations</th></tr></thead>
+              <tbody>
+                <tr><td class="type">Owner</td><td class="muted">Have permissions for the ent…</td><td>Aurora Agency</td><td><span class="sw sm lock"></span></td><td class="ops"><a href="#">Set permissions</a><a href="#">Edit</a><span class="trash"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td></tr>
+                <tr><td class="type">Admin</td><td class="muted">Have permissions for the ent…</td><td>Aurora Agency</td><td><span class="sw sm lock"></span></td><td class="ops"><a href="#">Set permissions</a><a href="#">Edit</a><span class="trash"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td></tr>
+                <tr><td class="type">Team Leader</td><td>Team Leader</td><td></td><td><span class="sw sm on"></span></td><td class="ops"><a href="#">Set permissions</a><a href="#">Edit</a><span class="trash"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td></tr>
+                <tr><td class="type">Chatter</td><td>Chatter</td><td></td><td><span class="sw sm on"></span></td><td class="ops"><a href="#">Set permissions</a><a href="#">Edit</a><span class="trash"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td></tr>
+                <tr><td class="type">Creator</td><td>Creator</td><td></td><td><span class="sw sm on"></span></td><td class="ops"><a href="#">Set permissions</a><a href="#">Edit</a><span class="trash"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td></tr>
+              </tbody>
+            </table>
+          </section>
+
+          <!-- SALES SETTINGS -->
+          <section class="panel" data-panel="sales">
+            <div class="panel-head">
+              <div class="panel-title">Sales settings</div>
+              <div class="panel-actions"><a class="btn-ghost" href="#">Settings history</a><button class="btn btn-primary">Edit</button></div>
+            </div>
+            <div style="display:flex;align-items:flex-start;margin-bottom:6px">
+              <div style="font-size:17px;font-weight:600;color:#fff">Customize how employee earnings are calculated in your reports</div>
+              <div class="lastupd" style="margin-left:auto">Last updated on Jul 21, 2026 10:48 PM</div>
+            </div>
+            <div style="display:flex;align-items:center;margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid #242424">
+              <div style="font-size:14.5px;color:#cfcfcf">Multiple employees working on the same shift for the assigned Creator</div>
+              <span class="sw sm" style="margin-left:auto"></span>
+            </div>
+            <table class="tbl">
+              <thead><tr><th>Type</th><th></th><th>Attributed to</th></tr></thead>
+              <tbody>
+                <tr><td class="type">Message</td><td></td><td>Sale is attributed to message sender</td></tr>
+                <tr><td class="type">OF Mass Message</td><td></td><td class="muted">Sale is not attributed to anyone</td></tr>
+                <tr><td class="type">Auto-message</td><td></td><td class="muted">Sale is not attributed to anyone</td></tr>
+                <tr><td class="type" rowspan="5" style="vertical-align:middle">Tips</td><td class="sub">Tips from messages</td><td>Sale is attributed to the last Chatter who messaged the fan within <span class="numchip">1</span> hours and <span class="numchip">0</span> minutes of the Creator being tipped.</td></tr>
+                <tr><td class="sub">Tips from profile</td><td class="muted">Sale is not attributed to anyone</td></tr>
+                <tr><td class="sub">Tips from posts</td><td class="muted">Sale is not attributed to anyone</td></tr>
+                <tr><td class="sub">Tips from streams</td><td class="muted">Sale is not attributed to anyone</td></tr>
+                <tr><td class="sub">Tips from stories</td><td class="muted">Sale is not attributed to anyone</td></tr>
+                <tr><td class="type">Posts</td><td></td><td class="muted">Sale is not attributed to anyone</td></tr>
+                <tr><td class="type">Subscription</td><td></td><td class="muted">Sale is not attributed to anyone</td></tr>
+                <tr><td class="type">Streams</td><td></td><td class="muted">Sale is not attributed to anyone</td></tr>
+                <tr><td class="type">Referrals</td><td></td><td class="muted">Sale is not attributed to anyone</td></tr>
+              </tbody>
+            </table>
+            <div style="font-size:14px;color:#8a8a8a;margin:18px 0 22px">If none of the above conditions are met, the sale is not attributed to anyone</div>
+            <div class="synccard" style="max-width:none">
+              <div class="syncrow" style="border-top:none;padding-top:0"><span class="nm">Exclude welcome messages</span><span class="sw sm" style="margin-left:auto"></span></div>
+              <div class="syncrow"><span class="nm">Exclude OnlyFans Service Fee (20%)</span><span class="sw sm" style="margin-left:auto"></span></div>
+            </div>
+          </section>
+
+          <!-- TIME TRACKING -->
+          <section class="panel" data-panel="time">
+            <div class="panel-head line">
+              <div class="panel-title">Time tracking</div>
+              <div class="panel-actions"><button class="btn btn-outline">Edit</button></div>
+            </div>
+            <div class="setrow">
+              <div class="txt"><div class="t">Enable time tracking</div><div class="d">Track your team's work hours with a clock in and clock out function</div></div>
+              <span class="sw"></span>
+            </div>
+          </section>
+
+          <!-- MESSAGING SETTINGS -->
+          <section class="panel" data-panel="messaging">
+            <div class="panel-head"><div class="panel-title">Messaging settings</div></div>
+            <div class="setrow">
+              <div class="lead"><span class="ic"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5h9M8 3v2M6 5c0 4 2 7 5 8M11 5c0 5-3 8-7 9" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 20l4-9 4 9M14.5 17h5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <div class="txt"><div class="t">AI translation</div><div class="d">Enable AI translation in Messages Pro for employees in your organization</div></div></div>
+              <span class="sw orange"></span>
+            </div>
+          </section>
+
+          <!-- ABOUT INFLOWW -->
+          <section class="panel" data-panel="about">
+            <div class="panel-head line"><div class="panel-title">About Infloww</div></div>
+            <div class="about-center">
+              <div class="iflogo"><svg width="60" height="60" viewBox="0 0 60 60" fill="none"><rect x="12" y="14" width="8" height="32" fill="#fff"/><path d="M28 14h20v7H36v6h10v7H36v12h-8V14z" fill="#fff"/></svg></div>
+              <div class="ver">Current version 5.7.14 (14)</div>
+              <div class="cli">client: - web: 29795554352-5.7.14-29795554352 lite: 5.7.14-29714636718 mp2: 5.7.14-29714612059</div>
+              <button class="btn btn-primary" style="margin-top:16px">Update to the latest version</button>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="help"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11.5a7.5 7.5 0 0 1-10.8 6.7L4 19.5l1.3-4.1A7.5 7.5 0 1 1 20 11.5z"/></svg></div>
+</div>
+
+<script>
+  var tabs = document.querySelectorAll('#tablist .tab');
+  var panels = document.querySelectorAll('.panel');
+  tabs.forEach(function(t){
+    t.addEventListener('click', function(){
+      tabs.forEach(function(x){x.classList.remove('active')});
+      t.classList.add('active');
+      var key = t.getAttribute('data-tab');
+      panels.forEach(function(p){ p.classList.toggle('show', p.getAttribute('data-panel')===key); });
+      document.querySelector('.panelwrap').scrollTop = 0;
+    });
+  });
+</script>
+<script id="ms-js">(function(){
+  if(window.__msInit)return; window.__msInit=1;
+  document.addEventListener('click',function(e){
+    var sw=document.getElementById('modelswap'); if(!sw)return;
+    if(e.target.closest('.ms-btn')){ sw.classList.toggle('open'); e.stopPropagation(); return; }
+    var it=e.target.closest('.ms-item');
+    if(it){
+      sw.querySelectorAll('.ms-item').forEach(function(x){x.classList.remove('active')});
+      it.classList.add('active');
+      var av=sw.querySelector('.ms-av'), nm=sw.querySelector('.ms-name'),
+          dot=it.querySelector('.ms-dot'), lbl=it.querySelector('.ms-nm');
+      if(nm&&lbl) nm.textContent=lbl.textContent;
+      if(av&&dot){ av.textContent=dot.textContent; av.style.background=dot.style.background; }
+      sw.classList.remove('open'); return;
+    }
+    sw.classList.remove('open');
+  });
+})();</script>
+</body>
+</html>

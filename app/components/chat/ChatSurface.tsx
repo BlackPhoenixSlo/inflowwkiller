@@ -144,6 +144,28 @@ export function ChatSurface({
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
+  // 👁 "Focus" — a phone reading mode. Collapses the AI status strip and the
+  // search/translate header controls so the thread gets the full screen on a
+  // 360px phone. Persisted globally (a personal reading preference, not
+  // per-fan) and only ever toggleable below lg, where the header crowds the
+  // conversation — desktop never sees the button so focusMode stays false
+  // there and the extra chips render as before.
+  const [focusMode, setFocusMode] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setFocusMode(window.localStorage.getItem("chatFocusMode") === "1");
+  }, []);
+  const toggleFocus = useCallback(() => {
+    setFocusMode((v) => {
+      const next = !v;
+      try {
+        window.localStorage.setItem("chatFocusMode", next ? "1" : "0");
+      } catch {
+        /* private-mode / quota — the toggle still works for this session */
+      }
+      return next;
+    });
+  }, []);
   // Imperative handle on Composer — lets FanDrawer's "Send to chat"
   // buttons (on unsold PPVs) preload the composer with that PPV's
   // text + media + price, identical to picking a saved template.
@@ -763,8 +785,11 @@ export function ChatSurface({
             <div className="text-[11px] text-fg-dim truncate">
               @{chat.withUser.username || profile?.username || fanQ.data?.of_username || chat.withUser.id} · {accountLabel}
             </div>
-            {/* Why the AI is (or isn't) talking to this fan — see AiStatusStrip. */}
-            <AiStatusStrip accountId={accountId} fanId={fanId} />
+            {/* Why the AI is (or isn't) talking to this fan — see AiStatusStrip.
+                Focus mode hides it below lg; desktop (>=lg) always shows it. */}
+            <div className={cn(focusMode && "hidden lg:block")}>
+              <AiStatusStrip accountId={accountId} fanId={fanId} />
+            </div>
           </div>
         </button>
         {/* Stays mounted on phone: it returns null when nothing is queued,
@@ -772,12 +797,31 @@ export function ChatSurface({
             only way to see/cancel a fan's queued sends. No wrapper div —
             that would add a stray flex gap to the desktop header. */}
         <ScheduledForChat accountId={accountId} fanId={fanId} />
+        {/* 👁 Focus — phone-only (lg:hidden). Strips the header down to the
+            fan + composer so the thread fills a small screen. Persisted. */}
+        <button
+          type="button"
+          onClick={toggleFocus}
+          className={cn(
+            "lg:hidden text-[11px] shrink-0",
+            focusMode
+              ? "px-1.5 py-0.5 rounded-md bg-accent/15 text-accent border border-accent/40 font-medium"
+              : "text-fg-dim hover:text-fg underline underline-offset-2",
+          )}
+          title={focusMode
+            ? "Focus mode ON — AI status & header tools hidden for more thread space. Tap to turn off."
+            : "Focus mode — hide the AI status strip and header tools to give the conversation the full screen"}
+          aria-pressed={focusMode}
+        >
+          👁 focus{focusMode ? " ON" : ""}
+        </button>
         <button
           type="button"
           onClick={() => setSearchOpen((v) => !v)}
           className={cn(
             "text-[11px] underline underline-offset-2",
             searchOpen ? "text-accent" : "text-fg-dim hover:text-fg",
+            focusMode && "hidden lg:inline",
           )}
           title="Search this conversation"
         >
@@ -791,6 +835,7 @@ export function ChatSurface({
             translateOn
               ? "px-1.5 py-0.5 rounded-md bg-accent/15 text-accent border border-accent/40 font-medium"
               : "text-fg-dim hover:text-fg underline underline-offset-2",
+            focusMode && "hidden lg:inline",
           )}
           title={translateOn
             ? "Translation ON — non-English messages show in English with a (lang) tag; original on hover. Click to turn off."

@@ -103,6 +103,7 @@ from .of_ai_chat import (
     _load_mid_funnel_fans,
     _good_examples, _load_persona, _looks_like_echo, _mark_question_asked,
     _mark_reply_sent,
+    _history_text,
     _maybe_push_nickname, _maybe_refresh_profile, _nonempty, _pause_fan,
     _primary_ask_target, _questions_still_needed, _recent_ask_pattern,
     _strip_html, split_for_bubbles,
@@ -264,7 +265,7 @@ _DEFAULTS: dict = {
     # Item 17 — post-purchase talk window: keep chatting a just-paid fan this long
     # after his last money event; past it with no NEW spend, hand off (stop + cool
     # off → in closer mode of_ai_chat/Auto Convo keeps him warm).
-    "post_purchase_minutes": 25,
+    "post_purchase_minutes": 30,
     "offer_expiry_minutes": 120,         # a pending offer older than this w/o a buy
                                          # drops to the no_signal (short-leash) tier
     # Item 10 — a "stop" is a cheap SKIP (no reply this tick), NOT a durable pause:
@@ -583,12 +584,13 @@ async def _gather(account_id: str,
     async with get_session() as s:
         rows = (await s.execute(
             select(Message.fan_id, Message.direction, Message.body,
-                   created_at_text(), Message.automation_kind, Message.mass_run_id)
+                   created_at_text(), Message.automation_kind, Message.mass_run_id,
+                   Message.image_desc)
             .where(*where)
             .order_by(Message.fan_id, Message.created_at, Message.message_id)
         )).all()
     bad_ts: list[int] = []   # fans that own a row with an unreadable created_at
-    for fan_id, direction, body, created_at_raw, automation_kind, mass_run_id in rows:
+    for fan_id, direction, body, created_at_raw, automation_kind, mass_run_id, image_desc in rows:
         created_at = parse_ts(created_at_raw)
         if created_at is None and created_at_raw is not None:
             # Unreadable, not absent: the row can't be placed on the thread's
@@ -600,7 +602,7 @@ async def _gather(account_id: str,
         c = out.get(fan_id)
         if c is None:
             c = out[fan_id] = _Cand(int(fan_id))
-        text = _strip_html(body)[:_MSG_CLIP]
+        text = _history_text(direction, body, image_desc)
         c.messages.append((direction, text))
         c.last_dir = direction
         c.last_body = text
@@ -2254,9 +2256,9 @@ def _cadence_gate(c: "_Cand", *, pending: ContentOffer | None, recent_payer: boo
     buying signal (tier upgrade) or after a session-gap of silence resets his burst.
 
       • Post-purchase window (item 17): a fan who paid within post_purchase_minutes
-        stays engaged with no cap; once that window lapses with no newer money event
-        AND no live buying signal, stop and hand off (of_ai_chat keeps him warm in
-        closer mode).
+        stays engaged with no cap; once that window lapses, the buy still counts as a
+        buying signal, so he falls back to the buying_signal tier (cap 20) rather than
+        being cut off — a proven buyer keeps a full leash for the recent-payer hour.
       • Otherwise classify the signal (item 21) and stop once the burst reply count
         (`session_out_n`) reaches that tier's cap (item 10 / "selling stops").
 
@@ -2267,16 +2269,13 @@ def _cadence_gate(c: "_Cand", *, pending: ContentOffer | None, recent_payer: boo
     body = c.last_body or ""
     live_signal = bool(pic or _CONTENT_ASK_RE.search(body) or ESCALATION_RE.search(body))
 
-    # Item 17 — post-purchase talk window. Only a RECENT money event opens it (an
-    # ancient purchase must not stop a fan chatting again today), so bound it to the
-    # recent-payer horizon.
+    # Item 17 — post-purchase talk window: a just-paid fan gets an UNCAPPED burst for
+    # post_purchase_minutes after his last money event. Past it there's no early exit —
+    # he falls through to the tier logic below, where the buy still reads as a buying
+    # signal (recent_payer → buying_signal, cap 20): a full leash, never a hard stop.
     ppm = int(cad.get("post_purchase_minutes") or 0)
-    if money_at is not None and ppm and (now - money_at) < timedelta(hours=1):
-        if now - money_at <= timedelta(minutes=ppm):
-            return (False, "post_purchase", 0)        # still warm — keep talking, no cap
-        if not live_signal:
-            return (True, "post_purchase_done", 0)    # quiet after the window → hand off
-        # he's asking for more AFTER the window → a fresh sale opportunity, keep going
+    if money_at is not None and ppm and (now - money_at) <= timedelta(minutes=ppm):
+        return (False, "post_purchase", 0)            # just paid → uncapped burst
 
     limits = cad.get("msg_limits_by_signal") or {}
     if pic:
@@ -2979,12 +2978,10 @@ async def _ask_counters(account_id: str, now: datetime) -> tuple[dict[int, int],
     return by_fan, hour_n, len(rows)
 
 
-async def _fan_ladder_state(account_id: str, fan_id: int, f: Fan | None,
-                            ladder: LadderState | None) -> upsell.FanState:
-    """The two facts the price actually depends on: the LARGEST single PPV he has
-    ever paid (the history ceiling — never ask >1.5x it) and the rung he JUST bought
-    (the escalation base). Read from PAID messages, never from lifetime_spend_cents:
-    spend is a SUM, and a fan who tipped $5 forty times has never once paid $200."""
+async def _max_single_paid_cents(account_id: str, fan_id: int) -> int:
+    """The LARGEST single PPV he has ever paid, in cents (0 if none). Read from PAID
+    messages, never from lifetime_spend_cents: spend is a SUM, and a fan who tipped
+    $5 forty times has never once paid $200. The one canonical 'proven ceiling'."""
     async with get_session() as s:
         mx = (await s.execute(
             select(func.max(Message.price_cents)).where(
@@ -2992,7 +2989,15 @@ async def _fan_ladder_state(account_id: str, fan_id: int, f: Fan | None,
                 Message.fan_id == int(fan_id),
                 Message.is_paid.is_(True))
         )).scalar_one_or_none()
-    max_paid = int(mx or 0)
+    return int(mx or 0)
+
+
+async def _fan_ladder_state(account_id: str, fan_id: int, f: Fan | None,
+                            ladder: LadderState | None) -> upsell.FanState:
+    """The two facts the price actually depends on: the LARGEST single PPV he has
+    ever paid (the history ceiling — never ask >1.5x it) and the rung he JUST bought
+    (the escalation base)."""
+    max_paid = await _max_single_paid_cents(account_id, fan_id)
     last_paid: int | None = None
     # Only a HOT ladder escalates off the last rung — outside the hot window the
     # next ask is a cold open again, not last_paid * 1.5 forever.
@@ -3513,7 +3518,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         presented = []
 
     if bot_accused:
-        # §6.4 first strike — he thinks she might be a bot. Defensiveness ("I'm a
+        # §6.4 brush-off — he thinks she might be a bot. Defensiveness ("I'm a
         # real person, I promise!") is exactly what a bot does; the humane, effective
         # move is to brush it off and pivot to something HE said. Sell nothing.
         need_block = (
@@ -4211,7 +4216,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # never do. Then COMPANION intent, then the three declines. ALL of these
             # are LADDER-scoped — none ever touches fans.automation_paused_until.
             seller_off = False       # COMPANION / cooldown / bot-accused ⇒ talk, don't sell
-            bot_accused_first = False
+            bot_accused_turn = False
             # A HARD decline WINS over the poverty/companion brakes — always. Otherwise a
             # message that carries both a distress token and a chargeback ("im tapped out,
             # im disputing this charge and reporting you") hits detect_spend_regret first
@@ -4290,11 +4295,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # price can follow it.
                 ladders.update(await _load_ladders(account_id, [fan_id]))
 
-            # §6.4 — bot accusation. Stateful: 1st strike suppresses the offer this
-            # turn and brushes it off in one line; 2nd strike ends selling (COMPANION
-            # for the session). Never skip_list, never a hard stop — 96% of accusers
-            # keep talking and 23% go on to pay. Also honour an ACTIVE companion/
-            # cooldown window from an earlier turn (seller OFF, conversation ON).
+            # §6.4 — bot accusation. Same one-turn brush-off as before (a light line, not
+            # a defensive protest; sell nothing THIS message) — but it NO LONGER escalates
+            # to COMPANION. The old rule flipped a 2nd accusation to a persistent 24h
+            # companion window that re-stamped on every repeat, so a fan who said "bot"
+            # ~daily was gagged forever (u514288063: 13 offers, 5 accusations, $0, still
+            # chatting warmly, dead to the closer). Now every accusation is just the
+            # single-turn brush-off; he stays fully sellable on his next inbound. Still
+            # counted (the roster header reads bot_accused_count). An ACTIVE companion/
+            # cooldown window from a DIFFERENT brake (just-talk §6.3, broke §6.1, spend-cap
+            # §6.2) is honoured below — a bot accusation just no longer creates one.
             if gate_on:
                 _lad_now = ladders.get(fan_id)
                 if _lad_now is not None:
@@ -4305,19 +4315,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 if _detect_bot_accusation(c.last_body):
                     bot_accusations += 1
                     prev = int(_lad_now.bot_accused_count or 0) if _lad_now is not None else 0
-                    new_count = prev + 1
-                    if new_count >= 2:
-                        await _save_ladder(account_id, fan_id,
-                                           status=upsell.STATUS_COMPANION,
-                                           bot_accused_count=new_count,
-                                           companion_until=now + timedelta(hours=24))
-                        seller_off = True
-                        log.info("ai_chatter 2nd bot-accusation → COMPANION account=%s "
-                                 "fan=%s", account_id, fan_id)
-                    else:
-                        await _save_ladder(account_id, fan_id, bot_accused_count=new_count)
-                        seller_off = True         # suppress the offer this turn
-                        bot_accused_first = True  # + brush it off, single bubble
+                    await _save_ladder(account_id, fan_id, bot_accused_count=prev + 1)
+                    seller_off = True         # suppress the offer THIS turn only
+                    bot_accused_turn = True   # + brush it off, single breezy bubble
 
             # §5 — a bare haggle / stated cap ("can you do $30") is a VOICED price
             # objection but NOT a decline: stamp objection_at so an EARNED discount may
@@ -4723,7 +4723,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                               content_ask=content_ask,
                                               escalation=escalation,
                                               hot_thread=hot_thread,
-                                              bot_accused=bot_accused_first,
+                                              bot_accused=bot_accused_turn,
                                               painful_on=painful_on,
                                               lang=fan_lang,
                                               profile=profiles.get(fan_id),
@@ -4867,6 +4867,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # → resend that SAME media up to `teaser_disc_pct` off (max 20%). A believable
             # one-time drop, not a fresh rung; the rung doesn't climb. Skipped for a broke/
             # declined fan (seller_off / _leak) exactly like a paid rung.
+            # NOTE: teaser_convo_ignore_brakes deliberately does NOT apply here — it lifts
+            # the brakes for the PROACTIVE escalation ladder (0/10/40/80), not for a
+            # reactive discount-on-balk. A haggle re-push at a companion/broke fan stays
+            # braked on purpose (that's a de-escalation the operator didn't ask to force).
             if (teaser is None and haggling and not dry_run and not _leak
                     and not seller_off and offer_item is None):
                 _prev = await _last_unpaid_teaser(account_id, fan_id)
@@ -4893,8 +4897,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         teaser = {"media_ids": _prev["media_ids"], "price_cents": _dp,
                                   "is_free": False, "convo": True, "rung": _rg,
                                   "next_rung": _rg, "resend": True}
+            # Operator override (teaser_convo_ignore_brakes): the escalation ladder
+            # runs past the companion/bot-accused/broke brakes — only a MANUAL stop
+            # (enforced upstream in run()) halts it. `_leak` is a ToS content guard,
+            # NOT a fan-state brake, so it is honoured regardless.
+            _teaser_ignore_brakes = bool((convo_teaser_cfg or {}).get("ignore_brakes"))
             if (teaser is None and convo_teaser_cfg is not None and not dry_run
-                    and not _leak and not seller_off):
+                    and not _leak and (not seller_off or _teaser_ignore_brakes)):
                 # Adaptive cadence: if nobody is selling him a PPV (none pending, none
                 # going out this turn), the convo-teaser is his ONLY offer — fire it
                 # SOONER (after ~10 of his msgs). If a PPV is already in play, keep the
@@ -4921,13 +4930,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         and _tstate.get("last_msg")):
                     _t_sold = await _teaser_sold(account_id, fan_id,
                                                  int(_tstate["last_msg"]))
+                # Proven-spend soften floor (adaptive only): 38% of his biggest single
+                # PPV ever paid. One indexed max() query, only when the ladder can soften.
+                _t_max_paid = (await _max_single_paid_cents(account_id, fan_id)
+                               if _tcfg.get("adaptive") else 0)
                 try:
                     _msgs_since = await _fan_msgs_since(account_id, fan_id, _since)
                     teaser = await _tip_reward.pick_convo_teaser(
                         client, account_id, fan_id, tcfg=_tcfg,
                         msgs_since_last=_msgs_since, rung=int(_tstate.get("rung") or 0),
                         last_price_cents=_t_last_price, last_sold=_t_sold,
-                        last_was_free=_t_last_free, now=now)
+                        last_was_free=_t_last_free, max_paid_cents=_t_max_paid, now=now)
                 except Exception:
                     log.debug("ai_chatter convo_teaser pick failed account=%s fan=%s",
                               account_id, fan_id, exc_info=True)
@@ -4936,10 +4949,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # loaded under the gate (§3152), so on a gate-off account fan_ladder
                     # is None here — read the pause AUTHORITATIVELY (one query, only for a
                     # paid rung) so a broke man is never sent a $10/$50 tease.
+                    # teaser_convo_ignore_brakes lifts THIS brake too (operator override —
+                    # a paid rung then reaches a broke/declined fan); the per-tick paid
+                    # cap is infra rate-limiting, not a fan-state brake, so it always holds.
                     _lad = (fan_ladder if fan_ladder is not None
                             else (await _load_ladders(account_id, [fan_id])).get(fan_id))
                     _paused = (_lad is not None and _lad.offers_paused_until
-                               and _lad.offers_paused_until > now)
+                               and _lad.offers_paused_until > now
+                               and not _teaser_ignore_brakes)
                     if _paused or hot_teaser_paid_tick >= _MAX_FORCED_ASKS_PER_TICK:
                         teaser = None      # brake + the per-tick paid cap
             if not dry_run:
@@ -4955,16 +4972,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Don't ship his name as a standalone bubble — fold it into a neighbour.
             parts = _merge_lone_name_bubbles(
                 parts, (resolve_fan_name(f) or "").split("/")[0] if f else "")
-            # §6.4 first strike — brush it off in ONE line. A multi-bubble "no really
-            # i'm real" reads as protesting-too-much; a single breezy line does not.
-            if bot_accused_first and parts:
+            # §6.4 brush-off — ONE line. A multi-bubble "no really i'm real" reads as
+            # protesting-too-much; a single breezy line does not.
+            if bot_accused_turn and parts:
                 parts = parts[:1]
             if not parts:
                 # A sticker-only reply (empty text + a tag) is a legit pure
                 # reaction — but never when an offer/teaser needs pitch text to
                 # ride on, and never as the brush-off to a bot accusation.
                 if (sticker_tag is None or offer_item is not None
-                        or teaser is not None or bot_accused_first):
+                        or teaser is not None or bot_accused_turn):
                     errors += 1
                     log.debug("ai_chatter dropped echo-only reply account=%s fan=%s",
                               account_id, fan_id)

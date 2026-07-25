@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Infloww — The #1 CRM for OnlyFans and beyond</title>
+<meta name="description" content="Grow your agency revenue across OnlyFans, Fansly, MYM, and Fanvue with the operating system top agencies already run on." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+<style>
+  /* ============================================================
+     DESIGN TOKENS
+     ============================================================ */
+  :root{
+    --white:#FFFFFF;
+    --band:#F6F8FB;
+    --navy:#1B2A4A;
+    --ink:#12172B;
+    --muted:#5B6478;
+    --blue:#2F6BFF;
+    --blue-2:#6E8BFF;
+    --blue-tint:#EAF1FF;
+    --green:#16B364;
+    --line:#E7ECF3;
+    --line-soft:#EEF2F8;
+    --shadow-sm:0 1px 2px rgba(18,23,43,.06), 0 1px 3px rgba(18,23,43,.05);
+    --shadow-md:0 8px 24px rgba(18,23,43,.08), 0 2px 6px rgba(18,23,43,.05);
+    --shadow-lg:0 30px 60px rgba(18,23,43,.14), 0 10px 24px rgba(18,23,43,.08);
+    --grad:linear-gradient(135deg,#2F6BFF 0%,#6E8BFF 100%);
+    --radius:16px;
+    --radius-sm:12px;
+    --maxw:1160px;
+  }
+
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+  body{
+    font-family:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink);
+    background:var(--white);
+    line-height:1.55;
+    font-size:17px;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    overflow-x:hidden;
+  }
+  img,svg{display:block;max-width:100%}
+  a{color:inherit;text-decoration:none}
+  ul{list-style:none}
+
+  /* ============================================================
+     LAYOUT PRIMITIVES
+     ============================================================ */
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px;width:100%}
+  .section{padding:96px 0}
+  .section--tight{padding:72px 0}
+  .band{background:var(--band)}
+  .dark{background:var(--ink);color:#fff}
+
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:8px;
+    font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--blue);
+  }
+  .tag{
+    display:inline-flex;align-items:center;gap:8px;
+    padding:6px 12px;border-radius:999px;
+    background:var(--blue-tint);color:var(--blue);
+    font-size:13px;font-weight:700;letter-spacing:.03em;
+  }
+  .section-head{max-width:680px;margin:0 auto 56px;text-align:center}
+  .section-head h2{
+    font-size:clamp(30px,4.4vw,44px);font-weight:800;letter-spacing:-.02em;
+    line-height:1.1;margin:16px 0 14px;
+  }
+  .section-head p{color:var(--muted);font-size:18px}
+
+  h1,h2,h3{letter-spacing:-.02em}
+
+  /* ============================================================
+     BUTTONS
+     ============================================================ */
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:9px;
+    font-family:inherit;font-size:15px;font-weight:700;
+    padding:13px 24px;border-radius:999px;cursor:pointer;border:1px solid transparent;
+    transition:transform .16s ease, box-shadow .16s ease, background .16s ease, color .16s ease;
+    white-space:nowrap;
+  }
+  .btn:active{transform:translateY(1px)}
+  .btn-primary{
+    background:var(--grad);color:#fff;
+    box-shadow:0 8px 20px rgba(47,107,255,.35);
+  }
+  .btn-primary:hover{box-shadow:0 12px 26px rgba(47,107,255,.45);transform:translateY(-1px)}
+  .btn-ghost{
+    background:#fff;color:var(--ink);border-color:var(--line);
+  }
+  .btn-ghost:hover{border-color:#cdd6e4;box-shadow:var(--shadow-sm)}
+  .btn-dark{background:var(--ink);color:#fff}
+  .btn-dark:hover{background:#0a0e1c}
+  .btn-white{background:#fff;color:var(--blue)}
+  .btn-white:hover{box-shadow:0 10px 24px rgba(0,0,0,.14);transform:translateY(-1px)}
+  .btn-lg{padding:16px 30px;font-size:16px}
+
+  .assure{display:inline-flex;align-items:center;gap:8px;color:var(--muted);font-size:14px;font-weight:500}
+  .assure svg{flex:none}
+
+  /* ============================================================
+     NAV
+     ============================================================ */
+  header.nav{
+    position:sticky;top:0;z-index:100;
+    background:rgba(255,255,255,.86);
+    backdrop-filter:saturate(180%) blur(12px);
+    border-bottom:1px solid var(--line);
+  }
+  .nav-inner{display:flex;align-items:center;gap:28px;height:70px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px;letter-spacing:-.02em}
+  .brand .mark{
+    width:34px;height:34px;border-radius:10px;background:var(--grad);
+    display:flex;align-items:center;justify-content:center;flex:none;
+    box-shadow:0 6px 14px rgba(47,107,255,.35);
+  }
+  .nav-links{display:flex;align-items:center;gap:26px;margin-left:14px}
+  .nav-links a{color:var(--muted);font-weight:600;font-size:15px;transition:color .15s}
+  .nav-links a:hover{color:var(--ink)}
+  .nav-right{margin-left:auto;display:flex;align-items:center;gap:18px}
+  .nav-right .login{color:var(--ink);font-weight:600;font-size:15px}
+  .nav-right .login:hover{color:var(--blue)}
+  .hamburger{
+    display:none;background:none;border:1px solid var(--line);border-radius:10px;
+    width:44px;height:44px;cursor:pointer;align-items:center;justify-content:center;color:var(--ink);
+  }
+  .mobile-menu{display:none;border-top:1px solid var(--line);background:#fff;padding:14px 24px 22px}
+  .mobile-menu a{display:block;padding:12px 4px;color:var(--ink);font-weight:600;border-bottom:1px solid var(--line-soft)}
+  .mobile-menu .btn{width:100%;margin-top:14px}
+
+  /* ============================================================
+     HERO
+     ============================================================ */
+  .hero{position:relative;overflow:hidden;padding:70px 0 0;text-align:center}
+  .hero::before{
+    content:"";position:absolute;inset:0;z-index:-1;
+    background:
+      radial-gradient(600px 340px at 50% -6%, rgba(47,107,255,.12), transparent 70%),
+      radial-gradient(520px 320px at 88% 10%, rgba(110,139,255,.10), transparent 70%),
+      radial-gradient(520px 320px at 10% 4%, rgba(47,107,255,.07), transparent 70%);
+  }
+  .pill-badge{
+    display:inline-flex;align-items:center;gap:8px;
+    background:#fff;border:1px solid var(--line);border-radius:999px;
+    padding:7px 16px;font-size:14px;font-weight:600;color:var(--navy);
+    box-shadow:var(--shadow-sm);margin-bottom:26px;
+  }
+  .pill-badge .star{color:#F5A623}
+  .hero h1{
+    font-size:clamp(38px,6.2vw,60px);font-weight:800;line-height:1.05;
+    letter-spacing:-.03em;max-width:14ch;margin:0 auto 22px;
+  }
+  .hero h1 .accent{
+    background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .hero .sub{
+    max-width:640px;margin:0 auto 32px;color:var(--muted);font-size:19px;
+  }
+  .hero-cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-bottom:16px}
+  .hero-assure{display:flex;justify-content:center;margin-bottom:56px}
+
+  /* Browser mock */
+  .browser{
+    max-width:1000px;margin:0 auto;border-radius:16px;overflow:hidden;
+    background:#fff;border:1px solid var(--line);box-shadow:var(--shadow-lg);
+    transform:translateY(0);
+  }
+  .browser-bar{
+    display:flex;align-items:center;gap:14px;padding:12px 16px;
+    background:#F3F5F9;border-bottom:1px solid var(--line);
+  }
+  .dots{display:flex;gap:7px}
+  .dots i{width:12px;height:12px;border-radius:50%;display:block}
+  .dots i:nth-child(1){background:#FF5F57}
+  .dots i:nth-child(2){background:#FEBC2E}
+  .dots i:nth-child(3){background:#28C840}
+  .url{
+    flex:1;max-width:420px;background:#fff;border:1px solid var(--line);border-radius:8px;
+    padding:6px 12px;font-size:13px;color:var(--muted);display:flex;align-items:center;gap:8px;
+  }
+  .url svg{flex:none}
+
+  .app{display:grid;grid-template-columns:210px 1fr;min-height:440px;text-align:left}
+  .app-side{background:#0F1628;color:#fff;padding:18px 14px;display:flex;flex-direction:column;gap:6px}
+  .app-side .logo{display:flex;align-items:center;gap:9px;font-weight:800;margin-bottom:16px;padding:4px}
+  .app-side .logo .mk{width:26px;height:26px;border-radius:8px;background:var(--grad);flex:none}
+  .navitem{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:9px;color:#9AA6C0;font-size:14px;font-weight:600}
+  .navitem.active{background:rgba(47,107,255,.18);color:#fff}
+  .navitem svg{flex:none;opacity:.9}
+  .app-side .spacer{flex:1}
+  .app-side .who{display:flex;align-items:center;gap:10px;padding:8px;border-top:1px solid rgba(255,255,255,.08);margin-top:6px}
+  .app-side .who .av{width:30px;height:30px;border-radius:50%;background:var(--grad);flex:none;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+  .app-side .who small{color:#9AA6C0;font-size:11px}
+  .app-side .who b{font-size:13px}
+
+  .app-main{padding:20px 22px;background:#F7F9FC}
+  .app-main .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+  .app-main .top h4{font-size:17px;font-weight:800}
+  .app-main .top .chip{font-size:12px;font-weight:700;color:var(--green);background:#E7F7EE;padding:5px 10px;border-radius:999px}
+  .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+  .kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px 14px}
+  .kpi .lbl{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+  .kpi .val{font-size:22px;font-weight:800;margin:4px 0 2px}
+  .kpi .delta{font-size:11px;font-weight:700;color:var(--green);display:flex;align-items:center;gap:4px}
+  .kpi .spark{margin-top:8px}
+  .chart-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 16px 10px}
+  .chart-card .ch-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+  .chart-card .ch-top b{font-size:14px}
+  .chart-card .ch-top span{font-size:12px;color:var(--muted)}
+  .legend{display:flex;gap:14px;margin-top:8px;font-size:11px;color:var(--muted)}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ============================================================
+     TRUST BAR
+     ============================================================ */
+  .trust{padding:44px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .trust p{text-align:center;color:var(--muted);font-size:14px;font-weight:600;margin-bottom:26px;letter-spacing:.02em}
+  .logos{display:flex;align-items:center;justify-content:center;gap:44px;flex-wrap:wrap}
+  .logos svg{opacity:.42;filter:grayscale(1);transition:opacity .2s}
+  .logos svg:hover{opacity:.7}
+
+  /* ============================================================
+     WHY / FEATURE CARDS GRID
+     ============================================================ */
+  .grid-6{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+  .fcard{
+    background:#fff;border:1px solid var(--line);border-radius:var(--radius);
+    padding:26px 24px;transition:transform .18s ease, box-shadow .18s ease, border-color .18s;
+  }
+  .fcard:hover{transform:translateY(-4px);box-shadow:var(--shadow-md);border-color:#dbe3f0}
+  .ficon{
+    width:48px;height:48px;border-radius:12px;background:var(--blue-tint);
+    display:flex;align-items:center;justify-content:center;color:var(--blue);margin-bottom:16px;
+  }
+  .fcard h3{font-size:18px;font-weight:700;margin-bottom:7px}
+  .fcard p{color:var(--muted);font-size:15px}
+
+  /* ============================================================
+     ALTERNATING PRODUCT ROWS
+     ============================================================ */
+  .frow{display:grid;grid-template-columns:1fr 1fr;gap:64px;align-items:center;margin-bottom:96px}
+  .frow:last-child{margin-bottom:0}
+  .frow.reverse .fr-media{order:2}
+  .frow.reverse .fr-text{order:1}
+  .fr-text h2{font-size:clamp(26px,3.6vw,36px);font-weight:800;line-height:1.12;margin:14px 0 14px}
+  .fr-text p{color:var(--muted);font-size:17px;margin-bottom:22px}
+  .checklist li{display:flex;align-items:flex-start;gap:11px;margin-bottom:13px;font-weight:500}
+  .checklist li b{font-weight:700}
+  .check{
+    width:22px;height:22px;border-radius:50%;background:#E7F7EE;color:var(--green);
+    display:flex;align-items:center;justify-content:center;flex:none;margin-top:1px;
+  }
+  .fr-media{
+    background:#fff;border:1px solid var(--line);border-radius:20px;padding:20px;
+    box-shadow:var(--shadow-md);position:relative;overflow:hidden;
+  }
+  .fr-media::after{
+    content:"";position:absolute;inset:0;z-index:0;pointer-events:none;
+    background:radial-gradient(420px 220px at 80% -10%, rgba(47,107,255,.07), transparent 70%);
+  }
+  .fr-media > *{position:relative;z-index:1}
+
+  /* Chat inbox mock */
+  .inbox{display:grid;grid-template-columns:150px 1fr;gap:12px;height:360px}
+  .inbox-list{background:#F7F9FC;border:1px solid var(--line);border-radius:12px;padding:8px;overflow:hidden}
+  .inbox-list .search{background:#fff;border:1px solid var(--line);border-radius:8px;height:28px;margin-bottom:8px;display:flex;align-items:center;padding:0 8px;gap:6px;color:var(--muted)}
+  .conv{display:flex;gap:8px;padding:8px 6px;border-radius:9px;align-items:center}
+  .conv.sel{background:#fff;box-shadow:var(--shadow-sm)}
+  .conv .av{width:30px;height:30px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700}
+  .conv .meta{min-width:0}
+  .conv .meta b{font-size:12px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .conv .meta span{font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+  .conv .dot{width:8px;height:8px;border-radius:50%;background:var(--blue);margin-left:auto;flex:none}
+  .thread{background:#fff;border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
+  .thread .th-top{padding:10px 14px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:9px}
+  .thread .th-top .av{width:28px;height:28px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700}
+  .thread .th-top b{font-size:13px}
+  .thread .th-top .on{font-size:10px;color:var(--green);font-weight:700}
+  .th-body{flex:1;padding:14px;display:flex;flex-direction:column;gap:10px;background:#FbFCFE}
+  .bub{max-width:74%;padding:9px 12px;border-radius:14px;font-size:12.5px;line-height:1.4}
+  .bub.in{background:#EEF2F8;border-bottom-left-radius:5px;align-self:flex-start}
+  .bub.out{background:var(--grad);color:#fff;border-bottom-right-radius:5px;align-self:flex-end}
+  .suggest{margin:2px 14px;padding:9px 11px;border:1px dashed var(--blue);background:var(--blue-tint);border-radius:10px;font-size:11.5px;color:var(--navy);display:flex;gap:8px;align-items:center}
+  .suggest .ai{font-size:10px;font-weight:800;color:var(--blue);background:#fff;border-radius:6px;padding:2px 6px;flex:none}
+  .th-input{margin:8px 14px 14px;height:34px;border:1px solid var(--line);border-radius:10px;display:flex;align-items:center;padding:0 10px;color:var(--muted);font-size:12px;justify-content:space-between}
+  .th-input .send{width:24px;height:24px;border-radius:7px;background:var(--grad);display:flex;align-items:center;justify-content:center;color:#fff}
+
+  /* Smart list mock */
+  .slist{display:flex;flex-direction:column;gap:12px}
+  .seg{display:flex;align-items:center;gap:12px;background:#F7F9FC;border:1px solid var(--line);border-radius:12px;padding:13px 14px}
+  .seg .badge{width:40px;height:40px;border-radius:10px;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:15px}
+  .seg .info{flex:1;min-width:0}
+  .seg .info b{font-size:14px;display:block}
+  .seg .info span{font-size:12px;color:var(--muted)}
+  .seg .count{text-align:right}
+  .seg .count b{font-size:16px;display:block}
+  .seg .count span{font-size:11px;color:var(--muted)}
+  .seg .bar{height:6px;border-radius:6px;background:#E7ECF3;overflow:hidden;margin-top:6px}
+  .seg .bar i{display:block;height:100%;border-radius:6px}
+  .rulebar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:2px}
+  .rulebar .rp{font-size:11.5px;font-weight:700;background:var(--blue-tint);color:var(--blue);padding:5px 9px;border-radius:7px}
+  .rulebar .op{font-size:11.5px;color:var(--muted);font-weight:600}
+
+  /* Vault media grid mock */
+  .vgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .vtile{aspect-ratio:1/1;border-radius:12px;position:relative;overflow:hidden;border:1px solid var(--line)}
+  .vtile .lbl{position:absolute;left:7px;bottom:7px;font-size:9.5px;font-weight:700;color:#fff;background:rgba(0,0,0,.42);padding:2px 7px;border-radius:6px;backdrop-filter:blur(2px)}
+  .vtile .price{position:absolute;right:7px;top:7px;font-size:9.5px;font-weight:800;color:#fff;background:rgba(47,107,255,.9);padding:2px 6px;border-radius:6px}
+  .vtile .pv{position:absolute;left:7px;top:7px;width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.85);display:flex;align-items:center;justify-content:center;color:var(--ink)}
+  .vfolders{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .vfolder{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600;background:#F7F9FC;border:1px solid var(--line);border-radius:9px;padding:7px 11px;color:var(--navy)}
+  .vfolder.on{background:var(--blue-tint);border-color:#c9dbff;color:var(--blue)}
+  .vfolder .n{font-size:10px;color:var(--muted);background:#fff;border-radius:6px;padding:1px 6px}
+
+  /* ============================================================
+     AI COPILOT (dark band)
+     ============================================================ */
+  .copilot .section-head h2{color:#fff}
+  .copilot .section-head p{color:#AEB6CC}
+  .copilot{position:relative;overflow:hidden}
+  .copilot::before{
+    content:"";position:absolute;inset:0;z-index:0;
+    background:
+      radial-gradient(500px 300px at 12% 0%, rgba(47,107,255,.28), transparent 65%),
+      radial-gradient(500px 320px at 88% 100%, rgba(110,139,255,.22), transparent 65%);
+  }
+  .copilot .wrap{position:relative;z-index:1}
+  .beta{
+    display:inline-flex;align-items:center;gap:7px;background:rgba(47,107,255,.2);color:#8FB0FF;
+    border:1px solid rgba(47,107,255,.4);padding:5px 12px;border-radius:999px;font-size:12px;font-weight:800;letter-spacing:.08em;
+  }
+  .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+  .dcard{
+    background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.1);border-radius:16px;
+    padding:24px 22px;transition:transform .18s ease, background .18s;
+  }
+  .dcard:hover{transform:translateY(-4px);background:rgba(255,255,255,.08)}
+  .dcard .ic{width:44px;height:44px;border-radius:11px;background:var(--grad);display:flex;align-items:center;justify-content:center;color:#fff;margin-bottom:16px}
+  .dcard h3{font-size:16px;font-weight:700;margin-bottom:7px;color:#fff}
+  .dcard p{color:#AEB6CC;font-size:14px}
+
+  /* ============================================================
+     ANALYTICS
+     ============================================================ */
+  .grid-analytics{display:grid;grid-template-columns:repeat(4,1fr);gap:20px}
+  .acard{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:22px;transition:transform .18s, box-shadow .18s}
+  .acard:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+  .acard .ah{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .acard .ah .ic{width:34px;height:34px;border-radius:9px;background:var(--blue-tint);color:var(--blue);display:flex;align-items:center;justify-content:center;flex:none}
+  .acard h3{font-size:15px;font-weight:700}
+  .acard .big{font-size:26px;font-weight:800;margin:10px 0 2px}
+  .acard .cap{font-size:12.5px;color:var(--muted);margin-bottom:12px}
+  .acard .viz{border-top:1px solid var(--line-soft);padding-top:12px}
+
+  /* ============================================================
+     TESTIMONIALS
+     ============================================================ */
+  .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
+  .tcard{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:28px 26px;display:flex;flex-direction:column;gap:18px;box-shadow:var(--shadow-sm)}
+  .stars{display:flex;gap:3px;color:#F5A623}
+  .tcard .quote{font-size:16px;line-height:1.6;color:var(--ink);flex:1}
+  .who2{display:flex;align-items:center;gap:12px}
+  .who2 .av{width:46px;height:46px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:15px}
+  .who2 b{font-size:15px;display:block}
+  .who2 span{font-size:13px;color:var(--muted)}
+
+  /* ============================================================
+     PRICING
+     ============================================================ */
+  .grid-pricing{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;align-items:stretch}
+  .pcard{
+    background:#fff;border:1px solid var(--line);border-radius:var(--radius);
+    padding:26px 24px;display:flex;flex-direction:column;position:relative;transition:transform .18s, box-shadow .18s;
+  }
+  .pcard:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+  .pcard.pop{border:2px solid var(--blue);box-shadow:0 20px 40px rgba(47,107,255,.16)}
+  .pop-badge{
+    position:absolute;top:-13px;left:50%;transform:translateX(-50%);
+    background:var(--grad);color:#fff;font-size:12px;font-weight:800;letter-spacing:.03em;
+    padding:6px 16px;border-radius:999px;box-shadow:0 8px 18px rgba(47,107,255,.4);white-space:nowrap;
+  }
+  .pcard .pf-net{font-size:14px;font-weight:700;color:var(--muted);margin-bottom:4px}
+  .pcard .pf-name{font-size:19px;font-weight:800;margin-bottom:12px}
+  .pcard .price{display:flex;align-items:baseline;gap:4px;margin-bottom:2px}
+  .pcard .price .amt{font-size:40px;font-weight:800;letter-spacing:-.03em}
+  .pcard .price .cur{font-size:22px;font-weight:800;align-self:flex-start;margin-top:6px}
+  .pcard .per{font-size:13px;color:var(--muted);margin-bottom:20px}
+  .pcard .pl{margin-bottom:24px;flex:1}
+  .pcard .pl li{display:flex;gap:9px;align-items:flex-start;font-size:14px;margin-bottom:11px;color:var(--ink)}
+  .pcard .pl li .check{width:19px;height:19px}
+  .pcard .btn{width:100%}
+
+  /* ============================================================
+     FINAL CTA
+     ============================================================ */
+  .finalcta{position:relative;overflow:hidden;background:var(--grad);color:#fff;text-align:center;padding:88px 0}
+  .finalcta::before{
+    content:"";position:absolute;inset:0;
+    background:radial-gradient(600px 300px at 20% 0%, rgba(255,255,255,.16), transparent 60%),
+               radial-gradient(600px 300px at 80% 100%, rgba(255,255,255,.12), transparent 60%);
+  }
+  .finalcta .wrap{position:relative;z-index:1}
+  .finalcta h2{font-size:clamp(30px,4.6vw,46px);font-weight:800;margin-bottom:16px;letter-spacing:-.02em}
+  .finalcta p{font-size:18px;opacity:.92;margin-bottom:30px}
+  .finalcta .assure{color:rgba(255,255,255,.9)}
+  .finalcta .btn-white{margin-bottom:16px}
+
+  /* ============================================================
+     FOOTER
+     ============================================================ */
+  footer{background:#0B0F1E;color:#C4CBDC;padding:72px 0 34px}
+  .foot-top{display:grid;grid-template-columns:1.4fr repeat(5,1fr);gap:36px;padding-bottom:44px;border-bottom:1px solid rgba(255,255,255,.08)}
+  .foot-brand .brand{color:#fff;margin-bottom:14px}
+  .foot-brand p{font-size:14px;color:#8B94AC;max-width:260px;margin-bottom:18px}
+  .foot-col h4{font-size:13px;font-weight:700;color:#fff;text-transform:uppercase;letter-spacing:.06em;margin-bottom:16px}
+  .foot-col a{display:block;font-size:14px;color:#9AA3BC;padding:6px 0;transition:color .15s}
+  .foot-col a:hover{color:#fff}
+  .foot-bottom{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:26px;flex-wrap:wrap}
+  .foot-bottom .copy{font-size:13px;color:#8B94AC}
+  .socials{display:flex;gap:10px}
+  .socials a{width:38px;height:38px;border-radius:10px;background:rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;color:#C4CBDC;transition:background .15s,color .15s}
+  .socials a:hover{background:var(--blue);color:#fff}
+  .disclaimer{margin-top:20px;font-size:12px;color:#6B7490;text-align:center}
+
+  /* ============================================================
+     RESPONSIVE
+     ============================================================ */
+  @media (max-width:1024px){
+    .grid-analytics,.grid-4{grid-template-columns:repeat(2,1fr)}
+    .grid-pricing{grid-template-columns:repeat(2,1fr)}
+    .foot-top{grid-template-columns:1fr 1fr 1fr}
+    .foot-brand{grid-column:1 / -1}
+  }
+  @media (max-width:900px){
+    .nav-links{display:none}
+    .nav-right .login,.nav-right .btn{display:none}
+    .hamburger{display:flex}
+    .frow{grid-template-columns:1fr;gap:34px;margin-bottom:64px}
+    .frow.reverse .fr-media{order:0}
+    .frow.reverse .fr-text{order:0}
+    .grid-6{grid-template-columns:repeat(2,1fr)}
+    .grid-3{grid-template-columns:1fr}
+  }
+  @media (max-width:640px){
+    .section{padding:64px 0}
+    .section--tight{padding:52px 0}
+    .wrap{padding:0 18px}
+    .grid-6{grid-template-columns:1fr}
+    .grid-4,.grid-analytics{grid-template-columns:1fr}
+    .grid-pricing{grid-template-columns:1fr}
+    .kpis{grid-template-columns:1fr 1fr}
+    .app{grid-template-columns:1fr}
+    .app-side{display:none}
+    .inbox{grid-template-columns:110px 1fr}
+    .foot-top{grid-template-columns:1fr 1fr}
+    .logos{gap:28px}
+    .hero .sub{font-size:17px}
+    .hero-cta .btn{flex:1;min-width:calc(50% - 7px)}
+  }
+  @media (max-width:420px){
+    .kpis{grid-template-columns:1fr}
+    .foot-top{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================ NAV ============================ -->
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a href="#" class="brand" aria-label="Infloww home">
+      <span class="mark" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+          <path d="M4 6.5C4 5.12 5.12 4 6.5 4H17.5C18.88 4 20 5.12 20 6.5V13.5C20 14.88 18.88 16 17.5 16H9L5 19.5V16H6.5C5.12 16 4 14.88 4 13.5V6.5Z" fill="#fff"/>
+          <circle cx="9" cy="10" r="1.4" fill="#2F6BFF"/>
+          <circle cx="12" cy="10" r="1.4" fill="#2F6BFF"/>
+          <circle cx="15" cy="10" r="1.4" fill="#2F6BFF"/>
+        </svg>
+      </span>
+      Infloww
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#product">Product</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#download">Download</a>
+      <a href="#help">Help</a>
+      <a href="#sales">Talk to sales</a>
+    </nav>
+    <div class="nav-right">
+      <a href="#login" class="login">Log in</a>
+      <a href="#trial" class="btn btn-primary">Start free trial</a>
+      <button class="hamburger" id="hamburger" aria-label="Open menu" aria-expanded="false">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M4 7h16M4 12h16M4 17h16"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+  <div class="mobile-menu" id="mobileMenu">
+    <a href="#product">Product</a>
+    <a href="#pricing">Pricing</a>
+    <a href="#download">Download</a>
+    <a href="#help">Help</a>
+    <a href="#sales">Talk to sales</a>
+    <a href="#login">Log in</a>
+    <a href="#trial" class="btn btn-primary">Start free trial</a>
+  </div>
+</header>
+
+<!-- ============================ HERO ============================ -->
+<section class="hero">
+  <div class="wrap">
+    <span class="pill-badge"><span class="star">★</span> Voted the #1 creator CRM</span>
+    <h1>The <span class="accent">#1 CRM</span> for OnlyFans and beyond</h1>
+    <p class="sub">Grow your agency revenue across OnlyFans, Fansly, MYM, and Fanvue with the operating system top agencies already run on.</p>
+    <div class="hero-cta">
+      <a href="#trial" class="btn btn-primary btn-lg">Start free trial</a>
+      <a href="#demo" class="btn btn-ghost btn-lg">Book a demo</a>
+    </div>
+    <div class="hero-assure">
+      <span class="assure">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#E7F7EE"/><path d="M8 12.5l2.5 2.5 5-5.5" stroke="#16B364" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        No credit card required
+      </span>
+    </div>
+
+    <!-- Browser mock -->
+    <div class="browser" role="img" aria-label="Infloww dashboard preview">
+      <div class="browser-bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <div class="url">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="5" y="11" width="14" height="9" rx="2" stroke="#5B6478" stroke-width="2"/><path d="M8 11V8a4 4 0 018 0v3" stroke="#5B6478" stroke-width="2"/></svg>
+          app.infloww.com/dashboard
+        </div>
+      </div>
+      <div class="app">
+        <!-- sidebar -->
+        <aside class="app-side">
+          <div class="logo">
+            <span class="mk"></span> Infloww
+          </div>
+          <div class="navitem active">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+            Dashboard
+          </div>
+          <div class="navitem">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+            Messages
+          </div>
+          <div class="navitem">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/></svg>
+            Fans
+          </div>
+          <div class="navitem">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 4-6"/></svg>
+            Analytics
+          </div>
+          <div class="navitem">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5"/></svg>
+            Vault
+          </div>
+          <div class="spacer"></div>
+          <div class="who">
+            <span class="av">AX</span>
+            <div><b>Apex Agency</b><br><small>12 creators</small></div>
+          </div>
+        </aside>
+        <!-- main -->
+        <div class="app-main">
+          <div class="top">
+            <h4>Revenue overview</h4>
+            <span class="chip">Live · Last 30 days</span>
+          </div>
+          <div class="kpis">
+            <div class="kpi">
+              <div class="lbl">Net revenue</div>
+              <div class="val">$284.6k</div>
+              <div class="delta">▲ 18.4% MoM</div>
+              <svg class="spark" width="100%" height="26" viewBox="0 0 120 26" preserveAspectRatio="none"><polyline points="0,20 15,18 30,19 45,12 60,14 75,8 90,10 105,4 120,3" fill="none" stroke="#2F6BFF" stroke-width="2"/><polygon points="0,20 15,18 30,19 45,12 60,14 75,8 90,10 105,4 120,3 120,26 0,26" fill="rgba(47,107,255,.10)"/></svg>
+            </div>
+            <div class="kpi">
+              <div class="lbl">Messages sent</div>
+              <div class="val">41,209</div>
+              <div class="delta">▲ 9.1% MoM</div>
+              <svg class="spark" width="100%" height="26" viewBox="0 0 120 26" preserveAspectRatio="none"><polyline points="0,16 15,14 30,17 45,11 60,13 75,9 90,12 105,6 120,7" fill="none" stroke="#16B364" stroke-width="2"/><polygon points="0,16 15,14 30,17 45,11 60,13 75,9 90,12 105,6 120,7 120,26 0,26" fill="rgba(22,179,100,.10)"/></svg>
+            </div>
+            <div class="kpi">
+              <div class="lbl">Conversion</div>
+              <div class="val">7.8%</div>
+              <div class="delta">▲ 2.3% MoM</div>
+              <svg class="spark" width="100%" height="26" viewBox="0 0 120 26" preserveAspectRatio="none"><polyline points="0,18 15,19 30,15 45,16 60,10 75,12 90,7 105,9 120,5" fill="none" stroke="#6E8BFF" stroke-width="2"/><polygon points="0,18 15,19 30,15 45,16 60,10 75,12 90,7 105,9 120,5 120,26 0,26" fill="rgba(110,139,255,.10)"/></svg>
+            </div>
+          </div>
+          <div class="chart-card">
+            <div class="ch-top"><b>Revenue by platform</b><span>Jan – Jun</span></div>
+            <svg width="100%" height="140" viewBox="0 0 520 140" preserveAspectRatio="none" aria-hidden="true">
+              <line x1="0" y1="30" x2="520" y2="30" stroke="#EEF2F8"/>
+              <line x1="0" y1="70" x2="520" y2="70" stroke="#EEF2F8"/>
+              <line x1="0" y1="110" x2="520" y2="110" stroke="#EEF2F8"/>
+              <polygon points="0,118 87,96 174,102 261,72 348,80 435,48 520,40 520,140 0,140" fill="rgba(47,107,255,.12)"/>
+              <polyline points="0,118 87,96 174,102 261,72 348,80 435,48 520,40" fill="none" stroke="#2F6BFF" stroke-width="2.5"/>
+              <polyline points="0,128 87,120 174,112 261,116 348,98 435,104 520,86" fill="none" stroke="#6E8BFF" stroke-width="2.5" stroke-dasharray="5 4"/>
+              <g fill="#2F6BFF"><circle cx="261" cy="72" r="3.5"/><circle cx="435" cy="48" r="3.5"/><circle cx="520" cy="40" r="3.5"/></g>
+            </svg>
+            <div class="legend"><span><i style="background:#2F6BFF"></i>OnlyFans</span><span><i style="background:#6E8BFF"></i>Fansly + MYM</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ TRUST BAR ============================ -->
+<div class="trust">
+  <div class="wrap">
+    <p>Trusted by 3,000+ agencies and creators</p>
+    <div class="logos">
+      <svg width="96" height="26" viewBox="0 0 96 26" aria-label="APEX"><text x="0" y="20" font-family="Inter,sans-serif" font-size="21" font-weight="800" letter-spacing="1" fill="#12172B">APEX</text></svg>
+      <svg width="150" height="26" viewBox="0 0 150 26" aria-label="LUNA MGMT"><text x="0" y="20" font-family="Inter,sans-serif" font-size="20" font-weight="700" letter-spacing="1" fill="#12172B">LUNA MGMT</text></svg>
+      <svg width="92" height="26" viewBox="0 0 92 26" aria-label="NOVA"><text x="0" y="20" font-family="Inter,sans-serif" font-size="21" font-weight="800" font-style="italic" fill="#12172B">NOVA</text></svg>
+      <svg width="88" height="26" viewBox="0 0 88 26" aria-label="PEAK"><text x="0" y="20" font-family="Inter,sans-serif" font-size="21" font-weight="800" letter-spacing="2" fill="#12172B">PEAK</text></svg>
+      <svg width="120" height="26" viewBox="0 0 120 26" aria-label="VELVET"><text x="0" y="20" font-family="Inter,sans-serif" font-size="20" font-weight="600" letter-spacing="3" fill="#12172B">VELVET</text></svg>
+      <svg width="106" height="26" viewBox="0 0 106 26" aria-label="ORBIT"><circle cx="11" cy="13" r="9" fill="none" stroke="#12172B" stroke-width="2.5"/><text x="26" y="20" font-family="Inter,sans-serif" font-size="21" font-weight="800" fill="#12172B">ORBIT</text></svg>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ WHY CHOOSE ============================ -->
+<section class="section band" id="product">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Why choose Infloww</span>
+      <h2>Everything your agency needs, engineered to scale</h2>
+      <p>The complete infrastructure top agencies rely on to run their creators — secure, fast, and always on.</p>
+    </div>
+    <div class="grid-6">
+      <div class="fcard">
+        <div class="ficon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-4z"/><path d="M9 12l2 2 4-4"/></svg>
+        </div>
+        <h3>Data security</h3>
+        <p>Bank-grade encryption and SOC 2 controls keep every creator account and fan record protected.</p>
+      </div>
+      <div class="fcard">
+        <div class="ficon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h8l-1 8 11-13h-8l1-7z"/></svg>
+        </div>
+        <h3>Better performance</h3>
+        <p>A blazing-fast interface built for chatters who move through hundreds of conversations an hour.</p>
+      </div>
+      <div class="fcard">
+        <div class="ficon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>Safety</h3>
+        <p>Compliance-first automation and account safeguards designed to protect your creators from bans.</p>
+      </div>
+      <div class="fcard">
+        <div class="ficon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        </div>
+        <h3>Uptime guarantee</h3>
+        <p>A 99.99% uptime SLA so your team keeps selling around the clock without interruptions.</p>
+      </div>
+      <div class="fcard">
+        <div class="ficon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a4 4 0 100-8 4 4 0 000 8z"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-2.82 1.17V21a2 2 0 11-4 0v-.09A1.65 1.65 0 006 19.4a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 003.6 13.7 2 2 0 013 12a2 2 0 011.42-1.9 1.65 1.65 0 00.94-2.16 2 2 0 112.83-2.83l.06.06A1.65 1.65 0 0011 4.6 2 2 0 0113 3a2 2 0 011.9 1.42 1.65 1.65 0 002.16.94 2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 12z"/></svg>
+        </div>
+        <h3>Top talent</h3>
+        <p>Built by ex-operators and engineers who know exactly how a high-performing agency runs.</p>
+      </div>
+      <div class="fcard">
+        <div class="ficon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>
+        </div>
+        <h3>24/7 support</h3>
+        <p>Real humans on live chat any hour of any day, with an average first response under two minutes.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ PRODUCT FEATURE ROWS ============================ -->
+<section class="section">
+  <div class="wrap">
+
+    <!-- Row 1: Messages Pro -->
+    <div class="frow">
+      <div class="fr-text">
+        <span class="tag">Messages Pro™</span>
+        <h2>Messages Pro™ — Chat up to 40% faster</h2>
+        <p>A purpose-built inbox that turns your chatters into closers. Keyboard-first, distraction-free, and packed with the shortcuts a high-volume team lives on.</p>
+        <ul class="checklist">
+          <li><span class="check"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><span><b>Saved scripts & snippets</b> fire in a single keystroke.</span></li>
+          <li><span class="check"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><span><b>Fan context sidebar</b> surfaces spend, notes, and history inline.</span></li>
+          <li><span class="check"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><span><b>Priority queue</b> routes the hottest buyers to the front.</span></li>
+        </ul>
+      </div>
+      <div class="fr-media">
+        <div class="inbox">
+          <div class="inbox-list">
+            <div class="search">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+              <span style="font-size:11px">Search</span>
+            </div>
+            <div class="conv sel"><span class="av" style="background:#2F6BFF">JM</span><div class="meta"><b>Jordan M.</b><span>Can't wait to see more 🔥</span></div><span class="dot"></span></div>
+            <div class="conv"><span class="av" style="background:#16B364">SK</span><div class="meta"><b>Sam K.</b><span>How much for the bundle?</span></div></div>
+            <div class="conv"><span class="av" style="background:#F5A623">RL</span><div class="meta"><b>Riley L.</b><span>Just tipped you $50 💕</span></div></div>
+            <div class="conv"><span class="av" style="background:#6E8BFF">TP</span><div class="meta"><b>Taylor P.</b><span>You up? 😏</span></div></div>
+            <div class="conv"><span class="av" style="background:#E0577E">DM</span><div class="meta"><b>Devin M.</b><span>Loved the last video</span></div></div>
+          </div>
+          <div class="thread">
+            <div class="th-top"><span class="av" style="background:#2F6BFF">JM</span><div><b>Jordan M.</b><br><span class="on">● Online now</span></div></div>
+            <div class="th-body">
+              <div class="bub in">Hey! Just saw your story, you look incredible 😍</div>
+              <div class="bub out">Aww thank you babe 🥰 I actually just shot something special...</div>
+              <div class="bub in">Ohh I need to see it. What are we talking?</div>
+            </div>
+            <div class="suggest"><span class="ai">AI</span> Suggested: "I've got a 4-video bundle for my VIPs — $45 and it's all yours 😏"</div>
+            <div class="th-input">Type a message… <span class="send"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 2: Smart Lists (reversed) -->
+    <div class="frow reverse">
+      <div class="fr-text">
+        <span class="tag">Smart Lists™</span>
+        <h2>Smart Lists™ — Auto-segment every fan</h2>
+        <p>Stop guessing who to message. Smart Lists sort every subscriber by spend, activity, and behavior automatically — so your mass sends always land on the right audience.</p>
+        <ul class="checklist">
+          <li><span class="check"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><span><b>Dynamic segments</b> update the instant a fan's behavior changes.</span></li>
+          <li><span class="check"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><span><b>Spend tiers</b> separate whales from window-shoppers automatically.</span></li>
+          <li><span class="check"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><span><b>One-click targeting</b> pipes any segment straight into a campaign.</span></li>
+        </ul>
+      </div>
+      <div class="fr-media">
+        <div class="slist">
+          <div class="rulebar">
+            <span class="rp">Lifetime spend</span><span class="op">≥</span><span class="rp">$250</span><span class="op">AND</span><span class="rp">Active in 7d</span>
+          </div>
+          <div class="seg">
+            <span class="badge" style="background:linear-gradient(135deg,#16B364,#3ED88A)">$$$</span>
+            <div class="info"><b>VIP whales</b><span>Top 5% by lifetime spend</span><div class="bar"><i style="width:88%;background:#16B364"></i></div></div>
+            <div class="count"><b>412</b><span>fans</span></div>
+          </div>
+          <div class="seg">
+            <span class="badge" style="background:linear-gradient(135deg,#2F6BFF,#6E8BFF)">★</span>
+            <div class="info"><b>Loyal spenders</b><span>Bought in the last 30 days</span><div class="bar"><i style="width:64%;background:#2F6BFF"></i></div></div>
+            <div class="count"><b>1,938</b><span>fans</span></div>
+          </div>
+          <div class="seg">
+            <span class="badge" style="background:linear-gradient(135deg,#F5A623,#FFC760)">◐</span>
+            <div class="info"><b>Warm leads</b><span>Engaged, not yet purchased</span><div class="bar"><i style="width:41%;background:#F5A623"></i></div></div>
+            <div class="count"><b>3,204</b><span>fans</span></div>
+          </div>
+          <div class="seg">
+            <span class="badge" style="background:linear-gradient(135deg,#8B94AC,#B4BDD1)">z</span>
+            <div class="info"><b>Going quiet</b><span>No reply in 14+ days</span><div class="bar"><i style="width:22%;background:#8B94AC"></i></div></div>
+            <div class="count"><b>2,057</b><span>fans</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 3: Vault Pro -->
+    <div class="frow">
+      <div class="fr-text">
+        <span class="tag">Vault Pro™</span>
+        <h2>Vault Pro™ — Your media, organized</h2>
+        <p>Every photo and video for every creator, sorted, priced, and searchable in one shared library. Your chatters find the perfect PPV in seconds instead of scrolling forever.</p>
+        <ul class="checklist">
+          <li><span class="check"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><span><b>Smart folders</b> auto-tag content by type, price, and creator.</span></li>
+          <li><span class="check"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><span><b>Suggested pricing</b> recommends the right PPV amount per fan tier.</span></li>
+          <li><span class="check"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><span><b>Sent-history tracking</b> stops you re-sending the same set twice.</span></li>
+        </ul>
+      </div>
+      <div class="fr-media">
+        <div class="vfolders">
+          <span class="vfolder on">All media <span class="n">2,309</span></span>
+          <span class="vfolder">Solo <span class="n">844</span></span>
+          <span class="vfolder">Bundles <span class="n">126</span></span>
+          <span class="vfolder">Previews <span class="n">312</span></span>
+        </div>
+        <div class="vgrid">
+          <div class="vtile" style="background:linear-gradient(135deg,#2F6BFF,#6E8BFF)"><span class="pv"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span><span class="price">$25</span><span class="lbl">Bundle · 4 clips</span></div>
+          <div class="vtile" style="background:linear-gradient(135deg,#E0577E,#F58AA8)"><span class="price">$12</span><span class="lbl">Lingerie set</span></div>
+          <div class="vtile" style="background:linear-gradient(135deg,#16B364,#3ED88A)"><span class="lbl">Free preview</span></div>
+          <div class="vtile" style="background:linear-gradient(135deg,#F5A623,#FFC760)"><span class="price">$40</span><span class="lbl">VIP exclusive</span></div>
+          <div class="vtile" style="background:linear-gradient(135deg,#8B5CF6,#B79BFF)"><span class="pv"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span><span class="price">$18</span><span class="lbl">Shower set</span></div>
+          <div class="vtile" style="background:linear-gradient(135deg,#0EA5E9,#5FCDF5)"><span class="lbl">Teaser</span></div>
+          <div class="vtile" style="background:linear-gradient(135deg,#12172B,#3A4263)"><span class="price">$60</span><span class="lbl">Custom</span></div>
+          <div class="vtile" style="background:linear-gradient(135deg,#EC4899,#F784C0)"><span class="pv"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span><span class="price">$30</span><span class="lbl">Boy/girl</span></div>
+          <div class="vtile" style="background:linear-gradient(135deg,#14B8A6,#5FE6D6)"><span class="price">$15</span><span class="lbl">Selfie set</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================ AI COPILOT (dark) ============================ -->
+<section class="section dark copilot">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="beta">✦ BETA</span>
+      <h2 style="margin-top:16px">Infloww AI Copilot</h2>
+      <p>An AI trained on your creator's voice that drafts the next line, remembers every fan, and helps your team sell without ever sounding like a bot.</p>
+    </div>
+    <div class="grid-4">
+      <div class="dcard">
+        <div class="ic">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+        </div>
+        <h3>Context-awareness</h3>
+        <p>Reads the whole thread and the fan's full history before suggesting a single word.</p>
+      </div>
+      <div class="dcard">
+        <div class="ic">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M9 9h.01M15 9h.01M9 14c1 1 5 1 6 0"/></svg>
+        </div>
+        <h3>Digital clone</h3>
+        <p>Learns each creator's tone and slang so every reply sounds authentically like her.</p>
+      </div>
+      <div class="dcard">
+        <div class="ic">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h8l-1 8 11-13h-8l1-7z"/></svg>
+        </div>
+        <h3>Real-time suggestions</h3>
+        <p>Drafts the perfect next message the moment a fan replies, ready to send or tweak.</p>
+      </div>
+      <div class="dcard">
+        <div class="ic">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+        </div>
+        <h3>Messages Pro™</h3>
+        <p>Plugs straight into your inbox so the Copilot works right where your team chats.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ ANALYTICS ============================ -->
+<section class="section band">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Analytics</span>
+      <h2>Know your numbers</h2>
+      <p>Every dollar, every shift, every chatter — measured. Make decisions on data, not gut feel.</p>
+    </div>
+    <div class="grid-analytics">
+      <div class="acard">
+        <div class="ah"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></span><h3>Message dashboard</h3></div>
+        <div class="big">41,209</div>
+        <div class="cap">Messages sent this month</div>
+        <div class="viz">
+          <svg width="100%" height="46" viewBox="0 0 200 46" preserveAspectRatio="none"><g fill="#2F6BFF"><rect x="4" y="26" width="14" height="20" rx="3"/><rect x="26" y="18" width="14" height="28" rx="3"/><rect x="48" y="22" width="14" height="24" rx="3"/><rect x="70" y="10" width="14" height="36" rx="3"/><rect x="92" y="16" width="14" height="30" rx="3"/><rect x="114" y="6" width="14" height="40" rx="3"/><rect x="136" y="14" width="14" height="32" rx="3"/><rect x="158" y="4" width="14" height="42" rx="3"/><rect x="180" y="12" width="14" height="34" rx="3"/></g></svg>
+        </div>
+      </div>
+      <div class="acard">
+        <div class="ah"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/></svg></span><h3>Fan reports</h3></div>
+        <div class="big">8,671</div>
+        <div class="cap">Active paying fans</div>
+        <div class="viz">
+          <svg width="100%" height="46" viewBox="0 0 200 46" preserveAspectRatio="none"><polyline points="0,38 25,34 50,36 75,24 100,28 125,16 150,20 175,10 200,6" fill="none" stroke="#16B364" stroke-width="2.5"/><polygon points="0,38 25,34 50,36 75,24 100,28 125,16 150,20 175,10 200,6 200,46 0,46" fill="rgba(22,179,100,.12)"/></svg>
+        </div>
+      </div>
+      <div class="acard">
+        <div class="ah"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7h-9M20 12h-9M20 17h-9M4 7h.01M4 12h.01M4 17h.01"/></svg></span><h3>Employee reports</h3></div>
+        <div class="big">$62.4k</div>
+        <div class="cap">Top chatter revenue</div>
+        <div class="viz">
+          <svg width="100%" height="46" viewBox="0 0 200 46" preserveAspectRatio="none"><g><rect x="6" y="8" width="140" height="9" rx="4.5" fill="#2F6BFF"/><rect x="6" y="22" width="104" height="9" rx="4.5" fill="#6E8BFF"/><rect x="6" y="36" width="72" height="9" rx="4.5" fill="#EAF1FF"/></g></svg>
+        </div>
+      </div>
+      <div class="acard">
+        <div class="ah"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span><h3>Employee shifts</h3></div>
+        <div class="big">99.2%</div>
+        <div class="cap">Coverage across all shifts</div>
+        <div class="viz">
+          <svg width="100%" height="46" viewBox="0 0 200 46"><g fill="none" stroke-width="8" stroke-linecap="round"><circle cx="23" cy="23" r="16" stroke="#EEF2F8"/><circle cx="23" cy="23" r="16" stroke="#2F6BFF" stroke-dasharray="100 100" transform="rotate(-90 23 23)"/></g><text x="52" y="20" font-family="Inter" font-size="11" font-weight="700" fill="#12172B">3 shifts · 24h</text><text x="52" y="35" font-family="Inter" font-size="10" fill="#5B6478">Day · Swing · Night</text></svg>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ TESTIMONIALS ============================ -->
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Loved by operators</span>
+      <h2>Agencies scale faster on Infloww</h2>
+      <p>From two-creator teams to 100+ roster agencies, operators switch to Infloww and never look back.</p>
+    </div>
+    <div class="grid-3">
+      <div class="tcard">
+        <div class="stars">★★★★★</div>
+        <p class="quote">"We onboarded 40 creators in a weekend and our revenue per chatter jumped 32% in the first month. Messages Pro alone paid for the whole platform."</p>
+        <div class="who2"><span class="av" style="background:#2F6BFF">MT</span><div><b>Marcus T.</b><span>Apex Agency</span></div></div>
+      </div>
+      <div class="tcard">
+        <div class="stars">★★★★★</div>
+        <p class="quote">"Smart Lists changed the game. Our mass sends finally hit the right fans and unsubscribes dropped by half. I can't imagine running the agency without it."</p>
+        <div class="who2"><span class="av" style="background:#16B364">LK</span><div><b>Lena K.</b><span>Luna Management</span></div></div>
+      </div>
+      <div class="tcard">
+        <div class="stars">★★★★★</div>
+        <p class="quote">"The AI Copilot sounds exactly like our creators. New chatters ramp in days instead of weeks, and the quality of every conversation went up overnight."</p>
+        <div class="who2"><span class="av" style="background:#E0577E">SR</span><div><b>Sofia R.</b><span>Nova Collective</span></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ PRICING ============================ -->
+<section class="section band" id="pricing">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Pricing</span>
+      <h2>One simple price per platform</h2>
+      <p>Flat, transparent pricing per creator profile. No setup fees, no revenue share — ever.</p>
+    </div>
+    <div class="grid-pricing">
+      <div class="pcard pop">
+        <span class="pop-badge">Most popular</span>
+        <div class="pf-net">Infloww for</div>
+        <div class="pf-name">OnlyFans</div>
+        <div class="price"><span class="cur">$</span><span class="amt">40</span></div>
+        <div class="per">/mo per creator profile</div>
+        <ul class="pl">
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Messages Pro™ inbox</li>
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Smart Lists™ segmentation</li>
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Vault Pro™ & analytics</li>
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>AI Copilot (beta)</li>
+        </ul>
+        <a href="#trial" class="btn btn-primary">Start free trial</a>
+      </div>
+      <div class="pcard">
+        <div class="pf-net">Infloww for</div>
+        <div class="pf-name">Fansly</div>
+        <div class="price"><span class="cur">$</span><span class="amt">40</span></div>
+        <div class="per">/mo per creator profile</div>
+        <ul class="pl">
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Messages Pro™ inbox</li>
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Smart Lists™ segmentation</li>
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Vault Pro™ & analytics</li>
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Full team seats</li>
+        </ul>
+        <a href="#trial" class="btn btn-ghost">Start free trial</a>
+      </div>
+      <div class="pcard">
+        <div class="pf-net">Infloww for</div>
+        <div class="pf-name">MYM</div>
+        <div class="price"><span class="cur">$</span><span class="amt">50</span></div>
+        <div class="per">/mo per creator profile</div>
+        <ul class="pl">
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Messages Pro™ inbox</li>
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Smart Lists™ segmentation</li>
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Vault Pro™ & analytics</li>
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Priority support</li>
+        </ul>
+        <a href="#trial" class="btn btn-ghost">Start free trial</a>
+      </div>
+      <div class="pcard">
+        <div class="pf-net">Infloww for</div>
+        <div class="pf-name">Fanvue</div>
+        <div class="price"><span class="cur">$</span><span class="amt">50</span></div>
+        <div class="per">/mo per creator profile</div>
+        <ul class="pl">
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Messages Pro™ inbox</li>
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Smart Lists™ segmentation</li>
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Vault Pro™ & analytics</li>
+          <li><span class="check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span>Priority support</li>
+        </ul>
+        <a href="#trial" class="btn btn-ghost">Start free trial</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ FINAL CTA ============================ -->
+<section class="finalcta" id="trial">
+  <div class="wrap">
+    <h2>Ready to grow your agency?</h2>
+    <p>Join 3,000+ agencies already scaling on the #1 creator CRM.</p>
+    <div><a href="#trial" class="btn btn-white btn-lg">Start free trial</a></div>
+    <span class="assure">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="rgba(255,255,255,.25)"/><path d="M8 12.5l2.5 2.5 5-5.5" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      No credit card required
+    </span>
+  </div>
+</section>
+
+<!-- ============================ FOOTER ============================ -->
+<footer id="help">
+  <div class="wrap">
+    <div class="foot-top">
+      <div class="foot-brand">
+        <div class="brand" style="color:#fff">
+          <span class="mark" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path d="M4 6.5C4 5.12 5.12 4 6.5 4H17.5C18.88 4 20 5.12 20 6.5V13.5C20 14.88 18.88 16 17.5 16H9L5 19.5V16H6.5C5.12 16 4 14.88 4 13.5V6.5Z" fill="#fff"/>
+              <circle cx="9" cy="10" r="1.4" fill="#2F6BFF"/>
+              <circle cx="12" cy="10" r="1.4" fill="#2F6BFF"/>
+              <circle cx="15" cy="10" r="1.4" fill="#2F6BFF"/>
+            </svg>
+          </span>
+          Infloww
+        </div>
+        <p>The operating system top OnlyFans agencies run on. Chat faster, segment smarter, sell more.</p>
+      </div>
+      <div class="foot-col">
+        <h4>Product</h4>
+        <a href="#pricing">Pricing</a>
+        <a href="#download">Download</a>
+        <a href="#changelog">Changelog</a>
+        <a href="#releases">Releases</a>
+      </div>
+      <div class="foot-col">
+        <h4>Company</h4>
+        <a href="#careers">Careers</a>
+        <a href="#news">News</a>
+        <a href="#blog">Blog</a>
+        <a href="#media">Media Kit</a>
+        <a href="#contact">Contact</a>
+      </div>
+      <div class="foot-col">
+        <h4>Support</h4>
+        <a href="#help">Help Center</a>
+        <a href="#tutorials">Tutorials</a>
+        <a href="#support">Support</a>
+      </div>
+      <div class="foot-col">
+        <h4>Compare</h4>
+        <a href="#vs-creatorhero">vs. CreatorHero</a>
+        <a href="#vs-onlymonster">vs. OnlyMonster</a>
+        <a href="#switch">Switch to Infloww</a>
+      </div>
+      <div class="foot-col">
+        <h4>Legal</h4>
+        <a href="#terms">Terms</a>
+        <a href="#privacy">Privacy</a>
+        <a href="#cookies">Cookies</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span class="copy">© 2026 Infloww</span>
+      <div class="socials">
+        <a href="#x" aria-label="X"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M18.9 2H22l-7.3 8.3L23 22h-6.6l-5.2-6.8L5.3 22H2l7.8-8.9L1.4 2h6.8l4.7 6.2L18.9 2zm-1.2 18h1.8L7.1 3.9H5.2L17.7 20z"/></svg></a>
+        <a href="#instagram" aria-label="Instagram"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg></a>
+        <a href="#youtube" aria-label="YouTube"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M23 12s0-3.3-.4-4.9a2.6 2.6 0 00-1.8-1.8C19.2 5 12 5 12 5s-7.2 0-8.8.4A2.6 2.6 0 001.4 7.2C1 8.7 1 12 1 12s0 3.3.4 4.9a2.6 2.6 0 001.8 1.8C4.8 19 12 19 12 19s7.2 0 8.8-.4a2.6 2.6 0 001.8-1.8C23 15.3 23 12 23 12zM9.8 15.3V8.7l5.7 3.3-5.7 3.3z"/></svg></a>
+        <a href="#linkedin" aria-label="LinkedIn"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M20.4 3H3.6A.6.6 0 003 3.6v16.8a.6.6 0 00.6.6h16.8a.6.6 0 00.6-.6V3.6a.6.6 0 00-.6-.6zM8.3 18.3H5.4V9.4h2.9v8.9zM6.9 8.2a1.7 1.7 0 110-3.4 1.7 1.7 0 010 3.4zm11.4 10.1h-2.9v-4.3c0-1 0-2.4-1.4-2.4s-1.7 1.1-1.7 2.3v4.4H9.4V9.4h2.8v1.2h.1a3 3 0 012.8-1.5c3 0 3.5 2 3.5 4.5v4.7z"/></svg></a>
+      </div>
+    </div>
+    <div class="disclaimer">Design mockup — not affiliated with Infloww.</div>
+  </div>
+</footer>
+
+<script>
+  (function(){
+    var btn = document.getElementById('hamburger');
+    var menu = document.getElementById('mobileMenu');
+    if(!btn || !menu) return;
+    btn.addEventListener('click', function(){
+      var open = menu.style.display === 'block';
+      menu.style.display = open ? 'none' : 'block';
+      btn.setAttribute('aria-expanded', String(!open));
+    });
+    menu.querySelectorAll('a').forEach(function(a){
+      a.addEventListener('click', function(){
+        menu.style.display = 'none';
+        btn.setAttribute('aria-expanded','false');
+      });
+    });
+  })();
+</script>
+
+</body>
+</html>

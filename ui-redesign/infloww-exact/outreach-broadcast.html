@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1440, initial-scale=1">
+<title>fastt — Broadcast</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --canvas:#1e1e1e;
+    --card:#262626;
+    --black:#000000;
+    --border:#333333;
+    --border-soft:#2c2c2c;
+    --accent:#4166f6;
+    --green:#67d1ae;
+    --text:#ffffff;
+    --muted:#8a8a8a;
+    --muted2:#6a6a6a;
+    --nav:#b9b9b9;
+    font-synthesis:none;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#050505;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  body{display:flex;justify-content:center;align-items:flex-start;min-height:100vh}
+
+  .app{
+    position:relative;
+    width:1440px;height:900px;overflow:hidden;
+    background:var(--canvas);
+    color:var(--text);
+    display:flex;flex-direction:column;
+  }
+
+  /* ============ TOP BAR ============ */
+  .topbar{
+    height:52px;flex:0 0 52px;
+    background:var(--black);
+    display:flex;align-items:center;
+    padding:0 18px 0 20px;
+    gap:14px;
+  }
+  .traffic{display:flex;gap:8px;align-items:center}
+  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
+  .traffic .r{background:#ff5f57}
+  .traffic .y{background:#febc2e}
+  .traffic .g{background:#28c840}
+  .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
+  .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
+  .trial b{font-size:13px;font-weight:600;color:#fff}
+  .trial span{font-size:12px;color:var(--muted)}
+
+  .top-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .pill{
+    display:flex;align-items:center;gap:8px;height:36px;padding:0 15px;
+    border:1px solid #2b2b2b;border-radius:20px;background:#111214;
+    font-size:13.5px;font-weight:500;color:#f0f0f0;white-space:nowrap;
+  }
+  .pill svg{flex:0 0 auto}
+  .dot-green{width:9px;height:9px;border-radius:50%;background:#3ec46a;display:inline-block}
+  .pill .info{color:var(--muted);display:flex;align-items:center}
+  .sfw{display:flex;flex-direction:column;align-items:center;gap:3px;margin:0 4px 0 6px}
+  .sfw label{font-size:10.5px;font-weight:600;color:#cfcfcf;letter-spacing:.3px}
+  .toggle{width:26px;height:14px;border-radius:8px;background:#3a3a3a;position:relative}
+  .toggle::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:#e6e6e6}
+  .iconbtn{width:36px;height:36px;display:flex;align-items:center;justify-content:center;color:#e6e6e6;border-radius:50%}
+  .avatar-top{width:34px;height:34px;border-radius:50%;background:var(--accent);
+    display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#fff}
+
+  /* ============ SHELL ============ */
+  .shell{flex:1;display:flex;min-height:0}
+
+  /* ============ SIDEBAR ============ */
+  .sidebar{
+    width:252px;flex:0 0 252px;background:var(--black);
+    display:flex;flex-direction:column;padding:16px 14px 16px;
+  }
+  .creator{
+    display:flex;align-items:center;gap:11px;padding:11px 12px;
+    background:#181818;border:1px solid #2e2e2e;border-radius:12px;margin-bottom:16px;
+  }
+  .of-logo{width:30px;height:30px;border-radius:9px;
+    background:linear-gradient(160deg,#3b82f6,#1d5ff0);
+    display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .creator .name{font-size:15px;font-weight:600;color:#fff}
+  .creator .pink{width:8px;height:8px;border-radius:50%;background:#ec4b9b;margin-left:auto}
+  .creator .cv{color:var(--muted);display:flex}
+
+  .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-item{
+    display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
+    color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
+  }
+  .nav-item:hover{background:#141414}
+  .nav-item .ico{width:22px;display:flex;align-items:center;justify-content:center;flex:0 0 22px;color:#9a9a9a}
+  .nav-item .lbl{flex:1;white-space:nowrap}
+  .nav-item .cv{color:#666;display:flex}
+  .nav-item.active{
+    background:#1c1c1c;border:1px solid #2b2b2b;color:#fff;
+    box-shadow:0 1px 0 rgba(255,255,255,.04), 0 2px 8px rgba(0,0,0,.4);
+  }
+  .nav-item.active .ico{color:#fff}
+  .badge{background:#f2295b;color:#fff;font-size:11px;font-weight:700;line-height:1;
+    padding:3px 5px;border-radius:9px;min-width:20px;text-align:center;flex:0 0 auto}
+  .popout{width:22px;height:22px;border:1px solid #333;border-radius:7px;margin-left:-2px;
+    display:flex;align-items:center;justify-content:center;color:#9a9a9a;flex:0 0 auto}
+  .divider{height:1px;background:#1f1f1f;margin:12px 4px}
+  .spacer{flex:1}
+  .version{font-size:12.5px;color:#5a5a5a;padding:14px 12px 2px}
+  /* canonical sidebar: nav scrolls, footer pinned */
+  .nav{flex:1;min-height:0;overflow-y:auto;scrollbar-width:none}
+  .nav::-webkit-scrollbar{display:none}
+  .sbfoot{flex:0 0 auto;display:flex;flex-direction:column;gap:2px;padding-top:8px;border-top:1px solid #1f1f1f;margin-top:6px}
+
+  /* ============ MAIN ============ */
+  .main{flex:1;min-width:0;overflow:hidden;padding:20px 40px 0}
+
+  .banner{
+    display:flex;align-items:center;gap:11px;
+    background:rgba(65,102,246,.12);border:1px solid rgba(65,102,246,.28);
+    border-radius:10px;padding:11px 16px;margin-bottom:18px;color:#c9d3ff;font-size:14px;
+  }
+  .banner .bx{margin-left:auto;color:#8ea0e6;display:flex;cursor:pointer}
+
+  .sec-head{display:flex;align-items:center;margin-bottom:16px}
+  .sec-title{display:flex;align-items:center;gap:9px;font-size:19px;font-weight:600;color:#fff}
+  .sec-title .info{color:var(--muted);display:flex}
+  .sec-utc{display:flex;align-items:center;gap:6px;margin-left:16px;font-size:14px;color:var(--muted)}
+  .sec-utc .info{display:flex}
+  .head-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+  .dropdown{display:flex;align-items:center;gap:10px;height:44px;padding:0 14px;
+    border:1px solid var(--border);border-radius:10px;background:#1c1c1c;font-size:14.5px;color:#eee;font-weight:500;cursor:pointer}
+  .dropdown .cv{color:var(--muted);display:flex}
+  .segment{display:flex;height:44px;border:1px solid var(--border);border-radius:10px;background:#1c1c1c;overflow:hidden}
+  .segment button{border:0;background:transparent;color:var(--muted);font-family:inherit;
+    font-size:14.5px;font-weight:500;padding:0 20px;cursor:pointer;height:100%}
+  .segment button.on{background:#343434;color:#fff}
+
+  /* earnings card */
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px}
+
+  .cardpad{padding:22px 24px}
+  .card-h{display:flex;align-items:center;gap:9px;font-size:17px;font-weight:600;color:#fff}
+  .card-h .info{color:var(--muted);display:flex}
+  .card-h .count{color:#cfcfcf;font-weight:500;margin-left:2px;display:flex;align-items:center;gap:6px}
+
+  .empty-center{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px}
+  .empty-center .cap{font-size:14.5px;color:var(--muted)}
+
+  /* floating help */
+  .help{position:absolute;right:26px;bottom:22px;width:52px;height:52px;border-radius:50%;
+    background:#111;border:1px solid #2a2a2a;display:flex;align-items:center;justify-content:center;
+    box-shadow:0 6px 20px rgba(0,0,0,.5);color:#eaeaea}
+
+  a{color:inherit}
+  .nav-item{text-decoration:none}
+  /* ---- submenu ---- */
+  .nav-item.has-sub{cursor:pointer}
+  .nav-item.open{color:#fff;background:#141414}
+  .nav-item.open .ico{color:#fff}
+  .nav-item .chev svg{transition:transform .15s}
+  .nav-item.open .chev svg{transform:rotate(180deg)}
+  .subnav{display:none;flex-direction:column;gap:2px;padding-left:8px;margin:2px 0}
+  .subnav.open{display:flex}
+  .sub-item{display:flex;align-items:center;gap:11px;height:42px;padding:0 11px;border-radius:10px;
+    color:var(--nav);font-size:14.5px;font-weight:500;cursor:pointer;text-decoration:none}
+  .sub-item .ico{width:22px;display:flex;align-items:center;justify-content:center;flex:0 0 22px;color:#8f8f8f}
+  .sub-item:hover{background:#141414}
+  .sub-item.active{background:#1c1c1c;border:1px solid #2b2b2b;color:#fff}
+  .sub-item.active .ico{color:#fff}
+</style>
+<style id="fx-css">
+  /* ================= fastt fx- COMPONENT KIT (paste whole block) ================= */
+  /* switch */
+  .fx-switch{display:inline-block;width:40px;height:22px;border-radius:12px;background:#3a3a3a;
+    position:relative;cursor:pointer;flex:0 0 auto;transition:background .15s;vertical-align:middle}
+  .fx-switch::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;
+    background:#e6e6e6;transition:left .15s}
+  .fx-switch.on{background:var(--accent)}
+  .fx-switch.on::after{left:20px}
+  .fx-switch.sm{width:32px;height:18px}
+  .fx-switch.sm::after{width:14px;height:14px}
+  .fx-switch.sm.on::after{left:16px}
+
+  /* cards */
+  .fx-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px 22px;margin-bottom:16px}
+  .fx-card-h{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:600;color:#fff;margin-bottom:4px}
+  .fx-card-sub{font-size:13.5px;color:var(--muted);line-height:1.5}
+
+  /* toggle card (enable/disable feature) */
+  .fx-togglecard{background:var(--card);border:1px solid var(--border);border-radius:12px;
+    padding:18px 20px;margin-bottom:14px}
+  .fx-tc-row{display:flex;align-items:center;gap:14px}
+  .fx-tc-ico{width:40px;height:40px;border-radius:10px;background:rgba(65,102,246,.13);color:#7d97f8;
+    display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .fx-tc-ico.green{background:rgba(103,209,174,.12);color:var(--green)}
+  .fx-tc-ico.purple{background:rgba(167,139,250,.15);color:#a78bfa}
+  .fx-tc-ico.red{background:rgba(229,115,91,.15);color:#e5735b}
+  .fx-tc-body{flex:1;min-width:0}
+  .fx-tc-title{font-size:15px;font-weight:600;color:#fff;display:flex;align-items:center;gap:8px}
+  .fx-tc-desc{font-size:13px;color:var(--muted);margin-top:3px;line-height:1.45}
+  .fx-tc-state{font-size:12.5px;font-weight:600;color:var(--muted);margin-right:12px}
+  .fx-togglecard.on .fx-tc-state{color:var(--green)}
+  .fx-tc-knobs{display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--border-soft);
+    display:none;gap:18px;align-items:center;flex-wrap:wrap}
+  .fx-togglecard.on .fx-tc-knobs{display:flex}
+
+  /* preset ladder */
+  .fx-presets{display:flex;gap:14px;margin:6px 0 4px}
+  .fx-preset{flex:1;background:#1c1c1c;border:1px solid var(--border);border-radius:12px;padding:16px;
+    cursor:pointer;position:relative;transition:border-color .12s}
+  .fx-preset:hover{border-color:#4a4a4a}
+  .fx-preset.sel{border-color:var(--accent);background:rgba(65,102,246,.07)}
+  .fx-preset.sel::after{content:"✓";position:absolute;top:10px;right:12px;width:20px;height:20px;
+    border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:700;
+    display:flex;align-items:center;justify-content:center}
+  .fx-preset .pn{font-size:14.5px;font-weight:600;color:#fff}
+  .fx-preset .pt{font-size:12.5px;color:var(--muted);margin:4px 0 10px;line-height:1.4}
+  .fx-preset ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+  .fx-preset li{font-size:12px;color:#b9b9b9;display:flex;gap:6px;align-items:baseline}
+  .fx-preset li::before{content:"·";color:var(--accent);font-weight:700}
+
+  /* slider */
+  .fx-sliderrow{margin:14px 0}
+  .fx-sl-head{display:flex;align-items:baseline;margin-bottom:8px}
+  .fx-sl-name{font-size:13.5px;font-weight:500;color:#ddd}
+  .fx-sl-hint{font-size:12px;color:var(--muted2);margin-left:8px}
+  .fx-rv{margin-left:auto;font-size:14px;font-weight:600;color:var(--accent)}
+  input[type=range].fx-range{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:2px;
+    background:#3a3a3a;outline:none;margin:0}
+  input[type=range].fx-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;
+    border-radius:50%;background:var(--accent);border:2.5px solid #dfe6ff;cursor:pointer}
+
+  /* advanced drawer */
+  .fx-adv{margin-top:18px;border-top:1px solid var(--border-soft);padding-top:14px}
+  .fx-adv-head{display:flex;align-items:center;gap:10px;cursor:default}
+  .fx-adv-head .t{font-size:13.5px;font-weight:600;color:#cfcfcf}
+  .fx-adv-head .h{font-size:12px;color:var(--muted2)}
+  .fx-adv-body{display:none;margin-top:16px}
+  .fx-adv-body.open{display:block}
+  .fx-adv-group{margin-bottom:18px}
+  .fx-adv-group>h4{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+    color:var(--muted2);margin:0 0 10px}
+  .fx-grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px 18px}
+  .fx-grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px 18px}
+
+  /* fields */
+  .fx-field{display:flex;flex-direction:column;gap:6px}
+  .fx-field>label{font-size:12.5px;font-weight:500;color:#b9b9b9}
+  .fx-input,.fx-select{height:38px;background:#1c1c1c;border:1px solid var(--border);border-radius:9px;
+    color:#eee;font-family:inherit;font-size:13.5px;padding:0 12px;outline:none;width:100%}
+  .fx-select{-webkit-appearance:none;appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");
+    background-repeat:no-repeat;background-position:right 10px center;padding-right:32px}
+  textarea.fx-input{height:auto;min-height:84px;padding:10px 12px;resize:none;line-height:1.5}
+  .fx-unit{position:relative}
+  .fx-unit .fx-input{padding-left:26px}
+  .fx-unit::before{content:attr(data-unit);position:absolute;left:11px;top:50%;transform:translateY(-50%);
+    font-size:13.5px;color:var(--muted);z-index:1}
+
+  /* checkbox row */
+  .fx-check{display:flex;align-items:center;gap:10px;font-size:13.5px;color:#ddd;cursor:pointer;padding:5px 0}
+  .fx-check .bx{width:18px;height:18px;border-radius:5px;border:1.5px solid #4a4a4a;flex:0 0 auto;
+    display:flex;align-items:center;justify-content:center;font-size:11px;color:transparent;transition:all .12s}
+  .fx-check.on .bx{background:var(--accent);border-color:var(--accent);color:#fff}
+  .fx-check.on .bx::after{content:"✓";font-weight:700}
+  .fx-check .sub{font-size:12px;color:var(--muted2);margin-left:4px}
+
+  /* segmented (small) */
+  .fx-seg{display:inline-flex;height:38px;border:1px solid var(--border);border-radius:9px;background:#1c1c1c;overflow:hidden}
+  .fx-seg button{border:0;background:transparent;color:var(--muted);font-family:inherit;font-size:13.5px;
+    font-weight:500;padding:0 16px;cursor:pointer;height:100%}
+  .fx-seg button.on{background:#343434;color:#fff}
+
+  /* chips */
+  .fx-chips{display:flex;gap:8px;flex-wrap:wrap}
+  .fx-chip{height:30px;display:inline-flex;align-items:center;gap:6px;padding:0 12px;border-radius:15px;
+    border:1px solid var(--border);background:#1c1c1c;color:#b9b9b9;font-size:12.5px;font-weight:500;cursor:pointer}
+  .fx-chip.on{border-color:var(--accent);background:rgba(65,102,246,.12);color:#c9d3ff}
+
+  /* status strip */
+  .fx-status{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 18px}
+  .fx-st{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:15px;
+    background:#1c1c1c;border:1px solid var(--border-soft);font-size:12.5px;color:#cfcfcf}
+  .fx-st i{width:7px;height:7px;border-radius:50%;display:inline-block;background:#5a5a5a}
+  .fx-st.ok i{background:#3ec46a}
+  .fx-st.warn i{background:#febc2e}
+  .fx-st.err i{background:#f2295b}
+
+  /* buttons */
+  .fx-btn{height:38px;padding:0 18px;border-radius:9px;border:0;background:var(--accent);color:#fff;
+    font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+  .fx-btn.ghost{background:transparent;border:1px solid var(--border);color:#ddd}
+  .fx-btn.green{background:rgba(103,209,174,.15);color:var(--green);border:1px solid rgba(103,209,174,.3)}
+
+  /* audience picker */
+  .fx-audience{display:flex;flex-direction:column;gap:12px}
+  .fx-aud-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .fx-aud-lbl{font-size:12.5px;font-weight:500;color:#b9b9b9;width:86px;flex:0 0 86px}
+  .fx-aud-reach{font-size:12.5px;color:var(--muted);margin-top:2px}
+  .fx-aud-reach b{color:var(--green);font-weight:600}
+
+  /* composer */
+  .fx-composer{background:#1c1c1c;border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .fx-composer textarea{width:100%;min-height:92px;background:transparent;border:0;outline:none;resize:none;
+    color:#eee;font-family:inherit;font-size:14px;line-height:1.55;padding:14px 16px}
+  .fx-comp-bar{display:flex;align-items:center;gap:4px;padding:8px 10px;border-top:1px solid var(--border-soft)}
+  .fx-ci{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+    color:#9a9a9a;cursor:pointer}
+  .fx-ci:hover{background:#262626;color:#fff}
+  .fx-comp-price{display:flex;align-items:center;gap:6px;height:32px;padding:0 10px;margin-left:6px;
+    border:1px solid var(--border);border-radius:8px;background:#161616;font-size:13px;color:#ddd}
+  .fx-comp-price input{width:52px;background:transparent;border:0;outline:none;color:#fff;font:inherit;font-weight:600}
+  .fx-comp-send{margin-left:auto}
+
+  /* pricing / tip ladder */
+  .fx-ladder{display:flex;flex-direction:column;gap:8px}
+  .fx-rung{display:flex;align-items:center;gap:12px;background:#1c1c1c;border:1px solid var(--border-soft);
+    border-radius:10px;padding:9px 12px}
+  .fx-rung .n{width:24px;height:24px;border-radius:50%;background:rgba(65,102,246,.15);color:#7d97f8;
+    font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .fx-rung .fx-select{flex:1;height:34px}
+  .fx-rung .fx-unit{width:92px;flex:0 0 92px}
+  .fx-rung .fx-unit .fx-input{height:34px}
+
+  /* sound human */
+  .fx-human .fx-check{padding:7px 0}
+
+  /* misc */
+  .fx-kv{display:flex;gap:8px;font-size:13px;color:var(--muted);padding:3px 0}
+  .fx-kv b{color:#ddd;font-weight:500}
+  .fx-new{font-size:9px;font-weight:700;letter-spacing:.03em;background:var(--accent);color:#fff;
+    padding:2px 6px;border-radius:5px;vertical-align:middle}
+  .fx-hr{height:1px;background:var(--border-soft);margin:16px 0;border:0}
+  .fx-note{display:flex;gap:10px;align-items:flex-start;background:rgba(65,102,246,.08);
+    border:1px solid rgba(65,102,246,.22);border-radius:10px;padding:11px 14px;font-size:13px;color:#c9d3ff;line-height:1.5}
+  .fx-note.warn{background:rgba(254,188,46,.07);border-color:rgba(254,188,46,.25);color:#e8cf9a}
+  /* =============== /fx- COMPONENT KIT =============== */
+</style>
+<style>
+  .main{overflow-y:auto;padding-bottom:40px}
+  /* ---- Broadcast page-specific (bc-) ---- */
+  .sec-sub{font-size:13.5px;color:var(--muted);margin:-8px 0 10px;line-height:1.5}
+  .bc-grid{display:grid;grid-template-columns:1fr 470px;gap:16px;align-items:start}
+  .bc-line{display:flex;align-items:center;gap:10px;background:#1c1c1c;border:1px solid var(--border-soft);
+    border-radius:10px;padding:10px 13px;font-size:13.5px;color:#e8e8e8;margin-bottom:8px;line-height:1.4}
+  .bc-line .who{width:26px;height:26px;border-radius:50%;background:rgba(236,75,155,.16);color:#ec4b9b;
+    font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .bc-line .rot{margin-left:auto;font-size:11px;color:var(--muted2);white-space:nowrap;padding-left:10px}
+  .bc-tile{width:46px;height:46px;border-radius:9px;flex:0 0 auto;border:1px solid var(--border)}
+  .bc-tile.sunrise,.bc-mini.sunrise{background:linear-gradient(140deg,#f6b06e,#e5735b 55%,#8a4bd8)}
+  .bc-tile.beach,.bc-mini.beach{background:linear-gradient(140deg,#67d1ae,#3f7fd1)}
+  .bc-tile.dusk,.bc-mini.dusk{background:linear-gradient(140deg,#a78bfa,#4166f6)}
+  .bc-tile.noir,.bc-mini.noir{background:linear-gradient(140deg,#5b6bd6,#23264d)}
+  .bc-media{display:flex;align-items:center;gap:11px;margin-top:10px}
+  .bc-media .cap{font-size:12.5px;color:var(--muted);line-height:1.45}
+  .bc-media .cap b{color:#ddd;font-weight:500}
+  .bc-poolgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+  .bc-pool{background:#1c1c1c;border:1px solid var(--border-soft);border-radius:10px;padding:13px 14px}
+  .bc-pool h5{font-size:12.5px;font-weight:600;color:#ddd;display:flex;align-items:baseline;gap:8px;margin:0 0 9px}
+  .bc-pool h5 .hrs{font-size:11px;font-weight:500;color:var(--muted2)}
+  .bc-pool .fx-input{height:34px;font-size:13px;background:#242424;margin-bottom:7px}
+  .bc-pool-media{display:flex;align-items:center;gap:7px;margin-top:3px}
+  .bc-mini{width:30px;height:30px;border-radius:7px;border:1px solid var(--border);flex:0 0 auto}
+  .bc-mini.add{background:transparent;border-style:dashed;display:flex;align-items:center;justify-content:center;
+    color:var(--muted2);font-size:15px;font-weight:500;cursor:pointer}
+  .bc-mini.add:hover{border-color:var(--accent);color:#7d97f8}
+  .bc-addline{font-size:12px;color:#7d97f8;cursor:pointer;display:inline-flex;align-items:center;gap:5px;margin-top:1px}
+  .bc-hint{font-size:12px;color:var(--muted2);line-height:1.5;margin-top:8px}
+</style>
+<style id="ms-css">
+  .modelswap{position:relative;margin-left:14px;z-index:60}
+  .ms-btn{display:flex;align-items:center;gap:8px;height:36px;padding:0 12px 0 8px;border:1px solid #2b2b2b;
+    border-radius:20px;background:#111214;color:#f0f0f0;font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer}
+  .ms-btn:hover{border-color:#3a3a3a}
+  .ms-av{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:700;color:#fff;flex:0 0 auto}
+  .ms-cv{color:#8a8a8a;transition:transform .15s}
+  .modelswap.open .ms-cv{transform:rotate(180deg)}
+  .ms-menu{position:absolute;top:44px;left:0;min-width:216px;background:#1b1b1d;border:1px solid #333;
+    border-radius:12px;padding:6px;box-shadow:0 12px 34px rgba(0,0,0,.55);display:none}
+  .modelswap.open .ms-menu{display:block}
+  .ms-head{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6a6a6a;padding:8px 10px 6px}
+  .ms-item{display:flex;align-items:center;gap:10px;height:40px;padding:0 10px;border-radius:9px;
+    color:#e6e6e6;font-size:14px;font-weight:500;cursor:pointer;text-decoration:none}
+  .ms-item:hover{background:#242424}
+  .ms-item.active{background:#242424}
+  .ms-dot{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:700;color:#fff;flex:0 0 auto}
+  .ms-nm{flex:1}
+  .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
+  .ms-item:not(.active) .ms-on{visibility:hidden}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= TOP BAR ================= -->
+  <div class="topbar">
+    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+    <div class="panel-btn">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+        <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
+      </svg>
+    </div>
+    <div class="trial"><b>You're on a free trial</b><span>7 days left</span></div>
+    <div class="modelswap" id="modelswap">
+      <button class="ms-btn" type="button">
+        <span class="ms-av" style="background:#e0679b">L</span>
+        <span class="ms-name">Ava</span>
+        <svg class="ms-cv" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="ms-menu">
+        <div class="ms-head">Switch model</div>
+        <a class="ms-item active"><span class="ms-dot" style="background:#e0679b">L</span><span class="ms-nm">Ava</span><span class="ms-on"></span></a>
+        <a class="ms-item"><span class="ms-dot" style="background:#5b8def">I</span><span class="ms-nm">Isabelle</span><span class="ms-on"></span></a>
+        <a class="ms-item"><span class="ms-dot" style="background:#67d1ae">A</span><span class="ms-nm">the graded vault</span><span class="ms-on"></span></a>
+        <a class="ms-item"><span class="ms-dot" style="background:#a78bfa">A</span><span class="ms-nm">the graded vault</span><span class="ms-on"></span></a>
+        <a class="ms-item"><span class="ms-dot" style="background:#e5a35b">S</span><span class="ms-nm">the graded vault</span><span class="ms-on"></span></a>
+      </div>
+    </div>
+
+    <div class="top-right">
+      <div class="pill"><span class="dot-green"></span>Operational</div>
+      <div class="pill">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7">
+          <circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/>
+        </svg>
+        UTC-10:00
+        <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
+      </div>
+      <a class="pill" href="referrals.html">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7">
+          <circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3.2 2.9-5 5.5-5s4.9 1.8 5.5 5"/><path d="M16 6.5a2.7 2.7 0 0 1 0 5M18.5 19c-.3-2-1.1-3.6-2.3-4.6" stroke-linecap="round"/>
+        </svg>
+        Referrals
+      </a>
+      <a class="pill" href="leaderboard.html">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7">
+          <path d="M7 4h10v4a5 5 0 0 1-10 0V4z"/><path d="M7 5H4v2a3 3 0 0 0 3 3M17 5h3v2a3 3 0 0 1-3 3" stroke-linecap="round"/><path d="M10 13.5V17M14 13.5V17M8 20h8" stroke-linecap="round"/>
+        </svg>
+        Leaderboard
+      </a>
+      <div class="sfw"><label>SFW</label><div class="toggle"></div></div>
+      <a class="iconbtn" href="notifications.html">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+          <path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10.5 19a2 2 0 0 0 3 0" stroke-linecap="round"/>
+        </svg>
+      </a>
+      <div class="avatar-top">Aa</div>
+    </div>
+  </div>
+
+  <!-- ================= SHELL ================= -->
+  <div class="shell">
+
+    <!-- ============ SIDEBAR ============ -->
+    <aside class="sidebar">
+      <div class="creator">
+        <div class="of-logo">
+          <svg width="20" height="20" viewBox="0 0 28 28" fill="none">
+            <circle cx="15" cy="14" r="7.5" stroke="#fff" stroke-width="3"/>
+            <circle cx="15" cy="14" r="2.5" fill="#fff"/>
+            <path d="M7.5 14 H2.5" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="name">OnlyFans</div>
+        <span class="pink"></span>
+        <span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </div>
+
+      <nav class="nav">
+        <a class="nav-item" href="dashboard.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span><span class="lbl">Dashboard</span></a>
+        <div class="nav-item has-sub" data-sub="ofm"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20l1-4L16 5l3 3L8 19l-4 1z"/><path d="M14 7l3 3"/></svg></span><span class="lbl">OF Manager</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ofm"><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Home</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">New post</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Notifications</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Messages Basic</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Queue</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Collections</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Statements</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Statistics</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Bank</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">My profile</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">OF settings</span></a></div>
+        <div class="nav-item has-sub" data-sub="ana"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 20V10M12 20V4M18 20v-7" stroke-linecap="round"/></svg></span><span class="lbl">Analytics</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ana"><a class="sub-item" href="analytics-creator-reports.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="12" cy="10" r="2.3"/><path d="M8.5 16c.5-1.7 1.8-2.5 3.5-2.5s3 .8 3.5 2.5" stroke-linecap="round"/></svg></span><span class="lbl">Creator reports</span></a><a class="sub-item" href="analytics-employee-reports.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M6 15.5c.4-1.5 1.5-2.2 3-2.2s2.6.7 3 2.2" stroke-linecap="round"/><path d="M14.5 9.5h3.5M14.5 13h3.5" stroke-linecap="round"/></svg></span><span class="lbl">Employee reports</span></a><a class="sub-item" href="analytics-fan-reports.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="8.5" r="3.4"/><path d="M5.5 19.5c.7-3.4 3.2-5.2 6.5-5.2s5.8 1.8 6.5 5.2" stroke-linecap="round"/></svg></span><span class="lbl">Fan reports</span></a><a class="sub-item" href="analytics-message-dashboard.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12h4l2-6 4 12 2-6h6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Message dashboard</span></a></div>
+        <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
+        <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
+
+        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
+        <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
+        <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
+        <div class="nav-item has-sub" data-sub="tip"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="9" width="16" height="11" rx="2"/><path d="M4 12h16M12 9v11" stroke-linecap="round"/><path d="M12 9c-4 0-5-1.6-5-3 0-1.2 1-2 2.2-2C11 4 12 6 12 9zm0 0c4 0 5-1.6 5-3 0-1.2-1-2-2.2-2C13 4 12 6 12 9z"/></svg></span><span class="lbl">Tips &amp; Rewards</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-tip"><a class="sub-item" href="tips-rewards.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tip Rewards</span></a><a class="sub-item" href="tips-ask.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tip Ask</span></a><a class="sub-item" href="tips-image-reply.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Image Reply &amp; Teasers</span></a><a class="sub-item" href="tips-make-right.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Make It Right</span></a></div>
+        <div class="nav-item has-sub" data-sub="fan"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="12" cy="10" r="2.3"/><path d="M8.5 16c.5-1.7 1.8-2.5 3.5-2.5s3 .8 3.5 2.5" stroke-linecap="round"/></svg></span><span class="lbl">Fan Intelligence</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-fan"><a class="sub-item" href="fans-auto-learn.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-learn Fans</span></a><a class="sub-item" href="fans-sheets-export.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Sheets Export</span></a><a class="sub-item" href="fans-restrictions.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Restrictions</span></a></div>
+        <div class="nav-item has-sub" data-sub="con"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5" stroke-dasharray="2.6 2.4"/><path d="M12 9v6M9 12h6" stroke-linecap="round"/></svg></span><span class="lbl">Content &amp; Stories</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-con"><a class="sub-item" href="content-auto-posts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Posts</span></a><a class="sub-item" href="auto-stories.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Stories</span></a><a class="sub-item" href="content-create-post.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Create Post</span></a></div>
+        <div class="nav-item has-sub" data-sub="vai"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3.5l1.7 4 4 1.7-4 1.7L12 15l-1.7-4L6.3 9.2l4-1.7z" stroke-linejoin="round"/><path d="M18 14.5l.9 2 2 .9-2 .9-.9 2-.9-2-2-.9 2-.9z" stroke-linejoin="round"/></svg></span><span class="lbl">Vault AI</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-vai"><a class="sub-item" href="vault-ai.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Manage</span></a><a class="sub-item" href="vault-describe.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-describe</span></a><a class="sub-item" href="vault-reminders.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reminder Cards</span></a><a class="sub-item" href="vault-review.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Review</span></a></div>
+
+        <div class="divider"></div>
+
+        <div class="nav-item has-sub" data-sub="cre"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="10" r="3"/><path d="M6.5 18.5a6 6 0 0 1 11 0"/></svg></span><span class="lbl">Creators</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-cre"><a class="sub-item" href="creators-manage.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="12" cy="10" r="2.3"/><path d="M8.5 16c.5-1.7 1.8-2.5 3.5-2.5s3 .8 3.5 2.5" stroke-linecap="round"/></svg></span><span class="lbl">Manage creators</span></a><a class="sub-item" href="creators-proxy.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="6" rx="1.8"/><rect x="3" y="13" width="18" height="6" rx="1.8"/><circle cx="7" cy="8" r=".9" fill="currentColor" stroke="none"/><circle cx="7" cy="16" r=".9" fill="currentColor" stroke="none"/></svg></span><span class="lbl">Custom proxy</span></a></div>
+        <div class="nav-item has-sub" data-sub="emp"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="2"/><path d="M6 16c.5-1.8 1.7-2.5 3-2.5s2.5.7 3 2.5" stroke-linecap="round"/><path d="M14.5 9h4M14.5 13h4" stroke-linecap="round"/></svg></span><span class="lbl">Employees</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-emp"><a class="sub-item" href="employees-manage.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M6 15.5c.4-1.5 1.5-2.2 3-2.2s2.6.7 3 2.2" stroke-linecap="round"/><path d="M14.5 9.5h3.5M14.5 13h3.5" stroke-linecap="round"/></svg></span><span class="lbl">Manage employees</span></a><a class="sub-item" href="employees-shift.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Shift schedule</span></a></div>
+
+      </nav>
+      <div class="sbfoot">
+        <a class="nav-item" href="settings.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h10M18 7h2M4 17h2M10 17h10" stroke-linecap="round"/><circle cx="15" cy="7" r="2.4"/><circle cx="8" cy="17" r="2.4"/></svg></span><span class="lbl">Settings</span></a>
+        <a class="nav-item" href="#"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.8 2.8 0 0 1 5.3 1c0 1.8-2.7 2.2-2.7 3.8" stroke-linecap="round"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg></span><span class="lbl">Help center</span></a>
+      </div>
+      <div class="version">Version 5.7.14</div>
+    </aside>
+
+    <!-- ============ MAIN ============ -->
+    <main class="main">
+
+      <!-- section header -->
+      <div class="sec-head">
+        <div class="sec-title">Broadcast
+          <span class="info"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
+        </div>
+        <div class="head-right">
+          <div class="dropdown">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7"><circle cx="12" cy="8.5" r="3.4"/><path d="M5.5 19.5c.7-3.4 3.2-5.2 6.5-5.2s5.8 1.8 6.5 5.2" stroke-linecap="round"/></svg>
+            Aria
+            <span class="cv"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="sec-sub">A friendly "you're around?" hello to fans who are online — the one place for every broadcast, big or small.</div>
+
+      <!-- status strip -->
+      <div class="fx-status">
+        <span class="fx-st ok"><i></i>Running — scans every 60 s</span>
+        <span class="fx-st ok"><i></i>214 fans online right now</span>
+        <span class="fx-st"><i></i>Pools ready · 9 lines · 4 times of day</span>
+        <span class="fx-st"><i></i>Quiet hours off — sends 24/7</span>
+      </div>
+
+      <!-- master toggle (prod: Ava runs this, the graded vault doesn't) -->
+      <div class="fx-togglecard on">
+        <div class="fx-tc-row">
+          <div class="fx-tc-ico">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="fx-tc-body">
+            <div class="fx-tc-title">Broadcast <span class="fx-st ok" style="height:24px;font-size:11.5px;padding:0 10px;font-weight:500"><i></i>Ava: on · the graded vault: off</span></div>
+            <div class="fx-tc-desc">Greets fans who are online with a time-of-day line and a photo. fastt watches who comes on, waits a natural minute, skips anyone mid-conversation — you just keep the message pools fresh.</div>
+          </div>
+          <span class="fx-tc-state">Running</span>
+          <span class="fx-switch on"></span>
+        </div>
+        <div class="fx-tc-knobs">
+          <div class="fx-kv"><b>214</b> fans online · scans every <b>60 s</b></div>
+          <div class="fx-kv">route: <b>personal 1:1 nudges</b></div>
+          <div class="fx-kv">cooldown: <b>12 h per fan</b></div>
+        </div>
+      </div>
+
+      <div class="bc-grid">
+
+        <!-- LEFT: audience + route note -->
+        <div>
+          <div class="fx-card">
+            <div class="fx-card-h">Who hears from you</div>
+            <div class="fx-card-sub" style="margin-bottom:14px">Start with fans who are online right now — they answer 5&#215; more often.</div>
+            <div class="fx-audience">
+              <div class="fx-aud-row"><span class="fx-aud-lbl">Send to</span>
+                <div class="fx-seg" data-single><button class="on">Online now</button><button>Everyone</button><button>Repliers</button></div>
+              </div>
+              <div class="fx-aud-row"><span class="fx-aud-lbl">Exclude</span>
+                <div class="fx-chips"><span class="fx-chip on">Chatted in last 12h</span><span class="fx-chip on">Muted / restricted</span><span class="fx-chip">Open PPV pending</span></div>
+              </div>
+              <div class="fx-aud-reach">Estimated reach: <b>214 fans</b> online right now · 9 skipped (active chats)</div>
+            </div>
+          </div>
+          <div class="fx-note" style="margin-bottom:0">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="flex:0 0 auto;margin-top:1px"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg>
+            fastt picks the delivery route automatically — personal 1:1 nudges for small sets, a list-blast at 100k scale.
+          </div>
+        </div>
+
+        <!-- RIGHT: message pool preview -->
+        <div class="fx-card" style="margin-bottom:0">
+          <div class="fx-card-h">What goes out — Morning
+            <span style="margin-left:auto;font-size:12px;font-weight:500;color:var(--muted2)">rotates 3 lines</span>
+          </div>
+          <div class="fx-card-sub" style="margin-bottom:12px">One line per fan from the Morning pool — <b style="color:#ddd;font-weight:500">{name}</b> fills in automatically.</div>
+          <div class="bc-line"><span class="who">Aa</span>morning sleepyhead {name} ☀️ you're up early 👀</div>
+          <div class="bc-line"><span class="who">Aa</span>good morning {name} 💋 come start the day with me</div>
+          <div class="bc-line"><span class="who">Aa</span>heyy 🌸 online this morning? say hi 👀</div>
+          <div class="bc-media">
+            <div class="bc-tile sunrise"></div>
+            <div class="cap"><b>Teasers</b> folder · 1 of 4 photos rides along, a different one each send</div>
+          </div>
+          <hr class="fx-hr" style="margin:14px 0">
+          <div style="display:flex;align-items:center;gap:12px">
+            <button class="fx-btn ghost">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg>
+              Send me a test
+            </button>
+            <span style="font-size:12px;color:var(--muted2)">goes to your own chat, never to fans</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= ADVANCED ================= -->
+      <div class="fx-adv">
+        <div class="fx-adv-head">
+          <span class="t">Advanced</span>
+          <span class="fx-switch sm" data-adv="adv-bc"></span>
+          <span class="h">every knob — message pools, pacing, per-fan rules, quiet hours, spend gates</span>
+        </div>
+        <div class="fx-adv-body" id="adv-bc">
+
+          <!-- Slots editor -->
+          <div class="fx-adv-group">
+            <h4>Message pools — by time of day</h4>
+            <div style="display:flex;align-items:center;gap:12px">
+              <div class="fx-seg" data-single><button class="on">Every day</button><button>Weekend override</button></div>
+              <span style="font-size:12px;color:var(--muted2)">weekend pools win on Sat–Sun when set — Friday night ≠ Tuesday morning</span>
+            </div>
+            <div class="bc-poolgrid">
+              <div class="bc-pool">
+                <h5>Morning <span class="hrs">5–12</span></h5>
+                <input class="fx-input" value="morning sleepyhead {name} ☀️ you're up early 👀">
+                <input class="fx-input" value="good morning {name} 💋 come start the day with me">
+                <input class="fx-input" value="heyy 🌸 online this morning? say hi 👀">
+                <span class="bc-addline">+ Add line</span>
+                <div class="bc-pool-media"><span class="bc-mini sunrise"></span><span class="bc-mini beach"></span><span class="bc-mini add">+</span><span style="font-size:11px;color:var(--muted2)">Teasers · rotates</span></div>
+              </div>
+              <div class="bc-pool">
+                <h5>Afternoon <span class="hrs">12–18</span></h5>
+                <input class="fx-input" value="afternoon 😘 who's online? keep me company">
+                <input class="fx-input" value="bored this afternoon {name}? 😏 come chat">
+                <span class="bc-addline">+ Add line</span>
+                <div class="bc-pool-media"><span class="bc-mini beach"></span><span class="bc-mini add">+</span><span style="font-size:11px;color:var(--muted2)">Beach set · rotates</span></div>
+              </div>
+              <div class="bc-pool">
+                <h5>Evening <span class="hrs">18–21</span></h5>
+                <input class="fx-input" value="evening {name} 🍷 come unwind with me">
+                <input class="fx-input" value="online tonight? i was hoping you'd show up 👀">
+                <span class="bc-addline">+ Add line</span>
+                <div class="bc-pool-media"><span class="bc-mini dusk"></span><span class="bc-mini add">+</span><span style="font-size:11px;color:var(--muted2)">VIP set · rotates</span></div>
+              </div>
+              <div class="bc-pool">
+                <h5>Night <span class="hrs">21–5</span></h5>
+                <input class="fx-input" value="up late {name}? 🌙 i'm still here">
+                <input class="fx-input" value="can't sleep either? 😏 keep me company">
+                <span class="bc-addline">+ Add line</span>
+                <div class="bc-pool-media"><span class="bc-mini noir"></span><span class="bc-mini add">+</span><span style="font-size:11px;color:var(--muted2)">Teasers · rotates</span></div>
+              </div>
+            </div>
+            <div class="bc-hint">{name}, {city}, {hobby}, {pet} fill from the fan's profile — anything unknown just disappears from the line.</div>
+          </div>
+
+          <!-- Pacing -->
+          <div class="fx-adv-group">
+            <h4>Pacing — how human it feels</h4>
+            <div class="fx-grid3">
+              <div class="fx-field"><label>Wait after they come online (min)</label><input class="fx-input" value="1"></div>
+              <div class="fx-field"><label>Plus random jitter (min)</label><input class="fx-input" value="1"></div>
+              <div class="fx-field"><label>Offline gap to count as "back" (min)</label><input class="fx-input" value="5"></div>
+              <div class="fx-field"><label>Max fans started per scan</label><input class="fx-input" value="25"></div>
+              <div class="fx-field"><label>Scan cap (fans checked)</label><input class="fx-input" value="200"></div>
+              <div class="fx-field"><label>Still online within (min)</label><input class="fx-input" value="30"></div>
+            </div>
+            <div class="bc-hint">The wait + jitter make it feel like she noticed them, not like a tripwire. Extras past the per-scan cap roll to the next minute — never dropped. If the fan left during the wait, the send is skipped.</div>
+          </div>
+
+          <!-- Per-fan rules -->
+          <div class="fx-adv-group">
+            <h4>Per-fan rules — never be annoying</h4>
+            <div class="fx-grid3">
+              <div class="fx-field"><label>One hello per fan every (h)</label><input class="fx-input" value="12"></div>
+              <div class="fx-field"><label>Give up after no-replies — never stops (99)</label><input class="fx-input" value="99"></div>
+              <div class="fx-field"><label>Leave live chats alone for (h)</label><input class="fx-input" value="6"></div>
+            </div>
+            <div style="margin-top:10px">
+              <label class="fx-check on"><span class="bx"></span>Only fans who already got their welcome <span class="sub">and not within 1 h of it — no double hello</span></label>
+            </div>
+            <div class="bc-hint">Set to 99, she never gives up on a quiet fan — every time he shows up online, she still says hi (the 12 h cooldown keeps it from getting clingy).</div>
+          </div>
+
+          <!-- Quiet hours + Spend gates -->
+          <div class="fx-adv-group">
+            <h4>Quiet hours &amp; spend gates</h4>
+            <div class="fx-grid3">
+              <div class="fx-field"><label>No sends from</label>
+                <select class="fx-select"><option selected>Off — sends 24/7</option><option>22:00</option><option>23:00</option><option>00:00</option><option>01:00</option><option>02:00</option></select>
+              </div>
+              <div class="fx-field"><label>Until</label>
+                <select class="fx-select"><option selected>—</option><option>06:00</option><option>07:00</option><option>08:00</option><option>09:00</option></select>
+              </div>
+              <div class="fx-field"><label>Timezone</label>
+                <select class="fx-select"><option selected>Creator-local (UTC-10:00)</option><option>UTC</option></select>
+              </div>
+            </div>
+            <div class="fx-grid3" style="margin-top:12px">
+              <div class="fx-field"><label>Min lifetime spend</label><div class="fx-unit" data-unit="$"><input class="fx-input" placeholder="off" value=""></div></div>
+              <div class="fx-field"><label>Max lifetime spend</label><div class="fx-unit" data-unit="$"><input class="fx-input" placeholder="off" value=""></div></div>
+              <div class="fx-field"><label>Skip if spent more than (last 30d)</label><div class="fx-unit" data-unit="$"><input class="fx-input" value="200"></div></div>
+            </div>
+            <div class="bc-hint">Quiet hours are off — if a fan is online at 3am, she's "up late too". The $200 gate keeps the broadcast off your hot spenders — they're already talking to the AI closer 1:1, and a generic hello would cheapen that thread.</div>
+          </div>
+
+          <!-- Content mode -->
+          <div class="fx-adv-group">
+            <h4>Content</h4>
+            <div style="display:flex;align-items:center;gap:28px;flex-wrap:wrap">
+              <div style="display:flex;flex-direction:column;gap:6px">
+                <span style="font-size:12.5px;font-weight:500;color:#b9b9b9">Message flavor</span>
+                <div class="fx-seg" data-single><button class="on">Tease</button><button>Q&amp;A</button><button>Mix</button></div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:6px">
+                <span style="font-size:12.5px;font-weight:500;color:#b9b9b9">When a fan comes back</span>
+                <div class="fx-seg" data-single><button class="on">New lines</button><button>Same line</button></div>
+              </div>
+            </div>
+            <div style="margin-top:14px;display:flex;flex-direction:column;gap:2px">
+              <label class="fx-check on"><span class="bx"></span>Info line opener <span class="sub">opens with a line about him — his city, his team, his day</span></label>
+              <label class="fx-check on"><span class="bx"></span>Attach an image to the info line <span class="sub">a rotating photo rides along</span></label>
+              <label class="fx-check"><span class="bx"></span>Nudge line <span class="sub">off — the info line alone is the opener, no extra "come chat" tacked on</span></label>
+            </div>
+            <div class="bc-hint">Q&amp;A asks about something from the fan's profile — his dog, his city, his job. Mix uses Q&amp;A when there's a fact to ask about, tease otherwise.</div>
+          </div>
+
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <div class="help">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11.5a7.5 7.5 0 0 1-10.8 6.7L4 19.5l1.3-4.1A7.5 7.5 0 1 1 20 11.5z"/></svg>
+  </div>
+
+</div>
+
+<script>
+  // ==== CANONICAL SIDEBAR JS (identical on every page — do not fork) ====
+  (function(){
+    if (window.__canonSb) return; window.__canonSb = 1;
+    // submenu expand/collapse
+    document.querySelectorAll('.nav-item.has-sub').forEach(function(it){
+      it.addEventListener('click', function(){
+        var s = document.getElementById('sub-' + it.dataset.sub);
+        var open = it.classList.toggle('open');
+        if (s) s.classList.toggle('open', open);
+      });
+    });
+    // auto-active: highlight the item matching this page, expand its section
+    var here = (location.pathname.split('/').pop() || 'dashboard.html');
+    var done = false;
+    document.querySelectorAll('.sidebar .nav-item[href], .sidebar .sub-item[href]').forEach(function(a){
+      if (done) return;
+      if (a.getAttribute('href') === here) {
+        done = true;
+        a.classList.add('active');
+        var sub = a.closest('.subnav');
+        if (sub) {
+          sub.classList.add('open');
+          var head = document.querySelector('.nav-item.has-sub[data-sub="' + sub.id.replace('sub-','') + '"]');
+          if (head) head.classList.add('open');
+        }
+        setTimeout(function(){ if (a.scrollIntoView) a.scrollIntoView({block:'center'}); }, 0);
+      }
+    });
+  })();
+  // ==== /CANONICAL SIDEBAR JS ====
+</script>
+<script id="fx-js">
+  /* ================= fx behaviors (paste whole block, idempotent) ================= */
+  (function(){
+    if (window.__fxKit) return; window.__fxKit = 1;
+    document.addEventListener('click', function(e){
+      var sw = e.target.closest('.fx-switch');
+      if (sw) {
+        var on = sw.classList.toggle('on');
+        var adv = sw.getAttribute('data-adv');
+        if (adv) { var b = document.getElementById(adv); if (b) b.classList.toggle('open', on); }
+        var tc = sw.closest('.fx-togglecard');
+        if (tc) { tc.classList.toggle('on', on);
+          var st = tc.querySelector('.fx-tc-state'); if (st) st.textContent = on ? 'Running' : 'Off'; }
+        var card = sw.closest('.fx-card');
+        if (card && card.querySelector('.fx-check')) {} /* visual only */
+        return;
+      }
+      var pr = e.target.closest('.fx-preset');
+      if (pr) { pr.parentElement.querySelectorAll('.fx-preset').forEach(function(p){p.classList.remove('sel')});
+        pr.classList.add('sel'); return; }
+      var sg = e.target.closest('.fx-seg button');
+      if (sg) { sg.parentElement.querySelectorAll('button').forEach(function(b){b.classList.remove('on')});
+        sg.classList.add('on'); return; }
+      var ch = e.target.closest('.fx-chip');
+      if (ch) { if (ch.parentElement.hasAttribute('data-single')) {
+          ch.parentElement.querySelectorAll('.fx-chip').forEach(function(c){c.classList.remove('on')});
+          ch.classList.add('on'); } else { ch.classList.toggle('on'); } return; }
+      var ck = e.target.closest('.fx-check');
+      if (ck) { ck.classList.toggle('on'); return; }
+    });
+    document.addEventListener('input', function(e){
+      if (!e.target.classList || !e.target.classList.contains('fx-range')) return;
+      var head = e.target.previousElementSibling;
+      var rv = head && head.querySelector('.fx-rv');
+      if (rv) { var f = e.target.getAttribute('data-fmt') || '%v';
+        rv.textContent = f.replace('%v', Number(e.target.value).toLocaleString()); }
+    });
+  })();
+  /* =============== /fx behaviors =============== */
+</script>
+<script id="ms-js">(function(){
+  if(window.__msInit)return; window.__msInit=1;
+  document.addEventListener('click',function(e){
+    var sw=document.getElementById('modelswap'); if(!sw)return;
+    if(e.target.closest('.ms-btn')){ sw.classList.toggle('open'); e.stopPropagation(); return; }
+    var it=e.target.closest('.ms-item');
+    if(it){
+      sw.querySelectorAll('.ms-item').forEach(function(x){x.classList.remove('active')});
+      it.classList.add('active');
+      var av=sw.querySelector('.ms-av'), nm=sw.querySelector('.ms-name'),
+          dot=it.querySelector('.ms-dot'), lbl=it.querySelector('.ms-nm');
+      if(nm&&lbl) nm.textContent=lbl.textContent;
+      if(av&&dot){ av.textContent=dot.textContent; av.style.background=dot.style.background; }
+      sw.classList.remove('open'); return;
+    }
+    sw.classList.remove('open');
+  });
+})();</script>
+</body>
+</html>

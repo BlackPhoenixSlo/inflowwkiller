@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1440, initial-scale=1">
+<title>Infloww — Referral Program</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{--black:#000;--accent:#4166f6;--text:#fff;--muted:#8a8a8a;font-synthesis:none}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#050505;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}
+  body{display:flex;justify-content:center;align-items:flex-start;min-height:100vh}
+  a{text-decoration:none;color:inherit}
+  .app{position:relative;width:1440px;height:900px;overflow:hidden;background:#050505;color:var(--text);display:flex;flex-direction:column}
+
+  /* TOP BAR */
+  .topbar{height:52px;flex:0 0 52px;background:var(--black);display:flex;align-items:center;padding:0 18px 0 20px;gap:14px}
+  .traffic{display:flex;gap:8px;align-items:center}
+  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
+  .traffic .r{background:#ff5f57}.traffic .y{background:#febc2e}.traffic .g{background:#28c840}
+  .panel-btn{margin-left:8px;display:flex;color:#e9e9e9}
+  .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
+  .trial b{font-size:13px;font-weight:600;color:#fff}
+  .trial span{font-size:12px;color:var(--muted)}
+  .top-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .pill{display:flex;align-items:center;gap:8px;height:36px;padding:0 15px;border:1px solid #2b2b2b;border-radius:20px;background:#111214;font-size:13.5px;font-weight:500;color:#f0f0f0;white-space:nowrap}
+  .pill.act{background:#1c1c1c;border-color:#3a3a3a}
+  .dot-green{width:9px;height:9px;border-radius:50%;background:#3ec46a;display:inline-block}
+  .pill .info{color:var(--muted);display:flex}
+  .sfw{display:flex;flex-direction:column;align-items:center;gap:3px;margin:0 4px 0 6px}
+  .sfw label{font-size:10.5px;font-weight:600;color:#cfcfcf;letter-spacing:.3px}
+  .toggle{width:26px;height:14px;border-radius:8px;background:#3a3a3a;position:relative}
+  .toggle::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:#e6e6e6}
+  .iconbtn{width:36px;height:36px;display:flex;align-items:center;justify-content:center;color:#e6e6e6;border-radius:50%}
+  .iconbtn:hover{background:#1c1c1c}
+  .avatar-top{width:34px;height:34px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#fff}
+
+  /* SHELL + RAIL */
+  .shell{flex:1;display:flex;min-height:0}
+  .railbar{width:70px;flex:0 0 70px;background:#000;display:flex;flex-direction:column;align-items:center;padding:14px 0 12px}
+  .rail-logo{width:42px;height:42px;border-radius:12px;background:#141821;display:flex;align-items:center;justify-content:center;position:relative;margin-bottom:12px}
+  .rail-logo .pink{position:absolute;top:-1px;right:-1px;width:10px;height:10px;border-radius:50%;background:#ec4b9b;border:2px solid #000}
+  .rail-icons{display:flex;flex-direction:column;align-items:center;gap:5px;width:100%}
+  .rail-item{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#787878}
+  .rail-item:hover{background:#141414;color:#cfcfcf}
+  .rail-div{width:26px;height:1px;background:#242424;margin:9px 0}
+  .rail-spacer{flex:1}
+
+  /* OVERLAY */
+  .overlay{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;background:#000}
+  .ov-head{height:60px;flex:0 0 60px;display:flex;align-items:center;padding:0 24px;border-bottom:1px solid #1a1a1a}
+  .ov-title{font-size:20px;font-weight:600;color:#fff}
+  .ov-close{margin-left:auto;color:#c0c0c0;width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:9px}
+  .ov-close:hover{background:#1c1c1c;color:#fff}
+  .ov-body{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative}
+
+  .ref-title{font-size:56px;font-weight:800;color:#2a2a2a;letter-spacing:-1px;text-align:center}
+  .ref-sub{font-size:26px;font-weight:500;color:#6a6a6a;margin-top:10px;margin-bottom:44px}
+  .ref-card{width:300px;height:300px;border-radius:26px;background:#4166f6;box-shadow:0 0 60px rgba(65,102,246,.45);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;text-align:center}
+  .ref-card .inv{font-size:22px;font-weight:700;margin-bottom:8px}
+  .ref-card .earn{display:flex;align-items:baseline;gap:6px}
+  .ref-card .earn .e{font-size:24px;font-weight:600}
+  .ref-card .earn .big{font-size:78px;font-weight:800;letter-spacing:-3px;line-height:1}
+  .ref-card .earn .pct{font-size:34px;font-weight:700}
+  .ref-card .fy{font-size:15px;font-weight:500;margin-top:8px;opacity:.95}
+  .ref-btn{margin-top:56px;background:#4166f6;color:#fff;border:none;font-family:inherit;font-size:19px;font-weight:600;padding:20px 60px;border-radius:12px;cursor:pointer}
+  .ref-btn:hover{background:#3457e8}
+
+  .help{position:absolute;right:26px;bottom:22px;width:52px;height:52px;border-radius:50%;background:#111;border:1px solid #2a2a2a;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 20px rgba(0,0,0,.5);color:#eaeaea}
+</style>
+<style id="ms-css">
+  .modelswap{position:relative;margin-left:14px;z-index:60}
+  .ms-btn{display:flex;align-items:center;gap:8px;height:36px;padding:0 12px 0 8px;border:1px solid #2b2b2b;
+    border-radius:20px;background:#111214;color:#f0f0f0;font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer}
+  .ms-btn:hover{border-color:#3a3a3a}
+  .ms-av{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:700;color:#fff;flex:0 0 auto}
+  .ms-cv{color:#8a8a8a;transition:transform .15s}
+  .modelswap.open .ms-cv{transform:rotate(180deg)}
+  .ms-menu{position:absolute;top:44px;left:0;min-width:216px;background:#1b1b1d;border:1px solid #333;
+    border-radius:12px;padding:6px;box-shadow:0 12px 34px rgba(0,0,0,.55);display:none}
+  .modelswap.open .ms-menu{display:block}
+  .ms-head{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6a6a6a;padding:8px 10px 6px}
+  .ms-item{display:flex;align-items:center;gap:10px;height:40px;padding:0 10px;border-radius:9px;
+    color:#e6e6e6;font-size:14px;font-weight:500;cursor:pointer;text-decoration:none}
+  .ms-item:hover{background:#242424}
+  .ms-item.active{background:#242424}
+  .ms-dot{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:700;color:#fff;flex:0 0 auto}
+  .ms-nm{flex:1}
+  .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
+  .ms-item:not(.active) .ms-on{visibility:hidden}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="topbar">
+    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+    <div class="panel-btn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/></svg></div>
+    <div class="trial"><b>You're on a free trial</b><span>7 days left</span></div>
+    <div class="modelswap" id="modelswap">
+      <button class="ms-btn" type="button">
+        <span class="ms-av" style="background:#e0679b">L</span>
+        <span class="ms-name">Ava</span>
+        <svg class="ms-cv" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="ms-menu">
+        <div class="ms-head">Switch model</div>
+        <a class="ms-item active"><span class="ms-dot" style="background:#e0679b">L</span><span class="ms-nm">Ava</span><span class="ms-on"></span></a>
+        <a class="ms-item"><span class="ms-dot" style="background:#5b8def">I</span><span class="ms-nm">Isabelle</span><span class="ms-on"></span></a>
+        <a class="ms-item"><span class="ms-dot" style="background:#67d1ae">A</span><span class="ms-nm">the graded vault</span><span class="ms-on"></span></a>
+        <a class="ms-item"><span class="ms-dot" style="background:#a78bfa">A</span><span class="ms-nm">the graded vault</span><span class="ms-on"></span></a>
+        <a class="ms-item"><span class="ms-dot" style="background:#e5a35b">S</span><span class="ms-nm">the graded vault</span><span class="ms-on"></span></a>
+      </div>
+    </div>
+    <div class="top-right">
+      <div class="pill"><span class="dot-green"></span>Operational</div>
+      <div class="pill"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg>UTC-10:00<span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span></div>
+      <a class="pill act" href="referrals.html"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3.2 2.9-5 5.5-5s4.9 1.8 5.5 5"/><path d="M16 6.5a2.7 2.7 0 0 1 0 5M18.5 19c-.3-2-1.1-3.6-2.3-4.6" stroke-linecap="round"/></svg>Referrals</a>
+      <a class="pill" href="leaderboard.html"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7"><path d="M7 4h10v4a5 5 0 0 1-10 0V4z"/><path d="M7 5H4v2a3 3 0 0 0 3 3M17 5h3v2a3 3 0 0 1-3 3" stroke-linecap="round"/><path d="M10 13.5V17M14 13.5V17M8 20h8" stroke-linecap="round"/></svg>Leaderboard</a>
+      <div class="sfw"><label>SFW</label><div class="toggle"></div></div>
+      <a class="iconbtn" href="notifications.html"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10.5 19a2 2 0 0 0 3 0" stroke-linecap="round"/></svg></a>
+      <div class="avatar-top">Aa</div>
+    </div>
+  </div>
+
+  <div class="shell">
+    <aside class="railbar">
+      <a class="rail-logo" href="dashboard.html"><svg width="22" height="22" viewBox="0 0 28 28" fill="none"><circle cx="15" cy="14" r="7.5" stroke="#4166f6" stroke-width="3"/><circle cx="15" cy="14" r="2.5" fill="#4166f6"/><path d="M7.5 14 H2.5" stroke="#4166f6" stroke-width="3" stroke-linecap="round"/></svg><span class="pink"></span></a>
+      <div class="rail-icons">
+        <a class="rail-item" href="dashboard.html" title="Dashboard"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></a>
+        <a class="rail-item" href="ofmanager.html" title="OF Manager"><svg width="21" height="21" viewBox="0 0 24 24" fill="none"><path d="M12 3c-4 0-8 3-9 8 5 0 9-3 9-8z" fill="currentColor"/><circle cx="15" cy="14" r="5.5" stroke="currentColor" stroke-width="2"/><circle cx="15" cy="14" r="1.8" fill="currentColor"/></svg></a>
+        <a class="rail-item" href="analytics-creator-reports.html" title="Analytics"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 20V10M12 20V4M18 20v-7" stroke-linecap="round"/></svg></a>
+        <a class="rail-item" href="messages.html" title="Messages Pro"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3l3.2 5.6L21 12l-5.8 3.4L12 21l-3.2-5.6L3 12l5.8-3.4L12 3z" stroke-linejoin="round"/></svg></a>
+        <a class="rail-item" href="growth-smart-messages.html" title="Growth"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M4 17l5-4 4 3 3-3 4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        
+      </div>
+      <div class="rail-div"></div>
+      <div class="rail-icons">
+        <a class="rail-item" href="creators-manage.html" title="Creators"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="12" cy="10" r="2.4"/><path d="M8 16c.6-2 2.2-2.8 4-2.8s3.4.8 4 2.8" stroke-linecap="round"/></svg></a>
+        <a class="rail-item" href="employees-manage.html" title="Employees"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="2.5"/><circle cx="12" cy="10" r="2.2"/><path d="M8.5 16c.6-1.8 2-2.5 3.5-2.5s2.9.7 3.5 2.5" stroke-linecap="round"/></svg></a>
+      </div>
+      <div class="rail-spacer"></div>
+      <div class="rail-icons">
+        <a class="rail-item" href="settings.html" title="Settings"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h10M18 7h2M4 17h2M10 17h10" stroke-linecap="round"/><circle cx="15" cy="7" r="2.4"/><circle cx="8" cy="17" r="2.4"/></svg></a>
+        <a class="rail-item" href="#" title="Help center"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.8 2.8 0 0 1 5.3 1c0 1.8-2.7 2.2-2.7 3.8" stroke-linecap="round"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg></a>
+      </div>
+    </aside>
+
+    <main class="overlay">
+      <div class="ov-head">
+        <div class="ov-title">Referral Program</div>
+        <a class="ov-close" href="dashboard.html" title="Close"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg></a>
+      </div>
+      <div class="ov-body">
+        <div class="ref-title">Partner with Infloww</div>
+        <div class="ref-sub">Get paid for inviting your network</div>
+        <div class="ref-card">
+          <div class="inv">Invite an Agency</div>
+          <div class="earn"><span class="e">earn</span><span class="big">10</span><span class="pct">%</span></div>
+          <div class="fy">of first year subscription</div>
+        </div>
+        <button class="ref-btn">Start Earning Now</button>
+      </div>
+      <div class="help"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11.5a7.5 7.5 0 0 1-10.8 6.7L4 19.5l1.3-4.1A7.5 7.5 0 1 1 20 11.5z"/></svg></div>
+    </main>
+  </div>
+</div>
+<script id="ms-js">(function(){
+  if(window.__msInit)return; window.__msInit=1;
+  document.addEventListener('click',function(e){
+    var sw=document.getElementById('modelswap'); if(!sw)return;
+    if(e.target.closest('.ms-btn')){ sw.classList.toggle('open'); e.stopPropagation(); return; }
+    var it=e.target.closest('.ms-item');
+    if(it){
+      sw.querySelectorAll('.ms-item').forEach(function(x){x.classList.remove('active')});
+      it.classList.add('active');
+      var av=sw.querySelector('.ms-av'), nm=sw.querySelector('.ms-name'),
+          dot=it.querySelector('.ms-dot'), lbl=it.querySelector('.ms-nm');
+      if(nm&&lbl) nm.textContent=lbl.textContent;
+      if(av&&dot){ av.textContent=dot.textContent; av.style.background=dot.style.background; }
+      sw.classList.remove('open'); return;
+    }
+    sw.classList.remove('open');
+  });
+})();</script>
+</body>
+</html>

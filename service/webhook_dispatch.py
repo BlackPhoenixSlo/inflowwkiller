@@ -55,6 +55,19 @@ def _deep_convo_done_state() -> str:
 
 log = logging.getLogger("of-relay.webhook_dispatch")
 
+
+async def _fan_lifetime_spend_cents(account_id: str, fan_id: int) -> int:
+    """The fan's lifetime spend (cents), 0 when unknown/absent. One home for the
+    spend read this module does from several dispatch gates."""
+    async with get_session() as s:
+        v = (await s.execute(
+            select(Fan.lifetime_spend_cents).where(
+                Fan.account_id == str(account_id),
+                Fan.fan_id == int(fan_id),
+            )
+        )).scalar_one_or_none()
+    return int(v or 0)
+
 # Window for the dedup check: skip enqueue if a pending job for (account, kind)
 # is already due within this many seconds (the imminent sweep covers this fan).
 _DEDUP_WINDOW_S = 5
@@ -199,16 +212,8 @@ async def _classify_kind(account_id: str, fan_id: int) -> str | None:
     except Exception:
         ai_gate = None
     if ai_gate is not None:
-        async with get_session() as s:
-            spend = (
-                await s.execute(
-                    select(Fan.lifetime_spend_cents).where(
-                        Fan.account_id == str(account_id),
-                        Fan.fan_id == int(fan_id),
-                    )
-                )
-            ).scalar_one_or_none()
-        return "ai_chatter" if int(spend or 0) < ai_gate else None
+        spend = await _fan_lifetime_spend_cents(account_id, fan_id)
+        return "ai_chatter" if spend < ai_gate else None
 
     # One read for both markers: the fan's deep_convo_state + its skip_list row.
     async with get_session() as s:
@@ -452,10 +457,30 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int) -> Non
     Gated SEPARATELY from the reply (W7) and tip hooks: an image reply / closer
     pivot should fire even on a fan no chat sweep would answer. Never raises."""
     try:
-        from automations.tip_reward import image_reply_flags  # lazy: avoid cycle
+        from automations.tip_reward import (  # lazy: avoid cycle
+            image_describe_flags, image_reply_flags,
+        )
         send_img, run_closer = await image_reply_flags(account_id)
-        if not (send_img or run_closer):
+        describe_on, describe_seed, describe_scope = await image_describe_flags(account_id)
+
+        # "paid" scope → only describe photos from fans who have actually spent, so a
+        # $0 fan spamming pics never burns a vision call. "all" describes everyone.
+        if describe_on and describe_scope == "paid":
+            if await _fan_lifetime_spend_cents(account_id, fan_id) <= 0:
+                describe_on = False
+
+        if not (send_img or run_closer or describe_on):
             return
+
+        # Vision-describe the photo FIRST and BLOCK on it (a few seconds, reads as
+        # human typing) — the description is cached on messages.image_desc, and the
+        # closer we kick below reads it straight back into its history as
+        # "[photo he sent: …]". Awaiting here is what lets the FIRST reply rate the
+        # picture instead of a later one. Never raises; a describe miss just leaves
+        # image_desc NULL and the closer proceeds photo-blind (prior behavior).
+        if describe_on:
+            from vault_ai_api import describe_inbound_message  # lazy: avoid cycle
+            await describe_inbound_message(account_id, int(message_id), describe_seed)
 
         woke = False
         if send_img:
@@ -480,8 +505,8 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int) -> Non
                           account_id, fan_id)
         if woke:
             ax.wake_supervisor()
-        log.info("image_dispatch account=%s fan=%s msg=%s reply=%s closer=%s",
-                 account_id, fan_id, message_id, send_img, run_closer)
+        log.info("image_dispatch account=%s fan=%s msg=%s reply=%s closer=%s describe=%s",
+                 account_id, fan_id, message_id, send_img, run_closer, describe_on)
     except Exception:
         log.warning("image_dispatch_failed account=%s fan=%s",
                     account_id, fan_id, exc_info=True)

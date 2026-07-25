@@ -18,6 +18,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
+import { usePaidPage, PAID_PAGE_NOTE } from "@/hooks/usePaidPage";
 import { relay, type VaultMedia } from "@/lib/relay";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { EmojiPickerButton, EmojiQuickRow, insertAtCursor } from "@/components/chat/EmojiBar";
@@ -80,6 +81,19 @@ export function PostComposer({
   const [results, setResults] = useState<FanOutResult[] | null>(null);
   const [taggedCreators, setTaggedCreators] = useState<TaggedCreatorChoice[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // A subscription page has no paid-post lane on OF, so the price field is not
+  // an option there. The relay refuses a priced post for one anyway (409) —
+  // this just stops the operator typing a price that can never post.
+  const { isPaidPage } = usePaidPage(accountId);
+
+  // Selected a paid page with a price already typed → clear it, so a stale
+  // number can't ride into an all-models switch or a later free-page pick.
+  useEffect(() => {
+    if (isPaidPage) {
+      setPrice("");
+      setPreviewCount(0);
+    }
+  }, [isPaidPage]);
 
   // All-models mode is text-only for now (upload-from-computer is paused
   // pending a producer-pipeline fix). Drop vault attachments when entering
@@ -362,15 +376,19 @@ export function PostComposer({
             <input
               type="text"
               inputMode="decimal"
-              value={price}
+              value={isPaidPage ? "" : price}
+              disabled={isPaidPage}
               onChange={(e) => setPrice(sanitizePriceInput(e.target.value))}
-              placeholder="0 (free)"
-              className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent"
+              placeholder={isPaidPage ? "free only" : "0 (free)"}
+              className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent disabled:opacity-40"
             />
             <span className={isPPV ? "text-warn text-[11px]" : "text-fg-dim text-[11px]"}>
               {isPPV ? `🔒 PPV $${priceNum.toFixed(2)}` : "free"}
             </span>
           </div>
+          {isPaidPage && (
+            <div className="text-[11px] text-fg-dim">{PAID_PAGE_NOTE}</div>
+          )}
 
           <ScheduleField
             scope={allModels ? "all-models" : accountId}

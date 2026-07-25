@@ -1,0 +1,1019 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OnlyMonster · Analytics Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --canvas:#FFFEF9;
+    --card:#FFFFFF;
+    --border:#EFE7D3;
+    --border-soft:#F4EEDF;
+    --gold-1:#CCB994;
+    --gold-2:#E2CFAB;
+    --gold-3:#B8975A;
+    --gold-deep:#8A6D2F;
+    --gold-darker:#5E481F;
+    --sidebar:#131210;
+    --sidebar-2:#1D1B17;
+    --sidebar-line:#2A2823;
+    --heading:#131210;
+    --body:#2F2B2C;
+    --muted:#8B8C8F;
+    --muted-2:#A9A79E;
+    --green:#16B364;
+    --green-bg:#E7F7EE;
+    --red:#E5484D;
+    --red-bg:#FCEBEB;
+    --shadow-sm:0 1px 2px rgba(120,96,42,.05);
+    --shadow:0 1px 2px rgba(120,96,42,.05), 0 10px 26px rgba(150,120,60,.08);
+    --shadow-lg:0 2px 6px rgba(120,96,42,.08), 0 18px 40px rgba(150,120,60,.14);
+    --r:12px;
+    --r-lg:16px;
+    --sans:"Plus Jakarta Sans","Manrope",system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:var(--sans);
+    background:var(--canvas);
+    color:var(--body);
+    font-size:14px;
+    line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+  }
+  ::selection{background:var(--gold-2);color:var(--heading)}
+
+  .app{display:flex;min-height:100vh}
+
+  /* ---------------- SIDEBAR ---------------- */
+  .sidebar{
+    width:240px;flex:0 0 240px;
+    background:var(--sidebar);
+    color:#CFC8BA;
+    display:flex;flex-direction:column;
+    position:sticky;top:0;height:100vh;
+    transition:width .22s ease, flex-basis .22s ease;
+    z-index:40;
+  }
+  .sidebar .brand{
+    display:flex;align-items:center;gap:10px;
+    padding:20px 18px 16px;
+  }
+  .brand .mark{width:30px;height:30px;flex:0 0 30px}
+  .brand .word{
+    font-weight:800;font-size:16px;letter-spacing:-.02em;
+    color:#F4ECD9;white-space:nowrap;
+  }
+  .brand .word b{color:var(--gold-1)}
+
+  .switcher{
+    margin:2px 14px 14px;
+    display:flex;align-items:center;gap:10px;
+    background:var(--sidebar-2);
+    border:1px solid var(--sidebar-line);
+    border-radius:999px;padding:6px 10px 6px 6px;
+    cursor:pointer;transition:border-color .15s, background .15s;
+  }
+  .switcher:hover{border-color:#3a372f;background:#232019}
+  .switcher .av{
+    width:28px;height:28px;flex:0 0 28px;border-radius:50%;
+    background:linear-gradient(135deg,var(--gold-1),var(--gold-3));
+    color:#131210;font-weight:800;font-size:12px;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .switcher .meta{display:flex;flex-direction:column;line-height:1.15;min-width:0}
+  .switcher .meta .t{font-size:12.5px;font-weight:700;color:#F1E9D7;white-space:nowrap}
+  .switcher .meta .s{font-size:10.5px;color:#8f8a7c}
+  .switcher .chev{margin-left:auto;color:#8f8a7c;flex:0 0 auto}
+
+  .nav{flex:1;overflow-y:auto;padding:6px 12px 12px}
+  .nav::-webkit-scrollbar{width:6px}
+  .nav::-webkit-scrollbar-thumb{background:#2a2823;border-radius:6px}
+  .nav .sec{
+    font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+    color:#67635a;padding:14px 12px 6px;
+  }
+  .nav a{
+    display:flex;align-items:center;gap:12px;
+    padding:9px 12px;border-radius:10px;
+    color:#B9B3A6;text-decoration:none;font-weight:600;font-size:13.5px;
+    position:relative;transition:background .14s,color .14s;white-space:nowrap;
+  }
+  .nav a svg{width:19px;height:19px;flex:0 0 19px;stroke-width:1.7}
+  .nav a .lbl{flex:1}
+  .nav a .pill{
+    font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:999px;
+    background:#2a2721;color:#d8cba6;
+  }
+  .nav a:hover{background:#211e18;color:#EDE6D6}
+  .nav a.active{
+    background:linear-gradient(90deg,rgba(204,185,148,.20),rgba(204,185,148,.05));
+    color:#F6EFDD;
+  }
+  .nav a.active::before{
+    content:"";position:absolute;left:-12px;top:8px;bottom:8px;width:3px;
+    border-radius:0 3px 3px 0;background:linear-gradient(var(--gold-1),var(--gold-3));
+  }
+  .nav a.active svg{color:var(--gold-1)}
+
+  .side-foot{
+    border-top:1px solid var(--sidebar-line);
+    padding:12px 14px;display:flex;align-items:center;gap:10px;
+  }
+  .side-foot .av{
+    width:34px;height:34px;flex:0 0 34px;border-radius:50%;
+    background:linear-gradient(135deg,#E2CFAB,#B8975A);
+    color:#131210;font-weight:800;font-size:13px;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .side-foot .meta{display:flex;flex-direction:column;line-height:1.2;min-width:0}
+  .side-foot .meta .t{font-size:12.5px;font-weight:700;color:#F1E9D7;white-space:nowrap}
+  .side-foot .meta .s{font-size:11px;color:#807b6e}
+  .side-foot .plan{
+    margin-left:auto;font-size:10px;font-weight:800;letter-spacing:.04em;
+    padding:3px 9px;border-radius:999px;
+    background:linear-gradient(135deg,var(--gold-2),var(--gold-3));
+    color:#131210;
+  }
+
+  /* collapsed */
+  .app.collapsed .sidebar{width:74px;flex-basis:74px}
+  .app.collapsed .brand .word,
+  .app.collapsed .switcher .meta,
+  .app.collapsed .switcher .chev,
+  .app.collapsed .nav .sec,
+  .app.collapsed .nav a .lbl,
+  .app.collapsed .nav a .pill,
+  .app.collapsed .side-foot .meta,
+  .app.collapsed .side-foot .plan{display:none}
+  .app.collapsed .switcher{justify-content:center;padding:6px}
+  .app.collapsed .nav a{justify-content:center;padding:10px}
+  .app.collapsed .side-foot{justify-content:center}
+
+  /* ---------------- MAIN ---------------- */
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+
+  .topbar{
+    position:sticky;top:0;z-index:30;
+    background:rgba(255,255,255,.86);
+    backdrop-filter:saturate(160%) blur(8px);
+    border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:16px;
+    padding:14px 24px;
+  }
+  .burger{
+    width:36px;height:36px;border-radius:10px;border:1px solid var(--border);
+    background:#fff;display:flex;align-items:center;justify-content:center;
+    cursor:pointer;color:var(--heading);flex:0 0 auto;transition:.15s;
+  }
+  .burger:hover{border-color:var(--gold-1);background:#FFFCF3}
+  .topbar h1{font-size:19px;font-weight:800;color:var(--heading);letter-spacing:-.02em}
+  .refreshed{
+    display:flex;align-items:center;gap:7px;color:var(--muted);
+    font-size:12.5px;font-weight:500;
+  }
+  .refreshed .dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px var(--green-bg)}
+  .top-actions{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .btn{
+    display:inline-flex;align-items:center;gap:7px;
+    font-family:inherit;font-weight:700;font-size:13px;cursor:pointer;
+    border-radius:10px;padding:9px 14px;border:1px solid var(--border);
+    background:#fff;color:var(--heading);transition:.15s;
+  }
+  .btn:hover{border-color:var(--gold-1);background:#FFFCF3}
+  .btn svg{width:16px;height:16px}
+  .icon-btn{
+    width:38px;height:38px;padding:0;justify-content:center;position:relative;
+  }
+  .icon-btn .badge{
+    position:absolute;top:7px;right:8px;width:8px;height:8px;border-radius:50%;
+    background:var(--red);border:2px solid #fff;
+  }
+  .btn.gold{
+    border:none;color:#131210;
+    background:linear-gradient(135deg,var(--gold-2),var(--gold-3));
+    box-shadow:0 6px 16px rgba(184,151,90,.28);
+  }
+  .btn.gold:hover{filter:brightness(1.04);transform:translateY(-1px)}
+
+  .content{padding:22px 24px 40px;display:flex;flex-direction:column;gap:18px;max-width:1560px;width:100%}
+
+  /* ---------------- FILTER PANEL ---------------- */
+  .filters{
+    background:var(--card);border:1px solid var(--border);border-radius:var(--r);
+    box-shadow:var(--shadow-sm);
+    display:flex;flex-wrap:wrap;align-items:center;gap:12px;
+    padding:12px 14px;
+  }
+  .filters .fl-label{
+    font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--muted-2);margin-right:2px;
+  }
+  .fgroup{display:flex;flex-direction:column;gap:5px;position:relative}
+  .fgroup>.cap{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted-2)}
+  .dropdown{
+    display:inline-flex;align-items:center;gap:9px;
+    border:1px solid var(--border);background:#FFFDF7;border-radius:10px;
+    padding:8px 12px;font-weight:700;font-size:13px;color:var(--heading);
+    cursor:pointer;transition:.15s;white-space:nowrap;
+  }
+  .dropdown:hover{border-color:var(--gold-1)}
+  .dropdown svg{width:14px;height:14px;color:var(--muted);transition:transform .18s}
+  .fgroup.open .dropdown svg{transform:rotate(180deg)}
+  .dropdown .lead{color:var(--muted);font-weight:600}
+  .panel{
+    position:absolute;top:calc(100% + 8px);left:0;z-index:20;min-width:230px;
+    background:#fff;border:1px solid var(--border);border-radius:12px;
+    box-shadow:var(--shadow-lg);padding:8px;display:none;
+  }
+  .fgroup.open .panel{display:block}
+  .opt{
+    display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;
+    font-weight:600;font-size:13px;cursor:pointer;color:var(--body);
+  }
+  .opt:hover{background:#FBF6EA}
+  .opt .ck{width:16px;height:16px;color:var(--gold-3);opacity:0}
+  .opt.sel .ck{opacity:1}
+  .opt.sel{color:var(--heading);font-weight:700}
+  .panel .sep{height:1px;background:var(--border-soft);margin:6px 4px}
+  .panel .foot{display:flex;gap:8px;padding:6px 4px 2px}
+  .mini-btn{
+    flex:1;text-align:center;font-weight:700;font-size:12.5px;cursor:pointer;
+    border-radius:8px;padding:8px;border:1px solid var(--border);background:#fff;color:var(--heading);
+  }
+  .mini-btn.apply{border:none;color:#131210;background:linear-gradient(135deg,var(--gold-2),var(--gold-3))}
+  .mini-btn:hover{filter:brightness(1.02)}
+
+  .toggle{
+    display:inline-flex;background:#F6EFDE;border:1px solid var(--border);
+    border-radius:10px;padding:3px;gap:2px;
+  }
+  .toggle button{
+    font-family:inherit;font-weight:700;font-size:12.5px;cursor:pointer;
+    border:none;background:transparent;color:var(--muted);
+    padding:6px 12px;border-radius:8px;transition:.15s;
+  }
+  .toggle button.on{background:#fff;color:var(--heading);box-shadow:var(--shadow-sm)}
+  .filters .spacer{flex:1}
+
+  /* ---------------- CARDS / GRID ---------------- */
+  .card{
+    background:var(--card);border:1px solid var(--border);border-radius:var(--r);
+    box-shadow:var(--shadow-sm);padding:16px 18px;
+    transition:transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+  }
+  .card:hover{transform:translateY(-3px);box-shadow:var(--shadow);border-color:var(--gold-1)}
+  .card-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .card-head h3{font-size:14.5px;font-weight:800;color:var(--heading);letter-spacing:-.01em}
+  .card-head .sub{font-size:11.5px;color:var(--muted);font-weight:500}
+  .card-head .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+
+  .section-title{
+    display:flex;align-items:center;gap:10px;margin:4px 2px -4px;
+  }
+  .section-title h2{font-size:13px;font-weight:800;letter-spacing:.02em;color:var(--heading);text-transform:uppercase}
+  .section-title .line{flex:1;height:1px;background:linear-gradient(90deg,var(--border),transparent)}
+
+  .grid{display:grid;gap:16px}
+  .kpi-grid{grid-template-columns:1fr}
+  .mon-grid{grid-template-columns:repeat(2,1fr)}
+  .type-grid{grid-template-columns:repeat(2,1fr)}
+  .two-col,.rev-col,.tx-col,.fans-col{grid-template-columns:1fr}
+
+  @media(min-width:1001px){
+    .kpi-grid{grid-template-columns:repeat(4,1fr)}
+    .mon-grid{grid-template-columns:repeat(6,1fr)}
+    .type-grid{grid-template-columns:repeat(5,1fr)}
+    .rev-col{grid-template-columns:0.92fr 1.5fr}
+    .tx-col{grid-template-columns:1fr 1.35fr}
+    .fans-col{grid-template-columns:1.55fr 1fr}
+  }
+
+  /* ---------------- KPI CARDS ---------------- */
+  .kpi{display:flex;flex-direction:column;gap:8px}
+  .kpi .top{display:flex;align-items:center;justify-content:space-between}
+  .kpi .lab{font-size:12px;font-weight:600;color:var(--muted)}
+  .kpi .ic{
+    width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;
+    background:linear-gradient(135deg,#FBF3E1,#F1E4C6);color:var(--gold-deep);
+  }
+  .kpi .ic svg{width:16px;height:16px}
+  .kpi .val{font-size:29px;font-weight:800;color:var(--heading);letter-spacing:-.02em;line-height:1}
+  .kpi .row2{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:2px}
+  .delta{
+    display:inline-flex;align-items:center;gap:4px;font-weight:800;font-size:12px;
+    padding:3px 8px;border-radius:999px;
+  }
+  .delta svg{width:12px;height:12px}
+  .delta.up{color:#0E8f4f;background:var(--green-bg)}
+  .delta.down{color:#c93a3e;background:var(--red-bg)}
+  .kpi .spark{width:118px;height:38px;flex:0 0 auto}
+  .kpi .cmp{font-size:11px;color:var(--muted-2);font-weight:500}
+
+  /* ---------------- DONUT / LEGEND ---------------- */
+  .donut-wrap{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .donut-svg{width:186px;height:186px}
+  .donut-center .amt{font-size:22px;font-weight:800;fill:var(--heading)}
+  .legend{display:flex;flex-direction:column;gap:9px;width:100%}
+  .legend .li{display:flex;align-items:center;gap:10px;font-size:12.5px}
+  .legend .sw{width:11px;height:11px;border-radius:3px;flex:0 0 11px}
+  .legend .nm{font-weight:600;color:var(--body)}
+  .legend .amt{margin-left:auto;font-weight:800;color:var(--heading);font-variant-numeric:tabular-nums}
+  .legend .pc{width:44px;text-align:right;color:var(--muted);font-weight:600;font-variant-numeric:tabular-nums}
+
+  /* ---------------- MONETIZATION MINI ---------------- */
+  .mon{display:flex;flex-direction:column;gap:6px}
+  .mon .lab{font-size:11px;font-weight:600;color:var(--muted);line-height:1.25;min-height:28px}
+  .mon .val{font-size:22px;font-weight:800;color:var(--heading);letter-spacing:-.02em;line-height:1}
+  .mon .abbr{font-size:10px;font-weight:800;letter-spacing:.08em;color:var(--gold-deep);
+    background:#FBF3E1;border-radius:6px;padding:2px 6px;align-self:flex-start}
+
+  /* ---------------- CHART CHROME ---------------- */
+  .chart{width:100%;height:auto;display:block}
+  .axis-lbl{font-size:10.5px;fill:var(--muted-2);font-weight:600}
+  .grid-line{stroke:#F1E9D6;stroke-width:1}
+  .base-line{stroke:#E6DCC4;stroke-width:1}
+
+  /* type mini */
+  .tmini{display:flex;flex-direction:column;gap:8px}
+  .tmini .th{display:flex;align-items:center;justify-content:space-between;gap:6px}
+  .tmini .tt{font-size:11.5px;font-weight:700;color:var(--muted)}
+  .tmini .tv{font-size:19px;font-weight:800;color:var(--heading);letter-spacing:-.02em}
+  .tmini .mchart{width:100%;height:56px}
+
+  .pie-legend{display:flex;flex-direction:column;gap:7px}
+  .pie-legend .li{display:flex;align-items:center;gap:9px;font-size:12px}
+  .pie-legend .sw{width:10px;height:10px;border-radius:3px;flex:0 0 10px}
+  .pie-legend .nm{color:var(--body);font-weight:600}
+  .pie-legend .ct{margin-left:auto;font-weight:800;color:var(--heading);font-variant-numeric:tabular-nums}
+
+  .hide{display:none !important}
+  .foot-note{font-size:11px;color:var(--muted-2);text-align:center;padding:8px 0 2px}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <rect x="1" y="1" width="30" height="30" rx="9" fill="#1D1B17" stroke="#3a362c"/>
+        <path d="M8 22c0-5 3.6-9 8-9s8 4 8 9" stroke="url(#lg)" stroke-width="2.4" stroke-linecap="round"/>
+        <circle cx="12.5" cy="14.5" r="2.1" fill="#E2CFAB"/>
+        <circle cx="19.5" cy="14.5" r="2.1" fill="#E2CFAB"/>
+        <path d="M11 24.5c1.4 1.3 3.1 2 5 2s3.6-.7 5-2" stroke="#B8975A" stroke-width="2" stroke-linecap="round"/>
+        <defs><linearGradient id="lg" x1="8" y1="13" x2="24" y2="22"><stop stop-color="#E2CFAB"/><stop offset="1" stop-color="#B8975A"/></linearGradient></defs>
+      </svg>
+      <span class="word">Only<b>Monster</b></span>
+    </div>
+
+    <div class="switcher" title="Switch organization">
+      <span class="av">A</span>
+      <span class="meta"><span class="t">Apex Agency</span><span class="s">14 creators</span></span>
+      <svg class="chev" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+
+    <nav class="nav">
+      <div class="sec">Workspace</div>
+      <a href="#" class="active">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        <span class="lbl">Dashboard</span>
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h5l2 3h4l2-3h5"/><path d="M4.5 6h15l1.5 6v6a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18v-6z"/></svg>
+        <span class="lbl">Inbox</span>
+        <span class="pill">27</span>
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6"/><path d="M17.5 20a5.5 5.5 0 0 0-3-4.9"/></svg>
+        <span class="lbl">Fans</span>
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4" width="17" height="16" rx="2.5"/><circle cx="12" cy="12" r="3"/><path d="M12 9v-.01M15 12h.01"/></svg>
+        <span class="lbl">Vault</span>
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11l13-6v14L4 13z"/><path d="M4 11v2a1.5 1.5 0 0 0 1.5 1.5H7"/><path d="M8 15v3.5A1.5 1.5 0 0 0 9.5 20"/></svg>
+        <span class="lbl">Mass Message</span>
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg>
+        <span class="lbl">Smart Lists</span>
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>
+        <span class="lbl">Automations</span>
+        <span class="pill">6</span>
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="16" rx="2.5"/><path d="M3.5 9h17M8 3v3M16 3v3"/><path d="M8 13h3v3H8z"/></svg>
+        <span class="lbl">Scheduling</span>
+      </a>
+      <div class="sec">Agency</div>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="9" r="2.6"/><circle cx="16" cy="9" r="2.6"/><path d="M3 19a5 5 0 0 1 10 0M13.5 15.2A5 5 0 0 1 21 19"/></svg>
+        <span class="lbl">Team</span>
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>
+        <span class="lbl">Reports</span>
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 6.6 19.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 4.6 14a1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 8 1.6 1.6 0 0 0 4.3 6.2l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 10 4.6h.1A1.6 1.6 0 0 0 11 3.1V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.6 1.6 0 0 0 21 10.9h.1a2 2 0 1 1 0 4H21a1.6 1.6 0 0 0-1.6.9z"/></svg>
+        <span class="lbl">Settings</span>
+      </a>
+    </nav>
+
+    <div class="side-foot">
+      <span class="av">JR</span>
+      <span class="meta"><span class="t">Jordan Rivera</span><span class="s">Owner</span></span>
+      <span class="plan">Agency</span>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main">
+    <!-- TOP BAR -->
+    <header class="topbar">
+      <button class="burger" id="burger" aria-label="Collapse sidebar">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <h1>Dashboard</h1>
+      <span class="refreshed"><span class="dot"></span>Last refreshed: 2 min ago</span>
+      <div class="top-actions">
+        <button class="btn" id="editMode">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+          Edit Mode
+        </button>
+        <button class="btn icon-btn" aria-label="Notifications">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+          <span class="badge"></span>
+        </button>
+        <button class="btn gold">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-9 4 6 3-4 6 7z"/><path d="M3 20h18"/></svg>
+          Upgrade
+        </button>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <!-- FILTER PANEL -->
+      <div class="filters">
+        <span class="fl-label">Filters</span>
+
+        <div class="fgroup" data-dd>
+          <span class="cap">Accounts</span>
+          <div class="dropdown" data-toggle>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3"/><path d="M3 19a5 5 0 0 1 10 0M15 6a3 3 0 0 1 0 6M21 19a5 5 0 0 0-4-4.9"/></svg>
+            All accounts
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6" stroke-linecap="round"/></svg>
+          </div>
+          <div class="panel">
+            <div class="opt sel"><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-11" stroke-linecap="round" stroke-linejoin="round"/></svg>All accounts <span style="margin-left:auto;color:var(--muted);font-weight:600">14</span></div>
+            <div class="opt"><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-11" stroke-linecap="round" stroke-linejoin="round"/></svg>Aria Rose</div>
+            <div class="opt"><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-11" stroke-linecap="round" stroke-linejoin="round"/></svg>Ava Monroe</div>
+            <div class="opt"><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-11" stroke-linecap="round" stroke-linejoin="round"/></svg>Sasha Blaze</div>
+            <div class="opt"><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-11" stroke-linecap="round" stroke-linejoin="round"/></svg>Nova Sky</div>
+          </div>
+        </div>
+
+        <div class="fgroup" data-dd>
+          <span class="cap">Time Range</span>
+          <div class="dropdown" data-toggle>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="4.5" width="17" height="16" rx="2.5"/><path d="M3.5 9h17M8 3v3M16 3v3"/></svg>
+            Last 30 Days
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6" stroke-linecap="round"/></svg>
+          </div>
+          <div class="panel">
+            <div class="opt"><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-11" stroke-linecap="round" stroke-linejoin="round"/></svg>Today</div>
+            <div class="opt"><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-11" stroke-linecap="round" stroke-linejoin="round"/></svg>Last 7 Days</div>
+            <div class="opt sel"><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-11" stroke-linecap="round" stroke-linejoin="round"/></svg>Last 30 Days</div>
+            <div class="opt"><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-11" stroke-linecap="round" stroke-linejoin="round"/></svg>Last 90 Days</div>
+            <div class="opt"><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-11" stroke-linecap="round" stroke-linejoin="round"/></svg>Month to date</div>
+            <div class="sep"></div>
+            <div class="opt">Custom range…<span style="margin-left:auto;color:var(--muted)">Jun 22 – Jul 21</span></div>
+            <div class="foot">
+              <button class="mini-btn">Reset</button>
+              <button class="mini-btn apply">Apply</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="fgroup">
+          <span class="cap">Time Zone</span>
+          <div class="toggle" data-seg>
+            <button class="on">UTC+0</button>
+            <button>Agency TZ</button>
+          </div>
+        </div>
+
+        <div class="fgroup">
+          <span class="cap">Earning Type</span>
+          <div class="toggle" data-seg>
+            <button class="on">NET</button>
+            <button>GROSS</button>
+          </div>
+        </div>
+
+        <div class="spacer"></div>
+        <button class="btn">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13M7 11l5 5 5-5"/><path d="M4 20h16"/></svg>
+          Export
+        </button>
+      </div>
+
+      <!-- KPI ROW -->
+      <section class="grid kpi-grid">
+        <!-- Fans -->
+        <div class="card kpi">
+          <div class="top">
+            <span class="lab">Fans</span>
+            <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><path d="M3 19a5 5 0 0 1 10 0M15 6a3 3 0 0 1 0 6M21 19a5 5 0 0 0-4-4.9"/></svg></span>
+          </div>
+          <div class="val">12,480</div>
+          <div class="row2">
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <span class="delta up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>8.2%</span>
+              <span class="cmp">vs prev 30d</span>
+            </div>
+            <svg class="spark" viewBox="0 0 120 40" fill="none" preserveAspectRatio="none">
+              <path d="M4,30 L20,28 L36,29 L52,25 L68,24 L84,20 L100,18 L116,12 L116,40 L4,40 Z" fill="url(#sp1)"/>
+              <path d="M4,30 L20,28 L36,29 L52,25 L68,24 L84,20 L100,18 L116,12" stroke="#B8975A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="116" cy="12" r="3" fill="#B8975A" stroke="#fff" stroke-width="1.6"/>
+              <defs><linearGradient id="sp1" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#CCB994" stop-opacity=".35"/><stop offset="1" stop-color="#CCB994" stop-opacity="0"/></linearGradient></defs>
+            </svg>
+          </div>
+        </div>
+        <!-- Spenders -->
+        <div class="card kpi">
+          <div class="top">
+            <span class="lab">Spenders</span>
+            <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5.5c0-1.9-2.2-3-5-3s-5 1.3-5 3.2S9 8.5 12 9s5 1.4 5 3.4-2.2 3.1-5 3.1-5-1.2-5-3"/></svg></span>
+          </div>
+          <div class="val">3,912</div>
+          <div class="row2">
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <span class="delta up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>5.1%</span>
+              <span class="cmp">vs prev 30d</span>
+            </div>
+            <svg class="spark" viewBox="0 0 120 40" fill="none" preserveAspectRatio="none">
+              <path d="M4,31 L20,29 L36,30 L52,26 L68,27 L84,23 L100,21 L116,16 L116,40 L4,40 Z" fill="url(#sp2)"/>
+              <path d="M4,31 L20,29 L36,30 L52,26 L68,27 L84,23 L100,21 L116,16" stroke="#B8975A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="116" cy="16" r="3" fill="#B8975A" stroke="#fff" stroke-width="1.6"/>
+              <defs><linearGradient id="sp2" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#CCB994" stop-opacity=".35"/><stop offset="1" stop-color="#CCB994" stop-opacity="0"/></linearGradient></defs>
+            </svg>
+          </div>
+        </div>
+        <!-- Transactions -->
+        <div class="card kpi">
+          <div class="top">
+            <span class="lab">Transactions</span>
+            <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h13l-3-3M20 17H7l3 3"/></svg></span>
+          </div>
+          <div class="val">18,204</div>
+          <div class="row2">
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <span class="delta up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>12.4%</span>
+              <span class="cmp">vs prev 30d</span>
+            </div>
+            <svg class="spark" viewBox="0 0 120 40" fill="none" preserveAspectRatio="none">
+              <path d="M4,32 L20,28 L36,30 L52,24 L68,22 L84,18 L100,15 L116,10 L116,40 L4,40 Z" fill="url(#sp3)"/>
+              <path d="M4,32 L20,28 L36,30 L52,24 L68,22 L84,18 L100,15 L116,10" stroke="#B8975A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="116" cy="10" r="3" fill="#B8975A" stroke="#fff" stroke-width="1.6"/>
+              <defs><linearGradient id="sp3" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#CCB994" stop-opacity=".35"/><stop offset="1" stop-color="#CCB994" stop-opacity="0"/></linearGradient></defs>
+            </svg>
+          </div>
+        </div>
+        <!-- Global Rank -->
+        <div class="card kpi">
+          <div class="top">
+            <span class="lab">Global Rank</span>
+            <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4"/><path d="M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M7 5H4v2a3 3 0 0 0 3 3M17 5h3v2a3 3 0 0 1-3 3"/></svg></span>
+          </div>
+          <div class="val">#42</div>
+          <div class="row2">
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <span class="delta up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>3</span>
+              <span class="cmp">up 3 places</span>
+            </div>
+            <svg class="spark" viewBox="0 0 120 40" fill="none" preserveAspectRatio="none">
+              <path d="M4,18 L20,20 L36,17 L52,19 L68,15 L84,16 L100,13 L116,10 L116,40 L4,40 Z" fill="url(#sp4)"/>
+              <path d="M4,18 L20,20 L36,17 L52,19 L68,15 L84,16 L100,13 L116,10" stroke="#B8975A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="116" cy="10" r="3" fill="#B8975A" stroke="#fff" stroke-width="1.6"/>
+              <defs><linearGradient id="sp4" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#CCB994" stop-opacity=".35"/><stop offset="1" stop-color="#CCB994" stop-opacity="0"/></linearGradient></defs>
+            </svg>
+          </div>
+        </div>
+      </section>
+
+      <!-- REVENUE ROW -->
+      <div class="section-title"><h2>Revenue</h2><span class="line"></span></div>
+      <section class="grid rev-col">
+        <!-- Revenue Breakdown donut -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Revenue Breakdown</h3>
+            <div class="right"><span class="sub">Net · 30d</span></div>
+          </div>
+          <div class="donut-wrap">
+            <svg class="donut-svg" viewBox="0 0 180 180" role="img" aria-label="Revenue breakdown donut chart">
+              <circle cx="90" cy="90" r="64" fill="none" stroke="#F4EEDF" stroke-width="26"/>
+              <g fill="none" stroke-width="26" pathLength="100">
+                <circle cx="90" cy="90" r="64" stroke="#8A6D2F" stroke-dasharray="51 49" transform="rotate(-90 90 90)"/>
+                <circle cx="90" cy="90" r="64" stroke="#B8975A" stroke-dasharray="27 73" transform="rotate(97.2 90 90)"/>
+                <circle cx="90" cy="90" r="64" stroke="#CCB994" stroke-dasharray="13 87" transform="rotate(198 90 90)"/>
+                <circle cx="90" cy="90" r="64" stroke="#E2CFAB" stroke-dasharray="5 95" transform="rotate(248.4 90 90)"/>
+              </g>
+              <g class="donut-center" text-anchor="middle">
+                <text x="90" y="86" class="amt">$248,910</text>
+                <text x="90" y="104" style="font-size:10.5px;font-weight:600;fill:#8B8C8F;letter-spacing:.04em">TOTAL · 30D</text>
+              </g>
+            </svg>
+            <div class="legend">
+              <div class="li"><span class="sw" style="background:#8A6D2F"></span><span class="nm">Media</span><span class="amt">$129,433</span><span class="pc">52%</span></div>
+              <div class="li"><span class="sw" style="background:#B8975A"></span><span class="nm">Subscription</span><span class="amt">$69,695</span><span class="pc">28%</span></div>
+              <div class="li"><span class="sw" style="background:#CCB994"></span><span class="nm">Tips</span><span class="amt">$34,847</span><span class="pc">14%</span></div>
+              <div class="li"><span class="sw" style="background:#E2CFAB"></span><span class="nm">Other · Live streams</span><span class="amt">$14,935</span><span class="pc">6%</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Revenue Overview line/bar -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Revenue Overview</h3>
+            <div class="right">
+              <span class="sub">Jun 22 – Jul 21</span>
+              <div class="toggle" id="revToggle">
+                <button class="on" data-mode="line">Line</button>
+                <button data-mode="bar">Bar</button>
+              </div>
+            </div>
+          </div>
+          <svg class="chart" viewBox="0 0 660 250" role="img" aria-label="Revenue over 30 days">
+            <defs>
+              <linearGradient id="goldArea" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#CCB994" stop-opacity=".38"/><stop offset="1" stop-color="#CCB994" stop-opacity=".02"/></linearGradient>
+              <linearGradient id="goldBar" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#D9C298"/><stop offset="1" stop-color="#B8975A"/></linearGradient>
+            </defs>
+            <!-- gridlines + y labels -->
+            <g>
+              <line class="grid-line" x1="48" y1="20"  x2="640" y2="20"/>
+              <line class="grid-line" x1="48" y1="65"  x2="640" y2="65"/>
+              <line class="grid-line" x1="48" y1="110" x2="640" y2="110"/>
+              <line class="grid-line" x1="48" y1="155" x2="640" y2="155"/>
+              <line class="base-line" x1="48" y1="200" x2="640" y2="200"/>
+              <text class="axis-lbl" x="40" y="24"  text-anchor="end">$14k</text>
+              <text class="axis-lbl" x="40" y="69"  text-anchor="end">$10.5k</text>
+              <text class="axis-lbl" x="40" y="114" text-anchor="end">$7k</text>
+              <text class="axis-lbl" x="40" y="159" text-anchor="end">$3.5k</text>
+              <text class="axis-lbl" x="40" y="204" text-anchor="end">$0</text>
+            </g>
+            <!-- LINE / AREA -->
+            <g id="revLine">
+              <path d="M48,133.1 L88.9,121.6 L129.7,125.4 L170.6,104.9 L211.4,111.3 L252.3,94.6 L293.1,102.3 L334,83 L374.9,92 L415.7,74 L456.6,63.7 L497.4,72.7 L538.3,53.4 L579.1,61.1 L620,41.9 L620,200 L48,200 Z" fill="url(#goldArea)"/>
+              <path d="M48,133.1 L88.9,121.6 L129.7,125.4 L170.6,104.9 L211.4,111.3 L252.3,94.6 L293.1,102.3 L334,83 L374.9,92 L415.7,74 L456.6,63.7 L497.4,72.7 L538.3,53.4 L579.1,61.1 L620,41.9" fill="none" stroke="#B8975A" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="620" cy="41.9" r="4.5" fill="#8A6D2F" stroke="#fff" stroke-width="2"/>
+              <g font-size="10.5" font-weight="700" fill="#131210">
+                <rect x="590" y="20" width="60" height="17" rx="5" fill="#131210"/>
+                <text x="620" y="32" text-anchor="middle" fill="#F4ECD9">$12.3k</text>
+              </g>
+            </g>
+            <!-- BARS -->
+            <g id="revBar" class="hide">
+              <rect x="38"  y="133.1" width="20" height="66.9"  rx="4" fill="url(#goldBar)"/>
+              <rect x="78.9" y="121.6" width="20" height="78.4"  rx="4" fill="url(#goldBar)"/>
+              <rect x="119.7" y="125.4" width="20" height="74.6" rx="4" fill="url(#goldBar)"/>
+              <rect x="160.6" y="104.9" width="20" height="95.1" rx="4" fill="url(#goldBar)"/>
+              <rect x="201.4" y="111.3" width="20" height="88.7" rx="4" fill="url(#goldBar)"/>
+              <rect x="242.3" y="94.6" width="20" height="105.4" rx="4" fill="url(#goldBar)"/>
+              <rect x="283.1" y="102.3" width="20" height="97.7" rx="4" fill="url(#goldBar)"/>
+              <rect x="324"  y="83" width="20" height="117"  rx="4" fill="url(#goldBar)"/>
+              <rect x="364.9" y="92" width="20" height="108" rx="4" fill="url(#goldBar)"/>
+              <rect x="405.7" y="74" width="20" height="126" rx="4" fill="url(#goldBar)"/>
+              <rect x="446.6" y="63.7" width="20" height="136.3" rx="4" fill="url(#goldBar)"/>
+              <rect x="487.4" y="72.7" width="20" height="127.3" rx="4" fill="url(#goldBar)"/>
+              <rect x="528.3" y="53.4" width="20" height="146.6" rx="4" fill="url(#goldBar)"/>
+              <rect x="569.1" y="61.1" width="20" height="138.9" rx="4" fill="url(#goldBar)"/>
+              <rect x="610"  y="41.9" width="20" height="158.1" rx="4" fill="#8A6D2F"/>
+            </g>
+            <!-- x labels -->
+            <g text-anchor="middle">
+              <text class="axis-lbl" x="48"  y="218">Jun 22</text>
+              <text class="axis-lbl" x="191" y="218">Jun 29</text>
+              <text class="axis-lbl" x="334" y="218">Jul 6</text>
+              <text class="axis-lbl" x="477" y="218">Jul 13</text>
+              <text class="axis-lbl" x="620" y="218">Jul 21</text>
+            </g>
+          </svg>
+        </div>
+      </section>
+
+      <!-- MONETIZATION ROW -->
+      <div class="section-title"><h2>Monetization</h2><span class="line"></span></div>
+      <section class="grid mon-grid">
+        <div class="card mon">
+          <span class="lab">New Fans Revenue</span>
+          <span class="val">$58,340</span>
+          <span class="delta up" style="align-self:flex-start"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>6.4%</span>
+        </div>
+        <div class="card mon">
+          <span class="lab">Existing Fans Revenue</span>
+          <span class="val">$190,570</span>
+          <span class="delta up" style="align-self:flex-start"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>9.1%</span>
+        </div>
+        <div class="card mon">
+          <span class="abbr">ARPPU</span>
+          <span class="lab">Avg Revenue Per Paying User</span>
+          <span class="val">$63.63</span>
+          <span class="delta up" style="align-self:flex-start"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>3.2%</span>
+        </div>
+        <div class="card mon">
+          <span class="abbr">ARPNU</span>
+          <span class="lab">Avg Revenue Per New User</span>
+          <span class="val">$18.92</span>
+          <span class="delta down" style="align-self:flex-start"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>1.4%</span>
+        </div>
+        <div class="card mon">
+          <span class="abbr">APV</span>
+          <span class="lab">Avg Payment Value</span>
+          <span class="val">$13.67</span>
+          <span class="delta up" style="align-self:flex-start"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>2.1%</span>
+        </div>
+        <div class="card mon">
+          <span class="abbr">APC</span>
+          <span class="lab">Avg Payment Count</span>
+          <span class="val">4.65</span>
+          <span class="delta up" style="align-self:flex-start"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>0.8%</span>
+        </div>
+      </section>
+
+      <!-- NEW FANS ROW -->
+      <div class="section-title"><h2>New Fans</h2><span class="line"></span></div>
+      <section class="grid fans-col">
+        <div class="card">
+          <div class="card-head">
+            <h3>New Subscribers</h3>
+            <div class="right"><span class="sub">Daily · last 14 days</span><span class="delta up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>11.6%</span></div>
+          </div>
+          <svg class="chart" viewBox="0 0 520 220" role="img" aria-label="New subscribers per day">
+            <g>
+              <line class="grid-line" x1="40" y1="20" x2="500" y2="20"/>
+              <line class="grid-line" x1="40" y1="77" x2="500" y2="77"/>
+              <line class="grid-line" x1="40" y1="134" x2="500" y2="134"/>
+              <line class="base-line" x1="40" y1="190" x2="500" y2="190"/>
+              <text class="axis-lbl" x="34" y="24" text-anchor="end">280</text>
+              <text class="axis-lbl" x="34" y="81" text-anchor="end">190</text>
+              <text class="axis-lbl" x="34" y="138" text-anchor="end">95</text>
+              <text class="axis-lbl" x="34" y="194" text-anchor="end">0</text>
+            </g>
+            <g fill="url(#goldBar)">
+              <rect x="40"    y="117.1" width="20" height="72.9" rx="4"/>
+              <rect x="72.9"  y="102"   width="20" height="88"   rx="4"/>
+              <rect x="105.7" y="109.9" width="20" height="80.1" rx="4"/>
+              <rect x="138.6" y="88"    width="20" height="102"  rx="4"/>
+              <rect x="171.4" y="96.5"  width="20" height="93.5" rx="4"/>
+              <rect x="204.3" y="75.3"  width="20" height="114.7" rx="4"/>
+              <rect x="237.1" y="83.1"  width="20" height="106.9" rx="4"/>
+              <rect x="270"   y="68"    width="20" height="122"  rx="4"/>
+              <rect x="302.9" y="75.9"  width="20" height="114.1" rx="4"/>
+              <rect x="335.7" y="60.1"  width="20" height="129.9" rx="4"/>
+              <rect x="368.6" y="49.1"  width="20" height="140.9" rx="4"/>
+              <rect x="401.4" y="57"    width="20" height="133"  rx="4"/>
+              <rect x="434.3" y="39.4"  width="20" height="150.6" rx="4"/>
+              <rect x="467.1" y="27.9"  width="20" height="162.1" rx="4" fill="#8A6D2F"/>
+            </g>
+            <g text-anchor="middle">
+              <text class="axis-lbl" x="50"  y="207">Jul 8</text>
+              <text class="axis-lbl" x="181" y="207">Jul 12</text>
+              <text class="axis-lbl" x="312" y="207">Jul 16</text>
+              <text class="axis-lbl" x="477" y="207">Jul 21</text>
+            </g>
+          </svg>
+        </div>
+
+        <!-- Spenders vs Non pie -->
+        <div class="card">
+          <div class="card-head"><h3>Spenders vs Non-Spenders</h3></div>
+          <div style="display:flex;align-items:center;gap:22px;flex-wrap:wrap;justify-content:center">
+            <svg viewBox="0 0 108 108" width="132" height="132" role="img" aria-label="Spenders versus non-spenders">
+              <path d="M54 54 L54 10 A44 44 0 0 1 94.54 71.10 Z" fill="#B8975A" stroke="#fff" stroke-width="2"/>
+              <path d="M54 54 L94.54 71.10 A44 44 0 1 1 54 10 Z" fill="#EAD9B6" stroke="#fff" stroke-width="2"/>
+              <circle cx="54" cy="54" r="19" fill="#fff"/>
+              <text x="54" y="51" text-anchor="middle" style="font-size:14px;font-weight:800;fill:#131210">31%</text>
+              <text x="54" y="63" text-anchor="middle" style="font-size:8px;font-weight:600;fill:#8B8C8F">SPEND</text>
+            </svg>
+            <div class="pie-legend">
+              <div class="li"><span class="sw" style="background:#B8975A"></span><span class="nm">Spenders</span><span class="ct">3,912</span></div>
+              <div class="li"><span class="sw" style="background:#EAD9B6"></span><span class="nm">Non-Spenders</span><span class="ct">8,568</span></div>
+              <div class="li" style="margin-top:4px;padding-top:9px;border-top:1px solid var(--border-soft)"><span class="nm" style="color:var(--muted)">Conversion rate</span><span class="ct" style="color:#0E8f4f">31.3%</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TRANSACTION ANALYSIS ROW -->
+      <div class="section-title"><h2>Transaction Analysis</h2><span class="line"></span></div>
+      <section class="grid tx-col">
+        <!-- Sales breakdown pie -->
+        <div class="card">
+          <div class="card-head"><h3>Transaction Sales Breakdown</h3><div class="right"><span class="sub">by ticket size</span></div></div>
+          <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+            <svg viewBox="0 0 180 180" width="168" height="168" role="img" aria-label="Transactions by ticket size">
+              <path d="M90 90 L90 18 A72 72 0 0 1 129.48 150.21 Z" fill="#E2CFAB" stroke="#fff" stroke-width="2"/>
+              <path d="M90 90 L129.48 150.21 A72 72 0 0 1 18.05 92.79 Z" fill="#CCB994" stroke="#fff" stroke-width="2"/>
+              <path d="M90 90 L18.05 92.79 A72 72 0 0 1 49.43 30.52 Z" fill="#B8975A" stroke="#fff" stroke-width="2"/>
+              <path d="M90 90 L49.43 30.52 A72 72 0 0 1 76.33 19.31 Z" fill="#8A6D2F" stroke="#fff" stroke-width="2"/>
+              <path d="M90 90 L76.33 19.31 A72 72 0 0 1 90 18 Z" fill="#5E481F" stroke="#fff" stroke-width="2"/>
+            </svg>
+            <div class="pie-legend" style="flex:1;min-width:170px">
+              <div class="li"><span class="sw" style="background:#E2CFAB"></span><span class="nm">$0 – $10</span><span class="ct">7,420</span><span class="pc" style="width:40px;text-align:right;color:var(--muted);font-weight:600">40.8%</span></div>
+              <div class="li"><span class="sw" style="background:#CCB994"></span><span class="nm">$10 – $50</span><span class="ct">6,120</span><span class="pc" style="width:40px;text-align:right;color:var(--muted);font-weight:600">33.6%</span></div>
+              <div class="li"><span class="sw" style="background:#B8975A"></span><span class="nm">$50 – $100</span><span class="ct">2,930</span><span class="pc" style="width:40px;text-align:right;color:var(--muted);font-weight:600">16.1%</span></div>
+              <div class="li"><span class="sw" style="background:#8A6D2F"></span><span class="nm">$100 – $200</span><span class="ct">1,180</span><span class="pc" style="width:40px;text-align:right;color:var(--muted);font-weight:600">6.5%</span></div>
+              <div class="li"><span class="sw" style="background:#5E481F"></span><span class="nm">$200+</span><span class="ct">554</span><span class="pc" style="width:40px;text-align:right;color:var(--muted);font-weight:600">3.0%</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Transaction overview bar -->
+        <div class="card">
+          <div class="card-head"><h3>Transaction Overview</h3><div class="right"><span class="sub">daily · last 14 days</span></div></div>
+          <svg class="chart" viewBox="0 0 540 220" role="img" aria-label="Transactions per day">
+            <g>
+              <line class="grid-line" x1="44" y1="20" x2="520" y2="20"/>
+              <line class="grid-line" x1="44" y1="77" x2="520" y2="77"/>
+              <line class="grid-line" x1="44" y1="134" x2="520" y2="134"/>
+              <line class="base-line" x1="44" y1="190" x2="520" y2="190"/>
+              <text class="axis-lbl" x="38" y="24" text-anchor="end">2.0k</text>
+              <text class="axis-lbl" x="38" y="81" text-anchor="end">1.35k</text>
+              <text class="axis-lbl" x="38" y="138" text-anchor="end">700</text>
+              <text class="axis-lbl" x="38" y="194" text-anchor="end">0</text>
+            </g>
+            <g fill="url(#goldBar)">
+              <rect x="46"    y="89.7"  width="20" height="100.3" rx="4"/>
+              <rect x="80"    y="84.6"  width="20" height="105.4" rx="4"/>
+              <rect x="114"   y="97.4"  width="20" height="92.6"  rx="4"/>
+              <rect x="148"   y="75.3"  width="20" height="114.7" rx="4"/>
+              <rect x="182"   y="80.4"  width="20" height="109.6" rx="4"/>
+              <rect x="216"   y="69.3"  width="20" height="120.7" rx="4"/>
+              <rect x="250"   y="72.7"  width="20" height="117.3" rx="4"/>
+              <rect x="284"   y="61.7"  width="20" height="128.3" rx="4"/>
+              <rect x="318"   y="65.9"  width="20" height="124.1" rx="4"/>
+              <rect x="352"   y="54.9"  width="20" height="135.1" rx="4"/>
+              <rect x="386"   y="47.2"  width="20" height="142.8" rx="4"/>
+              <rect x="420"   y="52.3"  width="20" height="137.7" rx="4"/>
+              <rect x="454"   y="42.1"  width="20" height="147.9" rx="4"/>
+              <rect x="488"   y="32.4"  width="20" height="157.6" rx="4" fill="#8A6D2F"/>
+            </g>
+            <g text-anchor="middle">
+              <text class="axis-lbl" x="56"  y="207">Jul 8</text>
+              <text class="axis-lbl" x="192" y="207">Jul 12</text>
+              <text class="axis-lbl" x="328" y="207">Jul 16</text>
+              <text class="axis-lbl" x="498" y="207">Jul 21</text>
+            </g>
+          </svg>
+        </div>
+      </section>
+
+      <!-- REVENUE BY TYPE ROW -->
+      <div class="section-title"><h2>Revenue by Type</h2><span class="line"></span></div>
+      <section class="grid type-grid">
+        <!-- Spenders -->
+        <div class="card tmini">
+          <div class="th"><span class="tt">Spenders</span><span class="delta up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>5.1%</span></div>
+          <span class="tv">3,912</span>
+          <svg class="mchart" viewBox="0 0 180 60" preserveAspectRatio="none">
+            <path d="M10,44 L32.86,40 L55.71,42 L78.57,36 L101.43,34 L124.29,30 L147.14,26 L170,20 L170,52 L10,52 Z" fill="url(#goldArea)"/>
+            <path d="M10,44 L32.86,40 L55.71,42 L78.57,36 L101.43,34 L124.29,30 L147.14,26 L170,20" fill="none" stroke="#B8975A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="170" cy="20" r="3" fill="#8A6D2F" stroke="#fff" stroke-width="1.6"/>
+          </svg>
+        </div>
+        <!-- New Spenders -->
+        <div class="card tmini">
+          <div class="th"><span class="tt">New Spenders</span><span class="delta up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>9.7%</span></div>
+          <span class="tv">1,204</span>
+          <svg class="mchart" viewBox="0 0 180 60" preserveAspectRatio="none">
+            <path d="M10,46 L32.86,42 L55.71,44 L78.57,38 L101.43,40 L124.29,32 L147.14,30 L170,24 L170,52 L10,52 Z" fill="url(#goldArea)"/>
+            <path d="M10,46 L32.86,42 L55.71,44 L78.57,38 L101.43,40 L124.29,32 L147.14,30 L170,24" fill="none" stroke="#B8975A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="170" cy="24" r="3" fill="#8A6D2F" stroke="#fff" stroke-width="1.6"/>
+          </svg>
+        </div>
+        <!-- Media Revenue -->
+        <div class="card tmini">
+          <div class="th"><span class="tt">Media Revenue</span><span class="delta up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>11.3%</span></div>
+          <span class="tv">$129,433</span>
+          <svg class="mchart" viewBox="0 0 180 60" preserveAspectRatio="none">
+            <path d="M10,45 L32.86,43 L55.71,38 L78.57,36 L101.43,32 L124.29,28 L147.14,22 L170,16 L170,52 L10,52 Z" fill="url(#goldArea)"/>
+            <path d="M10,45 L32.86,43 L55.71,38 L78.57,36 L101.43,32 L124.29,28 L147.14,22 L170,16" fill="none" stroke="#B8975A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="170" cy="16" r="3" fill="#8A6D2F" stroke="#fff" stroke-width="1.6"/>
+          </svg>
+        </div>
+        <!-- Subscription Revenue -->
+        <div class="card tmini">
+          <div class="th"><span class="tt">Subscription Revenue</span><span class="delta up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>4.2%</span></div>
+          <span class="tv">$69,695</span>
+          <svg class="mchart" viewBox="0 0 180 60" preserveAspectRatio="none">
+            <path d="M10,42 L32.86,40 L55.71,38 L78.57,37 L101.43,34 L124.29,33 L147.14,30 L170,27 L170,52 L10,52 Z" fill="url(#goldArea)"/>
+            <path d="M10,42 L32.86,40 L55.71,38 L78.57,37 L101.43,34 L124.29,33 L147.14,30 L170,27" fill="none" stroke="#B8975A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="170" cy="27" r="3" fill="#8A6D2F" stroke="#fff" stroke-width="1.6"/>
+          </svg>
+        </div>
+        <!-- Tips Revenue -->
+        <div class="card tmini">
+          <div class="th"><span class="tt">Tips Revenue</span><span class="delta up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>7.8%</span></div>
+          <span class="tv">$34,847</span>
+          <svg class="mchart" viewBox="0 0 180 60" preserveAspectRatio="none">
+            <path d="M10,46 L32.86,38 L55.71,42 L78.57,34 L101.43,40 L124.29,30 L147.14,28 L170,22 L170,52 L10,52 Z" fill="url(#goldArea)"/>
+            <path d="M10,46 L32.86,38 L55.71,42 L78.57,34 L101.43,40 L124.29,30 L147.14,28 L170,22" fill="none" stroke="#B8975A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="170" cy="22" r="3" fill="#8A6D2F" stroke="#fff" stroke-width="1.6"/>
+          </svg>
+        </div>
+      </section>
+
+      <p class="foot-note">Design-exploration mockup · figures are illustrative · OnlyMonster Analytics</p>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  // sidebar collapse
+  document.getElementById('burger').addEventListener('click', function(){
+    document.getElementById('app').classList.toggle('collapsed');
+  });
+
+  // nav active state
+  document.querySelectorAll('.nav a').forEach(function(a){
+    a.addEventListener('click', function(e){
+      e.preventDefault();
+      document.querySelectorAll('.nav a').forEach(function(x){ x.classList.remove('active'); });
+      a.classList.add('active');
+    });
+  });
+
+  // filter dropdowns (visual)
+  document.querySelectorAll('.fgroup[data-dd] [data-toggle]').forEach(function(t){
+    t.addEventListener('click', function(e){
+      e.stopPropagation();
+      var g = t.closest('.fgroup');
+      var wasOpen = g.classList.contains('open');
+      document.querySelectorAll('.fgroup.open').forEach(function(o){ o.classList.remove('open'); });
+      if(!wasOpen) g.classList.add('open');
+    });
+  });
+  document.addEventListener('click', function(){
+    document.querySelectorAll('.fgroup.open').forEach(function(o){ o.classList.remove('open'); });
+  });
+  document.querySelectorAll('.panel').forEach(function(p){
+    p.addEventListener('click', function(e){ e.stopPropagation(); });
+  });
+  // single-select options inside a panel
+  document.querySelectorAll('.panel').forEach(function(p){
+    p.querySelectorAll('.opt').forEach(function(o){
+      o.addEventListener('click', function(){
+        if(o.querySelector('.ck')){
+          p.querySelectorAll('.opt').forEach(function(x){ x.classList.remove('sel'); });
+          o.classList.add('sel');
+        }
+      });
+    });
+  });
+
+  // segmented toggles (time zone / earning type / others)
+  document.querySelectorAll('.toggle[data-seg]').forEach(function(seg){
+    seg.querySelectorAll('button').forEach(function(b){
+      b.addEventListener('click', function(){
+        seg.querySelectorAll('button').forEach(function(x){ x.classList.remove('on'); });
+        b.classList.add('on');
+      });
+    });
+  });
+
+  // revenue overview line/bar toggle
+  var revToggle = document.getElementById('revToggle');
+  var revLine = document.getElementById('revLine');
+  var revBar = document.getElementById('revBar');
+  revToggle.querySelectorAll('button').forEach(function(b){
+    b.addEventListener('click', function(){
+      revToggle.querySelectorAll('button').forEach(function(x){ x.classList.remove('on'); });
+      b.classList.add('on');
+      if(b.dataset.mode === 'bar'){ revBar.classList.remove('hide'); revLine.classList.add('hide'); }
+      else { revLine.classList.remove('hide'); revBar.classList.add('hide'); }
+    });
+  });
+
+  // edit mode visual toggle
+  document.getElementById('editMode').addEventListener('click', function(){
+    this.classList.toggle('gold');
+  });
+</script>
+</body>
+</html>

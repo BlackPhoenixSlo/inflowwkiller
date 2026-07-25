@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>fastt _shared — fx component kit (copy-paste)</title>
+<!--
+  ============================================================================
+  fastt fx- COMPONENT KIT — the shared vocabulary for every fastt page.
+  HOW TO USE (builders):
+    1. Copy the ENTIRE <style id="fx-css"> block into your page <head>,
+       AFTER the shell CSS you copied from dashboard.html.
+    2. Copy the ENTIRE <script id="fx-js"> block right before </body>,
+       AFTER the canonical sidebar JS.
+    3. Copy the markup snippets you need from <body> below. Do NOT restyle
+       them per-page — consistency across pages is the whole point.
+  All classes are namespaced fx- so they can never collide with shell CSS.
+  Palette comes from the shell :root vars (--card #262626, --border #333,
+  --accent #4166f6, --green #67d1ae, --muted #8a8a8a, canvas #1e1e1e).
+  ============================================================================
+-->
+<style>
+  :root{--canvas:#1e1e1e;--card:#262626;--black:#000;--border:#333;--border-soft:#2c2c2c;
+    --accent:#4166f6;--green:#67d1ae;--text:#fff;--muted:#8a8a8a;--muted2:#6a6a6a;--nav:#b9b9b9}
+  body{background:var(--canvas);color:#fff;font-family:Inter,-apple-system,sans-serif;padding:40px;max-width:960px;margin:0 auto}
+  h2{margin:34px 0 12px;font-size:15px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+</style>
+
+<style id="fx-css">
+  /* ================= fastt fx- COMPONENT KIT (paste whole block) ================= */
+  /* switch */
+  .fx-switch{display:inline-block;width:40px;height:22px;border-radius:12px;background:#3a3a3a;
+    position:relative;cursor:pointer;flex:0 0 auto;transition:background .15s;vertical-align:middle}
+  .fx-switch::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;
+    background:#e6e6e6;transition:left .15s}
+  .fx-switch.on{background:var(--accent)}
+  .fx-switch.on::after{left:20px}
+  .fx-switch.sm{width:32px;height:18px}
+  .fx-switch.sm::after{width:14px;height:14px}
+  .fx-switch.sm.on::after{left:16px}
+
+  /* cards */
+  .fx-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px 22px;margin-bottom:16px}
+  .fx-card-h{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:600;color:#fff;margin-bottom:4px}
+  .fx-card-sub{font-size:13.5px;color:var(--muted);line-height:1.5}
+
+  /* toggle card (enable/disable feature) */
+  .fx-togglecard{background:var(--card);border:1px solid var(--border);border-radius:12px;
+    padding:18px 20px;margin-bottom:14px}
+  .fx-tc-row{display:flex;align-items:center;gap:14px}
+  .fx-tc-ico{width:40px;height:40px;border-radius:10px;background:rgba(65,102,246,.13);color:#7d97f8;
+    display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .fx-tc-ico.green{background:rgba(103,209,174,.12);color:var(--green)}
+  .fx-tc-ico.purple{background:rgba(167,139,250,.15);color:#a78bfa}
+  .fx-tc-ico.red{background:rgba(229,115,91,.15);color:#e5735b}
+  .fx-tc-body{flex:1;min-width:0}
+  .fx-tc-title{font-size:15px;font-weight:600;color:#fff;display:flex;align-items:center;gap:8px}
+  .fx-tc-desc{font-size:13px;color:var(--muted);margin-top:3px;line-height:1.45}
+  .fx-tc-state{font-size:12.5px;font-weight:600;color:var(--muted);margin-right:12px}
+  .fx-togglecard.on .fx-tc-state{color:var(--green)}
+  .fx-tc-knobs{display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--border-soft);
+    display:none;gap:18px;align-items:center;flex-wrap:wrap}
+  .fx-togglecard.on .fx-tc-knobs{display:flex}
+
+  /* preset ladder */
+  .fx-presets{display:flex;gap:14px;margin:6px 0 4px}
+  .fx-preset{flex:1;background:#1c1c1c;border:1px solid var(--border);border-radius:12px;padding:16px;
+    cursor:pointer;position:relative;transition:border-color .12s}
+  .fx-preset:hover{border-color:#4a4a4a}
+  .fx-preset.sel{border-color:var(--accent);background:rgba(65,102,246,.07)}
+  .fx-preset.sel::after{content:"✓";position:absolute;top:10px;right:12px;width:20px;height:20px;
+    border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:700;
+    display:flex;align-items:center;justify-content:center}
+  .fx-preset .pn{font-size:14.5px;font-weight:600;color:#fff}
+  .fx-preset .pt{font-size:12.5px;color:var(--muted);margin:4px 0 10px;line-height:1.4}
+  .fx-preset ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+  .fx-preset li{font-size:12px;color:#b9b9b9;display:flex;gap:6px;align-items:baseline}
+  .fx-preset li::before{content:"·";color:var(--accent);font-weight:700}
+
+  /* slider */
+  .fx-sliderrow{margin:14px 0}
+  .fx-sl-head{display:flex;align-items:baseline;margin-bottom:8px}
+  .fx-sl-name{font-size:13.5px;font-weight:500;color:#ddd}
+  .fx-sl-hint{font-size:12px;color:var(--muted2);margin-left:8px}
+  .fx-rv{margin-left:auto;font-size:14px;font-weight:600;color:var(--accent)}
+  input[type=range].fx-range{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:2px;
+    background:#3a3a3a;outline:none;margin:0}
+  input[type=range].fx-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;
+    border-radius:50%;background:var(--accent);border:2.5px solid #dfe6ff;cursor:pointer}
+
+  /* advanced drawer */
+  .fx-adv{margin-top:18px;border-top:1px solid var(--border-soft);padding-top:14px}
+  .fx-adv-head{display:flex;align-items:center;gap:10px;cursor:default}
+  .fx-adv-head .t{font-size:13.5px;font-weight:600;color:#cfcfcf}
+  .fx-adv-head .h{font-size:12px;color:var(--muted2)}
+  .fx-adv-body{display:none;margin-top:16px}
+  .fx-adv-body.open{display:block}
+  .fx-adv-group{margin-bottom:18px}
+  .fx-adv-group>h4{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+    color:var(--muted2);margin:0 0 10px}
+  .fx-grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px 18px}
+  .fx-grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px 18px}
+
+  /* fields */
+  .fx-field{display:flex;flex-direction:column;gap:6px}
+  .fx-field>label{font-size:12.5px;font-weight:500;color:#b9b9b9}
+  .fx-input,.fx-select{height:38px;background:#1c1c1c;border:1px solid var(--border);border-radius:9px;
+    color:#eee;font-family:inherit;font-size:13.5px;padding:0 12px;outline:none;width:100%}
+  .fx-select{-webkit-appearance:none;appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");
+    background-repeat:no-repeat;background-position:right 10px center;padding-right:32px}
+  textarea.fx-input{height:auto;min-height:84px;padding:10px 12px;resize:none;line-height:1.5}
+  .fx-unit{position:relative}
+  .fx-unit .fx-input{padding-left:26px}
+  .fx-unit::before{content:attr(data-unit);position:absolute;left:11px;top:50%;transform:translateY(-50%);
+    font-size:13.5px;color:var(--muted);z-index:1}
+
+  /* checkbox row */
+  .fx-check{display:flex;align-items:center;gap:10px;font-size:13.5px;color:#ddd;cursor:pointer;padding:5px 0}
+  .fx-check .bx{width:18px;height:18px;border-radius:5px;border:1.5px solid #4a4a4a;flex:0 0 auto;
+    display:flex;align-items:center;justify-content:center;font-size:11px;color:transparent;transition:all .12s}
+  .fx-check.on .bx{background:var(--accent);border-color:var(--accent);color:#fff}
+  .fx-check.on .bx::after{content:"✓";font-weight:700}
+  .fx-check .sub{font-size:12px;color:var(--muted2);margin-left:4px}
+
+  /* segmented (small) */
+  .fx-seg{display:inline-flex;height:38px;border:1px solid var(--border);border-radius:9px;background:#1c1c1c;overflow:hidden}
+  .fx-seg button{border:0;background:transparent;color:var(--muted);font-family:inherit;font-size:13.5px;
+    font-weight:500;padding:0 16px;cursor:pointer;height:100%}
+  .fx-seg button.on{background:#343434;color:#fff}
+
+  /* chips */
+  .fx-chips{display:flex;gap:8px;flex-wrap:wrap}
+  .fx-chip{height:30px;display:inline-flex;align-items:center;gap:6px;padding:0 12px;border-radius:15px;
+    border:1px solid var(--border);background:#1c1c1c;color:#b9b9b9;font-size:12.5px;font-weight:500;cursor:pointer}
+  .fx-chip.on{border-color:var(--accent);background:rgba(65,102,246,.12);color:#c9d3ff}
+
+  /* status strip */
+  .fx-status{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 18px}
+  .fx-st{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:15px;
+    background:#1c1c1c;border:1px solid var(--border-soft);font-size:12.5px;color:#cfcfcf}
+  .fx-st i{width:7px;height:7px;border-radius:50%;display:inline-block;background:#5a5a5a}
+  .fx-st.ok i{background:#3ec46a}
+  .fx-st.warn i{background:#febc2e}
+  .fx-st.err i{background:#f2295b}
+
+  /* buttons */
+  .fx-btn{height:38px;padding:0 18px;border-radius:9px;border:0;background:var(--accent);color:#fff;
+    font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+  .fx-btn.ghost{background:transparent;border:1px solid var(--border);color:#ddd}
+  .fx-btn.green{background:rgba(103,209,174,.15);color:var(--green);border:1px solid rgba(103,209,174,.3)}
+
+  /* audience picker */
+  .fx-audience{display:flex;flex-direction:column;gap:12px}
+  .fx-aud-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .fx-aud-lbl{font-size:12.5px;font-weight:500;color:#b9b9b9;width:86px;flex:0 0 86px}
+  .fx-aud-reach{font-size:12.5px;color:var(--muted);margin-top:2px}
+  .fx-aud-reach b{color:var(--green);font-weight:600}
+
+  /* composer */
+  .fx-composer{background:#1c1c1c;border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .fx-composer textarea{width:100%;min-height:92px;background:transparent;border:0;outline:none;resize:none;
+    color:#eee;font-family:inherit;font-size:14px;line-height:1.55;padding:14px 16px}
+  .fx-comp-bar{display:flex;align-items:center;gap:4px;padding:8px 10px;border-top:1px solid var(--border-soft)}
+  .fx-ci{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+    color:#9a9a9a;cursor:pointer}
+  .fx-ci:hover{background:#262626;color:#fff}
+  .fx-comp-price{display:flex;align-items:center;gap:6px;height:32px;padding:0 10px;margin-left:6px;
+    border:1px solid var(--border);border-radius:8px;background:#161616;font-size:13px;color:#ddd}
+  .fx-comp-price input{width:52px;background:transparent;border:0;outline:none;color:#fff;font:inherit;font-weight:600}
+  .fx-comp-send{margin-left:auto}
+
+  /* pricing / tip ladder */
+  .fx-ladder{display:flex;flex-direction:column;gap:8px}
+  .fx-rung{display:flex;align-items:center;gap:12px;background:#1c1c1c;border:1px solid var(--border-soft);
+    border-radius:10px;padding:9px 12px}
+  .fx-rung .n{width:24px;height:24px;border-radius:50%;background:rgba(65,102,246,.15);color:#7d97f8;
+    font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .fx-rung .fx-select{flex:1;height:34px}
+  .fx-rung .fx-unit{width:92px;flex:0 0 92px}
+  .fx-rung .fx-unit .fx-input{height:34px}
+
+  /* sound human */
+  .fx-human .fx-check{padding:7px 0}
+
+  /* misc */
+  .fx-kv{display:flex;gap:8px;font-size:13px;color:var(--muted);padding:3px 0}
+  .fx-kv b{color:#ddd;font-weight:500}
+  .fx-new{font-size:9px;font-weight:700;letter-spacing:.03em;background:var(--accent);color:#fff;
+    padding:2px 6px;border-radius:5px;vertical-align:middle}
+  .fx-hr{height:1px;background:var(--border-soft);margin:16px 0;border:0}
+  .fx-note{display:flex;gap:10px;align-items:flex-start;background:rgba(65,102,246,.08);
+    border:1px solid rgba(65,102,246,.22);border-radius:10px;padding:11px 14px;font-size:13px;color:#c9d3ff;line-height:1.5}
+  .fx-note.warn{background:rgba(254,188,46,.07);border-color:rgba(254,188,46,.25);color:#e8cf9a}
+  /* =============== /fx- COMPONENT KIT =============== */
+</style>
+</head>
+<body>
+
+<h1 style="font-size:20px">fx component kit — live snippets</h1>
+<p style="color:#8a8a8a;font-size:13.5px;margin-top:6px">Every snippet below is canonical. Copy markup as-is, change only labels/values.</p>
+
+<h2>1 · Toggle card (enable/disable feature — NO wizard)</h2>
+<!-- SNIPPET: toggle card. Add .on to .fx-togglecard when prod default = enabled. -->
+<div class="fx-togglecard on">
+  <div class="fx-tc-row">
+    <div class="fx-tc-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8.5" r="3.4"/><path d="M5.5 19.5c.7-3.4 3.2-5.2 6.5-5.2s5.8 1.8 6.5 5.2" stroke-linecap="round"/></svg></div>
+    <div class="fx-tc-body">
+      <div class="fx-tc-title">Auto-learn fans</div>
+      <div class="fx-tc-desc">AI reads each conversation and keeps a profile per fan — name, job, interests. Used everywhere.</div>
+    </div>
+    <span class="fx-tc-state">Running</span>
+    <span class="fx-switch on"></span>
+  </div>
+  <div class="fx-tc-knobs">
+    <label class="fx-check on"><span class="bx"></span>Write nicknames &amp; notes to OnlyFans</label>
+    <div class="fx-kv"><b>2,041</b> fans profiled · next pass in <b>38 min</b></div>
+  </div>
+</div>
+
+<h2>2 · Preset ladder (COMPLEX engine default view)</h2>
+<!-- SNIPPET: preset ladder. Exactly one .sel — the prod default. -->
+<div class="fx-presets">
+  <div class="fx-preset"><div class="pn">Chat only</div><div class="pt">Talks, never sells.</div><ul><li>Replies to every fan</li><li>No offers, no prices</li></ul></div>
+  <div class="fx-preset sel"><div class="pn">Chat + Sell</div><div class="pt">Sells when the fan leans in. Your current setup.</div><ul><li>Closer mode — waits for buying intent</li><li>PPV offers up to 7/day</li><li>Hands whales ($2,000+) to you</li></ul></div>
+  <div class="fx-preset"><div class="pn">Aggressive Seller</div><div class="pt">Creates the intent itself.</div><ul><li>Pushes offers proactively</li><li>Re-engage nudge after 15 min</li></ul></div>
+</div>
+
+<h2>3 · Slider</h2>
+<!-- SNIPPET: slider. data-fmt tokens: "$%v" "%v min" "%v/day" "%v msgs". Set value + data to the prod default. -->
+<div class="fx-sliderrow">
+  <div class="fx-sl-head"><span class="fx-sl-name">Whale cutoff</span><span class="fx-sl-hint">above this lifetime spend the AI hands the fan to your team</span><span class="fx-rv">$2,000</span></div>
+  <input type="range" class="fx-range" min="100" max="5000" step="100" value="2000" data-fmt="$%v">
+</div>
+
+<h2>4 · Advanced drawer</h2>
+<!-- SNIPPET: advanced drawer. Body hidden by default; switch has data-adv pointing at body id. -->
+<div class="fx-adv">
+  <div class="fx-adv-head">
+    <span class="t">Advanced mode</span>
+    <span class="fx-switch sm" data-adv="adv-demo"></span>
+    <span class="h">every real knob, grouped — for power users</span>
+  </div>
+  <div class="fx-adv-body" id="adv-demo">
+    <div class="fx-adv-group"><h4>Offer pacing</h4>
+      <div class="fx-grid3">
+        <div class="fx-field"><label>Max offers / fan / day</label><input class="fx-input" value="7"></div>
+        <div class="fx-field"><label>Fan msgs between offers</label><input class="fx-input" value="2"></div>
+        <div class="fx-field"><label>Open-offer expiry (hrs)</label><input class="fx-input" value="2"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>5 · Audience picker (shared by every blast/compose surface)</h2>
+<!-- SNIPPET: AudiencePicker -->
+<div class="fx-audience">
+  <div class="fx-aud-row"><span class="fx-aud-lbl">Send to</span>
+    <div class="fx-seg" data-single><button class="on">Online now</button><button>Everyone</button><button>Repliers</button></div>
+  </div>
+  <div class="fx-aud-row"><span class="fx-aud-lbl">Spend tier</span>
+    <div class="fx-chips" data-single><span class="fx-chip on">Any spend</span><span class="fx-chip">Never paid</span><span class="fx-chip">$1–25</span><span class="fx-chip">$25–100</span><span class="fx-chip">$100+</span></div>
+  </div>
+  <div class="fx-aud-row"><span class="fx-aud-lbl">Exclude</span>
+    <div class="fx-chips"><span class="fx-chip on">Bought in last 24h</span><span class="fx-chip on">Muted / restricted</span><span class="fx-chip">Open PPV pending</span></div>
+  </div>
+  <div class="fx-aud-reach">Estimated reach: <b>214 fans</b> online right now</div>
+</div>
+
+<h2>6 · Composer (message + media + PPV price + send later)</h2>
+<!-- SNIPPET: Composer toolbar.
+     {name} RULE: {name} works ONLY in per-fan 1:1 sends (Broadcast, nudges, follow-ups).
+     MASS messages are one broadcast — {name} is impossible there; never show it in a mass composer. -->
+<div class="fx-composer">
+  <textarea placeholder="Write the message…">morning sleepyhead {name} ☀️ you're up early 👀</textarea>
+  <div class="fx-comp-bar">
+    <span class="fx-ci" title="Vault media"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M21 16l-5-5-9 8" stroke-linejoin="round"/></svg></span>
+    <span class="fx-ci" title="Emoji"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M8.5 14s1.2 1.8 3.5 1.8 3.5-1.8 3.5-1.8" stroke-linecap="round"/><circle cx="9" cy="10" r=".9" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r=".9" fill="currentColor" stroke="none"/></svg></span>
+    <span class="fx-ci" title="Template"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M8 9h8M8 13h8M8 17h5" stroke-linecap="round"/></svg></span>
+    <span class="fx-ci" title="Send later"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg></span>
+    <div class="fx-comp-price" title="PPV price — locks message until paid">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.8"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+      $<input value="24">
+    </div>
+    <button class="fx-btn fx-comp-send">Send</button>
+  </div>
+</div>
+
+<h2>7 · Sound human (shared style control)</h2>
+<!-- SNIPPET: Sound human. Prefill ON for chat engines (prod). -->
+<div class="fx-card fx-human">
+  <div class="fx-card-h">Sound human<span style="margin-left:auto"></span><span class="fx-switch on"></span></div>
+  <div class="fx-card-sub" style="margin-bottom:8px">Short girl-voice bubbles, real thumb typos, non-native touches. Applied to every AI reply on this page.</div>
+  <label class="fx-check on"><span class="bx"></span>Natural voice + 3-bubble split</label>
+  <label class="fx-check on"><span class="bx"></span>Occasional thumb typos <span class="sub">*fix follows, max 1/hr</span></label>
+  <label class="fx-check on"><span class="bx"></span>Non-native English touches</label>
+</div>
+
+<h2>8 · Pricing / tip ladder</h2>
+<!-- SNIPPET: ladder -->
+<div class="fx-ladder">
+  <div class="fx-rung"><span class="n">1</span><select class="fx-select"><option>Teasers</option></select><div class="fx-unit" data-unit="$"><input class="fx-input" value="0"></div></div>
+  <div class="fx-rung"><span class="n">2</span><select class="fx-select"><option>Titt pics</option></select><div class="fx-unit" data-unit="$"><input class="fx-input" value="10"></div></div>
+  <div class="fx-rung"><span class="n">3</span><select class="fx-select"><option>Pussy Play pic/vids</option></select><div class="fx-unit" data-unit="$"><input class="fx-input" value="40"></div></div>
+</div>
+<div style="display:flex;align-items:center;gap:10px;margin-top:10px"><span class="fx-switch sm on"></span><span style="font-size:13px;color:#ddd">Adaptive — climb only after a buy, soften the ask after a pass</span></div>
+
+<h2>9 · Status strip</h2>
+<!-- SNIPPET: status strip -->
+<div class="fx-status">
+  <span class="fx-st ok"><i></i>Running</span>
+  <span class="fx-st"><i></i>Last run 4 min ago</span>
+  <span class="fx-st"><i></i>Next in 56 s</span>
+  <span class="fx-st"><i></i>DeepSeek V4 Flash</span>
+  <span class="fx-st"><i></i>$0.03 today</span>
+</div>
+
+<h2>10 · Notes / banners</h2>
+<div class="fx-note">The AI never messages whales — fans above the cutoff always go to your team.</div>
+<div style="height:8px"></div>
+<div class="fx-note warn">Suggest-only: nothing sends until you approve each card.</div>
+
+<script id="fx-js">
+  /* ================= fx behaviors (paste whole block, idempotent) ================= */
+  (function(){
+    if (window.__fxKit) return; window.__fxKit = 1;
+    document.addEventListener('click', function(e){
+      var sw = e.target.closest('.fx-switch');
+      if (sw) {
+        var on = sw.classList.toggle('on');
+        var adv = sw.getAttribute('data-adv');
+        if (adv) { var b = document.getElementById(adv); if (b) b.classList.toggle('open', on); }
+        var tc = sw.closest('.fx-togglecard');
+        if (tc) { tc.classList.toggle('on', on);
+          var st = tc.querySelector('.fx-tc-state'); if (st) st.textContent = on ? 'Running' : 'Off'; }
+        var card = sw.closest('.fx-card');
+        if (card && card.querySelector('.fx-check')) {} /* visual only */
+        return;
+      }
+      var pr = e.target.closest('.fx-preset');
+      if (pr) { pr.parentElement.querySelectorAll('.fx-preset').forEach(function(p){p.classList.remove('sel')});
+        pr.classList.add('sel'); return; }
+      var sg = e.target.closest('.fx-seg button');
+      if (sg) { sg.parentElement.querySelectorAll('button').forEach(function(b){b.classList.remove('on')});
+        sg.classList.add('on'); return; }
+      var ch = e.target.closest('.fx-chip');
+      if (ch) { if (ch.parentElement.hasAttribute('data-single')) {
+          ch.parentElement.querySelectorAll('.fx-chip').forEach(function(c){c.classList.remove('on')});
+          ch.classList.add('on'); } else { ch.classList.toggle('on'); } return; }
+      var ck = e.target.closest('.fx-check');
+      if (ck) { ck.classList.toggle('on'); return; }
+    });
+    document.addEventListener('input', function(e){
+      if (!e.target.classList || !e.target.classList.contains('fx-range')) return;
+      var head = e.target.previousElementSibling;
+      var rv = head && head.querySelector('.fx-rv');
+      if (rv) { var f = e.target.getAttribute('data-fmt') || '%v';
+        rv.textContent = f.replace('%v', Number(e.target.value).toLocaleString()); }
+    });
+  })();
+  /* =============== /fx behaviors =============== */
+</script>
+</body>
+</html>

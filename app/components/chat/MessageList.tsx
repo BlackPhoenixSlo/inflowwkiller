@@ -874,12 +874,13 @@ function Bubble({
            *  doesn't bounce/reflow when the async attribution map lands and
            *  the label pops in. Empty placeholder keeps the 10px line height;
            *  aria-hidden + a NBSP so it occupies space without being read. */}
-          {/* Phone: which teammate sent it is a desktop concern — the wrapper
-           *  hides BOTH branches (label + anti-reflow placeholder) below md,
-           *  and only exists on outbound bubbles so no empty flex item (and
-           *  therefore no extra gap-0.5) is ever added on desktop. */}
+          {/* Which automation/teammate sent it now shows on phone too — on a
+           *  phone the human chatter can't tell an AI-Chatter bubble from a
+           *  mass blast without it. Same "Sent by …" text as desktop; the
+           *  anti-reflow NBSP placeholder rides along so labelless bubbles
+           *  reserve the line identically across breakpoints. */}
           {(isOutgoing || isOptimisticOutgoing) && (
-            <span className="hidden md:inline">
+            <span className="inline">
               {employeeLabel ? (
                 <span className="text-fg-dim/70" title={`Sent by ${employeeLabel}`}>
                   Sent by {employeeLabel}

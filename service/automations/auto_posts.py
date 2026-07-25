@@ -33,6 +33,8 @@ Payload shape::
                                    #   = free. Passed to create_post as-is (OF's
                                    #   /posts `price` is dollars) and stored as
                                    #   price_cents via _to_cents (19.99 → 1999).
+                                   #   DROPPED on a paid-subscription page — that
+                                   #   page has no paid-post lane (account_page).
          "hours_to_live": 6,       # null/absent = keep forever (P2 "keep")
          "delay_minutes": 0},       # stagger THIS post after the previous one
         {"text": "...", "media_files": [456], "hours_to_live": 12}
@@ -52,6 +54,7 @@ import logging
 import random
 from datetime import datetime, timedelta
 
+import account_page  # free-vs-paid page: a paid page has no paid-post lane
 import automation_executor as ax  # shared _make_client seam + enqueue_job
 from automation_registry import register
 from automations._pools import has_media_source, pick_media, pick_text
@@ -115,8 +118,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             }
             for p in posts
         ]
+        # Surface the paid-page gate in the preview, so an operator planning a
+        # priced drop sees it will be dropped BEFORE the real run silently does it.
+        paid_page = await account_page.is_paid_page(account_id)
+        for p in plan:
+            p["skipped_reason"] = (account_page.PAID_PAGE_SKIP
+                                   if paid_page and (p.get("price") or 0) > 0 else None)
         return {
             "dry_run": True, "posts": len(posts), "plan": plan, "posted": 0,
+            "paid_page": paid_page,
             "resend_after_hours": _pos_float(payload.get("resend_after_hours")),
             "resend_count": int(payload.get("resend_count") or 0),
         }
@@ -154,6 +164,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # Still drain the rest so one bad item doesn't strand the queue.
         remaining = await _drip_rest(account_id, rest, None, cycle)
         return {"status": "skipped", "reason": "empty_post", "remaining": remaining}
+
+    # ── A PAID post needs a FREE page ────────────────────────────────────
+    # A subscription page has no paid-post lane on OF (see service/account_page.py),
+    # so a priced item is dropped instead of posted — never re-priced to 0, which
+    # would hand the locked set to every subscriber for free. The queue still
+    # drains, so the free items in the same list keep going out.
+    if price and price > 0 and await account_page.is_paid_page(account_id):
+        log.info("auto_posts: account=%s is a paid-subscription page — dropping the "
+                 "priced item (no paid-post lane on OF)", account_id)
+        remaining = await _drip_rest(account_id, rest, None, cycle)
+        return {"status": "skipped", "reason": account_page.PAID_PAGE_SKIP,
+                "remaining": remaining}
 
     # Attribution: a post from the worker is the system Automation actor.
     employee_id: int | None = None

@@ -20,6 +20,7 @@ import { EditRawJsonButton } from "./JsonConfigModal";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { useReorder } from "@/hooks/useReorder";
+import { usePaidPage, PAID_PAGE_NOTE } from "@/hooks/usePaidPage";
 import { cn } from "@/lib/utils";
 import { proxyImage } from "@/lib/relay";
 import {
@@ -155,6 +156,9 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   const previewM = usePpvPreview(accountId);
   const postM = usePostPpvToFeed(accountId);
   const previewFeedM = usePreviewPpvToFeed(accountId);
+  // A subscription page has no paid-post lane on OF, and a feed PPV is always
+  // priced — so every feed control here is dead for it (the relay refuses too).
+  const { isPaidPage } = usePaidPage(accountId);
   // which "Post to feed" is in flight: a PPV id, or "__random__" for the bottom button
   const [postFor, setPostFor] = useState<string | null>(null);
   // the generated candidate for the GLOBAL "post fresh PPV" flow: Generate → this
@@ -704,22 +708,29 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
               <Button
                 size="sm" variant="secondary"
                 onClick={() => { setPostFor(p.id); postM.mutate(p.id); }}
-                disabled={postM.isPending || p.media_ids.length === 0 || p.feed_enabled === false}
-                title="Post this PPV to your feed now as a paid post at its base price"
+                disabled={postM.isPending || p.media_ids.length === 0
+                          || p.feed_enabled === false || isPaidPage}
+                title={isPaidPage ? PAID_PAGE_NOTE
+                       : "Post this PPV to your feed now as a paid post at its base price"}
               >
                 {postM.isPending && postFor === p.id ? "Posting…" : "Post to feed now"}
               </Button>
               <label className={cn("flex items-center gap-1.5 text-xs cursor-pointer",
-                                   p.feed_enabled === false && "opacity-40 pointer-events-none")}>
+                                   (p.feed_enabled === false || isPaidPage)
+                                     && "opacity-40 pointer-events-none")}>
                 <input
                   type="checkbox"
                   className="h-3.5 w-3.5 accent-[var(--accent)]"
-                  checked={(p.also_post_to_feed ?? false) && p.feed_enabled !== false}
-                  disabled={p.feed_enabled === false}
+                  checked={(p.also_post_to_feed ?? false) && p.feed_enabled !== false
+                           && !isPaidPage}
+                  disabled={p.feed_enabled === false || isPaidPage}
                   onChange={(e) => setPpv(i, { also_post_to_feed: e.target.checked })}
                 />
                 Also auto-post to feed with each send
               </label>
+              {isPaidPage && (
+                <span className="text-[11px] text-fg-dim">{PAID_PAGE_NOTE}</span>
+              )}
               {postFor === p.id && postM.isSuccess && (
                 <span className="text-[11px] text-emerald-500">
                   Posted @ ${postM.data.price} ✓{postM.data.used_feed_caption ? " (feed caption)" : ""}
@@ -1137,12 +1148,16 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
               setPostFor(null);
               previewFeedM.mutate(undefined, { onSuccess: (data) => setFeedCandidate(data) });
             }}
-            disabled={previewFeedM.isPending || ppvs.filter((p) => p.feed_enabled !== false && p.media_ids.length).length === 0}
+            disabled={previewFeedM.isPending || isPaidPage || ppvs.filter((p) => p.feed_enabled !== false && p.media_ids.length).length === 0}
+            title={isPaidPage ? PAID_PAGE_NOTE : undefined}
           >
             {previewFeedM.isPending ? "Generating…" : feedCandidate ? "Regenerate" : "Generate a fresh PPV to post →"}
           </Button>
           {previewFeedM.isError && (
             <span className="text-xs text-red-500">{previewFeedM.error?.message || "generate failed"}</span>
+          )}
+          {isPaidPage && (
+            <span className="text-xs text-fg-dim">{PAID_PAGE_NOTE}</span>
           )}
         </div>
 

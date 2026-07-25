@@ -29,6 +29,8 @@ import {
   type VaultAiConfig,
   type VaultAiTier,
 } from "@/hooks/useVaultAiConfig";
+import { usePaidPage, PAID_PAGE_NOTE } from "@/hooks/usePaidPage";
+import { cn } from "@/lib/utils";
 
 const INPUT_BASE =
   "bg-bg border border-border rounded-lg px-3 py-2 focus:outline-none focus:border-accent";
@@ -68,6 +70,10 @@ export default function VaultAiTab({ accountId }: { accountId: string | null }) 
   const arcQ = useVaultArcStatus(accountId);
   const armM = useApproveVaultArc(accountId);
   const cancelM = useCancelVaultArc(accountId);
+  // A subscription page has no paid-post lane on OF, so the arc's feed_paid
+  // channels are dropped server-side (vault_ppv_week.plan_week) — the combine
+  // toggle would promise a wall drop that can never happen.
+  const { isPaidPage } = usePaidPage(accountId);
 
   const [enabled, setEnabled] = useState(false);
   const [bands, setBands] = useState<Record<VaultAiTier, [number, number]>>({
@@ -267,12 +273,14 @@ export default function VaultAiTab({ accountId }: { accountId: string | null }) 
                   <option value={4}>4 weeks (month)</option>
                 </select>
               </label>
-              <label className="space-y-1 block self-end">
+              <label className={cn("space-y-1 block self-end",
+                                   isPaidPage && "opacity-40 pointer-events-none")}>
                 <span className="flex items-center gap-2 text-xs cursor-pointer pb-2">
                   <input
                     type="checkbox"
                     className="h-4 w-4 accent-[var(--accent)]"
-                    checked={combine}
+                    checked={combine && !isPaidPage}
+                    disabled={isPaidPage}
                     onChange={(e) => { markDirty(); setCombine(e.target.checked); }}
                   />
                   Combine feed post + mass DM per drop
@@ -290,6 +298,12 @@ export default function VaultAiTab({ accountId }: { accountId: string | null }) 
                 </span>
               </label>
             </div>
+            {isPaidPage && (
+              <div className="text-[11px] text-fg-dim leading-relaxed">
+                📌💰 {PAID_PAGE_NOTE} Every drop in the arc sells in DMs instead;
+                the Sunday free post still goes on the wall.
+              </div>
+            )}
             <div className="text-[11px] text-fg-dim/70 leading-relaxed">
               In-voice copy is written through your PAINFUL_TEXTING framing (brevity +
               emotion). Off = fast template captions that still thread the week.

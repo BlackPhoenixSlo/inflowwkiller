@@ -117,3 +117,8 @@ filter_gaps_*.html
 # Anything a probe writes next to itself.
 service/*.html
 service/_out_/
+
+# Cat-sticker prototype — 28M of gifs + regenerable build artifacts
+# (build_*.py, candidates/, __pycache__). Stays UNTRACKED by ruling; the
+# gifs are a bulk asset set, not source.
+cat_stickers/

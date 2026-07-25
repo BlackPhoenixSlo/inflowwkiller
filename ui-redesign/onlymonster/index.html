@@ -1,0 +1,1023 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OnlyMonster — Grow Your Content Selling Business with AI and Big Data</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet" />
+<style>
+  /* ============ TOKENS ============ */
+  :root{
+    --cream:#FFFEF9;
+    --panel:#FBF6EA;
+    --gold-mid:#CCB994;
+    --gold-light:#E2CFAB;
+    --gold-pale:#FEF1C2;
+    --gold-rich:#B8975A;
+    --dark:#131210;
+    --text:#2F2B2C;
+    --muted:#8B8C8F;
+    --line:rgba(184,151,90,.22);
+    --gold-grad:linear-gradient(135deg,#E2CFAB 0%,#CCB994 50%,#B8975A 100%);
+    --gold-grad-soft:linear-gradient(135deg,#FEF1C2 0%,#E2CFAB 55%,#CCB994 100%);
+    --shadow-soft:0 20px 60px -20px rgba(122,96,44,.28);
+    --shadow-card:0 12px 34px -18px rgba(122,96,44,.30);
+    --radius:12px;
+    --radius-sm:8px;
+    --maxw:1180px;
+    --sans:"Plus Jakarta Sans",system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    --display:"Fraunces","Plus Jakarta Sans",Georgia,system-ui,serif;
+  }
+
+  /* ============ RESET ============ */
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  html,body{max-width:100%;overflow-x:hidden}
+  body{
+    margin:0;
+    font-family:var(--sans);
+    color:var(--text);
+    background:var(--cream);
+    font-size:17px;
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  a{color:inherit;text-decoration:none}
+  img,svg{display:block;max-width:100%}
+  button{font-family:inherit;cursor:pointer;border:none;background:none}
+  h1,h2,h3,h4{margin:0;color:var(--dark);line-height:1.1;letter-spacing:-.02em}
+  p{margin:0}
+  ul{margin:0;padding:0;list-style:none}
+
+  .wrap{width:100%;max-width:var(--maxw);margin:0 auto;padding:0 24px}
+  .section{padding:96px 0}
+  .eyebrow{
+    font-size:13px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--gold-rich);
+  }
+
+  /* ============ BUTTONS ============ */
+  .btn{
+    display:inline-flex;align-items:center;gap:9px;
+    padding:13px 22px;border-radius:999px;font-weight:700;font-size:15px;
+    transition:transform .18s ease,box-shadow .18s ease,background .18s ease;
+    white-space:nowrap;
+  }
+  .btn-gold{
+    background:var(--gold-grad);color:#3a2d10;
+    box-shadow:0 10px 24px -10px rgba(184,151,90,.75),inset 0 1px 0 rgba(255,255,255,.5);
+  }
+  .btn-gold:hover{transform:translateY(-2px);box-shadow:0 16px 30px -10px rgba(184,151,90,.85),inset 0 1px 0 rgba(255,255,255,.5)}
+  .btn-outline{
+    background:transparent;color:var(--gold-rich);
+    border:1.5px solid var(--gold-mid);
+  }
+  .btn-outline:hover{background:var(--gold-pale);border-color:var(--gold-rich)}
+  .btn-lg{padding:16px 30px;font-size:16px}
+  .btn-dark{background:var(--dark);color:var(--gold-light)}
+  .btn-dark:hover{transform:translateY(-2px)}
+
+  /* ============ NAV ============ */
+  .nav{
+    position:sticky;top:0;z-index:60;
+    background:rgba(255,254,249,.72);
+    backdrop-filter:saturate(160%) blur(14px);
+    -webkit-backdrop-filter:saturate(160%) blur(14px);
+    border-bottom:1px solid transparent;
+    transition:border-color .2s ease,box-shadow .2s ease;
+  }
+  .nav.scrolled{border-bottom-color:var(--line);box-shadow:0 6px 24px -18px rgba(122,96,44,.5)}
+  .nav-inner{display:flex;align-items:center;gap:22px;height:74px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px;color:var(--dark);letter-spacing:-.02em}
+  .brand .glyph{
+    width:34px;height:34px;border-radius:9px;
+    background:var(--gold-grad);display:grid;place-items:center;
+    box-shadow:0 6px 16px -6px rgba(184,151,90,.8),inset 0 1px 0 rgba(255,255,255,.55);
+  }
+  .nav-links{display:flex;align-items:center;gap:26px;margin:0 auto}
+  .nav-links a{font-size:14.5px;font-weight:600;color:#4a453f;transition:color .15s}
+  .nav-links a:hover{color:var(--gold-rich)}
+  .nav-actions{display:flex;align-items:center;gap:14px}
+  .nav-actions .signin{font-size:14.5px;font-weight:600;color:#4a453f}
+  .nav-actions .signin:hover{color:var(--gold-rich)}
+  .tg-pill{padding:10px 16px;font-size:13.5px}
+  .hamburger{display:none;width:44px;height:44px;border-radius:10px;border:1px solid var(--line);
+    place-items:center;background:var(--panel)}
+  .hamburger span{display:block;width:20px;height:2px;background:var(--dark);border-radius:2px;position:relative}
+  .hamburger span::before,.hamburger span::after{content:"";position:absolute;left:0;width:20px;height:2px;background:var(--dark);border-radius:2px}
+  .hamburger span::before{top:-6px}.hamburger span::after{top:6px}
+
+  /* mobile menu */
+  .mobile-menu{display:none;position:fixed;inset:74px 0 auto 0;z-index:55;
+    background:var(--cream);border-bottom:1px solid var(--line);
+    box-shadow:var(--shadow-soft);padding:18px 24px 26px}
+  .mobile-menu.open{display:block}
+  .mobile-menu a{display:block;padding:12px 6px;font-weight:600;border-bottom:1px solid rgba(184,151,90,.12)}
+  .mobile-menu .m-actions{display:flex;flex-direction:column;gap:12px;margin-top:18px}
+  .mobile-menu .m-actions .btn{justify-content:center}
+
+  /* ============ HERO ============ */
+  .hero{position:relative;padding:78px 0 40px;text-align:center;overflow:hidden}
+  .hero::before{
+    content:"";position:absolute;top:-160px;left:50%;transform:translateX(-50%);
+    width:900px;height:520px;border-radius:50%;
+    background:radial-gradient(ellipse at center,rgba(254,241,194,.9),rgba(226,207,171,.4) 45%,transparent 70%);
+    filter:blur(10px);z-index:0;pointer-events:none;
+  }
+  .hero .wrap{position:relative;z-index:1}
+  .badge{
+    display:inline-flex;align-items:center;gap:9px;
+    padding:8px 16px;border-radius:999px;font-size:13.5px;font-weight:700;
+    color:var(--gold-rich);background:rgba(254,241,194,.7);
+    border:1px solid var(--gold-mid);box-shadow:0 4px 14px -8px rgba(184,151,90,.6);
+  }
+  .badge .dot{width:8px;height:8px;border-radius:50%;background:var(--gold-grad);box-shadow:0 0 0 3px rgba(226,207,171,.4)}
+  h1.hero-title{
+    font-family:var(--display);font-weight:600;
+    font-size:clamp(40px,6.2vw,60px);line-height:1.04;letter-spacing:-.03em;
+    margin:26px auto 0;max-width:16ch;
+  }
+  h1.hero-title .em{
+    background:linear-gradient(135deg,#B8975A,#8a6c34);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    font-style:italic;
+  }
+  .hero-sub{max-width:60ch;margin:22px auto 0;font-size:18px;color:#5a5550}
+  .hero-cta{display:flex;align-items:center;justify-content:center;gap:18px;flex-wrap:wrap;margin-top:32px}
+  .nocc{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:#5a5550}
+  .nocc .chk{width:20px;height:20px;border-radius:50%;background:#e7f6ec;display:grid;place-items:center;color:#2f9e59}
+
+  /* ---- Browser mock ---- */
+  .browser{
+    margin:56px auto 0;max-width:1020px;
+    background:#fff;border-radius:16px;overflow:hidden;
+    border:1px solid var(--line);
+    box-shadow:0 40px 90px -40px rgba(90,70,30,.5),0 10px 30px -18px rgba(90,70,30,.25);
+  }
+  .browser-bar{display:flex;align-items:center;gap:14px;padding:13px 18px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .dots{display:flex;gap:7px}
+  .dots i{width:11px;height:11px;border-radius:50%;display:block}
+  .dots i:nth-child(1){background:#f0a58f}.dots i:nth-child(2){background:#f2d199}.dots i:nth-child(3){background:#a9d9b0}
+  .url{flex:1;max-width:420px;margin:0 auto;background:#fff;border:1px solid var(--line);border-radius:999px;
+    font-size:12.5px;color:var(--muted);padding:6px 14px;display:flex;align-items:center;gap:8px}
+  .url svg{width:12px;height:12px;color:var(--gold-rich)}
+  .browser-body{display:grid;grid-template-columns:190px 1fr;min-height:430px;background:#fff}
+
+  .dash-side{background:var(--dark);padding:20px 16px;display:flex;flex-direction:column;gap:6px}
+  .dash-side .s-brand{display:flex;align-items:center;gap:9px;color:#fff;font-weight:800;font-size:15px;margin-bottom:14px}
+  .dash-side .s-brand .g{width:26px;height:26px;border-radius:7px;background:var(--gold-grad);display:grid;place-items:center}
+  .dash-side .navitem{display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:9px;color:#b9b4ab;font-size:13px;font-weight:600}
+  .dash-side .navitem svg{width:16px;height:16px}
+  .dash-side .navitem.active{background:linear-gradient(135deg,rgba(226,207,171,.22),rgba(184,151,90,.12));color:var(--gold-light)}
+  .dash-side .navitem.active svg{color:var(--gold-light)}
+  .dash-side .s-foot{margin-top:auto;display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:10px;background:rgba(255,255,255,.05)}
+  .dash-side .s-foot .av{width:28px;height:28px;border-radius:50%;background:var(--gold-grad);display:grid;place-items:center;font-size:12px;font-weight:800;color:#3a2d10}
+  .dash-side .s-foot .nm{color:#e7e3db;font-size:12px;font-weight:700;line-height:1.15}
+  .dash-side .s-foot .nm small{display:block;color:#8f8a80;font-weight:500;font-size:10.5px}
+
+  .dash-main{padding:22px;background:linear-gradient(180deg,#FFFEF9,#FBF6EA)}
+  .dash-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+  .dash-head h4{font-size:16px}
+  .dash-head .rng{font-size:11.5px;font-weight:700;color:var(--gold-rich);background:var(--gold-pale);border:1px solid var(--gold-mid);padding:6px 12px;border-radius:999px}
+  .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+  .kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px 14px;box-shadow:var(--shadow-card)}
+  .kpi .lab{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .kpi .val{font-size:21px;font-weight:800;color:var(--dark);margin-top:6px;font-family:var(--display)}
+  .kpi .delta{font-size:11px;font-weight:700;margin-top:4px;display:inline-flex;align-items:center;gap:4px;color:#2f9e59}
+  .kpi .delta.neg{color:#c9772f}
+  .dash-charts{display:grid;grid-template-columns:1.55fr 1fr;gap:12px}
+  .chart-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px;box-shadow:var(--shadow-card)}
+  .chart-card .ct{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .chart-card .ct b{font-size:12.5px;color:var(--dark)}
+  .chart-card .ct span{font-size:11px;color:var(--muted);font-weight:600}
+  .donut-wrap{display:flex;align-items:center;gap:14px}
+  .legend{display:flex;flex-direction:column;gap:8px}
+  .legend div{display:flex;align-items:center;gap:8px;font-size:11.5px;font-weight:600;color:#5a5550}
+  .legend i{width:10px;height:10px;border-radius:3px;display:block}
+
+  /* ============ STATS STRIP ============ */
+  .stats{background:var(--dark);color:#fff;padding:64px 0}
+  .stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;text-align:center}
+  .stat .num{font-family:var(--display);font-weight:600;font-size:clamp(38px,5vw,54px);
+    background:var(--gold-grad-soft);-webkit-background-clip:text;background-clip:text;color:transparent;letter-spacing:-.02em}
+  .stat .cap{margin-top:6px;color:#b9b4ab;font-weight:600;font-size:15px}
+  .stat + .stat{border-left:1px solid rgba(226,207,171,.16)}
+
+  /* ============ LOGO GRID ============ */
+  .logos{padding:64px 0;text-align:center}
+  .logos p{font-size:13px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .logo-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:44px;margin-top:30px;opacity:.72}
+  .logo-row .lg{display:flex;align-items:center;gap:9px;color:#7a746c;font-weight:800;font-size:18px;letter-spacing:-.02em}
+  .logo-row .lg svg{width:24px;height:24px;color:var(--gold-rich)}
+
+  /* ============ SECTION HEAD ============ */
+  .sec-head{text-align:center;max-width:680px;margin:0 auto 54px}
+  .sec-head h2{font-family:var(--display);font-weight:600;font-size:clamp(30px,4.4vw,44px);margin-top:14px;letter-spacing:-.025em}
+  .sec-head p{margin-top:16px;color:#5a5550;font-size:18px}
+
+  /* ============ AUDIENCE CARDS ============ */
+  .aud-grid{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+  .aud-card{
+    background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:36px;
+    box-shadow:var(--shadow-card);position:relative;overflow:hidden;
+    transition:transform .2s ease,box-shadow .2s ease;
+  }
+  .aud-card:hover{transform:translateY(-4px);box-shadow:0 26px 50px -26px rgba(122,96,44,.4)}
+  .aud-card::after{content:"";position:absolute;top:-60px;right:-60px;width:180px;height:180px;border-radius:50%;
+    background:radial-gradient(circle,rgba(254,241,194,.8),transparent 70%)}
+  .aud-icon{width:58px;height:58px;border-radius:14px;background:var(--gold-grad);display:grid;place-items:center;
+    box-shadow:0 12px 24px -12px rgba(184,151,90,.9),inset 0 1px 0 rgba(255,255,255,.5);position:relative;z-index:1}
+  .aud-icon svg{width:28px;height:28px;color:#3a2d10}
+  .aud-card h3{font-size:24px;margin-top:20px;position:relative;z-index:1}
+  .aud-card .lede{margin-top:10px;color:#5a5550;font-size:15.5px;position:relative;z-index:1}
+  .feat-list{margin-top:22px;display:flex;flex-direction:column;gap:13px;position:relative;z-index:1}
+  .feat-list li{display:flex;align-items:flex-start;gap:12px;font-size:15px;font-weight:600;color:#3a352f}
+  .chk-gold{flex:none;width:22px;height:22px;border-radius:50%;background:var(--gold-grad);display:grid;place-items:center;margin-top:1px;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.5)}
+  .chk-gold svg{width:12px;height:12px;color:#3a2d10}
+  .learn{display:inline-flex;align-items:center;gap:7px;margin-top:26px;font-weight:700;color:var(--gold-rich);position:relative;z-index:1}
+  .learn:hover{gap:11px}
+  .learn svg{width:16px;height:16px;transition:transform .15s}
+
+  /* ============ FEATURE ROWS ============ */
+  .feature{display:grid;grid-template-columns:1fr 1fr;gap:56px;align-items:center;padding:60px 0}
+  .feature.rev .f-text{order:2}
+  .feature.rev .f-visual{order:1}
+  .f-text h2{font-family:var(--display);font-weight:600;font-size:clamp(28px,3.8vw,40px);margin-top:14px;letter-spacing:-.025em}
+  .f-text .tag{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;border-radius:999px;
+    background:var(--gold-pale);border:1px solid var(--gold-mid);color:var(--gold-rich);font-size:12.5px;font-weight:700;letter-spacing:.04em}
+  .f-text p.lede{margin-top:18px;color:#5a5550;font-size:17px}
+  .f-text .feat-list{margin-top:22px}
+  .f-visual{position:relative}
+  .f-card{background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow-soft);overflow:hidden}
+
+  /* chat mock */
+  .chat-head{display:flex;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .chat-head .av{width:40px;height:40px;border-radius:50%;background:var(--gold-grad);display:grid;place-items:center;font-weight:800;color:#3a2d10}
+  .chat-head .nm{font-weight:700;font-size:15px;color:var(--dark);line-height:1.2}
+  .chat-head .nm small{display:block;font-weight:600;color:#2f9e59;font-size:12px}
+  .chat-head .nm small::before{content:"● ";font-size:9px}
+  .chat-body{padding:18px;display:flex;flex-direction:column;gap:12px;background:linear-gradient(180deg,#fff,#FFFEF9)}
+  .bubble{max-width:78%;padding:11px 15px;border-radius:16px;font-size:14.5px;line-height:1.45}
+  .bubble.in{align-self:flex-start;background:var(--panel);color:#3a352f;border-bottom-left-radius:5px}
+  .bubble.out{align-self:flex-end;background:var(--gold-grad);color:#3a2d10;border-bottom-right-radius:5px;font-weight:600}
+  .ai-suggest{margin-top:6px;padding:14px;border-radius:14px;background:linear-gradient(135deg,rgba(254,241,194,.55),rgba(226,207,171,.28));border:1px dashed var(--gold-mid)}
+  .ai-suggest .lbl{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:800;color:var(--gold-rich);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}
+  .ai-suggest .lbl svg{width:15px;height:15px}
+  .chips{display:flex;flex-direction:column;gap:8px}
+  .chip{padding:10px 13px;background:#fff;border:1px solid var(--gold-mid);border-radius:11px;font-size:13.5px;color:#3a352f;
+    display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:500;transition:background .15s}
+  .chip:hover{background:var(--gold-pale)}
+  .chip .send{font-size:11px;font-weight:800;color:var(--gold-rich)}
+
+  /* dashboard mock small */
+  .mini-dash{padding:18px}
+  .mini-dash .kpis{grid-template-columns:repeat(3,1fr);margin-bottom:14px}
+  .mini-dash .kpi .val{font-size:19px}
+
+  /* vault grid mock */
+  .vault{padding:16px}
+  .vault-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  .vault-head b{font-size:14px;color:var(--dark)}
+  .vault-head .pill{font-size:11px;font-weight:700;color:var(--gold-rich);background:var(--gold-pale);border:1px solid var(--gold-mid);padding:5px 11px;border-radius:999px}
+  .vault-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .vault-cell{aspect-ratio:1/1.15;border-radius:12px;position:relative;overflow:hidden;border:1px solid var(--line);
+    display:flex;align-items:flex-end;padding:9px}
+  .vault-cell .tag{font-size:10px;font-weight:800;color:#3a2d10;background:rgba(255,255,255,.82);padding:3px 8px;border-radius:999px;backdrop-filter:blur(2px)}
+  .vault-cell .lock{position:absolute;top:8px;right:8px;width:22px;height:22px;border-radius:50%;background:rgba(19,18,16,.55);display:grid;place-items:center}
+  .vault-cell .lock svg{width:11px;height:11px;color:var(--gold-light)}
+  .vc1{background:linear-gradient(135deg,#FEF1C2,#CCB994)}
+  .vc2{background:linear-gradient(135deg,#E2CFAB,#B8975A)}
+  .vc3{background:linear-gradient(135deg,#F3E4C0,#D9C093)}
+  .vc4{background:linear-gradient(135deg,#CCB994,#8a6c34)}
+  .vc5{background:linear-gradient(135deg,#FEF1C2,#E2CFAB)}
+  .vc6{background:linear-gradient(135deg,#DcC59a,#B8975A)}
+
+  /* ============ GROWTH BAND ============ */
+  .growth{background:var(--dark);color:#fff;border-radius:28px;margin:0 24px;overflow:hidden;position:relative}
+  .growth-inner{max-width:var(--maxw);margin:0 auto;padding:64px 40px;display:grid;grid-template-columns:.85fr 1.15fr;gap:40px;align-items:center}
+  .growth .big{font-family:var(--display);font-weight:600;font-size:clamp(64px,10vw,110px);line-height:1;
+    background:var(--gold-grad-soft);-webkit-background-clip:text;background-clip:text;color:transparent;letter-spacing:-.03em}
+  .growth h2{font-size:clamp(24px,3vw,32px);color:#fff;margin-top:8px;font-family:var(--display);font-weight:500}
+  .growth p{margin-top:16px;color:#c3beb4;font-size:16px;max-width:44ch}
+  .growth .gstats{display:flex;gap:30px;margin-top:26px}
+  .growth .gstats .gs b{font-family:var(--display);font-size:26px;color:var(--gold-light);display:block}
+  .growth .gstats .gs span{font-size:12.5px;color:#9a958c;font-weight:600}
+  .growth-chart{background:rgba(255,255,255,.03);border:1px solid rgba(226,207,171,.14);border-radius:18px;padding:22px}
+  .growth-chart .gc-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .growth-chart .gc-top b{font-size:13px;color:#e7e3db}
+  .growth-chart .gc-top span{font-size:11.5px;color:#8f8a80;font-weight:600}
+
+  /* ============ TESTIMONIALS ============ */
+  .tgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+  .tcard{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:30px;box-shadow:var(--shadow-card);display:flex;flex-direction:column}
+  .stars{display:flex;gap:3px;margin-bottom:16px}
+  .stars svg{width:17px;height:17px;color:var(--gold-rich)}
+  .tcard blockquote{margin:0;font-size:16px;color:#3a352f;line-height:1.6;flex:1}
+  .tmeta{display:flex;align-items:center;gap:12px;margin-top:22px}
+  .tmeta .av{width:46px;height:46px;border-radius:50%;background:var(--gold-grad);display:grid;place-items:center;font-weight:800;color:#3a2d10}
+  .tmeta .who b{display:block;font-size:14.5px;color:var(--dark)}
+  .tmeta .who span{font-size:12.5px;color:var(--muted);font-weight:600}
+
+  /* ============ PRICING ============ */
+  .pgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;align-items:stretch}
+  .pcard{background:#fff;border:1px solid var(--line);border-radius:20px;padding:32px;display:flex;flex-direction:column;box-shadow:var(--shadow-card);position:relative}
+  .pcard.pop{background:var(--dark);color:#fff;border:1px solid var(--gold-rich);box-shadow:0 30px 60px -28px rgba(122,96,44,.6);transform:translateY(-10px)}
+  .pop-badge{position:absolute;top:-14px;left:50%;transform:translateX(-50%);background:var(--gold-grad);color:#3a2d10;
+    font-size:12px;font-weight:800;padding:6px 16px;border-radius:999px;letter-spacing:.03em;white-space:nowrap;box-shadow:0 8px 18px -8px rgba(184,151,90,.9)}
+  .pcard h3{font-size:19px}
+  .pcard.pop h3{color:#fff}
+  .ptag{font-size:13.5px;color:var(--muted);font-weight:600;margin-top:6px}
+  .pcard.pop .ptag{color:#b9b4ab}
+  .price{margin-top:20px;display:flex;align-items:baseline;gap:4px}
+  .price .amt{font-family:var(--display);font-weight:600;font-size:46px;color:var(--dark);letter-spacing:-.02em}
+  .pcard.pop .price .amt{background:var(--gold-grad-soft);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .price .per{font-size:15px;color:var(--muted);font-weight:600}
+  .pcard.pop .price .per{color:#b9b4ab}
+  .pfeat{margin-top:24px;display:flex;flex-direction:column;gap:13px;flex:1}
+  .pfeat li{display:flex;align-items:flex-start;gap:11px;font-size:14.5px;font-weight:500;color:#3a352f}
+  .pcard.pop .pfeat li{color:#d8d3ca}
+  .pfeat .chk-gold{width:20px;height:20px}
+  .pcard .btn{justify-content:center;margin-top:26px;width:100%}
+  .pfoot{text-align:center;margin-top:26px;color:var(--muted);font-size:14px}
+
+  /* ============ FAQ ============ */
+  .faq-wrap{max-width:820px;margin:0 auto}
+  .faq-item{border:1px solid var(--line);border-radius:14px;background:var(--panel);margin-bottom:14px;overflow:hidden;transition:box-shadow .2s}
+  .faq-item.open{box-shadow:var(--shadow-card);background:#fff}
+  .faq-q{width:100%;text-align:left;display:flex;align-items:center;justify-content:space-between;gap:16px;
+    padding:20px 24px;font-size:17px;font-weight:700;color:var(--dark)}
+  .faq-q .ico{flex:none;width:30px;height:30px;border-radius:50%;border:1.5px solid var(--gold-mid);display:grid;place-items:center;transition:transform .25s,background .2s;color:var(--gold-rich)}
+  .faq-item.open .faq-q .ico{transform:rotate(45deg);background:var(--gold-grad);color:#3a2d10;border-color:transparent}
+  .faq-q .ico svg{width:15px;height:15px}
+  .faq-a{max-height:0;overflow:hidden;transition:max-height .3s ease}
+  .faq-a p{padding:0 24px 22px;color:#5a5550;font-size:15.5px}
+
+  /* ============ FINAL CTA ============ */
+  .final{margin:0 24px}
+  .final-inner{max-width:var(--maxw);margin:0 auto;background:var(--gold-grad);border-radius:28px;
+    padding:70px 40px;text-align:center;position:relative;overflow:hidden;
+    box-shadow:0 40px 80px -36px rgba(184,151,90,.85)}
+  .final-inner::before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 30% 20%,rgba(255,255,255,.4),transparent 45%)}
+  .final-inner h2{position:relative;font-family:var(--display);font-weight:600;font-size:clamp(32px,5vw,50px);color:#2c2109;letter-spacing:-.02em}
+  .final-inner p{position:relative;margin:16px auto 0;max-width:52ch;color:#4a3915;font-size:18px;font-weight:500}
+  .final-inner .hero-cta{margin-top:30px}
+  .final-inner .nocc{color:#4a3915}
+  .final-inner .nocc .chk{background:rgba(255,255,255,.7)}
+
+  /* ============ FOOTER ============ */
+  footer{background:var(--dark);color:#c3beb4;padding:72px 0 34px;margin-top:96px}
+  .foot-top{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr 1fr;gap:36px}
+  .foot-brand .brand{color:#fff;margin-bottom:16px}
+  .foot-brand p{font-size:14.5px;color:#9a958c;max-width:30ch}
+  .foot-tg{margin-top:22px;display:inline-flex;align-items:center;gap:10px;padding:12px 18px;border-radius:14px;
+    background:rgba(226,207,171,.08);border:1px solid rgba(226,207,171,.22)}
+  .foot-tg .txt{font-size:13px;line-height:1.3}
+  .foot-tg .txt b{display:block;color:#fff;font-size:14px}
+  .foot-tg svg{width:26px;height:26px;color:var(--gold-light)}
+  .fcol h5{color:#fff;font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;margin-bottom:16px}
+  .fcol a{display:block;font-size:14.5px;color:#9a958c;padding:6px 0;transition:color .15s}
+  .fcol a:hover{color:var(--gold-light)}
+  .foot-bottom{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;
+    margin-top:52px;padding-top:26px;border-top:1px solid rgba(226,207,171,.14)}
+  .foot-bottom .cp{font-size:13.5px;color:#8f8a80}
+  .socials{display:flex;gap:12px}
+  .socials a{width:38px;height:38px;border-radius:10px;background:rgba(226,207,171,.08);border:1px solid rgba(226,207,171,.16);
+    display:grid;place-items:center;color:var(--gold-light);transition:background .15s,transform .15s}
+  .socials a:hover{background:var(--gold-grad);color:#3a2d10;transform:translateY(-2px)}
+  .socials svg{width:17px;height:17px}
+  .disclaimer{text-align:center;margin-top:22px;font-size:12px;color:#6a655d}
+
+  /* ============ RESPONSIVE ============ */
+  @media (max-width:1000px){
+    .nav-links{display:none}
+    .nav-actions .tg-pill,.nav-actions .signin{display:none}
+    .hamburger{display:grid}
+    .browser-body{grid-template-columns:1fr}
+    .dash-side{flex-direction:row;flex-wrap:wrap;gap:8px;align-items:center}
+    .dash-side .s-brand{margin-bottom:0;margin-right:auto}
+    .dash-side .navitem{padding:7px 10px}
+    .dash-side .s-foot{margin-top:0}
+    .foot-top{grid-template-columns:1fr 1fr}
+    .foot-brand{grid-column:1/-1}
+  }
+  @media (max-width:820px){
+    .section{padding:72px 0}
+    .stats-grid{grid-template-columns:1fr;gap:34px}
+    .stat + .stat{border-left:none;border-top:1px solid rgba(226,207,171,.16);padding-top:34px}
+    .aud-grid{grid-template-columns:1fr}
+    .feature,.feature.rev{grid-template-columns:1fr;gap:32px}
+    .feature .f-text,.feature.rev .f-text{order:1}
+    .feature .f-visual,.feature.rev .f-visual{order:2}
+    .growth-inner{grid-template-columns:1fr;padding:48px 28px}
+    .tgrid{grid-template-columns:1fr}
+    .pgrid{grid-template-columns:1fr;max-width:440px;margin:0 auto}
+    .pcard.pop{transform:none}
+    .dash-charts{grid-template-columns:1fr}
+  }
+  @media (max-width:520px){
+    .wrap{padding:0 18px}
+    .kpis{grid-template-columns:1fr 1fr}
+    .foot-top{grid-template-columns:1fr 1fr}
+    .foot-bottom{justify-content:center;text-align:center}
+    .growth{margin:0 14px}.final{margin:0 14px}
+    .vault-grid{gap:8px}
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ NAV ============ -->
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a href="#" class="brand" aria-label="OnlyMonster home">
+      <span class="glyph" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2 3 9l9 13 9-13-9-7Z" fill="#3a2d10"/><path d="M12 2 3 9h18L12 2Z" fill="#5c471a"/><path d="M8 9h8l-4 6-4-6Z" fill="#fff" fill-opacity=".55"/></svg>
+      </span>
+      OnlyMonster
+    </a>
+
+    <nav class="nav-links">
+      <a href="#organizations">For Organizations</a>
+      <a href="#accounts">For Accounts</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
+      <a href="#downloads">Downloads</a>
+      <a href="#blog">Blog</a>
+      <a href="#help">Help Center</a>
+    </nav>
+
+    <div class="nav-actions">
+      <a href="#telegram" class="btn btn-outline tg-pill">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.9 4.3 18.6 20c-.24 1.1-.9 1.37-1.82.85l-5.03-3.7-2.43 2.34c-.27.27-.5.5-1 .5l.36-5.1L17.9 6.3c.4-.36-.09-.56-.62-.2L5.9 13.34.98 11.8c-1.07-.34-1.1-1.07.23-1.6L20.5 2.7c.9-.34 1.68.2 1.4 1.6Z"/></svg>
+        Join us on Telegram
+      </a>
+      <a href="#signin" class="signin">Sign In</a>
+      <a href="#signup" class="btn btn-gold">Create Account</a>
+      <button class="hamburger" id="hamburger" aria-label="Open menu" aria-expanded="false"><span></span></button>
+    </div>
+  </div>
+</header>
+
+<div class="mobile-menu" id="mobileMenu">
+  <a href="#organizations">For Organizations</a>
+  <a href="#accounts">For Accounts</a>
+  <a href="#pricing">Pricing</a>
+  <a href="#faq">FAQ</a>
+  <a href="#downloads">Downloads</a>
+  <a href="#blog">Blog</a>
+  <a href="#help">Help Center</a>
+  <div class="m-actions">
+    <a href="#telegram" class="btn btn-outline">Join us on Telegram</a>
+    <a href="#signin" class="btn btn-outline">Sign In</a>
+    <a href="#signup" class="btn btn-gold">Create Account</a>
+  </div>
+</div>
+
+<!-- ============ HERO ============ -->
+<section class="hero">
+  <div class="wrap">
+    <span class="badge"><span class="dot"></span> AI + Big Data for creators</span>
+    <h1 class="hero-title">Grow Your Content Selling Business with <span class="em">AI and Big Data</span></h1>
+    <p class="hero-sub">Advanced Management Software — The First and Only Tool on the Market Leveraging Big Data and AI Insights</p>
+    <div class="hero-cta">
+      <a href="#signup" class="btn btn-gold btn-lg">Sign Up — It's Free</a>
+      <span class="nocc">
+        <span class="chk"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        No credit card required
+      </span>
+    </div>
+
+    <!-- Browser / product mock -->
+    <div class="browser" aria-hidden="true">
+      <div class="browser-bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <div class="url"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>app.onlymonster.ai/dashboard</div>
+      </div>
+      <div class="browser-body">
+        <aside class="dash-side">
+          <div class="s-brand"><span class="g"><svg width="14" height="14" viewBox="0 0 24 24"><path d="M12 2 3 9l9 13 9-13-9-7Z" fill="#3a2d10"/></svg></span> OnlyMonster</div>
+          <div class="navitem active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg> Dashboard</div>
+          <div class="navitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg> Analytics</div>
+          <div class="navitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg> Messages</div>
+          <div class="navitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3"/><path d="M15 5a3 3 0 0 1 0 6M3 20a6 6 0 0 1 12 0M15 14a6 6 0 0 1 6 6"/></svg> Fans</div>
+          <div class="navitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg> Vault</div>
+          <div class="s-foot"><span class="av">SL</span><span class="nm">Sienna Lux<small>Growth plan</small></span></div>
+        </aside>
+        <main class="dash-main">
+          <div class="dash-head">
+            <h4>Revenue overview</h4>
+            <span class="rng">Last 30 days ▾</span>
+          </div>
+          <div class="kpis">
+            <div class="kpi"><div class="lab">Net revenue</div><div class="val">$84,210</div><div class="delta"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6"/></svg>+40.7%</div></div>
+            <div class="kpi"><div class="lab">New fans</div><div class="val">3,942</div><div class="delta"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6"/></svg>+18.2%</div></div>
+            <div class="kpi"><div class="lab">Avg. response</div><div class="val">1.4m</div><div class="delta neg"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 9l6 6 6-6"/></svg>-32s</div></div>
+          </div>
+          <div class="dash-charts">
+            <div class="chart-card">
+              <div class="ct"><b>Sales trend</b><span>$ / day</span></div>
+              <svg viewBox="0 0 320 120" width="100%" height="120" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="area1" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#E2CFAB" stop-opacity=".85"/>
+                    <stop offset="100%" stop-color="#CCB994" stop-opacity="0"/>
+                  </linearGradient>
+                  <linearGradient id="line1" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stop-color="#E2CFAB"/><stop offset="55%" stop-color="#CCB994"/><stop offset="100%" stop-color="#B8975A"/>
+                  </linearGradient>
+                </defs>
+                <path d="M0,92 C30,80 45,60 70,66 C95,72 110,40 140,44 C168,48 185,28 210,34 C240,41 258,18 285,22 L320,16 L320,120 L0,120 Z" fill="url(#area1)"/>
+                <path d="M0,92 C30,80 45,60 70,66 C95,72 110,40 140,44 C168,48 185,28 210,34 C240,41 258,18 285,22 L320,16" fill="none" stroke="url(#line1)" stroke-width="3" stroke-linecap="round"/>
+                <circle cx="285" cy="22" r="4.5" fill="#B8975A" stroke="#fff" stroke-width="2"/>
+              </svg>
+            </div>
+            <div class="chart-card">
+              <div class="ct"><b>Revenue mix</b><span>by source</span></div>
+              <div class="donut-wrap">
+                <svg width="96" height="96" viewBox="0 0 42 42">
+                  <circle cx="21" cy="21" r="15.9" fill="none" stroke="#F1E7D0" stroke-width="7"/>
+                  <circle cx="21" cy="21" r="15.9" fill="none" stroke="#B8975A" stroke-width="7" stroke-dasharray="46 54" stroke-dashoffset="25" stroke-linecap="round"/>
+                  <circle cx="21" cy="21" r="15.9" fill="none" stroke="#CCB994" stroke-width="7" stroke-dasharray="30 70" stroke-dashoffset="-21" stroke-linecap="round"/>
+                  <circle cx="21" cy="21" r="15.9" fill="none" stroke="#E2CFAB" stroke-width="7" stroke-dasharray="24 76" stroke-dashoffset="-51" stroke-linecap="round"/>
+                  <text x="21" y="20" text-anchor="middle" font-size="6.5" font-weight="800" fill="#2F2B2C" font-family="Plus Jakarta Sans">64%</text>
+                  <text x="21" y="26" text-anchor="middle" font-size="3.4" fill="#8B8C8F" font-family="Plus Jakarta Sans">PPV</text>
+                </svg>
+                <div class="legend">
+                  <div><i style="background:#B8975A"></i> PPV messages</div>
+                  <div><i style="background:#CCB994"></i> Subscriptions</div>
+                  <div><i style="background:#E2CFAB"></i> Tips &amp; unlocks</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ STATS ============ -->
+<section class="stats">
+  <div class="wrap">
+    <div class="stats-grid">
+      <div class="stat"><div class="num">10,000+</div><div class="cap">active accounts</div></div>
+      <div class="stat"><div class="num">1,800+</div><div class="cap">organizations</div></div>
+      <div class="stat"><div class="num">40.7%</div><div class="cap">average sales growth</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ LOGOS ============ -->
+<section class="logos">
+  <div class="wrap">
+    <p>Trusted by leading agencies</p>
+    <div class="logo-row">
+      <span class="lg"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 2 22h20L12 2Z"/></svg>Apex Media</span>
+      <span class="lg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M7 12h10"/></svg>Velvet Group</span>
+      <span class="lg"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="18" rx="5"/></svg>NovaTalent</span>
+      <span class="lg"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>Lumen Co.</span>
+      <span class="lg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 20V8l8-5 8 5v12"/><path d="M9 20v-6h6v6"/></svg>Crescent</span>
+      <span class="lg"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="8" cy="12" r="5"/><circle cx="16" cy="12" r="5" fill-opacity=".55"/></svg>Halo Mgmt</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ AUDIENCE ============ -->
+<section class="section" id="organizations">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">One platform, two ways to win</span>
+      <h2>Built for agencies and solo creators alike</h2>
+      <p>Whether you run a team of chatters across dozens of accounts or grow a single brand solo, OnlyMonster gives you the data and automation to sell more.</p>
+    </div>
+    <div class="aud-grid">
+      <!-- Organizations -->
+      <article class="aud-card">
+        <div class="aud-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21V7l6-4 6 4v14"/><path d="M15 21V11l6 3v7"/><path d="M7 9h.01M7 13h.01M11 9h.01M11 13h.01"/></svg></div>
+        <h3 id="organizations-h">For Organizations</h3>
+        <p class="lede">Run a high-performing agency with full visibility across every account, chatter, and shift.</p>
+        <ul class="feat-list">
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Team management with roles &amp; permissions</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Agency-wide analytics &amp; leaderboards</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Shift scheduling &amp; performance tracking</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Secure account access without sharing logins</li>
+        </ul>
+        <a href="#organizations" class="learn">Learn more <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+      </article>
+      <!-- Accounts -->
+      <article class="aud-card" id="accounts">
+        <div class="aud-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></div>
+        <h3>For Accounts / Solo Creators</h3>
+        <p class="lede">Sell smarter with an AI co-pilot that knows every fan and closes while you sleep.</p>
+        <ul class="feat-list">
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> AI smart replies tuned to your voice</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Deep fan insights &amp; spend history</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Smart vault with AI tagging &amp; search</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Scheduling for posts, mass DMs &amp; PPV</li>
+        </ul>
+        <a href="#accounts" class="learn">Learn more <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FEATURE ROWS ============ -->
+<section class="section" style="padding-top:0" id="features">
+  <div class="wrap">
+
+    <!-- (a) AI Smart Reply -->
+    <div class="feature">
+      <div class="f-text">
+        <span class="tag"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.6 4.9L18.5 8.5 13.6 10 12 15l-1.6-5L5.5 8.5l4.9-1.6L12 2Z"/></svg> AI Assistant</span>
+        <h2>AI Smart Reply Suggestions</h2>
+        <p class="lede">Every conversation gets three on-brand replies drafted in your tone — ready to send, edit, or ignore. Your chatters move faster and close more, without ever sounding robotic.</p>
+        <ul class="feat-list">
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Context-aware from full chat &amp; spend history</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Detects buying signals &amp; suggests PPV timing</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Learns your voice from every message sent</li>
+        </ul>
+      </div>
+      <div class="f-visual">
+        <div class="f-card" aria-hidden="true">
+          <div class="chat-head">
+            <span class="av">JM</span>
+            <span class="nm">Jordan M.<small>online now</small></span>
+          </div>
+          <div class="chat-body">
+            <div class="bubble in">Hey gorgeous 😍 what are you up to tonight?</div>
+            <div class="bubble in">been thinking about you all day tbh</div>
+            <div class="bubble out">aww you're sweet 🥰 I just finished a little photoshoot… want a peek?</div>
+            <div class="ai-suggest">
+              <div class="lbl"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.6 4.9L18.5 8.5 13.6 10 12 15l-1.6-5L5.5 8.5l4.9-1.6L12 2Z"/></svg> AI suggested replies</div>
+              <div class="chips">
+                <div class="chip">I saved something just for you tonight 💌 <span class="send">Send</span></div>
+                <div class="chip">You've been on my mind too… unlock this? 🔥 <span class="send">Send</span></div>
+                <div class="chip">Only 3 left at this price babe — want it? <span class="send">Send</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- (b) Big-Data Analytics -->
+    <div class="feature rev">
+      <div class="f-text">
+        <span class="tag"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg> Analytics</span>
+        <h2>Big-Data Analytics Dashboard</h2>
+        <p class="lede">See what actually drives revenue. OnlyMonster aggregates millions of data points across accounts to surface the trends, cohorts, and PPV pricing that convert best.</p>
+        <ul class="feat-list">
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Real-time revenue, retention &amp; churn</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Benchmarks against 10,000+ accounts</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> AI-recommended PPV price points</li>
+        </ul>
+      </div>
+      <div class="f-visual">
+        <div class="f-card mini-dash" aria-hidden="true">
+          <div class="kpis">
+            <div class="kpi"><div class="lab">MRR</div><div class="val">$127k</div><div class="delta"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6"/></svg>+22%</div></div>
+            <div class="kpi"><div class="lab">Retention</div><div class="val">91%</div><div class="delta"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6"/></svg>+4pt</div></div>
+            <div class="kpi"><div class="lab">Unlock rate</div><div class="val">38%</div><div class="delta"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 15l6-6 6 6"/></svg>+9%</div></div>
+          </div>
+          <div class="chart-card">
+            <div class="ct"><b>Weekly earnings</b><span>Mon – Sun</span></div>
+            <svg viewBox="0 0 320 140" width="100%" height="140">
+              <defs>
+                <linearGradient id="bar1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#E2CFAB"/><stop offset="100%" stop-color="#B8975A"/></linearGradient>
+              </defs>
+              <g fill="url(#bar1)">
+                <rect x="14" y="70" width="30" height="55" rx="6"/>
+                <rect x="58" y="52" width="30" height="73" rx="6"/>
+                <rect x="102" y="84" width="30" height="41" rx="6"/>
+                <rect x="146" y="38" width="30" height="87" rx="6"/>
+                <rect x="190" y="60" width="30" height="65" rx="6"/>
+                <rect x="234" y="24" width="30" height="101" rx="6"/>
+                <rect x="278" y="46" width="30" height="79" rx="6"/>
+              </g>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- (c) Vault -->
+    <div class="feature">
+      <div class="f-text">
+        <span class="tag"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg> Content Vault</span>
+        <h2>Vault Management</h2>
+        <p class="lede">Every clip, set, and PPV organized in one intelligent library. AI auto-tags your media so the right content is one search away — and never sent to the same fan twice.</p>
+        <ul class="feat-list">
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> AI auto-tagging &amp; instant search</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Duplicate detection &amp; send history</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Suggested price bands per set</li>
+        </ul>
+      </div>
+      <div class="f-visual">
+        <div class="f-card vault" aria-hidden="true">
+          <div class="vault-head"><b>Vault · 2,309 items</b><span class="pill">AI tagged</span></div>
+          <div class="vault-grid">
+            <div class="vault-cell vc1"><span class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span><span class="tag">$18 · lingerie</span></div>
+            <div class="vault-cell vc2"><span class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span><span class="tag">$35 · solo</span></div>
+            <div class="vault-cell vc3"><span class="tag">free · tease</span></div>
+            <div class="vault-cell vc4"><span class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span><span class="tag">$60 · premium</span></div>
+            <div class="vault-cell vc5"><span class="tag">$12 · bikini</span></div>
+            <div class="vault-cell vc6"><span class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span><span class="tag">$45 · shower</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ GROWTH BAND ============ -->
+<section class="section" style="padding:40px 0">
+  <div class="growth">
+    <div class="growth-inner">
+      <div>
+        <div class="big">+40.7%</div>
+        <h2>Average sales growth</h2>
+        <p>Accounts running OnlyMonster's AI and Big-Data engine grow revenue 40.7% on average within their first 90 days — measured across our full network.</p>
+        <div class="gstats">
+          <div class="gs"><b>2.4×</b><span>faster reply time</span></div>
+          <div class="gs"><b>+31%</b><span>PPV unlock rate</span></div>
+          <div class="gs"><b>91%</b><span>fan retention</span></div>
+        </div>
+      </div>
+      <div class="growth-chart" aria-hidden="true">
+        <div class="gc-top"><b>Network revenue index</b><span>Jan → Jul 2026</span></div>
+        <svg viewBox="0 0 520 220" width="100%" height="auto" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="garea" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#E2CFAB" stop-opacity=".65"/>
+              <stop offset="100%" stop-color="#CCB994" stop-opacity="0"/>
+            </linearGradient>
+            <linearGradient id="gline" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#FEF1C2"/><stop offset="50%" stop-color="#E2CFAB"/><stop offset="100%" stop-color="#B8975A"/>
+            </linearGradient>
+          </defs>
+          <g stroke="rgba(226,207,171,.12)" stroke-width="1">
+            <line x1="0" y1="55" x2="520" y2="55"/><line x1="0" y1="110" x2="520" y2="110"/><line x1="0" y1="165" x2="520" y2="165"/>
+          </g>
+          <path d="M0,180 C60,172 90,158 130,150 C175,141 200,120 250,116 C300,112 320,84 370,74 C420,64 450,40 500,26 L520,20 L520,220 L0,220 Z" fill="url(#garea)"/>
+          <path d="M0,180 C60,172 90,158 130,150 C175,141 200,120 250,116 C300,112 320,84 370,74 C420,64 450,40 500,26 L520,20" fill="none" stroke="url(#gline)" stroke-width="4" stroke-linecap="round"/>
+          <circle cx="500" cy="26" r="6" fill="#FEF1C2" stroke="#B8975A" stroke-width="2"/>
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TESTIMONIALS ============ -->
+<section class="section">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Loved by operators</span>
+      <h2>What agencies and creators say</h2>
+    </div>
+    <div class="tgrid">
+      <article class="tcard">
+        <div class="stars">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+        </div>
+        <blockquote>"We scaled from 6 to 40 accounts without adding overhead. The analytics alone paid for the platform in the first week — we finally know which PPV prices actually convert."</blockquote>
+        <div class="tmeta"><span class="av">MR</span><div class="who"><b>Marcus Reeve</b><span>Founder, Apex Media Agency</span></div></div>
+      </article>
+      <article class="tcard">
+        <div class="stars">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+        </div>
+        <blockquote>"The AI reply suggestions sound exactly like me. I do my full chat shift in half the time and my regulars have no idea anything changed. My best month ever came 5 weeks in."</blockquote>
+        <div class="tmeta"><span class="av">SL</span><div class="who"><b>Sienna Lux</b><span>Solo creator, 210k fans</span></div></div>
+      </article>
+      <article class="tcard">
+        <div class="stars">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7l3-7Z"/></svg>
+        </div>
+        <blockquote>"Shift scheduling and role permissions gave us real accountability. Every chatter's numbers are transparent, so coaching is easy and payouts are fair. Total game-changer for the team."</blockquote>
+        <div class="tmeta"><span class="av">DN</span><div class="who"><b>Dana Nguyen</b><span>Ops Director, Velvet Group</span></div></div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PRICING ============ -->
+<section class="section" id="pricing" style="background:var(--panel);border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Pricing</span>
+      <h2>Simple plans that scale with you</h2>
+      <p>Start free, no credit card required. Upgrade when you're ready to unlock the full AI and Big-Data engine.</p>
+    </div>
+    <div class="pgrid">
+      <article class="pcard">
+        <h3>Starter</h3>
+        <p class="ptag">For solo creators getting started</p>
+        <div class="price"><span class="amt">$29</span><span class="per">/ month</span></div>
+        <ul class="pfeat">
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> 1 connected account</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Core analytics dashboard</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Vault &amp; content scheduling</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> 200 AI reply suggestions / mo</li>
+        </ul>
+        <a href="#signup" class="btn btn-outline">Start free</a>
+      </article>
+
+      <article class="pcard pop">
+        <span class="pop-badge">★ Most popular</span>
+        <h3>Growth</h3>
+        <p class="ptag">For scaling creators &amp; small teams</p>
+        <div class="price"><span class="amt">$89</span><span class="per">/ month</span></div>
+        <ul class="pfeat">
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Up to 5 connected accounts</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Big-Data benchmarks &amp; insights</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Unlimited AI smart replies</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> 3 team seats &amp; roles</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Priority support</li>
+        </ul>
+        <a href="#signup" class="btn btn-gold">Create Account</a>
+      </article>
+
+      <article class="pcard">
+        <h3>Agency</h3>
+        <p class="ptag">For agencies running at scale</p>
+        <div class="price"><span class="amt">$249</span><span class="per">/ month</span></div>
+        <ul class="pfeat">
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Unlimited accounts</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Shift scheduling &amp; leaderboards</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Roles, permissions &amp; audit log</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Unlimited team seats</li>
+          <li><span class="chk-gold"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span> Dedicated success manager</li>
+        </ul>
+        <a href="#signup" class="btn btn-outline">Talk to sales</a>
+      </article>
+    </div>
+    <p class="pfoot">All plans include a 14-day free trial · Cancel anytime · No credit card required to start</p>
+  </div>
+</section>
+
+<!-- ============ FAQ ============ -->
+<section class="section" id="faq">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">FAQ</span>
+      <h2>Frequently asked questions</h2>
+    </div>
+    <div class="faq-wrap">
+      <div class="faq-item">
+        <button class="faq-q">How much does OnlyMonster cost?
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+        </button>
+        <div class="faq-a"><p>You can start completely free — no credit card required. Paid plans begin at $29/month for solo creators and scale to $249/month for agencies with unlimited accounts. Every paid plan comes with a 14-day free trial, and you can upgrade, downgrade, or cancel at any time.</p></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q">Is my account data secure?
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+        </button>
+        <div class="faq-a"><p>Absolutely. All data is encrypted in transit and at rest, and your team accesses connected accounts through secure permissions — never by sharing raw logins. Role-based access, session controls, and a full audit log keep sensitive actions accountable across your whole organization.</p></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q">Which platforms are supported?
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+        </button>
+        <div class="faq-a"><p>OnlyMonster is purpose-built for content-selling platforms and works across desktop and our downloadable apps. You can manage multiple creator accounts from a single organization dashboard, with unified analytics, messaging, and vault management across all of them.</p></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q">Do you offer a free trial?
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+        </button>
+        <div class="faq-a"><p>Yes. You can sign up and explore the platform for free, and every paid plan includes a 14-day free trial with full access to AI smart replies and Big-Data analytics. No credit card is required to get started.</p></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q">Can I manage a team of chatters?
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+        </button>
+        <div class="faq-a"><p>Definitely. Organizations get roles &amp; permissions, shift scheduling, per-chatter performance tracking, and leaderboards — so you can scale a team across dozens of accounts while keeping every seat transparent and accountable.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FINAL CTA ============ -->
+<section class="final">
+  <div class="final-inner">
+    <h2>Start growing today</h2>
+    <p>Join 10,000+ accounts using AI and Big Data to sell more, work smarter, and grow faster.</p>
+    <div class="hero-cta">
+      <a href="#signup" class="btn btn-dark btn-lg">Sign Up — It's Free</a>
+      <span class="nocc">
+        <span class="chk"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2f9e59" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        No credit card required
+      </span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FOOTER ============ -->
+<footer>
+  <div class="wrap">
+    <div class="foot-top">
+      <div class="foot-brand">
+        <a href="#" class="brand" style="color:#fff">
+          <span class="glyph" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 2 3 9l9 13 9-13-9-7Z" fill="#3a2d10"/><path d="M8 9h8l-4 6-4-6Z" fill="#fff" fill-opacity=".55"/></svg></span>
+          OnlyMonster
+        </a>
+        <p>Advanced management software leveraging Big Data and AI insights to grow your content-selling business.</p>
+        <a href="#telegram" class="foot-tg">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21.9 4.3 18.6 20c-.24 1.1-.9 1.37-1.82.85l-5.03-3.7-2.43 2.34c-.27.27-.5.5-1 .5l.36-5.1L17.9 6.3c.4-.36-.09-.56-.62-.2L5.9 13.34.98 11.8c-1.07-.34-1.1-1.07.23-1.6L20.5 2.7c.9-.34 1.68.2 1.4 1.6Z"/></svg>
+          <span class="txt"><b>Join us on Telegram</b>News, tips &amp; live support</span>
+        </a>
+      </div>
+      <div class="fcol">
+        <h5>Product</h5>
+        <a href="#organizations">For Organizations</a>
+        <a href="#accounts">For Accounts</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#downloads">Downloads</a>
+      </div>
+      <div class="fcol">
+        <h5>Resources</h5>
+        <a href="#blog">Blog</a>
+        <a href="#help">Help Center</a>
+        <a href="#faq">FAQ</a>
+        <a href="#changelog">Changelog</a>
+      </div>
+      <div class="fcol">
+        <h5>Company</h5>
+        <a href="#about">About</a>
+        <a href="#careers">Careers</a>
+        <a href="#contact">Contact</a>
+      </div>
+      <div class="fcol">
+        <h5>Legal</h5>
+        <a href="#terms">Terms</a>
+        <a href="#privacy">Privacy</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span class="cp">© 2026 OnlyMonster. All rights reserved.</span>
+      <div class="socials">
+        <a href="#x" aria-label="X"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.9 2H22l-7.1 8.1L23 22h-6.8l-5.3-6.9L4.8 22H2l7.6-8.7L1.6 2h6.9l4.8 6.4L18.9 2Zm-1.2 18h1.7L7.4 3.8H5.6L17.7 20Z"/></svg></a>
+        <a href="#instagram" aria-label="Instagram"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1.2" fill="currentColor" stroke="none"/></svg></a>
+        <a href="#telegram" aria-label="Telegram"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M21.9 4.3 18.6 20c-.24 1.1-.9 1.37-1.82.85l-5.03-3.7-2.43 2.34c-.27.27-.5.5-1 .5l.36-5.1L17.9 6.3c.4-.36-.09-.56-.62-.2L5.9 13.34.98 11.8c-1.07-.34-1.1-1.07.23-1.6L20.5 2.7c.9-.34 1.68.2 1.4 1.6Z"/></svg></a>
+        <a href="#youtube" aria-label="YouTube"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M23 12s0-3.2-.4-4.7a2.5 2.5 0 0 0-1.7-1.7C19.3 5.2 12 5.2 12 5.2s-7.3 0-8.9.4A2.5 2.5 0 0 0 1.4 7.3C1 8.8 1 12 1 12s0 3.2.4 4.7a2.5 2.5 0 0 0 1.7 1.7c1.6.4 8.9.4 8.9.4s7.3 0 8.9-.4a2.5 2.5 0 0 0 1.7-1.7C23 15.2 23 12 23 12ZM9.8 15.3V8.7l5.7 3.3-5.7 3.3Z"/></svg></a>
+      </div>
+    </div>
+    <p class="disclaimer">Design mockup — not affiliated with OnlyMonster.</p>
+  </div>
+</footer>
+
+<script>
+  // Sticky nav shadow
+  var nav = document.getElementById('nav');
+  window.addEventListener('scroll', function(){
+    nav.classList.toggle('scrolled', window.scrollY > 8);
+  }, {passive:true});
+
+  // Mobile menu
+  var burger = document.getElementById('hamburger');
+  var menu = document.getElementById('mobileMenu');
+  burger.addEventListener('click', function(){
+    var open = menu.classList.toggle('open');
+    burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  menu.querySelectorAll('a').forEach(function(a){
+    a.addEventListener('click', function(){ menu.classList.remove('open'); burger.setAttribute('aria-expanded','false'); });
+  });
+
+  // FAQ accordion
+  document.querySelectorAll('.faq-q').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var item = btn.parentElement;
+      var ans = item.querySelector('.faq-a');
+      var isOpen = item.classList.contains('open');
+      // close all
+      document.querySelectorAll('.faq-item').forEach(function(f){
+        f.classList.remove('open');
+        f.querySelector('.faq-a').style.maxHeight = null;
+      });
+      if(!isOpen){
+        item.classList.add('open');
+        ans.style.maxHeight = ans.scrollHeight + 'px';
+      }
+    });
+  });
+</script>
+</body>
+</html>

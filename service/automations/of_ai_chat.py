@@ -495,6 +495,18 @@ def _strip_html(s: str | None) -> str:
     return _TAG_RE.sub("", s).strip()
 
 
+def _history_text(direction: str, body: str | None, image_desc: str | None) -> str:
+    """One message row → the history line the reply-LLM reads. Canonical for BOTH
+    _gather builders (ai_chatter imports this). An inbound photo we vision-described
+    at ingest rides in as "[photo he sent: …]" so the AI can rate / react to it — and
+    so a photo-only DM (empty body) stops being an invisible blank turn."""
+    text = _strip_html(body)[:_MSG_CLIP]
+    if direction == "in" and image_desc:
+        tag = f"[photo he sent: {image_desc}]"
+        text = f"{text} {tag}" if text else tag
+    return text
+
+
 def _nonempty(v) -> bool:
     """True when a fan-fact column carries real signal (not '', not '[]'/'{}')."""
     if v is None:
@@ -614,15 +626,15 @@ async def _gather(account_id: str,
         where.append(Message.fan_id.in_(fan_ids))
     async with get_session() as s:
         rows = (await s.execute(
-            select(Message.fan_id, Message.direction, Message.body)
+            select(Message.fan_id, Message.direction, Message.body, Message.image_desc)
             .where(*where)
             .order_by(Message.fan_id, Message.created_at, Message.message_id)
         )).all()
-    for fan_id, direction, body in rows:
+    for fan_id, direction, body, image_desc in rows:
         c = out.get(fan_id)
         if c is None:
             c = out[fan_id] = _Candidate(int(fan_id))
-        text = _strip_html(body)[:_MSG_CLIP]
+        text = _history_text(direction, body, image_desc)
         c.messages.append((direction, text))
         c.last_dir = direction
         c.last_body = text

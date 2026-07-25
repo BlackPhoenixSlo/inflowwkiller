@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import account_page
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import AccountAiConfig, AutomationRule, CatalogItem, Message
@@ -526,6 +527,14 @@ async def post_ppv_to_feed(body: _PostNowBody = Body(...)) -> dict[str, Any]:
     verbatim for a WYSIWYG post-now."""
     assert_account_owned(body.account_id)
 
+    # A feed PPV is a PAID post, and a paid-subscription page has no paid-post
+    # lane on OF (service/account_page.py). Refused here rather than in
+    # post_to_feed so the operator gets the real reason instead of a 502.
+    if await account_page.is_paid_page(body.account_id):
+        raise HTTPException(
+            409, "this page charges for a subscription — OF has no paid-post lane "
+                 "for it. The PPV still sells in DMs.")
+
     stored = await _load_stored_config(body.account_id)
     chosen = _pick_feed_ppv(stored, ppv_id=body.ppv_id)
 
@@ -611,6 +620,9 @@ async def preview_ppv_to_feed(body: _PreviewPostBody = Body(...)) -> dict[str, A
         "price": base_cents / 100,
         "media_count": len(media_ids),
         "preview_count": len(previews),
+        # True ⇒ /post-now will refuse: a paid-subscription page has no paid-post
+        # lane. Surfaced here so the confirm step can say so before it is pressed.
+        "paid_page": await account_page.is_paid_page(body.account_id),
         # The candidate's ordered media + the ⭐ free-preview subset — lets the operator
         # reorder/reselect before confirming. previews is always ⊆ media_ids.
         "media_ids": media_ids,
