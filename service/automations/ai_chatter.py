@@ -1085,8 +1085,44 @@ _TEASER_DISCOUNT_PCT = 0.20
 # signals that must hit the broke PAUSE (stop selling), not a cheaper re-offer.
 
 
-async def _open_offer_count(account_id: str, fan_id: int) -> int:
-    return len(await _open_offers(account_id, fan_id))
+async def _unlocked_since_open_offers(account_id: str, fan_id: int,
+                                      open_offers: list[ContentOffer]) -> bool:
+    """True when the fan has UNLOCKED something — a PPV opened (paid priced msg)
+    OR a tip buy — since his OLDEST still-open offer was made.
+
+    The max_open_offers cap counts our own ContentOffers only; tip_reward and
+    hand-sent PPVs write none, so they never fill it (invariant kept). But when he
+    buys ONE of those UNTRACKED pieces, no offer resolves and the cap stays full,
+    freezing the closer on `_pending_block` — the exact "waiting for open won't let
+    me price a new one" stall observed live. This says "he opened one",
+    so the caller lifts ONE slot. tip buys count (that's the "still lift 1 after a
+    tip buy" case). Scoped since the oldest open offer so a stale old purchase can't
+    lift the cap — only a buy made while these asks were on the table."""
+    since = min((o.offered_at for o in open_offers if o.offered_at), default=None)
+    if since is None:
+        return False
+    async with get_session() as s:
+        ppv = (await s.execute(
+            select(Message.message_id).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.direction == "out",
+                Message.price_cents > 0,
+                Message.is_paid.is_(True),
+                Message.purchased_at.isnot(None),
+                Message.purchased_at >= since).limit(1)
+        )).first()
+        if ppv is not None:
+            return True
+        tip = (await s.execute(
+            select(Transaction.id).where(
+                Transaction.account_id == str(account_id),
+                Transaction.fan_id == int(fan_id),
+                Transaction.kind.in_(_TIP_KINDS),
+                Transaction.status.in_(("cleared", "pending")),
+                Transaction.occurred_at >= since).limit(1)
+        )).first()
+    return tip is not None
 
 
 async def _last_unpaid_teaser(account_id: str, fan_id: int) -> dict | None:
@@ -4461,7 +4497,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # re-priced if he's balking) — so a fan asking for something else, or
             # haggling, gets a real answer instead of a stonewall. A 2nd offer rides
             # close on the 1st's heels, so relax the between-offers spacing for it.
-            open_count = await _open_offer_count(account_id, fan_id) if pending is not None else 0
+            open_offers_f = (await _open_offers(account_id, fan_id)
+                             if pending is not None else [])
+            open_count = len(open_offers_f)
+            # Lift ONE slot the moment he's opened a PPV / done a tip buy since these
+            # asks went on the table: an UNTRACKED unlock (tip_reward box, tip, hand-
+            # sent PPV) resolves no offer, so without this the cap stays full and
+            # `_pending_block` gags the closer — the "waiting for open won't let me
+            # price a new one" stall. A tracked offer he unlocks already frees its own
+            # slot by resolving, so this only ever adds the untracked case.
+            if open_count and await _unlocked_since_open_offers(
+                    account_id, fan_id, open_offers_f):
+                open_count -= 1
             second_offer = pending is not None and open_count < max_open_offers
             # Per-fan language: fans.language (manual pin or gen_info detection)
             # overrides the account default; unset → account default. Resolved HERE
