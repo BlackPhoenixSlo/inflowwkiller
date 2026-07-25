@@ -695,8 +695,18 @@ async def post_to_feed(account_id: str, ppv: dict, *, employee_id: int | None = 
     `previews_override`, when provided, replaces the preview_options-based previews;
     either way previews are filtered to a ⊆ subset of the media actually sent.
     `bounds` = the operator's (min_cents, max_cents) price limits (price_bounds(cfg));
-    None → the hard OF defaults. The posted price is clamped into them."""
+    None → the hard OF defaults. The posted price is clamped into them.
+
+    A feed post from here is ALWAYS priced (base_cents is clamped up to the $3
+    floor), so on a paid-subscription page there is nothing to post — that page
+    has no paid-post lane at all. Skipped, not downgraded to a free post: the
+    set is the product and the DM PPV still sells it."""
     import automation_executor as ax
+    import account_page
+    if await account_page.is_paid_page(account_id):
+        log.info("post_to_feed account=%s ppv=%s SKIPPED — paid-subscription page "
+                 "has no paid-post lane", account_id, ppv.get("id"))
+        return {"status": "skipped", "reason": account_page.PAID_PAGE_SKIP}
     lo, hi = bounds if bounds is not None else (_PRICE_FLOOR_CENTS, _PRICE_CEIL_CENTS)
     base_cents = max(lo, min(int(ppv.get("base_price_cents") or 0), hi))
     ppv_media = [int(x) for x in (ppv.get("media_ids") or []) if str(x).strip()]

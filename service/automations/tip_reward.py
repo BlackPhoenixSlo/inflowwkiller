@@ -106,6 +106,18 @@ _DEFAULTS: dict = {
     # on_inbound_image off an inbound, non-tip media DM. Default OFF.
     "image_reply_enabled": False,   # Flag 1: send ONE free vault image straight back
     "image_closer_enabled": False,  # Flag 2: kick the ai_chatter CLOSER for this fan
+    # Flag 3: run the Qwen3-VL vision model on the photo he sent and cache the
+    # description on the Message row (messages.image_desc). The closer/chat engines
+    # then read that back into their history as "[photo he sent: …]" so the AI can
+    # react to it — rate a dick pic, clock what he's wearing, answer "what do you
+    # think?" Blocks the closer kick until the describe lands (a few seconds, reads
+    # as human typing) so the FIRST reply already sees the picture. Default ON.
+    "image_describe_enabled": True,
+    "image_describe_prompt": "",    # optional phrasing seed ('' → the built-in rater prompt)
+    # WHO gets their photos described — "all" (every fan) or "paid" (only fans with
+    # lifetime_spend_cents > 0, so a $0 fan spamming pics never burns a vision call).
+    # Default "all": with the feature on by default, describe every inbound photo.
+    "image_describe_scope": "all",  # "all" | "paid"
     # Image-reply knobs (only matter when image_reply_enabled):
     "image_reply_count": 1,            # how many free items to send back (usually 1)
     "image_reply_basis_cents": 999,    # tier basis for the freebie folder — "under
@@ -172,7 +184,37 @@ _DEFAULTS: dict = {
     "teaser_convo_adaptive": True,
     "teaser_convo_cut_lo": 0.65,           # no-buy soften keeps 65–73% of last ask
     "teaser_convo_cut_hi": 0.73,
-    "teaser_convo_floor_cents": 0,         # soften floor ($0 → eases to a free tease)
+    "teaser_convo_floor_cents": 0,         # STATIC soften floor ($0 → eases to a free tease)
+    # ── PROVEN-SPEND soften floor + free-bait oscillation (operator ask, 07-25) ──
+    # The no-buy soften no longer decays to $0 and dies. It decays by cut_* down to
+    # a floor of `floor_pct × his highest single PPV EVER PURCHASED` (the same
+    # max_single_paid × 0.38 signal ai_chatter's _proven_floor_cents uses), then
+    # OSCILLATES that floor ↔ $0 to keep re-teasing a stuck non-buyer with free bait
+    # and a steady floor ask. Floor = max(floor_cents static, floor_pct × max_paid).
+    # A fan who never bought (max_paid 0) has floor 0 → unchanged decay-to-free.
+    "teaser_convo_floor_pct_of_max_paid": 0.38,
+    # When he BUYS a softened/floor ask (one he haggled below the rung's list price),
+    # the next ask escalates off WHAT HE PAID × this step (capped at the ladder max) —
+    # NOT a jump up to the rung list he already refused. A $15.20 floor buy → ~$30 →
+    # ~$60, respecting the willingness he just proved. A full-price rung buy still
+    # climbs the configured ladder as before.
+    "teaser_convo_climb_step": 2.0,
+    # ── OVERRIDE the automated brakes for the ESCALATION ladder (operator ask,
+    # 2026-07-25) ─────────────────────────────────────────────────────────────
+    # When ON, the convo-teaser ladder ($0/$10/$40/$80 …) fires every `after`
+    # messages REGARDLESS of the fan-state brakes ai_chatter normally honours:
+    #   • seller_off  — companion window / post-buy cooldown / bot-accusation
+    #   • offers_paused_until — the "he said he's broke / hard-declined" pause
+    # ⚠️ This deliberately overrides the POVERTY BRAKE — the codebase elsewhere
+    # calls escalating a man who typed "my wallet is tapped out" the single worst
+    # thing this system can do, and the adaptive ladder exists precisely because a
+    # climb-every-send once walked an unbought fan $40→$200 overnight with him
+    # complaining about price in-thread. Enabling this accepts that risk. The ONLY
+    # thing that still halts the ladder is a MANUAL stop — blacklist, a skip_list
+    # row (manual_restrict / of_restricted / unreachable), or a muted peer-creator —
+    # all enforced UPSTREAM in run() before this code is reached. Default OFF so
+    # every existing account keeps the full brake set byte-for-byte.
+    "teaser_convo_ignore_brakes": False,
     "tiers": [
         {"name": "basic",   "min_basis_cents": 0,      "folders": []},
         {"name": "mid",     "min_basis_cents": 1000,   "folders": []},   # ≥ $10
@@ -234,6 +276,19 @@ async def image_reply_flags(account_id: str) -> tuple[bool, bool]:
     photo can trigger a freebie and/or the closer without tip rewards being on."""
     cfg = await _load_config(account_id)
     return bool(cfg.get("image_reply_enabled")), bool(cfg.get("image_closer_enabled"))
+
+
+async def image_describe_flags(account_id: str) -> tuple[bool, str, str]:
+    """(image_describe_enabled, image_describe_prompt, image_describe_scope) — for the
+    inbound-image dispatcher's vision step. Kept separate from `image_reply_flags` so
+    that tuple's callers/tests stay stable. Default ON, scope "all"; independent of the
+    tip `enabled` master switch. scope is "all" | "paid" (paid → only fans who spent)."""
+    cfg = await _load_config(account_id)
+    scope = str(cfg.get("image_describe_scope") or "all").strip().lower()
+    if scope not in ("all", "paid"):
+        scope = "all"
+    return (bool(cfg.get("image_describe_enabled")),
+            str(cfg.get("image_describe_prompt") or ""), scope)
 
 
 def _media_count(tip_cents: int, cfg: dict) -> int:
@@ -804,12 +859,20 @@ async def convo_teaser_config(account_id: str) -> dict | None:
         "after": max(1, int(cfg.get("teaser_convo_after_fan_msgs") or 20)),
         "count": max(1, int(cfg.get("teaser_convo_count") or 1)),
         "rungs": rungs,
+        # Operator override: run the ladder past the companion/bot-accused/broke
+        # brakes (manual stops still apply upstream). See _DEFAULTS for the risk.
+        "ignore_brakes": bool(cfg.get("teaser_convo_ignore_brakes")),
         # Adaptive (buy-aware climb / soften) + the weighted-bundle knobs it shares
         # with the hot teaser. All inert unless teaser_convo_adaptive is on.
         "adaptive": bool(cfg.get("teaser_convo_adaptive")),
         "cut_lo": float(cfg.get("teaser_convo_cut_lo") or 0.65),
         "cut_hi": float(cfg.get("teaser_convo_cut_hi") or 0.73),
         "floor_cents": max(0, int(cfg.get("teaser_convo_floor_cents") or 0)),
+        # Proven-spend soften floor: floor = floor_pct × his highest single PPV paid
+        # (computed per-run from max_single_paid by the caller). See _DEFAULTS.
+        "floor_pct": max(0.0, float(cfg.get("teaser_convo_floor_pct_of_max_paid") or 0.0)),
+        # Escalation ×step off a SOFTENED/floor buy (never off the rung list). See _DEFAULTS.
+        "climb_step": max(1.0, float(cfg.get("teaser_convo_climb_step") or 2.0)),
         "bundle_cents_per_weight": max(1, int(cfg.get("bundle_cents_per_weight") or 1000)),
         "bundle_free_count": max(0, int(cfg.get("bundle_free_count") or 0)),
         "bundle_hard_cap": max(1, int(cfg.get("bundle_hard_cap") or 12)),
@@ -819,10 +882,45 @@ async def convo_teaser_config(account_id: str) -> dict | None:
     }
 
 
+def _next_convo_teaser_price(*, idx: int, prices: list[int], last_px: int,
+                             last_sold: bool, last_was_free: bool,
+                             floor: int, step: float, frac: float) -> tuple[int, int, bool]:
+    """PURE pricing policy for the adaptive convo ladder — no I/O. Given where he is
+    (idx, the ladder prices) and what happened to the last teaser, return
+    (new_rung, price_cents, softened). `floor`/`frac`/`step` are pre-resolved by the
+    caller (floor = proven-spend floor, frac = the jittered cut, step = climb ×mult).
+
+      • first ever            → the opening rung-0 tease
+      • bought a SOFTENED ask → escalate off what he PAID × step (capped, rung tracks
+                                to the first rung ≥ the new ask); never the rung list
+                                he already refused
+      • full-price sale / the
+        opening free tease     → climb the configured ladder one rung
+      • no buy                → soften ×frac down to the floor, then OSCILLATE floor↔$0
+                                (free bait) so a stuck non-buyer keeps getting re-teased
+    """
+    if last_px <= 0 and idx == 0 and not last_sold and not last_was_free:
+        return 0, prices[0], False               # first ever
+    if last_sold and 0 < last_px < prices[idx]:  # softened buy → climb off what he PAID
+        price = min(prices[-1], int(round(last_px * step)))
+        new_idx = next((i for i, p in enumerate(prices) if p >= price), len(prices) - 1)
+        return new_idx, price, False
+    if last_sold or (last_was_free and idx == 0):  # full-price sale / opening free → climb
+        new_idx = min(idx + 1, len(prices) - 1)
+        return new_idx, prices[new_idx], False
+    cand = int(round(last_px * frac))            # no buy → soften, then oscillate floor↔$0
+    if cand >= floor:        price = cand        # still above the floor → decay
+    elif last_px > floor:    price = floor       # first dip below → land ON floor
+    elif last_px == floor:   price = 0           # was at floor → free bait
+    else:                    price = floor       # was $0 bait → bounce to floor
+    return idx, price, True
+
+
 async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
                             msgs_since_last: int, rung: int,
                             last_price_cents: int = 0, last_sold: bool = False,
-                            last_was_free: bool = False, rand: float | None = None,
+                            last_was_free: bool = False, max_paid_cents: int = 0,
+                            rand: float | None = None,
                             now: datetime | None = None) -> dict | None:
     """SELECTION for the conversational ladder. Fires only once he has sent `after`
     messages since his last teaser.
@@ -863,26 +961,24 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
                 "next_rung": min(idx + 1, len(rungs) - 1), "convo": True}
 
     # ── ADAPTIVE: buy-aware climb / soften, price-scaled weighted bundle ──
+    # Resolve the scalars the PURE pricing policy needs, then delegate. The floor is
+    # 38% of his biggest single PPV EVER paid (the same signal _proven_floor_cents
+    # uses) OR'd with the static floor; frac is the jittered soften cut.
     idx = max(0, min(int(rung or 0), len(rungs) - 1))
     prices = [max(0, int((r or {}).get("price_cents") or 0)) for r in rungs]
     last_px = max(0, int(last_price_cents or 0))
-    first_ever = last_px <= 0 and idx == 0 and not last_sold and not last_was_free
-    softened = False
-    if first_ever:
-        new_idx, price = 0, prices[0]
-    elif last_sold or last_was_free:                 # it landed → climb a rung
-        new_idx = min(idx + 1, len(rungs) - 1)
-        price = prices[new_idx]
-    else:                                            # no buy → soften, hold the rung
-        lo = float(tcfg.get("cut_lo") or 0.65)
-        hi = float(tcfg.get("cut_hi") or 0.73)
-        if lo > hi:
-            lo, hi = hi, lo
-        rv = random.random() if rand is None else float(rand)
-        frac = lo + (hi - lo) * max(0.0, min(1.0, rv))
-        floor = max(0, int(tcfg.get("floor_cents") or 0))
-        price = max(floor, int(round(last_px * frac)))
-        new_idx, softened = idx, True
+    floor = max(int(tcfg.get("floor_cents") or 0),
+                int(round(float(tcfg.get("floor_pct") or 0.0) * max(0, int(max_paid_cents or 0)))))
+    lo = float(tcfg.get("cut_lo") or 0.65)
+    hi = float(tcfg.get("cut_hi") or 0.73)
+    if lo > hi:
+        lo, hi = hi, lo
+    rv = random.random() if rand is None else float(rand)
+    frac = lo + (hi - lo) * max(0.0, min(1.0, rv))
+    new_idx, price, softened = _next_convo_teaser_price(
+        idx=idx, prices=prices, last_px=last_px, last_sold=last_sold,
+        last_was_free=last_was_free, floor=floor,
+        step=float(tcfg.get("climb_step") or 2.0), frac=frac)
 
     if price <= 0:
         plan = tip_ladder.bundle_plan(0, free_count=max(1, int(tcfg.get("bundle_free_count") or 1)))

@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Infloww · Messages Pro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#F6F8FB;
+    --panel:#FFFFFF;
+    --border:#E6EAF2;
+    --accent:#2F6BFF;
+    --accent-2:#1E4FD6;
+    --tint:#EAF1FF;
+    --heading:#12172B;
+    --muted:#5B6478;
+    --muted-2:#8A92A6;
+    --success:#16B364;
+    --success-tint:#E6F7EE;
+    --warning:#F5A623;
+    --warning-tint:#FEF3E0;
+    --navy:#12172B;
+    --navy-2:#1B2138;
+    --pink:#F0518A;
+    --violet:#8B5CF6;
+    --shadow-sm:0 1px 2px rgba(18,23,43,.05);
+    --shadow-md:0 6px 18px rgba(18,23,43,.08);
+    --shadow-lg:0 12px 34px rgba(18,23,43,.12);
+    --r-sm:8px;
+    --r-md:10px;
+    --r-lg:14px;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    font-family:"Inter",system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);
+    color:var(--heading);
+    font-size:14px;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    overflow:hidden;
+  }
+  button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit;}
+  input,textarea{font-family:inherit;}
+  ::-webkit-scrollbar{width:9px;height:9px;}
+  ::-webkit-scrollbar-thumb{background:#D3DAE8;border-radius:20px;border:2px solid transparent;background-clip:content-box;}
+  ::-webkit-scrollbar-thumb:hover{background:#B9C2D6;background-clip:content-box;}
+  ::-webkit-scrollbar-track{background:transparent;}
+
+  /* ============ APP SHELL ============ */
+  .app{display:flex;flex-direction:column;height:100vh;width:100vw;overflow:hidden;}
+
+  /* Top toolbar */
+  .topbar{
+    height:44px;flex:0 0 44px;display:flex;align-items:center;gap:14px;
+    padding:0 16px 0 16px;background:var(--panel);border-bottom:1px solid var(--border);
+    z-index:20;
+  }
+  .topbar .brand-wrap{display:flex;align-items:center;gap:9px;min-width:64px;}
+  .topbar .crumb{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12.5px;font-weight:500;}
+  .topbar .crumb strong{color:var(--heading);font-weight:600;}
+  .topbar .crumb .sep{color:#C7CEDD;}
+  .topbar-spacer{flex:1;}
+  .status-toggle{
+    display:flex;align-items:center;gap:8px;padding:5px 11px;border-radius:20px;
+    background:var(--success-tint);color:#0E8F4F;font-weight:600;font-size:12px;border:1px solid #CFF0DE;
+  }
+  .status-toggle .switch{
+    width:30px;height:17px;border-radius:20px;background:var(--success);position:relative;flex:0 0 auto;
+  }
+  .status-toggle .switch::after{content:"";position:absolute;top:2px;right:2px;width:13px;height:13px;border-radius:50%;background:#fff;box-shadow:var(--shadow-sm);}
+  .topbar-icons{display:flex;align-items:center;gap:4px;}
+  .tb-btn{
+    width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;
+    color:var(--muted);position:relative;transition:.15s;
+  }
+  .tb-btn:hover{background:var(--bg);color:var(--heading);}
+  .tb-btn .dot{position:absolute;top:6px;right:7px;width:7px;height:7px;border-radius:50%;background:var(--pink);border:1.5px solid #fff;}
+  .tb-search{
+    display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);
+    border-radius:9px;padding:6px 11px;width:220px;color:var(--muted-2);font-size:12.5px;
+  }
+  .tb-search input{border:none;background:none;outline:none;flex:1;color:var(--heading);font-size:12.5px;}
+  kbd{font-family:inherit;font-size:10.5px;background:#fff;border:1px solid var(--border);border-radius:5px;padding:1px 5px;color:var(--muted-2);box-shadow:0 1px 0 var(--border);}
+
+  /* Body row */
+  .body-row{flex:1;display:flex;min-height:0;}
+
+  /* ============ ICON RAIL ============ */
+  .rail{
+    width:64px;flex:0 0 64px;background:var(--navy);display:flex;flex-direction:column;align-items:center;
+    padding:12px 0 12px;gap:4px;
+  }
+  .rail .logo{
+    width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#2F6BFF,#6A9BFF);
+    display:flex;align-items:center;justify-content:center;margin-bottom:12px;box-shadow:0 6px 16px rgba(47,107,255,.45);
+  }
+  .rail-nav{display:flex;flex-direction:column;gap:3px;flex:1;width:100%;align-items:center;}
+  .nav-item{
+    width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;
+    color:#8891AC;position:relative;transition:.16s;
+  }
+  .nav-item:hover{background:var(--navy-2);color:#DCE3F5;}
+  .nav-item.active{background:var(--accent);color:#fff;box-shadow:0 6px 16px rgba(47,107,255,.4);}
+  .nav-item.active::before{content:"";position:absolute;left:-12px;width:4px;height:22px;border-radius:0 4px 4px 0;background:var(--accent);}
+  .nav-item .badge{
+    position:absolute;top:5px;right:5px;min-width:16px;height:16px;padding:0 4px;border-radius:9px;background:var(--pink);
+    color:#fff;font-size:9.5px;font-weight:700;display:flex;align-items:center;justify-content:center;border:1.5px solid var(--navy);
+  }
+  .rail-tip{
+    position:absolute;left:58px;background:var(--navy);color:#fff;font-size:11.5px;font-weight:600;padding:5px 9px;border-radius:7px;
+    white-space:nowrap;opacity:0;pointer-events:none;transform:translateX(-4px);transition:.14s;z-index:40;box-shadow:var(--shadow-md);
+  }
+  .nav-item:hover .rail-tip{opacity:1;transform:translateX(0);}
+  .rail .me{
+    width:36px;height:36px;border-radius:50%;margin-top:8px;background:linear-gradient(135deg,#F0518A,#8B5CF6);
+    display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px;
+    border:2px solid var(--navy-2);cursor:pointer;
+  }
+
+  /* ============ CONVERSATION LIST COLUMN ============ */
+  .list-col{
+    width:326px;flex:0 0 326px;background:var(--panel);border-right:1px solid var(--border);
+    display:flex;flex-direction:column;min-height:0;
+  }
+  .creator-pill-wrap{padding:12px 14px 10px;border-bottom:1px solid var(--border);}
+  .creator-pill{
+    display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--border);border-radius:12px;
+    background:var(--panel);width:100%;transition:.15s;box-shadow:var(--shadow-sm);
+  }
+  .creator-pill:hover{border-color:#CED8EC;background:#FCFDFF;}
+  .creator-av{position:relative;flex:0 0 auto;}
+  .creator-av .odot{position:absolute;bottom:-1px;right:-1px;width:11px;height:11px;border-radius:50%;background:var(--success);border:2px solid #fff;}
+  .creator-meta{flex:1;text-align:left;min-width:0;}
+  .creator-meta .nm{font-weight:700;font-size:13.5px;display:flex;align-items:center;gap:6px;}
+  .creator-meta .sub{font-size:11px;color:var(--success);font-weight:600;}
+  .chev{color:var(--muted-2);flex:0 0 auto;}
+
+  .search-wrap{padding:10px 14px;}
+  .search-box{
+    display:flex;align-items:center;gap:9px;background:var(--bg);border:1px solid var(--border);border-radius:10px;
+    padding:9px 12px;color:var(--muted-2);
+  }
+  .search-box input{border:none;background:none;outline:none;flex:1;font-size:13px;color:var(--heading);}
+
+  .chips{display:flex;gap:6px;padding:0 14px 12px;overflow-x:auto;scrollbar-width:none;}
+  .chips::-webkit-scrollbar{display:none;}
+  .chip{
+    flex:0 0 auto;padding:6px 12px;border-radius:20px;font-size:12px;font-weight:600;color:var(--muted);
+    background:var(--bg);border:1px solid var(--border);white-space:nowrap;transition:.14s;display:flex;align-items:center;gap:6px;
+  }
+  .chip:hover{border-color:#CED8EC;color:var(--heading);}
+  .chip.active{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 4px 10px rgba(47,107,255,.28);}
+  .chip .cnt{background:rgba(255,255,255,.28);border-radius:9px;padding:0 5px;font-size:10.5px;}
+  .chip:not(.active) .cnt{background:#E2E8F5;color:var(--muted);}
+
+  .conv-list{flex:1;overflow-y:auto;min-height:0;padding:2px 8px 12px;}
+  .conv-section{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted-2);padding:12px 8px 6px;}
+  .conv{
+    display:flex;gap:11px;padding:10px;border-radius:12px;cursor:pointer;transition:.13s;position:relative;align-items:flex-start;
+  }
+  .conv:hover{background:#F7F9FE;}
+  .conv.active{background:var(--tint);}
+  .conv.active::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:3px;background:var(--accent);}
+  .conv-av{position:relative;flex:0 0 auto;}
+  .conv-av .odot{position:absolute;bottom:-1px;right:-1px;width:11px;height:11px;border-radius:50%;background:var(--success);border:2px solid #fff;}
+  .conv-av .odot.off{background:#C4CBDA;}
+  .conv-body{flex:1;min-width:0;}
+  .conv-top{display:flex;align-items:center;gap:6px;}
+  .conv-name{font-weight:600;font-size:13.5px;color:var(--heading);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .conv-time{margin-left:auto;font-size:11px;color:var(--muted-2);flex:0 0 auto;font-weight:500;}
+  .conv.unread .conv-time{color:var(--accent);font-weight:600;}
+  .conv-prev{font-size:12.5px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px;}
+  .conv.unread .conv-prev{color:var(--heading);font-weight:500;}
+  .conv-tags{display:flex;gap:5px;margin-top:7px;flex-wrap:wrap;align-items:center;}
+  .tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;display:inline-flex;align-items:center;gap:3px;letter-spacing:.2px;}
+  .tag.vip{background:#F3ECFF;color:var(--violet);}
+  .tag.spend{background:var(--success-tint);color:#0E8F4F;}
+  .tag.prio{background:var(--warning-tint);color:#B9770F;}
+  .tag.new{background:var(--tint);color:var(--accent);}
+  .unread-pill{
+    margin-left:auto;min-width:20px;height:20px;padding:0 6px;border-radius:11px;background:var(--accent);color:#fff;
+    font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:0 0 auto;box-shadow:0 3px 8px rgba(47,107,255,.35);
+  }
+
+  /* ============ CENTER CONVERSATION PANE ============ */
+  .center{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--panel);}
+  .conv-header{
+    flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border);
+  }
+  .ch-av{position:relative;flex:0 0 auto;}
+  .ch-av .odot{position:absolute;bottom:0px;right:0px;width:12px;height:12px;border-radius:50%;background:var(--success);border:2.5px solid #fff;}
+  .ch-meta{min-width:0;}
+  .ch-name{font-weight:700;font-size:15.5px;display:flex;align-items:center;gap:8px;}
+  .ch-name .verified{color:var(--accent);}
+  .ch-sub{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:7px;margin-top:1px;}
+  .ch-sub .live{display:inline-flex;align-items:center;gap:4px;color:var(--success);font-weight:600;}
+  .ch-sub .live .d{width:6px;height:6px;border-radius:50%;background:var(--success);}
+  .ch-actions{margin-left:auto;display:flex;align-items:center;gap:8px;}
+  .spend-chip{
+    display:flex;align-items:center;gap:7px;padding:6px 12px;border-radius:20px;background:var(--success-tint);
+    color:#0E8F4F;font-weight:700;font-size:12.5px;border:1px solid #CFF0DE;
+  }
+  .ico-btn{
+    width:34px;height:34px;border-radius:10px;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;
+    color:var(--muted);background:var(--panel);transition:.14s;
+  }
+  .ico-btn:hover{background:var(--bg);color:var(--heading);border-color:#CED8EC;}
+  .ico-btn.on{background:var(--tint);color:var(--accent);border-color:#CBD9FB;}
+
+  .thread{flex:1;overflow-y:auto;min-height:0;padding:20px 22px 8px;background:linear-gradient(180deg,#FBFCFE,#FFFFFF);display:flex;flex-direction:column;gap:3px;}
+  .day-div{display:flex;align-items:center;gap:12px;margin:14px 0 10px;}
+  .day-div::before,.day-div::after{content:"";flex:1;height:1px;background:var(--border);}
+  .day-div span{font-size:11px;font-weight:600;color:var(--muted-2);background:#fff;padding:2px 10px;border-radius:20px;border:1px solid var(--border);}
+
+  .msg{display:flex;flex-direction:column;max-width:64%;margin-bottom:9px;}
+  .msg.in{align-self:flex-start;align-items:flex-start;}
+  .msg.out{align-self:flex-end;align-items:flex-end;}
+  .bubble{
+    padding:10px 14px;border-radius:16px;font-size:13.5px;line-height:1.5;word-wrap:break-word;box-shadow:var(--shadow-sm);
+  }
+  .msg.in .bubble{background:#EEF1F7;color:#1E2438;border-bottom-left-radius:5px;}
+  .msg.out .bubble{background:linear-gradient(135deg,#2F6BFF,#3D74FF);color:#fff;border-bottom-right-radius:5px;}
+  .msg-time{font-size:10.5px;color:var(--muted-2);margin-top:4px;padding:0 4px;display:flex;align-items:center;gap:5px;}
+  .msg.out .msg-time .seen{color:var(--accent);display:inline-flex;align-items:center;gap:2px;}
+
+  /* PPV card */
+  .ppv{
+    width:288px;border-radius:16px;overflow:hidden;box-shadow:var(--shadow-md);border:1px solid rgba(255,255,255,.25);
+  }
+  .msg.out .ppv{border-bottom-right-radius:5px;}
+  .ppv-media{
+    height:168px;position:relative;display:flex;align-items:center;justify-content:center;
+    background:
+      radial-gradient(120px 120px at 30% 25%, rgba(255,255,255,.25), transparent),
+      linear-gradient(135deg,#F0518A,#8B5CF6 60%,#2F6BFF);
+  }
+  .ppv-media.locked::after{content:"";position:absolute;inset:0;backdrop-filter:blur(3px);background:rgba(18,23,43,.28);}
+  .ppv-lock{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:8px;color:#fff;}
+  .ppv-lock .circle{width:52px;height:52px;border-radius:50%;background:rgba(255,255,255,.22);display:flex;align-items:center;justify-content:center;border:1.5px solid rgba(255,255,255,.4);}
+  .ppv-lock .txt{font-size:12px;font-weight:600;opacity:.95;}
+  .ppv-unlocked-badge{position:absolute;z-index:2;top:10px;left:10px;background:rgba(22,179,100,.95);color:#fff;font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:20px;display:flex;align-items:center;gap:4px;}
+  .ppv-count{position:absolute;z-index:2;bottom:10px;right:10px;background:rgba(18,23,43,.6);color:#fff;font-size:10.5px;font-weight:600;padding:3px 8px;border-radius:20px;display:flex;align-items:center;gap:4px;}
+  .ppv-foot{padding:10px 13px;background:#fff;display:flex;align-items:center;gap:10px;}
+  .msg.out .ppv-foot{background:#EAF1FF;}
+  .ppv-price{font-weight:800;font-size:15px;color:var(--heading);}
+  .ppv-state{margin-left:auto;font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;}
+  .ppv-state.unlocked{background:var(--success-tint);color:#0E8F4F;}
+  .ppv-state.locked{background:var(--warning-tint);color:#B9770F;}
+  .ppv-caption{font-size:12px;color:var(--muted);margin-top:2px;}
+
+  /* system / tip chip */
+  .sys{align-self:center;display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#E6F7EE,#F0FBF5);border:1px solid #CFF0DE;color:#0E8F4F;
+    font-size:12px;font-weight:700;padding:7px 14px;border-radius:20px;margin:8px 0;box-shadow:var(--shadow-sm);}
+  .sys.pin{background:var(--tint);border-color:#CBD9FB;color:var(--accent);}
+
+  .typing{align-self:flex-start;display:flex;align-items:center;gap:5px;background:#EEF1F7;padding:11px 15px;border-radius:16px;border-bottom-left-radius:5px;margin-bottom:8px;}
+  .typing i{width:6px;height:6px;border-radius:50%;background:#9AA3B8;animation:blink 1.2s infinite;}
+  .typing i:nth-child(2){animation-delay:.2s;}
+  .typing i:nth-child(3){animation-delay:.4s;}
+  @keyframes blink{0%,80%,100%{opacity:.3;transform:translateY(0);}40%{opacity:1;transform:translateY(-2px);}}
+
+  /* Smart messages strip */
+  .smart-strip{
+    flex:0 0 auto;padding:11px 18px 3px;display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+    border-top:1px solid var(--border);background:var(--panel);
+  }
+  .smart-label{display:flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;color:var(--violet);}
+  .smart-chip{
+    padding:7px 13px;border-radius:20px;border:1px solid #DCD3FF;background:linear-gradient(135deg,#F7F4FF,#FDF6FF);
+    font-size:12.5px;color:#4B3B8F;font-weight:500;transition:.14s;max-width:340px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .smart-chip:hover{border-color:var(--violet);box-shadow:0 4px 12px rgba(139,92,246,.18);transform:translateY(-1px);}
+
+  /* Composer */
+  .composer{flex:0 0 auto;padding:8px 18px 16px;background:var(--panel);}
+  .composer-box{
+    border:1px solid var(--border);border-radius:14px;background:var(--panel);box-shadow:var(--shadow-sm);transition:.15s;
+  }
+  .composer-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--tint);}
+  .composer-input-row{display:flex;align-items:flex-end;gap:8px;padding:10px 12px 4px;}
+  .composer-input-row textarea{
+    flex:1;border:none;outline:none;resize:none;background:none;font-size:13.5px;line-height:1.5;color:var(--heading);
+    max-height:120px;min-height:24px;padding:4px 0;
+  }
+  .composer-toolbar{display:flex;align-items:center;gap:4px;padding:4px 10px 8px;}
+  .cbtn{
+    height:34px;padding:0 10px;border-radius:9px;display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12.5px;font-weight:600;transition:.14s;
+  }
+  .cbtn:hover{background:var(--bg);color:var(--heading);}
+  .cbtn.ppv{color:var(--success);}
+  .cbtn.ppv:hover{background:var(--success-tint);}
+  .cbtn.scripts{border:1px solid var(--border);}
+  .composer-spacer{flex:1;}
+  .send-btn{
+    height:36px;padding:0 18px;border-radius:10px;background:linear-gradient(135deg,#2F6BFF,#3D74FF);color:#fff;font-weight:700;font-size:13px;
+    display:flex;align-items:center;gap:7px;box-shadow:0 6px 16px rgba(47,107,255,.35);transition:.14s;
+  }
+  .send-btn:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(47,107,255,.42);}
+
+  /* ============ RIGHT CONTEXT PANEL ============ */
+  .context{
+    width:304px;flex:0 0 304px;background:var(--panel);border-left:1px solid var(--border);
+    display:flex;flex-direction:column;min-height:0;overflow-y:auto;
+  }
+  .ctx-hero{padding:22px 20px 18px;text-align:center;border-bottom:1px solid var(--border);position:relative;}
+  .ctx-close{position:absolute;top:12px;right:12px;}
+  .ctx-hero .big-av{margin:0 auto 12px;position:relative;width:76px;height:76px;}
+  .ctx-hero .big-av .odot{position:absolute;bottom:3px;right:3px;width:16px;height:16px;border-radius:50%;background:var(--success);border:3px solid #fff;}
+  .ctx-name{font-weight:800;font-size:18px;display:flex;align-items:center;justify-content:center;gap:7px;}
+  .ctx-user{font-size:12.5px;color:var(--muted);margin-top:2px;}
+  .ctx-subpill{display:inline-flex;align-items:center;gap:6px;margin-top:11px;padding:5px 13px;border-radius:20px;background:var(--tint);color:var(--accent);font-size:12px;font-weight:700;}
+  .ctx-quick{display:flex;gap:8px;justify-content:center;margin-top:14px;}
+  .ctx-quick .q{width:38px;height:38px;border-radius:11px;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:var(--muted);transition:.14s;}
+  .ctx-quick .q:hover{background:var(--bg);color:var(--accent);border-color:#CBD9FB;}
+
+  .ctx-sec{padding:16px 20px;border-bottom:1px solid var(--border);}
+  .ctx-sec-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted-2);margin-bottom:12px;display:flex;align-items:center;gap:7px;}
+  .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;}
+  .stat{border:1px solid var(--border);border-radius:11px;padding:11px 12px;background:#FBFCFE;}
+  .stat .v{font-weight:800;font-size:17px;color:var(--heading);letter-spacing:-.3px;}
+  .stat .v.green{color:#0E8F4F;}
+  .stat .l{font-size:11px;color:var(--muted);margin-top:2px;font-weight:500;}
+
+  .note-box{border:1px solid var(--border);border-radius:11px;background:#FFFDF6;padding:0;}
+  .note-box textarea{width:100%;border:none;outline:none;resize:none;background:none;font-size:12.5px;line-height:1.55;color:#4A4230;padding:11px 12px;min-height:78px;}
+  .note-foot{display:flex;align-items:center;gap:6px;padding:6px 12px;border-top:1px solid #F0EAD6;font-size:11px;color:var(--muted-2);}
+  .note-foot .saved{color:var(--success);font-weight:600;display:inline-flex;align-items:center;gap:4px;margin-left:auto;}
+
+  .list-tags{display:flex;flex-wrap:wrap;gap:7px;}
+  .list-tag{font-size:11.5px;font-weight:600;padding:5px 11px;border-radius:20px;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);color:var(--muted);background:#FBFCFE;}
+  .list-tag .d{width:7px;height:7px;border-radius:50%;}
+  .list-tag.add{border-style:dashed;color:var(--accent);border-color:#CBD9FB;background:var(--tint);}
+
+  .purchase{display:flex;align-items:center;gap:11px;padding:9px 0;border-bottom:1px solid #F1F4FA;}
+  .purchase:last-child{border-bottom:none;}
+  .purchase .pi{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;}
+  .purchase .pi.ppv{background:var(--tint);color:var(--accent);}
+  .purchase .pi.tip{background:var(--success-tint);color:#0E8F4F;}
+  .purchase .pb{flex:1;min-width:0;}
+  .purchase .pt{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .purchase .pw{font-size:11px;color:var(--muted-2);margin-top:1px;}
+  .purchase .pa{font-weight:800;font-size:13px;color:#0E8F4F;flex:0 0 auto;}
+
+  .ctx-toggle-btn{
+    display:none;position:absolute;top:11px;right:18px;
+  }
+
+  /* avatar text */
+  .av-txt{font-weight:700;fill:#fff;}
+
+  /* responsive */
+  @media (max-width:1180px){
+    .context{width:270px;flex-basis:270px;}
+    .list-col{width:290px;flex-basis:290px;}
+  }
+  @media (max-width:900px){
+    .context{position:fixed;right:0;top:44px;bottom:0;z-index:50;box-shadow:var(--shadow-lg);transform:translateX(100%);transition:.22s;}
+    .context.open{transform:translateX(0);}
+    .ctx-toggle-btn{display:flex;}
+    .msg{max-width:80%;}
+  }
+  @media (max-width:720px){
+    .list-col{width:250px;flex-basis:250px;}
+    .tb-search{display:none;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ===== TOP TOOLBAR ===== -->
+  <div class="topbar">
+    <div class="crumb">
+      <strong>Messages Pro</strong>
+      <span class="sep">/</span>
+      <span>Inbox</span>
+      <span class="sep">/</span>
+      <span id="crumbFan">Jenna_92</span>
+    </div>
+    <div class="topbar-spacer"></div>
+    <div class="tb-search">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input placeholder="Search everything" />
+      <kbd>⌘K</kbd>
+    </div>
+    <div class="status-toggle" title="You are online — auto-replies active">
+      <span class="switch"></span>
+      <span>Online</span>
+    </div>
+    <div class="topbar-icons">
+      <button class="tb-btn" title="Notifications"><span class="dot"></span>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+      </button>
+      <button class="tb-btn" title="Help & shortcuts">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><path d="M12 17h.01"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="body-row">
+
+    <!-- ===== ICON RAIL ===== -->
+    <nav class="rail">
+      <div class="logo" title="Infloww">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M4 15c3-6 5-8 8-8s5 2 8 8" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle cx="8" cy="10" r="2.1" fill="#fff"/><circle cx="16" cy="10" r="2.1" fill="#fff"/></svg>
+      </div>
+      <div class="rail-nav" id="railNav">
+        <button class="nav-item active" data-nav="Inbox">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 12h5l1.5 2.5h5L16 12h5"/></svg>
+          <span class="badge">6</span><span class="rail-tip">Inbox</span>
+        </button>
+        <button class="nav-item" data-nav="Fans">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span class="rail-tip">Fans</span>
+        </button>
+        <button class="nav-item" data-nav="Vault">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2.5"/><path d="M8.5 3v18M3 8.5h5.5"/><circle cx="14.5" cy="13" r="2.5"/></svg>
+          <span class="rail-tip">Vault</span>
+        </button>
+        <button class="nav-item" data-nav="Mass message">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-8-8 18-2.5-7.5z"/><path d="M10.5 13.5 21 3"/></svg>
+          <span class="rail-tip">Mass message</span>
+        </button>
+        <button class="nav-item" data-nav="Smart Lists">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>
+          <span class="rail-tip">Smart Lists</span>
+        </button>
+        <button class="nav-item" data-nav="Analytics">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 2 4-6"/></svg>
+          <span class="rail-tip">Analytics</span>
+        </button>
+        <button class="nav-item" data-nav="Automations">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/><circle cx="12" cy="12" r="3.5"/></svg>
+          <span class="rail-tip">Automations</span>
+        </button>
+        <button class="nav-item" data-nav="Settings">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 6.6 19l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H2a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 3.4 6.6l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 9 3.4V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0 1.2 2.9h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+          <span class="rail-tip">Settings</span>
+        </button>
+      </div>
+      <button class="me" title="Your account">JB</button>
+    </nav>
+
+    <!-- ===== CONVERSATION LIST ===== -->
+    <aside class="list-col">
+      <div class="creator-pill-wrap">
+        <button class="creator-pill">
+          <span class="creator-av" id="creatorAv"></span>
+          <span class="creator-meta">
+            <span class="nm">Aria Vixen</span>
+            <span class="sub">Online · auto-reply on</span>
+          </span>
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+      </div>
+
+      <div class="search-wrap">
+        <div class="search-box">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input placeholder="Search fans…" />
+        </div>
+      </div>
+
+      <div class="chips" id="chips">
+        <button class="chip active">All <span class="cnt">248</span></button>
+        <button class="chip">Unread <span class="cnt">6</span></button>
+        <button class="chip">Online <span class="cnt">12</span></button>
+        <button class="chip">Big spenders <span class="cnt">34</span></button>
+        <button class="chip">Fans (VIP) <span class="cnt">9</span></button>
+        <button class="chip">Priority <span class="cnt">4</span></button>
+      </div>
+
+      <div class="conv-list" id="convList"></div>
+    </aside>
+
+    <!-- ===== CENTER PANE ===== -->
+    <section class="center">
+      <div class="conv-header">
+        <span class="ch-av" id="chAv"></span>
+        <div class="ch-meta">
+          <div class="ch-name">
+            <span id="chName">Jenna_92</span>
+            <svg class="verified" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 2.4 1.8 3 .1 1 2.8 2.4 1.7-.9 2.9.9 2.9-2.4 1.7-1 2.8-3 .1L12 22l-2.4-1.5-3-.1-1-2.8-2.4-1.7.9-2.9-.9-2.9 2.4-1.7 1-2.8 3-.1z"/><path d="m8.5 12 2.3 2.3 4.7-4.7" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="ch-sub">
+            <span id="chUser">@jenna_92</span>
+            <span class="live" id="chLive"><span class="d"></span> Active now</span>
+          </div>
+        </div>
+        <div class="ch-actions">
+          <div class="spend-chip">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            Lifetime <span id="chLifetime">$1,240</span>
+          </div>
+          <button class="ico-btn" title="Note">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-6"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
+          </button>
+          <button class="ico-btn" title="Call">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3.1-8.7A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.4-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/></svg>
+          </button>
+          <button class="ico-btn" title="Pin conversation">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 3h6l-1 7 3 3H7l3-3z"/></svg>
+          </button>
+          <button class="ico-btn on ctx-toggle-btn" id="ctxToggle" title="Fan profile">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="thread" id="thread"></div>
+
+      <div class="smart-strip" id="smartStrip">
+        <span class="smart-label">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.9 4.7L19 9.5l-4.1 3.3L16 18l-4-2.7L8 18l1.1-5.2L5 9.5l5.1-1.8z"/></svg>
+          Smart Messages™
+        </span>
+      </div>
+
+      <div class="composer">
+        <div class="composer-box">
+          <div class="composer-input-row">
+            <textarea id="composerInput" rows="1" placeholder="Type a message…"></textarea>
+          </div>
+          <div class="composer-toolbar">
+            <button class="cbtn" title="Attach from Vault">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.5 12.8 20.7a5 5 0 0 1-7-7l8.2-8.2a3.3 3.3 0 0 1 4.7 4.7l-8.2 8.2a1.7 1.7 0 0 1-2.4-2.4l7.6-7.5"/></svg>
+              Vault
+            </button>
+            <button class="cbtn ppv" title="Send as paid PPV">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4 12 22l-9-9V3h10z"/><circle cx="7.5" cy="7.5" r="1.6"/></svg>
+              Set price
+            </button>
+            <button class="cbtn" title="Emoji">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"/><path d="M9 9h.01M15 9h.01"/></svg>
+            </button>
+            <button class="cbtn scripts" title="Saved scripts">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h13l3 3v13H4z"/><path d="M8 8h7M8 12h8M8 16h5"/></svg>
+              Scripts
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <span class="composer-spacer"></span>
+            <button class="send-btn" id="sendBtn">
+              Send
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-8-8 18-2.5-7.5z"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== RIGHT CONTEXT PANEL ===== -->
+    <aside class="context" id="context">
+      <div class="ctx-hero">
+        <button class="ico-btn ctx-close" id="ctxClose" title="Close panel">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+        <div class="big-av" id="ctxAv"></div>
+        <div class="ctx-name"><span id="ctxName">Jenna_92</span></div>
+        <div class="ctx-user" id="ctxUser">@jenna_92</div>
+        <div class="ctx-subpill">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M20 6 9 17l-5-5"/></svg>
+          <span id="ctxSub">Subscribed 3 mo</span>
+        </div>
+        <div class="ctx-quick">
+          <button class="q" title="Add to list"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
+          <button class="q" title="Tip request"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></button>
+          <button class="q" title="Restrict"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></svg></button>
+          <button class="q" title="More"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button>
+        </div>
+      </div>
+
+      <div class="ctx-sec">
+        <div class="ctx-sec-title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 2 4-6"/></svg>
+          Spend stats
+        </div>
+        <div class="stats-grid" id="statsGrid"></div>
+      </div>
+
+      <div class="ctx-sec">
+        <div class="ctx-sec-title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-6"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
+          Private note
+        </div>
+        <div class="note-box">
+          <textarea id="ctxNote"></textarea>
+          <div class="note-foot">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+            Edited by you
+            <span class="saved"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M20 6 9 17l-5-5"/></svg> Saved</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="ctx-sec">
+        <div class="ctx-sec-title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>
+          Smart Lists
+        </div>
+        <div class="list-tags" id="listTags"></div>
+      </div>
+
+      <div class="ctx-sec">
+        <div class="ctx-sec-title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 0 1-8 0"/></svg>
+          Recent purchases
+        </div>
+        <div id="purchases"></div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+
+<script>
+/* ---------- avatar generator (inline SVG initials) ---------- */
+const PALETTES = [
+  ['#2F6BFF','#6A9BFF'],['#F0518A','#FF8FB3'],['#8B5CF6','#B794FF'],
+  ['#16B364','#5FD69A'],['#F5A623','#FFC969'],['#0EA5B7','#4FD3E0'],
+  ['#E0517A','#F59BBA'],['#5661E0','#8E97FF']
+];
+function palFor(seed){let h=0;for(let i=0;i<seed.length;i++)h=(h*31+seed.charCodeAt(i))>>>0;return PALETTES[h%PALETTES.length];}
+function initials(name){
+  const clean=name.replace(/[^A-Za-z0-9_ ]/g,' ').replace(/_/g,' ').trim().split(/\s+/);
+  if(clean.length===1)return clean[0].slice(0,2).toUpperCase();
+  return (clean[0][0]+clean[1][0]).toUpperCase();
+}
+function avatar(name,size,fs){
+  const [a,b]=palFor(name);const id='g'+Math.random().toString(36).slice(2,8);
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="border-radius:50%;display:block">
+    <defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs>
+    <rect width="${size}" height="${size}" rx="${size/2}" fill="url(#${id})"/>
+    <text class="av-txt" x="50%" y="50%" dy=".02em" font-size="${fs}" text-anchor="middle" dominant-baseline="central" font-family="Inter">${initials(name)}</text>
+  </svg>`;
+}
+
+/* ---------- data ---------- */
+const CONVOS = {
+  jenna:{
+    name:"Jenna_92", user:"@jenna_92", online:true, live:"Active now",
+    lifetime:"$1,240", sub:"Subscribed 3 mo",
+    prev:"Omg yes send it 🙈 you're so bad", time:"2m", unread:2,
+    online_dot:true, vip:true, spender:true, priority:false,
+    stats:[["$1,240","Lifetime spend","green"],["18","PPVs bought",""],["$310","Tips",""],["$28","Avg buy",""]],
+    note:"Loves GFE + slow build-up. Buys most PPVs under $30, went to $60 twice on custom. Works nights (nurse) — best to text after 10pm. Birthday Aug 14. Never call her by real name.",
+    lists:[["Big Spenders","#16B364"],["GFE Regulars","#8B5CF6"],["Online Now","#2F6BFF"]],
+    purchases:[["ppv","Shower tease set","Today · 9:41 AM","$25"],["tip","Tip — 'good morning'","Yesterday","$20"],["ppv","Custom video (2m)","Mon","$60"],["ppv","Lingerie photo bundle","Last week","$18"]],
+    smart:["Send the shower set as a $25 PPV 🚿","Awww you're gonna make me blush 🙈","Tease her about last night’s custom"],
+    messages:[
+      {t:"day",v:"Today"},
+      {t:"in",v:"morning babe 🥱 just got off my shift",time:"9:02 AM"},
+      {t:"out",v:"mmm hi sleepy girl 🥰 rough night at the hospital?",time:"9:05 AM",seen:true},
+      {t:"in",v:"soo long. i kept thinking about our chat last night lol",time:"9:06 AM"},
+      {t:"out",v:"oh yeah? 😏 i might’ve made something JUST for you while you were gone…",time:"9:07 AM",seen:true},
+      {t:"ppv",dir:"out",locked:false,price:"$25",state:"Unlocked",caption:"steamy shower tease · 3 pics + 1 clip",count:"4 media",time:"9:41 AM"},
+      {t:"sys",v:"Jenna unlocked your $25 message"},
+      {t:"in",v:"OKAY that was worth every penny 🔥🔥 send more",time:"9:44 AM"},
+      {t:"out",v:"greedy 😈 i love it. give me 10 mins & i’ll spoil you properly",time:"9:45 AM",seen:true},
+      {t:"tip",v:"Jenna tipped $20 — “for being so cute this morning”"},
+      {t:"in",v:"Omg yes send it 🙈 you're so bad",time:"9:52 AM"},
+      {t:"typing"}
+    ]
+  },
+  mike:{
+    name:"coolguy_mike", user:"@coolguy_mike", online:true, live:"Active now",
+    lifetime:"$3,980", sub:"Subscribed 8 mo",
+    prev:"whats the price on the full vid?", time:"6m", unread:1,
+    online_dot:true, vip:true, spender:true, priority:true,
+    stats:[["$3,980","Lifetime spend","green"],["52","PPVs bought",""],["$1,120","Tips",""],["$41","Avg buy",""]],
+    note:"WHALE 🐳 — top 1% spender. Impulsive buyer, hates being made to wait. Loves 'exclusive / just for you' framing. Will drop $100+ on customs. Do NOT lowball him. Prefers video over pics.",
+    lists:[["Big Spenders","#16B364"],["Whales","#F5A623"],["Priority","#F5A623"],["Video Buyers","#8B5CF6"]],
+    purchases:[["ppv","Full-length custom (12m)","Yesterday","$120"],["tip","Tip — birthday","3 days ago","$150"],["ppv","B/G collab clip","Last week","$85"],["ppv","POV video pack","Last week","$45"]],
+    smart:["Quote him $65 for the full video 🎥","Frame it as 'made this one just for you'","Offer the VIP bundle at $90"],
+    messages:[
+      {t:"day",v:"Today"},
+      {t:"in",v:"hey you around? been thinking about that preview you posted 👀",time:"1:12 PM"},
+      {t:"out",v:"for youuu? always 😌 that preview was just a tiny taste babe",time:"1:14 PM",seen:true},
+      {t:"in",v:"it looked insane. is there a full version",time:"1:15 PM"},
+      {t:"out",v:"there is 🤫 12 whole minutes, uncut. i only send it to my favorites though",time:"1:16 PM",seen:true},
+      {t:"ppv",dir:"out",locked:true,price:"$40",state:"Locked",caption:"full 12-min video · uncut, sound on",count:"1 video",time:"1:18 PM"},
+      {t:"in",v:"whats the price on the full vid?",time:"1:24 PM"}
+    ]
+  },
+  david:{
+    name:"David R.", user:"@davidr_ttx", online:false, live:"Active 2h ago",
+    lifetime:"$610", sub:"Subscribed 5 wk",
+    prev:"maybe next week, kinda broke rn haha", time:"1h", unread:0,
+    online_dot:false, vip:false, spender:false, priority:false,
+    stats:[["$610","Lifetime spend","green"],["9","PPVs bought",""],["$40","Tips",""],["$21","Avg buy",""]],
+    note:"Newer sub, warming up. Price-sensitive — bounces off anything over $30. Responds well to bundles & discounts. Chatty, likes to talk about his day. Good candidate for a 'first VIP' offer.",
+    lists:[["New Subs","#2F6BFF"],["Price Sensitive","#5B6478"]],
+    purchases:[["ppv","Discount bundle (3 pics)","Last week","$15"],["ppv","Welcome PPV","3 wk ago","$12"],["tip","Tip — 'nice smile'","4 wk ago","$10"]],
+    smart:["Offer him a $15 starter bundle 🎁","Ask about his weekend plans","Send a free flirty pic to warm him up"],
+    messages:[
+      {t:"day",v:"Earlier today"},
+      {t:"in",v:"heyy how’s your day going",time:"11:30 AM"},
+      {t:"out",v:"better now that you texted 😊 was just about to make coffee. you?",time:"11:47 AM",seen:true},
+      {t:"in",v:"same old, work is dragging lol",time:"11:52 AM"},
+      {t:"out",v:"aw i can make it more fun 😏 i put together a little bundle you’d love, on discount just for the week",time:"11:55 AM",seen:true},
+      {t:"ppv",dir:"out",locked:true,price:"$15",state:"Locked",caption:"weekly discount bundle · 3 pics",count:"3 media",time:"11:56 AM"},
+      {t:"in",v:"maybe next week, kinda broke rn haha",time:"12:14 PM"}
+    ]
+  },
+  sofia:{
+    name:"Sofia_Rose", user:"@sofia.rose", online:true, live:"Active now",
+    lifetime:"$2,150", sub:"Subscribed 6 mo",
+    prev:"you always know how to spoil me 💕", time:"14m", unread:0,
+    online_dot:true, vip:true, spender:true, priority:false,
+    stats:[["$2,150","Lifetime spend","green"],["29","PPVs bought",""],["$540","Tips",""],["$33","Avg buy",""]],
+    note:"Loyal VIP, very sweet. Buys consistently 2-3x/week. Loves compliments & feeling special. Into cosplay content. Anniversary of subbing coming up — send a thank-you gift.",
+    lists:[["Big Spenders","#16B364"],["VIP","#8B5CF6"],["Cosplay Fans","#F0518A"]],
+    purchases:[["tip","Tip — 'you're gorgeous'","Today","$35"],["ppv","Cosplay set — Harley","Yesterday","$40"],["ppv","Bedroom photo set","2 days ago","$28"]],
+    smart:["Tease the new cosplay drop 🎀","Thank her for being a day-one VIP","Send the Harley set part 2 at $30"],
+    messages:[
+      {t:"day",v:"Today"},
+      {t:"in",v:"just saw your story, you looked unreal 😍",time:"2:30 PM"},
+      {t:"out",v:"stoppp 🙈 you’re gonna give me an ego. i actually shot a whole cosplay set today thinking of my VIPs",time:"2:33 PM",seen:true},
+      {t:"ppv",dir:"out",locked:false,price:"$40",state:"Unlocked",caption:"Harley Quinn cosplay · full set",count:"8 media",time:"2:35 PM"},
+      {t:"sys",v:"Sofia unlocked your $40 message"},
+      {t:"tip",v:"Sofia tipped $35 — “you're gorgeous 💕”"},
+      {t:"in",v:"you always know how to spoil me 💕",time:"2:44 PM"}
+    ]
+  },
+  brandon:{
+    name:"Brandon_K", user:"@bk_2000", online:false, live:"Active 40m ago",
+    lifetime:"$95", sub:"Subscribed 9 days",
+    prev:"do you do customs?", time:"3h", unread:1,
+    online_dot:false, vip:false, spender:false, priority:true,
+    stats:[["$95","Lifetime spend","green"],["3","PPVs bought",""],["$0","Tips",""],["$26","Avg buy",""]],
+    note:"Brand new, high intent — asking about customs already. Hasn't tipped yet. Handle with care, big upside. Wants a specific outfit request (details in DMs).",
+    lists:[["New Subs","#2F6BFF"],["Priority","#F5A623"],["Custom Requests","#F0518A"]],
+    purchases:[["ppv","Intro photo set","5 days ago","$20"],["ppv","Welcome PPV","9 days ago","$12"]],
+    smart:["Yes! Quote customs from $75 🎬","Ask what outfit he has in mind","Send your custom menu"],
+    messages:[
+      {t:"day",v:"Today"},
+      {t:"in",v:"hey! love the content so far",time:"10:02 AM"},
+      {t:"out",v:"aw thank you babe, welcome to my little world 😘 what made you sub?",time:"10:20 AM",seen:true},
+      {t:"in",v:"honestly your vibe. quick q — do you do customs?",time:"10:24 AM"}
+    ]
+  },
+  mia:{
+    name:"Mia.Belle", user:"@mia_belle", online:true, live:"Active now",
+    lifetime:"$780", sub:"Subscribed 2 mo",
+    prev:"haha you're trouble 😂", time:"5h", unread:0,
+    online_dot:true, vip:false, spender:false, priority:false,
+    stats:[["$780","Lifetime spend","green"],["11","PPVs bought",""],["$60","Tips",""],["$24","Avg buy",""]],
+    note:"Fun, playful, banters a lot. Buys when the convo is hot — not a browser. Keep it light and teasing. Likes GIFs & voice notes.",
+    lists:[["Active Chatters","#2F6BFF"],["GFE Regulars","#8B5CF6"]],
+    purchases:[["ppv","Playful selfie set","2 days ago","$18"],["tip","Tip — 'made me laugh'","4 days ago","$15"],["ppv","Voice note bundle","Last week","$22"]],
+    smart:["Send a flirty voice note 🎙️","Bet her she can't resist the next PPV","Send a teasing GIF"],
+    messages:[
+      {t:"day",v:"Today"},
+      {t:"in",v:"you can NOT say stuff like that and then go offline 😭",time:"9:10 AM"},
+      {t:"out",v:"oops 😇 i had to leave you wanting more, that’s kinda my whole thing",time:"9:31 AM",seen:true},
+      {t:"in",v:"haha you're trouble 😂",time:"9:33 AM"}
+    ]
+  },
+  tyler:{
+    name:"Tyler_W", user:"@tylerw88", online:false, live:"Active yesterday",
+    lifetime:"$1,910", sub:"Subscribed 11 mo",
+    prev:"send me something to think about at work 😏", time:"1d", unread:0,
+    online_dot:false, vip:true, spender:true, priority:false,
+    stats:[["$1,910","Lifetime spend","green"],["31","PPVs bought",""],["$260","Tips",""],["$35","Avg buy",""]],
+    note:"Long-term VIP, reliable weekly buyer. Corporate job, buys during work hours 9-5. Loves the 'naughty at work' angle. Rarely tips but buys every PPV.",
+    lists:[["Big Spenders","#16B364"],["VIP","#8B5CF6"],["Loyal 6mo+","#16B364"]],
+    purchases:[["ppv","Office roleplay set","Yesterday","$38"],["ppv","Morning tease clip","3 days ago","$30"],["ppv","Weekend photo dump","Last week","$42"]],
+    smart:["Send the 'meeting break' teaser 😏","Frame it as a work distraction","Offer the office set part 2"],
+    messages:[
+      {t:"day",v:"Yesterday"},
+      {t:"in",v:"long day at the office, need a break 🙄",time:"3:40 PM"},
+      {t:"out",v:"then let me be your break 😏 slip into the bathroom for 2 mins…",time:"3:52 PM",seen:true},
+      {t:"in",v:"send me something to think about at work 😏",time:"3:55 PM"}
+    ]
+  },
+  lena:{
+    name:"Lena", user:"@lena_xoxo", online:true, live:"Active now",
+    lifetime:"$4,420", sub:"Subscribed 1 yr",
+    prev:"you're my favorite, you know that ❤️", time:"2d", unread:0,
+    online_dot:true, vip:true, spender:true, priority:true,
+    stats:[["$4,420","Lifetime spend","green"],["68","PPVs bought",""],["$1,640","Tips",""],["$39","Avg buy",""]],
+    note:"TOP FAN 👑 — #1 lifetime spender, been here a year. Treat like royalty. Emotionally invested (parasocial), craves connection over content. Send personal voice notes. Remembers small details — reference her dog 'Biscuit'.",
+    lists:[["Whales","#F5A623"],["VIP","#8B5CF6"],["Top Fan","#F0518A"],["Loyal 6mo+","#16B364"]],
+    purchases:[["tip","Tip — 'just because ❤️'","2 days ago","$100"],["ppv","Anniversary custom","3 days ago","$150"],["tip","Tip — 'miss you'","Last week","$75"],["ppv","GN voice + pic","Last week","$30"]],
+    smart:["Ask how Biscuit is doing 🐶","Send a personal 'thinking of you' voice note","Thank her for a full year 👑"],
+    messages:[
+      {t:"day",v:"2 days ago"},
+      {t:"in",v:"okay I know it's late but I just wanted to say today was hard and talking to you helped ❤️",time:"11:20 PM"},
+      {t:"out",v:"i’m always here for you, you know that 🥺 how’s Biscuit? did the vet visit go okay?",time:"11:24 PM",seen:true},
+      {t:"in",v:"he's totally fine!! spoiled as always lol. you remembering that means everything",time:"11:26 PM"},
+      {t:"tip",v:"Lena tipped $100 — “just because ❤️”"},
+      {t:"in",v:"you're my favorite, you know that ❤️",time:"11:28 PM"}
+    ]
+  }
+};
+
+const ORDER = ["jenna","mike","sofia","david","brandon","mia","tyler","lena"];
+let activeKey = "jenna";
+
+/* ---------- render conversation list ---------- */
+function tagChips(c){
+  let h="";
+  if(c.vip) h+=`<span class="tag vip"><svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1z"/></svg>VIP</span>`;
+  if(c.spender) h+=`<span class="tag spend">$ Spender</span>`;
+  if(c.priority) h+=`<span class="tag prio">Priority</span>`;
+  if(c.sub && /days|wk|9 days/.test(c.sub)) h+=`<span class="tag new">New</span>`;
+  return h;
+}
+function renderList(){
+  const el=document.getElementById("convList");
+  let html=`<div class="conv-section">Pinned</div>`;
+  const pinned=["jenna","mike"];
+  const rest=ORDER.filter(k=>!pinned.includes(k));
+  const row=(k)=>{
+    const c=CONVOS[k];
+    return `<div class="conv ${k===activeKey?'active':''} ${c.unread?'unread':''}" data-key="${k}" onclick="selectConv('${k}')">
+      <span class="conv-av">${avatar(c.name,42,15)}<span class="odot ${c.online_dot?'':'off'}"></span></span>
+      <div class="conv-body">
+        <div class="conv-top">
+          <span class="conv-name">${c.name}</span>
+          <span class="conv-time">${c.time}</span>
+        </div>
+        <div class="conv-prev">${c.prev}</div>
+        <div class="conv-tags">
+          ${tagChips(c)}
+          ${c.unread?`<span class="unread-pill">${c.unread}</span>`:''}
+        </div>
+      </div>
+    </div>`;
+  };
+  html+=pinned.map(row).join("");
+  html+=`<div class="conv-section">All messages</div>`;
+  html+=rest.map(row).join("");
+  el.innerHTML=html;
+}
+
+/* ---------- render thread ---------- */
+function msgHTML(m){
+  if(m.t==="day") return `<div class="day-div"><span>${m.v}</span></div>`;
+  if(m.t==="sys") return `<div class="sys"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>${m.v}</div>`;
+  if(m.t==="tip") return `<div class="sys"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-6"/><path d="M2 8h20v4H2z"/><path d="M12 22V8"/><path d="M12 8a3 3 0 1 0-3-3c0 1.5 1 3 3 3zM12 8a3 3 0 1 1 3-3c0 1.5-1 3-3 3z"/></svg>${m.v}</div>`;
+  if(m.t==="typing") return `<div class="typing"><i></i><i></i><i></i></div>`;
+  if(m.t==="ppv"){
+    const lockedCls=m.locked?'locked':'';
+    const media=m.locked
+      ? `<div class="ppv-media ${lockedCls}"><div class="ppv-lock"><span class="circle"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span><span class="txt">Locked · tap to unlock</span></div><span class="ppv-count"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 3l14 9-14 9z"/></svg>${m.count}</span></div>`
+      : `<div class="ppv-media"><span class="ppv-unlocked-badge"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M20 6 9 17l-5-5"/></svg>Unlocked</span><div class="ppv-lock"><span class="circle"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V6a4 4 0 0 1 7-2.6"/></svg></span></div><span class="ppv-count"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 3l14 9-14 9z"/></svg>${m.count}</span></div>`;
+    return `<div class="msg ${m.dir}">
+      <div class="ppv">
+        ${media}
+        <div class="ppv-foot">
+          <span class="ppv-price">${m.price}</span>
+          <span class="ppv-state ${m.locked?'locked':'unlocked'}">${m.state}</span>
+        </div>
+      </div>
+      <div class="ppv-caption">${m.caption}</div>
+      <div class="msg-time">${m.time}${m.dir==='out'?` · <span class="seen"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m2 12 5 5L18 6"/><path d="m11 15 1 1L22 6"/></svg>Seen</span>`:''}</div>
+    </div>`;
+  }
+  // regular in/out
+  const seen = m.t==="out" && m.seen ? ` · <span class="seen"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m2 12 5 5L18 6"/><path d="m11 15 1 1L22 6"/></svg>Seen</span>` : "";
+  return `<div class="msg ${m.t}"><div class="bubble">${m.v}</div><div class="msg-time">${m.time||''}${seen}</div></div>`;
+}
+
+function renderThread(c){
+  const el=document.getElementById("thread");
+  el.innerHTML=c.messages.map(msgHTML).join("");
+  el.scrollTop=el.scrollHeight;
+}
+
+/* ---------- render smart strip ---------- */
+function renderSmart(c){
+  const el=document.getElementById("smartStrip");
+  const label=el.querySelector(".smart-label");
+  el.innerHTML="";
+  el.appendChild(label);
+  c.smart.forEach(s=>{
+    const b=document.createElement("button");
+    b.className="smart-chip";
+    b.textContent=s;
+    b.onclick=()=>{document.getElementById("composerInput").value=s.replace(/[🚿🙈😏🎥🎬🎁🐶🎀🎙️👑❤️💕]/g,'').trim();document.getElementById("composerInput").focus();};
+    el.appendChild(b);
+  });
+}
+
+/* ---------- render context panel ---------- */
+function renderContext(c){
+  document.getElementById("ctxAv").innerHTML=avatar(c.name,76,26)+`<span class="odot" style="${c.online_dot?'':'background:#C4CBDA'}"></span>`;
+  document.getElementById("ctxName").textContent=c.name;
+  document.getElementById("ctxUser").textContent=c.user;
+  document.getElementById("ctxSub").textContent=c.sub;
+  document.getElementById("statsGrid").innerHTML=c.stats.map(s=>`<div class="stat"><div class="v ${s[2]}">${s[0]}</div><div class="l">${s[1]}</div></div>`).join("");
+  document.getElementById("ctxNote").value=c.note;
+  document.getElementById("listTags").innerHTML=c.lists.map(l=>`<span class="list-tag"><span class="d" style="background:${l[1]}"></span>${l[0]}</span>`).join("")+`<span class="list-tag add"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Add</span>`;
+  document.getElementById("purchases").innerHTML=c.purchases.map(p=>{
+    const ic=p[0]==="tip"
+      ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>`
+      : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>`;
+    return `<div class="purchase"><span class="pi ${p[0]}">${ic}</span><div class="pb"><div class="pt">${p[1]}</div><div class="pw">${p[2]}</div></div><span class="pa">${p[3]}</span></div>`;
+  }).join("");
+}
+
+/* ---------- render header ---------- */
+function renderHeader(c){
+  document.getElementById("chAv").innerHTML=avatar(c.name,44,15)+(c.online?'<span class="odot"></span>':'');
+  document.getElementById("chName").textContent=c.name;
+  document.getElementById("chUser").textContent=c.user;
+  document.getElementById("chLifetime").textContent=c.lifetime;
+  document.getElementById("crumbFan").textContent=c.name;
+  const live=document.getElementById("chLive");
+  live.innerHTML=c.online?`<span class="d"></span> ${c.live}`:c.live;
+  live.className=c.online?"live":"";
+  live.style.color=c.online?"":"var(--muted-2)";
+}
+
+/* ---------- select conversation ---------- */
+function selectConv(key){
+  activeKey=key;
+  const c=CONVOS[key];
+  document.querySelectorAll(".conv").forEach(el=>el.classList.toggle("active",el.dataset.key===key));
+  renderHeader(c);
+  renderThread(c);
+  renderSmart(c);
+  renderContext(c);
+}
+
+/* ---------- interactions ---------- */
+document.getElementById("chips").addEventListener("click",e=>{
+  const chip=e.target.closest(".chip");if(!chip)return;
+  document.querySelectorAll("#chips .chip").forEach(c=>c.classList.remove("active"));
+  chip.classList.add("active");
+});
+document.getElementById("railNav").addEventListener("click",e=>{
+  const item=e.target.closest(".nav-item");if(!item)return;
+  document.querySelectorAll(".nav-item").forEach(n=>n.classList.remove("active"));
+  item.classList.add("active");
+});
+document.getElementById("ctxToggle").addEventListener("click",()=>document.getElementById("context").classList.toggle("open"));
+document.getElementById("ctxClose").addEventListener("click",()=>document.getElementById("context").classList.remove("open"));
+
+const ci=document.getElementById("composerInput");
+ci.addEventListener("input",()=>{ci.style.height="auto";ci.style.height=Math.min(ci.scrollHeight,120)+"px";});
+
+function doSend(){
+  const val=ci.value.trim();if(!val)return;
+  const c=CONVOS[activeKey];
+  // strip the typing indicator if present
+  c.messages=c.messages.filter(m=>m.t!=="typing");
+  c.messages.push({t:"out",v:val,time:"now",seen:false});
+  ci.value="";ci.style.height="auto";
+  renderThread(c);
+}
+document.getElementById("sendBtn").addEventListener("click",doSend);
+ci.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();doSend();}});
+
+/* ---------- init ---------- */
+document.getElementById("creatorAv").innerHTML=avatar("Aria Vixen",38,13)+'<span class="odot"></span>';
+renderList();
+selectConv("jenna");
+</script>
+</body>
+</html>

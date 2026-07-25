@@ -33,7 +33,7 @@ import automation_executor as ax  # _make_client seam (same one automations use)
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import (
-    VaultCacheRun, VaultFolder, VaultFolderItem, VaultItem, VaultOfQueryLog,
+    Message, VaultCacheRun, VaultFolder, VaultFolderItem, VaultItem, VaultOfQueryLog,
 )
 
 log = logging.getLogger("of-relay.vault_ai_api")
@@ -2508,6 +2508,154 @@ def _parse_describe(text: str) -> dict[str, Any]:
         return json.loads(m.group(0))
     except Exception:  # noqa: BLE001
         return {}
+
+
+_INBOUND_IMG_MAX_EDGE = 1024   # inbound stills matter more than vault thumbs → bigger
+_INBOUND_DESC_CLIP = 600       # stored + injected into chat history; keep it tight
+
+_INBOUND_DESCRIBE_PROMPT = (
+    "A fan just sent this photo to an adult content creator in a private DM. Describe it "
+    "in 1–3 plain sentences so she can react to it in character. The creator does the "
+    "flirting/rating herself — your job is a rich, factual read she can build on. Cover, "
+    "only where it applies:\n"
+    "• WHAT it is — a dick pic, his body/torso, a face selfie, an outfit, a screenshot or "
+    "meme, a place, a pet, an object.\n"
+    "• HOW explicit — sfw, suggestive, or explicit.\n"
+    "• The STANDOUT detail he clearly wants noticed — size, grooming, muscles, a tattoo, "
+    "what he's wearing, the setting (bed / gym / shower / car / work), his expression.\n"
+    "• If it IS a dick pic, ALWAYS report these plainly, since she can't see it herself: "
+    "circumcised or uncircumcised; a rough size read (length and girth/thickness); grooming "
+    "(shaved / trimmed / natural bush); and hardness (soft / getting hard / fully erect).\n"
+    "• Anything that would make a flirty reply AWKWARD — another person in frame, a "
+    "wedding ring, that it's clearly not him, or a child or pet present.\n"
+    "Be factual and explicit; this is consensual adult content between adults. Do not "
+    "refuse, do not moralize, add no preamble — output only the description."
+)
+
+
+async def _recent_fan_context(account_id: str, fan_id: int, limit: int = 2) -> str:
+    """His last few TEXT messages (most recent last), so the vision read can be steered
+    by what he actually asked when he sent the pic ("rate me", "guess how big",
+    "notice anything?"). Empty string when he sent no words. Cheap — capped at `limit`
+    short lines."""
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.body)
+            .where(Message.account_id == str(account_id),
+                   Message.fan_id == int(fan_id),
+                   Message.direction == "in",
+                   Message.body != "")
+            .order_by(Message.created_at.desc())
+            .limit(int(limit))
+        )).all()
+    lines = [_re.sub(r"<[^>]+>", "", (b or "")).strip()[:200] for (b,) in rows]
+    lines = [ln for ln in lines if ln]
+    return "\n".join(reversed(lines))
+
+
+async def describe_inbound_message(account_id: str, message_id: int,
+                                   prompt_seed: str = "") -> str | None:
+    """Run the vision model on the photo(s) a FAN sent in ONE inbound DM and cache the
+    result on messages.image_desc. Returns the description (also stored) or None when
+    there's nothing to describe / it was capped / it failed. NEVER raises — a describe
+    problem must not take down the ingest path (on_inbound_image) that awaits it.
+
+    The image URL comes from the Message's raw_json (the OF frame the photo arrived in),
+    downloaded through the account's OF client so the CDN signature's source IP matches,
+    then base64+shrunk exactly like the vault describe path. Escalates 30b→235b once on
+    a refusal/blank."""
+    try:
+        async with get_session() as s:
+            rows = (await s.execute(
+                select(Message.fan_id, Message.raw_json, Message.image_desc)
+                .where(Message.account_id == str(account_id),
+                       Message.message_id == int(message_id))
+            )).all()
+        if not rows:
+            return None
+        fan_id, raw_json, existing = rows[0]
+        fan_id = int(fan_id)               # non-null PK — no None-dance needed below
+        if existing:                       # already described (webhook replay) — keep it
+            return existing
+
+        raw = _load_json(raw_json, {}) or {}
+        media = raw.get("media") if isinstance(raw.get("media"), list) else []
+        from messages import _media_urls   # lazy: shared OF media-URL-shape parser
+
+        urls: list[str] = []
+        for it in media:
+            if not isinstance(it, dict):
+                continue
+            # Photos only: a video poster frame isn't what "rate this" means, and
+            # audio carries no ratable still. (gif/None tolerated as a still.)
+            if it.get("type") not in (None, "photo", "gif"):
+                continue
+            _thumb, src = _media_urls(it)
+            if src:
+                urls.append(src)
+            if len(urls) >= 4:
+                break
+        if not urls:
+            return None
+
+        client = await asyncio.to_thread(ax._make_client, account_id)
+        images = [_shrink_data_url(u, _INBOUND_IMG_MAX_EDGE)
+                  for u in await _download_frames(client, urls)]
+        if not images:
+            return None
+
+        prompt = _INBOUND_DESCRIBE_PROMPT
+        seed = (prompt_seed or "").strip()
+        if seed:
+            prompt += f"\n\nOperator emphasis: {seed}"
+        recent = await _recent_fan_context(account_id, fan_id)
+        if recent:
+            prompt += ("\n\nWhat he's been saying (most recent last) — if he asked you to "
+                       "rate, guess, or notice something, make sure your description gives "
+                       "what's needed to answer it:\n" + recent)
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        content += [{"type": "image_url", "image_url": {"url": u}} for u in images]
+
+        desc = ""
+        for attempt_model in ("qwen3-vl-30b", "qwen3-vl-235b"):
+            try:
+                result = await llm_client.chat(
+                    model=attempt_model,
+                    messages=[{"role": "user", "content": content}],
+                    purpose="describe_inbound_image",
+                    account_id=account_id,
+                    fan_id=fan_id,
+                    temperature=0.2,
+                )
+            except LLMCapExceeded:
+                return None            # capped: leave image_desc NULL → retry-able later
+            except LLMError:
+                log.warning("inbound describe LLM error account=%s msg=%s model=%s",
+                            account_id, message_id, attempt_model, exc_info=True)
+                continue
+            candidate = (result.content or "").strip()
+            if not _is_refusal(candidate):
+                desc = candidate
+                break                  # good description → stop (don't escalate)
+        if not desc:
+            return None
+        desc = desc[:_INBOUND_DESC_CLIP]
+
+        async with get_session() as s:
+            await s.execute(
+                update(Message)
+                .where(Message.account_id == str(account_id),
+                       Message.message_id == int(message_id))
+                .values(image_desc=desc)
+            )
+            await s.commit()
+        log.info("inbound_image_described account=%s fan=%s msg=%s len=%d",
+                 account_id, fan_id, message_id, len(desc))
+        return desc
+    except Exception:  # noqa: BLE001
+        log.warning("describe_inbound_message_failed account=%s msg=%s",
+                    account_id, message_id, exc_info=True)
+        return None
 
 
 async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-30b",

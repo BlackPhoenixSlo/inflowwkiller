@@ -430,6 +430,13 @@ class Message(Base):
     automation_kind: Mapped[str | None] = mapped_column(String)
 
     raw_json: Mapped[str | None] = mapped_column(Text)
+    # Qwen3-VL description of an inbound photo the FAN sent, cached at ingest by
+    # webhook_dispatch.on_inbound_image (gated by tip_reward image_describe_enabled).
+    # NULL = never described (no image, feature off, or a describe failure). The chat
+    # engines read it back into history as "[photo he sent: …]" so the AI can rate /
+    # react to it. Added 0052; nullable so init_db's ADD-COLUMN catch-up materializes
+    # it on prod with no backfill. See vault_ai_api.describe_inbound_message.
+    image_desc: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)  # OF's createdAt
     ingested_at: Mapped[datetime] = _ts_now()
 

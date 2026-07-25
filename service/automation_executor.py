@@ -66,6 +66,7 @@ from db.models import (
 from of_client import OFAPIError, OFClient
 from automation_registry import register, get_automation, load_automation_plugins
 import account_health
+import account_page  # free-vs-paid page (prime the cache off the recovery probe)
 
 log = logging.getLogger("of-relay.automation")
 
@@ -1401,10 +1402,13 @@ async def _probe_dead_sessions() -> None:
             await account_health.stamp_probe(aid)
             try:
                 client = _make_client(aid)
-                await asyncio.to_thread(client.me)
+                me = await asyncio.to_thread(client.me)
             except Exception as e:
                 log.info("session_probe_still_dead account=%s err=%s", aid, repr(e)[:200])
                 continue
+            # Free-run: this probe already holds the profile the paid-post gate
+            # needs, and a recovered account is exactly when it went stale.
+            account_page.prime(aid, me)
             if await account_health.clear_session_dead(aid):
                 log.info("account_session_recovered account=%s — automations resume", aid)
     except Exception:

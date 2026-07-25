@@ -433,7 +433,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
               <label className="space-y-1">
                 <div className="text-fg-dim text-xs">Post-purchase window (min)</div>
                 <input type="number" className={`${INPUT} w-full`} min={0}
-                  value={cfg.post_purchase_minutes ?? 25}
+                  value={cfg.post_purchase_minutes ?? 30}
                   onChange={(e) => set({ post_purchase_minutes: parseInt(e.target.value || "0", 10) })} />
               </label>
               <label className="space-y-1">

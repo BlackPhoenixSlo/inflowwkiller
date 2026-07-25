@@ -138,6 +138,15 @@ def _validate(cfg: dict) -> dict:
         out["image_reply_enabled"] = bool(cfg["image_reply_enabled"])
     if "image_closer_enabled" in cfg:
         out["image_closer_enabled"] = bool(cfg["image_closer_enabled"])
+    # Flag 3: vision-describe the photo he sent and cache it on the message so the
+    # chat engines can rate / react to it. Optional prompt seed steers the rater.
+    if "image_describe_enabled" in cfg:
+        out["image_describe_enabled"] = bool(cfg["image_describe_enabled"])
+    if "image_describe_prompt" in cfg:
+        out["image_describe_prompt"] = str(cfg["image_describe_prompt"] or "").strip()[:400]
+    if "image_describe_scope" in cfg:
+        v = str(cfg["image_describe_scope"] or "all").strip().lower()
+        out["image_describe_scope"] = v if v in ("all", "paid") else "all"
     # Hot-thread proactive teaser (read by ai_chatter). Master flag + the two vault
     # folders; the numeric knobs are clamped in the _INT_KNOBS loop below.
     if "hot_teaser_enabled" in cfg:

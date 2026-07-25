@@ -38,6 +38,7 @@ sys.path.insert(0, str(HERE))
 
 import accounts as account_registry  # noqa: E402
 import account_health  # noqa: E402  # dead-session pause (see service/account_health.py)
+import account_page  # noqa: E402  # free-vs-paid page (see service/account_page.py)
 import proxies as proxy_registry  # noqa: E402
 import live_rev  # noqa: E402
 import secrets_store  # noqa: E402  # UI-writable key store (Setup → Keys)
@@ -1329,7 +1330,11 @@ def health(request: Request, all_accounts: bool = Query(False, description="Prob
 
 @app.get("/api/of/v2/users/me")
 def users_me() -> dict[str, Any]:
-    return _proxy(lambda: _get_client().me())
+    me = _proxy(lambda: _get_client().me())
+    # Free-vs-paid page rides on `subscribePrice` here; hand it to account_page
+    # so the feed-post gate gets its answer without a second OF round-trip.
+    account_page.prime(_resolve_account_id(_request_ctx.get()), me)
+    return me
 
 
 # ── Image proxy ────────────────────────────────────────────────
@@ -5642,6 +5647,8 @@ def of_update_profile(body: dict = Body(...)):
     # /users/me/settings, so any profile patch may change the cached blob.
     aid = _resolve_account_id(_request_ctx.get())
     relay_cache.invalidate("my_settings", aid)
+    # A profile PATCH can move `subscribePrice` — re-read the page tier next ask.
+    account_page.invalidate(aid)
     return result
 
 # ── Analytics (Statistics > Earnings/Engagement/Reach tabs) ────────
@@ -6136,9 +6143,23 @@ async def of_cancel_scheduled(request: Request, queue_id: int):
 
 # Posts writes ------------------------------------------------------
 
+async def _refuse_paid_post_on_paid_page(request: Request, price: float | int | None) -> None:
+    """A priced feed post needs a FREE page — a subscription page has no
+    paid-post lane on OF (service/account_page.py). Refused here, at the one
+    route the composer and its all-models fan-out both go through, so the
+    operator gets the reason instead of an opaque OF rejection."""
+    if not price or float(price) <= 0:
+        return
+    if await account_page.is_paid_page(_resolve_account_id(request)):
+        raise HTTPException(
+            409, "this page charges for a subscription — OF has no paid-post lane "
+                 "for it. Post it free, or sell it as a PPV in DMs.")
+
+
 @app.post("/api/of/v2/posts")
-def of_create_post(body: _CreatePostBody = Body(...)):
-    return _proxy(lambda: _get_client().create_post(
+async def of_create_post(request: Request, body: _CreatePostBody = Body(...)):
+    await _refuse_paid_post_on_paid_page(request, body.price)
+    return await asyncio.to_thread(_proxy, lambda: _get_client().create_post(
         text=body.text, media_files=body.media_files,
         price=body.price, previews=body.previews, posted_at=body.posted_at,
         tagged_users=body.tagged_users,
@@ -6146,8 +6167,9 @@ def of_create_post(body: _CreatePostBody = Body(...)):
     ))
 
 @app.put("/api/of/v2/posts/{post_id}")
-def of_edit_post(post_id: int, body: _EditPostBody = Body(...)):
-    return _proxy(lambda: _get_client().edit_post(
+async def of_edit_post(post_id: int, request: Request, body: _EditPostBody = Body(...)):
+    await _refuse_paid_post_on_paid_page(request, body.price)
+    return await asyncio.to_thread(_proxy, lambda: _get_client().edit_post(
         post_id, text=body.text, price=body.price, media_files=body.media_files,
     ))
 

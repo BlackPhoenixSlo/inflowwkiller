@@ -484,8 +484,9 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
         detail = "Per-fan cooldown after a send."
     elif lad is not None and lad.companion_until and lad.companion_until > now:
         state, label, until = "companion", "Talking, not selling", _iso(lad.companion_until)
-        detail = ("He said he's broke, asked to just talk, or called her a bot. The "
-                  "conversation stays on; no price goes in front of him.")
+        detail = ("He said he's broke or asked to just talk. The conversation stays on; "
+                  "no price goes in front of him. (A bot accusation no longer lands him "
+                  "here — it's counted, but he stays sellable.)")
     elif lad is not None and lad.cooldown_until and lad.cooldown_until > now:
         state, label, until = "companion", "Talking, not selling", _iso(lad.cooldown_until)
         detail = "Post-purchase ease-off — he just bought; she isn't charging again yet."

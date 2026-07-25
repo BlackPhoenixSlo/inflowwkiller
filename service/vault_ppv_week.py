@@ -33,6 +33,7 @@ import logging
 from typing import Any, Callable
 from urllib.parse import quote
 
+import account_page
 import vault_ai_brief
 import vault_scripts
 from vault_ppv_sets import (
@@ -334,11 +335,31 @@ def _default_copy(ctx: dict[str, Any]) -> str:
 # `mass_ppv` + `feed_paid` reuse the existing `also_post_to_feed` wiring
 # (`ppv_send.post_to_feed`); the free variants are unpriced nudges.
 
-def _channels_for(role: str, price_cents: int, theme: str, *, combine: bool = True
-                  ) -> list[dict[str, Any]]:
+def _delivery_for(chapter_delivery: str, paid_page: bool) -> str:
+    """A chapter's delivery, remapped for the page it lands on. On a paid page a
+    `paid_post` day has no wall to land on (no paid-post lane), so it IS a mass
+    PPV — say so, or the review card and the LLM copy brief would both promise a
+    feed drop `_channels_for` has already removed."""
+    if paid_page and chapter_delivery == "paid_post":
+        return "ppv"
+    return chapter_delivery
+
+
+def _channels_for(role: str, price_cents: int, theme: str, *, combine: bool = True,
+                  paid_page: bool = False) -> list[dict[str, Any]]:
     """The concrete sends for a day. With `combine` (the operator's default) every
-    drop fires a feed action AND a DM action; without it, just the primary."""
+    drop fires a feed action AND a DM action; without it, just the primary.
+
+    `paid_page` (OF says this page charges for a subscription — see
+    service/account_page.py) removes every `feed_paid` channel: that page has no
+    paid-post lane, so the drop is sold in DMs only. The opener, whose whole
+    point was the wall, becomes a priced DM rather than a free nudge pointing at
+    a post that will never exist. `feed_free` is untouched — a free post is
+    exactly what a subscription page's wall is for."""
     if role == "opener":
+        if paid_page:
+            return [{"kind": "mass_ppv", "label": "Mass PPV · DMs (paid page: no wall drop)",
+                     "priced": True, "price_cents": price_cents}]
         feed = {"kind": "feed_paid", "label": "Paid post · feed (free preview + lock)",
                 "priced": True, "price_cents": price_cents}
         dm = {"kind": "mass_free", "label": "Mass DM nudge · free", "priced": False,
@@ -354,6 +375,8 @@ def _channels_for(role: str, price_cents: int, theme: str, *, combine: bool = Tr
         return [feed, dm] if combine else [feed]
     dm = {"kind": "mass_ppv", "label": "Mass PPV · DMs", "priced": True,
           "price_cents": price_cents}
+    if paid_page:
+        return [dm]
     feed = {"kind": "feed_paid", "label": "Also paid post · feed", "priced": True,
             "price_cents": price_cents}
     return [dm, feed] if combine else [dm]
@@ -397,7 +420,8 @@ def _day_plan(ch: _Chapter, items: list[dict[str, Any]], *, prev_theme: str,
               bands: dict[str, tuple[int, int]], bounds: tuple[int, int],
               prev_price: int, copy_fn: Callable[[dict[str, Any]], str],
               pad_pool: list[dict[str, Any]] | None = None,
-              combine: bool = True, reused: bool = False) -> dict[str, Any]:
+              combine: bool = True, reused: bool = False,
+              paid_page: bool = False) -> dict[str, Any]:
     items = _dedupe(items)[:MAX_MEDIA]
 
     # Borrow a tame HOOK when a priced day holds nothing it may preview — an
@@ -419,6 +443,8 @@ def _day_plan(ch: _Chapter, items: list[dict[str, Any]], *, prev_theme: str,
     tier = _dominant_tier(items) if items else "unknown"
     theme = _theme(items, avoid=prev_theme) if items else "me"
 
+    delivery = _delivery_for(ch.delivery, paid_page)
+
     if ch.delivery == "free_post":
         price = 0
         # A free post IS the giveaway — the whole thing is unlocked. Prefer the
@@ -434,7 +460,7 @@ def _day_plan(ch: _Chapter, items: list[dict[str, Any]], *, prev_theme: str,
     caption = copy_fn({
         "role": ch.role, "weekday": ch.weekday, "theme": theme,
         "prev_theme": prev_theme, "tier": tier, "price_cents": price,
-        "delivery": ch.delivery, "items": items,
+        "delivery": delivery, "items": items,
     })
 
     kinds: dict[str, int] = {}
@@ -457,9 +483,10 @@ def _day_plan(ch: _Chapter, items: list[dict[str, Any]], *, prev_theme: str,
 
     return {
         "key": ch.key, "weekday": ch.weekday, "role": ch.role,
-        "headline": ch.headline, "delivery": ch.delivery, "heat": ch.heat,
+        "headline": ch.headline, "delivery": delivery, "heat": ch.heat,
         "caption_pool_key": ch.pool,
-        "channels": _channels_for(ch.role, price, theme, combine=combine),
+        "channels": _channels_for(ch.role, price, theme, combine=combine,
+                                  paid_page=paid_page),
         "hero_facts": hero_facts,
         "tier": tier, "band": _TIER_TO_BAND.get(tier, "unknown"),
         "price_cents": price,
@@ -479,8 +506,8 @@ def _day_plan(ch: _Chapter, items: list[dict[str, Any]], *, prev_theme: str,
 
 
 def plan_week(items: list[dict[str, Any]], *, config: dict[str, Any] | None = None,
-              copy_fn: Callable[[dict[str, Any]], str] | None = None
-              ) -> dict[str, Any]:
+              copy_fn: Callable[[dict[str, Any]], str] | None = None,
+              paid_page: bool = False) -> dict[str, Any]:
     """A seven-day escalation arc from a pool of described vault items. PURE —
     no DB, no network, no LLM.
 
@@ -495,6 +522,11 @@ def plan_week(items: list[dict[str, Any]], *, config: dict[str, Any] | None = No
     — so the arc always spans the full range the vault has and heat never goes
     backward. Sunday's recap is a free taste, drawn (reused) from the week's own
     tame previews.
+
+    `paid_page` = OF says this page charges for a subscription, so it has no
+    paid-post lane: every `feed_paid` channel is dropped and the opener sells in
+    DMs instead (see `_channels_for`). Passed in, not looked up — this function
+    stays pure.
     """
     copy_fn = copy_fn or _default_copy
     bands = _bands(config)
@@ -556,7 +588,7 @@ def plan_week(items: list[dict[str, Any]], *, config: dict[str, Any] | None = No
     for ch in _SELLING:
         day = _day_plan(ch, alloc[ch.key], prev_theme=prev_theme, bands=bands,
                         bounds=bounds, prev_price=prev_price, copy_fn=copy_fn,
-                        pad_pool=pad_pool, combine=combine)
+                        pad_pool=pad_pool, combine=combine, paid_page=paid_page)
         days.append(day)
         if day["theme"]:
             prev_theme = day["theme"]
@@ -581,7 +613,7 @@ def plan_week(items: list[dict[str, Any]], *, config: dict[str, Any] | None = No
     recap_items = [by_id[m] for m in recap_ids[:_RECAP.want] if m in by_id]
     days.append(_day_plan(_RECAP, recap_items, prev_theme=prev_theme, bands=bands,
                           bounds=bounds, prev_price=0, copy_fn=copy_fn,
-                          combine=combine, reused=True))
+                          combine=combine, reused=True, paid_page=paid_page))
 
     selling = days[:6]
     prices = [d["price_cents"] for d in selling]
@@ -598,8 +630,9 @@ def plan_week(items: list[dict[str, Any]], *, config: dict[str, Any] | None = No
 
     return {
         "days": days,
+        "paid_page": paid_page,
         "arc": [{"weekday": c.weekday, "role": c.role, "heat": c.heat,
-                 "delivery": c.delivery} for c in ARC],
+                 "delivery": _delivery_for(c.delivery, paid_page)} for c in ARC],
         "coverage": {
             "items_total": len(enriched),
             "placeable": len(placeable),
@@ -728,7 +761,8 @@ async def build_week(account_id: str, *, config: dict[str, Any] | None = None,
     """Load the vault and plan its week. Read-only, suggest-only. `use_llm` writes
     the connective captions through the house voice (network)."""
     items = await _load_items(account_id)
-    plan = plan_week(items, config=config, copy_fn=copy_fn)
+    plan = plan_week(items, config=config, copy_fn=copy_fn,
+                     paid_page=await account_page.is_paid_page(account_id))
     plan["account_id"] = account_id
     if use_llm:
         model, painful = await _llm_context(account_id)
@@ -742,15 +776,15 @@ async def build_week(account_id: str, *, config: dict[str, Any] | None = None,
 
 def plan_month(items: list[dict[str, Any]], *, weeks: int = 4,
                config: dict[str, Any] | None = None,
-               copy_fn: Callable[[dict[str, Any]], str] | None = None
-               ) -> dict[str, Any]:
+               copy_fn: Callable[[dict[str, Any]], str] | None = None,
+               paid_page: bool = False) -> dict[str, Any]:
     """`weeks` escalation arcs, exclusive ACROSS the month — week 2 never re-sells
     what week 1 already sold. Each week still opens soft and finishes hot; a
     described vault of a few hundred items is deep enough for several waves. Pure."""
     pool = list(items)
     week_plans: list[dict[str, Any]] = []
     for w in range(1, weeks + 1):
-        wp = plan_week(pool, config=config, copy_fn=copy_fn)
+        wp = plan_week(pool, config=config, copy_fn=copy_fn, paid_page=paid_page)
         wp["week_index"] = w
         week_plans.append(wp)
         used = {m for d in wp["days"][:6] for m in d["media_ids"]}
@@ -762,6 +796,7 @@ def plan_month(items: list[dict[str, Any]], *, weeks: int = 4,
     chans = [c for wp in week_plans for d in wp["days"] for c in d["channels"]]
     return {
         "weeks": week_plans,
+        "paid_page": paid_page,
         "summary": {
             "weeks": weeks, "days": weeks * 7,
             "media_bound": sum(d["size"] for d in selling),
@@ -781,7 +816,8 @@ async def build_month(account_id: str, *, weeks: int = 4, use_llm: bool = True,
     """Load the vault and plan a whole month of exclusive weekly arcs. Read-only,
     suggest-only. `use_llm` (default on) writes every day's caption in voice."""
     items = await _load_items(account_id)
-    plan = plan_month(items, weeks=weeks, config=config)
+    plan = plan_month(items, weeks=weeks, config=config,
+                      paid_page=await account_page.is_paid_page(account_id))
     plan["account_id"] = account_id
     if use_llm:
         model, painful = await _llm_context(account_id)
