@@ -128,6 +128,88 @@ _FAST_REPLY_WINDOW = 20
 _FAST_REPLY_TRIGGER = 5     # >=5 of the last 20 realized replies under 30s ⇒ nudge
 _FAST_NUDGE_FLOOR_S = 60
 
+# ── Opening speed. Her reply gap on a fan's EARLY turns (his 2nd-15th inbound)
+# predicts whether he ever speaks again, and the effect is steepest on exactly the
+# fans worth keeping. Measured 2026-07-26 over 25,693 early turns, split by how fast
+# HE had just replied:
+#     his last reply   gap <10min   10-30min   30-120min   >2h
+#     HOT   (<2min)      92.7%       81.7%      72.2%     57.2%   (n=10002 / 208)
+#     WARM (2-10min)     89.9%       80.1%      83.3%     65.4%
+#     COLD (>10min)      82.5%       77.1%      70.4%     60.5%   (n=4374 / 2329)
+# The gradient survives inside every engagement stratum, so it is not merely "cold
+# threads die" — and a HOT fan loses 35.5 points to a >2h gap against a COLD fan's
+# 22. Attention is cheapest to spend and most expensive to withhold at the start.
+# (Observational, and his-latency is a coarse heat proxy — but the direction holds in
+# all three strata, which selection alone does not explain. The one non-monotonic
+# cell, WARM 30-120min at 83.3%, is n=258 and inside the noise.)
+# THE OPENING — his first _OPENING_TURNS inbounds, answered on a STATIC schedule.
+#
+# Static and not a draw, because a fan meets his opening exactly once: he has nothing
+# to compare it against, so per-fan variance is invisible to him. (The earlier version
+# drew from a pole and justified it as "the first replies vary the way a person's do" —
+# that describes a sequence he never sees.) Heat cannot do this job either: it only
+# interpolates toward _HOT_MU, median 124s, which puts most opening replies over
+# INLINE_MAX_S (120s) — they would defer through the scheduler, spend the fan's single
+# deferral hop, and inherit the wake_at poll's latency on the one reply that must not
+# be late.
+#
+# TWO values, not one, and they must differ. Turn 2 reaches this schedule only when
+# turn 1 produced no gif — i.e. he opened with a question — and a single constant would
+# then hand him two identical gaps back to back, which is the one repeat he CAN see. In
+# the ordinary gif-first flow turn 2 is the beat, so he only ever meets the first value.
+#
+# 60s: fast enough for the continuation curve (92.7% at <2min), far enough above
+# _FLOOR_S that it never reads as a machine. Note this targets TOTAL inbound→reply
+# latency, so the realised gap is max(60, poll_lag + _FLOOR_S) — "60 seconds, unless
+# the poll was already slower than that".
+_OPENING_S = (60.0, 100.0)
+_OPENING_TURNS = len(_OPENING_S)   # derived: one source of truth for "how many"
+
+# THE WARM-UP — the first _WARMUP_S of the conversation. Covers what the opening
+# cannot: turn 3 was still free to draw the ordinary cold reply, which put a 30-minute
+# silence eight minutes into a brand new thread. A bigger turn count does not fix that
+# (it makes the first four replies fast and leaves the fifth free to vanish); the ask
+# was bounded by the CLOCK — "no 30, never, for the next 20 minutes". So inside the
+# window no break may roll and no single reply may exceed _WARMUP_CEIL_S. Measured
+# from HIS FIRST inbound, not from the welcome: the conversation starts when he
+# answers, and an old fan re-engaging months later is not in a warm-up.
+#
+# The opening and the warm-up OVERLAP but neither contains the other, so they stay two
+# predicates rather than one phase enum: `turn_index` can still be 1 an hour into a
+# thread (he answered, then went quiet, then answered again), and the warm-up covers
+# turn 9 if he is chatty. Collapsing them would silently drop one of those cases.
+_WARMUP_S = 20 * 60
+
+# THE BEAT — the rest after a solo gif. A gif closes no loop and opens none, so
+# nothing is owed in either direction and drifting off reads as her attention
+# wandering rather than as her ignoring him. The two 07-26 test subjects are the same
+# length of silence with opposite outcomes, and what differed was whether an answer
+# was owed. One fan answered a gif with a throwaway line, waited ~40min, came back
+# with a gif of his own and then bought. Another volunteered real content, waited
+# ~30min, and collapsed to one word before going silent. Hence the beat is gated on
+# `answer_owed` and NEVER on a turn counter — a positional script would have fired
+# straight into the second fan's most engaged moment.
+#
+# The beat is its OWN DRAW, exactly like the opening — NOT a floor-and-cap laid over
+# the ordinary cold reply. That was the first implementation and it was quietly broken:
+# the cold pole's median (~340s) and long tail sit mostly OUTSIDE the beat's window, so
+# most draws were pinned to whichever bound they crossed. Measured over 2,000 seeds,
+# 51.4% of opening beats came out at EXACTLY 300.000s and 39.1% of later ones at
+# EXACTLY 420.000s — a fixed inter-message interval repeating across every new fan on
+# every account, which is the most machine-detectable thing this design could possibly
+# emit, and precisely what the spread was supposed to prevent. Percentile summaries hid
+# it completely; only a distinct-value count showed the point mass.
+#
+# Triangular rather than lognormal because a triangular draw cannot produce boundary
+# mass: it is generated inside the range instead of being clamped into it. Mode at five
+# minutes because that is the number the operator asked for twice.
+_BEAT_S = (240.0, 420.0)     # 4-7 min, and the draw never touches either end
+_BEAT_MODE_S = 300.0         # 5 min
+
+# Derived, not typed twice: the warm-up must not clamp tighter than the beat's own top
+# or the two would fight and the beat would be silently truncated inside the window.
+_WARMUP_CEIL_S = max(480, _BEAT_S[1])
+
 # A fan who spoke this recently is mid-conversation (used only for context labelling
 # now that both live contexts share one draw).
 SCENE_TTL_S = 12 * 60
@@ -190,6 +272,20 @@ class RhythmCtx:
     tz_offset_minutes: int | None = None  # creator-local offset from UTC
     no_sleep: bool = False               # skip the overnight sleep; only short breaks
     last_cover_at: datetime | None = None
+    # Is an ANSWER OWED on this turn? True when his last inbound asked something or
+    # volunteered real content (`_common.is_qualifying_inbound`), False for a
+    # dead-end reaction ("lol", an emoji, a gif). This is the ONE gate on every
+    # discretionary silence: breaks and the post-gif rest both refuse to fire while
+    # he is waiting on an answer. `is_qualifying_inbound` is the right predicate and
+    # `is_substantive_msg` is NOT — the latter passes a bare "lol", which is the
+    # exact turn a break is safe on.
+    answer_owed: bool = False
+    after_gif_solo: bool = False         # her last outbound was a gif with no text
+    turn_index: int = 0                  # which inbound of the thread this is (1=first)
+    # HIS FIRST inbound on this thread — the clock the warm-up window runs off. None
+    # means the caller did not wire it, and an unknown start is NOT a warm-up, so a
+    # caller that never supplies it keeps today's behaviour exactly.
+    thread_started_at: datetime | None = None
     enabled: bool = True
 
 
@@ -335,7 +431,16 @@ def decide_availability(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decis
     # gets. This is the operator's "if it's hot both reply fast; if boring or no sales she
     # takes a break." An open ask forces heat high, so a live sell is structurally
     # break-proof (a ladder stranded mid-sell is the worst outcome in the system).
-    if _context_of(ctx, utc_now) == CONTEXT_FREE_CHAT:
+    # An OWED ANSWER is break-proof, and so is the opening. Both are the same rule
+    # the two 07-26 subjects taught: silence is cheap on a turn that closed cleanly
+    # and expensive on one that didn't. Without the `answer_owed` gate a break rolls
+    # straight into a fan who just volunteered something — which is precisely how fan
+    # a fan went from a full volunteered sentence to a one-word reply to gone. Note
+    # this is deliberately NOT a turn-counter script: a gap at exchange 3 is fine
+    # after a throwaway line and ruinous after a question, so position never
+    # decides it.
+    if _context_of(ctx, utc_now) == CONTEXT_FREE_CHAT \
+            and not ctx.answer_owed and not protected_start(ctx, utc_now):
         _, _, p_break = _heat_params(scene_heat(ctx, utc_now))
         if rng.random() < p_break:
             if ctx.no_sleep:
@@ -347,6 +452,30 @@ def decide_availability(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decis
                             cover_line=_pick_cover(rng, COVER_BUSY, ctx, utc_now))
 
     return None
+
+
+def in_opening(ctx: RhythmCtx) -> bool:
+    """Is this one of his first few inbounds? `turn_index` is 1-based and 0 means the
+    caller did not supply it — an unknown turn is NOT treated as the opening, so a
+    caller that never wires it keeps today's behaviour exactly."""
+    return 1 <= ctx.turn_index <= _OPENING_TURNS
+
+
+def in_warmup(ctx: RhythmCtx, utc_now: datetime) -> bool:
+    """Are we inside the first _WARMUP_S of the conversation? Unlike `in_opening`
+    this is a CLOCK, not a turn count — the ask was "no 30-minute gap, ever, for the
+    first twenty minutes", and a fan who fires off eight messages in four minutes
+    would walk straight out of any turn-based window."""
+    if ctx.thread_started_at is None:
+        return False
+    return (utc_now - ctx.thread_started_at).total_seconds() <= _WARMUP_S
+
+
+def protected_start(ctx: RhythmCtx, utc_now: datetime) -> bool:
+    """Is this thread young enough that she may not simply wander off? The union of
+    the two windows — they overlap without either containing the other, so both are
+    asked. This is the ONLY place a break consults them."""
+    return in_opening(ctx) or in_warmup(ctx, utc_now)
 
 
 def _context_of(ctx: RhythmCtx, utc_now: datetime) -> str:
@@ -395,6 +524,79 @@ def _heat_params(heat: float) -> tuple[float, float, float]:
     return mu, sigma, p_break
 
 
+# A hard bound on a heavy-tailed draw does not clip the tail, it STACKS it on one
+# value. Every clamp in this module had that defect: 20.9% of opening replies came out
+# at exactly 25.000s (the floor) and 37.5% of warm-up replies at exactly 480.000s (the
+# ceiling). A repeated identical interval is the most machine-readable thing a chat can
+# emit, so the bounds are applied SOFTLY — a draw that would have landed on a bound is
+# spread across a band just inside it instead. Same window, same median, no spike.
+_EDGE_SPREAD = 0.08          # band width, as a fraction of (ceiling - floor)
+
+
+def _fit(core: float, floor: float, ceiling: float, rng: Random) -> float:
+    """Bring `core` inside [floor, ceiling] WITHOUT piling mass on either bound."""
+    span = (ceiling - floor) * _EDGE_SPREAD
+    if span <= 0:
+        return floor
+    if core >= ceiling:
+        return rng.uniform(ceiling - span, ceiling)
+    if core <= floor:
+        return rng.uniform(floor, floor + span)
+    return core
+
+
+def beat_applies(ctx: RhythmCtx) -> bool:
+    """She sent a gif and he owes her nothing back ⇒ let it breathe. The one
+    deliberate pause in the design, and the only condition that gets its own draw."""
+    return ctx.after_gif_solo and not ctx.answer_owed
+
+
+def _draw(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> float:
+    """The raw reply latency, before bounds. ONE ordered decision — the first branch
+    that matches owns the distribution, so precedence is a readable list rather than
+    something that emerges from clamps interacting.
+
+    The beat outranks the opening deliberately: on his second message, right after
+    the opening gif, the operator wants the five-minute beat, not a 55-second snap.
+    (Which is also why the opening is usually sampled ONCE per fan — turn 2 only
+    reaches this pole when turn 1 produced no gif, e.g. he opened with a question.)"""
+    if beat_applies(ctx):
+        return rng.triangular(_BEAT_S[0], _BEAT_S[1], _BEAT_MODE_S)
+    if in_opening(ctx):
+        return _OPENING_S[ctx.turn_index - 1]
+    mu, sigma, _ = _heat_params(scene_heat(ctx, utc_now))
+    return rng.lognormvariate(mu, sigma)
+
+
+def _bounds(ctx: RhythmCtx, utc_now: datetime, context: str) -> tuple[float, float]:
+    """(floor, ceiling) for that draw, resolved in ONE place. Pure — no rng, so it
+    can be called in any order relative to the draw.
+
+    Postcondition: floor <= ceiling, ALWAYS. Without it the pair can invert (a wide
+    floor under a narrow ceiling) and which end wins is then decided by how the caller
+    happens to nest its min/max — `min(max(x, floor), ceiling)` and
+    `max(min(x, ceiling), floor)` give opposite answers from the same numbers."""
+    if beat_applies(ctx):
+        # The beat's draw is already inside its own range, so nothing may narrow it —
+        # not the opening ceiling, not the warm-up. Clamping it is what produced the
+        # point mass at 300s/420s that this whole shape exists to remove. Its top
+        # (7 min) is under _WARMUP_CEIL_S, so it never breaks the warm-up promise.
+        return float(_FLOOR_S), _BEAT_S[1]
+
+    ceiling = _ASK_OPEN_CEIL_S if context == CONTEXT_ASK_OPEN else _FREE_CHAT_CEIL_S
+    if in_warmup(ctx, utc_now):
+        ceiling = min(ceiling, _WARMUP_CEIL_S)
+
+    floor = float(_FLOOR_S)
+    # Soft fast-reply nudge: if she's been snapping back <30s too often lately, floor
+    # this draw at 60s. The hard >35%-share floor was refuted (non-monotonic); this
+    # keeps only the direction the data supports (accused threads reply faster).
+    recent = ctx.recent_realized_s[-_FAST_REPLY_WINDOW:]
+    if sum(1 for d in recent if d < _FAST_REPLY_S) >= _FAST_REPLY_TRIGGER:
+        floor = max(floor, _FAST_NUDGE_FLOOR_S)
+    return min(floor, ceiling), ceiling
+
+
 def mirror_mult(his_last_latency_s: float | None) -> float:
     """Cosmetic pace-mirror: a whisper on TOP of the heat model. See _MIRROR_BETA. His
     latency already drives `heat`; this just keeps a fan who fires back in 8s from getting
@@ -434,26 +636,17 @@ def decide(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decision:
     # the fast sexting pole (78s) and the slow chat pole (374s) by this thread's live
     # heat. A hot scene ⇒ ~every-minute replies; a cold one ⇒ minutes, drifting toward a
     # break. The ceiling still keys off whether an ask is open (she never vanishes mid-sell).
-    context = _context_of(ctx, utc_now)
-    ceiling = _ASK_OPEN_CEIL_S if context == CONTEXT_ASK_OPEN else _FREE_CHAT_CEIL_S
-
-    heat = scene_heat(ctx, utc_now)
-    mu, sigma, _ = _heat_params(heat)
-    core = rng.lognormvariate(mu, sigma)
+    # Draw, then clamp. WHICH distribution and WHICH bounds is the whole policy, and it
+    # lives in _draw()/_bounds() — nothing here depends on statement order, and _bounds
+    # is pure so the two may be called in either order.
     # NOTE: his reply speed is ALREADY a heat input (scene_heat's latency term). The old
     # mirror_mult multiplied it AGAIN here — a double-count of a signal that was itself a
     # confound. Dropped: heat owns his-pace now. mirror_mult stays defined for any future
     # non-heat caller, but the decide() path must not re-apply it.
-
-    # Soft fast-reply nudge: if she's been snapping back <30s too often lately, floor
-    # this draw at 60s. The hard >35%-share floor was refuted (non-monotonic); this
-    # keeps only the direction the data supports (accused threads reply faster).
-    floor = _FLOOR_S
-    recent = ctx.recent_realized_s[-_FAST_REPLY_WINDOW:]
-    if sum(1 for d in recent if d < _FAST_REPLY_S) >= _FAST_REPLY_TRIGGER:
-        floor = max(floor, _FAST_NUDGE_FLOOR_S)
-
-    core = min(max(core, floor), ceiling)
+    context = _context_of(ctx, utc_now)
+    core = _draw(ctx, utc_now, rng)
+    floor, ceiling = _bounds(ctx, utc_now, context)
+    core = _fit(core, floor, ceiling, rng)
 
     # Target TOTAL inbound→reply latency, not a delay stacked on top of however long
     # the executor poll already sat. Otherwise every reply is (poll interval + draw)

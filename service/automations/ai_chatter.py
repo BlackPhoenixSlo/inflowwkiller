@@ -106,7 +106,8 @@ from ._common import (
     STYLE_MAX_BUBBLES,
     apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction, coerce_ids,
     load_consistency_flags,
-    hold_with_typing, apply_typo_throttle, load_cat_stickers_flag,
+    hold_with_typing, apply_typo_throttle, is_qualifying_inbound,
+    load_cat_stickers_flag,
     load_cat_sticker_tuning,
     load_nonnative_flags, load_spacing_flags,
     load_painful_texting_flag, load_strip_emojis, load_style_flags,
@@ -610,7 +611,8 @@ async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
 class _Cand:
     __slots__ = ("fan_id", "fan_msg_n", "last_dir", "last_body", "messages",
                  "last_in_at", "last_out_at", "last_human_out_at", "session_out_n",
-                 "day_out_n", "total_out_n", "first_at", "her_last_at", "pic_sent")
+                 "day_out_n", "total_out_n", "first_at", "her_last_at", "pic_sent",
+                 "last_out_was_gif", "last_in_text", "first_in_at")
 
     def __init__(self, fan_id: int):
         self.fan_id = fan_id
@@ -620,8 +622,30 @@ class _Cand:
         # endpoint reads the same fact the engine does instead of reconstructing
         # it from dispatch state it cannot see (see _leash.TIER_PIC_SENT).
         self.pic_sent = False
+        # Her most recent outbound was a gif with no text — the one turn a pause is
+        # free on, because a gif neither answers nor asks anything (rhythm's
+        # `after_gif_solo`).
+        self.last_out_was_gif = False
         self.last_dir = ""
+        # The last message's HISTORY LINE — what the reply-LLM reads, and what the gif
+        # seed keys off. For an inbound with media this carries a `[he sent: …]` vision
+        # tag, so it is the WRONG field for any gate that asks "what did HE say":
+        # use `last_in_text` for that. (Both `answer_owed` and the gif-first opener
+        # were written against this field first and both were wrong for the same
+        # reason — the describer's prose cleared thresholds his own words never did.)
         self.last_body = ""
+        # His last inbound's OWN WORDS — HTML-stripped body with no `[he sent: …]`
+        # vision tag glued on. `last_body` carries that tag, and a description like
+        # "an animated gif: a cat rolling its eyes" is long enough to clear
+        # is_qualifying_inbound's 3-token bar all by itself — so reading the gate off
+        # last_body made every media-only DM "owed an answer" on the strength of text
+        # OUR OWN describer wrote. A gif he sends is a dead-end reaction, which is the
+        # one turn a pause is safe on; it must not read as a question.
+        self.last_in_text = ""
+        # HIS first message on this thread — the warm-up clock. Deliberately not
+        # `first_at` (the oldest row of ANY direction): that is our own welcome, and
+        # the conversation does not start until he answers it.
+        self.first_in_at: datetime | None = None
         self.messages: list[tuple[str, str]] = []  # (direction, body) oldest→newest
         self.last_in_at: datetime | None = None
         # ANY outbound (human or bot) — the rhythm sampler's "how long has she been
@@ -796,6 +820,9 @@ async def _gather(account_id: str,
         if direction == "in":
             c.fan_msg_n += 1
             c.last_in_at = created_at
+            c.last_in_text = _strip_html(body)
+            if c.first_in_at is None and created_at is not None:
+                c.first_in_at = created_at
             # Assigned, not OR-ed: the tier means "he JUST sent a picture", so a
             # photo three days and forty messages ago must not still read as a
             # live buying signal. Each inbound overwrites the last.
@@ -804,6 +831,24 @@ async def _gather(account_id: str,
         else:
             c.last_out_at = created_at
             hers = mass_run_id is None and automation_kind in _OUR_KINDS
+            # Was her latest outbound a GIF ON ITS OWN? Empty text + no media is the
+            # solo-sticker wire shape (a text reply has a body, a media/PPV send has
+            # media_count>0), so the fact is readable from the columns this scan
+            # ALREADY selects — no raw_json, no extra query on the hot path.
+            # Assigned, not OR-ed: it means "her LAST send was a gif", so a gif forty
+            # messages ago must not still be holding the rest open.
+            #
+            # Gated on `hers`, and that gate is what makes it exact rather than a
+            # guess. Only the chat engines send a bare gif; the empty-body rows from
+            # everything else (image_reply with no media, tip_reward, untagged) are
+            # not gifs and used to arm the beat by mistake. Within `hers` there is no
+            # ambiguity: a text reply carries a body and a PPV carries media, so
+            # neither can look like this. (The ~20% of matching rows whose raw_json
+            # lacks a giphyId are not counter-examples — write_outbound_attribution
+            # stores raw_json=None and the WS pump stores the frame, for the SAME
+            # message_id, so that split is a race between two writers of one message.)
+            c.last_out_was_gif = (hers and not (body or "").strip()
+                                  and int(media_count or 0) == 0)
             if (automation_kind is None and mass_run_id is None
                     and body not in broadcast_bodies):
                 c.last_human_out_at = created_at
@@ -4511,6 +4556,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         lad0.last_paid_at if lad0 is not None else None, _h_paid),
                     his_last_latency_s=_his_last_latency_s(c),  # heat: his pace
                     fan_hot=_fan_hot(c),                        # heat: he's escalating
+                    # Break-proof gates. This is the PRE-LLM availability check, so
+                    # they must match the decide() call below or she'd take a break
+                    # here that the reply path would never have chosen — and the
+                    # break is decided before we pay for a reply we'd throw away.
+                    answer_owed=is_qualifying_inbound(c.last_in_text),
+                    turn_index=int(c.fan_msg_n),
+                    thread_started_at=c.first_in_at,
                     sleep_window=sleep_win, tz_offset_minutes=tz_off,
                     no_sleep=rhythm_no_sleep,
                     last_cover_at=(rst0.last_cover_at if rst0 is not None else None),
@@ -4872,6 +4924,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     cat_stickers.cooldown_active(account_id, fan_id,
                                                  gap_min=sticker_gap_min),
                     skip_w=sticker_skip_w, solo_w=sticker_solo_w)
+                # Open with the gif on his very first message — see
+                # cat_stickers.open_with_gif. Reads his OWN words (last_in_text), not
+                # the history line, which carries the `[he sent: …]` vision tag.
+                sticker_mode = cat_stickers.open_with_gif(
+                    sticker_mode, turn_index=int(c.fan_msg_n),
+                    his_words=c.last_in_text)
             # The deepen phase: once there is nothing left to ask, work in a gen_info
             # opener instead of generic banter. ai_chatter has no graduation cutoff,
             # so a dry pool is restocked (below) rather than ending the conversation.
@@ -4937,6 +4995,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             raw, sticker_tag = cat_stickers.parse_marker(raw)
             if sticker_mode == "skip":
                 sticker_tag = None
+            # Never the same reaction twice running — see cat_stickers.keep_tag.
+            if sticker_tag is not None:
+                sticker_tag = cat_stickers.keep_tag(
+                    account_id, fan_id, sticker_tag, has_text=bool(raw))
+                if sticker_tag is None:
+                    log.info("ai_chatter sticker tag repeat dropped account=%s "
+                             "fan=%s", account_id, fan_id)
             offer_item = offerable.get(offer_id) if offer_id is not None else None
             if offer_id is not None and offer_item is None:
                 log.info("ai_chatter offer marker rejected account=%s fan=%s id=%s",
@@ -5271,14 +5336,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             rst = rstates.get(fan_id)
             cover_line: str | None = rhythm_cover if rhythm_resume else None
             first_delay: float | None = None
-            # `parts` is empty only on a sticker-only reply — no text bubble to
-            # time, so rhythm's decide() (which reads parts[0]) is skipped and
-            # the sticker send below uses its own short hold.
-            if rhythm_on and not rhythm_resume and parts:
+            # `parts` is empty only on a sticker-only reply. It still goes through
+            # rhythm: a gif IS her answer, and it must be paced like one. Skipping it
+            # (the original `and parts` guard) was harmless while solo gifs were ~5% of
+            # replies — but the gif-first opener made one the DEFAULT first reply to
+            # every new fan, so the loudest turn in the product was landing on the
+            # sticker's own 2-6s hold, under _FLOOR_S, bypassing the whole opening
+            # schedule. Nothing to type on a gif, so the wpm hold is 0.
+            if rhythm_on and not rhythm_resume:
                 rnow = datetime.utcnow()
                 d = rhythm.decide(rhythm.RhythmCtx(
-                    account_id=str(account_id), fan_id=fan_id, text=parts[0],
-                    typing_delay_s=typing_delay_seconds(parts[0], typing_wpm),
+                    account_id=str(account_id), fan_id=fan_id,
+                    text=(parts[0] if parts else ""),
+                    typing_delay_s=(typing_delay_seconds(parts[0], typing_wpm)
+                                    if parts else 0.0),
                     last_inbound_at=c.last_in_at, last_outbound_at=c.last_out_at,
                     # An open/hot ladder suppresses break rolls entirely: a ladder
                     # stranded mid-sell is the worst outcome in the system.
@@ -5295,6 +5366,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     his_last_latency_s=_his_last_latency_s(c),
                     fan_hot=_fan_hot(c),
                     recent_realized_s=_recent_realized_s(rst),
+                    # Is an answer OWED? A question or volunteered content is
+                    # break-proof and rest-proof; a bare "lol" is not. is_qualifying
+                    # _inbound is the predicate that draws that line — is_substantive
+                    # _msg passes "lol" and would make every turn owed.
+                    answer_owed=is_qualifying_inbound(c.last_in_text),
+                    after_gif_solo=bool(c.last_out_was_gif),
+                    turn_index=int(c.fan_msg_n),
+                    thread_started_at=c.first_in_at,
                     sleep_window=sleep_win, tz_offset_minutes=tz_off,
                     no_sleep=rhythm_no_sleep,
                     last_cover_at=(rst.last_cover_at if rst is not None else None),
@@ -5515,11 +5594,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if sticker_tag is not None and not send_failed and not first_no_id:
                 gid = cat_stickers.pick_gif(
                     sticker_tag,
-                    random.Random(f"gif:{account_id}:{fan_id}:{c.last_body}"))
+                    random.Random(f"gif:{account_id}:{fan_id}:{c.last_body}"),
+                    account_id=account_id, fan_id=fan_id)
                 if gid is not None:
                     srng = random.Random(f"sdelay:{fan_id}:{gid}")
-                    await hold_with_typing(account_id, fan_id,
-                                           2.0 + 4.0 * srng.random(),
+                    # A gif that IS the reply carries the rhythm delay, exactly as
+                    # bubble 0 would have. A gif RIDING AFTER text is a second bubble,
+                    # so it keeps the short 2-6s beat between bubbles.
+                    s_hold = (first_delay if (not parts and first_delay is not None)
+                              else 2.0 + 4.0 * srng.random())
+                    await hold_with_typing(account_id, fan_id, s_hold,
                                            typing_indicator=typing_indicator)
                     try:
                         result = await asyncio.to_thread(
@@ -5544,7 +5628,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             or datetime.utcnow(),
                             emit_live=True,
                         )
-                        cat_stickers.mark_sent(account_id, fan_id)
+                        cat_stickers.mark_sent(account_id, fan_id,
+                                               tag=sticker_tag, gif_id=gid)
                         sticker_sent = True
                         sent_ok = True
                         stickers_sent += 1
