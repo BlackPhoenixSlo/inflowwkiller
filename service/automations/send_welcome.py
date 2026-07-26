@@ -94,6 +94,17 @@ _DEFAULT_NOTIF_LIMIT = 50      # how many subscribe-notifications to pull per ti
 _DEFAULT_MAX_WELCOMES = 25     # batch cap per run (logged when it bites)
 _WELCOME_TEMPERATURE = 0.85    # matches the spec's Grok call
 _GUARD_DEFAULT_H = 12.0        # cross-automation contact-guard window (payload override)
+# How long a fan rests after his welcome lands, before the chat engine may answer.
+#
+# A new subscriber is the hottest lead there is and he replies FAST — measured
+# 07-26, one answered 50 seconds after the welcome. He then waited ~14 minutes,
+# because two brakes were running and the wrong one won: this sender set a
+# deliberate 10-minute rest (`_FAN_COOLDOWN_S`) and then left its 15-minute fan
+# LEASE lying around to expire (`_LEASE_TTL_S`), and the generic infra timeout
+# silently outranked the policy. The lease is now handed back on a confirmed
+# send, so this constant is the only thing pacing him — one brake, one number,
+# and it is the one somebody chose.
+_WELCOME_REST_S = 150          # 2.5 min — long enough not to talk over the welcome
 
 # First-letter → alliterative adjective for the real-name stutter trick (V1
 # _fan_name_hint / generate_welcome_local). e.g. S → "Sexy Sofie".
@@ -1063,15 +1074,27 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             sent += 1
             sent_ok = True
         finally:
-            # W3: keep the lease (let it expire) on a confirmed send + rest the
-            # fan; release it only when we did NOT send so a retry can run sooner.
+            # W3: rest the fan, then hand the lease straight back — do NOT sit on
+            # it. Holding it meant the 15-minute lease TTL, not the rest we chose,
+            # decided when he could be answered.
+            #
+            # ORDER IS LOAD-BEARING: the cooldown must be in force BEFORE the lease
+            # drops. A tick landing in the gap would see a fan with neither brake
+            # and could reply on top of the welcome — the exact double-message the
+            # lease exists to stop. And if the cooldown write fails we KEEP the
+            # lease, so a fan is never left with no brake at all; it expires on its
+            # own and we are back to the old, slower-but-safe behaviour.
+            rested = False
             if sent_ok:
                 try:
-                    await ax.start_fan_cooldown(account_id, fan_id)
+                    await ax.start_fan_cooldown(account_id, fan_id,
+                                                cooldown_s=_WELCOME_REST_S)
+                    rested = True
                 except Exception:
-                    log.warning("send_welcome cooldown set failed account=%s fan=%s",
+                    log.warning("send_welcome cooldown set failed account=%s fan=%s "
+                                "— keeping the lease as the fallback brake",
                                 account_id, fan_id, exc_info=True)
-            else:
+            if rested or not sent_ok:
                 await ax.release_fan_lease(account_id, fan_id)
 
     return {
