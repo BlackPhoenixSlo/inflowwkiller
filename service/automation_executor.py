@@ -67,6 +67,7 @@ from of_client import OFAPIError, OFClient
 from automation_registry import register, get_automation, load_automation_plugins
 import account_health
 import account_page  # free-vs-paid page (prime the cache off the recovery probe)
+from jsonsafe import dump_capped
 
 log = logging.getLogger("of-relay.automation")
 
@@ -838,7 +839,7 @@ async def _upsert_message(
     is_paid = m.get("isOpened") if price_cents > 0 else None  # NULL = free message
     sender_name = (from_user.get("name") or from_user.get("username") or "")[:255]
     body = m.get("text") or ""
-    raw = json.dumps(m, default=str)[:64 * 1024]
+    raw = dump_capped(m)
 
     stmt = (
         sqlite_insert(Message)

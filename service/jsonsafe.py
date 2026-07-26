@@ -21,6 +21,39 @@ from __future__ import annotations
 import json
 from typing import Any
 
+# Payload columns are capped so one rogue media array can't blow up the disk.
+PAYLOAD_CAP = 64 * 1024
+
+
+def dump_capped(payload: Any, *, limit: int = PAYLOAD_CAP) -> str:
+    """Serialize for a capped TEXT column, ALWAYS returning parseable JSON.
+
+    The cap used to be a blind slice — `json.dumps(m, default=str)[:64 * 1024]`,
+    written four times. Cutting JSON at a byte offset does not produce smaller
+    JSON, it produces unparseable text: on 2026-07-26 every one of the 261 bad
+    `messages.raw_json` rows was EXACTLY 65536 bytes, all but three of them
+    `ppv_send` outbound — so the payloads most likely to be cut were the ones
+    carrying media and price detail.
+
+    Nothing ever crashed over it, which is precisely the problem: `load_json`
+    below degrades corrupt text to a fallback, and `json_extract` in SQL returns
+    NULL, so half a payload read as no payload with nothing said either way.
+
+    Over the cap we store a stub instead of a fragment. A stub is valid JSON, it
+    is honest — the column says "there was one and we dropped it, this big" —
+    and it is greppable, so the next person can size the problem in one query
+    instead of discovering it by accident. (A salvaging variant that drops just
+    the heavy `media` key would keep the useful small fields; it needs a payload
+    shape assumption this module deliberately doesn't make.)"""
+    try:
+        text = json.dumps(payload, default=str)
+    except Exception:
+        # An unserializable payload is not worth raising into an ingest path.
+        return json.dumps({"_dropped": "unserializable"})
+    if len(text) <= limit:
+        return text
+    return json.dumps({"_dropped": "oversize", "_bytes": len(text)})
+
 
 def load_json(raw: Any, fallback: Any) -> Any:
     """Parse a JSON text column, tolerating None / already-parsed / bad JSON.

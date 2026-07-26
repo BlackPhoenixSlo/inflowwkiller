@@ -27,6 +27,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from jsonsafe import dump_capped
 from .engine import get_session
 from .models import (
     Account,
@@ -81,7 +82,7 @@ async def insert_event(
                 source=source,
                 provider_event_id=provider_event_id,
                 event_type=event_type,
-                payload_json=json.dumps(payload, default=str)[:64 * 1024],
+                payload_json=dump_capped(payload),
             )
             if provider_event_id:
                 # Skip insert when a duplicate hits the partial unique idx.

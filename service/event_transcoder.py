@@ -43,6 +43,7 @@ from db.models import Chat, Fan, Message, Transaction
 from of_shapes import giphy_dm_id, has_video   # shared OF payload-shape readers
 from automations._common import source_self_heal_set
 import relay_cache
+from jsonsafe import dump_capped
 
 # Outbound-echo cache-bust debounce (per account). A mass blast echoes one
 # outbound chat_message per recipient; busting list_chats/roster_count on each
@@ -285,7 +286,7 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     # We persist the full payload as raw_json so future migrations can
     # backfill new columns without re-fetching from OF. 64 KB cap keeps
     # one rogue media-array from blowing up disk usage.
-    raw = json.dumps(m, default=str)[:64 * 1024]
+    raw = dump_capped(m)
 
     async with get_session() as s:
         # ── messages upsert ─────────────────────────────────────
@@ -504,7 +505,7 @@ async def _transcode_ppv_unlock(
             event_type, tuple(sorted(payload.keys())),
         )
         return
-    raw = json.dumps(payload, default=str)[:64 * 1024]
+    raw = dump_capped(payload)
     async with get_session() as s:
         await _record_inbound_payment(
             s,
