@@ -24,7 +24,7 @@ from typing import Iterable
 
 import re
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
@@ -215,6 +215,68 @@ def mass_placeholder_message_id(mass_run_id: int) -> int:
     return _MASS_PLACEHOLDER_BASE + int(mass_run_id)
 
 
+async def _backfill_attribution(
+    *,
+    account_id: str,
+    fan_id: int,
+    message_id: int,
+    sent_by_employee_id: int | None,
+    automation_kind: str | None,
+    mass_run_id: int | None,
+    funnel_step: str | None,
+) -> None:
+    """Tag a row somebody else inserted first.
+
+    The insert in `write_outbound_attribution` is `on_conflict_do_nothing`, which
+    is right for the chat-preview bump — a duplicate re-run must not re-bump the
+    inbox — but it also meant that whenever the WS pump inserted the same
+    `(account_id, fan_id, message_id)` first, the send lost its attribution
+    permanently. The pump writes the row straight off the websocket with
+    `automation_kind` NULL and its own conflict clause never sets that column, so
+    nothing downstream could repair it.
+
+    That is not a reporting nit. `_Cand` reads a NULL `automation_kind` as proof a
+    HUMAN sent the message:
+
+        if automation_kind is None and mass_run_id is None:
+            c.last_human_out_at = created_at
+
+    …and `resume_after_manual_hours` then stands the engine down on that fan — an
+    hour of silence on the house default, longer on accounts that raised it. So a
+    lost race doesn't just miscount a send, it mutes the bot for a fan who is
+    sitting there waiting. Measured 07-26: 309 rows in six days that `vault_sends`
+    proves we sent, carrying no attribution at all.
+
+    `coalesce(existing, ours)` per column, so the first writer that actually HAD a
+    value keeps it — a second attribution call, or an ingest that already tagged
+    the row, is a no-op — and columns we have nothing for are left alone rather
+    than blanked. Body, media and `raw_json` are deliberately untouched: the pump
+    has the real OF payload for those and we only ever had placeholders."""
+    ours = {"sent_by_employee_id": sent_by_employee_id,
+            "automation_kind": automation_kind,
+            "mass_run_id": mass_run_id,
+            "funnel_step": funnel_step}
+    have = {k: v for k, v in ours.items() if v is not None}
+    if not have:
+        return                      # nothing to say about this row
+    try:
+        async with get_session() as s:
+            await s.execute(
+                update(Message)
+                .where(Message.account_id == str(account_id),
+                       Message.fan_id == int(fan_id),
+                       Message.message_id == int(message_id))
+                .values(**{k: func.coalesce(getattr(Message, k), v)
+                           for k, v in have.items()})
+            )
+        log.info("attribution backfilled onto an existing row: account=%s fan=%s "
+                 "msg=%s kind=%s", account_id, fan_id, message_id, automation_kind)
+    except Exception:
+        # Never break a send over bookkeeping — same contract as the insert above.
+        log.warning("attribution backfill failed account=%s fan=%s msg=%s",
+                    account_id, fan_id, message_id, exc_info=True)
+
+
 async def write_outbound_attribution(
     *,
     account_id: str,
@@ -339,6 +401,17 @@ async def write_outbound_attribution(
             await _advance_chat_preview(
                 account_id=str(account_id), fan_id=int(fan_id),
                 message_id=int(message_id), body=body, created_at=created_at,
+            )
+        else:
+            # Somebody inserted this row first — tag it anyway. See the docstring
+            # on _backfill_attribution: losing the tag does not just skew stats,
+            # it MUTES the engine on that fan.
+            await _backfill_attribution(
+                account_id=str(account_id), fan_id=int(fan_id),
+                message_id=int(message_id),
+                sent_by_employee_id=sent_by_employee_id,
+                automation_kind=automation_kind,
+                mass_run_id=mass_run_id, funnel_step=funnel_step,
             )
         log.info(
             "attribution: account=%s fan=%s msg=%s emp=%s mass_run=%s",
