@@ -88,6 +88,12 @@ DEFAULT_GAP_MIN = 0.0  # per-fan minutes between stickers (0 = no floor)
 
 # Per-fan floor state — in-memory (restart = clean slate).
 _last_sent: dict[tuple[str, int], datetime] = {}
+# Per-fan LAST (tag, giphy_id) — the consecutive-repeat guard. Also in-memory, and
+# deliberately so: the tag exists only in the prompt protocol (never persisted) and
+# the giphy id lives in `messages.raw_json`, which _gather does NOT select — pulling
+# raw_json into that whole-account scan to save one duplicate gif after a relay
+# restart is the wrong trade. Worst case on restart is a single repeat.
+_last_pick: dict[tuple[str, int], tuple[str, str]] = {}
 
 # A well-formed marker (capture the tag) vs ANY marker-ish line (strip-all —
 # the fan must never see the protocol, malformed included). Same split as the
@@ -136,15 +142,70 @@ def cooldown_active(account_id: str, fan_id: int,
 
 
 def mark_sent(account_id: str, fan_id: int,
-              now: datetime | None = None) -> None:
+              now: datetime | None = None,
+              tag: str | None = None, gif_id: str | None = None) -> None:
     _last_sent[(str(account_id), int(fan_id))] = now or datetime.utcnow()
+    if tag is not None or gif_id is not None:
+        _last_pick[(str(account_id), int(fan_id))] = (tag or "", gif_id or "")
 
 
-def pick_gif(tag: str, rng) -> str | None:
-    """The giphy id to send for `tag` — random among the tag's hand-picked
-    gifs so the same reaction doesn't always land the same clip."""
+def keep_tag(account_id: str, fan_id: int, tag: str | None,
+             *, has_text: bool) -> str | None:
+    """The tag to actually send — None when it would be the same reaction twice in
+    a row to this fan. Both chat engines call this; it is the one home for the rule.
+
+    Observed on a live thread: he complimented her three turns running, the model
+    answered `shy` all three times, and two of the three drew the SAME clip about
+    twenty minutes apart. One `shy` is a girl being coy; three is a macro. Consecutive
+    only — she may reuse the tag once something else has gone out.
+
+    `has_text=False` (a solo roll, where the marker IS the whole reply) always keeps
+    the tag: dropping it there would send an empty turn — nothing at all. A repeat
+    solo still goes out, and `pick_gif` guarantees it is at least a different clip."""
+    if tag is None or not has_text:
+        return tag
+    prev = _last_pick.get((str(account_id), int(fan_id)))
+    return None if (prev and prev[0] == str(tag)) else tag
+
+
+def open_with_gif(mode: str, *, turn_index: int, his_words: str) -> str:
+    """Upgrade an `allow` roll to `solo` on his very first message.
+
+    Operator call, off a live thread that opened gif-first and converted inside the
+    first two hours. A NUDGE, not a mandate: `solo` tells the model a reaction may be
+    the whole reply, and it writes text anyway when no sticker fits.
+
+    Two guards, both load-bearing. A QUESTION is exempt — a gif in place of an answer
+    is the one thing that reads as nobody being home. And only `allow` is upgraded:
+    promoting a `skip` would put this above the account's own rate knob
+    (`cat_sticker_skip_pct`) and above the cooldown, so an operator dialling gifs DOWN
+    would still get one on every new fan.
+
+    `his_words` must be his OWN text — not the history line, which carries the
+    `[he sent: …]` vision tag and would let our describer's prose decide this."""
+    if mode != "allow" or turn_index > 1 or "?" in (his_words or ""):
+        return mode
+    return "solo"
+
+
+def pick_gif(tag: str, rng, account_id: str, fan_id: int) -> str | None:
+    """The giphy id to send for `tag` — random among the tag's hand-picked gifs
+    so the same reaction doesn't always land the same clip.
+
+    The fan's PREVIOUS clip is excluded, which is the only guard that actually stops
+    a visible repeat: the pools are 2-6 clips wide, so an independent draw per turn
+    repeats ~25% of the time on a 4-clip tag, and the seed (fan + his text) does not
+    help because his text differs every turn. Excluding is skipped when it would empty
+    the pool, so a 1-clip tag still sends rather than going silent."""
     gifs = _CATALOG.get(tag, ("", ()))[1]
-    return rng.choice(gifs) if gifs else None
+    if not gifs:
+        return None
+    prev = _last_pick.get((str(account_id), int(fan_id)))
+    if prev and prev[1]:
+        fresh = tuple(g for g in gifs if g != prev[1])
+        if fresh:
+            gifs = fresh
+    return rng.choice(gifs)
 
 
 def prompt_block(mode: str) -> str:

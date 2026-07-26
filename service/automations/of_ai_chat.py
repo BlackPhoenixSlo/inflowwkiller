@@ -1790,6 +1790,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             raw, sticker_tag = cat_stickers.parse_marker(raw)
             if sticker_mode == "skip":
                 sticker_tag = None
+            # NOTE: this engine deliberately does NOT call cat_stickers.open_with_gif.
+            # The gif-first opener belongs to ai_chatter, which owns the new-sub lane;
+            # of_ai_chat stands down whenever ai_chatter is running as full chatter, so
+            # wiring it here too would mean two engines racing to open the same thread.
+            # Never the same reaction twice running — see cat_stickers.keep_tag.
+            if sticker_tag is not None:
+                sticker_tag = cat_stickers.keep_tag(
+                    account_id, fan_id, sticker_tag, has_text=bool(raw))
+                if sticker_tag is None:
+                    log.info("of_ai_chat sticker tag repeat dropped account=%s "
+                             "fan=%s", account_id, fan_id)
             # Deterministic floor under ONPLATFORM_GUARDRAIL: if the model still
             # leaked a number / off-platform handle / meetup arrangement, swap for
             # a warm on-platform deflection before it can be sent.
@@ -1912,7 +1923,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if sticker_tag is not None and not send_failed and not first_no_id:
                 gid = cat_stickers.pick_gif(
                     sticker_tag,
-                    random.Random(f"gif:{account_id}:{fan_id}:{c.last_body}"))
+                    random.Random(f"gif:{account_id}:{fan_id}:{c.last_body}"),
+                    account_id=account_id, fan_id=fan_id)
                 if gid is not None:
                     srng = random.Random(f"sdelay:{fan_id}:{gid}")
                     await hold_with_typing(account_id, fan_id,
@@ -1941,7 +1953,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             or datetime.utcnow(),
                             emit_live=True,
                         )
-                        cat_stickers.mark_sent(account_id, fan_id)
+                        cat_stickers.mark_sent(account_id, fan_id,
+                                               tag=sticker_tag, gif_id=gid)
                         sticker_sent = True
                         sent_ok = True
                         stickers_sent += 1
