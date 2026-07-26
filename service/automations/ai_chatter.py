@@ -5126,11 +5126,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # is seeded on (fan, his last message), so an unchanged inbound rolls
                 # the same "solo" next tick, and the tick after, for ever. Only a
                 # LANDED message flips a fan off the candidate list (`c.last_dir`),
-                # so nothing downstream could break the cycle — one live fan sat 8h
-                # on a single "Lol", burning a generation every 90s and never
-                # getting an answer. Sending the gif ends it, and it arms the
-                # per-fan sticker gap, so the next turn comes back as text and
-                # carries the offer.
+                # so nothing downstream could break the cycle. It only ends when the
+                # model happens to write text instead — measured live on one "Lol":
+                # 36 minutes of silence, 25 generations burned, 23 of them binned,
+                # before it broke character and the 24th got through. Sending the
+                # gif ends it on the FIRST tick, and it arms the per-fan sticker
+                # gap, so the next turn comes back as text and carries the offer.
                 #
                 # A bot accusation still needs words. A cat gif answering "are you a
                 # bot" reads as exactly the dodge he just accused her of.
