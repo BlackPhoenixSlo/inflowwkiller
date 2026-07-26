@@ -39,6 +39,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from auth import assert_account_owned
 from automation_registry import load_automation_plugins, registered_kinds
+from automations._common import STYLE_CONSISTENCY_KEYS
 from db.engine import get_session
 from db.models import (
     Account,
@@ -78,12 +79,15 @@ _MAX_DOC_BYTES = 5 * 1024 * 1024
 _MAX_SECTION_ROWS = 2000
 _BACKUP_KEEP = 20
 
-# The 17 data columns of account_ai_config (PK + updated_at excluded). The
-# export test asserts this list against AccountAiConfig.__table__.columns so a
-# future column can't silently fall out of the export.
+# Every data column of account_ai_config (PK + updated_at excluded). The export
+# test asserts this list against AccountAiConfig.__table__.columns so a future
+# column can't silently fall out of the export — it caught persona_facts_json on
+# the day that column was added. (No count in this comment on purpose: the old
+# "17" had drifted to 21 unnoticed, which is exactly the rot the test prevents.)
 CONFIG_SCALAR_COLS = ("persona", "welcome_rules", "utc_offset", "timezone", "location",
                       "language", "daily_cost_cap_cents", "model")
-CONFIG_JSON_COLS = ("time_activities_json", "time_images_json", "welcome_pinned_json",
+CONFIG_JSON_COLS = ("persona_facts_json",
+                    "time_activities_json", "time_images_json", "welcome_pinned_json",
                     "model_by_purpose", "nudge_config_json", "webhook_config_json",
                     "autoreply_config_json", "style_config_json", "tip_reward_config_json",
                     "ai_chatter_config_json", "ppv_library_config_json",
@@ -513,6 +517,20 @@ def _sanitize_config_clone(cfg: dict, rep: _Report) -> dict:
             rep.config_flags_forced_off[col] = blob.get("enabled")
             blob["enabled"] = False
             rep.visited.add(base + (col, "enabled"))
+
+    # style_config_json is NOT an _ENABLED_FLAG_BLOB — it has no single `enabled`
+    # master, and its flags were all FREE prompt-level layers, so a clone could
+    # safely inherit them. `consistency_*` broke that assumption: it is the first
+    # key in this blob that SPENDS, billing a second LLM call on every qualifying
+    # reply. Its loader is explicit-only precisely so no account is ever opted in
+    # by accident, and a clone silently carrying it hot is exactly that accident.
+    style = cfg.get("style_config_json")
+    if isinstance(style, dict):
+        for k in STYLE_CONSISTENCY_KEYS:
+            if k in style:
+                rep.config_flags_forced_off[f"style_config_json.{k}"] = style[k]
+                style[k] = False
+                rep.visited.add(base + ("style_config_json", k))
     return cfg
 
 

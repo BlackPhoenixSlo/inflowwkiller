@@ -24,7 +24,7 @@ from typing import Iterable
 
 import re
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
@@ -145,6 +145,19 @@ async def _manual_yield_seconds(account_id: str) -> int:
 # ceiling for the (small, autoincrement) mass_run_id. Bump it toward 2**53 if
 # OF's ids ever climb close.
 _MASS_PLACEHOLDER_BASE = 5_000_000_000_000_000
+# Exclusive upper bound of the placeholder band. NOT cosmetic: 6e15 is where
+# transaction_ingest._TIP_MSG_ID_BASE starts its own synthetic band of PERMANENT
+# ledger-tip history. `adopt_thread_placeholders` scans this band by range and
+# DELETES what it matches, so an open-ended `>= BASE` would put those tip rows in
+# range of a delete. The ceiling is the guard, not a tidiness nicety.
+_MASS_PLACEHOLDER_CEIL = 6_000_000_000_000_000
+# How far apart a placeholder and its real row may be and still be the same send.
+# The stub is written as the send goes out; the real row lands on the next ingest,
+# so the true distance is seconds to a few minutes. Six hours is deliberately
+# generous — it forgives a stalled ingest or a backfill — while still refusing the
+# pairing this bound exists to stop: a stub whose real row NEVER arrived adopting a
+# same-caption send weeks later and stamping it with the wrong run.
+_MAX_ADOPT_SECONDS = 6 * 3600.0
 
 
 def _slug_sender(display_name: str) -> str:
@@ -542,6 +555,123 @@ async def record_broadcast_mass_run(
             account_id, queue_id, automation_kind,
         )
         return None
+
+
+async def adopt_thread_placeholders(s, *, account_id: str, fan_id: int) -> int:
+    """Fold every un-reconciled optimistic placeholder in ONE thread into OF's
+    real rows. Runs on the INGEST side, inside the caller's session. Returns how
+    many were adopted.
+
+    Why this exists: `write_mass_optimistic_rows` stamps a synthetic-id row at
+    send time because OF's queue endpoint returns no per-fan ids and the WS pump
+    skips outbound. When OF *does* echo the ids inline, send_mass_message calls
+    `reconcile_mass_placeholder` right away. When it does NOT — `ppv_send`, and
+    any list/online audience — the real row only shows up hours later via the
+    scrape, and nothing ever dropped the placeholder. Two costs, both live in
+    prod: the thread rendered the PPV twice, and the real row (carrying no
+    `automation_kind`) read as a HUMAN send, poisoning every "did a chatter
+    touched this thread" signal and inflating creator-typed message counts.
+
+    PER THREAD, not per message, and that is the whole shape of it. OF gives us
+    no id linking a placeholder to its real row, so the pairing key is
+    (account, fan) + exact body — which means the work is inherently about a
+    thread's whole placeholder set, not about the one row being upserted.
+    Measured on prod 2026-07-25, only 9.4% of placeholders (1,448 of 15,341) ever
+    have a real twin at all, so a per-message hook would spend a lookup on every
+    outbound row of every re-scrape to find nothing the overwhelming majority of
+    the time. One indexed range-seek per thread that usually returns empty is
+    both cheaper and MORE complete: an older placeholder heals as soon as the
+    thread is touched again, instead of only when its own message re-upserts.
+
+    `price_cents` is adopted only when OF's row reports 0 and the placeholder
+    holds a real price — OF omits the price on some scraped PPV rows, and that
+    zero would otherwise erase the sale's value.
+
+    Best-effort: a failure leaves today's harmless duplicate, never a missing
+    message, so it swallows and reports 0.
+    """
+    try:
+        # Cheap PK-range seek; the overwhelmingly common answer is "none".
+        placeholders = (await s.execute(
+            select(Message).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.message_id >= _MASS_PLACEHOLDER_BASE,
+                Message.message_id < _MASS_PLACEHOLDER_CEIL,
+            )
+        )).scalars().all()
+        if not placeholders:
+            return 0
+        bodies = {p.body for p in placeholders}
+        reals = (await s.execute(
+            select(Message).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.message_id < _MASS_PLACEHOLDER_BASE,
+                Message.direction == "out",
+                Message.body.in_(bodies),
+            )
+        )).scalars().all()
+        if not reals:
+            return 0
+
+        # Pair GLOBALLY nearest-first, not placeholder-by-placeholder. One caption
+        # can legitimately go to the same fan twice (two runs, weeks apart), and
+        # there are usually more stubs than ingested rows — so letting each stub
+        # grab its own nearest lets an OLD stub claim a row that belongs to a
+        # recent one, purely because it was iterated first. Sorting every
+        # candidate pair by distance and claiming greedily makes the result
+        # independent of row order.
+        pairs = sorted(
+            ((_seconds_apart(r.created_at, ph.created_at), ph, r)
+             for ph in placeholders for r in reals if r.body == ph.body),
+            key=lambda t: t[0],
+        )
+        adopted = 0
+        claimed: set[int] = set()   # a real row absorbs at most one placeholder
+        used: set[int] = set()
+        for _dist, ph, real in pairs:
+            # Sorted nearest-first, so the first pair past the bound ends it. A
+            # placeholder and the row it stands for are seconds to minutes apart —
+            # the stub is written as the send goes out and the real row arrives on
+            # the next ingest. Without a bound the pairing was distance-ORDERED but
+            # not distance-LIMITED, so a stub whose own real row never ingested
+            # eventually claimed whatever same-caption row existed, however far
+            # away: the same caption sent to the same fan a month later would be
+            # stamped with a month-old mass_run_id and automation_kind, and the
+            # stub deleted, making the mis-attribution unrecoverable. `inf` (an
+            # unusable timestamp on either side) is past the bound too, which is
+            # exactly what `_seconds_apart` promises but could not previously
+            # enforce — it made a bad row lose the ordering, never the match.
+            if _dist > _MAX_ADOPT_SECONDS:
+                break
+            if real.message_id in claimed or ph.message_id in used:
+                continue
+            claimed.add(real.message_id)
+            used.add(ph.message_id)
+            real.automation_kind = real.automation_kind or ph.automation_kind
+            real.mass_run_id = real.mass_run_id or ph.mass_run_id
+            real.sent_by_employee_id = (real.sent_by_employee_id
+                                        or ph.sent_by_employee_id)
+            if not (real.price_cents or 0) and (ph.price_cents or 0):
+                real.price_cents = int(ph.price_cents)
+            await s.delete(ph)
+            adopted += 1
+        return adopted
+    except Exception:
+        log.exception("placeholder adopt failed (account=%s fan=%s)",
+                      account_id, fan_id)
+        return 0
+
+
+def _seconds_apart(a: datetime | None, b: datetime | None) -> float:
+    """|a - b| in seconds; `inf` when either side is missing, so a row with an
+    unusable timestamp LOSES the nearest-match instead of winning it. (created_at
+    is NOT NULL, but a row once reached prod holding '' — see db/models.py — and
+    a corrupt cell must not silently become the best candidate.)"""
+    if a is None or b is None:
+        return float("inf")
+    return abs((a - b).total_seconds())
 
 
 async def reconcile_mass_placeholder(

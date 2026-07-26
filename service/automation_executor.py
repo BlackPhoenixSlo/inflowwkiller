@@ -1248,6 +1248,14 @@ async def _scrape_one_chat(
         )
         for m in collected:
             await _upsert_message(s, account_id, fan_id, own_user_id, m)
+        # The scrape is where an un-echoed optimistic send (ppv_send, list/online
+        # audiences) finally meets OF's real row — fold the stubs in now, or the
+        # thread keeps BOTH rows forever and the real one reads as a human send.
+        # Once per thread, after the rows land: the pairing key is body-within-
+        # thread, so it was never per-message work.
+        from attribution import adopt_thread_placeholders  # local: circular import
+        await adopt_thread_placeholders(s, account_id=str(account_id),
+                                        fan_id=int(fan_id))
         await _upsert_chat_and_history(
             s, account_id, fan_id,
             newest_id=newest_id, newest_text=newest_text, newest_at=newest_at,

@@ -18,18 +18,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from fastapi.responses import FileResponse, Response
 from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client seam (same one automations use)
+# The permanent, signature-free picture stores (thumbs / full previews / DRM poster
+# frames), including the whole route body behind the three serve endpoints below.
+# This module keeps the SWEEP that fills them.
+import vault_mirror
+import vault_stills
+from of_shapes import giphy_dm_id, still_url  # shared OF payload-shape readers
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import (
@@ -48,90 +52,12 @@ _running: set[str] = set()
 # In-memory storyboard-warming progress per account (surfaced in /collect/status).
 _warm_progress: dict[str, dict[str, Any]] = {}
 
-# On-disk 300px thumbnail cache. OF CDN urls are IP+time-signed and EXPIRE, so a
-# mirror row's stored url 403s later (the broken-tile bug). We download the thumb
-# bytes once through the account's client and serve them from disk forever after —
-# permanent + instant, no signature dependence.
-_THUMB_DIR = Path(os.environ.get("VAULT_THUMB_DIR", "/tmp/of-relay-vault-thumbs"))
-# Poster-frame cache for DRM videos. Progressive videos get an ffmpeg storyboard
-# (server-side scrub cache); DRM (SAMPLE-AES) clips can't be sliced, so OF's own
-# pre-extracted poster frames are the only hover preview — cached here so a DRM
-# hover is instant from disk instead of a ~0.7s cold OF fetch.
-_POSTER_DIR = Path(os.environ.get("VAULT_POSTER_DIR", "/tmp/of-relay-vault-posters"))
-# Full-FRAME image cache. The thumb above is a 300x300 CENTRE-CROP of a 3:4
-# portrait, so the top and bottom of the picture are simply gone — which is why
-# an operator correcting a flag could not see a waistband or genitalia sitting at
-# the frame edge (the same crop that made the vision model over-report
-# `fully_nude`, fixed for the MODEL via `_describe_image_of`). This serves the
-# aspect-preserving `preview` (960x1280), permanent + on-disk, for the review UI.
-_IMAGE_DIR = Path(os.environ.get("VAULT_IMAGE_DIR", "/tmp/of-relay-vault-images"))
-
-
-
-def _thumb_path(account_id: str, media_id: int) -> Path:
-    return _THUMB_DIR / account_id / f"{media_id}.jpg"
-
-
-def _poster_path(account_id: str, media_id: int, idx: int) -> Path:
-    return _POSTER_DIR / account_id / f"{media_id}_{idx}.jpg"
-
-
-def _image_path(account_id: str, media_id: int) -> Path:
-    return _IMAGE_DIR / account_id / f"{media_id}.jpg"
-
-
-def _fetch_thumb_sync(client: Any, url: str) -> bytes | None:
-    try:
-        r = client.http.get(url, timeout=client.timeout_s)
-        if r.status_code == 200 and r.content:
-            return r.content
-    except Exception:  # noqa: BLE001
-        pass
-    return None
-
-
-def _parse_iso(v: Any) -> datetime | None:
-    if not v or not isinstance(v, str):
-        return None
-    try:
-        return datetime.fromisoformat(v.replace("Z", "+00:00")).replace(tzinfo=None)
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _thumb_of(files: dict | None) -> str | None:
-    if not isinstance(files, dict):
-        return None
-    for k in ("thumb", "squarePreview", "preview", "full"):
-        f = files.get(k)
-        if isinstance(f, dict) and f.get("url"):
-            return f["url"]
-    return None
-
-
 def _describe_image_of(files: dict | None) -> str | None:
-    """The image variant to send the VISION model — not the same choice as the
-    UI thumb.
-
-    `thumb` is 300x300 and, because OF's stills are 3:4 portrait, it is a
-    centre-CROP: the top and bottom of the picture are simply gone. Describe ran
-    on that for its whole life, which is why it kept reporting `fully_nude` for
-    shots whose only garment was a band of underwear at the bottom edge — the
-    model never saw that part of the frame.
-
-    `preview` (960x1280) keeps the real aspect ratio and ~13x the pixels, so an
-    edge-of-frame waistband survives. `full` (2316x3088) is bigger still but
-    costs proportionally more vision tokens for detail the task does not need.
-    Ordered widest-useful first; `thumb` stays as the last resort for media that
-    exposes nothing else.
-    """
-    if not isinstance(files, dict):
-        return None
-    for k in ("preview", "full", "squarePreview", "thumb"):
-        f = files.get(k)
-        if isinstance(f, dict) and f.get("url"):
-            return f["url"]
-    return None
+    """The image variant to send the VISION model — not the same choice as the UI
+    thumb. Takes a bare `files` dict (vault items store one); the ordering and the
+    centre-crop lesson behind it now live in `of_shapes.still_url`, shared with the
+    inbound-DM describe path so both ask the same question of the same payloads."""
+    return still_url({"files": files}) if isinstance(files, dict) else None
 
 
 def _video_url(m: dict) -> str | None:
@@ -189,41 +115,26 @@ def _warm_one_sync(client: Any, url: str, dur: float) -> str:
             pass
 
 
-def _row_values(account_id: str, m: dict, run_id: int) -> dict[str, Any] | None:
-    """Mirror-field values for one OF media dict. None if it has no id."""
-    mid = m.get("id")
-    if mid is None:
-        return None
-    files = m.get("files") if isinstance(m.get("files"), dict) else {}
-    kind = m.get("type") or "photo"
-    dur = m.get("duration")
-    now = datetime.utcnow()
-    # OF custom-folder membership: listStates[].hasMedia is the per-item "is this
-    # media in that list" flag (Posts.hasMedia aligns with top-level hasPosts).
-    of_folders = [
-        ls.get("id") for ls in (m.get("listStates") or [])
-        if isinstance(ls, dict) and ls.get("type") == "custom" and ls.get("hasMedia") and ls.get("id")
-    ]
-    return {
-        "account_id": account_id,
-        "media_id": int(mid),
-        "kind": str(kind),
-        "duration_seconds": int(dur) if isinstance(dur, (int, float)) and dur else None,
-        "width": m.get("width") if isinstance(m.get("width"), int) else None,
-        "height": m.get("height") if isinstance(m.get("height"), int) else None,
-        "thumb_url": _thumb_of(files),
-        "full_url": (files.get("full") or {}).get("url") if isinstance(files.get("full"), dict) else None,
-        "raw_json": json.dumps(m, ensure_ascii=False, default=str),
-        "created_at": _parse_iso(m.get("createdAt")) or now,
-        "updated_at_of": m.get("updatedAt") if isinstance(m.get("updatedAt"), str) else None,
-        "last_seen_run_id": run_id,
-        "updated_at": now,
-        "of_folder_ids": json.dumps(of_folders),
-        # base searchable blob — describe enriches this later; on conflict we
-        # DON'T overwrite it (preserve describe output).
-        "search_text": str(kind).lower(),
-        "tags": "[]",
-    }
+async def _warm_store(client: Any, account_id: str, phase: str,
+                      targets: list[tuple[Path, str]]) -> None:
+    """Download every missing still in `targets` into its permanent path.
+
+    One loop for all three stores — they differed only in which path a media id
+    maps to, which is the caller's business and nothing else's.
+
+    Progress uses `warmed`/`warm_total`, the keys /collect/status already reads —
+    previously only the storyboard phase spoke them, so the three still phases ran
+    silently behind a progress bar stuck on null."""
+    total = len(targets)
+    _warm_progress[account_id] = {"phase": phase, "warmed": 0, "warm_total": total}
+    for n, (path, url) in enumerate(targets, 1):
+        if not path.is_file():
+            data = await asyncio.to_thread(vault_stills.fetch_bytes_sync, client, url)
+            if data:
+                vault_stills.write(path, data)
+        if n % 10 == 0 or n == total:
+            _warm_progress[account_id] = {"phase": phase, "warmed": n,
+                                          "warm_total": total}
 
 
 async def _run_collect(account_id: str, run_id: int) -> None:
@@ -236,6 +147,7 @@ async def _run_collect(account_id: str, run_id: int) -> None:
         upserted = 0
         videos: list[tuple[str, float]] = []   # (signed url, duration) to warm after
         thumbs: list[tuple[int, str]] = []     # (media_id, thumb url) to cache after
+        stills: list[tuple[int, str]] = []     # (media_id, full-frame url) to cache after
         drm_posters: list[tuple[int, list[str]]] = []  # DRM (media_id, poster urls)
         while pages < _MAX_PAGES:
             resp = await asyncio.to_thread(
@@ -246,12 +158,21 @@ async def _run_collect(account_id: str, run_id: int) -> None:
                 break
             async with get_session() as s:
                 for m in items:
-                    vals = _row_values(account_id, m, run_id)
+                    vals = vault_mirror.row_values(account_id, m, run_id)
                     if vals is None:
                         continue
                     total += 1
                     if vals.get("thumb_url"):
                         thumbs.append((vals["media_id"], vals["thumb_url"]))
+                    # The full-FRAME preview, not just the 300px square. Warmed
+                    # here for the same reason as the thumb: after OF's signature
+                    # expires we can no longer fetch it, and a lazily-filled
+                    # store means whatever nobody happened to open is lost.
+                    still = _describe_image_of(
+                        m.get("files") if isinstance(m.get("files"), dict) else {}
+                    )
+                    if still:
+                        stills.append((vals["media_id"], still))
                     if (m.get("type") == "video"):
                         vurl = _video_url(m)
                         if vurl:
@@ -263,14 +184,11 @@ async def _run_collect(account_id: str, run_id: int) -> None:
                             if pf:
                                 drm_posters.append((vals["media_id"], pf))
                     # Preserve AI / operator / describe fields on conflict —
-                    # only refresh the mirror bookkeeping.
-                    refresh = {
-                        k: vals[k] for k in (
-                            "kind", "duration_seconds", "width", "height",
-                            "thumb_url", "full_url", "raw_json", "updated_at_of",
-                            "last_seen_run_id", "updated_at", "of_folder_ids",
-                        )
-                    }
+                    # only refresh the mirror bookkeeping. `last_seen_run_id` is
+                    # the sweep's own bookkeeping, so it rides on top of the
+                    # shared list rather than inside it.
+                    refresh = {k: vals[k]
+                               for k in vault_mirror.MIRROR_REFRESH_FIELDS + ("last_seen_run_id",)}
                     stmt = (
                         sqlite_insert(VaultItem)
                         .values(**vals)
@@ -306,37 +224,23 @@ async def _run_collect(account_id: str, run_id: int) -> None:
             if run:
                 run.phase = "thumbs"
                 await s.commit()
-        # Cache 300px thumbs to disk (incremental: skip ones already cached).
-        tdone = 0
-        _warm_progress[account_id] = {"phase": "thumbs", "thumbs": 0, "thumb_total": len(thumbs)}
-        for mid, turl in thumbs:
-            tp = _thumb_path(account_id, mid)
-            if not tp.is_file():
-                data = await asyncio.to_thread(_fetch_thumb_sync, client, turl)
-                if data:
-                    try:
-                        tp.parent.mkdir(parents=True, exist_ok=True)
-                        tp.write_bytes(data)
-                    except Exception:  # noqa: BLE001
-                        pass
-            tdone += 1
-            if tdone % 10 == 0:
-                _warm_progress[account_id] = {"phase": "thumbs", "thumbs": tdone, "thumb_total": len(thumbs)}
-        # Cache DRM poster frames to disk (incremental). DRM clips can't be
-        # ffmpeg-storyboarded, so these OF frames are the hover preview — caching
-        # them makes a DRM hover instant instead of a cold ~0.7s OF fetch.
-        for mid, frames in drm_posters:
-            for idx, furl in enumerate(frames):
-                pp = _poster_path(account_id, mid, idx)
-                if pp.is_file():
-                    continue
-                data = await asyncio.to_thread(_fetch_thumb_sync, client, furl)
-                if data:
-                    try:
-                        pp.parent.mkdir(parents=True, exist_ok=True)
-                        pp.write_bytes(data)
-                    except Exception:  # noqa: BLE001
-                        pass
+        # Fill the three permanent stores. All incremental — an already-cached file
+        # is skipped, so a re-collect only pays for what is new.
+        await _warm_store(client, account_id, "thumbs",
+                          [(vault_stills.thumb_path(account_id, mid), u)
+                           for mid, u in thumbs])
+        # The full frames too, not just the squares (~960x1280). This is the copy
+        # the review UI reads, and it is equally unrecoverable once the signature
+        # it came from has aged out.
+        await _warm_store(client, account_id, "images",
+                          [(vault_stills.image_path(account_id, mid), u)
+                           for mid, u in stills])
+        # DRM clips can't be ffmpeg-storyboarded, so OF's own poster frames ARE the
+        # hover preview — cached, a DRM hover is instant instead of a cold ~0.7s fetch.
+        await _warm_store(client, account_id, "posters",
+                          [(vault_stills.poster_path(account_id, mid, idx), u)
+                           for mid, frames in drm_posters
+                           for idx, u in enumerate(frames)])
         async with get_session() as s:
             run = await s.get(VaultCacheRun, run_id)
             if run:
@@ -391,6 +295,14 @@ async def start_collect(account_id: str = Query(...)) -> dict[str, Any]:
     if account_id in _running:
         raise HTTPException(status_code=409, detail={"error": "collect_already_running"})
     _running.add(account_id)
+    # Drop the OF listing cache first. It holds whole response bodies whose
+    # urls are time-signed, so serving one back after the signature aged out
+    # hands the picker links that 403 — the same stale-url the sweep is about
+    # to replace. Cheap, and it makes Re-collect mean "everything fresh".
+    try:
+        await vault_cache.invalidate(account_id)
+    except Exception:  # noqa: BLE001
+        log.warning("vault_cache invalidate failed for %s", account_id, exc_info=True)
     async with get_session() as s:
         run = VaultCacheRun(account_id=account_id, status="running", phase="media")
         s.add(run)
@@ -398,6 +310,56 @@ async def start_collect(account_id: str = Query(...)) -> dict[str, Any]:
         run_id = run.id
     asyncio.create_task(_run_collect(account_id, run_id))
     return {"account_id": account_id, "run_id": run_id, "status": "running"}
+
+
+# Which store(s) a `scope` names. One map, so stats and purge can't disagree about
+# what "all" covers.
+def _stores() -> dict[str, Path]:
+    return {"thumbs": vault_stills.THUMB_DIR, "images": vault_stills.IMAGE_DIR,
+            "posters": vault_stills.POSTER_DIR}
+
+
+@router.get("/admin/vault-ai/stills/stats")
+async def stills_stats(account_id: str = Query(...)) -> dict[str, Any]:
+    """How much of this account's vault actually has PERMANENT local bytes.
+
+    `mirror` is how many items we know about; the per-store counts are how many
+    of them we can still render once OF's signed urls expire. A big gap means
+    a re-collect hasn't run since the store was last lost."""
+    assert_account_owned(account_id)
+    async with get_session() as s:
+        mirror = (
+            await s.execute(
+                select(func.count())
+                .select_from(VaultItem)
+                .where(VaultItem.account_id == account_id, VaultItem.removed_at.is_(None))
+            )
+        ).scalar_one()
+    stores = _stores()
+    out: dict[str, Any] = {"account_id": account_id, "mirror": int(mirror or 0),
+                           "dirs": {k: str(d) for k, d in stores.items()}}
+    for name, d in stores.items():
+        out[name] = vault_stills.dir_stats(d / account_id)
+    return out
+
+
+@router.post("/admin/vault-ai/stills/purge")
+async def stills_purge(
+    account_id: str = Query(...),
+    scope: str = Query("thumbs", pattern="^(thumbs|images|posters|all)$"),
+) -> dict[str, Any]:
+    """Delete this account's cached stills so the next Collect re-fetches them.
+
+    Use this for a store that went BAD (truncated or wrong pictures), not as
+    routine housekeeping: these bytes are the only copy that outlives OF's
+    signature, so purging without a re-collect behind it is how tiles go
+    blank. Re-collect is what refills them."""
+    assert_account_owned(account_id)
+    stores = _stores()
+    targets = list(stores.values()) if scope == "all" else [stores[scope]]
+    removed = vault_stills.purge(account_id, targets)
+    await vault_cache.invalidate(account_id)
+    return {"ok": True, "account_id": account_id, "scope": scope, "removed": removed}
 
 
 @router.get("/admin/vault-ai/collect/status")
@@ -464,41 +426,45 @@ async def cache_summary(account_id: str = Query(...)) -> dict[str, Any]:
     }
 
 
+# ── The three permanent stills ────────────────────────────────────────
+#
+# One route body (`vault_stills.serve`) three times over: disk, else fetch and
+# keep, re-signing the url through OF if the stored one has expired. Each endpoint
+# supplies only the store it reads and the rule for picking ITS url out of a media
+# dict — and that rule is written once, used for both the stored payload and the
+# re-signed one, so the two can't disagree.
+
+def _pick_thumb(m: dict) -> str | None:
+    return vault_mirror.thumb_of(m.get("files") if isinstance(m.get("files"), dict) else {})
+
+
+def _pick_image(m: dict) -> str | None:
+    """Aspect-preserving preview → full → …; the square only if the media exposes
+    nothing else."""
+    return _describe_image_of(m.get("files") if isinstance(m.get("files"), dict) else {})
+
+
+def _pick_poster(i: int) -> vault_stills.Pick:
+    """Frame `i` of the poster set, or None if the video has fewer frames."""
+    def pick(m: dict) -> str | None:
+        frames = _video_poster_frames(m)
+        return frames[i] if i < len(frames) else None
+    return pick
+
+
 @router.get("/admin/vault-ai/thumb")
 async def vault_thumb(account_id: str = Query(...), media_id: int = Query(...)):
-    """Serve the cached 300px thumbnail from disk (permanent, signature-free).
-    On a miss, fetch it through the account's client, cache it, then serve —
-    so tiles never break on an expired OF url."""
+    """The 300px square — the grid + picker tile."""
     assert_account_owned(account_id)
-    p = _thumb_path(account_id, media_id)
-    headers = {"Cache-Control": "public, max-age=604800"}
-    if p.is_file():
-        return FileResponse(p, media_type="image/jpeg", headers=headers)
-    async with get_session() as s:
-        item = await s.get(VaultItem, (account_id, media_id))
-    if item is None:
-        raise HTTPException(status_code=404, detail="not_in_mirror")
-    raw = _load_json(item.raw_json, {}) or {}
-    files = raw.get("files") if isinstance(raw.get("files"), dict) else {}
-    url = _thumb_of(files) or item.thumb_url
-    if not url:
-        raise HTTPException(status_code=404, detail="no_thumb")
-    client = await asyncio.to_thread(ax._make_client, account_id)
-    data = await asyncio.to_thread(_fetch_thumb_sync, client, url)
-    if not data:
-        raise HTTPException(status_code=404, detail="fetch_failed")
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(data)
-    except Exception:  # noqa: BLE001
-        pass
-    return Response(content=data, media_type="image/jpeg", headers=headers)
+    return await vault_stills.serve(
+        account_id, media_id, vault_stills.thumb_path(account_id, media_id),
+        _pick_thumb)
 
 
 @router.get("/admin/vault-ai/image")
 async def vault_image(account_id: str = Query(...), media_id: int = Query(...)):
-    """Serve the FULL-FRAME image (aspect-preserving `preview`, ~960x1280),
-    permanent + on-disk — the review UI shows THIS, never the /thumb crop.
+    """The FULL-FRAME image (~960x1280) — the review UI shows THIS, never the
+    /thumb crop.
 
     /thumb is a 300x300 centre-crop of a 3:4 portrait: its top and bottom are
     gone, so a waistband or genitalia at the frame edge is invisible in it. That
@@ -508,81 +474,29 @@ async def vault_image(account_id: str = Query(...), media_id: int = Query(...)):
     `_describe_image_of` picks the same variant the model was given, so the
     reviewer sees precisely the frame the reading was made on."""
     assert_account_owned(account_id)
-    p = _image_path(account_id, media_id)
-    headers = {"Cache-Control": "public, max-age=604800"}
-    if p.is_file():
-        return FileResponse(p, media_type="image/jpeg", headers=headers)
-    async with get_session() as s:
-        item = await s.get(VaultItem, (account_id, media_id))
-    if item is None:
-        raise HTTPException(status_code=404, detail="not_in_mirror")
-    raw = _load_json(item.raw_json, {}) or {}
-    files = raw.get("files") if isinstance(raw.get("files"), dict) else {}
-    # Aspect-preserving preview → full → …; falls back to the square only if the
-    # media exposes nothing else. `item.thumb_url` is the last resort.
-    url = _describe_image_of(files) or item.thumb_url
-    if not url:
-        raise HTTPException(status_code=404, detail="no_image")
-    client = await asyncio.to_thread(ax._make_client, account_id)
-    data = await asyncio.to_thread(_fetch_thumb_sync, client, url)
-    if not data:
-        raise HTTPException(status_code=404, detail="fetch_failed")
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(data)
-    except Exception:  # noqa: BLE001
-        pass
-    return Response(content=data, media_type="image/jpeg", headers=headers)
-
-
-def _is_of_cdn(u: str) -> bool:
-    """Only fetch+cache poster frames from OnlyFans' own CDN — a caller-supplied
-    `u` must not be an open proxy to arbitrary hosts."""
-    try:
-        from urllib.parse import urlparse
-        host = (urlparse(u).hostname or "").lower()
-    except Exception:  # noqa: BLE001
-        return False
-    return host.endswith("onlyfans.com") or "cdn" in host and "onlyfans" in host
+    return await vault_stills.serve(
+        account_id, media_id, vault_stills.image_path(account_id, media_id),
+        _pick_image)
 
 
 @router.get("/admin/vault-ai/poster")
 async def vault_poster(
     account_id: str = Query(...), media_id: int = Query(...), i: int = Query(0, ge=0),
-    u: str | None = Query(None),
 ):
-    """Serve a cached DRM video poster frame from disk (permanent, signature-free,
-    media-id keyed so it survives OF url re-signs). Self-heals on a miss: resolve
-    the frame url from the mirror if collected, else from the caller-supplied OF
-    url `u` — so hovering an UN-collected DRM video still caches to the permanent
-    store (the cache fills as you browse; Collect just pre-warms the whole vault)."""
+    """Frame `i` of a DRM video's hover slideshow. The cache fills as you browse;
+    Collect just pre-warms the whole vault.
+
+    Takes no caller-supplied url. It used to accept `u=` so a hover over an
+    UN-collected clip could still fill the store, gated by a host check that
+    accepted any hostname containing both "cdn" and "onlyfans" — so
+    `cdn.onlyfans.attacker.com` passed and the route fetched it with the
+    account's own authenticated client. The parameter earned nothing: `serve`
+    already resolves an unknown media by id straight from OF, which is both the
+    safe source and the one that survives an expired signature."""
     assert_account_owned(account_id)
-    p = _poster_path(account_id, media_id, i)
-    headers = {"Cache-Control": "public, max-age=604800"}
-    if p.is_file():
-        return FileResponse(p, media_type="image/jpeg", headers=headers)
-    # Prefer the mirror's (fresh) url; fall back to the caller's OF url.
-    url: str | None = None
-    async with get_session() as s:
-        item = await s.get(VaultItem, (account_id, media_id))
-    if item is not None:
-        frames = _video_poster_frames(_load_json(item.raw_json, {}) or {})
-        if i < len(frames):
-            url = frames[i]
-    if url is None and u and _is_of_cdn(u):
-        url = u
-    if not url:
-        raise HTTPException(status_code=404, detail="no_poster_frame")
-    client = await asyncio.to_thread(ax._make_client, account_id)
-    data = await asyncio.to_thread(_fetch_thumb_sync, client, url)
-    if not data:
-        raise HTTPException(status_code=404, detail="fetch_failed")
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(data)
-    except Exception:  # noqa: BLE001
-        pass
-    return Response(content=data, media_type="image/jpeg", headers=headers)
+    return await vault_stills.serve(
+        account_id, media_id, vault_stills.poster_path(account_id, media_id, i),
+        _pick_poster(i))
 
 
 def _overlay(item: VaultItem, manual_order: int | None = None) -> dict[str, Any]:
@@ -594,7 +508,7 @@ def _overlay(item: VaultItem, manual_order: int | None = None) -> dict[str, Any]
         "describe_status": item.describe_status,
         "description": item.description,
         "video_description": item.video_description,
-        "tags": _load_json(item.tags, []),
+        "tags": load_json(item.tags, []),
         "explicitness_tier": item.explicitness_tier,
         "story_suitable": item.story_suitable,
         "tip_vault_flag": item.tip_vault_flag,
@@ -610,7 +524,7 @@ def _overlay(item: VaultItem, manual_order: int | None = None) -> dict[str, Any]
     # other 21 fields the model produced are invisible, which is exactly what
     # made the vault look like it had lost them. Projected read-only: edits
     # still go through the override+lock path on the real columns.
-    ai = _load_json(item.ai_fields_json, None)
+    ai = load_json(item.ai_fields_json, None)
     if isinstance(ai, dict):
         base["_ai"]["fields"] = {
             k: v for k, v in ai.items()
@@ -762,7 +676,7 @@ async def list_of_folders_from_mirror(account_id: str = Query(...)) -> dict[str,
             )
         ).all()
     for raw, kind in rows:
-        m = _load_json(raw, {}) or {}
+        m = load_json(raw, {}) or {}
         for ls in (m.get("listStates") or []):
             if not ls.get("hasMedia"):
                 continue
@@ -1401,7 +1315,7 @@ async def _flags_one(account_id: str, media_id: int,
         return {"media_id": media_id, "ok": False, "status": "not_flaggable"}
 
     is_video = item.kind == "video"
-    raw = _load_json(item.raw_json, {}) or {}
+    raw = load_json(item.raw_json, {}) or {}
     want = _FLAGS_VIDEO_FRAMES if is_video else 1
     images = await _collect_images(account_id, item, raw, want=want)
     if not images:
@@ -1412,7 +1326,7 @@ async def _flags_one(account_id: str, media_id: int,
     result = None
     for img in images:
         content = [{"type": "text", "text": _FLAGS_PROMPT},
-                   {"type": "image_url", "image_url": {"url": _shrink_data_url(img)}}]
+                   {"type": "image_url", "image_url": {"url": vision.shrink_data_url(img)}}]
         try:
             result = await llm_client.chat(
                 model=model, messages=[{"role": "user", "content": content}],
@@ -1436,14 +1350,14 @@ async def _flags_one(account_id: str, media_id: int,
         return {"media_id": media_id, "ok": False, "status": "unparsed",
                 "raw": (result.content if result else "" or "")[:200]}
 
-    fields = _load_json(item.ai_fields_json, {}) or {}
+    fields = load_json(item.ai_fields_json, {}) or {}
     data = _reconcile_with_acts(fields, _fold_clip_flags(per_frame))
     # An operator correction outranks the model, and must survive a forced
     # re-run — otherwise the next `flags-all --force` silently reverts it and
     # the operator has no reason to look at the item again. Same override+lock
     # contract `vault_ai_effective` defines for `description`; `vault_ai_fix`
     # writes the lock.
-    locked = set(_load_json(item.locked_fields_json, []) or [])
+    locked = set(load_json(item.locked_fields_json, []) or [])
     for key in _FLAG_KEYS:
         if key in data and key not in locked:
             fields[key] = data[key]
@@ -1514,7 +1428,7 @@ async def _flags_todo(account_id: str, *, force: bool = False,
 
     todo = []
     for mid, fj in rows:
-        f = _load_json(fj, {}) or {}
+        f = load_json(fj, {}) or {}
         # `flags_known`, not a key-presence test: a row carrying the superseded
         # boolean shape, or a region the model answered with something outside
         # the enum, has not really been flagged and must re-run. A row produced
@@ -2064,21 +1978,14 @@ async def sort_of_folders(payload: dict = Body(...)) -> dict[str, Any]:
     return {"account_id": account_id, "sorted": True}
 
 
-def _load_json(v: str | None, default: Any) -> Any:
-    if not v:
-        return default
-    try:
-        return json.loads(v)
-    except Exception:  # noqa: BLE001
-        return default
-
-
 # ── Describe (Qwen3-VL vision) ──────────────────────────────────────
 
 import base64  # noqa: E402
 import re as _re  # noqa: E402
 
 import llm_client  # noqa: E402
+import vision  # noqa: E402  (shared frame download / shrink / refusal test)
+from jsonsafe import load_json  # noqa: E402
 from llm_client import LLMCapExceeded, LLMError  # noqa: E402
 
 # Proven prompt (service/_probe_vault_describe.py — 8/8 described, 0 refused, correct NSFW tags).
@@ -2262,7 +2169,7 @@ def _frames_for_duration(seconds: int | None) -> int:
 # describe kept saying `fully_nude`. So we start from `preview` and downscale it
 # ourselves: fewer pixels, whole picture. 448px on the long edge is the measured
 # floor — 320px flips an item that 448 and 640 agree on, and 640 buys nothing.
-_FLAGS_MAX_EDGE = 448
+# (the flag-run edge now lives with the resizer — vision.MAX_EDGE_DEFAULT)
 
 # The prompt VERSION stamped onto every answer it produces.
 #
@@ -2385,39 +2292,6 @@ _FLAGS_PROMPT = (
 )
 
 
-def _shrink_data_url(data_url: str, max_edge: int = _FLAGS_MAX_EDGE) -> str:
-    """Downscale a base64 data-URL to `max_edge` on its LONG side, preserving
-    aspect. Returns the input unchanged if Pillow can't read it — a cheap pass
-    must never take down the caller."""
-    import io
-
-    try:
-        from PIL import Image
-
-        _, _, b64 = data_url.partition(",")
-        with Image.open(io.BytesIO(base64.b64decode(b64))) as im:
-            im = im.convert("RGB")
-            im.thumbnail((max_edge, max_edge), Image.LANCZOS)
-            buf = io.BytesIO()
-            im.save(buf, format="JPEG", quality=82)
-        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-    except Exception:  # noqa: BLE001
-        log.warning("flags shrink failed; sending full-size", exc_info=True)
-        return data_url
-
-
-_REFUSAL_MARKERS = ("i can't", "i cannot", "i'm unable", "cannot assist", "content policy",
-                    "i'm sorry", "not able to", "against my")
-
-
-def _is_refusal(text: str) -> bool:
-    low = (text or "").strip().lower()
-    return not low or (len(low) < 40 and any(m in low for m in _REFUSAL_MARKERS))
-
-
-def _img_data_url(b: bytes) -> str:
-    return "data:image/jpeg;base64," + base64.b64encode(b).decode()
-
 
 def _video_poster_frames(raw: dict) -> list[str]:
     """OF's own pre-extracted poster-frame URLs for a video
@@ -2428,24 +2302,11 @@ def _video_poster_frames(raw: dict) -> list[str]:
     prev = files.get("preview") or {}
     out = [o.get("url") for o in (prev.get("options") or []) if isinstance(o, dict) and o.get("url")]
     if not out:
-        one = _thumb_of(files)
+        one = vault_mirror.thumb_of(files)
         if one:
             out = [one]
     return out
 
-
-async def _download_frames(client: Any, urls: list[str]) -> list[str]:
-    """Download each frame URL through the account's OF client (source-IP
-    signing) and return them as base64 data-URLs. Skips failures."""
-    out: list[str] = []
-    for u in urls:
-        try:
-            resp = await asyncio.to_thread(lambda u=u: client.http.get(u, timeout=client.timeout_s))
-            if resp.status_code == 200 and resp.content:
-                out.append(_img_data_url(resp.content))
-        except Exception:  # noqa: BLE001
-            log.warning("poster frame fetch failed", exc_info=True)
-    return out
 
 
 def _spread(n_have: int, want: int) -> list[int]:
@@ -2479,13 +2340,13 @@ async def _collect_images(account_id: str, item: VaultItem, raw: dict,
             for i in _spread(srv._STORYBOARD_FRAMES, want):
                 p = srv._storyboard_frame_path(h, i)
                 if p.is_file():
-                    urls.append(_img_data_url(p.read_bytes()))
+                    urls.append(vision.img_data_url(p.read_bytes()))
             if urls:
                 return urls
         # DRM-only (no sliceable mp4) or storyboard produced nothing → fall back
         # to OF's pre-extracted poster frames. OF DOES serve these even for DRM,
         # so we can still describe/tag the clip instead of giving up (blocked_drm).
-        return await _download_frames(client, _video_poster_frames(raw)[:want])
+        return await vision.download_frames(client, _video_poster_frames(raw)[:want])
     # photo / gif
     files = raw.get("files") or {}
     url = _describe_image_of(files) or item.thumb_url or item.full_url
@@ -2494,7 +2355,7 @@ async def _collect_images(account_id: str, item: VaultItem, raw: dict,
     try:
         resp = await asyncio.to_thread(lambda: client.http.get(url, timeout=client.timeout_s))
         if resp.status_code == 200 and resp.content:
-            return [_img_data_url(resp.content)]
+            return [vision.img_data_url(resp.content)]
     except Exception:  # noqa: BLE001
         log.warning("describe image fetch failed media=%s", item.media_id, exc_info=True)
     return []
@@ -2510,152 +2371,9 @@ def _parse_describe(text: str) -> dict[str, Any]:
         return {}
 
 
-_INBOUND_IMG_MAX_EDGE = 1024   # inbound stills matter more than vault thumbs → bigger
-_INBOUND_DESC_CLIP = 600       # stored + injected into chat history; keep it tight
-
-_INBOUND_DESCRIBE_PROMPT = (
-    "A fan just sent this photo to an adult content creator in a private DM. Describe it "
-    "in 1–3 plain sentences so she can react to it in character. The creator does the "
-    "flirting/rating herself — your job is a rich, factual read she can build on. Cover, "
-    "only where it applies:\n"
-    "• WHAT it is — a dick pic, his body/torso, a face selfie, an outfit, a screenshot or "
-    "meme, a place, a pet, an object.\n"
-    "• HOW explicit — sfw, suggestive, or explicit.\n"
-    "• The STANDOUT detail he clearly wants noticed — size, grooming, muscles, a tattoo, "
-    "what he's wearing, the setting (bed / gym / shower / car / work), his expression.\n"
-    "• If it IS a dick pic, ALWAYS report these plainly, since she can't see it herself: "
-    "circumcised or uncircumcised; a rough size read (length and girth/thickness); grooming "
-    "(shaved / trimmed / natural bush); and hardness (soft / getting hard / fully erect).\n"
-    "• Anything that would make a flirty reply AWKWARD — another person in frame, a "
-    "wedding ring, that it's clearly not him, or a child or pet present.\n"
-    "Be factual and explicit; this is consensual adult content between adults. Do not "
-    "refuse, do not moralize, add no preamble — output only the description."
-)
-
-
-async def _recent_fan_context(account_id: str, fan_id: int, limit: int = 2) -> str:
-    """His last few TEXT messages (most recent last), so the vision read can be steered
-    by what he actually asked when he sent the pic ("rate me", "guess how big",
-    "notice anything?"). Empty string when he sent no words. Cheap — capped at `limit`
-    short lines."""
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(Message.body)
-            .where(Message.account_id == str(account_id),
-                   Message.fan_id == int(fan_id),
-                   Message.direction == "in",
-                   Message.body != "")
-            .order_by(Message.created_at.desc())
-            .limit(int(limit))
-        )).all()
-    lines = [_re.sub(r"<[^>]+>", "", (b or "")).strip()[:200] for (b,) in rows]
-    lines = [ln for ln in lines if ln]
-    return "\n".join(reversed(lines))
-
-
-async def describe_inbound_message(account_id: str, message_id: int,
-                                   prompt_seed: str = "") -> str | None:
-    """Run the vision model on the photo(s) a FAN sent in ONE inbound DM and cache the
-    result on messages.image_desc. Returns the description (also stored) or None when
-    there's nothing to describe / it was capped / it failed. NEVER raises — a describe
-    problem must not take down the ingest path (on_inbound_image) that awaits it.
-
-    The image URL comes from the Message's raw_json (the OF frame the photo arrived in),
-    downloaded through the account's OF client so the CDN signature's source IP matches,
-    then base64+shrunk exactly like the vault describe path. Escalates 30b→235b once on
-    a refusal/blank."""
-    try:
-        async with get_session() as s:
-            rows = (await s.execute(
-                select(Message.fan_id, Message.raw_json, Message.image_desc)
-                .where(Message.account_id == str(account_id),
-                       Message.message_id == int(message_id))
-            )).all()
-        if not rows:
-            return None
-        fan_id, raw_json, existing = rows[0]
-        fan_id = int(fan_id)               # non-null PK — no None-dance needed below
-        if existing:                       # already described (webhook replay) — keep it
-            return existing
-
-        raw = _load_json(raw_json, {}) or {}
-        media = raw.get("media") if isinstance(raw.get("media"), list) else []
-        from messages import _media_urls   # lazy: shared OF media-URL-shape parser
-
-        urls: list[str] = []
-        for it in media:
-            if not isinstance(it, dict):
-                continue
-            # Photos only: a video poster frame isn't what "rate this" means, and
-            # audio carries no ratable still. (gif/None tolerated as a still.)
-            if it.get("type") not in (None, "photo", "gif"):
-                continue
-            _thumb, src = _media_urls(it)
-            if src:
-                urls.append(src)
-            if len(urls) >= 4:
-                break
-        if not urls:
-            return None
-
-        client = await asyncio.to_thread(ax._make_client, account_id)
-        images = [_shrink_data_url(u, _INBOUND_IMG_MAX_EDGE)
-                  for u in await _download_frames(client, urls)]
-        if not images:
-            return None
-
-        prompt = _INBOUND_DESCRIBE_PROMPT
-        seed = (prompt_seed or "").strip()
-        if seed:
-            prompt += f"\n\nOperator emphasis: {seed}"
-        recent = await _recent_fan_context(account_id, fan_id)
-        if recent:
-            prompt += ("\n\nWhat he's been saying (most recent last) — if he asked you to "
-                       "rate, guess, or notice something, make sure your description gives "
-                       "what's needed to answer it:\n" + recent)
-        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-        content += [{"type": "image_url", "image_url": {"url": u}} for u in images]
-
-        desc = ""
-        for attempt_model in ("qwen3-vl-30b", "qwen3-vl-235b"):
-            try:
-                result = await llm_client.chat(
-                    model=attempt_model,
-                    messages=[{"role": "user", "content": content}],
-                    purpose="describe_inbound_image",
-                    account_id=account_id,
-                    fan_id=fan_id,
-                    temperature=0.2,
-                )
-            except LLMCapExceeded:
-                return None            # capped: leave image_desc NULL → retry-able later
-            except LLMError:
-                log.warning("inbound describe LLM error account=%s msg=%s model=%s",
-                            account_id, message_id, attempt_model, exc_info=True)
-                continue
-            candidate = (result.content or "").strip()
-            if not _is_refusal(candidate):
-                desc = candidate
-                break                  # good description → stop (don't escalate)
-        if not desc:
-            return None
-        desc = desc[:_INBOUND_DESC_CLIP]
-
-        async with get_session() as s:
-            await s.execute(
-                update(Message)
-                .where(Message.account_id == str(account_id),
-                       Message.message_id == int(message_id))
-                .values(image_desc=desc)
-            )
-            await s.commit()
-        log.info("inbound_image_described account=%s fan=%s msg=%s len=%d",
-                 account_id, fan_id, message_id, len(desc))
-        return desc
-    except Exception:  # noqa: BLE001
-        log.warning("describe_inbound_message_failed account=%s msg=%s",
-                    account_id, message_id, exc_info=True)
-        return None
+# Reading what a FAN sent lives in `inbound_describe` — it is a CHAT feature and
+# only ever sat here because the vision primitives did. Those are now `vision`.
+# This module is back to one job: her VAULT.
 
 
 async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-30b",
@@ -2672,7 +2390,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
         item = await s.get(VaultItem, (account_id, media_id))
     if item is None:
         raise HTTPException(status_code=404, detail={"error": "not_in_mirror", "media_id": media_id})
-    raw = _load_json(item.raw_json, {}) or {}
+    raw = load_json(item.raw_json, {}) or {}
     want = int(frames) if frames else _frames_for_duration(item.duration_seconds)
     images = await _collect_images(account_id, item, raw, want=want)
     if not images:
@@ -2722,7 +2440,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
                 await s.commit()
             return {"media_id": media_id, "ok": False, "status": "error", "detail": str(e)[:300]}
         used_model = attempt_model
-        if not _is_refusal(result.content):
+        if not vision.is_refusal(result.content):
             parsed = _parse_describe(result.content)
             if parsed.get("description") or parsed.get("tags"):
                 data = parsed
@@ -2763,7 +2481,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
     search_text = " ".join([desc, *tags, *v2_terms]).lower()
 
     # Human edits win: never overwrite an effective field the operator locked.
-    locked = set(_load_json(item.locked_fields_json, []))
+    locked = set(load_json(item.locked_fields_json, []))
     # Stamp WHICH variant produced this row: a v1 row is a candidate for a later
     # v2 re-scan, and without the stamp "already described" is ambiguous.
     data = {**data, "_prompt_version": ("v1" if str(prompt_version) == "v1" else "v2"),
@@ -2787,12 +2505,12 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
     #
     # The flags are a different reading of the SAME image, so they stay valid
     # across a re-describe. A locked dispute fix outranks model and carried alike.
-    prev = _load_json(item.ai_fields_json, {}) or {}
+    prev = load_json(item.ai_fields_json, {}) or {}
     for key in (*vault_ai_brief.FLAG_KEYS, *vault_ai_brief.OVER_KEYS.values(),
                 "_flags_v", "_flags_model", "_flags_frames", "_flags_arc"):
         if key in prev:
             data[key] = prev[key]
-    for key, val in (_load_json(item.operator_overrides_json, {}) or {}).items():
+    for key, val in (load_json(item.operator_overrides_json, {}) or {}).items():
         if key not in locked or key not in vault_ai_fix.FIXABLE:
             continue
         if val is None:
@@ -3161,7 +2879,7 @@ async def _harvest_query(account_id: str, q: str, client: Any = None) -> dict[st
             item = await s.get(VaultItem, (account_id, mid))
             if item is None:
                 continue
-            terms = set(_load_json(item.of_terms, []))
+            terms = set(load_json(item.of_terms, []))
             if q in terms:
                 continue
             terms.add(q)
@@ -3263,7 +2981,7 @@ def _review_item_view(row: VaultAiReviewItem) -> dict[str, Any]:
         "id": row.id,
         "kind": row.kind,
         "status": row.status,
-        "payload": _load_json(row.payload_json, {}),
+        "payload": load_json(row.payload_json, {}),
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
@@ -3299,7 +3017,7 @@ def _is_stale(stored_baseline_json: str | None, current: dict[str, Any]) -> bool
     out of staleness detection — always fresh."""
     if not stored_baseline_json:
         return False
-    stored = _load_json(stored_baseline_json, None)
+    stored = load_json(stored_baseline_json, None)
     if not isinstance(stored, dict) or not stored:
         return False
     trimmed_stored = {k: stored[k] for k in current.keys() if k in stored}
@@ -3393,7 +3111,7 @@ async def approve_review_items(payload: dict = Body(...)) -> dict[str, Any]:
     async with get_session() as s:
         rows = await _load_target_rows(s, account_id, kind, ids)
         for row in rows:
-            stored_baseline = _load_json(row.baseline_json, None) or {}
+            stored_baseline = load_json(row.baseline_json, None) or {}
             current = await _current_baseline_view(s, account_id, stored_baseline if isinstance(stored_baseline, dict) else {})
             if _is_stale(row.baseline_json, current):
                 stale.append(row.id)
@@ -3526,8 +3244,8 @@ async def edit_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
             raise HTTPException(
                 status_code=404, detail={"error": "not_in_mirror", "media_id": media_id}
             )
-        overrides = _load_json(item.operator_overrides_json, {}) or {}
-        locked = set(_load_json(item.locked_fields_json, []) or [])
+        overrides = load_json(item.operator_overrides_json, {}) or {}
+        locked = set(load_json(item.locked_fields_json, []) or [])
         # compat-column projection per field (same-named legacy column).
         col_vals: dict[str, Any] = {}
         flag_edits: dict[str, Any] = {}
@@ -3571,7 +3289,7 @@ async def edit_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
             overrides[field] = ov       # operator override (locked or not — read-time wins)
             locked.add(field)            # lock: a describe rerun's is_locked() skips it
         if flag_edits:
-            merged = _load_json(item.ai_fields_json, {}) or {}
+            merged = load_json(item.ai_fields_json, {}) or {}
             for k, v in flag_edits.items():
                 if v is None:
                     merged.pop(k, None)

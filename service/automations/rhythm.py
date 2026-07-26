@@ -59,6 +59,26 @@ COVER_MIN_GAP_S = 2 * 3600  # stop apologising for 20-min gaps — that IS the t
                             # archive against ~993 replies that took >2h.
 COVER_REPEAT_DAYS = 7       # never reuse the same cover line on a fan within a week
 COVER_ROLL = 0.10           # even past the gap, only ~1 in 10 gets a spoken excuse
+# …but that 1-in-10 is calibrated on the gaps the archive is actually MADE of: 2-6h,
+# a woman who got busy for an evening. Vanishing for a DAY and strolling back with a
+# breezy "hey babe" is a different event, and reads as a bot with no object permanence
+# — the same reasoning that rejected silence-instead-of-cover, one order of magnitude
+# up. Long absences are now mostly acknowledged. (Judgement call, not an archive rate:
+# multi-day gaps are too rare in the corpus to fit a number to. Deliberately not 1.0 —
+# a woman who explains herself EVERY time is its own tell.)
+COVER_ROLL_LONG = 0.60      # ≥12h away
+COVER_ROLL_VERY_LONG = 0.85 # ≥24h away
+_COVER_LONG_GAP_S = 12 * 3600
+_COVER_VERY_LONG_GAP_S = 24 * 3600
+
+
+def _cover_roll_for(gap_s: float) -> float:
+    """How likely she is to SAY something about a gap of this size."""
+    if gap_s >= _COVER_VERY_LONG_GAP_S:
+        return COVER_ROLL_VERY_LONG
+    if gap_s >= _COVER_LONG_GAP_S:
+        return COVER_ROLL_LONG
+    return COVER_ROLL
 
 # ── The reply curve — HEAT-DRIVEN (v3). Reply speed is NOT one fixed random: it tracks
 # the temperature of THIS conversation. Measured on prod (real human 1:1, 2,107 replies):
@@ -447,7 +467,7 @@ def decide(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decision:
     # She was genuinely gone a while — and only THEN, ~1 in 10, does she mention it.
     # Apologising for every 20-min gap is itself the tell.
     cover = None
-    if gap_s >= COVER_MIN_GAP_S and rng.random() < COVER_ROLL:
+    if gap_s >= COVER_MIN_GAP_S and rng.random() < _cover_roll_for(gap_s):
         pool = COVER_LONG if gap_s >= 4 * 3600 else COVER_BUSY
         cover = _pick_cover(rng, pool, ctx, utc_now)
 

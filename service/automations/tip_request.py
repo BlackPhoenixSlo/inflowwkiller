@@ -36,6 +36,7 @@ from automation_registry import register
 from automations._common import (
     apply_word_restriction, load_hard_skip_ids, should_skip_muted_creator,
 )
+from automations.fan_state import fan_state, put_fan_state
 from db.engine import get_session
 from db.models import AccountAiConfig, Fan, Message
 from sqlalchemy import func, select
@@ -83,20 +84,12 @@ async def is_enabled(account_id: str) -> bool:
     return bool(cfg.get("enabled") and cfg.get("media_id"))
 
 
-def _load_custom_fields(fan: Fan | None) -> dict:
-    try:
-        cf = json.loads(fan.custom_fields) if fan and fan.custom_fields else {}
-        return cf if isinstance(cf, dict) else {}
-    except Exception:
-        return {}
-
-
 def _cooled_down(fan: Fan | None, cooldown_hours: int) -> bool:
     """True if a tip-request was sent to this fan within cooldown_hours (per-fan
     throttle so a repeat mass-buyer isn't nudged every sweep). 0 → never throttle."""
     if cooldown_hours <= 0:
         return False
-    at = (_load_custom_fields(fan).get(_STATE_KEY) or {}).get("at")
+    at = fan_state(fan, _STATE_KEY).get("at")
     if not at:
         return False
     try:
@@ -248,9 +241,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             async with get_session() as s:
                 fan = await s.get(Fan, (str(account_id), int(fid)))
                 if fan is not None:
-                    cf = _load_custom_fields(fan)
-                    cf[_STATE_KEY] = {"at": ts.isoformat()}
-                    fan.custom_fields = json.dumps(cf)
+                    put_fan_state(fan, _STATE_KEY, {"at": ts.isoformat()})
         except Exception:
             log.debug("tip_request cooldown stamp failed account=%s fan=%s",
                       account_id, fid, exc_info=True)

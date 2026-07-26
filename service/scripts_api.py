@@ -62,6 +62,11 @@ log = logging.getLogger("of-relay.scripts_api")
 
 router = APIRouter()
 
+# Ceiling for any daily-quota knob (item 21c). Well above any sane ration, low enough
+# that a fat-fingered value can't become an effectively-infinite leash by accident.
+# Defined before _INT_KNOBS because that dict literal reads it at import time.
+_DAILY_QUOTA_MAX = 500
+
 _INT_KNOBS = {
     "sla_minutes": (0, 1440),
     "max_lifetime_spend_cents": (0, 100_000_000),
@@ -88,6 +93,14 @@ _INT_KNOBS = {
     "tip_ladder_cap_cents": (100, 1_000_000),
     # How many asks may sit unanswered at once (runtime floors this at 2).
     "max_open_offers": (1, 10),
+    # Daily quota (item 21c) — the ceiling above the burst cap. 0 anywhere means
+    # "no ceiling from this knob", never "cap at zero".
+    "daily_quota_replies": (0, _DAILY_QUOTA_MAX),
+    "daily_quota_after_sale": (0, _DAILY_QUOTA_MAX),
+    "daily_quota_buying_signal": (0, _DAILY_QUOTA_MAX),
+    # The per-fan runway: HER replies to this fan before any ceiling applies. 0 retires
+    # the runway (the quota then applies from his first reply) — set it deliberately.
+    "daily_quota_free_replies": (0, 10_000),
 }
 
 # Float-valued knobs (ladder aggressiveness). Clamped to sane ranges: the ceiling
@@ -220,14 +233,30 @@ def _validate_cfg(cfg: dict) -> dict:
         out["gift_enabled"] = bool(cfg["gift_enabled"])
     if "filming_stall_enabled" in cfg:
         out["filming_stall_enabled"] = bool(cfg["filming_stall_enabled"])
-    # Tip ladder + proven-spend floor + the hot-lead trinity. All ship OFF; the
-    # numeric knobs for each ride in _INT_KNOBS / _FLOAT_KNOBS below.
+    # Tip ladder + proven-spend floor. Both ship OFF; the numeric knobs for each
+    # ride in _INT_KNOBS / _FLOAT_KNOBS below.
     if "tip_ladder_enabled" in cfg:
         out["tip_ladder_enabled"] = bool(cfg["tip_ladder_enabled"])
     if "proven_spend_floor_enabled" in cfg:
         out["proven_spend_floor_enabled"] = bool(cfg["proven_spend_floor_enabled"])
-    if "hotsell_trinity_enabled" in cfg:
-        out["hotsell_trinity_enabled"] = bool(cfg["hotsell_trinity_enabled"])
+    # Daily quota (item 21c). `daily_quota_enabled` computes it; `daily_quota_enforce`
+    # decides whether a hold actually withholds a reply. They are deliberately separate
+    # so an account can run a shadow day and read the real numbers first.
+    if "daily_quota_enabled" in cfg:
+        out["daily_quota_enabled"] = bool(cfg["daily_quota_enabled"])
+    if "daily_quota_enforce" in cfg:
+        out["daily_quota_enforce"] = bool(cfg["daily_quota_enforce"])
+    # gen_info openers — the "deepen" phase. `enabled` is the switch; `rate` is how
+    # often it may ride an ordinary reply. The rate is NOT a checkbox: at 1.0 every
+    # reply to a gathered fan carries a question, which is a permanent interrogation
+    # cadence. Clamped here so a bad payload can't reach a send path.
+    if "profile_openers_enabled" in cfg:
+        out["profile_openers_enabled"] = bool(cfg["profile_openers_enabled"])
+    if "profile_openers_rate" in cfg:
+        try:
+            out["profile_openers_rate"] = min(1.0, max(0.0, float(cfg["profile_openers_rate"])))
+        except (TypeError, ValueError):
+            pass          # unparseable → leave it unset, the house default applies
     # Smart pricing without the gate is meaningless (there is no ladder to price),
     # and letting the pair drift apart would be a state the UI can't represent.
     if out.get("smart_pricing_enabled") and not out.get(
@@ -290,6 +319,40 @@ def _validate_cfg(cfg: dict) -> dict:
                     422, f"msg_limits_by_spend[{i}] days/min_cents/cap must be numbers")
             rules.append({"days": days, "min_cents": min_cents, "cap": cap})
         out["msg_limits_by_spend"] = rules
+    # Spend-driven DAILY quota (item 21c): a LIST of {days, min_cents, quota}. Same
+    # shape and bounds as above with one difference that matters — `quota: 0` means
+    # UNCAPPED (a whale is never rationed), so unlike `cap` it is not clamped away as
+    # inert. A rung is retired by deleting it.
+    dqs = cfg.get("daily_quota_by_spend")
+    if dqs is not None:
+        if not isinstance(dqs, (list, tuple)):
+            raise HTTPException(422, "daily_quota_by_spend must be a list")
+        qrules: list[dict] = []
+        for i, r in enumerate(dqs):
+            if not isinstance(r, dict):
+                raise HTTPException(422, f"daily_quota_by_spend[{i}] must be an object")
+            try:
+                days = max(0, min(int(r.get("days") or 0), 365))
+                min_cents = max(0, min(int(r.get("min_cents") or 0), 10_000_000))
+                quota = max(0, min(int(r.get("quota") or 0), _DAILY_QUOTA_MAX))
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    422,
+                    f"daily_quota_by_spend[{i}] days/min_cents/quota must be numbers")
+            qrules.append({"days": days, "min_cents": min_cents, "quota": quota})
+        out["daily_quota_by_spend"] = qrules
+    # The backoff ladder: a LIST of positive hour values, walked once per exhaustion
+    # and then cycled. Emitted whole (shallow-merge safe). An empty list is legal and
+    # means "compute the quota but never hold" — the ladder is what does the holding.
+    qbh = cfg.get("quota_backoff_hours")
+    if qbh is not None:
+        if not isinstance(qbh, (list, tuple)):
+            raise HTTPException(422, "quota_backoff_hours must be a list")
+        try:
+            hours = [max(0.0, min(float(h), 720.0)) for h in qbh]
+        except (TypeError, ValueError):
+            raise HTTPException(422, "quota_backoff_hours must be numbers")
+        out["quota_backoff_hours"] = [h for h in hours if h > 0]
     return out
 
 

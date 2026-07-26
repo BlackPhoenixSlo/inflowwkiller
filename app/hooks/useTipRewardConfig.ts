@@ -40,6 +40,12 @@ export interface TipRewardConfig {
   image_reply_basis_cents?: number; // tier basis for the freebie (default 999 = "under $10")
   image_reply_cooldown_hours?: number; // per-fan throttle (also dedups webhook replays)
   image_reply_caption?: string; // optional caption ('' → media-only)
+  // Flag 3: vision-describe the photo/gif/clip HE sends, so the AI can react to it
+  // ("[he sent: …]"). DEFAULT ON server-side — an absent key means enabled, which
+  // is why the UI must read it with `?? true`, not `!!`.
+  image_describe_enabled?: boolean;
+  image_describe_scope?: "all" | "paid"; // who to spend a vision call on
+  image_describe_prompt?: string;        // operator emphasis appended to the read
   // Hot-thread proactive teaser — SELECTED here (vault-media home), SENT by
   // ai_chatter when thread_heat says the thread is HOT and no priced offer is going
   // out. Free warm-up for a $0 fan (capped), a priced tease PPV for a proven buyer.

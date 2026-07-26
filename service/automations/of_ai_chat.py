@@ -65,6 +65,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from . import _language
+from . import _openers  # the gen_info opener pool (the deepen phase)
 from . import rhythm  # tz_offset_for — the prompt clock (creator-local time)
 from attribution import write_outbound_attribution
 from automation_registry import register
@@ -75,21 +76,28 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from ._common import (
-    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING, guard_offplatform,
+    BIO_CONSISTENCY_GUARDRAIL, nonempty,
+    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING,
     STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
-    NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style, apply_word_restriction,
+    NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction,
     build_facts_note, build_structured_nickname, build_tip_ask_block, coerce_ids,
     facts_from_fan, hold_with_typing, apply_typo_throttle, is_content_ask,
     is_substantive_msg,
     load_cat_sticker_tuning, load_cat_stickers_flag,
     load_factground_flag, load_painful_texting_flag,
-    load_nonnative_flags, load_strip_emojis, load_style_flags, load_tip_ask_config,
+    load_consistency_flags,
+    load_nonnative_flags, load_spacing_flags, load_strip_emojis, load_style_flags, load_tip_ask_config,
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
     load_promo_spam_ids,
-    should_skip_muted_creator, skip_unreachable_fan, strip_emojis,
+    should_skip_muted_creator, skip_unreachable_fan,
     typing_delay_seconds,
 )
+from ._persona import (
+    claims_to_scalars, compose_persona, fan_claims_block, mentions_self_claim,
+    merge_persona_claims, parse_persona_claims, persona_register_age,
+)
+from ._outbound import ConsistencyCtx, finalize_draft
 from . import cat_stickers  # reaction-gif pack (same roll/parse/send seam as ai_chatter)
 from . import gen_info  # profile_is_stale() — the refresh-if-stale hook below
 
@@ -128,11 +136,6 @@ _REPLY_MAX_CHARS = 600           # trim a runaway generation before sending
 # just long enough to stop a double-fire within a cycle. Unlike the other senders,
 # of_ai_chat also RELEASES its lease on success (see finally) so this is the sole gate.
 _REPLY_COOLDOWN_S = 10
-
-# When of_ai_chat hands a fan to deep_convo, kick deep_convo this many seconds
-# later (instead of waiting for its periodic sweep) — long enough for the
-# handoff's gen_info regen to (re)build the deep questions first.
-_HANDOFF_DEEPCONVO_DELAY_S = 10
 
 # Per-message style variety — _build_messages rolls ONE of these into the prompt
 # each reply so the bot doesn't always look the same (the dead giveaway: identical
@@ -463,24 +466,6 @@ def _looks_like_echo(part: str, last_in: str) -> bool:
     return lo in hi and len(lo) / len(hi) >= 0.7
 
 
-# Hold strong refs to delayed handoff→deep_convo wake tasks (create_task only
-# keeps a weak ref, so a fire-and-forget sleeper can be GC'd mid-wait).
-_deepconvo_wake_tasks: set = set()
-
-
-def _schedule_deepconvo_wake(delay_s: float) -> None:
-    """After a handoff, wake the supervisor once the chained deep_convo job is due
-    so it doesn't wait for the next 30s tick. Never raises."""
-    async def _w() -> None:
-        try:
-            await asyncio.sleep(delay_s)
-            ax.wake_supervisor()
-        except Exception:  # pragma: no cover — defensive
-            pass
-    t = asyncio.create_task(_w())
-    _deepconvo_wake_tasks.add(t)
-    t.add_done_callback(_deepconvo_wake_tasks.discard)
-
 _HTML_OPEN = "<"
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -497,24 +482,19 @@ def _strip_html(s: str | None) -> str:
 
 def _history_text(direction: str, body: str | None, image_desc: str | None) -> str:
     """One message row → the history line the reply-LLM reads. Canonical for BOTH
-    _gather builders (ai_chatter imports this). An inbound photo we vision-described
-    at ingest rides in as "[photo he sent: …]" so the AI can rate / react to it — and
-    so a photo-only DM (empty body) stops being an invisible blank turn."""
+    _gather builders (ai_chatter imports this). Inbound media we described at ingest
+    rides in as "[he sent: …]" so the AI can rate / react to it — and so a media-only
+    DM (empty body) stops being an invisible blank turn.
+
+    The tag says "he sent", not "photo he sent": the same column also carries the
+    free Giphy read ("an animated gif: …"), and naming the medium twice is how the
+    bot ends up calling a reaction gif a nice pic. The description itself says what
+    the thing is."""
     text = _strip_html(body)[:_MSG_CLIP]
     if direction == "in" and image_desc:
-        tag = f"[photo he sent: {image_desc}]"
+        tag = f"[he sent: {image_desc}]"
         text = f"{text} {tag}" if text else tag
     return text
-
-
-def _nonempty(v) -> bool:
-    """True when a fan-fact column carries real signal (not '', not '[]'/'{}')."""
-    if v is None:
-        return False
-    if isinstance(v, str):
-        s = v.strip()
-        return bool(s) and s not in ("[]", "{}")
-    return bool(v)
 
 
 def _is_info_complete(f: Fan) -> bool:
@@ -526,21 +506,23 @@ def _is_info_complete(f: Fan) -> bool:
       4. depth                      (recent_events OR fetishes OR likes_boobs OR likes_ass)
     """
     groups = (
-        _nonempty(f.his_age),
-        _nonempty(f.home_country) or _nonempty(f.home_city),
-        _nonempty(f.hobbies),
-        (_nonempty(f.recent_events) or _nonempty(f.fetishes)
+        nonempty(f.his_age),
+        nonempty(f.home_country) or nonempty(f.home_city),
+        nonempty(f.hobbies),
+        (nonempty(f.recent_events) or nonempty(f.fetishes)
          or bool(f.likes_boobs) or bool(f.likes_ass)),
     )
     return (sum(1 for g in groups if g) / len(groups)) >= _INFO_COMPLETE_RATIO
 
 
 async def _load_persona(account_id: str) -> str:
+    """Her full identity preamble — prose, location, canon. All of it is
+    account-constant, so it is composed once per run here rather than threaded
+    through the builders per fan. ai_chatter imports this same loader."""
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, account_id)
-    return (cfg.persona if cfg and cfg.persona else "").strip() or (
-        "You are a warm, flirty OnlyFans creator chatting with one of your fans."
-    )
+    return compose_persona(cfg, fallback=(
+        "You are a warm, flirty OnlyFans creator chatting with one of your fans."))
 
 
 async def _load_clock_tz(account_id: str) -> int | None:
@@ -655,16 +637,16 @@ def _questions_still_needed(f: Fan, asked: set[str]) -> list[tuple[str, str]]:
     # A durable name is real_name OR a team/generated custom_nickname — either one
     # means we already know what to call him, so the name gap is CLOSED (keeps this
     # in step with the sticky-name guard, which uses the same OR).
-    name = _nonempty(f.real_name) or _nonempty(f.custom_nickname)
-    age = _nonempty(f.his_age)
-    country = _nonempty(f.home_country)
-    city = _nonempty(f.home_city)
-    occupation = _nonempty(f.occupation)
-    hobbies = _nonempty(f.hobbies)
-    fetishes = _nonempty(f.fetishes)
+    name = nonempty(f.real_name) or nonempty(f.custom_nickname)
+    age = nonempty(f.his_age)
+    country = nonempty(f.home_country)
+    city = nonempty(f.home_city)
+    occupation = nonempty(f.occupation)
+    hobbies = nonempty(f.hobbies)
+    fetishes = nonempty(f.fetishes)
     boobs = bool(f.likes_boobs)
     ass = bool(f.likes_ass)
-    events = _nonempty(f.recent_events)
+    events = nonempty(f.recent_events)
 
     q: list[tuple[str, str]] = []
     # CORE facts (name/age/location/job): pursue if still empty, but at MOST TWICE
@@ -757,20 +739,20 @@ def _good_examples(f: Fan, asked: set[str], have_durable_name: bool) -> str:
     def _clip(v) -> str:
         return str(v).strip()[:30]
     known_ex: list[str] = []
-    if _nonempty(f.occupation):
+    if nonempty(f.occupation):
         _job = _clip(f.occupation).lower()
         known_ex.append(f'"a {_job}? {_JOB_RIFFS.get(_job, "bet that keeps u busy")}"')
-    if _nonempty(f.home_city):
+    if nonempty(f.home_city):
         known_ex.append(f'"{_clip(f.home_city)}? ive always wanted to go there"')
-    if _nonempty(f.his_age):
+    if nonempty(f.his_age):
         known_ex.append(f'"{_clip(f.his_age)} and still trouble huh"')
-    if _nonempty(f.hobbies):
+    if nonempty(f.hobbies):
         known_ex.append(f'"still into {_clip(f.hobbies).lower()}? love that about u"')
-    if _nonempty(f.recent_events):
+    if nonempty(f.recent_events):
         known_ex.append(f'"hows {_clip(f.recent_events).lower()} going btw"')
     # Spicy prefs go LAST (same as _questions_still_needed: boobs/ass after all the
     # get-to-know facts), so known_ex[:2] fills with rapport before turning it up.
-    if _nonempty(f.fetishes):
+    if nonempty(f.fetishes):
         known_ex.append(f'"mmm {_clip(f.fetishes).lower()}? had a feeling about u"')
     if f.likes_ass and f.likes_boobs:
         known_ex.append('"so u like it all huh, greedy"')
@@ -807,6 +789,27 @@ def _primary_ask_target(presented: list[str]) -> str | None:
         if k in s:
             return k
     return presented[0] if presented else None
+
+
+def _gather_done(f: Fan, asked: set[str]) -> bool:
+    """Is the interview over for this fan?
+
+    Two ways to finish, and ONE home for the rule because both the candidate filter
+    and the send loop ask it — they used to answer it separately and could disagree:
+
+      • nothing left to ask — every topic filled or asked to its cap; or
+      • `_MAX_TURNS` replies spent still asking. That ends the INTERVIEW, not the
+        fan: a dodger stops being questioned and moves on to his openers like
+        anyone else, instead of being cut off entirely.
+
+    `turn_counter` is read off the in-memory row, and `_bump_attempt` writes the
+    increment straight to the DB without refreshing it — so within a single run this
+    lags by one. Deliberate: the escape firing a tick late is invisible, and
+    re-reading the row per fan per turn is not worth it.
+    """
+    if not _questions_still_needed(f, asked):
+        return True
+    return int(getattr(f, "turn_counter", 0) or 0) >= _MAX_TURNS
 
 
 def _turn_asked(bubbles: list[str]) -> bool:
@@ -854,7 +857,9 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
                     lang: str = "en",
                     profile: "FanProfile | None" = None,
                     clock: str = "",
-                    sticker_mode: str = "skip") -> tuple[list[dict], list[str]]:
+                    sticker_mode: str = "skip",
+                    opener: "_openers.Opener | None" = None,
+                    ) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — a faithful port of V1
     prompts.create_chat_response: a short, GIRLY, 100%-human reply that flirts
     WHILE gathering the one piece of info we still need. The 'still need' block is
@@ -876,14 +881,14 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # A DURABLE name (team nickname OR extracted real_name) — either one is enough;
     # drives the GOOD-examples gate so we never demonstrate a name-ask for a fan we
     # already have a name for.
-    have_durable_name = bool(name) and (_nonempty(f.custom_nickname)
-                                        or _nonempty(f.real_name))
+    have_durable_name = bool(name) and (nonempty(f.custom_nickname)
+                                        or nonempty(f.real_name))
     if name:
         facts.append(f"name/nickname: {name.split('/')[0][:40]}")
     for label, val in (("age", f.his_age), ("city", f.home_city),
                        ("country", f.home_country), ("hobbies", f.hobbies),
                        ("occupation", f.occupation), ("fetishes", f.fetishes)):
-        if _nonempty(val):
+        if nonempty(val):
             facts.append(f"{label}: {str(val).strip()[:80]}")
     # Fact-grounding layer (load_factground_flag; default ON). gen_info's rich profile —
     # the bio + bullet notes + team-written teases a human chatter reads before replying —
@@ -891,20 +896,20 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # leaves the facts block byte-identical to before, so a profile-less fan is unchanged.
     teases: list[str] = []
     if profile is not None:
-        if _nonempty(profile.short_bio):
+        if nonempty(profile.short_bio):
             facts.append(f"about him: {str(profile.short_bio).strip()[:400]}")
-        if _nonempty(profile.bullet_points):
+        if nonempty(profile.bullet_points):
             bp = str(profile.bullet_points).strip().replace("\n", "; ")[:600]
             facts.append(f"notes on him: {bp}")
         teases = [str(t).strip()[:140]
-                  for t in (profile.tease1, profile.tease2, profile.tease3) if _nonempty(t)]
+                  for t in (profile.tease1, profile.tease2, profile.tease3) if nonempty(t)]
     facts_block = ("\n".join(f"- {x}" for x in facts)
                    if facts else "- (nothing on file yet)")
     # A concrete nudge to WEAVE IN one specific detail — the difference between a bubble
     # that reads as a form letter and one that reads as her, mid-conversation. Only added
     # when there's something to reference, so a profile-less fan's prompt is unchanged.
     personal_lines: list[str] = []
-    if profile is not None and (_nonempty(profile.short_bio) or _nonempty(profile.bullet_points)):
+    if profile is not None and (nonempty(profile.short_bio) or nonempty(profile.bullet_points)):
         personal_lines.append(
             "Work in ONE specific, natural detail from what you know about him above "
             "(his job, a hobby, something going on in his life) — like you actually "
@@ -963,6 +968,12 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
 
     if selling:
         need_block = tip_ask_block            # tip-ask overrides the gather this turn
+    elif opener is not None:
+        # The DEEPEN phase: the gather is done, so this turn works in one gen_info
+        # opener — a question mined from something he actually said. It replaces the
+        # generic "just chat and flirt naturally" below, which is the banter the
+        # openers exist to improve on.
+        need_block = _openers.need_block(opener)
     elif not question_lines:
         need_block = "You know enough about him now — just chat and flirt naturally."
     elif ask:
@@ -989,7 +1000,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # third time — give him a playful nickname and use it. (`_questions_still_needed`
     # has already dropped 'name' from the list; this stops the model re-asking it
     # unprompted out of fixation.)
-    name_dodged = (not _nonempty(f.real_name) and "name:2" in asked)
+    name_dodged = (not nonempty(f.real_name) and "name:2" in asked)
     dodge_note = (
         "\n\nIMPORTANT: you asked his name twice and he dodged — do NOT ask his name "
         "again. Pick a playful nickname for him and just use it from now on."
@@ -1053,7 +1064,10 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"{clock_block}"
         f"{need_block}{dodge_note}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
-        "HOW YOU TEXT (a real 22yo girl, not an assistant):\n"
+        # The age here is the VOICE (text young and casual), not a claim about
+        # her — derived from the persona so a 49yo persona isn't told to text
+        # like a 22-year-old. See _common.persona_register_age.
+        f"HOW YOU TEXT (a real {persona_register_age(persona)}yo girl, not an assistant):\n"
         "- Short and casual. lowercase, contractions, u/ur/ya. React to what he "
         "said in a few words first.\n"
         "- VARY it every time — don't open the same way twice, and don't reuse a "
@@ -1064,7 +1078,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"{nudes_rule}"
         f"{_good_examples(f, asked, have_durable_name)}\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
-        f"{LIVE_PROOF_GUARDRAIL}"
+        f"{LIVE_PROOF_GUARDRAIL}\n\n"
+        f"{BIO_CONSISTENCY_GUARDRAIL}"
         f"{humanizer}{nonnative}{stickers}\n\n"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
         # Without this carve-out the contract line above suppresses the marker
@@ -1075,8 +1090,15 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         # OUTPUT-LANGUAGE block appended at the very END (prefix-cache safe); "" for en.
         + _language.output_language_directive(lang)
     )
+    # TIER B — what she has ALREADY told THIS fan. In the USER message because it
+    # is per-fan and therefore never prefix-cached: putting it in the system
+    # prompt would fragment the shared cached prefix per fan and cost ~3x the
+    # block's own tokens. "" for a fan with no deviations, which is most of them
+    # once canon is filled.
+    claims_block = fan_claims_block(f)
     user = (
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
+        f"{claims_block}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Reply to his last message now, in the STYLE FOR THIS MESSAGE above."
     )
@@ -1119,25 +1141,43 @@ _EXTRACT_SYSTEM = (
     "guess a city from a country, don't invent a job/hobby):\n"
     '{"real_name":"","his_age":"","home_country":"","home_city":"","hobbies":"",'
     '"occupation":"","fetishes":"","likes_boobs":false,"likes_ass":false,'
-    '"recent_events":[]}'
+    '"recent_events":[],"her_claims":[]}\n'
+    # TIER B. The call ALREADY renders both sides of the chat as FAN:/YOU:, so
+    # this costs no extra request — it was looking at her own lines all along and
+    # was simply never asked about them.
+    "\nAlso: \"her_claims\" — things the CREATOR (the YOU: lines) said about "
+    "HERSELF in this chat. This is a DEVIATIONS-ONLY list. You are given HER "
+    "PROFILE; record a claim ONLY when it is absent from that profile, or when it "
+    "CONTRADICTS it. If everything she said already matches her profile, return an "
+    "empty list — that is the normal, expected answer. Each entry is "
+    '{"topic":"<one or two words, e.g. hometown, living situation, her ex>",'
+    '"claim":"<what she told him, in her words, one short line>"}. Never invent a '
+    "claim she did not make, and never copy something the FAN said."
 )
 
 
 def _extract_messages(f: Fan, c: _Candidate,
-                      history_tail: int = _EXTRACT_HISTORY_TAIL) -> list[dict]:
+                      history_tail: int = _EXTRACT_HISTORY_TAIL,
+                      persona: str = "") -> list[dict]:
     current = {k: (getattr(f, k) or "") for k in _EXTRACT_FIELDS}
     current["likes_boobs"] = bool(f.likes_boobs)
     current["likes_ass"] = bool(f.likes_ass)
     history = c.messages[-history_tail:]
     convo = "\n".join(f"{'FAN' if d == 'in' else 'YOU'}: {b}" for d, b in history if b)
     user = (f"CURRENT (ground truth — keep unless he says something new):\n"
-            f"{json.dumps(current)}\n\nChat (oldest→newest):\n{convo}\n\n"
-            "Update the JSON with anything new he stated.")
+            f"{json.dumps(current)}\n\n"
+            # Canon, so her_claims can be deviations-only. Without it every line
+            # she says about herself looks novel and the ledger fills with noise
+            # that canon already answers.
+            f"HER PROFILE (what is already true of her everywhere):\n{persona}\n\n"
+            f"Chat (oldest→newest):\n{convo}\n\n"
+            "Update the JSON with anything new he stated, and list any claim she "
+            "made about herself that her profile does not already cover.")
     return [{"role": "system", "content": _EXTRACT_SYSTEM},
             {"role": "user", "content": user}]
 
 
-def _extract_worthwhile(f: Fan) -> bool:
+def _extract_worthwhile(f: Fan, c: _Candidate) -> bool:
     """Is a fact-extract call worth its money for this fan right now?
 
     The extract is FILL-EMPTY-ONLY (`_extract_and_fill` never overwrites a field
@@ -1150,15 +1190,53 @@ def _extract_worthwhile(f: Fan) -> bool:
     only thing forgone at saturation is a late likes_boobs/likes_ass flip — a minor
     body-focus hint, not worth a full call every turn.)"""
     for col in _EXTRACT_FIELDS:
-        if not _nonempty(getattr(f, col, None)):
+        if not nonempty(getattr(f, col, None)):
             return True
-    return not _nonempty(getattr(f, "recent_events", None))
+    if not nonempty(getattr(f, "recent_events", None)):
+        return True
+    # TIER B cost gate. A saturated profile is exactly the deep-thread moment her
+    # own claims start mattering, so the ledger cannot simply ride the fan-side
+    # gate — but re-enabling the call wholesale would hand back the ~43%-of-lane
+    # saving the cost audit won. Instead fire only on turns where SHE
+    # demonstrably said something about herself (deterministic, no LLM). A false
+    # negative just leaves one claim unrecorded; a false positive costs one cheap
+    # extract. Claims are open-ended, so this predicate — not saturation — is
+    # what bounds the call.
+    return any(mentions_self_claim(b)
+               for d, b in c.messages[-_EXTRACT_HISTORY_TAIL:] if d == "out")
+
+
+def _claim_updates(f: Fan, claims) -> dict:
+    """TIER B — the Fan-column updates implied by this turn's `her_claims`.
+
+    LATEST-WINS on purpose. The fill-empty-only rule the fan-side fields use is
+    right for HIS facts (he is not going to change where he was born) but would
+    freeze a bad first extraction of HER claims forever and stop a canon edit ever
+    propagating. Returns {} when the model reported nothing — which is the normal
+    answer for a fan whose claims all match canon.
+
+    Lifted out of _extract_and_fill: that function already owns the gate, the LLM
+    call, the parse, the fan-fact fill, the flags, recent_events and the upsert."""
+    if not isinstance(claims, list) or not claims:
+        return {}
+    merged = merge_persona_claims(
+        f.persona_claims_json, claims,
+        now_iso=datetime.utcnow().isoformat(timespec="seconds"))
+    updates: dict = {}
+    if merged != parse_persona_claims(f.persona_claims_json):
+        updates["persona_claims_json"] = json.dumps(merged, ensure_ascii=False)
+    # Mirror the topics fans ask most onto their own columns — serialized by
+    # fans.py and PATCH-editable, which is where the operator correction path
+    # comes from (see _persona.persona_claims_block's override rule).
+    updates.update(claims_to_scalars(merged))
+    return updates
 
 
 async def _extract_and_fill(account_id: str, fan_id: int, f: Fan,
                             c: _Candidate, model: str,
                             history_tail: int = _EXTRACT_HISTORY_TAIL,
-                            purpose: str = _PURPOSE) -> Fan:
+                            purpose: str = _PURPOSE,
+                            persona: str = "") -> Fan:
     """Extract his stated facts and persist any NEW ones onto the Fan row (fill
     empty fields only — never overwrite/guess). Updates `f` in place so this tick's
     reply + question list see the fresh facts. Raises LLMCapExceeded (caller stops);
@@ -1167,10 +1245,11 @@ async def _extract_and_fill(account_id: str, fan_id: int, f: Fan,
     # Skip the call entirely when the profile is already saturated — a fill-empty
     # -only extract can't add anything, so this is the reply's second LLM call
     # eliminated in steady state (see _extract_worthwhile).
-    if not _extract_worthwhile(f):
+    if not _extract_worthwhile(f, c):
         return f
     res = await llm_client.chat(
-        model=model, messages=_extract_messages(f, c, history_tail), purpose=purpose,
+        model=model, messages=_extract_messages(f, c, history_tail, persona),
+        purpose=purpose,
         account_id=account_id, fan_id=fan_id, temperature=0.2,
         response_format={"type": "json_object"},
     )
@@ -1186,14 +1265,17 @@ async def _extract_and_fill(account_id: str, fan_id: int, f: Fan,
     updates: dict = {}
     for col in _EXTRACT_FIELDS:
         v = data.get(col)
-        if isinstance(v, str) and v.strip() and not _nonempty(getattr(f, col, None)):
+        if isinstance(v, str) and v.strip() and not nonempty(getattr(f, col, None)):
             updates[col] = v.strip()[:200]
     for col in ("likes_boobs", "likes_ass"):
         if data.get(col) is True and not bool(getattr(f, col, False)):
             updates[col] = True
     ev = data.get("recent_events")
-    if isinstance(ev, list) and ev and not _nonempty(f.recent_events):
+    if isinstance(ev, list) and ev and not nonempty(f.recent_events):
         updates["recent_events"] = json.dumps([str(x)[:120] for x in ev][:6])
+
+    updates.update(_claim_updates(f, data.get("her_claims")))
+
     if not updates:
         return f
 
@@ -1213,52 +1295,44 @@ async def _extract_and_fill(account_id: str, fan_id: int, f: Fan,
     return f
 
 
-async def _reset_deep_convo_backoff(account_id: str, fan_id: int) -> None:
-    """Zero a fan's deep_convo backoff so they arrive at deep_convo CLEAN. A fan
-    handed off from of_ai_chat is actively chatting RIGHT NOW — they must never
-    inherit a stale `deep_convo_skip_level/remaining` (e.g. from an earlier drift,
-    or from messages being temporarily invisible), which would make deep_convo
-    skip them for several cycles instead of replying. UPSERT for the no-Fan-row
-    case, mirroring _mark_question_asked."""
+async def _graduate(client, account_id: str, fan_id: int, f: Fan) -> None:
+    """of_ai_chat is finished with this fan: the gather completed AND every gen_info
+    opener has been used. Skip-list him ('info' — kept because ai_chatter and the
+    dispatcher already read it as "left the gather loop"), regenerate the profile a
+    last time, and push the final nickname + note.
+
+    `deep_convo_state` is stamped terminal too. deep_convo deliberately lets 'info'
+    through — that reason WAS its intake — so without this it would pick up a fan
+    of_ai_chat has already taken through the openers and drill him a second time in
+    a second voice. That column is the one marker it hard-skips on.
+
+    This replaces the old handoff, which chained a delayed deep_convo job, a
+    supervisor wake and a backoff reset to move the fan into another automation.
+    The openers now happen here, so there is nothing to hand over."""
     now = datetime.utcnow()
-    cleared = {"deep_convo_skip_level": 0, "deep_convo_skip_remaining": 0,
-               "updated_at": now}
+    await _add_to_skip_list(account_id, fan_id, "info")
     async with get_session() as s:
         await s.execute(
             sqlite_insert(Fan)
-            .values(account_id=str(account_id), fan_id=int(fan_id), **cleared)
+            .values(account_id=str(account_id), fan_id=int(fan_id),
+                    deep_convo_state="done", deep_convo_updated_at=now,
+                    updated_at=now)
             .on_conflict_do_update(
-                index_elements=["account_id", "fan_id"], set_=cleared)
+                index_elements=["account_id", "fan_id"],
+                set_={"deep_convo_state": "done", "deep_convo_updated_at": now,
+                      "updated_at": now}),
         )
-
-
-async def _handoff_to_deep_convo(client, account_id: str, fan_id: int, f: Fan) -> None:
-    """End of the normal chat: skip-list the fan ('info'), clear any stale
-    deep_convo backoff (they're chatting now — deep_convo must engage promptly,
-    not skip them), enqueue a gen_info regen, and push the FINAL structured
-    nickname + fact-sheet NOTE to OF (notes land here, at the end of the AI convo)."""
-    await _add_to_skip_list(account_id, fan_id, "info")
-    await _reset_deep_convo_backoff(account_id, fan_id)
     await ax.enqueue_job(account_id, "gen_info", payload={"force_ids": [int(fan_id)]})
-    # Kick deep_convo right after the gen_info regen instead of waiting for the
-    # slow periodic sweep — the fan just finished gathering and is sitting on an
-    # unanswered turn. The short delay lets gen_info (re)build the Q/Teases first;
-    # if it isn't done, deep_convo falls back to the existing profile Q.
-    await ax.enqueue_job(
-        account_id, "deep_convo", payload={"only_fan_ids": [int(fan_id)]},
-        run_at=datetime.utcnow() + timedelta(seconds=_HANDOFF_DEEPCONVO_DELAY_S),
-    )
-    _schedule_deepconvo_wake(_HANDOFF_DEEPCONVO_DELAY_S)
     try:
         await push_nick_and_notes(
             client, account_id, fan_id,
             nick=build_structured_nickname(f),
             # 200 pinned EXPLICITLY: this PUTs the note to OnlyFans (no dedup/throttle
-            # on this path), so it must never inherit a widened build_facts_note default.
+            # on this path), so it must never inherit a widened default.
             notes=build_facts_note(facts_from_fan(f), max_len=200),
         )
     except Exception:
-        log.debug("of_ai_chat handoff push failed account=%s fan=%s",
+        log.debug("of_ai_chat graduation push failed account=%s fan=%s",
                   account_id, fan_id, exc_info=True)
 
 
@@ -1465,8 +1539,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typing_wpm = await load_typing_wpm(account_id)  # per-bubble "typing" pacing
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
+    # PHASE 2 pre-send consistency check — OFF unless explicitly enabled.
+    consistency_on = (await load_consistency_flags(account_id))[_PURPOSE]
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
+    # Space-before-"?" — its own tri-state key, read independently but only
+    # ever APPLIED inside the non-native block below, so it can narrow that
+    # register and never widen it.
+    spacing_on = (await load_spacing_flags(account_id))[_PURPOSE]
     factground_on = await load_factground_flag(account_id)  # rich-profile grounding (default ON)
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
     stickers_on = await load_cat_stickers_flag(account_id)    # cat reaction gifs (default ON)
@@ -1567,28 +1647,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _skip_and_collect(account_id, fan_id, "spent")
                 newly_skiplisted += 1
                 continue
-            if c.fan_msg_n >= _MAX_FAN_MESSAGES:
-                await _skip_and_collect(account_id, fan_id, "too_long")
-                newly_skiplisted += 1
-                continue
-            # Hard reply cap: after _MAX_TURNS confirmed replies, graduate to
-            # deep_convo regardless of info-completeness — a fan who never reveals
-            # the bio facts (dodges every question) otherwise stays here for ever.
-            if int(f.turn_counter or 0) >= _MAX_TURNS:
-                await _handoff_to_deep_convo(client, account_id, fan_id, f)
-                newly_skiplisted += 1
-                continue
-            # Hand off to deep_convo once there's NOTHING LEFT TO ASK — every topic
-            # is either filled (enough info) or has hit its ask cap (he dodged).
-            # That's the "go to deep convo if enough info or dodged" rule: we don't
-            # keep a fan in the gather forever, but we DO ask each thing (core facts
-            # up to 2x) before moving on. Then (re)generate the Q/Teases.
+            # Once every topic is either filled or asked to its cap, the GATHER is
+            # over and the fan moves on to the gen_info openers (the deepen phase,
+            # below in the send loop). Nothing is handed to another automation.
             try:
                 asked_f = set(json.loads(f.questions_asked or "[]"))
             except Exception:
                 asked_f = set()
-            if not _questions_still_needed(f, asked_f):
-                await _handoff_to_deep_convo(client, account_id, fan_id, f)
+            # The runaway cutoff bounds the GATHER, not the conversation. A fan who
+            # has finished answering is not "too long" — he is exactly the fan the
+            # openers were mined for, and applying this to him is what kept the
+            # deepen phase unreachable (368 fans cut by too_long against 21 who ever
+            # completed the gather).
+            if not _gather_done(f, asked_f) and c.fan_msg_n >= _MAX_FAN_MESSAGES:
+                await _skip_and_collect(account_id, fan_id, "too_long")
                 newly_skiplisted += 1
                 continue
         candidates.append(c)
@@ -1597,12 +1669,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     candidates.sort(key=lambda x: (-x.fan_msg_n, x.fan_id))
     candidates = candidates[:limit]
 
-    # Fact-grounding (default ON): one batch query for the final candidate set's rich
-    # profiles, fed to _build_messages so a bubble reads as "she remembers me". Off →
-    # empty map → profile=None → prompt byte-identical to before.
-    profiles: dict[int, FanProfile] = (
-        await _load_profiles(account_id, [c.fan_id for c in candidates])
-        if factground_on else {})
+    # One batch query for the final candidate set's rich profiles. Two consumers with
+    # different switches: fact-grounding feeds the bio into the prompt (default ON,
+    # `factground_on` — off ⇒ profile=None ⇒ prompt byte-identical to before), and the
+    # deepen phase reads the gen_info openers off the same rows. The openers are NOT
+    # gated on factground: turning bio-grounding off must not silently graduate every
+    # fan for want of a profile to read.
+    profiles: dict[int, FanProfile] = await _load_profiles(
+        account_id, [c.fan_id for c in candidates])
 
     sent = 0
     stickers_sent = 0       # cat reaction gifs delivered (incl. sticker-only replies)
@@ -1634,7 +1708,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # Extract sees only the last few turns (a newly-stated fact is
                 # always recent) — its own short tail, NOT the reply's.
                 f = await _extract_and_fill(account_id, fan_id, f, c, model,
-                                            _EXTRACT_HISTORY_TAIL)
+                                            _EXTRACT_HISTORY_TAIL, persona=persona)
             except LLMCapExceeded:
                 cap_hit = True
                 log.warning("of_ai_chat LLM cap reached (extract) account=%s — stopping",
@@ -1653,13 +1727,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 asked = set(json.loads(f.questions_asked or "[]"))
             except Exception:
                 asked = set()
-            # If the inline fill left NOTHING more to ask (all filled or asked to
-            # cap), hand off to deep_convo this turn (no redundant reply).
-            if (fan_id not in force_ids
-                    and not _questions_still_needed(f, asked)):
-                await _handoff_to_deep_convo(client, account_id, fan_id, f)
-                newly_skiplisted += 1
-                continue  # finally releases the lease (sent_ok stays False)
+            # The gather is over once the inline fill left nothing to ask. The fan
+            # does NOT leave — he moves on to the gen_info openers, worked into this
+            # same reply. Only when those run out does of_ai_chat finish with him:
+            # it is the starter lane, so it graduates rather than chatting for ever.
+            opener = None
+            if fan_id not in force_ids and _gather_done(f, asked):
+                # one_pass: the starter lane finishes with a fan after one question
+                # and one tease. It cannot wait for a dry pool — gen_info restocks
+                # after every reply, so the pool never empties (see next_for).
+                opener = _openers.next_for(f, profiles.get(fan_id), one_pass=True)
+                if opener is None:
+                    await _graduate(client, account_id, fan_id, f)
+                    newly_skiplisted += 1
+                    continue  # finally releases the lease (sent_ok stays False)
             # Per-fan language: a manual pin or gen_info detection on this fan
             # (fans.language) overrides the account default; unset → account default.
             fan_lang = _language.resolve_language(account_lang, getattr(f, "language", None))
@@ -1679,9 +1760,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 content_ask=_language.is_content_ask(c.last_body, fan_lang),
                 tip_ask_block=tip_ask_block,
                 painful_on=painful_on, lang=fan_lang,
-                profile=profiles.get(fan_id),
+                profile=profiles.get(fan_id) if factground_on else None,
                 clock=_clock_line(clock_tz),
-                sticker_mode=sticker_mode)
+                sticker_mode=sticker_mode,
+                opener=opener)
             try:
                 res = await llm_client.chat(
                     model=model,
@@ -1711,10 +1793,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Deterministic floor under ONPLATFORM_GUARDRAIL: if the model still
             # leaked a number / off-platform handle / meetup arrangement, swap for
             # a warm on-platform deflection before it can be sent.
-            raw, _leak = guard_offplatform(raw, random.Random(f"{fan_id}:{raw}"))
-            if _leak:
-                log.info("of_ai_chat off-platform leak guarded account=%s fan=%s reasons=%s",
-                         account_id, fan_id, _leak)
+            # The shared send chokepoint: guard_offplatform stops her leaking a
+            # phone number, PHASE 2 stops her contradicting herself, then the
+            # account-wide emoji strip — all in _outbound, in that order. PHASE 2
+            # is off unless the account opts in; a no-self-claim draft costs
+            # nothing either way.
+            raw, _leak = await finalize_draft(
+                raw, account_id=account_id, fan_id=fan_id, purpose=_PURPOSE,
+                consistency=ConsistencyCtx(
+                    fan=f, persona=persona, model=model,
+                    last_inbound=c.last_body or "") if consistency_on else None,
+                strip_emoji=strip_emoji_on)
             # Count the turn the moment a reply is GENERATED — a "try" counts
             # whether or not it lands. An undeliverable fan (no-id) or an echo-only
             # drop never bumps via the confirmed-send path, so its turn_counter
@@ -1723,11 +1812,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # still hits 30 and graduates to deep_convo instead of looping for ever.
             if not dry_run:
                 await _bump_attempt(account_id, fan_id, now)
-            # Account-wide emoji strip (opt-in): remove emojis BEFORE the split so
-            # the emoji-aware bubble logic simply never fires. The `if p.strip()`
-            # filter below still drops any bubble left empty by the strip.
-            if strip_emoji_on:
-                raw = strip_emojis(raw)
+            # (the account-wide emoji strip ran in finalize_draft above — still
+            # BEFORE the split, so the emoji-aware bubble logic never fires, and
+            # the `if p.strip()` filter below still drops a bubble it emptied.)
             # Up to `max_bubbles` bubbles (newline / em-dash / mid-emoji); em-dashes
             # are always cleaned out. Cap (2, or 3 with the style opt-in) so we
             # never spam.
@@ -1751,7 +1838,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             name_protect = [n for n in (f.real_name, f.generated_nickname,
                                         f.of_display_name) if n]
             if nonnative_on:  # opt-in: deterministic non-native misspellings (always)
-                parts = [apply_nonnative_style(p, protect=name_protect) for p in parts]
+                # ONE rng for the whole reply — see apply_nonnative_spacing.
+                _q_rng = random.Random(f"{fan_id}:{raw}:q")
+                parts = [apply_nonnative_style(p, protect=name_protect)
+                         for p in parts]
+                if spacing_on:
+                    parts = [apply_nonnative_spacing(p, _q_rng) for p in parts]
             if typo_on:  # opt-in: a realistic thumb-slip (+ a throttled "*fix" bubble)
                 # protect the words non-native already mangled so we don't double-corrupt
                 protect = name_protect + (list(NONNATIVE_OUTPUTS) if nonnative_on else [])
@@ -1874,6 +1966,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             target = _primary_ask_target(presented) if parts else None
             if target:
                 await _mark_question_asked(account_id, fan_id, target, asked)
+            # A gif-only reply carried no opener, so it doesn't burn one.
+            if opener is not None and parts:
+                await _openers.record_used(account_id, fan_id, f,
+                                           profiles.get(fan_id), opener.slot)
             # Keep stored info current: refresh the profile when the gate says stale.
             await _maybe_refresh_profile(account_id, fan_id, c.fan_msg_n, now)
             sent += 1

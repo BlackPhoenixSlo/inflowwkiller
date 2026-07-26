@@ -29,6 +29,11 @@ from db.models import AccountAiConfig, Fan, Message, SkipList
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+# The per-fan state blob lives in its own leaf module — see fan_state.py for why
+# storage does not belong in here. apply_typo_throttle below is a consumer like
+# any other; this is NOT a re-export, so importers go to the leaf directly.
+from .fan_state import fan_state, put_fan_state
+
 log = logging.getLogger("of-relay.automation.common")
 
 
@@ -478,6 +483,17 @@ DEFAULT_MODEL = "deepseek-v4-flash"
 STYLE_MAX_BUBBLES = 6   # a real texter can fire off a burst of quick texts in a row
 STYLE_AUTOMATIONS = ("of_ai_chat", "autoreply", "deep_convo", "ai_chatter")
 
+# The engines that actually CALL _persona.verify_self_consistency. Deliberately
+# NOT STYLE_AUTOMATIONS: the style layers above are prompt-level and every engine
+# applies them, but the pre-send check is a code path an engine either has or does
+# not. Keying its flags off the wider tuple minted `consistency_autoreply` and
+# `consistency_deep_convo` — settable, persisted, and read by nothing, which is
+# the same shape as the hot-lead trinity flag deleted in dc2c3b8.
+#
+# Widen this ONLY in the commit that adds the call, never ahead of it. The
+# invariant is asserted by test_consistency_check.case_no_inert_flags.
+CONSISTENCY_AUTOMATIONS = ("of_ai_chat", "ai_chatter")
+
 # The "not-AI" block — the tells that make automated chat read like a person.
 STYLE_HUMANIZER = (
     "TEXT LIKE A REAL PERSON, NOT AN AI:\n"
@@ -597,6 +613,49 @@ LIVE_PROOF_GUARDRAIL = (
     "line, e.g. \"i don't do facetime babe, but stay n talk to me\" or \"no live "
     "calls hun, you get me right here\"."
 )
+
+# ── Self-consistency guardrail (ALWAYS ON — not gated on any opt-in) ──
+# The creator-side twin of the fan-facts block. The prompt carries only the last
+# _HISTORY_TAIL bubbles, so in a long thread everything she has ever said about
+# HERSELF has scrolled out — and she re-answers "where did you grow up?" from
+# scratch every time. Measured on prod: 56% of repeat biographical questions
+# arrived with the earlier answer already out of the window (mean gap 127
+# messages), and one fan walked a thread from "soy argentina de verdad" to
+# "estoy acá en Chile" to "en córdoba" before telling her "ya no creo nada".
+#
+# Note what this does NOT say: it does not forbid inventing. A persona can never
+# cover every question a fan asks, so improvising is allowed and expected — the
+# rule is that an improvised detail becomes binding the moment it is said. That
+# is what makes this compose with the claimed-facts ledger rather than fight it:
+# the guardrail states the rule, the ledger supplies the remembered answers.
+BIO_CONSISTENCY_GUARDRAIL = (
+    "WHO YOU ARE (hard rule): everything about yourself — your age, birthday, "
+    "height, where you grew up, where you live now, your job, your studies, your "
+    "family, kids, who you live with, your ex, your body and tattoos, your pets, "
+    "your music, what you're into — must match your profile above and must NEVER "
+    "contradict "
+    "anything you have already told him. If your profile doesn't cover what he "
+    "asks, answer naturally in character, but keep it SMALL and stick to it for "
+    "the rest of the chat — never give him a different version later. If you're "
+    "not sure what you told him before, stay warm and vague instead of inventing "
+    "a new specific (a new city, a new age, a new name). NEVER say you can't "
+    "remember, and never explain yourself as a bot, an assistant, or an agency."
+)
+
+# ── Canonical "does this column carry signal" predicate ───────────────
+# Promoted here from of_ai_chat (its 50 call sites keep working via a re-export)
+# so the shared layer owns it: it is a general predicate over nullable text/JSON
+# columns, not an of_ai_chat concept, and _persona needs it too. Adding a second
+# near-identical helper instead of promoting this one was the original mistake.
+def nonempty(v) -> bool:
+    """True when a column carries real signal (not '', not '[]'/'{}')."""
+    if v is None:
+        return False
+    if isinstance(v, str):
+        s = v.strip()
+        return bool(s) and s not in ("[]", "{}")
+    return bool(v)
+
 
 # Emoji (with optional variation selector / ZWJ / regional-indicator) stripper —
 # the model ignores a "no emojis" prompt and its emoji PLACEMENT is itself a dead
@@ -975,7 +1034,21 @@ NONNATIVE_MISSPELLINGS = {
     "theirs": "thers",
     "subscription": "subscribtion",
     "telegram": "tegelgram",
+    # Harvested from the graded vault's own sent messages (2026-07-25): every misspelling
+    # below is one she repeats verbatim across separate conversations, which is
+    # exactly the fingerprint this layer wants — not a one-off thumb slip.
+    #   'beautifull' ×3  "Its so beautifull , expensive but beautifull"
+    #   'hiw'        ×3  "Hiw long do you want?" / "Hiw are u today ?"
+    # Fire rate matters here — this layer is deterministic, so a common word would
+    # read as a tic rather than a fingerprint. Measured over 32,392 bot sends
+    # (07-18→07-25): 'how' 2.4%, 'beautiful' 0.01% (vs 'gonna' 0.5% today). One in
+    # ~42 messages carrying 'hiw' is the intended texture; anything much denser
+    # would need a rate gate instead of a dict entry.
+    "beautiful": "beautifull",
+    "how": "hiw",
     # "then" -> "than" is CONTEXT-RISKY (it would corrupt real "than"); left OUT.
+    # 'switterland' (Switzerland ×2) is hers too but a proper noun the copy never
+    # emits on its own, so it would only ever fire by coincidence — left OUT.
 }
 # Multi-word phrases (applied before the single-word pass).
 NONNATIVE_PHRASES = {
@@ -998,11 +1071,59 @@ def _match_case(src: str, repl: str) -> str:
     return repl
 
 
+# A space before '?' — "Do you like it ?" — is the loudest habit in the creator's
+# own sent messages, and one the bot has never once produced: measured 2026-07-25
+# over the graded vault's outbound, 187 of her 728 question-carrying messages have it
+# against 0 of 3,336 bot sends. Unlike the misspelling dict this is NOT applied
+# every time — she does it on about a QUARTER of her questions, and always-on
+# would read as a broken keyboard rather than a habit. So it rolls per '?' run
+# against the caller's seeded rng (same seed as the thumb-typo pass → the same
+# reply always renders the same way).
+#
+# Not universal across creators: Isabelle's 106 question messages have zero. It
+# rides the per-account non-native flag for that reason.
+_NONNATIVE_SPACE_Q_RATE = 0.26
+_Q_RUN_RE = re.compile(r"(?<=[^\W\d_])(\?+)")
+# Tokens that must never be touched — a '?' inside one is query-string syntax or
+# part of a handle, not punctuation. Mirrors the typo pass's protect intent.
+_Q_SKIP_MARKERS = ("@", "/", "$", "http", "www", ".com")
+
+
+def apply_nonnative_spacing(text: str, rng, *, rate: float = _NONNATIVE_SPACE_Q_RATE) -> str:
+    """Sometimes detach a '?' from the word before it ("Do you like it ?").
+
+    Rolls independently per question-mark RUN so "u sure??" stays one unit rather
+    than splitting into "? ?". A run is only eligible when the character before it
+    is a LETTER, and the whole whitespace-token is skipped when it carries a
+    link/handle/price marker — that keeps 'onlyfans.com/x?y=1' intact.
+
+    `rng` is the caller's seeded Random and MUST be shared across the bubbles of
+    one reply — pass the same object, not a fresh Random per bubble. Re-seeding
+    per bubble replays the same roll for each, so every '?' in the reply agrees
+    and a 3-bubble answer renders "you like it ? really ? u sure ?" — the broken
+    keyboard this rate exists to avoid. Same reason `humanize_typos` takes the
+    rng from its caller rather than minting one."""
+    if not text or "?" not in text or rate <= 0:
+        return text
+    out = []
+    for tok in re.split(r"(\s+)", text):
+        if not tok or tok.isspace() or any(mk in tok.lower() for mk in _Q_SKIP_MARKERS):
+            out.append(tok)
+            continue
+        out.append(_Q_RUN_RE.sub(
+            lambda m: (" " + m.group(1)) if rng.random() < rate else m.group(1), tok))
+    return "".join(out)
+
+
 def apply_nonnative_style(text: str, *, protect=()) -> str:
     """Deterministically swap known words for their non-native misspelling at word
     boundaries (case-insensitive). Pure + reversible (nothing persisted); empty input
     returns input. Protected: a token with a digit / @handle / link / '$' / emoji, a
-    non-alpha core, or a name in `protect` is never touched."""
+    non-alpha core, or a name in `protect` is never touched.
+
+    The occasional space-before-'?' habit is a SEPARATE, rng-driven step
+    (`apply_nonnative_spacing`) the senders apply after this one — keeping it out
+    of here is what lets this function stay deterministic, as its name promises."""
     if not text:
         return text
     protect_set = {w.lower() for name in protect for w in _WORD_RE.findall(str(name))}
@@ -1038,6 +1159,69 @@ def nonnative_flag_key(automation: str) -> str:
 
 
 STYLE_NONNATIVE_KEYS = tuple(nonnative_flag_key(k) for k in STYLE_AUTOMATIONS)
+
+
+def spacing_flag_key(automation: str) -> str:
+    """style_config_json key for the space-before-'?' habit.
+
+    Its OWN key rather than riding `nonnative_<automation>`: the non-native layer
+    is a whole register (vocabulary, word order, the odd article), while this is a
+    single visible punctuation artifact — "you like it ?" — that an operator may
+    well want off while keeping the rest. It shipped with no switch of its own and
+    default-ON for ai_chatter, which is not a shape anyone should have to live
+    with. Same tri-state default as the layer it came from, so ticking nothing
+    changes nothing."""
+    return f"nonnative_spacing_{automation}"
+
+
+async def load_spacing_flags(account_id: str) -> dict[str, bool]:
+    """Read account_ai_config.style_config_json → {automation: bool} for the
+    space-before-'?' habit. TRI-STATE, same rule as load_nonnative_flags: explicit
+    True/False wins, ABSENT → _STYLE_DEFAULT_ON. STYLE_FORCE_OFF forces all False.
+
+    Read INDEPENDENTLY of the non-native flag, but the caller applies it only when
+    the non-native layer is on — the spacing is part of that register, so it can be
+    narrowed, never widened past its parent."""
+    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+        return {k: False for k in STYLE_AUTOMATIONS}
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    stored = _parse_style_config(getattr(cfg, "style_config_json", None) if cfg else None)
+    return {k: _resolve_style_flag(stored, k, spacing_flag_key(k)) for k in STYLE_AUTOMATIONS}
+
+
+def consistency_flag_key(automation: str) -> str:
+    """style_config_json key for the PHASE 2 pre-send consistency check, mirroring
+    typo_flag_key / nonnative_flag_key."""
+    return f"consistency_{automation}"
+
+
+STYLE_CONSISTENCY_KEYS = tuple(consistency_flag_key(k) for k in CONSISTENCY_AUTOMATIONS)
+
+
+async def load_consistency_flags(account_id: str) -> dict[str, bool]:
+    """Read account_ai_config.style_config_json → {automation: bool} for the
+    pre-send consistency check (the 'consistency_<automation>' keys).
+
+    Keyed off CONSISTENCY_AUTOMATIONS, not STYLE_AUTOMATIONS: only an engine that
+    calls verify_self_consistency may have a flag, so an operator can never enable
+    a check that nothing performs.
+
+    OFF unless EXPLICITLY enabled — note this does NOT use _resolve_style_flag.
+    That helper falls back to _STYLE_DEFAULT_ON, which carries ai_chatter=True, so
+    routing this layer through it would have switched the check on for every
+    ai_chatter account the moment it shipped (caught by the first test of it).
+    Unlike the humanizer and the typo layers, which are free, this one costs a
+    second LLM call on the replies it fires for: it is opted into per account,
+    never assumed. Ship it off, enable on the accounts with real payers, measure.
+    STYLE_FORCE_OFF still forces False."""
+    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+        return {k: False for k in CONSISTENCY_AUTOMATIONS}
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    stored = _parse_style_config(getattr(cfg, "style_config_json", None) if cfg else None)
+    return {k: bool(stored.get(consistency_flag_key(k), False))
+            for k in CONSISTENCY_AUTOMATIONS}
 
 
 async def load_nonnative_flags(account_id: str) -> dict[str, bool]:
@@ -1307,30 +1491,20 @@ async def apply_typo_throttle(account_id, fan_id, parts, rng, *, protect=(),
     now = datetime.utcnow()
     async with get_session() as s:
         fan = await s.get(Fan, (str(account_id), int(fan_id)))
-        try:
-            cf = json.loads(fan.custom_fields) if fan and fan.custom_fields else {}
-            if not isinstance(cf, dict):
-                cf = {}
-        except Exception:
-            cf = {}
-        state = cf.get(_TYPO_FIX_STATE_KEY)
-        if not isinstance(state, dict):
-            state = {}
+        state = fan_state(fan, _TYPO_FIX_STATE_KEY)
 
         out, emitted = _humanize_typos_impl(
             parts, rng, protect=protect, max_bubbles=max_bubbles,
             allow_correction=_typo_correction_allowed(state, now))
         out = out[:max_bubbles]
 
-        if emitted:
-            cf[_TYPO_FIX_STATE_KEY] = {"at": now.isoformat(), "since": 0}
-        else:
-            cf[_TYPO_FIX_STATE_KEY] = {
-                "at": state.get("at"),
-                "since": int(state.get("since", 0) or 0) + 1,
-            }
         if fan is not None:
-            fan.custom_fields = json.dumps(cf)
+            # Atomic with nothing else here, but the blob merge is the shared one —
+            # this throttle is cross-sender state and must not clobber a sibling key.
+            put_fan_state(fan, _TYPO_FIX_STATE_KEY,
+                          {"at": now.isoformat(), "since": 0} if emitted else
+                          {"at": state.get("at"),
+                           "since": int(state.get("since", 0) or 0) + 1})
             await s.commit()
     return out
 
@@ -1646,6 +1820,12 @@ def name_token(s: str | None, *, last: bool = False) -> str:
     raw = words[-1] if last else words[0]
     if not raw[:1].isupper():                 # real names are Capitalized; handles aren't
         return ""
+    # A SHOUTED token is a country/region code, never a first name. gen_info emits
+    # the name slot title-cased ('Mani'), so anything all-caps reaching here came
+    # from the location slot after _guard_name blanked an unusable name — without
+    # this, 'USA/Free' resolves to the greeting "u around USA?".
+    if raw.isupper() and len(raw) <= 4:
+        return ""
     # Keep letters only, but UNICODE-correct: str.isalpha() preserves accented names
     # (José, Ángel, Muñoz, Nicolás) that the old [^A-Za-z] strip mangled to Jos/ngel/Muoz.
     w = "".join(ch for ch in raw if ch.isalpha())
@@ -1661,11 +1841,18 @@ def resolve_fan_name(f) -> str:
     ('John/City/Tag') is then the most reliable name signal we hold, but the senders
     never consulted it and emitted a literal 'Babe'.
 
-    Precedence keeps each sender's prior behaviour for the populated cases
-    (real_name → generated_nickname → of_display_name, used verbatim) and only adds a
-    new tail that parses the curated custom_nickname. `of_username` is deliberately
-    excluded — handles like 'u123' / 'alexnielsen' aren't greetable names. Returns ''
-    when we truly have nothing; callers keep their own soft 'babe' fallback.
+    Precedence: real_name → generated_nickname → of_display_name → custom_nickname.
+    `of_username` is deliberately excluded — handles like 'u123' / 'alexnielsen'
+    aren't greetable names. Returns '' when we truly have nothing; callers keep their
+    own soft 'babe' fallback.
+
+    BOTH nickname columns hold a STRUCTURED LABEL, not a name: gen_info builds
+    `Name/City,Country/Age/Job/Tag` and, when it can't find a usable name, blanks the
+    first slot — `_clean_nickname` then drops the empty slot so the LOCATION slides
+    into first position ('Vancouver,Canada/39', 'USA/Free'). generated_nickname used
+    to be returned verbatim, so those labels reached the chat engines as the fan's
+    name and she greeted people with "hey Kentucky,USA u still there?". Both now go
+    through `name_token`, which keeps a real name slot and rejects a location one.
 
     `f` may be a Fan ORM row or a dict of the same fields."""
     def _g(attr: str) -> str:
@@ -1675,8 +1862,12 @@ def resolve_fan_name(f) -> str:
             return str(f.get(attr) or "").strip()
         return str(getattr(f, attr, "") or "").strip()
 
-    chained = _g("real_name") or _g("generated_nickname") or _g("of_display_name")
-    return chained or name_token(_g("custom_nickname"), last=True)
+    # of_display_name is OF's own field (a real display name like 'garrett baydala'),
+    # so it stays verbatim; only the two label columns are parsed.
+    return (_g("real_name")
+            or name_token(_g("generated_nickname"), last=True)
+            or _g("of_display_name")
+            or name_token(_g("custom_nickname"), last=True))
 
 
 def substitute_placeholders(text: str, fan, *, name: str | None = None) -> str:

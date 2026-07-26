@@ -52,8 +52,11 @@ import dataclasses
 import json
 import logging
 import random
+from collections import Counter
+from random import Random
 import re
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -67,12 +70,27 @@ from db.engine import get_session
 from db.models import (
     AccountAiConfig, Blacklist, CatalogItem, CatalogProgress, CatalogScript,
     ContentOffer, Fan, FanProfile, LadderQuote, LadderState, Message, PendingOffer,
-    RhythmState, ScheduledJob, SkipList, Transaction, VaultSend,
+    QuotaAudit, RhythmState, ScheduledJob, SkipList, Transaction, VaultSend,
     created_at_text, parse_ts,
 )
 from llm_client import LLMCapExceeded
 from . import cat_stickers, rhythm, script_packs, tip_ladder, upsell
+# The reply-volume leash — both gates, the spend rules that lift them, and the
+# verdict ledger. Re-exported under these names because `fans.py` (the status
+# endpoint) and the tests reach for them as `ai_chatter.X`, and because reading the
+# leash out of the engine that obeys it is the point of the split.
+from ._leash import (  # noqa: F401 — re-exported for fans.py / tests
+    HOT_TIERS, QUOTA_BACKOFF_SERVED, QUOTA_HELD, QUOTA_NO_LADDER, QUOTA_OFF,
+    QUOTA_RUNWAY, QUOTA_SIGNAL_LIFT, QUOTA_SPEND_LIFT, QUOTA_UNDER, QUOTA_UNLIMITED,
+    QUOTA_WINDOW, SPEND_QUOTA_UNLIMITED, TIER_BASELINE, TIER_BUYING_SIGNAL,
+    TIER_NO_SIGNAL, TIER_PIC_SENT, TIER_POST_PURCHASE, _cadence_gate,
+    _last_money_at, _paid_spend_by_window, _Quota, _quota_gate, _TIP_KINDS,
+    _write_quota_audit, daily_quotas, read_leash, spend_caps, spend_windows,
+)
+from ._persona import fan_claims_block, persona_register_age
+from ._outbound import ConsistencyCtx, finalize_draft
 from . import _language
+from . import _openers  # the gen_info opener pool (the deepen phase)
 # ppv_send owns the ONE price authority (`price_bounds`); ownership.py owns
 # the ONE ownership check (`owners_of_media`, keyed on MEDIA — a fan who
 # bought a clip in a mass blast has no content_offers row at all). Importing
@@ -82,18 +100,22 @@ from .ppv_send import price_bounds
 from ownership import owners_of_media as _owners_of_media
 from ._common import (
     CONTENT_ASK_RE, ESCALATION_RE, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER,
+    BIO_CONSISTENCY_GUARDRAIL,
+    nonempty,
     ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING, STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER,
     STYLE_MAX_BUBBLES,
-    apply_nonnative_style, apply_word_restriction, coerce_ids, guard_offplatform,
+    apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction, coerce_ids,
+    load_consistency_flags,
     hold_with_typing, apply_typo_throttle, load_cat_stickers_flag,
     load_cat_sticker_tuning,
-    load_nonnative_flags,
-    load_painful_texting_flag, load_style_flags,
+    load_nonnative_flags, load_spacing_flags,
+    load_painful_texting_flag, load_strip_emojis, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags,
     load_promo_spam_ids,
     quarantine_if_undeliverable, recent_payer_fans, resolve_fan_name, resolve_model,
     should_skip_muted_creator, skip_unreachable_fan, thread_heat, typing_delay_seconds,
 )
+from .fan_state import fan_state, set_fan_state
 # Deliberate sibling reuse — keeps the texting voice byte-compatible with
 # of_ai_chat instead of forking 500 lines of tuned style machinery.
 from .of_ai_chat import (
@@ -104,7 +126,7 @@ from .of_ai_chat import (
     _good_examples, _load_persona, _looks_like_echo, _mark_question_asked,
     _mark_reply_sent,
     _history_text,
-    _maybe_push_nickname, _maybe_refresh_profile, _nonempty, _pause_fan,
+    _maybe_push_nickname, _maybe_refresh_profile, _pause_fan,
     _primary_ask_target, _questions_still_needed, _recent_ask_pattern,
     _strip_html, split_for_bubbles,
 )
@@ -154,9 +176,6 @@ _OLD_FAN_SKIP = "old_fan_pre_ai"
 # enables it. The offer_* knobs are read by the M3 offer engine.
 _DEFAULTS: dict = {
     "enabled": False,
-    "hotsell_trinity_enabled": False,    # hot-lead tip→tip→PPV ladder (S2→S1→S3).
-                                         # Ships DARK: default off, zero behavior
-                                         # change until an account opts in.
     "mode": "always",                    # "backup" | "always". House default is
                                          # always-on: `enabled` below is the real
                                          # master switch, and every live account
@@ -261,6 +280,92 @@ _DEFAULTS: dict = {
         {"days": 30, "min_cents": 1000, "cap": 10},   # ≥ $10 in 30d → at least 10
         {"days": 7,  "min_cents": 10000, "cap": 15},  # ≥ $100 in 7d → at least 15
     ],
+    # Item 21c — the DAILY quota. The signal/spend caps above bound a BURST, and a
+    # burst reopens after `session_gap_minutes` (60) of her silence — so a fan who
+    # keeps typing gets a fresh cap every hour, ~24 times a day. Measured on prod
+    # 2026-07-26: 56% of all chat calls went to fans who have never paid a cent, and
+    # one of them (0 spend, 7 days) pulled 981 calls / 1,734 outbound messages by
+    # riding that hourly reset. The burst cap was never wrong — it just had no ceiling
+    # above it. This is that ceiling: replies per ROLLING 24h, per fan.
+    #
+    # It is a SLOWDOWN, never a stop. The fans worth protecting from a hard cut-off are
+    # the SLOW converters: measured in ACTIVE CHAT DAYS, the 15-30 day cohort is worth
+    # ~$241 lifetime against ~$74 for day-one buyers — 9% of converters, 24% of
+    # revenue. Burn the quota and she goes quiet for `quota_backoff_hours`, then talks
+    # again — the leash gets longer, never infinite.
+    #
+    # (This used to justify itself with "30% of buyers took more than 30 days". That
+    # number was FALSIFIED: it counted CALENDAR days from first contact and was
+    # inflated by dormant threads, one of them 2,313 days. In active chat days it is
+    # 6%. The conclusion held; the evidence did not. See library/DAILY_QUOTA_21C.md
+    # §10 — if the 30% sentence reappears anywhere, it is stale.)
+    # ── gen_info openers (the "deepen" phase) ──────────────────────────────────
+    # Once her bio-gap list for a fan is empty she can work a mined gen_info question
+    # into an ordinary reply instead of generic banter. Two knobs, because the
+    # feature shipped with neither and that is not a shape anyone should run:
+    #
+    #   `profile_openers_enabled`  ON. The behaviour is wanted — a reply that picks up
+    #                              something he actually told us beats "hey you 😘".
+    #   `profile_openers_rate`     0.30. It must NOT ride every reply. The pool arms
+    #                              for the WHOLE roster the moment this deploys (the
+    #                              per-fan state blob is empty for every existing
+    #                              fan), and a gathered fan would otherwise carry
+    #                              "ask him this" on every single turn from then on —
+    #                              a permanent interrogation cadence, which is the
+    #                              exact bot tell the bio-consistency work exists to
+    #                              remove. Most turns simply do not need a question.
+    #
+    # Rolled per (fan, inbound) so it is stable within a turn — a retry of the same
+    # turn makes the same choice rather than re-rolling until it wins.
+    "profile_openers_enabled": True,
+    "profile_openers_rate": 0.30,
+    "daily_quota_enabled": True,
+    "daily_quota_replies": 10,           # non-payer baseline: HER replies per 24h
+    # …but NOT until she has had a real run at him. EVERY fan is free before his first
+    # purchase, so throttling on "hasn't paid" alone would ration exactly the men we
+    # are still courting. This is a per-fan LIFETIME runway: until she has sent him
+    # this many replies, the daily quota does not apply at all, and she may chat as
+    # deep as the burst caps allow.
+    #
+    # 100 is measured, not guessed. Of every fan who has ever bought, 84% did it inside
+    # 25 of her replies and 99% inside 100 — so a 100-reply runway forfeits essentially
+    # no conversions while still catching the long repeaters (one $0 fan was taking ~130
+    # replies A DAY). Past it, a man who has had a hundred replies and bought nothing is
+    # the population this quota exists for.
+    #
+    # HER REPLIES, deliberately — not message rows. Rows count both directions and count
+    # bubbles, and the humanizer types one reply out as 2.82 rows on average (measured),
+    # so "100 rows" is really ~23 replies: it would start rationing before most fans had
+    # a fair run. Replies are also what actually costs an LLM call, so the runway is
+    # denominated in the thing being spent.
+    "daily_quota_free_replies": 100,
+    # Extra replies for 24h after a sale, on top of whatever tier he already earns —
+    # a man who just paid gets more room that day, not the stranger's ration.
+    "daily_quota_after_sale": 5,
+    # The floor while he is actively asking for content / escalating / sending pics.
+    # A man reaching for his wallet is never the man we ration, and this is what stops
+    # the quota from ever costing a sale — it mirrors the buying_signal burst tier.
+    "daily_quota_buying_signal": 20,
+    # The backoff ladder, in hours, walked once per quota exhaustion since his last
+    # money event — and CYCLIC: after the last rung it starts again at the first. A
+    # fixed floor would relegate a fan to "once every 3 days" forever; wrapping means
+    # every non-payer is periodically re-warmed at 4h, which is what the 30%-of-buyers
+    # -take-30-days tail needs. Any sale resets him to rung 0.
+    "quota_backoff_hours": [4, 12, 24, 72],
+    # The other side of the coin: fans who DO spend get a BIGGER daily quota, never a
+    # smaller one. Same {days, min_cents} shape as msg_limits_by_spend, same rolling
+    # windows, same max-never-min rule — the effective quota is the HIGHEST match, and
+    # `quota: 0` means UNCAPPED (a whale is never rationed). Empty list ⇒ spend never
+    # lifts the quota.
+    "daily_quota_by_spend": [
+        {"days": 30, "min_cents": 1000,  "quota": 25},   # ≥ $10 in 30d → 25/day
+        {"days": 7,  "min_cents": 10000, "quota": 60},   # ≥ $100 in 7d → 60/day
+        {"days": 7,  "min_cents": 50000, "quota": 0},    # ≥ $500 in 7d → uncapped
+    ],
+    # Ship computing-and-logging but NOT enforcing, so one day of real traffic proves
+    # who would have been throttled before a single live reply is withheld. Flip to
+    # True to enforce.
+    "daily_quota_enforce": False,
     "session_gap_minutes": 60,           # gap that starts a fresh burst for the caps
     # Item 17 — post-purchase talk window: keep chatting a just-paid fan this long
     # after his last money event; past it with no NEW spend, hand off (stop + cool
@@ -504,11 +609,17 @@ async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
 
 class _Cand:
     __slots__ = ("fan_id", "fan_msg_n", "last_dir", "last_body", "messages",
-                 "last_in_at", "last_out_at", "last_human_out_at", "session_out_n")
+                 "last_in_at", "last_out_at", "last_human_out_at", "session_out_n",
+                 "day_out_n", "total_out_n", "first_at", "her_last_at", "pic_sent")
 
     def __init__(self, fan_id: int):
         self.fan_id = fan_id
         self.fan_msg_n = 0
+        # Did his MOST RECENT inbound carry media? The buying-signal tier the
+        # cadence gate calls `pic`. Derived here, from the thread, so the status
+        # endpoint reads the same fact the engine does instead of reconstructing
+        # it from dispatch state it cannot see (see _leash.TIER_PIC_SENT).
+        self.pic_sent = False
         self.last_dir = ""
         self.last_body = ""
         self.messages: list[tuple[str, str]] = []  # (direction, body) oldest→newest
@@ -523,11 +634,25 @@ class _Cand:
                                  # cap counter) — REPLIES, not bubbles; only
                                  # populated when _gather is called with
                                  # session_gap_min > 0
+        self.day_out_n = 0       # HER OWN replies in the trailing 24h (item 21c
+                                 # daily quota) — same REPLIES-not-bubbles unit as
+                                 # session_out_n; only populated when _gather is
+                                 # called with day_window set
+        self.total_out_n = 0     # HER replies over the WHOLE thread (item 21c's
+                                 # per-fan runway) — same REPLIES-not-bubbles unit,
+                                 # never reset; only populated with day_window set
+        self.first_at: datetime | None = None    # oldest row on the thread — the dry
+                                                 # -streak anchor for a fan who has
+                                                 # never paid anything
+        self.her_last_at: datetime | None = None # HER last reply (not a human's, not a
+                                                 # bubble) — the clock the daily-quota
+                                                 # backoff counts its silence from
 
 
 async def _gather(account_id: str,
                   fan_ids: set[int] | None = None,
-                  *, session_gap_min: int = 0) -> dict[int, _Cand]:
+                  *, session_gap_min: int = 0,
+                  day_window: timedelta | None = None) -> dict[int, _Cand]:
     """One pass over the account's messages → per-fan history PLUS the two
     timestamps the gates need: when the fan last spoke (SLA age) and when a
     HUMAN last sent (manual outbound = automation_kind IS NULL and not part of
@@ -537,12 +662,18 @@ async def _gather(account_id: str,
     those fans IN SQL so reacting to one inbound DM never reads the whole
     account's message history. None/empty → the full-account sweep.
 
-    `session_gap_min > 0` additionally counts each fan's `session_out_n` — HER OWN
-    (ai_chatter) replies in the CURRENT burst, where a burst ends once SHE has been
-    silent for longer than `session_gap_min`. HIS messages do not hold the burst open:
-    measured on the thread, a fan who keeps typing would re-arm the gap forever and the
-    cap would become a permanent gag instead of a pause. The cadence caps (item 21) read
-    this so they bound a conversation, not a fan's lifetime.
+    It also times every reply of HERS, and from that one measurement derives all three
+    reply counters in a single post-pass — they differ only in the window they apply:
+
+      `session_out_n`  (`session_gap_min > 0`)  her replies in the CURRENT burst: the
+                       tail since her own last silence longer than `session_gap_min`.
+      `day_out_n`      (`day_window` set)       her replies within that window of HER
+                       LAST REPLY — the daily ceiling above the burst cap (item 21c).
+      `total_out_n`    (always)                 her replies over the whole thread —
+                       the per-fan runway the daily ceiling waits out.
+
+    The two window rules are deliberately different and each is load-bearing; both are
+    spelled out at the post-pass, which is the one place they can be compared.
 
     Only `automation_kind in _OUR_KINDS` counts — her chat turns AND her offer turns
     (`ai_upseller`), which are the same engine wearing a different label and must burn
@@ -562,6 +693,13 @@ async def _gather(account_id: str,
     else (his message, a human's, a gap) closes her turn."""
     out: dict[int, _Cand] = {}
     gap = timedelta(minutes=session_gap_min) if session_gap_min > 0 else None
+    # WHEN each of her replies landed, per fan — the single measurement all three
+    # counters are derived from after the scan. The loop's only job is to decide
+    # "is this row a new reply of hers"; how the replies are then WINDOWED is a
+    # question about windows, not about rows, and it belongs in one place below.
+    # (Cheap: this is strictly smaller than `c.messages`, which keeps every row on
+    # the thread anyway.)
+    her_times: dict[int, list[datetime]] = {}
     # The burst clock runs on HER OWN REPLIES, not on the thread. Measured on the thread,
     # a fan who keeps typing holds the burst open forever: she hits the cap, goes quiet,
     # and every message he sends RE-ARMS the very gap that would have freed her — so the
@@ -585,12 +723,13 @@ async def _gather(account_id: str,
         rows = (await s.execute(
             select(Message.fan_id, Message.direction, Message.body,
                    created_at_text(), Message.automation_kind, Message.mass_run_id,
-                   Message.image_desc)
+                   Message.image_desc, Message.media_count)
             .where(*where)
             .order_by(Message.fan_id, Message.created_at, Message.message_id)
         )).all()
     bad_ts: list[int] = []   # fans that own a row with an unreadable created_at
-    for fan_id, direction, body, created_at_raw, automation_kind, mass_run_id, image_desc in rows:
+    for (fan_id, direction, body, created_at_raw, automation_kind, mass_run_id,
+         image_desc, media_count) in rows:
         created_at = parse_ts(created_at_raw)
         if created_at is None and created_at_raw is not None:
             # Unreadable, not absent: the row can't be placed on the thread's
@@ -602,6 +741,10 @@ async def _gather(account_id: str,
         c = out.get(fan_id)
         if c is None:
             c = out[fan_id] = _Cand(int(fan_id))
+        # Rows arrive oldest→newest per fan, so the first one we see IS the thread's
+        # start — the dry-streak anchor for a fan who has never put money down.
+        if c.first_at is None and created_at is not None:
+            c.first_at = created_at
         text = _history_text(direction, body, image_desc)
         c.messages.append((direction, text))
         c.last_dir = direction
@@ -609,26 +752,30 @@ async def _gather(account_id: str,
         if direction == "in":
             c.fan_msg_n += 1
             c.last_in_at = created_at
+            # Assigned, not OR-ed: the tier means "he JUST sent a picture", so a
+            # photo three days and forty messages ago must not still read as a
+            # live buying signal. Each inbound overwrites the last.
+            c.pic_sent = int(media_count or 0) > 0
             mid_reply[fan_id] = False        # he spoke → her next row is a new reply
         else:
             c.last_out_at = created_at
             hers = mass_run_id is None and automation_kind in _OUR_KINDS
             if automation_kind is None and mass_run_id is None:
                 c.last_human_out_at = created_at
-            if gap is not None and hers and created_at is not None:
-                prev_her = her_last.get(fan_id)
-                # A gap since HER last reply opens a fresh burst — the counter is about
-                # how much SHE has said, so only her own silence can clear it.
-                if prev_her is not None and created_at - prev_her > gap:
-                    c.session_out_n = 0
-                    mid_reply[fan_id] = False
+            if hers and created_at is not None:
                 # Another bubble of the reply we already counted, or a new reply?
-                # Bubbles land seconds apart; a genuine second reply does not.
+                # Bubbles land seconds apart; a genuine second reply does not. (A row
+                # that crosses the session gap can never be a bubble — the smallest
+                # `session_gap_minutes` the validator accepts is 5, well past the
+                # 2-minute bubble window — so the burst reset needs no say here.)
+                prev_her = her_last.get(fan_id)
                 same_reply = (mid_reply.get(fan_id) and prev_her is not None
                               and created_at - prev_her <= _BUBBLE_WINDOW)
                 if not same_reply:
-                    c.session_out_n += 1   # HER reply — not a human's, not a bubble
+                    her_times.setdefault(fan_id, []).append(created_at)
+                # Her last ROW, bubbles included — when she last actually spoke.
                 her_last[fan_id] = created_at
+                c.her_last_at = created_at
             mid_reply[fan_id] = hers         # a human's row also closes her turn
 
     # ONE line per run, not one per row: the point is to make the corrupt rows
@@ -639,17 +786,48 @@ async def _gather(account_id: str,
                     "never silence an account again",
                     account_id, len(bad_ts), sorted(set(bad_ts))[:10])
 
-    # The burst also goes stale on the CLOCK, not only when a new reply of hers arrives.
-    # Without this the reset above can never fire for the fan it matters most for: she is
-    # capped, so she sends nothing, so no row of hers ever comes to notice the gap has
-    # passed — and she stays mute on him forever. An hour after her last reply, she is
-    # free again whether or not he kept talking through it.
-    if gap is not None:
-        now = datetime.utcnow()
-        for fid, c in out.items():
-            h = her_last.get(fid)
-            if h is None or now - h > gap:
+    # ── One measurement, three windows. Each counter is just "how many of her replies
+    # fall inside MY window", and each window is defined once, here, where the two
+    # deliberately different rules can be read side by side.
+    now = datetime.utcnow()
+    for fid, c in out.items():
+        times = her_times.get(fid, ())
+        c.total_out_n = len(times)          # the whole thread: his per-fan runway
+
+        if gap is not None:
+            # THE BURST — her replies since her own last silence longer than `gap`,
+            # counted back from the end. Only HER silence clears it: measured on the
+            # thread, a fan who keeps typing re-arms the very gap that would free her,
+            # so the counter could never reset and she'd be gagged on him permanently.
+            #
+            # And it goes stale on the CLOCK too, not only when a new reply arrives —
+            # otherwise it can never reopen for the fan it matters most for. She is
+            # capped, so she sends nothing, so no row of hers ever comes along to
+            # notice the hour has passed. An hour after her last reply she is free
+            # again whether or not he kept talking through it. Measured from her last
+            # ROW, not the reply's first bubble: her silence starts when she stopped
+            # typing, so a 4-bubble answer must not age from its opening line.
+            her_end = her_last.get(fid)
+            if her_end is None or now - her_end > gap:
                 c.session_out_n = 0
+            else:
+                n = 1
+                for i in range(len(times) - 1, 0, -1):
+                    if times[i] - times[i - 1] > gap:
+                        break
+                    n += 1
+                c.session_out_n = n
+
+        if day_window is not None:
+            # THE DAY — her replies within `day_window` of HER LAST REPLY, and that
+            # anchor is the whole design. Measured against `now` the count DECAYS: the
+            # ten replies that tripped the quota slide out of a trailing 24h on their
+            # own, the fan reads as under quota again, and the backoff releases him
+            # early — a 72h hold would expire in 24h and the long rungs could never
+            # bite. Anchored on her last reply it holds still while she stays quiet,
+            # so a hold lasts exactly as long as it is supposed to.
+            cutoff = times[-1] - day_window if times else None
+            c.day_out_n = sum(1 for t in times if cutoff is not None and t >= cutoff)
     return out
 
 
@@ -669,7 +847,6 @@ async def _load_stop_lists(account_id: str) -> tuple[set[int], dict[int, str]]:
 # ── Catalog + offers (M3): the LLM proposes, this code disposes ──────────────
 
 # Tip transaction kinds (mirror tip_reward / the attribution view).
-_TIP_KINDS = ("tip", "tip_post", "tip_stream")
 
 # The offer marker protocol: the model writes its pitch as normal bubbles and
 # ends the reply with a line that is exactly ">>OFFER <catalog item id>". The
@@ -2043,93 +2220,6 @@ async def _maybe_bootstrap_profile(account_id: str, fan_id: int) -> bool:
 
 # ── Cadence controller (items 10/17/18/21) ──────────────────────────────────
 
-async def _last_money_at(account_id: str, fan_ids) -> dict[int, datetime]:
-    """{fan_id: newest money-event time} — the later of an inbound tip (is_tip, so
-    the event time is created_at) and a PPV unlock (purchased_at). Drives the
-    post-purchase talk window (item 17). Fans with no money event are absent."""
-    ids = [int(x) for x in fan_ids]
-    if not ids:
-        return {}
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(Message.fan_id,
-                   func.max(func.coalesce(Message.purchased_at, Message.created_at)))
-            .where(Message.account_id == str(account_id),
-                   Message.fan_id.in_(ids),
-                   Message.is_unsent.is_(False),
-                   or_(Message.is_tip.is_(True), Message.purchased_at.isnot(None)))
-            .group_by(Message.fan_id)
-        )).all()
-    return {int(fid): ts for fid, ts in rows if ts is not None}
-
-
-async def _spend_caps(account_id: str, fan_ids, rules: list[dict],
-                      now: datetime) -> dict[int, int]:
-    """{fan_id: the highest burst cap his ROLLING-WINDOW paid spend earns} for the
-    item-21b spend floor. `rules` is msg_limits_by_spend — [{days, min_cents, cap}].
-    Only fans that clear at least one rule appear; the rest keep their signal cap.
-
-    Spend = PPV unlocks (paid outbound messages, priced by purchased_at/created_at)
-    PLUS tips (the transactions ledger, by occurred_at) — the same two sources
-    _buyer_facts and _paid_cents_7d already trust, so 'spend' here means the same
-    thing it does everywhere else. One window is opened per DISTINCT `days` value in
-    the rules (usually 2), each a single batched group-by, so cost is flat in fans.
-
-    A rule with no positive cap or a non-positive window/threshold is inert — an
-    operator zeroing a rung turns it off rather than capping anyone at 0."""
-    ids = [int(x) for x in fan_ids]
-    rules = [r for r in (rules or [])
-             if int(r.get("cap") or 0) > 0
-             and int(r.get("days") or 0) > 0
-             and int(r.get("min_cents") or 0) > 0]
-    if not ids or not rules:
-        return {}
-    # Sum each fan's paid spend once per distinct window, then let every rule that
-    # shares that window read the same total — n distinct windows, not n rules.
-    windows = sorted({int(r["days"]) for r in rules})
-    spend_by_window: dict[int, dict[int, int]] = {}
-    async with get_session() as s:
-        for days in windows:
-            since = now - timedelta(days=days)
-            ppv = (await s.execute(
-                select(Message.fan_id,
-                       func.coalesce(func.sum(Message.price_cents), 0))
-                .where(Message.account_id == str(account_id),
-                       Message.fan_id.in_(ids),
-                       Message.direction == "out",
-                       Message.is_paid.is_(True),
-                       Message.price_cents > 0,
-                       func.coalesce(Message.purchased_at, Message.created_at) >= since)
-                .group_by(Message.fan_id)
-            )).all()
-            tips = (await s.execute(
-                select(Transaction.fan_id,
-                       func.coalesce(func.sum(Transaction.amount_cents), 0))
-                .where(Transaction.account_id == str(account_id),
-                       Transaction.fan_id.in_(ids),
-                       Transaction.kind.in_(_TIP_KINDS),
-                       Transaction.status.in_(("cleared", "pending")),
-                       Transaction.occurred_at >= since)
-                .group_by(Transaction.fan_id)
-            )).all()
-            tot: dict[int, int] = {}
-            for fid, cents in ppv:
-                tot[int(fid)] = tot.get(int(fid), 0) + int(cents or 0)
-            for fid, cents in tips:
-                tot[int(fid)] = tot.get(int(fid), 0) + int(cents or 0)
-            spend_by_window[days] = tot
-    out: dict[int, int] = {}
-    for fid in ids:
-        best = 0
-        for r in rules:
-            spent = spend_by_window[int(r["days"])].get(fid, 0)
-            if spent >= int(r["min_cents"]):
-                best = max(best, int(r["cap"]))
-        if best > 0:
-            out[fid] = best
-    return out
-
-
 # How long a human chatter's unpaid PPV stays a LIVE ask for PACING purposes — i.e. how
 # long we refuse to stack another price on top of it. Long, because asking a man for
 # money twice while his first locked box is still sitting there unopened is the fastest
@@ -2240,66 +2330,6 @@ def _breakproof(ask_at: datetime | None, now: datetime) -> bool:
     the first 30 minutes after a price goes out are the sell; after that, a person is
     allowed to walk away from her phone (with a cover line)."""
     return ask_at is not None and (now - ask_at) <= _ASK_BREAKPROOF_WINDOW
-
-
-def _cadence_gate(c: "_Cand", *, pending: ContentOffer | None, recent_payer: bool,
-                  money_at: datetime | None, pic: bool,
-                  now: datetime, cad: dict,
-                  spend_cap: int = 0) -> tuple[bool, str, int]:
-    """Decide whether ai_chatter should keep engaging this fan THIS tick, and under
-    which signal tier. Returns (stop, tier, cap) — a pure function of the fan's live
-    state; every limit comes from `cad` (the config). `cap` is the EFFECTIVE reply
-    cap that decided `stop` (0 = uncapped, e.g. the post-purchase window); it is the
-    single source of truth for "how many replies is she allowed here", so the status
-    endpoint shows the same number the bot ran on instead of recomputing it. A "stop"
-    means skip the reply this tick (no LLM, no pause): the fan reopens on a real
-    buying signal (tier upgrade) or after a session-gap of silence resets his burst.
-
-      • Post-purchase window (item 17): a fan who paid within post_purchase_minutes
-        stays engaged with no cap; once that window lapses, the buy still counts as a
-        buying signal, so he falls back to the buying_signal tier (cap 20) rather than
-        being cut off — a proven buyer keeps a full leash for the recent-payer hour.
-      • Otherwise classify the signal (item 21) and stop once the burst reply count
-        (`session_out_n`) reaches that tier's cap (item 10 / "selling stops").
-
-    `spend_cap` (item 21b) is the floor his rolling-window PAID spend earns, precomputed
-    by _spend_caps. It only ever RAISES the leash: the effective cap is the MAX of the
-    live signal tier's cap and the spend cap, so a proven spender is never cut off as
-    short as a stranger, but a hotter live signal still wins if it's higher."""
-    body = c.last_body or ""
-    live_signal = bool(pic or _CONTENT_ASK_RE.search(body) or ESCALATION_RE.search(body))
-
-    # Item 17 — post-purchase talk window: a just-paid fan gets an UNCAPPED burst for
-    # post_purchase_minutes after his last money event. Past it there's no early exit —
-    # he falls through to the tier logic below, where the buy still reads as a buying
-    # signal (recent_payer → buying_signal, cap 20): a full leash, never a hard stop.
-    ppm = int(cad.get("post_purchase_minutes") or 0)
-    if money_at is not None and ppm and (now - money_at) <= timedelta(minutes=ppm):
-        return (False, "post_purchase", 0)            # just paid → uncapped burst
-
-    limits = cad.get("msg_limits_by_signal") or {}
-    if pic:
-        tier = "pic_sent"
-    elif recent_payer or live_signal:
-        tier = "buying_signal"
-    elif pending is not None:
-        # An offer is on the table. Fresh → keep working it (buying_signal); stale
-        # (older than offer_expiry_minutes, still unbought) → short-leash no_signal.
-        oem = int(cad.get("offer_expiry_minutes") or 0)
-        stale = bool(oem and pending.offered_at
-                     and (now - pending.offered_at) > timedelta(minutes=oem))
-        tier = "no_signal" if stale else "buying_signal"
-    else:
-        tier = "baseline"
-
-    cap = int(limits.get(tier) or 0)
-    # A proven spender's floor lifts the leash but never lowers it: take whichever
-    # cap is larger. (A spend_cap of 0 — no rule matched — leaves the signal cap as
-    # is; a signal cap of 0, i.e. an unconfigured tier, means "no cap" and must stay
-    # uncapped, so only fold in spend_cap when there IS a signal cap to raise.)
-    if cap:
-        cap = max(cap, int(spend_cap or 0))
-    return (bool(cap and c.session_out_n >= cap), tier, cap)
 
 
 # One gentle re-engage opener (item 18). {name} → his greetable name (or "babe").
@@ -3413,13 +3443,16 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     escalation: bool = False,
                     hot_thread: bool = False,
                     bot_accused: bool = False,
+                    image_dare: bool = False,
                     painful_on: bool = True,
                     lang: str = "en",
                     profile: "FanProfile | None" = None,
                     ask_every: int = 0,
                     buyer_facts: list[str] | None = None,
                     clock: str = "",
-                    sticker_mode: str = "skip") -> tuple[list[dict], list[str]]:
+                    sticker_mode: str = "skip",
+                    opener: "_openers.Opener | None" = None,
+                    ) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — of_ai_chat's girly info-gather prompt
     with one structural difference: `sell_block`. Empty (M2) → the no-offers
     line stays, byte-equal behavior. Non-empty (M3) → the catalog/offer rules
@@ -3436,19 +3469,19 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     for label, val in (("age", f.his_age), ("city", f.home_city),
                        ("country", f.home_country), ("hobbies", f.hobbies),
                        ("occupation", f.occupation), ("fetishes", f.fetishes)):
-        if _nonempty(val):
+        if nonempty(val):
             facts.append(f"{label}: {str(val).strip()[:80]}")
     # gen_info's rich profile — the bio + bullet notes a human chatter reads before
     # replying. This is what makes a bubble land as "she remembers me", not generic.
     teases: list[str] = []
     if profile is not None:
-        if _nonempty(profile.short_bio):
+        if nonempty(profile.short_bio):
             facts.append(f"about him: {str(profile.short_bio).strip()[:400]}")
-        if _nonempty(profile.bullet_points):
+        if nonempty(profile.bullet_points):
             bp = str(profile.bullet_points).strip().replace("\n", "; ")[:600]
             facts.append(f"notes on him: {bp}")
         teases = [str(t).strip()[:140]
-                  for t in (profile.tease1, profile.tease2, profile.tease3) if _nonempty(t)]
+                  for t in (profile.tease1, profile.tease2, profile.tease3) if nonempty(t)]
     # Spend/tip history (computed async at the call site) — proven-spender context
     # shared by the chatter and the seller. Empty for a non-spender → prompt
     # stays byte-equal.
@@ -3461,7 +3494,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # added when there's something to reference (a bio/notes fact, a tease, or a
     # recent thing he said), so a profile-less fan's prompt is unchanged.
     personal_lines: list[str] = []
-    if profile is not None and (_nonempty(profile.short_bio) or _nonempty(profile.bullet_points)):
+    if profile is not None and (nonempty(profile.short_bio) or nonempty(profile.bullet_points)):
         personal_lines.append(
             "Work in ONE specific, natural detail from what you know about him above "
             "(his job, a hobby, something going on in his life) — like you actually "
@@ -3553,6 +3586,30 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         )
         presented = []
         ask = False
+    elif image_dare:
+        # BEAT 2 of the bot-accusation move. Beat 1 (above) was the breezy joke on the
+        # accusation itself; he answered, and NOW she dares him — because she can
+        # actually read what he sends (the vision layer splices his picture into her
+        # next turn as "[he sent: …]"), so the rating lands specific and a bot-checker
+        # gets an answer no canned reply could fake.
+        #
+        # Split across two exchanges on purpose: joke-then-dare in ONE message is a
+        # man defending himself, which is what a bot does. Landing it on his reply
+        # makes it a callback — she was still thinking about it — and a photo back is
+        # the warmest turn a thread gets. Ranked BELOW a content-ask/escalation: if
+        # he's reaching for his wallet, sell; the dare can wait.
+        need_block = (
+            "He questioned whether you're real last message and you laughed it off. "
+            "Now call back to it and DARE him: tell him to send you a picture right "
+            "now and you'll tell him exactly what you see — a bot couldn't do that. "
+            "Match the register you two are already in: if the thread is explicit, be "
+            "filthy and specific about what you want a picture OF and promise him a "
+            "rating out of ten; if it's still tame, keep it a cheeky 'send me "
+            "something then, I'll tell you what I think'. ONE short message. It is a "
+            "dare, not a sale: no price, no offer line, no get-to-know question."
+        )
+        presented = []
+        ask = False
     elif hot_thread:
         # ── THE SEXTING LADDER. Reverse-engineered from the threads that actually
         # converted (Kingsley/Santan, 2026-07): a bought PPV lands after ~3.6 fan
@@ -3590,6 +3647,12 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
             )
         presented = []
         ask = False
+    elif opener is not None:
+        # The gather is done, so this turn works in one gen_info opener — a question
+        # mined from something he actually said — instead of the generic banter
+        # below. Unlike of_ai_chat, ai_chatter never graduates a fan: when the pool
+        # runs dry run() queues a refill and carries on.
+        need_block = _openers.need_block(opener)
     elif not question_lines:
         need_block = "You know enough about him now — just chat and flirt naturally."
     elif ask:
@@ -3613,14 +3676,14 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # it and NEVER re-interviews for his name — killing the "what's ur name" loop
     # even deep into a chat. resolve_fan_name already prefers these, so `name` here
     # is exactly the token to keep using (same split/clip as the facts line).
-    have_durable_name = bool(name) and (_nonempty(getattr(f, "custom_nickname", None))
-                                        or _nonempty(getattr(f, "real_name", None)))
+    have_durable_name = bool(name) and (nonempty(getattr(f, "custom_nickname", None))
+                                        or nonempty(getattr(f, "real_name", None)))
     call_him = (
         f"\n\nHIS NAME: call him {name.split('/')[0][:40]} from here on — we already "
         "know it, so NEVER ask his name again; just use it naturally."
         if have_durable_name else "")
 
-    name_dodged = (not have_durable_name and not _nonempty(f.real_name)
+    name_dodged = (not have_durable_name and not nonempty(f.real_name)
                    and "name:2" in asked)
     dodge_note = (
         "\n\nIMPORTANT: you asked his name twice and he dodged — do NOT ask his name "
@@ -3675,7 +3738,9 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         f"{clock_block}"
         f"{need_block}{dodge_note}{call_him}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
-        "HOW YOU TEXT (a real 22yo girl, not an assistant):\n"
+        # Register (text young and casual), NOT a claim about her age — derived
+        # from the persona so a 49yo persona isn't told to text like a 22yo.
+        f"HOW YOU TEXT (a real {persona_register_age(persona)}yo girl, not an assistant):\n"
         "- Short and casual. lowercase, contractions, u/ur/ya. React to what he "
         "said in a few words first.\n"
         "- VARY it every time — don't open the same way twice, and don't reuse a "
@@ -3687,7 +3752,8 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         "slow it down, then steer back to getting to know him. Warm and flirty, "
         "never cold or preachy.\n"
         f"{_good_examples(f, asked, have_durable_name)}\n"
-        f"{ONPLATFORM_GUARDRAIL}"
+        f"{ONPLATFORM_GUARDRAIL}\n\n"
+        f"{BIO_CONSISTENCY_GUARDRAIL}"
         f"{humanizer}{nonnative}{stickers}"
         f"{sell_section}"
         + ("Your reply is ONLY the message text — no JSON, quotes, or metadata. "
@@ -3704,8 +3770,15 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         # pins the >>OFFER token so a Spanish reply never leaks a translated marker.
         + _language.output_language_directive(lang)
     )
+    # TIER B — what she has ALREADY told THIS fan. USER message (per-fan, never
+    # prefix-cached) — same placement and reasoning as of_ai_chat's. ai_chatter
+    # matters most here: it has NO turn cap, so the 383- and 966-turn threads that
+    # produced the contradictions all live in this engine, not of_ai_chat's
+    # (_MAX_TURNS=30 / _MAX_FAN_MESSAGES=10 / $1 spend gate).
+    claims_block = fan_claims_block(f)
     user = (
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
+        f"{claims_block}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Reply to his last message now, in the STYLE FOR THIS MESSAGE above."
     )
@@ -3713,83 +3786,33 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
              {"role": "user", "content": user}], presented)
 
 
-# ── Hot-lead TRINITY (S2→S1→S3) ──────────────────────────────────────────────
-# The operator's main flow for a HOT lead (he's demanding content): escalate and
-# ask for a TIP (S2); if he doesn't tip within a rung gap, ONE direct tip nudge
-# (S1); if still no tip, hand off to the real OFFER engine — a locked PPV with
-# preview + price (S3), NOT a free-text price beg. Gated on hotsell_trinity_enabled
-# (default OFF). Per-fan stage lives in fans.custom_fields[_HOTSELL_KEY] (JSON,
-# no migration), mirroring the _typo_fix throttle's storage.
-_HOTSELL_KEY = "_hotsell"
-_HOTSELL_GAP_S = upsell.RUNG_GAP_S  # min seconds in a stage before advancing (180)
-
-# S2/S1 inject a tip-ask directive as the ai_chatter sell_block. S3 emits NO
-# directive here — the caller lets the normal offer manifest ride so the model can
-# write a real ">>OFFER <id>" (the engine then sends the locked PPV + preview).
-_HOTSELL_S2 = (
-    "HE ASKED TO SEE CONTENT and he's HOT. do NOT slow him down or say 'earn it'. "
-    "MATCH his heat and escalate in ONE short filthy-teasing line, then tell him to "
-    "send you a lil tip right here n you'll send him something — teasing, never "
-    "needy, never the bare word 'tip'.")
-_HOTSELL_S1 = (
-    "he hasn't tipped yet but he's still into it. nudge him ONCE more, direct but "
-    "playful: ONE short line making it easy — send a lil something right here n "
-    "you'll spoil him. NEVER beg, NEVER scold, NEVER shame him for not paying, keep "
-    "it hot.")
+# The hot-lead TRINITY (a gap-gated tip→tip→PPV ladder) lived here. It was never
+# wired into run(), so it never touched a fan; removed 2026-07-26 rather than left
+# as a config key that reads as a feature and does nothing. Spec + verbatim code:
+# library/HOTSELL_TRINITY_PARKED.md. Read §3 before restoring it — the house moved
+# to PPV-first with tip-asks off, which is what its first two rungs were.
 
 
-def _hotsell_advance(stage: str | None, entered_iso: str | None,
-                     tipped_since_cents: int, now: datetime,
-                     gap_s: int = _HOTSELL_GAP_S) -> tuple[str, str | None]:
-    """Pure stage machine → (action, directive). Actions:
-      'paid' → he tipped since entering the stage; exit (clear state).
-      'S2'/'S1' → (re)emit that tip-ask rung's directive; caller persists the stage.
-      'wait' → in a stage but the rung gap hasn't elapsed; hold, don't re-ask.
-      'S3' → gap elapsed after S1 with no tip; hand to the offer engine (no directive).
-    Pure + seedless so it unit-tests without a DB."""
-    if tipped_since_cents > 0:
-        return "paid", None
-    if stage is None:
-        return "S2", _HOTSELL_S2           # first touch: open with escalate+tip-ask
-    try:
-        entered = datetime.fromisoformat(entered_iso) if entered_iso else now
-    except Exception:
-        entered = now
-    if (now - entered).total_seconds() < gap_s:
-        return "wait", None                # too soon to escalate the ask
-    if stage == "S2":
-        return "S1", _HOTSELL_S1           # no tip after the gap → direct nudge
-    return "S3", None                      # S1 (or later) exhausted → real PPV
+# The bot-accusation dare is a TWO-BEAT move (see _build_messages): beat 1 is the
+# breezy joke on the accusation itself, beat 2 is "send me one and I'll rate it" on
+# his NEXT reply. This stamp marks beat 2 as spent so it never repeats — daring the
+# same man twice is the tell he was fishing for.
+_BOT_DARE_KEY = "_bot_dare"
 
 
-async def _hotsell_load(account_id: str, fan_id: int) -> tuple[str | None, str | None]:
-    """(stage, entered_iso) for this fan, or (None, None)."""
-    async with get_session() as s:
-        fan = (await s.execute(select(Fan).where(
-            Fan.account_id == str(account_id), Fan.fan_id == int(fan_id)))).scalar_one_or_none()
-        cf = json.loads(fan.custom_fields) if fan and fan.custom_fields else {}
-    st = cf.get(_HOTSELL_KEY) or {}
-    return st.get("stage"), st.get("at")
+def _bot_dare_done(f: Fan | None) -> bool:
+    """Has this fan already had the picture dare?
+
+    Pure, and takes the row the sweep already loaded — this is asked on every turn
+    of every previously-accused fan, so a DB round trip here would be one query per
+    fan per tick for a boolean we're already holding."""
+    return bool(fan_state(f, _BOT_DARE_KEY))
 
 
-async def _hotsell_save(account_id: str, fan_id: int,
-                        stage: str | None, at_iso: str | None) -> None:
-    """Persist (or clear, when stage is None) the fan's hot-sell stage."""
-    async with get_session() as s:
-        fan = (await s.execute(select(Fan).where(
-            Fan.account_id == str(account_id), Fan.fan_id == int(fan_id)))).scalar_one_or_none()
-        if fan is None:
-            return
-        try:
-            cf = json.loads(fan.custom_fields) if fan.custom_fields else {}
-        except Exception:
-            cf = {}
-        if stage is None:
-            cf.pop(_HOTSELL_KEY, None)
-        else:
-            cf[_HOTSELL_KEY] = {"stage": stage, "at": at_iso}
-        fan.custom_fields = json.dumps(cf)
-        await s.commit()
+async def _bot_dare_mark(account_id: str, fan_id: int) -> None:
+    """Stamp the dare as spent for this fan (permanent — one dare per man)."""
+    await set_fan_state(account_id, fan_id, _BOT_DARE_KEY,
+                        {"at": datetime.utcnow().isoformat()})
 
 
 # ── The automation ───────────────────────────────────────────────────────────
@@ -3842,7 +3865,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typing_indicator = await load_typing_indicator(account_id)
     style_on = (await load_style_flags(account_id))[_PURPOSE]
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]
+    # PHASE 2 pre-send consistency check — OFF unless explicitly enabled.
+    consistency_on = (await load_consistency_flags(account_id))[_PURPOSE]
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]
+    # Space-before-"?" — its own tri-state key, read independently but only
+    # ever APPLIED inside the non-native block below, so it can narrow that
+    # register and never widen it.
+    spacing_on = (await load_spacing_flags(account_id))[_PURPOSE]
+    # Account-wide emoji strip. ai_chatter ignored this setting entirely until the
+    # send chokepoint was extracted and made the omission visible — 7 of 12 live
+    # accounts had it ON, so the operator asked for no emojis and the engine that
+    # answers most of the messages kept sending them.
+    strip_emoji_on = await load_strip_emojis(account_id)
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
     stickers_on = await load_cat_stickers_flag(account_id)    # cat reaction gifs (default ON)
     sticker_skip_w, sticker_solo_w, sticker_gap_min = \
@@ -3852,10 +3886,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     persona = await _load_persona(account_id)
 
     # Cadence controller (items 10/17/18/21) — OFF unless the account opts in.
+    # The deepen phase (gen_info openers) and how often it may ride a reply. Read
+    # once per run, like every other style/cadence knob, rather than per candidate.
+    openers_on = bool(cfg.get("profile_openers_enabled"))
+    try:
+        openers_rate = float(cfg.get("profile_openers_rate"))
+    except (TypeError, ValueError):
+        openers_rate = _openers.DEFAULT_RATE
+    openers_rate = min(1.0, max(0.0, openers_rate))
     cadence_on = bool(cfg.get("cadence_enabled"))
     nudge_on = cadence_on and bool(cfg.get("nudge_enabled"))
     nudge_min = int(cfg.get("nudge_after_minutes") or 0)
     session_gap_min = int(cfg.get("session_gap_minutes") or 0) if cadence_on else 0
+    # Item 21c — the daily quota rides cadence (it is the ceiling above the burst cap,
+    # not a lane of its own). `daily_quota_enforce` decides whether a hold actually
+    # withholds a reply or is only counted: it ships computing-and-logging so a day of
+    # real traffic can prove who would have been throttled before anyone is.
+    quota_on = cadence_on and bool(cfg.get("daily_quota_enabled"))
+    quota_enforce = quota_on and bool(cfg.get("daily_quota_enforce"))
 
     # Old-fan engagement (opt-in): lift the `old_fan_pre_ai` flag and remember
     # who it covered — those fans get the gentle ask cadence in the prompt.
@@ -3908,7 +3956,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                               if r == _OLD_FAN_SKIP} if engage_old else set())
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)
     by_fan = await _gather(account_id, only_fan_ids or None,
-                           session_gap_min=session_gap_min)
+                           session_gap_min=session_gap_min,
+                           day_window=QUOTA_WINDOW if quota_on else None)
 
     client = await asyncio.to_thread(ax._make_client, account_id)
 
@@ -3943,6 +3992,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Conversational teaser ladder — NOT gated on heat; fires during ordinary chat
     # every N of his messages, climbing free → $10 → $50. None ⇒ off.
     convo_teaser_cfg = await _tip_reward.convo_teaser_config(account_id)
+    # Can she actually read a picture he sends? (vision describe at ingest — see
+    # webhook_dispatch.on_inbound_image). Gates the "send me one and I'll rate it"
+    # bot-accusation dare: promising a rating she can't deliver is worse than not
+    # daring at all. Read once per run, not per fan.
+    describe_on, _describe_seed, _describe_scope = \
+        await _tip_reward.image_describe_flags(account_id)
     scripts, catalog_items = await _load_catalog(account_id)
     offer_stats = await _resolve_open_offers(account_id, client, cfg,
                                              dry_run=dry_run,
@@ -3958,9 +4013,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Proven-spend cap floor per fan (item 21b) — {fid: highest cap his rolling-window
     # paid spend earns}, folded into the cadence gate. Only computed when cadence is on
     # AND at least one spend rule is configured, so an off flag / empty list costs nil.
-    spend_caps = (await _spend_caps(account_id, by_fan.keys(),
-                                    cfg.get("msg_limits_by_spend") or [], datetime.utcnow())
-                  if cadence_on else {})
+    # ONE scan feeds both spend-driven leashes (21b's burst floor and 21c's daily
+    # quota). They were two independent awaits over the same fans and overlapping
+    # windows; folding them off a single fetch also means the two can no longer be
+    # computed against different clocks, which the two `datetime.utcnow()` calls
+    # here previously allowed.
+    cap_rules = cfg.get("msg_limits_by_spend") or [] if cadence_on else []
+    quota_rules = cfg.get("daily_quota_by_spend") or [] if quota_on else []
+    windows = spend_windows(cap_rules, quota_rules)
+    spend_by_window = (await _paid_spend_by_window(
+        account_id, [int(x) for x in by_fan], windows, datetime.utcnow())
+        if windows and by_fan else {})
+    spend_cap_by_fan = spend_caps(spend_by_window, cap_rules)
+    spend_quotas = daily_quotas(spend_by_window, quota_rules)
     # Ladder + rhythm state for this sweep — one query each, and NOT EVEN READ when
     # the lanes are off (an off flag must cost nothing, not just change nothing).
     ladders = await _load_ladders(account_id, by_fan.keys()) if gate_on else {}
@@ -4118,6 +4183,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_cooldown = 0
     skipped_no_intent = 0   # intent_only: fan is just chatting, no buying signal
     skipped_cadence = 0     # cadence: burst cap hit / post-purchase window lapsed
+    quota_held = 0          # item 21c: daily quota spent, inside the backoff. COUNTED
+                            # even in shadow mode — that is the whole point of shadow
+                            # mode, so "how many would we have held" is answerable
+                            # before enforcement is switched on.
+    quota_held_fans: list[str] = []   # "fan:used/quota@waith(dryNd)" for the log line
+    quota_rows: list[tuple[int, "_Quota"]] = []   # every verdict → the audit ledger
     hard_stops = 0          # gate: chargeback/report/unsubscribe → ladder STOPPED
     soft_acks = 0           # gate: "i'm broke" → keep talking, stop selling 24h
     gate_blocked = 0        # gate: no price in front of this fan right now
@@ -4168,16 +4239,35 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # BEFORE any cooldown/lease/LLM cost. A stop is a silent skip THIS tick — the
         # fan reopens on a real buying signal (tier upgrade) or after a session-gap
         # of silence resets his burst. OFF unless the account enabled cadence.
+        cad_tier = TIER_BASELINE
         if cadence_on:
-            cad_stop, _cad_tier, _cad_cap = _cadence_gate(
+            cad_stop, cad_tier, _cad_cap = _cadence_gate(
                 c, pending=open_by_fan.get(fan_id),
                 recent_payer=fan_id in recent_payers,
                 money_at=money_at.get(fan_id),
                 pic=fan_id in intent_fan_ids, now=now, cad=cfg,
-                spend_cap=spend_caps.get(fan_id, 0))
+                spend_cap=spend_cap_by_fan.get(fan_id, 0))
             if cad_stop:
                 skipped_cadence += 1
                 continue
+        # Item 21c — the daily ceiling, checked after the burst cap and, like it,
+        # BEFORE any cooldown/lease/LLM cost. It reuses the TIER the burst gate just
+        # decided rather than re-deriving "is he buying" from the body a second time.
+        # In shadow mode (the default) the verdict is counted and logged but the reply
+        # still goes out, so the numbers can be audited against a real day's traffic
+        # before a single fan is held back.
+        if quota_on:
+            q = _quota_gate(
+                c, spend_quota=spend_quotas.get(fan_id),
+                money_at=money_at.get(fan_id),
+                tier=cad_tier, now=now, cad=cfg)
+            quota_rows.append((fan_id, q))
+            if q.hold:
+                quota_held += 1
+                quota_held_fans.append(
+                    f"{fan_id}:{q.used}/{q.quota}@{q.wait_h:g}h(dry{q.dry_h / 24:.1f}d)")
+                if quota_enforce:
+                    continue
         if await ax.fan_on_cooldown(account_id, fan_id):
             skipped_cooldown += 1
             continue
@@ -4217,6 +4307,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # are LADDER-scoped — none ever touches fans.automation_paused_until.
             seller_off = False       # COMPANION / cooldown / bot-accused ⇒ talk, don't sell
             bot_accused_turn = False
+            image_dare_turn = False
             # A HARD decline WINS over the poverty/companion brakes — always. Otherwise a
             # message that carries both a distress token and a chargeback ("im tapped out,
             # im disputing this charge and reporting you") hits detect_spend_regret first
@@ -4318,6 +4409,21 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     await _save_ladder(account_id, fan_id, bot_accused_count=prev + 1)
                     seller_off = True         # suppress the offer THIS turn only
                     bot_accused_turn = True   # + brush it off, single breezy bubble
+                elif (describe_on
+                      and _lad_now is not None
+                      and int(_lad_now.bot_accused_count or 0) > 0
+                      and not _bot_dare_done(f)):
+                    # BEAT 2: he called her a bot, she laughed it off, and he answered.
+                    # NOW dare him for a picture she can actually rate. Split across two
+                    # exchanges because joke-and-dare in one breath is a man defending
+                    # himself; landing it on his reply makes it a callback. Once per fan
+                    # (stamped below), and only where describe is on — promising a
+                    # rating she can't deliver is worse than never daring.
+                    # Deliberately does NOT set seller_off: the 07-25 policy is that a
+                    # bot accusation brushes off and NEVER gags selling. The dare is a
+                    # prompt preference for a quiet turn, not a seller gate — and it
+                    # yields to a real buying signal in the branch order below.
+                    image_dare_turn = True
 
             # §5 — a bare haggle / stated cap ("can you do $30") is a VOICED price
             # objection but NOT a decline: stamp objection_at so an EARNED discount may
@@ -4379,7 +4485,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
             try:
                 f = await _extract_and_fill(account_id, fan_id, f, c, model,
-                                            _EXTRACT_HISTORY_TAIL, purpose=_PURPOSE)
+                                            _EXTRACT_HISTORY_TAIL, purpose=_PURPOSE,
+                                            persona=persona)
             except LLMCapExceeded:
                 cap_hit = True
                 log.warning("ai_chatter LLM cap reached (extract) account=%s — stopping",
@@ -4715,7 +4822,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     cat_stickers.cooldown_active(account_id, fan_id,
                                                  gap_min=sticker_gap_min),
                     skip_w=sticker_skip_w, solo_w=sticker_solo_w)
+            # The deepen phase: once there is nothing left to ask, work in a gen_info
+            # opener instead of generic banter. ai_chatter has no graduation cutoff,
+            # so a dry pool is restocked (below) rather than ending the conversation.
+            opener = None
+            # Gated AND rationed. `_questions_still_needed` only says the bio gaps
+            # are filled; it does not say THIS turn wants a question. Without the
+            # roll every reply to a gathered fan carries one, for ever.
+            if not _questions_still_needed(f, asked) and _openers.should_offer(
+                    enabled=openers_on, rate=openers_rate,
+                    seed=f"opener:{account_id}:{fan_id}:{c.last_body}"):
+                opener = _openers.next_for(f, profiles.get(fan_id))
+                if opener is None:
+                    # Pool spent — ask gen_info for a fresh batch. The reply still
+                    # goes out THIS turn on plain banter: a fan is never held silent
+                    # waiting for a profile regen.
+                    await _maybe_refresh_profile(account_id, fan_id, c.fan_msg_n, now)
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
+                                              opener=opener,
                                               sticker_mode=sticker_mode,
                                               style_on=style_on,
                                               nonnative_on=nonnative_on,
@@ -4724,6 +4848,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                               escalation=escalation,
                                               hot_thread=hot_thread,
                                               bot_accused=bot_accused_turn,
+                                              image_dare=image_dare_turn,
                                               painful_on=painful_on,
                                               lang=fan_lang,
                                               profile=profiles.get(fan_id),
@@ -4815,11 +4940,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                              _trigger, account_id, fan_id, offer_item.id)
             offer_mode_eff = (_effective_mode(offer_item, cfg_offer_mode)
                               if offer_item is not None else None)
-            raw, _leak = guard_offplatform(raw, random.Random(f"{fan_id}:{raw}"))
+            # The shared send chokepoint — off-platform guard, then PHASE 2. See
+            # _outbound for why the sequence lives there and not inline. ai_chatter
+            # matters most for PHASE 2: it has NO turn cap, so the 383- and
+            # 966-turn threads that produced the contradictions all live here.
+            raw, _leak = await finalize_draft(
+                raw, account_id=account_id, fan_id=fan_id, purpose=_PURPOSE,
+                consistency=ConsistencyCtx(
+                    fan=f, persona=persona, model=model,
+                    last_inbound=c.last_body or "") if consistency_on else None,
+                strip_emoji=strip_emoji_on)
             if _leak:
                 offer_item = None  # a guarded reply must not carry a paid attach
-                log.info("ai_chatter off-platform leak guarded account=%s fan=%s reasons=%s",
-                         account_id, fan_id, _leak)
             # Hot-thread teaser — the thread is HOT, nothing priced is going out this
             # turn, and he is not braked: attach a few unseen vault items to the reply
             # she is already sending (free warm-up for a $0 fan, a priced tease PPV for a
@@ -5039,7 +5171,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             name_protect = [n for n in (f.real_name, f.generated_nickname,
                                         f.of_display_name) if n]
             if nonnative_on:
-                parts = [apply_nonnative_style(p, protect=name_protect) for p in parts]
+                # ONE rng for the whole reply — see apply_nonnative_spacing.
+                _q_rng = random.Random(f"{fan_id}:{raw}:q")
+                parts = [apply_nonnative_style(p, protect=name_protect)
+                         for p in parts]
+                # The space-before-'?' habit is part of this register but has its
+                # OWN switch — it is the one visible artifact an operator may want
+                # off while keeping the rest. Narrows the layer, never widens it.
+                if spacing_on:
+                    parts = [apply_nonnative_spacing(p, _q_rng) for p in parts]
             if typo_on:
                 protect = name_protect + (list(NONNATIVE_OUTPUTS) if nonnative_on else [])
                 parts = await apply_typo_throttle(
@@ -5356,11 +5496,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             target = _primary_ask_target(presented)
             if target:
                 await _mark_question_asked(account_id, fan_id, target, asked)
+            if opener is not None and parts:
+                await _openers.record_used(account_id, fan_id, f,
+                                           profiles.get(fan_id), opener.slot)
             await _maybe_refresh_profile(account_id, fan_id, c.fan_msg_n, now)
             # Item 22 — profile-less fan below gen_info's staleness gate: force one
             # regen so his notes get built now instead of never.
             await _maybe_bootstrap_profile(account_id, fan_id)
             sent += 1
+            # Beat 2 of the bot-accusation dare actually reached him — burn it, so a
+            # long thread never re-dares. Stamped on CONFIRMED send, not on the
+            # decision, so a failed send leaves the dare still owed.
+            if image_dare_turn:
+                await _bot_dare_mark(account_id, fan_id)
             # Persist the offer the moment its message is confirmed on the wire.
             # A teaser is its own delivery (advance immediately); a paid offer
             # opens and waits on the unlock watcher. VaultSend rows land at
@@ -5482,6 +5630,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             else:
                 await ax.release_fan_lease(account_id, fan_id)
 
+    # The rollout ledger, once per sweep and off the candidate loop's hot path.
+    if quota_on:
+        await _write_quota_audit(account_id, quota_rows,
+                                 enforced=quota_enforce, now=datetime.utcnow())
+
     return {
         "mode": mode,
         "candidates": len(candidates),
@@ -5508,6 +5661,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_cooldown": skipped_cooldown,
         "skipped_no_intent": skipped_no_intent,
         "skipped_cadence": skipped_cadence,
+        # Item 21c. `quota_enforced` False ⇒ these fans were counted, not held: the
+        # replies still went out. Flip daily_quota_enforce once the numbers look right.
+        "quota_held": quota_held,
+        "quota_enforced": quota_enforce,
+        # The true/false split at a glance, so a tail of the relay log answers "is it
+        # holding anyone, and if not, WHY not" without opening the DB. The ledger
+        # (quota_audit) has the same breakdown per fan per day.
+        "quota_reasons": dict(Counter(q.reason for _fid, q in quota_rows)),
+        # Capped: this is a run-stats line, not a report — the DB has the full picture.
+        "quota_held_fans": quota_held_fans[:20],
         "hard_stops": hard_stops,
         "soft_acks": soft_acks,
         "gate_blocked": gate_blocked,

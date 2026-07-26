@@ -68,6 +68,11 @@ export interface AiChatterConfig {
   /** Cadence controller (items 10/17/18/21) — makes the bot back off deliberately
    *  instead of chatting/selling forever. OFF by default (historical behavior). */
   cadence_enabled?: boolean;
+  /** The "deepen" phase — work a mined gen_info detail into an ordinary reply once
+   *  her bio-gap list for that fan is empty. `rate` is 0..1 (0.30 = 30% of eligible
+   *  replies); at 1.0 every reply to a gathered fan carries a question. */
+  profile_openers_enabled?: boolean;
+  profile_openers_rate?: number;
   /** Per-signal reply caps within a burst (0 = unlimited). Sent as a COMPLETE
    *  object — the server fills any missing tier from defaults. */
   msg_limits_by_signal?: {

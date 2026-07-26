@@ -345,6 +345,37 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           </label>
         </div>
 
+        {/* ── deepen phase: gen_info openers ── */}
+        <div className="rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-2 text-sm">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={cfg.profile_openers_enabled !== false}
+              onChange={(e) => set({ profile_openers_enabled: e.target.checked })} />
+            <span className="font-medium">Pick up what he told you</span>
+            <span className="text-fg-dim text-xs">
+              once there is nothing left to ask, work a real detail into the reply
+            </span>
+          </label>
+          <div className={cfg.profile_openers_enabled !== false
+            ? "space-y-1" : "space-y-1 opacity-50 pointer-events-none"}>
+            <label className="space-y-1 block max-w-xs">
+              <div className="text-fg-dim text-xs">
+                How often a reply uses one (%)
+              </div>
+              <input type="number" className={`${INPUT} w-full`} min={0} max={100}
+                value={Math.round((cfg.profile_openers_rate ?? 0.3) * 100)}
+                onChange={(e) => set({
+                  profile_openers_rate:
+                    Math.min(100, Math.max(0, parseInt(e.target.value || "0", 10))) / 100,
+                })} />
+            </label>
+            <div className="text-fg-dim text-xs">
+              Not every turn wants a question. At 100% every reply to a fan she has
+              finished getting to know carries one — which reads as an interview,
+              not a conversation. 30% is the house default.
+            </div>
+          </div>
+        </div>
+
         {/* ── cadence: stop / re-engage ── */}
         <div className="rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-3 text-sm">
           <label className="flex items-center gap-2">
@@ -512,10 +543,22 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
             Non-native English
           </label>
           <label className="flex items-center gap-1.5"
+            title="Sometimes detach the '?' from the word before it — “you like it ?”. Part of the non-native register, so it only applies while that is on; its own box because it is the one visible artifact you may want off while keeping the rest.">
+            <input type="checkbox" checked={style.spacingOn} disabled={!style.nonnativeOn}
+              onChange={(e) => style.setSpacingOn(e.target.checked)} />
+            Space before ?
+          </label>
+          <label className="flex items-center gap-1.5"
             title="Some replies end with a cat reaction gif — occasionally the gif IS the reply. Hand-picked pack, capped in code to one per fan every few hours.">
             <input type="checkbox" checked={style.catStickers}
               onChange={(e) => style.setCatStickers(e.target.checked)} />
             Cat stickers 🐱
+          </label>
+          <label className="flex items-center gap-1.5"
+            title="Before a reply sends, check it against what she has already told THIS fan (her pinned facts + the drawer's 'What she told him') and fix a contradiction. Only fires on replies that actually say something about her — costs a second AI call on those.">
+            <input type="checkbox" checked={style.consistencyOn}
+              onChange={(e) => style.setConsistencyOn(e.target.checked)} />
+            Never contradict herself
           </label>
           <Button size="sm" variant="ghost" disabled={style.saveStyleM.isPending}
             onClick={style.saveStyle}>

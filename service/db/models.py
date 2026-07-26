@@ -320,6 +320,21 @@ class Fan(Base):
     questions_asked: Mapped[str | None] = mapped_column(Text)
 
     # ── Persona continuity (what WE told THIS fan) ───────────
+    # TIER B — the per-fan claims ledger. What SHE told THIS fan about herself,
+    # stored ONLY where it deviates from the account canon (persona_facts_json) or
+    # covers something canon didn't. Most fans stay NULL; that is what keeps it
+    # cheap. JSON list of {topic, claim, at}, latest-wins per topic, capped at 20
+    # (see _common.merge_persona_claims).
+    #
+    # Why per-fan when canon exists: a claim already made cannot be retracted.
+    # Once she has told a fan "estoy acá en Chile", correcting him to Argentina
+    # mid-thread is WORSE than staying wrong — he experiences the correction as
+    # the lie. Canon keeps new threads right; this keeps existing threads coherent.
+    #
+    # The three persona_*_claimed scalars below are the fast path for the topics
+    # fans ask most; this column carries everything else. Both are already
+    # serialized by fans.py and PATCH-editable, so the correction UI is free.
+    persona_claims_json: Mapped[str | None] = mapped_column(Text)
     persona_age_claimed: Mapped[str | None] = mapped_column(Text)
     persona_location_claimed: Mapped[str | None] = mapped_column(Text)
     persona_job_claimed: Mapped[str | None] = mapped_column(Text)
@@ -433,9 +448,9 @@ class Message(Base):
     # Qwen3-VL description of an inbound photo the FAN sent, cached at ingest by
     # webhook_dispatch.on_inbound_image (gated by tip_reward image_describe_enabled).
     # NULL = never described (no image, feature off, or a describe failure). The chat
-    # engines read it back into history as "[photo he sent: …]" so the AI can rate /
+    # engines read it back into history as "[he sent: …]" so the AI can rate /
     # react to it. Added 0052; nullable so init_db's ADD-COLUMN catch-up materializes
-    # it on prod with no backfill. See vault_ai_api.describe_inbound_message.
+    # it on prod with no backfill. See inbound_describe.describe_inbound_message.
     image_desc: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)  # OF's createdAt
     ingested_at: Mapped[datetime] = _ts_now()
@@ -1292,6 +1307,24 @@ class AccountAiConfig(Base):
     # the revenue drop. See service/automations/rhythm.py:local_now.
     timezone: Mapped[str | None] = mapped_column(String)
     location: Mapped[str | None] = mapped_column(String)
+    # STRUCTURED creator facts — the canon she must never contradict, pinned into
+    # every chat prompt above the free-text persona. JSON dict, all keys optional.
+    # The key set is owned by _common.PERSONA_FACT_FIELDS (a save-path allowlist,
+    # so an unknown key is dropped rather than stored) and is driven by what fans
+    # measurably ask: relationship, age, kids, location, name, family, job ...
+    #
+    # Why this exists as fields and not more prose: `persona` averaged 202-882
+    # chars across live accounts while the style scaffolding around it ran ~5,000,
+    # and the gaps were exactly what fans probe. the graded vault's persona said "Born and
+    # raised in Argentina" with NO city — so when a fan asked where she grew up the
+    # model improvised, and a 966-turn thread walked Argentina → Chile → Córdoba
+    # before the fan said "ya no creo nada". A named empty slot is what the enrich
+    # button fills; free prose has no slots to notice are missing.
+    #
+    # Empty/absent keys render NOTHING (byte-identical prompt), same discipline as
+    # the clock and location blocks. Nullable, no server_default: init_db's
+    # ADD-COLUMN catch-up materializes it on prod with no backfill.
+    persona_facts_json: Mapped[str | None] = mapped_column(Text)
     # ISO 639-1 language this creator writes in (en/es/sl/…). NULL == "en". Gates BOTH
     # the output language of every conversational prompt AND which guard vocabulary
     # runs (English-only guards would mangle Spanish, and vice-versa — see
@@ -1935,6 +1968,54 @@ class GrokDailyCost(Base):
     updated_at: Mapped[datetime] = _ts_now()
 
 
+class QuotaAudit(Base):
+    """Item 21c — the daily-quota decision ledger. One row per (account, fan, UTC day,
+    outcome), counter upserted, so a shadow week answers "would we have held him, how
+    often, and WHY not" without re-deriving anything from message history.
+
+    Tall on purpose: `reason` is a value, not a column, so a new outcome needs no
+    migration and every question is one GROUP BY. Row count is bounded by
+    fans x days x outcomes, and one fan can only produce a handful of outcomes a day.
+
+    `n` counts EVALUATIONS, not replies — the gate runs once per candidate per tick, so
+    a fan sitting in a 72h backoff accrues many `held` evaluations while receiving no
+    messages at all. Read it as "how much of her attention this fan was asking for".
+    The remaining columns are a LAST-SEEN snapshot (overwritten each upsert), there to
+    make a row readable on its own without joining back to the thread.
+
+    Written whether or not `daily_quota_enforce` is on: in shadow mode `enforced` is
+    False and the reply still went out, which is exactly the counterfactual the ledger
+    exists to record. Prune with the other audit tables."""
+    __tablename__ = "quota_audit"
+
+    account_id: Mapped[str] = mapped_column(String, primary_key=True)
+    fan_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    day: Mapped[str] = mapped_column(String, primary_key=True)      # 'YYYY-MM-DD' UTC
+    # held | runway | under_quota | uncapped | signal_lift | backoff_served | no_ladder
+    reason: Mapped[str] = mapped_column(String, primary_key=True)
+    n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Was the verdict SERVED, or only recorded? False = shadow mode.
+    #
+    # PART OF THE KEY, not a snapshot column. The rollout is "shadow for a week, then
+    # flip `daily_quota_enforce`" — and the flip happens mid-day. As a plain column it
+    # was last-write-wins over an ACCUMULATING counter, so the first enforced sweep
+    # absorbed that morning's shadow evaluations into the same row and relabelled all
+    # of them enforced. The one day the distinction matters most is the one day it was
+    # destroyed. In the key, the two regimes are simply different rows.
+    enforced: Mapped[bool] = mapped_column(Boolean, primary_key=True, default=False)
+    # Last-seen snapshot of the numbers behind the verdict.
+    quota: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    runway_left: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    wait_h: Mapped[float | None] = mapped_column(Float)
+    dry_h: Mapped[float | None] = mapped_column(Float)
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        Index("ix_quota_audit_day", "account_id", "day", "reason"),
+    )
+
+
 class ModelPricing(Base):
     """Registry of truth for per-model token pricing. The MODELS dict in
     service/llm_client.py is just the seed; this table is authoritative so
@@ -2573,4 +2654,48 @@ class ResolutionLog(Base):
     __table_args__ = (
         UniqueConstraint("account_id", "incident_key", name="uq_resolution_incident"),
         Index("ix_resolution_fan", "account_id", "fan_id", "status"),
+    )
+
+
+class TranslationCache(Base):
+    """Durable store behind POST /admin/translate — one row per (target, source text).
+
+    The 🌐 toggle used to hold its translations in exactly two places, and BOTH
+    were volatile: a module-level Map in the browser tab (gone on every reload or
+    "↗ pop out") and an 8k-entry dict in the relay process (gone on every deploy).
+    So the same Spanish thread was re-translated against Google's free gtx
+    endpoint over and over — measured from the VPS, 40 uncached bubbles cost
+    ~1.5s of wall clock before the first English word appears, and that bill was
+    paid again on the next page load.
+
+    Keyed by the TEXT, not by message id, which is the whole reason this pays for
+    itself: over 30 days of prod chat, 193,471 rendered texts collapse to 86,949
+    distinct ones — a 55% hit rate before a single fan repeats himself, because
+    her side is largely scripted. A per-message column would translate "hola"
+    thousands of times over.
+
+    Server-side rather than localStorage for the same reason `vault_response_cache`
+    is: it is shared. The first chatter to open a thread warms it for the whole
+    team, in every tab, permanently — and it keeps the origin's contended ~5MB
+    localStorage budget for the react-query snapshot.
+
+    `text_hash` (md5 of target + NUL + text) is the primary key, so the source
+    text is stored for pruning/debugging only and never looked up by value.
+    """
+    __tablename__ = "translation_cache"
+
+    text_hash: Mapped[str] = mapped_column(String, primary_key=True)
+    target: Mapped[str] = mapped_column(String, nullable=False)
+    # ISO 639-1 as DETECTED by gtx ("es", "en", …) or "und". The UI tags bubbles
+    # with it and renders same-language ones untouched, so it is part of the
+    # cached answer, not metadata.
+    src_lang: Mapped[str] = mapped_column(String, nullable=False, default="und")
+    source_text: Mapped[str] = mapped_column(Text, nullable=False)
+    translated: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        # Backs the age-ordered prune (see translate_api._prune_locked). Without
+        # it the cap sweep is a full scan of the largest table nobody reads.
+        Index("ix_translation_cache_created", "created_at"),
     )

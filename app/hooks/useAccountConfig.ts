@@ -16,6 +16,13 @@ export interface BrainConfig {
   persona: string | null;
   welcome_rules: string | null;
   location: string | null;
+  /**
+   * Structured creator canon pinned into every chat prompt — the facts she must
+   * never contradict. Keys: age, job, home_city, home_country, born_city,
+   * born_country, upbringing, living_situation, relationship, family, pets.
+   * Empty {} = never enriched; nothing renders into the prompt.
+   */
+  persona_facts: Record<string, string>;
   /** ISO 639-1 the creator writes in; "en" default. Gates output language + guard vocab. */
   language: string;
   /** IANA zone (e.g. America/Vancouver). Wins over utc_offset; DST-correct. */
@@ -26,6 +33,16 @@ export interface BrainConfig {
   model_by_purpose: Record<string, string>;
   time_activities: Record<string, string>;
   time_images: Record<string, number>;
+}
+
+/** One creator-canon field, as served by the API — the single source of truth. */
+export interface PersonaFactField {
+  key: string;
+  label: string;
+  /** Enrich never proposes these: a business decision, or photographic evidence. */
+  operator_only: boolean;
+  /** Editor hint. Server-side so the 26 keys are enumerated exactly once. */
+  placeholder: string;
 }
 
 export interface LanguageOption {
@@ -42,6 +59,8 @@ export interface AccountConfigResp {
   model_options: string[];  // LLM model ids the account may pick
   purposes: string[];       // per-purpose override targets
   languages: LanguageOption[]; // language codes + labels for the dropdown
+  /** Creator-canon fields, ordered by how often fans ask. Single source of truth. */
+  persona_fact_fields: PersonaFactField[];
 }
 
 export function useAccountConfig(accountId: string | null) {
@@ -64,5 +83,32 @@ export function useSaveAccountConfig(accountId: string | null) {
     mutationFn: (config) =>
       relay.put("/admin/account-config", { account_id: accountId, config }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["account-config", accountId] }),
+  });
+}
+
+
+/** The 🪄 Enrich proposal — what the empty canon slots could be filled with. */
+export interface EnrichResult {
+  account_id: string;
+  /** Facts already locked in; the model may not overwrite these. */
+  known: Record<string, string>;
+  /** Only the newly filled slots. */
+  proposed: Record<string, string>;
+  /** known + proposed — what Save would store. */
+  facts: Record<string, string>;
+  /** Resolved IN CODE from the city/country, never model-guessed. null = ambiguous. */
+  timezone: string | null;
+  timezone_changed: boolean;
+  current_timezone: string | null;
+}
+
+/**
+ * Propose values for the empty creator-canon slots. PROPOSES ONLY — the operator
+ * reviews and saves through the normal PUT, so nothing reaches a fan-facing
+ * prompt unread.
+ */
+export function useEnrichPersona() {
+  return useMutation<EnrichResult, Error, { account_id: string; hint?: string | null }>({
+    mutationFn: (vars) => relay.post("/admin/account-config/enrich", vars),
   });
 }

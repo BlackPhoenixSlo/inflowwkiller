@@ -29,6 +29,7 @@ import { useFanChatMedia, type FanChatMediaItem } from "@/hooks/useFanChatMedia"
 import { stripOFHtml } from "@/lib/ofHtml";
 import { proxyImage, proxyScrubFrame, relay, type FanRecord, type OFChatItem, type VaultMedia } from "@/lib/relay";
 import { cn, fmtRelTime, interpretSubStatus } from "@/lib/utils";
+import { PersonaClaims } from "./PersonaClaims";
 import { type PickedTemplate } from "./TemplatePicker";
 import { useAiChatterSessions, useCancelOffer } from "@/hooks/useCatalog";
 
@@ -459,6 +460,12 @@ export function FanDrawer({
                   ))}
                 </select>
               </Field>
+
+              {/* Persona continuity — the claims ledger the chat engines write and
+               *  the pre-send consistency check reads. Sits under Notes because it
+               *  is the same question ("what does this fan know?") from her side. */}
+              <PersonaClaims accountId={accountId} fan={fan}
+                             onSave={(patch) => update.mutate(patch)} />
               </div>
 
               <div className="order-4 md:order-none space-y-1.5">

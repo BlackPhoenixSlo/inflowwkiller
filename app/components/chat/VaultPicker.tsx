@@ -1298,14 +1298,21 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                 : 0;
               // DRM videos serve poster frames from the relay's PERMANENT on-disk
               // cache (media-id keyed, signature-free). It self-heals: on a miss
-              // it fetches the OF url we pass (`u`) and stores it — so hovering a
-              // DRM video caches its posters even on an UN-collected account (the
-              // cache fills as you browse; Collect just pre-warms everything). Not
-              // gated on cache-mode — works on any owned account.
+              // the relay resolves the media by id straight from OF for a freshly
+              // signed url, then stores the bytes — so hovering a DRM video caches
+              // its posters even on an UN-collected account (the cache fills as you
+              // browse; Collect just pre-warms everything). Not gated on cache-mode
+              // — works on any owned account.
+              //
+              // We deliberately do NOT pass the url we happen to be holding. The
+              // route used to take it as `u=`, which made a render endpoint fetch
+              // whatever host the client named, and it saved nothing: the by-id
+              // read is the same call the relay makes when a stored url has gone
+              // stale, and unlike our copy it cannot already be expired.
               const useCachedPoster = drmOnly && !!accountId;
               const posterSrcFor = (u: string, idx: number) =>
                 useCachedPoster
-                  ? `/admin/vault-ai/poster?account_id=${encodeURIComponent(accountId!)}&media_id=${m.id}&i=${idx}&u=${encodeURIComponent(u)}`
+                  ? `/admin/vault-ai/poster?account_id=${encodeURIComponent(accountId!)}&media_id=${m.id}&i=${idx}`
                   : proxyImage(u, accountId);
               // Mount the ffmpeg <img>s (hidden) as soon as we hover a
               // progressive video so the background build kicks off — even
