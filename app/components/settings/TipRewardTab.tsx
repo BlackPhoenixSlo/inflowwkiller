@@ -21,7 +21,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Gift, FolderOpen, MessageCircle, Image as ImageIcon, Flame, HandCoins } from "lucide-react";
+import { Gift, FolderOpen, MessageCircle, Image as ImageIcon, Flame, HandCoins, Eye } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/primitives";
 import { SingleFolderRow, VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
@@ -77,6 +77,12 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   const [askTemplate, setAskTemplate] = useState("");
   // Inbound-image buying-signal handler — two independent flags (default OFF).
   const [imageReplyEnabled, setImageReplyEnabled] = useState(false);
+  // Default ON server-side (automations/tip_reward._DEFAULTS), so the initial UI
+  // state must agree — otherwise the tab renders "off" for a feature that is
+  // actively spending, and a save would silently turn it off.
+  const [imageDescribeEnabled, setImageDescribeEnabled] = useState(true);
+  const [imageDescribeScope, setImageDescribeScope] = useState<"all" | "paid">("all");
+  const [imageDescribePrompt, setImageDescribePrompt] = useState("");
   const [imageCloserEnabled, setImageCloserEnabled] = useState(false);
   const [imageReplyCooldown, setImageReplyCooldown] = useState(6);
   const [imageReplyCaption, setImageReplyCaption] = useState("");
@@ -125,6 +131,12 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setImageCloserEnabled(!!eff.image_closer_enabled);
     setImageReplyCooldown(eff.image_reply_cooldown_hours ?? 6);
     setImageReplyCaption(eff.image_reply_caption ?? "");
+    // `!== false`, not `!!` — this flag defaults ON server-side, and `eff` already
+    // merges the endpoint's `defaults`. Same idiom as context_pick_enabled above;
+    // re-stating the default here would be a second source of truth for it.
+    setImageDescribeEnabled(eff.image_describe_enabled !== false);
+    setImageDescribeScope(eff.image_describe_scope === "paid" ? "paid" : "all");
+    setImageDescribePrompt(eff.image_describe_prompt ?? "");
     setHtEnabled(!!eff.hot_teaser_enabled);
     setHtCount(eff.hot_teaser_count ?? 3);
     setHtCooldown(eff.hot_teaser_cooldown_hours ?? 6);
@@ -206,6 +218,9 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       image_closer_enabled: imageCloserEnabled,
       image_reply_cooldown_hours: imageReplyCooldown,
       image_reply_caption: imageReplyCaption.trim(),
+      image_describe_enabled: imageDescribeEnabled,
+      image_describe_scope: imageDescribeScope,
+      image_describe_prompt: imageDescribePrompt.trim(),
       // Hot-thread teaser — form holds the price in DOLLARS; the wire is cents.
       hot_teaser_enabled: htEnabled,
       hot_teaser_count: htCount,
@@ -544,6 +559,64 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
         )}
       </Section>
 
+      {/* ── IMAGE DESCRIBE (Flag 3) ────────────────────────────────────────
+          Read what he sends so the AI can actually react to it. DEFAULT ON. */}
+      <Section
+        icon={<Eye size={15} />}
+        title="Read what he sends (so she can react to it)"
+        subtitle="Runs a vision model on every photo, gif or clip a fan sends and feeds the description into the AI's next reply — so she can rate a dick pic, clock what he's wearing, or answer “what do you think?” instead of a photo-only DM being a blank turn. A Giphy gif is named for free. Locked PPV media is skipped (there's nothing to see until it's unlocked)."
+        toggle={
+          <Toggle
+            checked={imageDescribeEnabled}
+            onChange={(v) => {
+              markDirty();
+              setImageDescribeEnabled(v);
+            }}
+          />
+        }
+      >
+        {imageDescribeEnabled && (
+          <div className="space-y-4">
+            <label className="block space-y-1">
+              <div className="text-xs font-medium text-fg">Whose media to read</div>
+              <select
+                className={`${INPUT} w-full`}
+                value={imageDescribeScope}
+                onChange={(e) => {
+                  markDirty();
+                  setImageDescribeScope(e.target.value === "paid" ? "paid" : "all");
+                }}
+              >
+                <option value="all">Everyone (free fans capped: 3 pics + 1 clip a day)</option>
+                <option value="paid">Only fans who have spent money</option>
+              </select>
+              <div className="text-[11px] text-fg-dim/70">
+                “Everyone” keeps reading free fans — they may pay later — but each
+                one is budgeted per day so a photo-dumper can’t drain the vision
+                spend. Known promo-blasting creators are skipped either way.
+              </div>
+            </label>
+            <label className="block space-y-1">
+              <div className="text-xs font-medium text-fg">Emphasis (optional)</div>
+              <input
+                type="text"
+                className={`${INPUT} w-full`}
+                placeholder="always say if he looks cut or uncut…"
+                value={imageDescribePrompt}
+                onChange={(e) => {
+                  markDirty();
+                  setImageDescribePrompt(e.target.value);
+                }}
+              />
+              <div className="text-[11px] text-fg-dim/70">
+                Appended to the read. Costs about $0.0004 per picture; a Giphy gif
+                costs nothing.
+              </div>
+            </label>
+          </div>
+        )}
+      </Section>
+
       {/* ── IMAGE CLOSER (Flag 2) ───────────────────────────────────────────
           Hand a fan who just sent a photo to the AI closer (ai_chatter). */}
       <Section
@@ -787,7 +860,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
                 type="number"
                 min={1}
                 className={`${INPUT} w-56`}
-                placeholder="e.g. 4123456789"
+                placeholder="e.g. MEDIA_ID"
                 value={trMediaId}
                 onChange={(e) => {
                   markDirty();

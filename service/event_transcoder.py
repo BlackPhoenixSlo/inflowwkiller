@@ -40,6 +40,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
 from db.models import Chat, Fan, Message, Transaction
+from of_shapes import giphy_dm_id, has_video   # shared OF payload-shape readers
 from automations._common import source_self_heal_set
 import relay_cache
 
@@ -459,11 +460,19 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     # this one's. Guard on `not is_tip` (not just the tip_cents>0 branch above) so
     # a degenerate isTip frame with a 0/missing tipAmount that ALSO carries media
     # is never misread as a bare buying-signal photo. The hook decides the flags.
-    elif media_ids and not is_tip:
+    # A GIPHY dm rides the same hook even though it has NO media (see
+    # of_shapes.giphy_dm_id — the shared classifier the describe path also uses):
+    # gating on media_ids alone left a gif as a completely blank turn — no text,
+    # no picture, nothing for the AI to answer. We report WHAT arrived
+    # (`has_media`); what that's worth — buying signal vs. joke — is the hook's
+    # call, not ours.
+    elif (media_ids or giphy_dm_id(m)) and not is_tip:
         try:
             from webhook_dispatch import on_inbound_image
             asyncio.create_task(
-                on_inbound_image(aid_s, int(fan_id), int(message_id))
+                on_inbound_image(aid_s, int(fan_id), int(message_id),
+                                 has_media=bool(media_ids),
+                                 is_video=has_video(m.get("media")))
             )
         except Exception:
             log.debug("image dispatch hook failed", exc_info=True)

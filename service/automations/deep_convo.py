@@ -77,6 +77,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
+from ._persona import compose_persona
 from . import _language
 from attribution import write_outbound_attribution
 from automation_registry import register
@@ -84,17 +85,19 @@ from db.engine import get_session
 from db.models import AccountAiConfig, Blacklist, Fan, FanProfile, Message, SkipList
 from llm_client import LLMCapExceeded
 from ._common import (
-    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING, guard_offplatform,
-    STYLE_HUMANIZER, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style,
+    nonempty,
+    BIO_CONSISTENCY_GUARDRAIL,
+    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING,
+    STYLE_HUMANIZER, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style,
     apply_word_restriction, build_facts_note,
     build_structured_nickname, casualize_qtease, coerce_ids, facts_from_fan,
     hold_with_typing, apply_typo_throttle, load_nonnative_flags,
     load_painful_texting_flag, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
-    strip_emojis,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
     should_skip_muted_creator, skip_unreachable_fan, typing_delay_seconds,
 )
+from ._outbound import finalize_draft
 from .of_ai_chat import _clock_line, _load_clock_tz  # the prompt clock
 
 log = logging.getLogger("of-relay.automation.deep_convo")
@@ -147,8 +150,8 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 # deep_convo is emoji-FREE (user mandate, ALWAYS — independent of the account-wide
 # strip_emojis toggle). The model ignores a "no emojis" prompt, so we strip them in
-# code at the send chokepoint via the shared _common.strip_emojis.
-_strip_emojis = strip_emojis
+# code at the send chokepoint — `strip_emoji=True` where this module calls
+# _outbound.finalize_draft, which is the one place any engine strips.
 
 
 # A dash the model emits is BOTH a bot tell and a missed bubble break — a real
@@ -183,19 +186,9 @@ def _strip_html(s: str | None) -> str:
     return _TAG_RE.sub("", s).strip()
 
 
-def _nonempty(v) -> bool:
-    """True when a fan-fact column carries real signal (not '', not '[]'/'{}')."""
-    if v is None:
-        return False
-    if isinstance(v, str):
-        s = v.strip()
-        return bool(s) and s not in ("[]", "{}")
-    return bool(v)
-
-
 def _first_nonempty(*vals: str | None) -> str:
     for v in vals:
-        if _nonempty(v):
+        if nonempty(v):
             return _strip_html(v) if isinstance(v, str) and _HTML_OPEN in v else v.strip()
     return ""
 
@@ -210,21 +203,23 @@ def _is_info_complete(f: Fan) -> bool:
       4. depth    (recent_events OR fetishes OR likes_boobs OR likes_ass)
     """
     groups = (
-        _nonempty(f.his_age),
-        _nonempty(f.home_country) or _nonempty(f.home_city),
-        _nonempty(f.hobbies),
-        (_nonempty(f.recent_events) or _nonempty(f.fetishes)
+        nonempty(f.his_age),
+        nonempty(f.home_country) or nonempty(f.home_city),
+        nonempty(f.hobbies),
+        (nonempty(f.recent_events) or nonempty(f.fetishes)
          or bool(f.likes_boobs) or bool(f.likes_ass)),
     )
     return (sum(1 for g in groups if g) / len(groups)) >= _INFO_COMPLETE_RATIO
 
 
 async def _load_persona(account_id: str) -> str:
+    """Her full identity preamble — prose, location, canon. `persona` feeds ONLY
+    the two prompt builders here (_build_messages, _leadin_messages), so both get
+    it without threading a param through _generate/_generate_leadin."""
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, account_id)
-    return (cfg.persona if cfg and cfg.persona else "").strip() or (
-        "You are a warm, flirty OnlyFans creator chatting with one of your fans."
-    )
+    return compose_persona(cfg, fallback=(
+        "You are a warm, flirty OnlyFans creator chatting with one of your fans."))
 
 
 # ── Loaders (own session each) ────────────────────────────────────────
@@ -321,7 +316,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     for label, val in (("age", f.his_age), ("city", f.home_city),
                        ("country", f.home_country), ("hobbies", f.hobbies),
                        ("occupation", f.occupation), ("fetishes", f.fetishes)):
-        if _nonempty(val):
+        if nonempty(val):
             facts.append(f"{label}: {str(val).strip()[:80]}")
     facts_block = ("\n".join(f"- {x}" for x in facts)
                    if facts else "- (nothing on file yet)")
@@ -349,6 +344,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"{clock_block}"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
         f"{LIVE_PROOF_GUARDRAIL}\n\n"
+        f"{BIO_CONSISTENCY_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
         f"{NONNATIVE_REGISTER + chr(10) + chr(10) if nonnative_on else ''}"
         "IMPORTANT: your reply is ONLY the chat message text. Never include JSON, "
@@ -463,13 +459,18 @@ async def _send(client, account_id: str, fan_id: int, text: str,
     # Deterministic floor under ONPLATFORM_GUARDRAIL — every deep_convo bubble
     # (lead-in, scripted Q, tease) funnels through here, so one guard covers them
     # all. Scan BEFORE word restriction (which would hide "meet" as "meeet").
-    text, _leak = guard_offplatform(text, random.Random(f"{fan_id}:{text}"))
-    if _leak:
-        log.info("deep_convo off-platform leak guarded account=%s fan=%s reasons=%s",
-                 account_id, fan_id, _leak)
-    text = _strip_emojis(text)  # deep_convo is emoji-free (covers Q, replies, tease)
+    # The shared send chokepoint (_outbound). strip_emoji is UNCONDITIONALLY True
+    # here, not read from the account flag: deep_convo is emoji-free by design
+    # (covers Q, replies and tease alike). That divergence from the other engines
+    # is deliberate and now declared rather than implicit. No PHASE 2 consistency
+    # check — deep_convo does not implement it.
+    text, _leak = await finalize_draft(
+        text, account_id=account_id, fan_id=fan_id, purpose=_PURPOSE,
+        strip_emoji=True)
     if nonnative:  # opt-in: deterministic non-native misspellings (BEFORE word restrict)
-        text = apply_nonnative_style(text, protect=protect)
+        text = apply_nonnative_spacing(
+            apply_nonnative_style(text, protect=protect),
+            random.Random(f"{fan_id}:{text}:q"))
     text = _language.apply_word_restriction(text, lang)  # last-mile OF-restricted word substitution (language-gated)
     if typing_wpm is None:
         typing_wpm = await load_typing_wpm(account_id)
@@ -895,6 +896,7 @@ def _leadin_messages(persona: str, f: Fan, c: _Candidate,
         f"{clock_block}"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
         f"{LIVE_PROOF_GUARDRAIL}\n\n"
+        f"{BIO_CONSISTENCY_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
         f"{NONNATIVE_REGISTER if nonnative_on else ''}"
         f"{_language.output_language_directive(lang)}"

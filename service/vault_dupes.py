@@ -6,7 +6,7 @@ picker, and splits a folder's ordering. This module finds them; hiding them is a
 separate, operator-confirmed step (`vault_ai_api` → `of_client.hide_vault_media`).
 
 Signals, all computed from the ALREADY-CACHED 300px thumbs on disk
-(`vault_ai_api._thumb_path`) — no OF traffic, no LLM, ~2s for a 2.3k-item vault:
+(`vault_stills.thumb_path`) — no OF traffic, no LLM, ~2s for a 2.3k-item vault:
 
   md5    byte-identical thumb. Never a false positive.
   dHash  64-bit gradient hash — survives the re-encode OF applies to a re-upload.
@@ -148,7 +148,7 @@ async def ensure_hashes(account_id: str, *, force: bool = False) -> dict[str, in
     (CPU-bound, ~1ms/item) Pillow work in a thread so it can't stall the relay's
     event loop.
     """
-    from vault_ai_api import _thumb_path  # lazy: avoid an import cycle
+    from vault_stills import thumb_path  # the permanent, signature-free store
 
     async with get_session() as s:
         rows = (await s.execute(
@@ -166,7 +166,7 @@ async def ensure_hashes(account_id: str, *, force: bool = False) -> dict[str, in
     def _work() -> list[tuple[int, str]]:
         out: list[tuple[int, str]] = []
         for mid in todo:
-            fp = fingerprint_file(_thumb_path(account_id, mid))
+            fp = fingerprint_file(thumb_path(account_id, mid))
             if fp is not None:
                 out.append((mid, pack_hash(*fp)))
         return out

@@ -2126,6 +2126,12 @@ _AUTOMATION_RUNS_RETAIN_S = int(os.environ.get("AUTOMATION_RUNS_RETAIN_S", str(1
 _GROK_CALLS_RETAIN_S = int(os.environ.get("GROK_CALLS_RETAIN_S", str(30 * 24 * 60 * 60)))
 _SCHEDULED_JOBS_RETAIN_S = int(os.environ.get("SCHEDULED_JOBS_RETAIN_S", str(7 * 24 * 60 * 60)))
 _ACTIONS_RETAIN_S = int(os.environ.get("ACTIONS_RETAIN_S", str(90 * 24 * 60 * 60)))
+# quota_audit (item 21c). Its model docstring says "prune with the other audit tables"
+# and it was the one audit table with no bound — while being written for EVERY cadence
+# account, not just the one in the shadow rollout, because daily_quota_enabled defaults
+# on. 90 days matches `actions`: long enough to compare a shadow month against an
+# enforced one, which is the whole reason the ledger exists.
+_QUOTA_AUDIT_RETAIN_S = int(os.environ.get("QUOTA_AUDIT_RETAIN_S", str(90 * 24 * 60 * 60)))
 _AUDIT_EVICT_INTERVAL_S = int(os.environ.get("AUDIT_EVICT_INTERVAL_S", str(24 * 60 * 60)))
 
 
@@ -2137,7 +2143,7 @@ async def evict_audit_logs_once() -> dict[str, int]:
     rollup) is a SEPARATE, tiny, un-pruned table, so spend/cap history survives
     the grok_calls per-call prune. Returns {tablename: deleted_count}."""
     from db.engine import get_session
-    from db.models import Action, AutomationRun, GrokCall, ScheduledJob
+    from db.models import Action, AutomationRun, GrokCall, QuotaAudit, ScheduledJob
     from sqlalchemy import delete as sa_delete
 
     now = datetime.utcnow()
@@ -2147,6 +2153,9 @@ async def evict_audit_logs_once() -> dict[str, int]:
         (ScheduledJob, ScheduledJob.created_at, _SCHEDULED_JOBS_RETAIN_S,
          ScheduledJob.status.in_(("done", "error"))),
         (Action, Action.at, _ACTIONS_RETAIN_S, None),
+        # Bounded on `updated_at` — the row is a counter that keeps being touched, so
+        # a still-active fan's row is never evicted out from under the running week.
+        (QuotaAudit, QuotaAudit.updated_at, _QUOTA_AUDIT_RETAIN_S, None),
     ]
     out: dict[str, int] = {}
     for model, col, retain_s, extra in plan:

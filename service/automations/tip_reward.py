@@ -48,9 +48,10 @@ import automation_executor as ax        # _make_client / _parse_iso seams
 from attribution import write_outbound_attribution
 from automation_registry import register
 from automations._common import (
-    DEFAULT_TIP_ASK_ENABLED, apply_word_restriction, load_operator_stop_ids,
-    should_skip_muted_creator,
+    DEFAULT_TIP_ASK_ENABLED, apply_word_restriction,
+    load_operator_stop_ids, should_skip_muted_creator,
 )
+from automations.fan_state import fan_state, put_fan_state
 import random
 from db.engine import get_session
 from automations import tip_ladder
@@ -108,7 +109,7 @@ _DEFAULTS: dict = {
     "image_closer_enabled": False,  # Flag 2: kick the ai_chatter CLOSER for this fan
     # Flag 3: run the Qwen3-VL vision model on the photo he sent and cache the
     # description on the Message row (messages.image_desc). The closer/chat engines
-    # then read that back into their history as "[photo he sent: …]" so the AI can
+    # then read that back into their history as "[he sent: …]" so the AI can
     # react to it — rate a dick pic, clock what he's wearing, answer "what do you
     # think?" Blocks the closer kick until the describe lands (a few seconds, reads
     # as human typing) so the FIRST reply already sees the picture. Default ON.
@@ -467,14 +468,6 @@ async def _record_reward(account_id: str, fan_id: int, *, tip_message_id: int | 
 _IMAGE_REPLY_STATE_KEY = "_image_reply"
 
 
-def _load_custom_fields(fan: Fan | None) -> dict:
-    try:
-        cf = json.loads(fan.custom_fields) if fan and fan.custom_fields else {}
-        return cf if isinstance(cf, dict) else {}
-    except Exception:
-        return {}
-
-
 async def _image_reply_recent(account_id: str, fan_id: int, cooldown_hours: int) -> bool:
     """True if an image-reply freebie was sent to this fan within the last
     `cooldown_hours` (per-fan throttle; also dedups webhook replays). 0 → never
@@ -483,7 +476,7 @@ async def _image_reply_recent(account_id: str, fan_id: int, cooldown_hours: int)
         return False
     async with get_session() as s:
         fan = await s.get(Fan, (str(account_id), int(fan_id)))
-    at = (_load_custom_fields(fan).get(_IMAGE_REPLY_STATE_KEY) or {}).get("at")
+    at = fan_state(fan, _IMAGE_REPLY_STATE_KEY).get("at")
     if not at:
         return False
     try:
@@ -578,9 +571,7 @@ async def _run_image_reply(account_id: str, payload: dict, cfg: dict, *,
                             price_cents=0, sent_at=now))
         fan = await s.get(Fan, (str(account_id), fan_id))
         if fan is not None:
-            cf = _load_custom_fields(fan)
-            cf[_IMAGE_REPLY_STATE_KEY] = {"at": now.isoformat()}
-            fan.custom_fields = json.dumps(cf)
+            put_fan_state(fan, _IMAGE_REPLY_STATE_KEY, {"at": now.isoformat()})
 
     log.info("image_reply sent account=%s fan=%s tier=%s images=%d msg=%s",
              account_id, fan_id, tier_name, len(media_ids), reward_message_id)
@@ -727,7 +718,7 @@ async def pick_hot_teaser(client, account_id: str, fan_id: int, *,
     now = now or datetime.utcnow()
     async with get_session() as s:
         fan = await s.get(Fan, (str(account_id), int(fan_id)))
-    state = _load_custom_fields(fan).get(_HOT_TEASER_STATE_KEY) or {}
+    state = fan_state(fan, _HOT_TEASER_STATE_KEY)
     state = state if isinstance(state, dict) else {}
 
     cd = int(tcfg.get("cooldown_hours") or 0)
@@ -813,9 +804,7 @@ async def record_hot_teaser(account_id: str, fan_id: int, *, media_ids: list[int
                             price_cents=int(price_cents or 0), sent_at=now))
         fan = await s.get(Fan, (str(account_id), int(fan_id)))
         if fan is not None:
-            cf = _load_custom_fields(fan)
-            st = cf.get(_HOT_TEASER_STATE_KEY)
-            st = st if isinstance(st, dict) else {}
+            st = fan_state(fan, _HOT_TEASER_STATE_KEY)
             st["at"] = now.isoformat()
             if is_free:
                 st["free_sent"] = int(st.get("free_sent") or 0) + 1
@@ -827,16 +816,14 @@ async def record_hot_teaser(account_id: str, fan_id: int, *, media_ids: list[int
             st["last_price"] = int(price_cents or 0)
             st["last_msg"] = int(message_id) if message_id else None
             st["last_free"] = bool(is_free)
-            cf[_HOT_TEASER_STATE_KEY] = st
-            fan.custom_fields = json.dumps(cf)
+            put_fan_state(fan, _HOT_TEASER_STATE_KEY, st)
 
 
 def teaser_state(fan: Fan | None) -> dict:
     """The fan's teaser state ({at, free_sent, rung}) parsed off the Fan row ai_chatter
     already has in hand — no extra DB read. `at` (iso) is the last teaser, `rung` the
     convo-ladder position."""
-    st = _load_custom_fields(fan).get(_HOT_TEASER_STATE_KEY)
-    return st if isinstance(st, dict) else {}
+    return fan_state(fan, _HOT_TEASER_STATE_KEY)
 
 
 async def convo_teaser_config(account_id: str) -> dict | None:

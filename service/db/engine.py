@@ -252,5 +252,19 @@ async def init_db() -> None:
                                       "cleared", r1.rowcount, r2.rowcount)
                 except Exception:
                     _log.exception("decline-policy data catch-up failed")
+
+            # The creator-clock timezone catch-up (07-25 audit) used to live here as
+            # a table of (account_id, wrong value, correct IANA zone) driving seven
+            # guarded UPDATEs. It has moved to service/seed_creator_clock_fix.sql —
+            # apply it once per box.
+            #
+            # It could not stay: deploy-fastt.sh scrubs creator account ids out of
+            # every synced file, AND Flow B rsyncs that same scrubbed tree to the
+            # VPS, so a scrub does not merely redact what gets published — it
+            # rewrites the source production runs. Scrubbed, the table read
+            # ("ACCOUNT_ID", None, "Europe/Ljubljana"), matched no account, and the
+            # fix silently never applied while the leak scan reported all clear.
+            # Real account ids and synced source are mutually exclusive; data that
+            # is keyed by them belongs in data, not in code.
     finally:
         sync_engine.dispose()

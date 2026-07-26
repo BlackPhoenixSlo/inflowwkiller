@@ -27,18 +27,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from jsonsafe import load_json
 
-def _load_json(raw: Any, fallback: Any) -> Any:
-    """Parse a JSON text column, tolerating None / already-parsed / bad JSON."""
-    if raw is None:
-        return fallback
-    if isinstance(raw, (dict, list)):
-        return raw
-    try:
-        val = json.loads(raw)
-    except (TypeError, ValueError):
-        return fallback
-    return val if val is not None else fallback
+
+
 
 
 def _is_blank(value: Any) -> bool:
@@ -54,17 +46,17 @@ def _is_blank(value: Any) -> bool:
 
 def overrides(item: Any) -> dict:
     """Operator override map from `item.operator_overrides_json` ({} if unset)."""
-    return _load_json(getattr(item, "operator_overrides_json", None), {}) or {}
+    return load_json(getattr(item, "operator_overrides_json", None), {}) or {}
 
 
 def ai_fields(item: Any) -> dict:
     """Raw AI output map from `item.ai_fields_json` ({} if unset)."""
-    return _load_json(getattr(item, "ai_fields_json", None), {}) or {}
+    return load_json(getattr(item, "ai_fields_json", None), {}) or {}
 
 
 def locked_fields(item: Any) -> set[str]:
     """Set of field names the operator has locked (AI may never overwrite)."""
-    raw = _load_json(getattr(item, "locked_fields_json", None), [])
+    raw = load_json(getattr(item, "locked_fields_json", None), [])
     return set(raw) if isinstance(raw, (list, tuple, set)) else set()
 
 

@@ -28,10 +28,14 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import llm_client
 from auth import assert_account_owned
+from automations._persona import PERSONA_FACT_FIELDS, PERSONA_FACTS_OPERATOR_ONLY
 from brain_defaults import BRAIN_DEFAULTS
 from db.engine import get_session
 from db.models import AccountAiConfig
+from geo_timezones import resolve_timezone_for_place
+from llm_client import MODELS, LLMCapExceeded
 
 log = logging.getLogger("of-relay.account_config_api")
 
@@ -53,14 +57,39 @@ LANGUAGES: tuple[dict, ...] = tuple(
 )
 
 
+# These three were lazily imported to keep "this light API module" from pulling
+# the llm stack at startup. That saved nothing: the module-level
+# `from automations._language import ...` below already pulls llm_client
+# transitively, so the stack is loaded before any of them runs. The comments
+# outlived the fact and cost a reader real time re-deriving it, so the imports are
+# now where they belong.
+
 def _model_options() -> list[str]:
-    """The LLM model ids the account may pick. Lazy import so this light API
-    module doesn't pull the llm stack at startup."""
-    try:
-        from llm_client import MODELS
-        return list(MODELS.keys())
-    except Exception:  # pragma: no cover - defensive
-        return []
+    """The LLM model ids the account may pick."""
+    return list(MODELS.keys())
+
+
+def _persona_fact_fields() -> tuple[tuple[str, str], ...]:
+    """The creator-canon field contract."""
+    return PERSONA_FACT_FIELDS
+
+
+def _persona_facts_operator_only() -> frozenset[str]:
+    """Slots the enrich pass may not propose — what she will and won't do on
+    camera is a business decision, not something to infer."""
+    return PERSONA_FACTS_OPERATOR_ONLY
+
+
+def _persona_fact_meta() -> list[dict[str, Any]]:
+    """The creator-canon fields as editor metadata: {key, label, operator_only,
+    placeholder}. Single source of truth — the BrainPanel renders entirely from
+    this. The placeholder rides along because a separate 26-key map in TypeScript
+    is a second enumeration to forget."""
+    from automations._persona import PERSONA_FACT_PLACEHOLDERS
+    operator_only = _persona_facts_operator_only()
+    return [{"key": k, "label": label, "operator_only": k in operator_only,
+             "placeholder": PERSONA_FACT_PLACEHOLDERS.get(k, "")}
+            for k, label in _persona_fact_fields()]
 
 
 def _parse_obj(raw: str | None) -> dict:
@@ -98,6 +127,7 @@ def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
         "persona": row.persona if row else None,
         "welcome_rules": row.welcome_rules if row else None,
         "location": row.location if row else None,
+        "persona_facts": (_parse_obj(row.persona_facts_json) if row else {}),
         "language": (norm_lang(row.language) or "en") if row else "en",
         "timezone": row.timezone if row else None,
         "utc_offset": row.utc_offset if row else 0,
@@ -125,6 +155,11 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         "model_options": _model_options(),
         "purposes": list(PURPOSES),
         "languages": list(LANGUAGES),
+        # The creator-canon field contract, served the same way as slots /
+        # purposes / languages above. The editor renders straight off this, so
+        # the 26-field list has ONE home — a duplicated copy in the UI would
+        # drift silently and give an operator a box that never reaches a fan.
+        "persona_fact_fields": _persona_fact_meta(),
     }
 
 
@@ -145,6 +180,26 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     welcome_rules = _clean_text(cfg.get("welcome_rules"), "welcome_rules")
     location = _clean_text(cfg.get("location"), "location")
     model = _validate_model(cfg.get("model"), "model", allowed)
+
+    # persona_facts — the structured creator canon pinned into every chat prompt.
+    # An ALLOWLIST, not a passthrough: unknown keys are dropped rather than stored,
+    # because nothing downstream would ever render them and a silently-kept key
+    # reads to an operator as a fact that is in play when it is not. Values are
+    # coerced to trimmed strings (a list joins to "a, b") and clipped; empty
+    # values are dropped so an empty dict stores NULL == "never enriched".
+    facts_raw = cfg.get("persona_facts") or {}
+    if not isinstance(facts_raw, dict):
+        raise HTTPException(422, "persona_facts must be an object")
+    facts: dict[str, str] = {}
+    for key, _label in _persona_fact_fields():
+        val = facts_raw.get(key)
+        if isinstance(val, (list, tuple)):
+            val = ", ".join(str(v).strip() for v in val if str(v).strip())
+        elif isinstance(val, bool) or val is None:
+            val = "" if val is None else str(val)
+        val = str(val).strip()
+        if val:
+            facts[key] = val[:240]
 
     # language: an ISO 639-1 code from the known set; anything else (incl. "en" or
     # unset) stores NULL so the code default ("en") applies.
@@ -225,6 +280,7 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
         "persona": persona,
         "welcome_rules": welcome_rules,
         "location": location,
+        "persona_facts_json": json.dumps(facts) if facts else None,
         "language": language,
         "timezone": tz,
         "utc_offset": utc_offset,
@@ -247,3 +303,159 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     log.info("account_config_saved account=%s model=%s slots=%d imgs=%d",
              body.account_id, model, len(acts), len(imgs))
     return {"account_id": body.account_id, "config": _serialize(row)}
+
+
+# ── 🪄 Enrich: fill the creator canon from what we already know ────────
+# The gaps in a free-text persona are exactly what fans probe. the graded vault's said
+# "Born and raised in Argentina" with NO city, so a fan asking where she grew up
+# got an improvisation, and a 966-turn thread walked Argentina → Chile → Córdoba
+# before he stopped believing her. This proposes values for the empty slots.
+#
+# TWO SOURCES, deliberately split:
+#   • the LLM writes only the NARRATIVE fields (city, upbringing, living
+#     situation, family, pets) — persona colour, which is what it is good at.
+#   • the TIMEZONE is resolved IN CODE from the resolved city/country
+#     (geo_timezones.resolve_timezone_for_place). Six accounts were 1-4h wrong and
+#     the prompt clock then hard-instructs the model to DEFEND the wrong hour;
+#     letting a model guess the zone is how that happens. Ambiguous ⇒ None ⇒ the
+#     UI asks instead of guessing.
+#
+# It PROPOSES only — never writes. The operator reviews and saves through the
+# normal POST, so nothing reaches a fan-facing prompt unread.
+# The enrichable fact keys, in declaration order, minus the ones only an operator
+# may set. Derived from the same constants the validator and the UI read, so the
+# prompt cannot ask the model for a key the writer would drop.
+_ENRICH_KEYS = ", ".join(
+    k for k, _ in PERSONA_FACT_FIELDS if k not in PERSONA_FACTS_OPERATOR_ONLY
+)
+
+_ENRICH_SYSTEM = (
+    "You fill in the background profile of an OnlyFans creator persona so her "
+    "chat AI never has to improvise an answer about herself and contradict it "
+    "later. You are given her existing persona text and any facts already "
+    "confirmed. Respond with a SINGLE JSON object and nothing else.\n"
+    "RULES:\n"
+    "- Anything the persona already states, COPY EXACTLY. Never change a stated "
+    "fact — those are locked.\n"
+    "- Fill only what is MISSING, and stay strictly consistent with what is "
+    "stated (a persona that says Argentina gets an Argentine city, never a "
+    "Chilean one).\n"
+    "- You are AUTHORING a persona, not extracting facts about a real person. So "
+    "where the persona is silent, INVENT something ordinary and plausible and "
+    "commit to it — a home city, who she lives with, whether she has kids, a "
+    "sentence about her childhood. Leaving these blank is the WORST outcome, not "
+    "the safe one: the chat AI will then improvise a DIFFERENT answer every time "
+    "a fan asks, and fans notice. A committed invention beats an improvised one.\n"
+    "- Keep every value SHORT and concrete: a city name, one clause, a plain "
+    "phrase. `upbringing` is at most one sentence.\n"
+    "- Prefer a real, ordinary, plausible place a real person would be from. No "
+    "celebrities, no landmarks, nothing exotic or newsworthy.\n"
+    "- Use \"\" ONLY when a value would risk contradicting something already "
+    "stated. Never leave a slot empty merely because the persona did not spell it "
+    "out — that is the slot you are here to fill.\n"
+    "- Do NOT output a timezone, an offset, or a time — those are computed.\n"
+    "- NEVER output `tattoos` at all — not a description and not \"none\". Body "
+    "art is visible in her photos, so both an invented tattoo and a wrongly "
+    "denied one are things a fan can see are false.\n"
+    "- `birthday` must agree with `age`. `height` in both cm and feet if stated.\n"
+    "- These are also rapport material, not just a consistency check: `music`, "
+    "`travel`, `dreams`, `her_type` and `school` are what she RELATES to a fan "
+    "with, so make them specific enough to start a conversation ('grunge, mostly "
+    "Alice in Chains' beats 'rock').\n"
+    # DERIVED, never retyped. This list used to be a literal spelled out three
+    # lines below the two constants it restates — both imported at the top of this
+    # file — so adding a 27th fact meant editing two places and only one of them
+    # was enforced anywhere. They had not drifted yet; that is the only reason
+    # this is a cheap fix rather than a bug hunt.
+    f"Keys: {_ENRICH_KEYS}.\n"
+    "NEVER output `kinks`, `limits` or `tattoos` — the first two are the "
+    "creator's own business decision, and the third is visible in her photos."
+)
+
+
+class EnrichBody(BaseModel):
+    account_id: str
+    # Optional operator steer, e.g. "she's from Rosario, lives with a roommate".
+    hint: str | None = None
+
+
+@router.post("/admin/account-config/enrich")
+async def enrich_account_config(body: EnrichBody = Body(...)) -> dict[str, Any]:
+    """Propose values for the empty creator-canon slots. Read-only: returns a
+    proposal for the operator to review, edit and save. Never writes."""
+    assert_account_owned(body.account_id)
+    async with get_session() as s:
+        row = await s.get(AccountAiConfig, body.account_id)
+    if row is None:
+        raise HTTPException(404, f"no brain configured for {body.account_id!r}")
+
+    persona = (row.persona or "").strip()
+    location = (row.location or "").strip()
+    known = _parse_obj(row.persona_facts_json)
+    if not persona and not location and not known:
+        raise HTTPException(
+            422, "nothing to enrich from — write a persona (or set a location) first")
+
+    payload = {
+        "persona": persona,
+        "location": location,
+        "already_confirmed": known,
+        "operator_hint": (body.hint or "").strip(),
+    }
+    model = row.model or BRAIN_DEFAULTS.get("model") or "deepseek-v4-flash"
+    try:
+        res = await llm_client.chat(
+            model=model,
+            messages=[{"role": "system", "content": _ENRICH_SYSTEM},
+                      {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+            purpose="enrich_persona",
+            account_id=body.account_id,
+            response_format={"type": "json_object"},
+            temperature=0.4,
+        )
+        proposed_raw = json.loads(res.content or "{}")
+        if not isinstance(proposed_raw, dict):
+            proposed_raw = {}
+    except LLMCapExceeded:
+        raise HTTPException(429, "daily LLM cost cap reached for this account")
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("persona enrich failed account=%s", body.account_id)
+        raise HTTPException(502, "the enrich model did not return a usable profile")
+
+    # Same allowlist + coercion the save path uses — the model does not get to
+    # invent field names, and a stated fact is never overwritten by a proposal.
+    proposed: dict[str, str] = {}
+    operator_only = _persona_facts_operator_only()
+    for key, _label in _persona_fact_fields():
+        if key in operator_only:
+            continue        # the model does not get to author these — see the note
+        val = proposed_raw.get(key)
+        if isinstance(val, (list, tuple)):
+            val = ", ".join(str(v).strip() for v in val if str(v).strip())
+        val = "" if val is None else str(val).strip()
+        if val and not known.get(key):
+            proposed[key] = val[:240]
+
+    merged = {**known, **proposed}
+
+    # The timezone is CODE, not model output — see the note above.
+    tz = resolve_timezone_for_place(
+        city=merged.get("home_city"),
+        country=merged.get("home_country"),
+        free_text=location or merged.get("born_city") or merged.get("born_country"),
+    )
+    tz_changed = bool(tz) and tz != (row.timezone or "")
+
+    log.info("persona_enrich account=%s proposed=%d tz=%s (was %s)",
+             body.account_id, len(proposed), tz, row.timezone)
+    return {
+        "account_id": body.account_id,
+        "known": known,          # already locked in — shown greyed
+        "proposed": proposed,    # only the newly filled slots
+        "facts": merged,         # what Save would store
+        "timezone": tz,          # None ⇒ ambiguous, the UI asks
+        "timezone_changed": tz_changed,
+        "current_timezone": row.timezone,
+    }

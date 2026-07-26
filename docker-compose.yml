@@ -40,6 +40,17 @@ services:
       # `docker compose down` wipes hours of accumulated extracts and
       # every hover becomes a cold 3-7s build through the proxy.
       STORYBOARD_DIR: "/app/service/storyboard_cache"
+      # The three permanent vault image stores + the generic /img byte cache.
+      # These all defaulted to /tmp INSIDE the container, which meant every
+      # `up -d --build` threw them away. That is the broken-tile bug: OF CDN
+      # urls are time-signed and stop resolving after a couple of days, so
+      # once the local bytes are gone the mirror's stored url can no longer
+      # re-fetch them and the tile stays blank forever. Bind-mounted here so
+      # a rebuild keeps the pictures.
+      VAULT_THUMB_DIR: "/app/service/vault_thumbs"
+      VAULT_POSTER_DIR: "/app/service/vault_posters"
+      VAULT_IMAGE_DIR: "/app/service/vault_images"
+      IMG_CACHE_DIR: "/app/service/img_cache"
       # LLM provider keys (Grok + DeepSeek) for service/llm_client.py. They also
       # ride in via the COPYed service/.env, but declaring them here means a host
       # that exports them (or a compose .env) flows them through on a clean build
@@ -67,6 +78,17 @@ services:
       # KB each) keyed by URL hash. Survives container rebuilds so a
       # familiar vault stays scrub-warm.
       - ./service/storyboard_cache:/app/service/storyboard_cache
+      # Permanent vault stills: 300px thumbs, full-frame previews, and DRM
+      # poster frames — keyed by media id, so they survive OF re-signing the
+      # url. Same reasoning as the storyboard cache above, and the same
+      # reason it has to be a bind mount: these bytes are unrecoverable once
+      # the signature they came from has expired.
+      - ./service/vault_thumbs:/app/service/vault_thumbs
+      - ./service/vault_posters:/app/service/vault_posters
+      - ./service/vault_images:/app/service/vault_images
+      # Generic /img proxy byte cache (chat bubbles, avatars, wall media),
+      # keyed by host+path with the signature stripped.
+      - ./service/img_cache:/app/service/img_cache
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/livez"]
       interval: 30s

@@ -496,8 +496,7 @@ def _local_welcome_bubbles(name: str, cfg: dict, *, hour: int | None = None) -> 
     """V1 'precious' deterministic welcome as SEPARATE chat bubbles (NO LLM call):
 
         bubble 1:  Hey S-S-S-Sexy Sofie ! !!          ← the image rides on this one
-        bubble 2:  By the way - just woke up and made myself a coffee ☕ (it's
-                   Friday morning in Vancouver Island, Canada where I am from)
+        bubble 2:  just woke up and made myself a coffee... it's Friday morning in Vancouver, Canada
 
     The stutter prefix ('S-S-S-') sits on the first letter and leads into the full
     alliterative nickname 'Sexy Sofie'. Bubble 2 is the verbatim template line —
@@ -517,9 +516,12 @@ def _local_welcome_bubbles(name: str, cfg: dict, *, hour: int | None = None) -> 
     tod, activity = _time_activity(hour, cfg.get("time_activities") or {})
     location = (cfg.get("location") or "").strip()
     if activity:
+        # `where` already carries its own " in " so the line degrades cleanly to
+        # "...it's Friday morning" on an account with no location set — a dangling
+        # "in" is the kind of thing a fan reads as a broken bot.
         where = f" in {location}" if location else ""
-        bubbles.append(f"By the way - {activity} (it's {_model_weekday(cfg.get('utc_offset'))} "
-                       f"{tod}{where} where I am from)")
+        bubbles.append(f"{activity}... it's {_model_weekday(cfg.get('utc_offset'))} "
+                       f"{tod}{where}")
     return bubbles
 
 

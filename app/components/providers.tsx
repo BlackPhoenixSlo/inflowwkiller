@@ -87,6 +87,12 @@ const PERSIST_PREFIXES = new Set([
   "wall-media",     // ids posted on the wall — blue ring in vault picker
   "templates",      // composer's quick-reply picker
   "saved-replies",  // composer's saved replies
+  "msg-image-desc", // 👁 what the AI saw in each photo HE sent. Tiny (mean 2.7
+                    //   entries/fan) and effectively IMMUTABLE — a description
+                    //   is recomputed only by an explicit re-read click — so
+                    //   unlike the attribution overlay next door there's nothing
+                    //   for a stale copy to get wrong. Persisting it means a
+                    //   reload or "↗ pop out" paints captions with no round-trip.
   "fan",            // local fan-row drawer data
   "fan-spend",      // bulk lifetime-spend per chat row (24h staleTime)
   "fan-chat-media", // FanDrawer Sales + Unsold PPV galleries — slow OF

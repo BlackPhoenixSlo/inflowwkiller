@@ -46,6 +46,7 @@ from db.models import (
 )
 from stats import _parse_date
 from auth import assert_account_owned, assert_employee_filter_owned, clamp_account_filter
+from of_shapes import DIM_KEYS, media_urls   # shared OF payload-shape readers
 
 
 # CSV server-side cap. Streamed so memory stays bounded; the file size
@@ -113,6 +114,11 @@ def _row_to_dict(
         "automation_kind": m.automation_kind,
         "created_at": m.created_at.isoformat() if m.created_at else None,
         "ingested_at": m.ingested_at.isoformat() if m.ingested_at else None,
+        # NOTE: messages.image_desc is deliberately NOT serialized here. The chat
+        # pane reads it from the id-keyed overlay below (/image-desc) because the
+        # thread renders LIVE OF payloads, which carry no such field — a row copy
+        # would only survive the DB-seed path and then vanish on the first merge.
+        # One source, not two.
     }
 
 
@@ -137,12 +143,6 @@ def _safe_load_list(raw: str | None) -> list[Any]:
 #   2. a client onload→PATCH for items OF never sized.
 # Every consumer tolerates null dims (neutral skeleton box).
 
-# OF sub-blocks that may carry REAL (non-square) pixel dims, best first.
-# `thumb` is deliberately EXCLUDED: OF thumbs are 300x300 squares that would
-# distort the aspect ratio the skeleton/grid reserve.
-_DIM_KEYS = ("full", "source", "preview")
-
-
 def _as_pos_int(v: Any) -> int | None:
     """Coerce an OF width/height to a positive int, else None."""
     try:
@@ -164,7 +164,7 @@ def extract_media_dims(media: dict) -> tuple[int | None, int | None]:
         container = media.get(container_key)
         if not isinstance(container, dict):
             continue
-        for k in _DIM_KEYS:
+        for k in DIM_KEYS:
             sub = container.get(k)
             if isinstance(sub, dict):
                 w = _as_pos_int(sub.get("width"))
@@ -173,24 +173,6 @@ def extract_media_dims(media: dict) -> tuple[int | None, int | None]:
                     return (w, h)
     # Some payloads put width/height directly on the media object.
     return (_as_pos_int(media.get("width")), _as_pos_int(media.get("height")))
-
-
-def _media_urls(media: dict) -> tuple[str | None, str | None]:
-    """(thumb_url, source_url) from an OF media object, tolerating shape drift."""
-    thumb_url = source_url = None
-    files = media.get("files") if isinstance(media, dict) else None
-    if isinstance(files, dict):
-        thumb = files.get("thumb")
-        if isinstance(thumb, dict):
-            thumb_url = thumb.get("url")
-        for k in _DIM_KEYS:
-            sub = files.get(k)
-            if isinstance(sub, dict) and sub.get("url"):
-                source_url = sub.get("url")
-                break
-    if not source_url and isinstance(media, dict):
-        source_url = media.get("url")
-    return (thumb_url, source_url)
 
 
 def _media_duration_ms(media: dict) -> int | None:
@@ -288,7 +270,7 @@ async def reconcile_rest_media(
             if not isinstance(item, dict) or not isinstance(item.get("id"), int):
                 continue
             w, h = extract_media_dims(item)
-            thumb_url, source_url = _media_urls(item)
+            thumb_url, source_url = media_urls(item)
             ins = sqlite_insert(MessageMedia).values(
                 account_id=account_id,
                 fan_id=fan_id,
@@ -1095,6 +1077,82 @@ async def list_message_attribution(
     return {"by_msg_id": by_msg_id}
 
 
+@router.get("/admin/messages/{account_id}/{fan_id}/image-desc")
+async def list_image_descriptions(
+    account_id: str,
+    fan_id: int,
+    since_id: int | None = Query(None, description="Only return rows with message_id >= this"),
+    limit: int = Query(200, ge=1, le=200),
+) -> dict[str, Any]:
+    """Map message_id → what the vision model saw in a photo the FAN sent.
+
+    An OVERLAY (same shape//lifecycle as the attribution map above) rather than a
+    field on the message row, because the chat pane's bubbles come from the LIVE
+    OF fetch — an OF payload has no `image_desc`, so a row-level field would only
+    survive on the DB-seed path and then vanish the moment the OF fetch merged in.
+    Keyed by id, the description re-attaches to whichever copy of the bubble the
+    thread is currently rendering.
+
+    Inbound-only and non-null-only: this is the AI's read of HIS picture, and the
+    empty map (nothing described yet) is the normal case on a text-only chat."""
+    assert_account_owned(account_id)
+    async with get_session() as s:
+        q = (
+            select(Message.message_id, Message.image_desc)
+            .where(
+                Message.account_id == account_id,
+                Message.fan_id == fan_id,
+                Message.direction == "in",
+                Message.image_desc.is_not(None),
+            )
+        )
+        if since_id is not None:
+            q = q.where(Message.message_id >= since_id)
+        q = q.order_by(Message.message_id.desc()).limit(limit)
+        rows = (await s.execute(q)).all()
+    return {"by_msg_id": {str(r.message_id): r.image_desc for r in rows}}
+
+
+@router.post("/admin/messages/{account_id}/{fan_id}/{message_id}/describe")
+async def describe_message_image(
+    account_id: str,
+    fan_id: int,
+    message_id: int,
+    force: bool = Query(False, description="Re-run the vision model even if already described"),
+) -> dict[str, Any]:
+    """Describe (or RE-describe) the photo on one inbound message, on demand.
+
+    Two jobs the automatic ingest hook can't do:
+      • a photo that arrived BEFORE the describe feature shipped (or while the
+        flag was off / the LLM cap was hit) has a NULL column forever — the hook
+        only ever fires once, at ingest;
+      • `force` re-reads a picture the model got wrong or read too vaguely, which
+        is the whole point of the bubble's "re-read" button.
+
+    Costs ONE vision call (~$0.0004) — free for a Giphy gif — so it is a deliberate
+    click, never a hover. Returns the description; `image_desc: null` means the
+    describe found nothing to read or the model/cap refused. The cache rule (an
+    already-described message returns its stored read unless `force`) lives in
+    vault_ai_api, not here — this endpoint only owns its HTTP guards."""
+    assert_account_owned(account_id)
+    async with get_session() as s:
+        direction = (await s.execute(
+            select(Message.direction)
+            .where(Message.account_id == account_id,
+                   Message.fan_id == fan_id,
+                   Message.message_id == message_id)
+        )).scalar_one_or_none()
+    if direction is None:
+        raise HTTPException(404, "message not found")
+    if direction != "in":
+        # Describing our OWN send is never what this button means (and the AI
+        # already knows what it sent) — refuse rather than burn a vision call.
+        raise HTTPException(400, "only inbound messages carry a fan photo")
+
+    from inbound_describe import redescribe_inbound  # lazy: avoid cycle
+    return {"image_desc": await redescribe_inbound(account_id, message_id, force)}
+
+
 def _iso(v: Any) -> datetime | None:
     """Parse an OF ISO timestamp ('...Z' or '+00:00'); None on anything odd."""
     if not isinstance(v, str) or not v:
@@ -1128,6 +1186,8 @@ async def reconcile_chats_from_of(account_id: str, of_chats: list[dict]) -> int:
     every time because read state isn't monotonic. Best-effort: own session,
     swallows errors — a sync hiccup must never break the inbox response it rides on.
     """
+    from attribution import adopt_thread_placeholders  # local: circular import
+
     own = str(account_id)
     touched = 0
     try:
@@ -1156,6 +1216,17 @@ async def reconcile_chats_from_of(account_id: str, of_chats: list[dict]) -> int:
                         .on_conflict_do_nothing(
                             index_elements=["account_id", "fan_id", "message_id"])
                     )
+                    # Fastest place we ever see OF's real id for an un-echoed
+                    # optimistic send: this rides the inbox poll (60-90s) where
+                    # the scrape is hours behind. Folding the stub in here keeps
+                    # the thread from showing the PPV twice for a whole afternoon,
+                    # and keeps the real row from reading as a human send. Gated
+                    # on an OUTBOUND last message so an all-inbound inbox page
+                    # doesn't pay a lookup per chat for something that can only
+                    # ever pair with an outbound row.
+                    if direction == "out":
+                        await adopt_thread_placeholders(
+                            s, account_id=own, fan_id=int(fan_id))
 
                 # (b) unread_count = OF truth, unconditionally (create row if new).
                 await s.execute(

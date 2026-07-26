@@ -25,6 +25,10 @@ service/chatterly.db.devbak*
 *.devbak.*
 service/sessions/
 service/storyboard_cache/
+service/vault_thumbs/
+service/vault_posters/
+service/vault_images/
+service/img_cache/
 .run_public/
 onlystackAPP/
 
@@ -69,6 +73,11 @@ service/data/settings_backups/
 
 # Local sim/scratch harnesses + prod-data replays (never commit — throwaway)
 service/chatterly.sandbox.db
+# …and its WAL sidecars, like chatterly.db above. Without these a test run leaves
+# two untracked files in `git status`, which is how a throwaway gets swept into a
+# commit by an `add -A`.
+service/chatterly.sandbox.db-wal
+service/chatterly.sandbox.db-shm
 service/_sim_*.py
 service/_live_*.py
 service/_probe_*.py

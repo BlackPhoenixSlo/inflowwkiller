@@ -34,6 +34,7 @@ from db.models import (
     Account, Employee, Fan, FanProfile, GrokCall, Message, ScheduledJob, Transaction,
 )
 from auth import assert_account_owned
+import fan_status_copy as copy   # the badge sentences — see its module docstring
 
 # Statuses that mean "this money is gone / never landed" — chargebacks,
 # refunds, hard failures. Everything else (cleared AND still-pending payout
@@ -126,6 +127,9 @@ def _row_to_dict(f: Fan) -> dict[str, Any]:
         "automation_paused_until": (
             f.automation_paused_until.isoformat() if f.automation_paused_until else None
         ),
+        # Persona continuity (Tier B) — the three scalars are the RESOLVED answer
+        # per topic and are operator-writable. The ledger and the merged view are
+        # NOT here: see _with_persona_claims for why they are per-fan only.
         "persona_age_claimed": f.persona_age_claimed,
         "persona_location_claimed": f.persona_location_claimed,
         "persona_job_claimed": f.persona_job_claimed,
@@ -158,6 +162,36 @@ def _safe_load_obj(raw: str | None) -> dict[str, Any]:
         return v if isinstance(v, dict) else {}
     except (ValueError, TypeError):
         return {}
+
+
+def _with_persona_claims(row: dict[str, Any], f: Fan) -> dict[str, Any]:
+    """Add the Tier B ledger + merged view to a SINGLE-fan response.
+
+    Deliberately not in `_row_to_dict`: that serializer also backs the fans LIST
+    (`{"fans": [...]}`), and only the drawer reads these. Building them there put
+    a JSON parse and a merge on every row of a list that can run to thousands,
+    for two keys nobody in that response uses.
+
+    Both halves go through `parse_persona_claims`, NOT `_safe_load_array`. That
+    parser clips each claim to _CLAIM_TEXT_CLIP, and the merged view is built
+    from it — so reading the raw column here instead would hand the client two
+    different texts for the same claim, and the drawer (which pairs them by text
+    to find superseded versions) would show a long claim as BOTH current and
+    struck-through. One parser, one normalisation.
+
+    Lazy import: `automations._persona` pulls the llm stack, which nothing else
+    in this module needs — verified, not assumed.
+    """
+    from automations._persona import parse_persona_claims, resolved_claims
+    return {
+        **row,
+        "persona_claims": parse_persona_claims(f.persona_claims_json),
+        "persona_claims_resolved": resolved_claims(
+            f.persona_claims_json,
+            age_claimed=f.persona_age_claimed,
+            location_claimed=f.persona_location_claimed,
+            job_claimed=f.persona_job_claimed),
+    }
 
 
 def _safe_load_array(raw: str | None) -> list[Any]:
@@ -392,7 +426,7 @@ async def get_fan(account_id: str, fan_id: int) -> dict[str, Any]:
             s.add(f)
             await s.commit()
             await s.refresh(f)
-        row = _row_to_dict(f)
+        row = _with_persona_claims(_row_to_dict(f), f)
         # Join the gen_info profile so the drawer can show the rich note + openers.
         prof = await s.get(FanProfile, (account_id, fan_id))
     row["profile"] = _profile_block(prof, f.lifetime_spend_cents or 0)
@@ -465,31 +499,22 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
     def _iso(dt: datetime | None) -> str | None:
         return dt.isoformat() + "Z" if dt is not None else None
 
-    # ── The gates, in run()'s order. First hit wins.
-    state, label, detail, until = "active", "Active", "She'll answer his next message", None
-    if not engine_on:
-        state, label = "off", "AI Upseller off"
-        detail = "The engine's master switch is off for this account."
-    elif int(fan_id) in blacklist:
-        state, label, detail = "blocked", "Blacklisted", "This fan is on the blacklist."
-    elif reason is not None and reason not in ac._GRADUATION_SKIPS:
-        state, label = "blocked", f"Skipped ({reason})"
-        detail = "A skip_list row closes the thread to the AI."
-    elif rst is not None and rst.wake_at is not None and rst.wake_at > now:
-        state, label, until = "paused", "On a break", _iso(rst.wake_at)
-        detail = ("Human Rhythm stepped her away to look human. She wakes on her own — "
-                  "a live ask or a recent purchase makes a thread break-proof.")
-    elif fan is not None and fan.automation_paused_until and fan.automation_paused_until > now:
-        state, label, until = "paused", "Cooling down", _iso(fan.automation_paused_until)
-        detail = "Per-fan cooldown after a send."
-    elif lad is not None and lad.companion_until and lad.companion_until > now:
-        state, label, until = "companion", "Talking, not selling", _iso(lad.companion_until)
-        detail = ("He said he's broke or asked to just talk. The conversation stays on; "
-                  "no price goes in front of him. (A bot accusation no longer lands him "
-                  "here — it's counted, but he stays sellable.)")
-    elif lad is not None and lad.cooldown_until and lad.cooldown_until > now:
-        state, label, until = "companion", "Talking, not selling", _iso(lad.cooldown_until)
-        detail = "Post-purchase ease-off — he just bought; she isn't charging again yet."
+    def _future(dt: datetime | None) -> datetime | None:
+        """A deadline still ahead of us, else nothing — the builders take facts, not
+        comparisons, so 'is this state live' is decided once, here."""
+        return dt if dt is not None and dt > now else None
+
+    # ── The gates, in run()'s order. First hit wins: a later gate may only speak if
+    # nothing before it did. The SENTENCES live in fan_status_copy.
+    badge = copy.standing_badge(
+        engine_on=engine_on,
+        blacklisted=int(fan_id) in blacklist,
+        skip_reason=(reason if reason is not None
+                     and reason not in ac._GRADUATION_SKIPS else None),
+        rhythm_wake_at=_future(rst.wake_at if rst is not None else None),
+        paused_until=_future(fan.automation_paused_until if fan is not None else None),
+        companion_until=_future(lad.companion_until if lad is not None else None),
+        post_buy_until=_future(lad.cooldown_until if lad is not None else None))
 
     # The engine that owns this fan. A payer of_ai_chat graduated ('spent') belongs to
     # the upseller — that's precisely the fan it exists for.
@@ -512,44 +537,38 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
     # chat, on the same to_thread pool that serves live OF sends (see the relay
     # threadpool-starvation note). `session_gap_min` only populates session_out_n; every
     # field the gate reads is identical, so the cadence gather is a strict superset.
+    # Item 21c — the daily quota sits above the burst cap and needs its own (rolling
+    # 24h) reply count, so ask the same single gather for it rather than adding a pass.
+    quota_on = cadence_on and bool(cfg.get("daily_quota_enabled"))
     cand = None
     if cadence_on or gate_on:
         cand = (await ac._gather(
-            account_id, {int(fan_id)}, session_gap_min=gap_min)).get(int(fan_id))
+            account_id, {int(fan_id)}, session_gap_min=gap_min,
+            day_window=ac.QUOTA_WINDOW if quota_on else None)).get(int(fan_id))
     cadence: dict[str, Any] = {"enabled": cadence_on}
-    if cadence_on:
-        if cand is not None:
-            payers = await ac.recent_payer_fans(account_id, [int(fan_id)])
-            money = (await ac._last_money_at(account_id, [int(fan_id)])).get(int(fan_id))
-            # Proven-spender floor (item 21b): pass the fan's rolling-window spend cap
-            # in, then trust the cap the GATE reports — the effective-cap formula lives
-            # in _cadence_gate alone, so this status never drifts from the real leash.
-            spend_cap = (await ac._spend_caps(
-                account_id, [int(fan_id)],
-                cfg.get("msg_limits_by_spend") or [], now)).get(int(fan_id), 0)
-            stop, tier, cap = ac._cadence_gate(
-                cand, pending=(open_offers[0] if open_offers else None),
-                recent_payer=int(fan_id) in payers, money_at=money,
-                pic=False, now=now, cad=cfg, spend_cap=spend_cap)
-            used = int(cand.session_out_n or 0)
-            cadence = {
-                "enabled": True,
-                "tier": tier,                 # baseline | buying_signal | no_signal | …
-                "used": used,                 # REPLIES this burst (3-5 bubbles = 1)
-                "cap": cap or None,           # None = uncapped (e.g. post_purchase)
-                "left": max(cap - used, 0) if cap else None,
-                "stopped": bool(stop),
-                # The burst resets after this much silence — that's what "continues
-                # back" means for a CAP (a break, by contrast, has a wake time).
-                "resets_after_minutes": gap_min,
-                "last_message_at": (cand.last_in_at or cand.last_out_at
-                                    ).isoformat() + "Z" if (cand.last_in_at or cand.last_out_at) else None,
-            }
-            if stop and state == "active":
-                state, label = "paused", f"Reply cap reached ({used}/{cap})"
-                detail = (f"She's made {used} replies in this burst ({tier} tier). She "
-                          f"resumes on a real buying signal, or after {gap_min} min of "
-                          f"silence starts a fresh burst.")
+    if cadence_on and cand is not None:
+        # ASK the leash; never re-run it here. This was eight calls inlined in a
+        # specific order — spend windows, both gates, the burst gate's `tier`
+        # threaded into the quota gate — and every time that pipeline was retyped
+        # the drawer drifted from the bot. `read_leash` is the one home for the
+        # ordering; this endpoint's job is to RENDER the verdict, nothing else.
+        leash = await ac.read_leash(
+            account_id, int(fan_id), cand, cfg=cfg, now=now,
+            pending=(open_offers[0] if open_offers else None))
+        cadence = copy.burst_payload(
+            tier=leash.tier, used=leash.used, cap=leash.cap, stopped=leash.stopped,
+            gap_min=gap_min, last_message_at=leash.last_message_at)
+        if badge.state == "active":
+            badge = copy.burst_badge(stopped=leash.stopped, tier=leash.tier,
+                                     used=leash.used, cap=leash.cap,
+                                     gap_min=gap_min) or badge
+        # The DAILY ceiling (item 21c). In shadow mode the hold is computed but not
+        # served, and the UI must say so rather than claim she's paused when she isn't.
+        if leash.quota is not None:
+            enforce = bool(cfg.get("daily_quota_enforce"))
+            cadence["daily"] = copy.daily_payload(leash.quota, enforced=enforce)
+            if badge.state == "active":
+                badge = copy.daily_quota_badge(leash.quota, enforced=enforce) or badge
 
     # Why she can't put a price in front of him even when she's talking.
     caps_ok = await ac._offer_caps_ok(account_id, int(fan_id), cfg) if gate_on else None
@@ -656,10 +675,10 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
     }
 
     return {
-        "state": state,                     # active | paused | companion | blocked | off
-        "label": label,
-        "detail": detail,
-        "until": until,
+        "state": badge.state,               # active | paused | companion | blocked | off
+        "label": badge.label,
+        "detail": badge.detail,
+        "until": badge.until,
         "engine": engine,
         "graduated": reason if reason in ac._GRADUATION_SKIPS else None,
         "cadence": cadence,
@@ -952,4 +971,7 @@ async def update_fan(
         f.updated_at = datetime.utcnow()
         await s.commit()
         await s.refresh(f)
-        return _row_to_dict(f)
+        # The drawer writes this straight into its query cache, so the PATCH
+        # response has to carry the claims too — without them, correcting one
+        # would blank the panel until the next refetch.
+        return _with_persona_claims(_row_to_dict(f), f)

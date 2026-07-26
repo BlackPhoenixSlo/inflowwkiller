@@ -924,6 +924,8 @@ export function useSellerStyle(accountId: string | null) {
   const [typosOn, setTyposOn] = useState(false);
   const [nonnativeOn, setNonnativeOn] = useState(false);
   const [catStickers, setCatStickers] = useState(true);
+  const [consistencyOn, setConsistencyOn] = useState(false);
+  const [spacingOn, setSpacingOn] = useState(true);
   useEffect(() => {
     const c = { ...(styleQ.data?.defaults ?? {}), ...(styleQ.data?.config ?? {}) } as Record<string, unknown>;
     setGirlStyle(Boolean(c["ai_chatter"]));
@@ -931,11 +933,19 @@ export function useSellerStyle(accountId: string | null) {
     setNonnativeOn(Boolean(c["nonnative_ai_chatter"]));
     // account-wide, default ON — absent (older relay) still renders checked
     setCatStickers(c["cat_stickers"] !== false);
+    // OFF unless explicitly on: this one bills a second AI call per reply, so an
+    // absent key must never render checked (matches load_consistency_flags).
+    setConsistencyOn(Boolean(c["consistency_ai_chatter"]));
+    // Tri-state like its parent: ON for ai_chatter unless explicitly turned off,
+    // so an older relay that never stored the key still renders the live behaviour.
+    setSpacingOn(c["nonnative_spacing_ai_chatter"] !== false);
   }, [styleQ.data]);
   const saveStyle = () => saveStyleM.mutate({
     ai_chatter: girlStyle, typos_ai_chatter: typosOn, nonnative_ai_chatter: nonnativeOn,
-    cat_stickers: catStickers,
+    cat_stickers: catStickers, consistency_ai_chatter: consistencyOn,
+    nonnative_spacing_ai_chatter: spacingOn,
   });
   return { saveStyleM, girlStyle, setGirlStyle, typosOn, setTyposOn, nonnativeOn, setNonnativeOn,
-           catStickers, setCatStickers, saveStyle };
+           catStickers, setCatStickers, consistencyOn, setConsistencyOn,
+           spacingOn, setSpacingOn, saveStyle };
 }

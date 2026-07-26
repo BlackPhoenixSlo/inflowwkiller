@@ -21,6 +21,7 @@ import { openGroupTab } from "@/lib/groupChannel";
 import { useChatMessages } from "@/hooks/useChatMessages";
 import { mergeSeedIntoMessages, useChatMessagesLocal } from "@/hooks/useChatMessagesLocal";
 import { useChatAttribution } from "@/hooks/useChatAttribution";
+import { useChatImageDesc } from "@/hooks/useChatImageDesc";
 import { useSendMessage } from "@/hooks/useSendMessage";
 import { useLikeMessage } from "@/hooks/useLikeMessage";
 import { useTogglePinMessage } from "@/hooks/useTogglePinMessage";
@@ -699,6 +700,15 @@ export function ChatSurface({
   const attributionQ = useChatAttribution(accountId, fanId, oldestVisibleId);
   const attributionMap = attributionQ.data?.by_msg_id ?? null;
 
+  // 👁 inbound photo/gif reads — same id-keyed overlay shape, but deliberately
+  // NOT anchored on oldestVisibleId: the whole fan's map fits in one response,
+  // and the stable key is what lets it live in the persisted cache (see the
+  // hook's header). Rendered under incoming media bubbles so the chatter can see
+  // (and correct) exactly what the AI reads as "[he sent: …]". The describe/
+  // re-read mutation belongs to ImageDescCaption, not here.
+  const imageDescQ = useChatImageDesc(accountId, fanId);
+  const imageDescMap = imageDescQ.data?.by_msg_id ?? null;
+
   // Cross-chatter freshness: when a teammate (Slovenia/Kenya/Nigeria/…)
   // sends from another machine, the WS pump lands the outbound row in
   // useChatMessages but our attribution map is still cached. Rather than
@@ -945,6 +955,7 @@ export function ChatSurface({
         highlightId={highlightId}
         lastReadByPeerId={lastReadByPeerId}
         attribution={attributionMap}
+        imageDesc={imageDescMap}
         currentEmployeeName={currentEmployee?.display_name ?? null}
       />
 

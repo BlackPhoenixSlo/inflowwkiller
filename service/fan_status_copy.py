@@ -1,0 +1,134 @@
+"""What the FanDrawer badge SAYS — the sentences, kept out of the endpoint.
+
+`get_fan_ai_status` evaluates a fan against every gate the engine runs. It was also
+writing the prose for each verdict inline, which is how a 324-line function got that
+way: policy evaluation and copywriting interleaved, so neither could be read alone.
+
+The split is the same one `automations/_leash.py` makes one layer down. There, a gate
+returns a typed verdict instead of a decision buried in a sweep. Here, each builder
+turns one of those verdicts into a `Badge` — the endpoint reads "evaluate, then
+describe", and the copy lives somewhere a person can edit it without touching a gate.
+
+Every builder returns `None` when it has nothing to say, so the caller's rule stays
+the one it always was: FIRST HIT WINS, and a later gate never overwrites an earlier
+one's badge.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, NamedTuple
+
+
+class Badge(NamedTuple):
+    """One line of status as the drawer shows it."""
+    state: str                  # active | off | blocked | paused | companion
+    label: str                  # the chip
+    detail: str                 # the sentence under it
+    until: str | None = None    # ISO wake time, when the state has one
+
+
+def _iso(dt: datetime | None) -> str | None:
+    return dt.isoformat() + "Z" if dt is not None else None
+
+
+ACTIVE = Badge("active", "Active", "She'll answer his next message")
+
+
+def standing_badge(*, engine_on: bool, blacklisted: bool, skip_reason: str | None,
+                   rhythm_wake_at: datetime | None,
+                   paused_until: datetime | None,
+                   companion_until: datetime | None,
+                   post_buy_until: datetime | None) -> Badge:
+    """The durable reasons she is not answering, in the engine's own precedence —
+    master switch, blacklist, skip_list, then the three timed states. First hit wins,
+    and every branch here is a fact about stored state rather than a live gate."""
+    if not engine_on:
+        return Badge("off", "AI Upseller off",
+                     "The engine's master switch is off for this account.")
+    if blacklisted:
+        return Badge("blocked", "Blacklisted", "This fan is on the blacklist.")
+    if skip_reason is not None:
+        return Badge("blocked", f"Skipped ({skip_reason})",
+                     "A skip_list row closes the thread to the AI.")
+    if rhythm_wake_at is not None:
+        return Badge("paused", "On a break",
+                     "Human Rhythm stepped her away to look human. She wakes on her "
+                     "own — a live ask or a recent purchase makes a thread "
+                     "break-proof.", _iso(rhythm_wake_at))
+    if paused_until is not None:
+        return Badge("paused", "Cooling down", "Per-fan cooldown after a send.",
+                     _iso(paused_until))
+    if companion_until is not None:
+        return Badge("companion", "Talking, not selling",
+                     "He said he's broke or asked to just talk. The conversation "
+                     "stays on; no price goes in front of him. (A bot accusation no "
+                     "longer lands him here — it's counted, but he stays sellable.)",
+                     _iso(companion_until))
+    if post_buy_until is not None:
+        return Badge("companion", "Talking, not selling",
+                     "Post-purchase ease-off — he just bought; she isn't charging "
+                     "again yet.", _iso(post_buy_until))
+    return ACTIVE
+
+
+def burst_payload(*, tier: str, used: int, cap: int, stopped: bool, gap_min: int,
+                  last_message_at: datetime | None) -> dict[str, Any]:
+    """The burst numbers as the drawer reads them. `cap`/`left` are None when she is
+    UNCAPPED (e.g. the post-purchase window) — the drawer shows a dash, not a zero,
+    and 0 would read as "no replies allowed", the exact opposite of the truth."""
+    return {
+        "enabled": True,
+        "tier": tier,                 # baseline | buying_signal | no_signal | …
+        "used": used,                 # REPLIES this burst (3-5 bubbles = 1)
+        "cap": cap or None,
+        "left": max(cap - used, 0) if cap else None,
+        "stopped": bool(stopped),
+        # The burst resets after this much silence — that's what "continues back"
+        # means for a CAP (a break, by contrast, has a wake time).
+        "resets_after_minutes": gap_min,
+        "last_message_at": _iso(last_message_at),
+    }
+
+
+def daily_payload(q: Any, *, enforced: bool) -> dict[str, Any]:
+    """The daily-ceiling numbers, straight off the engine's own `_Quota`. Same
+    None-not-zero rule as above for an uncapped fan (a whale, or one still inside his
+    runway). `enforced` False means these are shadow figures — recorded, not served."""
+    return {
+        "used": q.used,
+        "quota": q.quota or None,
+        "left": max(q.quota - q.used, 0) if q.quota else None,
+        "held": bool(q.hold),
+        "enforced": bool(enforced),
+        "backoff_hours": q.wait_h or None,
+        "dry_days": round(q.dry_h / 24.0, 1) if q.dry_h else None,
+    }
+
+
+def burst_badge(*, stopped: bool, tier: str, used: int, cap: int,
+                gap_min: int) -> Badge | None:
+    """Item 21 — the burst cap. A CAP has no wake time (that's what makes it not a
+    break): it lifts on a buying signal or on silence, so the copy says so instead of
+    promising a clock."""
+    if not stopped:
+        return None
+    return Badge("paused", f"Reply cap reached ({used}/{cap})",
+                 f"She's made {used} replies in this burst ({tier} tier). She resumes "
+                 f"on a real buying signal, or after {gap_min} min of silence starts "
+                 f"a fresh burst.")
+
+
+def daily_quota_badge(q: Any, *, enforced: bool) -> Badge | None:
+    """Item 21c — the daily ceiling. `q` is the `_Quota` the engine itself returned.
+
+    Silent unless the hold is actually being SERVED: in shadow mode the verdict is
+    computed and recorded but the reply still goes out, and a badge claiming she is
+    paused when she is visibly still replying would be a lie the operator can see."""
+    if not (q.hold and enforced):
+        return None
+    return Badge("paused", f"Daily quota reached ({q.used}/{q.quota})",
+                 f"She's made {q.used} replies to him in the last 24h, and he hasn't "
+                 f"paid in {q.dry_h / 24:.1f} days. She goes quiet for {q.wait_h:g}h, "
+                 f"then talks to him again — this slows her down, it never stops her. "
+                 f"A purchase or a content ask resumes her immediately.")

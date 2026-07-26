@@ -328,9 +328,22 @@ export interface BootstrapResponse {
 // optional because OF's payloads vary by chat state. Keep field names
 // in OF's camelCase (we don't re-shape on the relay).
 
+export interface OFMediaVariant {
+  url: string;
+}
+/** The size variants OF hangs off one media item.
+ *
+ *  All five are modelled because picking a still is a search DOWN this list (see
+ *  lib/ofMedia.stillUrl): typing only `thumb`/`source` is what forced the chat
+ *  pane to guess describability from `type` instead of resolving a real URL — and
+ *  guessing gets a viewable clip that ships `preview` but no `thumb` wrong in one
+ *  direction, and a gif whose only file is the .mp4 wrong in the other. */
 export interface OFMediaFiles {
-  thumb?: { url: string } | null;
-  source?: { url: string } | null;
+  thumb?: OFMediaVariant | null;
+  squarePreview?: OFMediaVariant | null;
+  preview?: OFMediaVariant | null;
+  full?: OFMediaVariant | null;
+  source?: OFMediaVariant | null;
 }
 export interface OFMedia {
   id: number;
@@ -526,12 +539,49 @@ export interface FanRecord {
   relationship_stage?: string | null;
   has_kids?: boolean | null;
   pets?: unknown[];
+  // ── Persona continuity (Tier B) — what SHE told THIS fan ─
+  /** The resolved answer per topic. Operator-writable: these are what the prompt
+   *  reads, so a correction here is what actually changes her next reply. */
+  persona_age_claimed?: string | null;
+  persona_location_claimed?: string | null;
+  persona_job_claimed?: string | null;
+  /** The raw ledger behind those three — every self-claim she has made to this
+   *  fan, newest last. Read-only: it is the audit trail, not the setting. */
+  persona_claims?: PersonaClaim[];
+  /** The MERGED view: one row per topic, scalars overriding, in the order the
+   *  prompt prints them. Built server-side by the same function that renders the
+   *  prompt block, so the drawer shows what the AI is told — not a second
+   *  implementation of the override rule. */
+  persona_claims_resolved?: ResolvedClaim[];
   communication_style?: Record<string, unknown>;
   recent_events_timeline?: { date?: string; event?: string }[];
   /** The joined gen_info profile: rich note + openers. */
   profile?: FanProfileBlock;
   created_at: string | null;
   updated_at: string | null;
+}
+
+/** One line of the merged "you already told him this" block. */
+export interface ResolvedClaim {
+  /** The prompt's own wording — a topic she chose ("nationality") or an override
+   *  label ("where you are"). */
+  label: string;
+  value: string;
+  /** The PATCH-editable field behind this row, or null when the topic has no
+   *  mirror column. Null means read-only, NOT that it misses the prompt. */
+  column: "persona_age_claimed" | "persona_location_claimed" | "persona_job_claimed" | null;
+  /** When she said it. Null for an operator override — it was never "said". */
+  at: string | null;
+}
+
+/** One self-claim she made to this fan, as recorded at the time she said it. */
+export interface PersonaClaim {
+  /** Free-text topic the extractor chose ("city", "nationality", "job", …).
+   *  Deliberately not an enum — it is whatever she actually talked about. */
+  topic?: string;
+  claim?: string;
+  /** ISO timestamp of the reply that contained it. */
+  at?: string;
 }
 
 export interface FanProfileBlock {
@@ -555,6 +605,14 @@ export interface FanUpdate {
   fetishes?: string | null;
   /** ISO 639-1 code, or "" / null to clear the manual override. */
   language?: string | null;
+  /** Persona continuity (Tier B) — correct what she told this fan. These are the
+   *  values the chat prompt reads, so editing one changes her next reply. The
+   *  server has accepted them since they were added; only the client contract
+   *  was missing, which is why nothing could write them. `persona_claims` is
+   *  deliberately absent: the ledger is an audit trail, not a setting. */
+  persona_age_claimed?: string | null;
+  persona_location_claimed?: string | null;
+  persona_job_claimed?: string | null;
 }
 
 export interface SendMessageBody {

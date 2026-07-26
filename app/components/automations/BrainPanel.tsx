@@ -35,6 +35,7 @@ import { VaultPicker } from "@/components/chat/VaultPicker";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
 import { TIMEZONES, zoneLabel } from "@/components/settings/sellerShared";
+import { useEnrichPersona } from "@/hooks/useAccountConfig";
 
 // The welcome automation's default cadence: poll OF's new-subscriber feed every
 // 5 min (matches the send_welcome spec's {every_seconds: 300}).
@@ -82,11 +83,13 @@ function isBlankBrain(c: BrainConfig): boolean {
 }
 
 // The defaults, with this account's own images kept (defaults carry none).
-// timezone is account identity (where SHE lives), not brain voice — a reset
-// must never move the creator to another city.
+// timezone AND her facts are account identity (who SHE is, where SHE lives), not
+// brain voice — a reset must never move the creator to another city or wipe the
+// birthplace her fans have already been told.
 function defaultsWithImages(defaults: BrainConfig, current: BrainConfig): BrainConfig {
   return { ...defaults, time_images: current.time_images ?? {},
-           timezone: current.timezone ?? null };
+           timezone: current.timezone ?? null,
+           persona_facts: current.persona_facts ?? {} };
 }
 
 // "UTC-7" / "her clock: 1:20 AM" for the picked IANA zone — the operator's
@@ -148,6 +151,11 @@ export default function BrainPanel() {
   const createFollowupRule = useCreateRule(accountId);
   const updateFollowupRule = useUpdateRule(accountId);
   const previewM = useAutomationPreview();
+  const enrichM = useEnrichPersona();
+  const [enrichMsg, setEnrichMsg] = useState<string | null>(null);
+  // Which keys the last 🪄 run filled — highlighted so the operator reviews the
+  // PROPOSED values rather than the ones they already wrote themselves.
+  const [enrichedKeys, setEnrichedKeys] = useState<string[]>([]);
   const welcomePinM = useWelcomePin();
 
   const [welcomeEnabled, setWelcomeEnabled] = useState(false);
@@ -237,6 +245,9 @@ export default function BrainPanel() {
   const modelOptions = cfgQ.data?.model_options ?? [];
   const purposes = cfgQ.data?.purposes ?? [];
   const languages = cfgQ.data?.languages ?? [{ code: "en", label: "English" }];
+  // The canon field contract — keys, labels, placeholders and which are
+  // operator-only — comes wholly from the API. Nothing about it lives here.
+  const factFields = cfgQ.data?.persona_fact_fields ?? [];
 
   // Resolve the SAVED slot image ids (and the two preview image ids) back to
   // VaultMedia so the slots/preview render real thumbnails on load — mediaCache
@@ -254,6 +265,12 @@ export default function BrainPanel() {
 
   function set<K extends keyof BrainConfig>(key: K, val: BrainConfig[K]) {
     setForm((f) => (f ? { ...f, [key]: val } : f));
+    setMsg(null);
+  }
+  function setFact(key: string, text: string) {
+    setForm((f) =>
+      f ? { ...f, persona_facts: { ...(f.persona_facts ?? {}), [key]: text } } : f,
+    );
     setMsg(null);
   }
   function setActivity(slot: string, text: string) {
@@ -331,6 +348,34 @@ export default function BrainPanel() {
     }
   }
 
+  // 🪄 Enrich — propose values for the EMPTY canon slots, and resolve her
+  // timezone from the resulting city. Nothing is saved here: the proposal lands
+  // in the form for the operator to read and edit, then the normal Save writes
+  // it. The timezone comes back resolved in CODE (never model-guessed) — six
+  // live accounts were 1-4h wrong and the prompt clock then instructs the model
+  // to defend the wrong hour, so this is the one field a model may not author.
+  async function runEnrich() {
+    if (!accountId || !form) return;
+    setEnrichMsg(null);
+    try {
+      const res = await enrichM.mutateAsync({ account_id: accountId });
+      const filled = Object.keys(res.proposed ?? {});
+      setForm((f) => (f ? { ...f, persona_facts: res.facts ?? {} } : f));
+      setEnrichedKeys(filled);
+      if (res.timezone && res.timezone !== form.timezone) {
+        set("timezone", res.timezone);
+      }
+      const bits: string[] = [];
+      bits.push(filled.length ? `filled ${filled.length} field${filled.length === 1 ? "" : "s"}` : "nothing left to fill");
+      if (res.timezone && res.timezone_changed) bits.push(`timezone → ${res.timezone}`);
+      else if (!res.timezone) bits.push("timezone unresolved — pick it below");
+      setEnrichMsg(`${bits.join(" · ")}. Review, then Save.`);
+      setMsg(null);
+    } catch (e) {
+      setEnrichMsg(e instanceof Error ? e.message : "enrich failed");
+    }
+  }
+
   async function runWelcomePreview(ignorePin = false, slotOverride?: string) {
     if (!accountId) return;
     setWelcomeMsg(null);
@@ -340,6 +385,7 @@ export default function BrainPanel() {
     const draftCfg = form
       ? {
           persona: form.persona,
+          persona_facts: form.persona_facts,
           welcome_rules: form.welcome_rules,
           location: form.location,
           utc_offset: form.utc_offset,
@@ -599,6 +645,69 @@ export default function BrainPanel() {
                 onChange={(e) => set("daily_cost_cap_cents", Math.max(0, Number(e.target.value) || 0))}
               />
             </label>
+          </div>
+
+          {/* ── Her facts (the canon the chat AI may never contradict) ── */}
+          <div className="space-y-2 border-t border-border pt-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[11px] uppercase tracking-wide text-fg-dim">
+                Her facts
+              </span>
+              <button
+                type="button"
+                onClick={runEnrich}
+                disabled={enrichM.isPending || !form.persona}
+                className="rounded border border-border px-2 py-1 text-[11px] hover:bg-bg-hover disabled:opacity-40"
+                title={
+                  form.persona
+                    ? "Fill the empty fields from her persona, and work out her timezone from the city. Nothing is saved until you press Save."
+                    : "Write her persona first — enrich fills the gaps in it."
+                }
+              >
+                {enrichM.isPending ? "Enriching…" : "🪄 Enrich"}
+              </button>
+            </div>
+            <p className="text-[11px] text-fg-dim">
+              Pinned into every chat prompt as facts she can never contradict — and as
+              material she can relate to a fan with. A blank field is one she&apos;ll
+              improvise, differently each time it scrolls out of the conversation.
+              Ordered by how often fans actually ask. 🔒 fields are yours alone; Enrich
+              never guesses those.
+            </p>
+            {enrichMsg ? (
+              <p className="text-[11px] text-amber-400">{enrichMsg}</p>
+            ) : null}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {factFields.map((f) => {
+                const filled = enrichedKeys.includes(f.key);
+                return (
+                  <label key={f.key} className="block space-y-1">
+                    <span className="text-[11px] uppercase tracking-wide text-fg-dim">
+                      {f.label}
+                      {filled ? (
+                        <span className="ml-1 text-amber-400" title="Just proposed by Enrich — check it before saving">
+                          •
+                        </span>
+                      ) : null}
+                      {f.operator_only ? (
+                        <span
+                          className="ml-1 text-fg-dim"
+                          title="Enrich never fills this. What she will and won't do on camera is your call, not the model's — a wrong guess here either costs a sale or promises something she doesn't offer."
+                        >
+                          🔒
+                        </span>
+                      ) : null}
+                    </span>
+                    <Input
+                      value={form.persona_facts?.[f.key] ?? ""}
+                      onChange={(e) => setFact(f.key, e.target.value)}
+                      placeholder={f.placeholder}
+                      className={filled ? "border-amber-500/60" : undefined}
+                    />
+                  </label>
+                );
+              })}
+            </div>
           </div>
 
           {/* Model + per-purpose overrides */}

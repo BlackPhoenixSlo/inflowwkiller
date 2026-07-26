@@ -30,6 +30,7 @@ import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { MediaTile, pickEagerMediaIds } from "@/components/chat/MediaTile";
 import { automationLabel } from "@/components/messages/MessageRowGeneric";
 import type { AttributionEntry } from "@/hooks/useChatAttribution";
+import { ImageDescCaption } from "@/components/chat/ImageDescCaption";
 
 
 export interface MessageListProps {
@@ -80,6 +81,12 @@ export interface MessageListProps {
    *  employee or pre-DB-branch row) — the meta row guards on truthy
    *  display_name only. */
   attribution?: Record<string, AttributionEntry> | null;
+  /** Inbound photo/gif reads, keyed by message_id (string) — the same text the
+   *  chat engines see inline as "[he sent: …]". Missing key = that one was never
+   *  described (arrived before the feature, flag off, or the LLM cap was hit);
+   *  the caption then offers a manual read. ImageDescCaption owns the describe
+   *  mutation itself, so no callback needs threading through here. */
+  imageDesc?: Record<string, string> | null;
   /** Display name of the currently-picked employee. Used as the
    *  optimistic fallback for outbound bubbles that don't have a real
    *  message_id yet (tempId < 0) — the chatter sees their own name
@@ -95,7 +102,7 @@ export function MessageList(props: MessageListProps) {
     hasOlder, loadingOlder, onLoadOlder, onRetry, onCancelScheduled,
     onToggleLike, onQuoteReply, onTogglePin, onUnsend, onSendReward,
     highlightId, lastReadByPeerId,
-    attribution, currentEmployeeName,
+    attribution, currentEmployeeName, imageDesc,
   } = props;
 
   // 🌐 translate-to-English mode: batch-fetch translations for every loaded
@@ -509,6 +516,7 @@ export function MessageList(props: MessageListProps) {
             eagerMediaIds={eagerMediaIds}
             employeeLabel={employeeLabel}
             translation={translateOn && m.text ? translations.get(stripHtml(m.text)) ?? null : null}
+            imageDesc={imageDesc?.[String(m.id)] ?? null}
           />
         );
         if (!showDateSep) return [bubble];
@@ -530,7 +538,7 @@ function Bubble({
   onRetry, onCancelScheduled,
   onToggleLike, onQuoteReply, onTogglePin, onUnsend, onSendReward, onJumpTo,
   highlighted, isRealOutgoing, seenByPeer,
-  eagerMediaIds, employeeLabel, translation,
+  eagerMediaIds, employeeLabel, translation, imageDesc,
 }: {
   msg: OFMessage;
   replyTo: OFMessage["replyToMessage"] | null;
@@ -555,6 +563,8 @@ function Bubble({
   /** English translation of this bubble's text (null = none/failed/off).
    *  Only rendered when the detected language isn't already English. */
   translation?: BubbleTranslation | null;
+  /** What the AI saw in this (inbound) photo/gif; null = not described. */
+  imageDesc?: string | null;
 }) {
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   // Touch reveal for the per-message toolbar. On phones there is no hover, so
@@ -767,6 +777,21 @@ function Bubble({
             </span>
           )}
           {msg.media?.length ? <MediaStrip msg={msg} locked={locked} accountId={accountId} fanId={fanId} isOutgoing={isOutgoing || isOptimisticOutgoing} eagerMediaIds={eagerMediaIds} /> : null}
+          {/* What the AI sees in what HE sent. Incoming only — an outbound bubble
+           *  is our own send, and a locked PPV has nothing to read. Giphy dms carry
+           *  NO media (just a giphyId), and they're exactly what the free title
+           *  lane describes, so they must be covered here too. */}
+          {!isOutgoing && !isOptimisticOutgoing && !locked
+            && (msg.media?.length || msg.giphyId) ? (
+            <ImageDescCaption
+              accountId={accountId}
+              fanId={fanId}
+              messageId={numericIdForPin}
+              desc={imageDesc ?? null}
+              isGif={!msg.media?.length && !!msg.giphyId}
+              media={msg.media}
+            />
+          ) : null}
           {msg.giphyId ? (
             <a
               href={`https://media.giphy.com/media/${msg.giphyId}/giphy.gif`}

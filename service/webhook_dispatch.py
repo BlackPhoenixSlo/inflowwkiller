@@ -39,9 +39,11 @@ from sqlalchemy import select, update
 
 from db.engine import get_session
 from db.models import (
-    AccountAiConfig, Fan, FunnelState, MassRun, ResolutionLog, ScheduledJob, SkipList,
+    AccountAiConfig, Fan, FunnelState, MassRun, Message, ResolutionLog, ScheduledJob,
+    SkipList,
 )
 import automation_executor as ax
+from of_shapes import giphy_dm_id, has_video
 
 # deep_convo's terminal state — once a fan reaches it, no automation replies
 # (a human owns the chat). Lazy value so a constant rename in deep_convo can't
@@ -54,6 +56,114 @@ def _deep_convo_done_state() -> str:
         return "done"
 
 log = logging.getLogger("of-relay.webhook_dispatch")
+
+
+# Free-fan describe budget, per fan per rolling 24h. A fan who has never paid is
+# still worth reading — he may pay later, and the read is what makes her reply land
+# — but he must not be able to empty the vision budget by dumping his camera roll.
+# A clip costs the same call as a photo yet arrives in bursts, so it gets its own
+# tighter lane rather than eating the photo allowance.
+_FREE_FAN_IMAGE_CAP_24H = 3
+_FREE_FAN_VIDEO_CAP_24H = 1
+
+
+async def _describes_last_24h(account_id: str, fan_id: int) -> tuple[int, int]:
+    """(images, videos) this fan has had described in the last 24h.
+
+    Counted off `messages.image_desc IS NOT NULL` — the describe IS its own ledger,
+    so there's no extra table to keep in step. Video-ness comes from PARSING the
+    stored frame through the shared `of_shapes.has_video`, not from a substring of
+    the JSON and not from our own description text: a quoted/replied message embeds
+    the original frame, so a substring test bills a photo-reply-to-a-video-post
+    against the clip lane.
+
+    GIFs are excluded, and that is the difference between a budget and a tripwire.
+    A Giphy dm is "described" from Giphy's own public title — no model call, no
+    cost — yet it still writes `image_desc`, so counting stored descriptions billed
+    a fan for something nobody paid for. Three gifs, a free thing anyone can send
+    from the OF composer, and a never-paid fan's entire vision allowance was spent
+    before he sent a single photograph. The budget exists to bound MODEL SPEND, so
+    it counts only reads that could have cost something."""
+    since = datetime.utcnow() - timedelta(hours=24)
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.raw_json).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.direction == "in",
+                Message.image_desc.is_not(None),
+                Message.created_at >= since,
+            )
+        )).scalars().all()
+    videos = 0
+    billable = 0
+    for raw in rows:
+        try:
+            frame = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            billable += 1                  # truncated payload → counts as an image
+            continue
+        if giphy_dm_id(frame) is not None:
+            continue                       # free to describe ⇒ free to receive
+        billable += 1
+        if has_video(frame.get("media") if isinstance(frame, dict) else None):
+            videos += 1
+    return (billable - videos, videos)
+
+
+async def _free_fan_describe_allowed(account_id: str, fan_id: int,
+                                     is_video: bool) -> bool:
+    """Is another describe within this never-paid fan's daily budget?"""
+    images, videos = await _describes_last_24h(account_id, fan_id)
+    return (videos < _FREE_FAN_VIDEO_CAP_24H) if is_video \
+        else (images < _FREE_FAN_IMAGE_CAP_24H)
+
+
+async def _should_describe(account_id: str, fan_id: int, *,
+                           scope: str, is_video: bool, is_gif: bool = False) -> bool:
+    """Is THIS inbound media worth a vision call? The whole describe policy, in
+    one place, as one question.
+
+    Phrasing it spend-first is what collapses it: a fan who has paid is always
+    read, under either scope and with no budget, so every remaining rule is about
+    a fan who has never paid. That turns what was a four-deep `if/elif` ladder
+    mutating a `describe_on` flag inside the dispatch function into four flat
+    lines — and it asks for lifetime spend ONCE instead of once per branch.
+
+    Order matters below: `scope == "paid"` is the operator's explicit setting and
+    outranks the free-fan lanes underneath it."""
+    if await _fan_lifetime_spend_cents(account_id, fan_id) > 0:
+        return True
+    if scope == "paid":
+        return False
+    # Peer creators blasting mutual promo are not prospects and never convert, so
+    # reading their marketing images is pure spend. Uses the CONSERVATIVE shared
+    # predicate (follows us + never paid + no real exchange + actual promo
+    # markers), not the bare `creator_we_follow` source that once muted 71 real
+    # fans.
+    from automations._common import load_promo_spam_ids  # lazy: avoid cycle
+    if fan_id in await load_promo_spam_ids(account_id):
+        log.debug("describe skipped (promo-spam creator) account=%s fan=%s",
+                  account_id, fan_id)
+        return False
+    # A gif is read from Giphy's own public title — no model call, no cost — so the
+    # SPEND budget below does not apply. The ledger already excludes gifs; without
+    # the same exemption here the two halves disagree, and a free fan who has spent
+    # his three photo reads then sends a gif gets `image_desc` NULL — a completely
+    # blank turn for the chat engine, saving nothing, because the read was free.
+    #
+    # Deliberately BELOW scope and promo-spam, not above them: those two are policy
+    # ("only read payers", "these are not prospects"), and being free is not a
+    # reason to overrule an operator. Only the BUDGET is about money.
+    if is_gif:
+        return True
+    # A $0 fan is still worth reading — he may pay later, and the read is what
+    # makes her first reply land — but on a daily budget.
+    if not await _free_fan_describe_allowed(account_id, fan_id, is_video):
+        log.info("describe capped (free fan daily budget) account=%s fan=%s video=%s",
+                 account_id, fan_id, is_video)
+        return False
+    return True
 
 
 async def _fan_lifetime_spend_cents(account_id: str, fan_id: int) -> int:
@@ -441,7 +551,8 @@ async def on_inbound_tip(account_id: str, fan_id: int, message_id: int,
                     account_id, fan_id, exc_info=True)
 
 
-async def on_inbound_image(account_id: str, fan_id: int, message_id: int) -> None:
+async def on_inbound_image(account_id: str, fan_id: int, message_id: int,
+                           has_media: bool = True, is_video: bool = False) -> None:
     """A fan sent an IMAGE (non-tip inbound media) → a buying signal. Two
     independent, separately-gated reactions (both config in tip_reward_config_json,
     both default OFF):
@@ -455,7 +566,13 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int) -> Non
         enabled — the closer IS ai_chatter; with it off this flag is inert.
 
     Gated SEPARATELY from the reply (W7) and tip hooks: an image reply / closer
-    pivot should fire even on a fan no chat sweep would answer. Never raises."""
+    pivot should fire even on a fan no chat sweep would answer. Never raises.
+
+    `has_media=False` = the DM carried no media, only a Giphy id (see
+    event_transcoder). We still describe it — free, off Giphy's public title — but
+    NEITHER buying-signal reaction fires: a gif is a joke, not a nude.
+
+    `is_video` picks which lane of the free-fan daily budget this DM spends."""
     try:
         from automations.tip_reward import (  # lazy: avoid cycle
             image_describe_flags, image_reply_flags,
@@ -463,11 +580,21 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int) -> Non
         send_img, run_closer = await image_reply_flags(account_id)
         describe_on, describe_seed, describe_scope = await image_describe_flags(account_id)
 
-        # "paid" scope → only describe photos from fans who have actually spent, so a
-        # $0 fan spamming pics never burns a vision call. "all" describes everyone.
-        if describe_on and describe_scope == "paid":
-            if await _fan_lifetime_spend_cents(account_id, fan_id) <= 0:
-                describe_on = False
+        # A media-less DM is a Giphy gif. It reaches this hook so the AI can know
+        # what he sent, but it is NOT the buying signal a nude photo is: a laughing
+        # gif must never earn a free vault item or pivot the closer into selling.
+        # Name it, then let the ordinary reply lane answer.
+        if not has_media:
+            send_img = run_closer = False
+
+        # Scope, promo-spam and the free-fan budget are ONE question, and it lives
+        # in _should_describe — this function already owns enough (gifs, the vault
+        # reply, the closer kick) without a spend policy interleaved into it.
+        if describe_on:
+            describe_on = await _should_describe(
+                account_id, fan_id, scope=describe_scope, is_video=is_video,
+                # A media-less DM IS the gif case, already established above.
+                is_gif=not has_media)
 
         if not (send_img or run_closer or describe_on):
             return
@@ -475,11 +602,11 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int) -> Non
         # Vision-describe the photo FIRST and BLOCK on it (a few seconds, reads as
         # human typing) — the description is cached on messages.image_desc, and the
         # closer we kick below reads it straight back into its history as
-        # "[photo he sent: …]". Awaiting here is what lets the FIRST reply rate the
+        # "[he sent: …]". Awaiting here is what lets the FIRST reply rate the
         # picture instead of a later one. Never raises; a describe miss just leaves
         # image_desc NULL and the closer proceeds photo-blind (prior behavior).
         if describe_on:
-            from vault_ai_api import describe_inbound_message  # lazy: avoid cycle
+            from inbound_describe import describe_inbound_message  # lazy: avoid cycle
             await describe_inbound_message(account_id, int(message_id), describe_seed)
 
         woke = False

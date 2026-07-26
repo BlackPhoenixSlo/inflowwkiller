@@ -36,6 +36,13 @@ const STYLE_AUTOMATIONS: { key: keyof StyleConfig; label: string; hint: string }
   { key: "deep_convo", label: "Deep Convo", hint: "the deepening drill (also casualizes the Q & tease)" },
 ];
 
+/** Engines that actually RUN the pre-send consistency check — mirrors
+ *  `_common.CONSISTENCY_AUTOMATIONS`. Auto Convo and Deep Convo do not call it, so
+ *  their cell stays empty rather than offering a box that would save fine and then
+ *  do nothing. (ai_chatter is the other one; its toggle lives on the Chatter tab,
+ *  where the rest of that engine's settings are.) */
+const CONSISTENCY_AUTOMATIONS = new Set<keyof StyleConfig>(["of_ai_chat"]);
+
 function StyleSection({ accountId }: { accountId: string | null }) {
   const cfgQ = useStyleConfig(accountId);
   const saveM = useSaveStyleConfig(accountId);
@@ -150,10 +157,18 @@ function StyleSection({ accountId }: { accountId: string | null }) {
           <span className="w-20 text-center">Human style</span>
           <span className="w-20 text-center">Typos</span>
           <span className="w-20 text-center">Non-native</span>
+          <span className="w-20 text-center" title="Sometimes detach the '?' from the word before it — “you like it ?”. Part of the non-native register, so it only applies when Non-native is on; its own box because it is the one visible artifact you may want off while keeping the rest.">
+            Space ?
+          </span>
+          <span className="w-20 text-center" title="Before each reply sends, check it against what she has already told this fan and fix a contradiction. Costs a second AI call on replies that say something about her.">
+            Consistency
+          </span>
         </div>
         {STYLE_AUTOMATIONS.map(({ key, label, hint }) => {
           const typoKey = `typos_${key}` as keyof StyleConfig;
           const nonnativeKey = `nonnative_${key}` as keyof StyleConfig;
+          const consistencyKey = `consistency_${key}` as keyof StyleConfig;
+          const spacingKey = `nonnative_spacing_${key}` as keyof StyleConfig;
           return (
             <div key={key} className="flex items-center gap-3 max-md:min-h-[44px]">
               <span className="w-28 text-sm" title={hint}>{label}</span>
@@ -171,6 +186,28 @@ function StyleSection({ accountId }: { accountId: string | null }) {
                 <input type="checkbox" className="h-4 w-4 accent-[var(--accent)] cursor-pointer"
                   checked={!!form[nonnativeKey]} onChange={(e) => set({ [nonnativeKey]: e.target.checked })} />
               </label>
+              {/* Disabled, not empty: unlike Consistency this engine DOES run it —
+               *  it is simply inert while its parent register is off, and the box
+               *  keeps its stored value so ticking Non-native restores the choice. */}
+              <label className="w-20 flex justify-center max-md:items-center max-md:min-h-[44px]"
+                     title={form[nonnativeKey] ? undefined : "Turn on Non-native to use this"}>
+                <input type="checkbox" className="h-4 w-4 accent-[var(--accent)] cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                  disabled={!form[nonnativeKey]}
+                  checked={!!form[spacingKey]} onChange={(e) => set({ [spacingKey]: e.target.checked })} />
+              </label>
+              {/* Empty cell, not a disabled box: this engine does not call the
+               *  check at all, and a greyed checkbox reads as "available later". */}
+              <span className="w-20 flex justify-center max-md:items-center max-md:min-h-[44px]">
+                {CONSISTENCY_AUTOMATIONS.has(key) ? (
+                  <label className="flex justify-center">
+                    <input type="checkbox" className="h-4 w-4 accent-[var(--accent)] cursor-pointer"
+                      checked={!!form[consistencyKey]}
+                      onChange={(e) => set({ [consistencyKey]: e.target.checked })} />
+                  </label>
+                ) : (
+                  <span className="text-fg-dim/30 text-xs" title="This engine does not run the check">—</span>
+                )}
+              </span>
               <span className="text-[11px] text-fg-dim/70 hidden sm:inline">{hint}</span>
             </div>
           );

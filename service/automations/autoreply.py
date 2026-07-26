@@ -44,6 +44,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax
 import llm_client
+from ._persona import compose_persona
 from . import _language
 from attribution import write_outbound_attribution
 from automation_registry import register
@@ -53,17 +54,19 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from ._common import (
-    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING, guard_offplatform,
+    BIO_CONSISTENCY_GUARDRAIL,
+    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING,
     STYLE_3LINE, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
-    NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_style, apply_word_restriction,
+    NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction,
     build_tip_ask_block, hold_with_typing, apply_typo_throttle, is_content_ask,
-    load_nonnative_flags, load_painful_texting_flag,
+    load_nonnative_flags, load_spacing_flags, load_painful_texting_flag,
     load_strip_emojis, load_style_flags, load_tip_ask_config,
     load_typing_indicator, load_typing_wpm, load_typo_flags, load_hard_skip_ids,
     load_promo_spam_ids,
     recent_payer_fans, resolve_fan_name, resolve_model, should_skip_muted_creator,
-    skip_unreachable_fan, strip_emojis, typing_delay_seconds,
+    skip_unreachable_fan, typing_delay_seconds,
 )
+from automations._outbound import finalize_draft
 from .of_ai_chat import (_is_info_complete, _strip_html,
                          split_for_bubbles, _dedupe_lead_reaction,
                          _clock_line, _load_clock_tz)
@@ -216,6 +219,7 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         f"{hard_rules}\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
         f"{LIVE_PROOF_GUARDRAIL}\n\n"
+        f"{BIO_CONSISTENCY_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
         f"{NONNATIVE_REGISTER + chr(10) + chr(10) if nonnative_on else ''}"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
@@ -394,6 +398,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     account_lang = await _language.load_account_language(account_id)  # output language + guards
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
+    # Space-before-"?" — its own tri-state key, read independently but only
+    # ever APPLIED inside the non-native block below, so it can narrow that
+    # register and never widen it.
+    spacing_on = (await load_spacing_flags(account_id))[_PURPOSE]
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
@@ -549,13 +557,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         raw = (res.content or "").strip()
         # Deterministic floor under ONPLATFORM_GUARDRAIL: if the model still leaked
         # a number / off-platform handle / meetup arrangement, swap for a deflection.
-        raw, _leak = guard_offplatform(raw, random.Random(f"{fid}:{raw}"))
-        if _leak:
-            log.info("autoreply off-platform leak guarded account=%s fan=%s reasons=%s",
-                     account_id, fid, _leak)
-        # Account-wide emoji strip (opt-in) — before the split, like of_ai_chat.
-        if strip_emoji_on:
-            raw = strip_emojis(raw)
+        # The shared send chokepoint (_outbound): off-platform guard, then the
+        # account-wide emoji strip, before the split. No PHASE 2 consistency check
+        # — autoreply does not implement it, which is why there is no
+        # `consistency_autoreply` flag to switch on (see _common.CONSISTENCY_AUTOMATIONS).
+        raw, _leak = await finalize_draft(
+            raw, account_id=account_id, fan_id=fid, purpose=_PURPOSE,
+            strip_emoji=strip_emoji_on)
         parts = [apply_word_restriction(p)[:_REPLY_MAX_CHARS]
                  for p in split_for_bubbles(raw, max_bubbles,
                                             rng=random.Random(f"split:{f.fan_id}:{raw}"))
@@ -569,7 +577,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         name_protect = [n for n in (f.real_name, f.generated_nickname,
                                     f.of_display_name) if n]
         if nonnative_on:  # opt-in: deterministic non-native misspellings (always)
-            parts = [apply_nonnative_style(p, protect=name_protect) for p in parts]
+            # ONE rng for the whole reply — see apply_nonnative_spacing.
+            _q_rng = random.Random(f"{f.fan_id}:{raw}:q")
+            parts = [apply_nonnative_style(p, protect=name_protect)
+                     for p in parts]
+            if spacing_on:
+                parts = [apply_nonnative_spacing(p, _q_rng) for p in parts]
         if typo_on:  # opt-in: a realistic thumb-slip (+ a throttled "*fix" bubble)
             protect = name_protect + (list(NONNATIVE_OUTPUTS) if nonnative_on else [])
             parts = await apply_typo_throttle(
@@ -657,6 +670,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 async def _load_persona(account_id: str) -> str:
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, str(account_id))
-    return (cfg.persona if cfg and cfg.persona else "").strip() or (
-        "You are a warm, flirty OnlyFans creator texting a fan you've been chatting with."
-    )
+    return compose_persona(cfg, fallback=(
+        "You are a warm, flirty OnlyFans creator texting a fan you've been "
+        "chatting with."))

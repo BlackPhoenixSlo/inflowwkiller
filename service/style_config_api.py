@@ -27,8 +27,8 @@ from auth import assert_account_owned
 from db.engine import get_session
 from db.models import AccountAiConfig
 from automations._common import (
-    STYLE_AUTOMATIONS, typo_flag_key, nonnative_flag_key, FACTGROUND_KEY,
-    PAINFUL_TEXTING_KEY, CAT_STICKERS_KEY, CAT_STICKER_SKIP_PCT_KEY,
+    STYLE_AUTOMATIONS, STYLE_CONSISTENCY_KEYS, typo_flag_key, nonnative_flag_key, spacing_flag_key,
+    FACTGROUND_KEY, PAINFUL_TEXTING_KEY, CAT_STICKERS_KEY, CAT_STICKER_SKIP_PCT_KEY,
     CAT_STICKER_SOLO_PCT_KEY, CAT_STICKER_GAP_MIN_KEY)
 
 # NUMERIC knobs (not checkboxes): key → (default, max). Persisted as numbers —
@@ -64,8 +64,15 @@ def _defaults() -> dict[str, Any]:
     out = {k: _style_default(k) for k in STYLE_AUTOMATIONS}
     out.update({typo_flag_key(k): _style_default(k) for k in STYLE_AUTOMATIONS})
     out.update({nonnative_flag_key(k): _style_default(k) for k in STYLE_AUTOMATIONS})
+    # The space-before-'?' habit. Its own key, same tri-state default as the
+    # non-native layer it narrows — see _common.spacing_flag_key.
+    out.update({spacing_flag_key(k): _style_default(k) for k in STYLE_AUTOMATIONS})
     # Account-wide (not per-automation): strip every emoji at the send chokepoint.
     out["strip_emojis"] = False
+    # PHASE 2 pre-send self-consistency — OFF, and NOT tri-state. Unlike the layers
+    # above it costs a second LLM call per reply it fires on, so `load_consistency_flags`
+    # requires an explicit True. Reporting a default of False here matches that exactly.
+    out.update({k: False for k in STYLE_CONSISTENCY_KEYS})
     # Auto Convo (of_ai_chat) rich-profile grounding — DEFAULT ON (see load_factground_flag).
     out[FACTGROUND_KEY] = True
     # Account-wide brevity/emotion framing — DEFAULT ON (see load_painful_texting_flag).
@@ -88,9 +95,16 @@ def _resolved_view(stored: dict) -> dict[str, Any]:
     out = {k: _resolve_style_flag(stored, k, k) for k in STYLE_AUTOMATIONS}
     out.update({typo_flag_key(k): _resolve_style_flag(stored, k, typo_flag_key(k))
                 for k in STYLE_AUTOMATIONS})
+    out.update({spacing_flag_key(k): _resolve_style_flag(stored, k, spacing_flag_key(k))
+                for k in STYLE_AUTOMATIONS})
     out.update({nonnative_flag_key(k): _resolve_style_flag(stored, k, nonnative_flag_key(k))
                 for k in STYLE_AUTOMATIONS})
     out["strip_emojis"] = bool(stored.get("strip_emojis"))
+    # OFF unless explicitly stored — deliberately NOT _resolve_style_flag, whose
+    # tri-state default carries ai_chatter=True and would render this checked (and
+    # then bill a second LLM call per reply) on every account that never asked for it.
+    # Mirrors load_consistency_flags exactly.
+    out.update({k: bool(stored.get(k, False)) for k in STYLE_CONSISTENCY_KEYS})
     # DEFAULT ON: an absent key resolves True (matches load_factground_flag), so the box
     # renders checked and a save doesn't flip an implicit-ON flag to explicit-OFF.
     out[FACTGROUND_KEY] = bool(stored.get(FACTGROUND_KEY, True))
@@ -111,9 +125,18 @@ def _persist(cfg: dict) -> dict[str, Any]:
     on the first save and killed default-on realism for every UI-touched account."""
     if not isinstance(cfg, dict):
         cfg = {}
+    # This set is the ONLY gate on what reaches style_config_json — a key absent
+    # from it is dropped SILENTLY on a 200, so a loader reading that key can never
+    # see True and its feature ships inert. `consistency_*` was exactly that: the
+    # PHASE 2 pre-send check had a loader, an LLM call, tests and a drawer panel,
+    # and no way to switch on. When you add a `load_*_flags` reader, add its keys
+    # HERE in the same commit; `test_style_config.case_every_loader_key_survives_persist`
+    # fails the build if a loader's key set is not a subset of this one.
     known = set(STYLE_AUTOMATIONS) \
         | {typo_flag_key(k) for k in STYLE_AUTOMATIONS} \
         | {nonnative_flag_key(k) for k in STYLE_AUTOMATIONS} \
+        | {spacing_flag_key(k) for k in STYLE_AUTOMATIONS} \
+        | set(STYLE_CONSISTENCY_KEYS) \
         | {"strip_emojis", FACTGROUND_KEY, PAINFUL_TEXTING_KEY, CAT_STICKERS_KEY}
     out: dict[str, Any] = {k: bool(v) for k, v in cfg.items() if k in known}
     # Numeric knobs keep their number — bool() would turn "skip 30%" into True.
