@@ -649,6 +649,49 @@ class _Cand:
                                                  # backoff counts its silence from
 
 
+# An untagged outbound sent verbatim to at least this many DIFFERENT fans is a
+# broadcast, not somebody talking to one man. Five is deliberately low: a person
+# writing to one fan does not send the same sentence to five, and the cost of
+# being wrong is only that the engine keeps chatting.
+_BROADCAST_MIN_FANS = 5
+
+
+def _broadcast_bodies(rows) -> frozenset[str]:
+    """Untagged outbound bodies this account sent to MANY fans — OF's own
+    auto-welcome, and mass blasts fired from the OF app.
+
+    We infer the sender below from a missing tag: no `automation_kind` ⇒ a human
+    ⇒ `resume_after_manual_hours` stands the engine down on that fan. That is
+    wrong for anything OF sends on the creator's behalf, and the native welcome
+    (`replyOnSubscribe`) is the worst case — OF delivers it one-by-one, but it is
+    ALWAYS the same text, so EVERY new subscriber arrived pre-muted for an hour
+    and nobody answered his first message. The hottest moment he will ever have,
+    spent on hold. Measured 07-26: 4,054 broadcast messages since April against
+    2,380 genuine 1:1 human sends, and one account had 126 new subs welcomed by
+    the same stored OF line since 16 April.
+
+    A blast is the same case by the user's call: after she mass-messages 99 men
+    from the OF app the engine keeps chatting, rather than going silent on all 99.
+
+    Matched on BODY, not OF's `queueId` (which would be exact — the welcome is one
+    reused queue entry). `_gather` deliberately never loads `raw_json`: it is 64KB
+    a row and this is a whole-account scan. Body is already in hand, so this costs
+    one pass over rows we have and needs no schema change.
+
+    Empty bodies are skipped — a sticker send carries no text, and grouping them
+    would fold every gif on the account into one 'broadcast'."""
+    fans_per_body: dict[str, set[int]] = {}
+    for row in rows:
+        fan_id, direction, body, _created, automation_kind, mass_run_id = row[:6]
+        if direction != "out" or automation_kind is not None or mass_run_id is not None:
+            continue
+        if not (body or "").strip():
+            continue
+        fans_per_body.setdefault(body, set()).add(int(fan_id))
+    return frozenset(b for b, fans in fans_per_body.items()
+                     if len(fans) >= _BROADCAST_MIN_FANS)
+
+
 async def _gather(account_id: str,
                   fan_ids: set[int] | None = None,
                   *, session_gap_min: int = 0,
@@ -728,6 +771,7 @@ async def _gather(account_id: str,
             .order_by(Message.fan_id, Message.created_at, Message.message_id)
         )).all()
     bad_ts: list[int] = []   # fans that own a row with an unreadable created_at
+    broadcast_bodies = _broadcast_bodies(rows)
     for (fan_id, direction, body, created_at_raw, automation_kind, mass_run_id,
          image_desc, media_count) in rows:
         created_at = parse_ts(created_at_raw)
@@ -760,7 +804,8 @@ async def _gather(account_id: str,
         else:
             c.last_out_at = created_at
             hers = mass_run_id is None and automation_kind in _OUR_KINDS
-            if automation_kind is None and mass_run_id is None:
+            if (automation_kind is None and mass_run_id is None
+                    and body not in broadcast_bodies):
                 c.last_human_out_at = created_at
             if hers and created_at is not None:
                 # Another bubble of the reply we already counted, or a new reply?
