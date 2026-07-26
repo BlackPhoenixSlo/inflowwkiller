@@ -4206,6 +4206,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     ppv_drops = 0           # §3.6: inline setup→attach pacing holds
     paid_state_refreshed = 0  # PPVs the fan had unlocked that our is_paid still called unpaid
     errors = 0
+    # A reply we chose not to send is NOT an error, and folding the two together
+    # cost hours: `errors` climbing on a healthy account read as flakiness, when
+    # every one of them was this deliberate drop. Separate counter, separate name.
+    dropped_empty = 0       # nothing sendable survived the filters
+    offers_deferred = 0     # sticker-only reply ⇒ the attach waits for the next turn
     cap_hit = False
 
     for c in candidates:
@@ -5110,13 +5115,35 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 parts = parts[:1]
             if not parts:
                 # A sticker-only reply (empty text + a tag) is a legit pure
-                # reaction — but never when an offer/teaser needs pitch text to
-                # ride on, and never as the brush-off to a bot accusation.
-                if (sticker_tag is None or offer_item is not None
-                        or teaser is not None or bot_accused_turn):
-                    errors += 1
-                    log.debug("ai_chatter dropped echo-only reply account=%s fan=%s",
-                              account_id, fan_id)
+                # reaction — real girls answer "lol" with a gif, and ~150 of these
+                # land a day. Two things can make one unusable, and they need
+                # OPPOSITE handling.
+                #
+                # An offer or teaser riding this turn is NOT a reason to bin the
+                # reply. The attach rides the last text bubble, so with no text a
+                # priced PPV would go out captionless — but the fix is to defer the
+                # ATTACH, not the message. Dropping it was a trap: the sticker roll
+                # is seeded on (fan, his last message), so an unchanged inbound rolls
+                # the same "solo" next tick, and the tick after, for ever. Only a
+                # LANDED message flips a fan off the candidate list (`c.last_dir`),
+                # so nothing downstream could break the cycle — one live fan sat 8h
+                # on a single "Lol", burning a generation every 90s and never
+                # getting an answer. Sending the gif ends it, and it arms the
+                # per-fan sticker gap, so the next turn comes back as text and
+                # carries the offer.
+                #
+                # A bot accusation still needs words. A cat gif answering "are you a
+                # bot" reads as exactly the dodge he just accused her of.
+                if sticker_tag is not None and not bot_accused_turn:
+                    if offer_item is not None or teaser is not None:
+                        offers_deferred += 1
+                    offer_item = None
+                    teaser = None
+                else:
+                    dropped_empty += 1
+                    log.info("ai_chatter dropped empty reply account=%s fan=%s "
+                             "sticker=%s bot_accused=%s",
+                             account_id, fan_id, sticker_tag, bot_accused_turn)
                     continue
             # Anti-hallucination floor: price talk with NO validated offer
             # behind it never reaches a fan on a selling account. Strip those
@@ -5479,7 +5506,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                  "tag=%s gif=%s solo=%s", account_id, fan_id,
                                  sticker_tag, gid, not parts)
             if not parts and not sticker_sent:
-                errors += 1     # sticker-only reply and the gif never landed
+                # The gif WAS the reply and it never landed — a real failure, not a
+                # policy drop. It used to count itself and say nothing, which made an
+                # unsent reply indistinguishable in the log from one that went out.
+                errors += 1
+                log.warning("ai_chatter sticker-only reply never landed account=%s "
+                            "fan=%s tag=%s", account_id, fan_id, sticker_tag)
                 continue
             await _mark_reply_sent(account_id, fan_id, now)
             # §3.4 — record the REALIZED inbound→send latency + bubble count at the SEND
@@ -5688,6 +5720,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "spend_capped": spend_capped,
         "ppv_drops": ppv_drops,
         "errors": errors,
+        "dropped_empty": dropped_empty,
+        "offers_deferred": offers_deferred,
         "cap_hit": cap_hit,
         "dry_run": dry_run,
         "model": model,
