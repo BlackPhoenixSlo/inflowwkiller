@@ -3563,15 +3563,13 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
             facts.append(f"{label}: {str(val).strip()[:80]}")
     # gen_info's rich profile — the bio + bullet notes a human chatter reads before
     # replying. This is what makes a bubble land as "she remembers me", not generic.
-    teases: list[str] = []
     if profile is not None:
         if nonempty(profile.short_bio):
             facts.append(f"about him: {str(profile.short_bio).strip()[:400]}")
         if nonempty(profile.bullet_points):
             bp = str(profile.bullet_points).strip().replace("\n", "; ")[:600]
             facts.append(f"notes on him: {bp}")
-        teases = [str(t).strip()[:140]
-                  for t in (profile.tease1, profile.tease2, profile.tease3) if nonempty(t)]
+        # NO tease menu here — see the `personal_lines` note below.
     # Spend/tip history (computed async at the call site) — proven-spender context
     # shared by the chatter and the seller. Empty for a non-spender → prompt
     # stays byte-equal.
@@ -3581,18 +3579,22 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                    if facts else "- (nothing on file yet)")
     # A concrete nudge to WEAVE IN a specific detail — the difference between a bubble
     # that reads as a form letter and one that reads as her, mid-conversation. Only
-    # added when there's something to reference (a bio/notes fact, a tease, or a
-    # recent thing he said), so a profile-less fan's prompt is unchanged.
+    # added when there's something to reference, so a profile-less fan's prompt is
+    # unchanged.
+    #
+    # This used to also carry "you may riff on one of these lines the team wrote for
+    # him: <every unused tease>". That was a SECOND delivery channel for the same
+    # pool `_openers` meters — offered as a menu, unrationed, and above all never
+    # recorded, so a line the model lifted from it could be handed back days later as
+    # a deliberate opener. Teases now reach the model only through `need_block`,
+    # which is paced, framed as a reply rather than an opener, and marked used on a
+    # confirmed send. One channel, or the used-set is a suggestion.
     personal_lines: list[str] = []
     if profile is not None and (nonempty(profile.short_bio) or nonempty(profile.bullet_points)):
         personal_lines.append(
             "Work in ONE specific, natural detail from what you know about him above "
             "(his job, a hobby, something going on in his life) — like you actually "
             "remember him. Don't recite a list; drop one nugget the way a girlfriend would.")
-    if teases:
-        personal_lines.append(
-            "You may riff on one of these lines the team wrote for him — reword it in "
-            "your own voice, don't paste it verbatim: " + " | ".join(teases))
     personal_block = ("\n" + "\n".join(personal_lines)) if personal_lines else ""
 
     history = c.messages[-history_tail:]
@@ -4032,6 +4034,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # HER local time even when human-rhythm pacing is off. None ⇒ no clock line.
     clock_tz = rhythm.tz_offset_for(getattr(cfg_row, "timezone", None),
                                     getattr(cfg_row, "utc_offset", None))
+    # HER calendar day, for the opener ration (_openers.DAILY_CAP). Same offset the
+    # prompt clock uses; an account with no timezone yields "" and the ration does
+    # not apply, which is the pre-ration behaviour rather than a guessed boundary.
+    opener_day = _openers.local_day(clock_tz)
     sleep_win = (await _sleep_window(account_id, tz_off, cfg.get("sleep_window"))
                  if rhythm_on else rhythm.DEFAULT_SLEEP)
     media_asks: dict[int, list[int]] = {}
@@ -4932,7 +4938,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     his_words=c.last_in_text)
             # The deepen phase: once there is nothing left to ask, work in a gen_info
             # opener instead of generic banter. ai_chatter has no graduation cutoff,
-            # so a dry pool is restocked (below) rather than ending the conversation.
+            # so None just means banter — never silence, and never a handoff.
+            # No refill is triggered from here: `_maybe_refresh_profile` already runs
+            # after every reply below, so a spent pool restocks on the ordinary path.
             opener = None
             # Gated AND rationed. `_questions_still_needed` only says the bio gaps
             # are filled; it does not say THIS turn wants a question. Without the
@@ -4940,12 +4948,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if not _questions_still_needed(f, asked) and _openers.should_offer(
                     enabled=openers_on, rate=openers_rate,
                     seed=f"opener:{account_id}:{fan_id}:{c.last_body}"):
-                opener = _openers.next_for(f, profiles.get(fan_id))
-                if opener is None:
-                    # Pool spent — ask gen_info for a fresh batch. The reply still
-                    # goes out THIS turn on plain banter: a fan is never held silent
-                    # waiting for a profile regen.
-                    await _maybe_refresh_profile(account_id, fan_id, c.fan_msg_n, now)
+                opener = _openers.next_for(f, profiles.get(fan_id),
+                                           today=opener_day)
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
                                               opener=opener,
                                               sticker_mode=sticker_mode,
@@ -5661,8 +5665,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _mark_question_asked(account_id, fan_id, target, asked)
             if opener is not None and parts:
                 await _openers.record_used(account_id, fan_id, f,
-                                           profiles.get(fan_id), opener.slot)
-            await _maybe_refresh_profile(account_id, fan_id, c.fan_msg_n, now)
+                                           profiles.get(fan_id), opener.slot,
+                                           today=opener_day)
+            await _maybe_refresh_profile(account_id, fan_id, c.fan_msg_n, now, f)
             # Item 22 — profile-less fan below gen_info's staleness gate: force one
             # regen so his notes get built now instead of never.
             await _maybe_bootstrap_profile(account_id, fan_id)

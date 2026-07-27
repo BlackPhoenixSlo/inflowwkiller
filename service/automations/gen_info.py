@@ -320,7 +320,8 @@ def profile_is_stale(prev_count: int | None, last_gen_at: datetime | None,
                      now_count: int, now: datetime,
                      lines_empty: bool = False, *,
                      fresh_after: timedelta = _CADENCE_MIDDLE[0],
-                     volume_cap: int = _CADENCE_MIDDLE[1]) -> bool:
+                     volume_cap: int = _CADENCE_MIDDLE[1],
+                     class_spent: bool = False) -> bool:
     """Should this fan's profile be regenerated? Shared with of_ai_chat's
     refresh-if-stale hook. `fresh_after`/`volume_cap` come from _tier_knobs (the
     caller classifies the fan's spend tier); they default to the MIDDLE tier.
@@ -334,7 +335,19 @@ def profile_is_stale(prev_count: int | None, last_gen_at: datetime | None,
     `lines_empty` is the one EXEMPTION from the gate: when a whole Q- or Tease-class
     has been consumed (all three slots null) AND there's any new inbound message,
     refill the openers now — of_ai_chat needs openers to talk, so that functional
-    refill isn't held to the >= _MIN_NEW_MSGS freshness gate."""
+    refill isn't held to the >= _MIN_NEW_MSGS freshness gate.
+
+    `class_spent` (from `_openers.class_spent`) is the NON-destructive twin of that
+    signal: the lines are still on the row, but every one in a class has been
+    delivered. Deliberately NOT an exemption — it is checked AFTER the gate, so a fan
+    who has burnt his questions still waits for real new chat before we re-mine him.
+    Two reasons. Re-mining the same transcript hands back the same lines, and since a
+    regen re-arms the used-set, the fan would simply be re-sent openers he has already
+    had — the repeat this whole mechanism exists to stop. And keeping it behind the
+    gate makes the trigger self-limiting: firing moves the message baseline, so it
+    cannot fire again until another _MIN_NEW_MSGS arrive. `lines_empty` can afford to
+    skip the gate because a null class means the bot has nothing to say; a spent class
+    still has banter."""
     nc = int(now_count)
     prev = int(prev_count) if prev_count is not None else 0
     new_msgs = nc - prev
@@ -343,6 +356,8 @@ def profile_is_stale(prev_count: int | None, last_gen_at: datetime | None,
     if new_msgs < _MIN_NEW_MSGS:           # the gate — too little new chat to bother
         return False
     if prev_count is None:                 # never profiled, now past the gate
+        return True
+    if class_spent:                        # openers all delivered — mine fresh ones
         return True
     if new_msgs >= volume_cap:             # volume: every `volume_cap` new messages
         return True

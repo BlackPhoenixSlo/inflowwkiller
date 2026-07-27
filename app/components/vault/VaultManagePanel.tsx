@@ -30,23 +30,25 @@ import {
   addToOfFolder,
   createOfFolder,
   deleteOfFolder,
+  describeAllBody,
   describeMedia,
   useOfFoldersMirror,
   fetchCollectStatus,
-  fetchDescribeAllStatus,
-  fetchHarvestStatus,
   renameOfFolder,
   reorderItems,
   searchOf,
   sortOfFolders,
   startCollect,
-  startDescribeAll,
   useDescribePlan,
-  startHarvestKeywords,
   useMirrorItems,
   useVaultCacheSummary,
   mirrorFullSrc,
 } from "@/hooks/useVaultCache";
+import {
+  describeSweepText,
+  harvestSweepLabel,
+  useVaultSweep,
+} from "@/hooks/useVaultSweep";
 import { proxyImage, relay, type VaultList, type VaultMedia } from "@/lib/relay";
 import ImageLightbox from "@/components/vault/ImageLightbox";
 
@@ -128,8 +130,6 @@ export default function VaultManagePanel() {
   const [needsReview, setNeedsReview] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState<string>("");
-  const [describeAll, setDescribeAll] = useState<string>("");
-  const [harvest, setHarvest] = useState<string>("");
   const [promptVersion, setPromptVersion] = useState<"v1" | "v2">("v2");
   const drawerRef = useRef<HTMLElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -191,9 +191,42 @@ export default function VaultManagePanel() {
 
   const summary = useVaultCacheSummary(accountId);
   const plan = useDescribePlan(accountId, promptVersion);
+  // Both sweeps are the same object — see `useVaultSweep`. Polling, the start
+  // call, the running→idle edge and the mid-sweep grid refresh all live there,
+  // so this stays about what the buttons say.
+  const describeSweep = useVaultSweep({
+    kind: "describe-all",
+    accountId,
+    liveKeys: [["vault-mirror-items", accountId]],
+    settleKeys: [
+      ["vault-describe-plan", accountId],
+      ["vault-flags-review"],
+      ["vault-flags-accuracy"],
+      ["vault-ai-folder-plan"],
+    ],
+    // Offer the manual pass rather than relying on anyone remembering it
+    // exists. Describing writes what the model BELIEVES; every wrong answer
+    // this system has had was invisible to every automatic check and obvious
+    // to a human in seconds, so the end of a sweep is exactly when to ask.
+    onSettled: (s) => {
+      const n = s.progress?.needs_review ?? 0;
+      if (n > 0) setNeedsReview(n);
+    },
+  });
+  const harvestSweep = useVaultSweep({
+    kind: "harvest-keywords",
+    accountId,
+    liveKeys: [["vault-mirror-items", accountId]],
+  });
   const cachedCount = summary.data?.count ?? 0;
   const isCollecting = !!summary.data?.running;
   const run = summary.data?.last_run;
+  // The plan's counts come from the DB, so they stand in when the relay's
+  // in-memory counter isn't there — mid-startup, or after a restart took it out.
+  const describeText = describeSweepText(describeSweep.progress, {
+    done: Math.max(0, (plan.data?.total ?? 0) - (plan.data?.undescribed ?? 0)),
+    total: plan.data?.total ?? 0,
+  });
 
   // includeEmpty: the manage rail shows ALL custom folders (even empty ones) so
   // you can add media to / rename / delete them — unlike the picker which hides
@@ -332,7 +365,7 @@ export default function VaultManagePanel() {
   }
 
   async function onDescribeAll(mode: "new" | "restage" | "force" = "new") {
-    if (!accountId || describeAll) return;
+    if (!accountId || describeSweep.busy) return;
     if (mode !== "new") {
       const n = mode === "force" ? (plan.data?.total ?? 0) : (plan.data?.restage ?? 0);
       const est = ((promptVersion === "v2" ? 0.045 : 0.011) * n) / 100;
@@ -345,59 +378,11 @@ export default function VaultManagePanel() {
         return;
       }
     }
-    setDescribeAll("starting");
-    try {
-      await startDescribeAll(accountId, {
-        force: mode === "force",
-        restage: mode === "restage",
-        promptVersion,
-      });
-    } catch {
-      setDescribeAll("");
-      return;
-    }
-    for (let i = 0; i < 400; i++) {
-      await new Promise((r) => setTimeout(r, 2500));
-      const st = await fetchDescribeAllStatus(accountId).catch(() => null);
-      const p = st?.progress;
-      if (p) setDescribeAll(`${p.done}/${p.total}${p.capped ? " (cap hit)" : ""}`);
-      if (st && !st.running) break;
-      if (i % 4 === 0) qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
-    }
-    setDescribeAll("");
-    qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
-    qc.invalidateQueries({ queryKey: ["vault-describe-plan", accountId] });
-    for (const k of ["vault-flags-review", "vault-flags-accuracy", "vault-ai-folder-plan"]) {
-      qc.invalidateQueries({ queryKey: [k] });
-    }
-    // Offer the manual pass rather than relying on anyone remembering it
-    // exists. Describing writes what the model BELIEVES; every wrong answer
-    // this system has had was invisible to every automatic check and obvious
-    // to a human in seconds, so the end of a sweep is exactly when to ask.
-    const fin = await fetchDescribeAllStatus(accountId).catch(() => null);
-    const n = fin?.progress?.needs_review ?? 0;
-    if (n > 0) setNeedsReview(n);
-  }
-
-  async function onHarvest() {
-    if (!accountId || harvest) return;
-    setHarvest("starting");
-    try {
-      await startHarvestKeywords(accountId);
-    } catch {
-      setHarvest("");
-      return;
-    }
-    for (let i = 0; i < 200; i++) {
-      await new Promise((r) => setTimeout(r, 2000));
-      const st = await fetchHarvestStatus(accountId).catch(() => null);
-      const p = st?.progress;
-      if (p) setHarvest(`${p.done}/${p.total} · ${p.matches} hits`);
-      if (st && !st.running) break;
-      if (i % 5 === 0) qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
-    }
-    setHarvest("");
-    qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
+    await describeSweep.start(describeAllBody({
+      force: mode === "force",
+      restage: mode === "restage",
+      promptVersion,
+    }));
   }
 
   function toggleSel(m: VaultMedia) {
@@ -586,12 +571,16 @@ export default function VaultManagePanel() {
             <button
               type="button"
               onClick={() => onDescribeAll("new")}
-              disabled={!!describeAll || cachedCount === 0}
+              disabled={describeSweep.busy || cachedCount === 0}
               className="px-3 py-1.5 rounded-lg text-sm border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
-              title="Describe every un-described item (background)"
+              title={
+                describeSweep.busy
+                  ? describeText.title
+                  : "Describe every un-described item (background)"
+              }
             >
-              {describeAll
-                ? `Describing ${describeAll}`
+              {describeSweep.busy
+                ? `Describing ${describeText.label}`
                 : `Describe all${plan.data?.undescribed ? ` (${plan.data.undescribed})` : ""}`}
             </button>
             {/* Which bake-off prompt the sweep runs. B is the default and the only
@@ -600,14 +589,14 @@ export default function VaultManagePanel() {
             <select
               value={promptVersion}
               onChange={(e) => setPromptVersion(e.target.value as "v1" | "v2")}
-              disabled={!!describeAll}
+              disabled={describeSweep.busy}
               title="Describe prompt variant"
               className="px-2 py-1.5 rounded-lg text-sm bg-bg-elev-1 border border-border text-fg-dim"
             >
               <option value="v2">B · rich</option>
               <option value="v1">A · fast</option>
             </select>
-            {!!plan.data?.restage && !describeAll && (
+            {!!plan.data?.restage && !describeSweep.busy && (
               <button
                 type="button"
                 onClick={() => onDescribeAll("restage")}
@@ -620,12 +609,14 @@ export default function VaultManagePanel() {
             )}
             <button
               type="button"
-              onClick={onHarvest}
-              disabled={!!harvest || cachedCount === 0}
+              onClick={() => harvestSweep.start()}
+              disabled={harvestSweep.busy || cachedCount === 0}
               className="px-3 py-1.5 rounded-lg text-sm border border-sky-500/50 bg-sky-500/10 text-sky-400 hover:bg-sky-500/20 disabled:opacity-50"
               title="Run OF's own search across ~50 selling keywords and fold into local search"
             >
-              {harvest ? `Harvesting ${harvest}` : "Harvest OF (50)"}
+              {harvestSweep.busy
+                ? `Harvesting ${harvestSweepLabel(harvestSweep.progress)}`
+                : "Harvest OF (50)"}
             </button>
             <button
               type="button"
