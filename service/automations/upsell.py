@@ -476,9 +476,19 @@ def next_price(*, fan: FanState, band: tuple[int, int], last_paid_cents: int | N
         (int(hi_b), "library"),
         (OF_PRICE_MAX_CENTS, "of_max"),     # HARD invariant — the $200 wire max, always
     ]
+    # These two are COMPLEMENTARY and must be gated on the SAME fact, or there is a
+    # fan for whom neither fires. `has_ever_paid` is true for a man who only ever
+    # TIPPED (its caller derives it from the fan's cumulative-payment field), but the
+    # history cap needs a proven SINGLE payment — so a man who tipped $5 and never
+    # unlocked a PPV had max_single_paid_cents=0 (no history cap) AND has_ever_paid
+    # True (no cold ceiling), falling through both and leaving only the band.
+    # That was invisible while the band was the $3-$20 constant and capped him at $30;
+    # sourcing the band from the item's sticker opened it to the full $200 catalog.
+    # Measured 2026-07-27: 160 prod fans have tipped (avg $31, up to $200) and never
+    # bought a PPV. Gate both on max_single_paid_cents so exactly one always applies.
     if fan.max_single_paid_cents:
         caps.append((int(fan.max_single_paid_cents * hist_mult), "history"))
-    if last_paid_cents is None and not fan.has_ever_paid:
+    if last_paid_cents is None and not fan.max_single_paid_cents:
         caps.append((COLD_OPEN_CEILING_CENTS, "cold_ceiling"))
     # His stated cap ("keep it at 30") is a CEILING only, never a floor. Applied at 1.6x
     # (next ask ≤1.6x cap still converts at 52%). It may LOWER the ask / bias selection
