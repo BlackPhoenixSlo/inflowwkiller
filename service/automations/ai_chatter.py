@@ -91,6 +91,7 @@ from ._persona import fan_claims_block, persona_register_age
 from ._outbound import ConsistencyCtx, finalize_draft
 from . import _language
 from . import _openers  # the gen_info opener pool (the deepen phase)
+from . import _pins  # his own pinned long-form message (reader + writer)
 # ppv_send owns the ONE price authority (`price_bounds`); ownership.py owns
 # the ONE ownership check (`owners_of_media`, keyed on MEDIA — a fan who
 # bought a clip in a mass blast has no content_offers row at all). Importing
@@ -3868,9 +3869,12 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # produced the contradictions all live in this engine, not of_ai_chat's
     # (_MAX_TURNS=30 / _MAX_FAN_MESSAGES=10 / $1 spend gate).
     claims_block = fan_claims_block(f)
+    # His own long-form message, pinned on the thread and read back here (_pins) —
+    # same placement and reasoning as of_ai_chat's.
     user = (
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
         f"{claims_block}"
+        f"{_pins.pins_block(f)}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Reply to his last message now, in the STYLE FOR THIS MESSAGE above."
     )
@@ -3970,6 +3974,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # answers most of the messages kept sending them.
     strip_emoji_on = await load_strip_emojis(account_id)
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
+    pins_on, pins_write = await _pins.load_flags(account_id)  # both default OFF
     stickers_on = await load_cat_stickers_flag(account_id)    # cat reaction gifs (default ON)
     sticker_skip_w, sticker_solo_w, sticker_gap_min = \
         await load_cat_sticker_tuning(account_id)             # per-account rate knobs
@@ -5671,6 +5676,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Item 22 — profile-less fan below gen_info's staleness gate: force one
             # regen so his notes get built now instead of never.
             await _maybe_bootstrap_profile(account_id, fan_id)
+            # Should his last message be pinned for later re-reading? Nearly always
+            # no, and the "no" costs one length check — see _pins' cost ladder.
+            await _pins.consider(account_id, f, c.last_body, client, lang=fan_lang,
+                                 enabled=pins_on, write=pins_write)
             sent += 1
             # Beat 2 of the bot-accusation dare actually reached him — burn it, so a
             # long thread never re-dares. Stamped on CONFIRMED send, not on the

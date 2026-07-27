@@ -30,6 +30,7 @@ from automations._common import (
     STYLE_AUTOMATIONS, STYLE_CONSISTENCY_KEYS, typo_flag_key, nonnative_flag_key, spacing_flag_key,
     FACTGROUND_KEY, PAINFUL_TEXTING_KEY, CAT_STICKERS_KEY, CAT_STICKER_SKIP_PCT_KEY,
     CAT_STICKER_SOLO_PCT_KEY, CAT_STICKER_GAP_MIN_KEY)
+from automations._pins import PINS_ENABLED_KEY, PINS_WRITE_KEY
 
 # NUMERIC knobs (not checkboxes): key → (default, max). Persisted as numbers —
 # the bool coercion in _persist must never touch these.
@@ -137,7 +138,8 @@ def _persist(cfg: dict) -> dict[str, Any]:
         | {nonnative_flag_key(k) for k in STYLE_AUTOMATIONS} \
         | {spacing_flag_key(k) for k in STYLE_AUTOMATIONS} \
         | set(STYLE_CONSISTENCY_KEYS) \
-        | {"strip_emojis", FACTGROUND_KEY, PAINFUL_TEXTING_KEY, CAT_STICKERS_KEY}
+        | {"strip_emojis", FACTGROUND_KEY, PAINFUL_TEXTING_KEY, CAT_STICKERS_KEY,
+           PINS_ENABLED_KEY, PINS_WRITE_KEY}
     out: dict[str, Any] = {k: bool(v) for k, v in cfg.items() if k in known}
     # Numeric knobs keep their number — bool() would turn "skip 30%" into True.
     out.update({k: _clamp_num(k, cfg[k]) for k in _NUMERIC_KNOBS if k in cfg})

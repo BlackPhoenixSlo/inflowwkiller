@@ -46,6 +46,7 @@ import automation_executor as ax
 import llm_client
 from ._persona import compose_persona
 from . import _language
+from . import _pins  # his own pinned long-form message (reader only)
 from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
@@ -225,8 +226,10 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
         f"{_language.output_language_directive(lang)}"
     )
+    # His own long-form message, pinned on the thread and read back here (_pins).
     user = (
         f"What you know about him:\n{facts_block}\n\n"
+        f"{_pins.pins_block(f)}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Reply to his last message now, in THIS MESSAGE's style."
     )
