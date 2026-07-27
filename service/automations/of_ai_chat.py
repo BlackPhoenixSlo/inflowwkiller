@@ -891,33 +891,31 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         if nonempty(val):
             facts.append(f"{label}: {str(val).strip()[:80]}")
     # Fact-grounding layer (load_factground_flag; default ON). gen_info's rich profile —
-    # the bio + bullet notes + team-written teases a human chatter reads before replying —
-    # ported verbatim from ai_chatter. `profile is None` (flag off, or no profile on file)
-    # leaves the facts block byte-identical to before, so a profile-less fan is unchanged.
-    teases: list[str] = []
+    # the bio + bullet notes a human chatter reads before replying — ported verbatim
+    # from ai_chatter. `profile is None` (flag off, or no profile on file) leaves the
+    # facts block byte-identical to before, so a profile-less fan is unchanged.
     if profile is not None:
         if nonempty(profile.short_bio):
             facts.append(f"about him: {str(profile.short_bio).strip()[:400]}")
         if nonempty(profile.bullet_points):
             bp = str(profile.bullet_points).strip().replace("\n", "; ")[:600]
             facts.append(f"notes on him: {bp}")
-        teases = [str(t).strip()[:140]
-                  for t in (profile.tease1, profile.tease2, profile.tease3) if nonempty(t)]
+        # NO tease menu here — see the `personal_lines` note below.
     facts_block = ("\n".join(f"- {x}" for x in facts)
                    if facts else "- (nothing on file yet)")
     # A concrete nudge to WEAVE IN one specific detail — the difference between a bubble
     # that reads as a form letter and one that reads as her, mid-conversation. Only added
     # when there's something to reference, so a profile-less fan's prompt is unchanged.
+    #
+    # The "you may riff on one of these lines" tease menu that used to sit here is gone
+    # — the twin of ai_chatter's removal. It was a second, unmetered delivery channel
+    # for the pool `_openers` paces; teases now arrive only via `need_block`.
     personal_lines: list[str] = []
     if profile is not None and (nonempty(profile.short_bio) or nonempty(profile.bullet_points)):
         personal_lines.append(
             "Work in ONE specific, natural detail from what you know about him above "
             "(his job, a hobby, something going on in his life) — like you actually "
             "remember him. Don't recite a list; drop one nugget the way a girlfriend would.")
-    if teases:
-        personal_lines.append(
-            "You may riff on one of these lines the team wrote for him — reword it in "
-            "your own voice, don't paste it verbatim: " + " | ".join(teases))
     personal_block = ("\n" + "\n".join(personal_lines)) if personal_lines else ""
 
     history = c.messages[-history_tail:]
@@ -1417,17 +1415,25 @@ async def _mark_reply_sent(account_id: str, fan_id: int, now: datetime) -> None:
 
 
 async def _maybe_refresh_profile(account_id: str, fan_id: int, fan_msg_n: int,
-                                 now: datetime) -> bool:
+                                 now: datetime, fan: "Fan | None" = None) -> bool:
     """Refresh-if-stale hook: after an AI-chat reply lands, regenerate the fan's
     profile from the latest messages IF the spend-tiered age/volume gate says it's
     due (`gen_info.profile_is_stale`). Enqueues a GATED gen_info job (refill_ids=[fan],
     re-checked at run time) so the regen runs ASYNC on the supervisor — the chat reply
     is never blocked or slowed. Guarded against runaway re-enqueues by a pending-job
     check + the min-interval floor inside profile_is_stale. Best-effort: any failure
-    here is logged and swallowed (never breaks the reply). Returns True iff enqueued."""
+    here is logged and swallowed (never breaks the reply). Returns True iff enqueued.
+
+    `fan` defaults to None so a caller without the row still gets the age/volume
+    cadence, but both real callers pass it: without it `class_spent` cannot be read
+    and the spent-openers refill silently never fires."""
     try:
         async with get_session() as s:
-            row = (await s.execute(
+            # Named columns, not the whole entity: this runs after EVERY reply, and
+            # `select(FanProfile)` would drag short_bio / bullet_points / applied_notes
+            # along for nothing. The Row keys are the column names, so it duck-types
+            # as a profile for `_openers` — narrow AND readable.
+            prof = (await s.execute(
                 select(FanProfile.message_count_at_gen, FanProfile.last_generated_at,
                        FanProfile.q1, FanProfile.q2, FanProfile.q3,
                        FanProfile.tease1, FanProfile.tease2, FanProfile.tease3)
@@ -1437,18 +1443,27 @@ async def _maybe_refresh_profile(account_id: str, fan_id: int, fan_msg_n: int,
             # Spend-tier the cadence (same session): paying fans refresh faster.
             fresh_after, volume_cap = await gen_info.fan_cadence_knobs(
                 s, account_id, fan_id, now)
-        prev_count = int(row[0]) if row else None
-        last_gen_at = row[1] if row else None
-        # Refill openers too when a whole Q/Tease class has been consumed (all null)
-        # — the empty-lines gate inside profile_is_stale still requires new messages.
-        lines_empty = False
-        if row:
-            q_empty = not any((v or "").strip() for v in (row[2], row[3], row[4]))
-            tease_empty = not any((v or "").strip() for v in (row[5], row[6], row[7]))
-            lines_empty = q_empty or tease_empty
+        prev_count = int(prof.message_count_at_gen) if prof is not None else None
+        last_gen_at = prof.last_generated_at if prof is not None else None
+        # Two "he needs new openers" signals, and they are exact complements — both
+        # read through `_openers.stocked` so they can never both be true of one class,
+        # which is what keeps `class_spent` a one-shot (see its docstring):
+        #   lines_empty  — the class has NO lines. gen_info wrote nothing, so the bot
+        #                  has nothing to say. Skips the new-message gate.
+        #   class_spent  — the lines are all there and all DELIVERED (the used-set).
+        #                  Held behind the gate: re-mining the same transcript returns
+        #                  the same lines, and a regen re-arms the used-set, so he'd
+        #                  just be re-sent openers he has already had.
+        # `prof is not None` first, and not decoration: no profile row at all is a
+        # never-profiled fan, NOT a fan whose lines ran out. Without the guard every
+        # class reads empty, which skips the new-message gate and forces a regen on
+        # his very first message — cold start is `_maybe_bootstrap_profile`'s job.
+        lines_empty = prof is not None and any(
+            not _openers.stocked(prof, cls) for cls in _openers.CLASSES)
         if not gen_info.profile_is_stale(prev_count, last_gen_at, fan_msg_n, now,
                                          lines_empty=lines_empty,
-                                         fresh_after=fresh_after, volume_cap=volume_cap):
+                                         fresh_after=fresh_after, volume_cap=volume_cap,
+                                         class_spent=_openers.class_spent(fan, prof)):
             return False
         # Dedup: don't stack a second regen when one is already queued for this fan.
         # The runaway (one fan drew 23 regens in 3h) was per-reply enqueues piling up
@@ -1736,6 +1751,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # one_pass: the starter lane finishes with a fan after one question
                 # and one tease. It cannot wait for a dry pool — gen_info restocks
                 # after every reply, so the pool never empties (see next_for).
+                # No `today=`: `one_pass` drops the ration anyway (see next_for), so
+                # a None here always means the lane is finished and never "come back
+                # tomorrow" — which matters, because None GRADUATES the fan below.
                 opener = _openers.next_for(f, profiles.get(fan_id), one_pass=True)
                 if opener is None:
                     await _graduate(client, account_id, fan_id, f)
@@ -1984,7 +2002,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _openers.record_used(account_id, fan_id, f,
                                            profiles.get(fan_id), opener.slot)
             # Keep stored info current: refresh the profile when the gate says stale.
-            await _maybe_refresh_profile(account_id, fan_id, c.fan_msg_n, now)
+            await _maybe_refresh_profile(account_id, fan_id, c.fan_msg_n, now, f)
             sent += 1
             # We just replied → clear the unread badge. A mark-read failure must
             # never break the (already-persisted) send.

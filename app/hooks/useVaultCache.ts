@@ -15,6 +15,7 @@
 
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
+import { useSweepStatus } from "@/hooks/useVaultSweep";
 import { relay, type VaultMedia } from "@/lib/relay";
 
 // Lazy-load in small chunks on scroll (not all at once — 244 images loading
@@ -135,31 +136,22 @@ export async function describeMedia(accountId: string, mediaId: number) {
  *  v1 = the original one-sentence prompt, ~4× cheaper, no structured fields. */
 export type PromptVersion = "v1" | "v2";
 
-export interface DescribeAllOpts {
+/** The start body for a describe pass. Posted by `useVaultSweep`, which owns
+ *  every sweep's start call — this is only the shape of what describe adds on
+ *  top of `account_id`. */
+export function describeAllBody(opts: {
   force?: boolean;
   /** Re-scan rows produced by a DIFFERENT prompt version (resumable). */
   restage?: boolean;
   promptVersion?: PromptVersion;
   model?: string;
-}
-
-export async function startDescribeAll(
-  accountId: string,
-  optsOrForce: DescribeAllOpts | boolean = false,
-) {
-  const o: DescribeAllOpts =
-    typeof optsOrForce === "boolean" ? { force: optsOrForce } : optsOrForce;
-  return relay.post(
-    `/admin/vault-ai/describe-all`,
-    {
-      account_id: accountId,
-      force: !!o.force,
-      restage: !!o.restage,
-      prompt_version: o.promptVersion ?? "v2",
-      ...(o.model ? { model: o.model } : {}),
-    },
-    { accountId },
-  );
+}): Record<string, unknown> {
+  return {
+    force: !!opts.force,
+    restage: !!opts.restage,
+    prompt_version: opts.promptVersion ?? "v2",
+    ...(opts.model ? { model: opts.model } : {}),
+  };
 }
 
 /** What each sweep mode would actually process — real counts for the UI. */
@@ -260,14 +252,17 @@ export async function runVaultFlags(accountId: string) {
 }
 
 /** Poll the sweep while it runs. `coverage` comes from the DB, so a relay
- *  restart mid-sweep shows where the vault really stands rather than zero. */
+ *  restart mid-sweep shows where the vault really stands rather than zero.
+ *
+ *  `pollWhileIdle` preserves this caller's own semantics: the folders modal arms
+ *  the watch on the click and needs the poll running BEFORE the server admits
+ *  the sweep exists, because it stops watching on the first landed answer that
+ *  says `running: false` (see VaultAiFoldersModal's `since`). Self-arming would
+ *  make that first answer arrive only after the sweep had already started. */
 export function useVaultFlagsStatus(accountId: string | null, enabled: boolean) {
-  return useQuery<VaultFlagsStatus>({
-    queryKey: ["vault-flags-status", accountId],
-    enabled: !!accountId && enabled,
-    refetchInterval: enabled ? 2500 : false,
-    queryFn: () =>
-      relay.get(`/admin/vault-ai/flags-all/status?account_id=${encodeURIComponent(accountId!)}`),
+  return useSweepStatus<VaultFlagsStatus>("flags-all", accountId, {
+    enabled,
+    pollWhileIdle: enabled,
   });
 }
 
@@ -455,32 +450,6 @@ export async function searchOf(
   query: string,
 ): Promise<{ ids: number[]; count: number; source: string }> {
   return relay.post(`/admin/vault-ai/search-of`, { account_id: accountId, query }, { accountId });
-}
-
-/** Harvest OF's search across the whole "what sells" keyword set (background). */
-export async function startHarvestKeywords(accountId: string) {
-  return relay.post(`/admin/vault-ai/harvest-keywords`, { account_id: accountId }, { accountId });
-}
-
-export async function fetchHarvestStatus(
-  accountId: string,
-): Promise<{ running: boolean; progress: { total: number; done: number; matches: number } | null }> {
-  return relay.get(`/admin/vault-ai/harvest-keywords/status?account_id=${encodeURIComponent(accountId)}`);
-}
-
-export async function fetchDescribeAllStatus(accountId: string): Promise<{
-  running: boolean;
-  progress: {
-    total: number;
-    done: number;
-    capped: boolean;
-    /** Set once the sweep finishes: how many of the freshly-described items
-     *  the system wants a human to look at. Describe now runs the flags pass
-     *  in the same breath, so this is available the moment it lands. */
-    needs_review?: number;
-  } | null;
-}> {
-  return relay.get(`/admin/vault-ai/describe-all/status?account_id=${encodeURIComponent(accountId)}`);
 }
 
 export async function reorderItems(

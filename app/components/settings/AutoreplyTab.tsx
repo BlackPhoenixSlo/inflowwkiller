@@ -96,10 +96,10 @@ function StyleSection({ accountId }: { accountId: string | null }) {
         <span className="space-y-0.5">
           <span className="block text-sm">Fact-grounding (Auto Convo)</span>
           <span className="block text-[11px] text-fg-dim/70">
-            Feeds the info-gather reply his full gen_info profile — bio, notes and the
-            team-written teases — plus a nudge to work in one specific detail, so a reply
-            lands as “she remembers me” instead of generic. On by default; a fan with no
-            profile yet is unaffected.
+            Feeds the info-gather reply his gen_info profile — bio and notes — plus a
+            nudge to work in one specific detail, so a reply lands as “she remembers me”
+            instead of generic. On by default; a fan with no profile yet is unaffected.
+            His saved teases are sent separately, one at a time, at most one a day.
           </span>
         </span>
       </label>

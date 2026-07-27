@@ -1240,11 +1240,14 @@ async def load_nonnative_flags(account_id: str) -> dict[str, bool]:
 
 # ── "Fact-grounding" personalization layer (Auto Convo / of_ai_chat) ──
 # When on, of_ai_chat's reply prompt is fed gen_info's rich profile — the short_bio +
-# bullet notes + the team-written teases — plus a "work in ONE specific detail" nudge,
-# the same personalization ai_chatter already carries. Makes a bubble land as "she
-# remembers me" instead of generic. DEFAULT ON: a fan with no profile on file yet is
-# unaffected (the block only appears when there's something to reference), so turning
-# it on can never blank or break a reply.
+# bullet notes — plus a "work in ONE specific detail" nudge, the same personalization
+# ai_chatter already carries. Makes a bubble land as "she remembers me" instead of
+# generic. DEFAULT ON: a fan with no profile on file yet is unaffected (the block only
+# appears when there's something to reference), so turning it on can never blank or
+# break a reply.
+# NOT the teases: those reach the model only through `_openers.need_block`, which
+# paces them and marks them used. This layer once carried them too, as a menu — see
+# ONE CHANNEL in _openers.py for why one metered door beats two unmetered ones.
 FACTGROUND_KEY = "factground_of_ai_chat"
 # Account-wide toggle key (style_config_json) for the PAINFUL_TEXTING framing block.
 PAINFUL_TEXTING_KEY = "painful_texting"
