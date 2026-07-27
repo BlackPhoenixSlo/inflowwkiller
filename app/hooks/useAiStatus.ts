@@ -14,6 +14,16 @@ import { relay } from "@/lib/relay";
 
 export type AiState = "active" | "paused" | "companion" | "blocked" | "off";
 
+/**
+ * The daily quota's verdict names, mirroring the `QUOTA_*` constants in
+ * service/automations/_leash.py. Widened with `string` at the use site: the engine may
+ * name a new outcome before the UI knows it, and an unlisted reason must fall back to
+ * the plain counter, never blank the chip.
+ */
+export type DailyReason =
+  | "held" | "runway" | "under_quota" | "unlimited"
+  | "signal_lift" | "spend_lift" | "backoff_served" | "no_ladder" | "off";
+
 export type AiStatus = {
   state: AiState;
   label: string;
@@ -38,6 +48,20 @@ export type AiStatus = {
     stopped?: boolean;
     resets_after_minutes?: number;
     last_message_at?: string | null;
+    /** Item 21c — the DAILY ceiling that sits above the burst cap. Absent while
+     *  cadence is off. Unlike the cap, a hold HAS a clock. */
+    daily?: {
+      /** The gate's own verdict name — dispatch on THIS, never re-derive the state
+       *  from the numbers. The exit order of `_quota_gate` is not the UI's to know. */
+      reason: DailyReason | string;
+      used: number;
+      quota: number | null; // null = no ceiling reaches him (runway, or a whale)
+      runway_left: number | null; // replies before the ceiling starts applying
+      held: boolean;
+      enforced: boolean; // false = shadow — recorded, but she still replied
+      backoff_hours: number | null; // how long she stays quiet once held
+      dry_days: number | null; // since his last money event (or first contact)
+    };
   };
   offer_caps_ok: boolean | null;
   /** A live ask or a fresh purchase → she cannot randomly wander off mid-sell. */

@@ -364,10 +364,16 @@ _DEFAULTS: dict = {
         {"days": 7,  "min_cents": 10000, "quota": 60},   # ≥ $100 in 7d → 60/day
         {"days": 7,  "min_cents": 50000, "quota": 0},    # ≥ $500 in 7d → uncapped
     ],
-    # Ship computing-and-logging but NOT enforcing, so one day of real traffic proves
-    # who would have been throttled before a single live reply is withheld. Flip to
-    # True to enforce.
-    "daily_quota_enforce": False,
+    # ENFORCING since 2026-07-27, after a 39h shadow run on live traffic (784 verdicts,
+    # 48 fans, 5 accounts). What the ledger showed: the 11 fans it flagged `held` took
+    # 1,400 of 2,443 chat rows — 57% of her output — and produced $13.99 of $137.69, so
+    # 57% of the volume was buying 10% of the money. Nothing rationed a live sale: the
+    # only conversion among them came through `ppv_send`, which this gate does not touch,
+    # while the chat lane asked that same man for $160.61 across seven offers and closed
+    # none. The runway is what made it safe — one fan rode the free 100 down to
+    # `runway_left=1`, bought at reply ~99, and only crossed into `held` six hours later.
+    # Set False per account to go back to computing-and-logging without withholding.
+    "daily_quota_enforce": True,
     "session_gap_minutes": 60,           # gap that starts a fresh burst for the caps
     # Item 17 — post-purchase talk window: keep chatting a just-paid fan this long
     # after his last money event; past it with no NEW spend, hand off (stop + cool
@@ -4359,9 +4365,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # Item 21c — the daily ceiling, checked after the burst cap and, like it,
         # BEFORE any cooldown/lease/LLM cost. It reuses the TIER the burst gate just
         # decided rather than re-deriving "is he buying" from the body a second time.
-        # In shadow mode (the default) the verdict is counted and logged but the reply
-        # still goes out, so the numbers can be audited against a real day's traffic
-        # before a single fan is held back.
+        # SERVED since 2026-07-27. With `daily_quota_enforce` False the verdict is still
+        # counted, logged and written to `quota_audit` while the reply goes out — the
+        # shadow mode the rollout ran in, and still the way to audit a config change
+        # against real traffic before any fan is held back.
         if quota_on:
             q = _quota_gate(
                 c, spend_quota=spend_quotas.get(fan_id),

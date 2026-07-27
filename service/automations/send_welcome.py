@@ -20,8 +20,9 @@ It mirrors the scrape_chats reference in automation_executor.py:
   • its OWN AsyncSession per write.
   • llm_client.chat() generates the welcome — that call writes the `grok_calls`
     audit row AND enforces the per-account daily cost cap atomically, so we don't
-    re-implement either; persona / welcome_rules / time-of-day come from
-    `account_ai_config`.
+    re-implement either; persona / location / time-of-day come from
+    `account_ai_config` (the welcome's SHAPE is fixed in code — see
+    `_compose_system` — so every account's riff matches the local template).
   • the existing optimistic send path: `of_client.send_message` →
     `attribution.write_outbound_attribution` (credits the system Automation
     employee, since no X-Employee-Id exists for a background run). The WS pump
@@ -312,31 +313,37 @@ def _slot_image_id(cfg: dict, hour: int) -> int | None:
         return None
 
 
-def _compose_system(cfg: dict, name_instr: str, tod: str, activity: str) -> str:
+# The house greeting shape, in CODE — deliberately not operator-editable. It
+# replaces the per-account `welcome_rules` column, which still described the
+# retired V1 "Hello there," format and asked for a "drama line" nothing has ever
+# put in the prompt.
+#
+# The model writes the GREETING ONLY. Bubble 2 is `_activity_bubble` — the same
+# deterministic line a named fan gets — so there is nothing here about weekdays,
+# location or activities, and no way for the model to drop or invent a fact.
+_GREETING_RULES = (
+    'Write ONE line: an excited stutter greeting, exactly this shape — '
+    '"Hey A-A-A-Adoring Alex ! !!". Take the first letter of whatever you are '
+    'greeting them by, stutter it three times, run it straight into a flirty '
+    'adjective starting with that same letter, then the name or handle, then '
+    '" ! !!". Never write the word \'Stranger\'. No markdown, no questions, at '
+    'most one emoji. Output only the line — no preamble, no surrounding quotes.'
+)
+
+
+def _compose_system(cfg: dict, name_instr: str) -> str:
     persona = (cfg.get("persona")
                or "You are a warm, flirty OnlyFans creator welcoming a brand-new "
                   "subscriber to your page.").strip()
-    parts = [persona]
-    rules = (cfg.get("welcome_rules") or "").strip()
-    if rules:
-        parts.append("Welcome rules:\n" + rules)
+    parts = [persona, _GREETING_RULES]
     if name_instr:
         parts.append("Name handling: " + name_instr)
-    if activity:
-        parts.append(f"It is {tod} where you are and you are {activity}. "
-                     f"You may reference this naturally.")
-    parts.append(
-        "Write ONE short, personal welcome DM (1–3 sentences, casual texting "
-        "tone). Do not use the word 'welcome' more than once. Output only the "
-        "message text — no surrounding quotes, no preamble."
-    )
     return "\n\n".join(parts)
 
 
-def _compose_user(name: str, tod: str) -> str:
-    who = (f"The new subscriber's name/handle is: {name}." if name
-           else "The new subscriber has not set a name.")
-    return f"{who} Local time of day: {tod}."
+def _compose_user(name: str) -> str:
+    return (f"The new subscriber's name/handle is: {name}." if name
+            else "The new subscriber has not set a name.")
 
 
 # ── DB seams (own session each — house pattern) ───────────────────────
@@ -373,7 +380,6 @@ async def _load_ai_config(account_id: str) -> dict:
                                        cfg.utc_offset)
         return {
             "persona": cfg.persona,
-            "welcome_rules": cfg.welcome_rules,
             "utc_offset": (off_min / 60.0 if off_min is not None
                            else (cfg.utc_offset or 0)),
             "location": cfg.location,
@@ -503,47 +509,56 @@ async def _resolve_welcome_name(account_id: str, fan_id: int, sub: dict) -> str:
     return ""
 
 
-def _local_welcome_bubbles(name: str, cfg: dict, *, hour: int | None = None) -> list[str]:
-    """V1 'precious' deterministic welcome as SEPARATE chat bubbles (NO LLM call):
+# A welcome is always [greeting] + the slot's activity line. The two halves are
+# INDEPENDENT: the greeting is the only fan-specific part, and the activity bubble
+# is a pure function of (cfg, hour). Keeping them apart is what lets a fan we
+# can't name take the LLM greeting and the SAME deterministic activity line as
+# everyone else — so the pin and the restyle downstream need no special case.
 
-        bubble 1:  Hey S-S-S-Sexy Sofie ! !!          ← the image rides on this one
-        bubble 2:  just woke up and made myself a coffee... it's Friday morning in Vancouver, Canada
-
-    The stutter prefix ('S-S-S-') sits on the first letter and leads into the full
-    alliterative nickname 'Sexy Sofie'. Bubble 2 is the verbatim template line —
-    run() AI-restyles it into casual texting tone before sending (verbatim is the
-    fallback when the LLM is capped/down). The V1 third line ('Will reply when I
-    am back :)') is retired — it read canned; two paced bubbles land more human.
-    Bubble 2 is omitted entirely when the account has no activity for this slot."""
+def _local_greeting(name: str) -> str:
+    """V1 'precious' bubble 1 (NO LLM): 'Hey S-S-S-Sexy Sofie ! !!' — the stutter
+    prefix sits on the first letter and leads into the alliterative nickname. The
+    vault image rides this bubble."""
     L = name[0].upper()
-    adj = _ADJS.get(L, "Flirty")
-    stutter = f"{L}-{L}-{L}-{adj} {name}"
-    bubbles = [f"Hey {stutter} ! !!"]
+    return f"Hey {L}-{L}-{L}-{_ADJS.get(L, 'Flirty')} {name} ! !!"
 
-    # `hour` lets a preview pin an arbitrary slot; the send path passes none → the
-    # creator's current local hour (behavior unchanged for run()).
+
+def _activity_bubble(cfg: dict, hour: int | None = None) -> list[str]:
+    """Bubble 2 — 'just woke up and made myself a coffee... it's Friday morning in
+    Vancouver, Canada' — as a 0-or-1 element list, empty when the account has no
+    activity for this slot. Verbatim here; run() AI-restyles it into casual texting
+    tone before sending (verbatim is the fallback when the LLM is capped/down).
+
+    Carries NOTHING fan-specific by construction — identical for every fan in the
+    same slot, which is exactly what lets `_restyle_cache` be keyed on the line
+    alone and shared across the run.
+
+    `hour` lets a preview pin an arbitrary slot; None → the creator's current local
+    hour. The V1 third line ('Will reply when I am back :)') is retired — it read
+    canned; two paced bubbles land more human."""
     if hour is None:
         hour = _model_hour(cfg.get("utc_offset") or 0)
     tod, activity = _time_activity(hour, cfg.get("time_activities") or {})
+    if not activity:
+        return []
+    # `where` carries its own " in " so the line degrades cleanly to "...it's Friday
+    # morning" on an account with no location set — a dangling "in" is the kind of
+    # thing a fan reads as a broken bot.
     location = (cfg.get("location") or "").strip()
-    if activity:
-        # `where` already carries its own " in " so the line degrades cleanly to
-        # "...it's Friday morning" on an account with no location set — a dangling
-        # "in" is the kind of thing a fan reads as a broken bot.
-        where = f" in {location}" if location else ""
-        bubbles.append(f"{activity}... it's {_model_weekday(cfg.get('utc_offset'))} "
-                       f"{tod}{where}")
-    return bubbles
-
-
-def _local_welcome(name: str, cfg: dict) -> str:
-    """Single-text form of the bubbles (preview / dev drivers / logs)."""
-    return "\n\n".join(_local_welcome_bubbles(name, cfg))
+    where = f" in {location}" if location else ""
+    return [f"{activity}... it's {_model_weekday(cfg.get('utc_offset'))} {tod}{where}"]
 
 
 # ── AI restyle of the activity bubble (casual texting tone) ───────────
 
 _RESTYLE_TEMPERATURE = 0.9
+
+
+def _one_line(text: str | None) -> str:
+    """First non-empty line, unquoted. Both LLM calls in this module contract for a
+    single line; this is where that contract is enforced when the model rambles."""
+    out = (text or "").strip().strip('"').strip("'")
+    return next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
 
 
 def _compose_restyle_system(cfg: dict) -> str:
@@ -607,33 +622,30 @@ async def _restyle_activity(
         fan_id=fan_id,
         temperature=_RESTYLE_TEMPERATURE,
     )
-    out = (res.content or "").strip().strip('"').strip("'")
-    # Enforce the one-line contract even if the model rambles.
-    out = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
-    return out or line
+    return _one_line(res.content) or line
 
 
-async def _generate_welcome(
+async def _generate_greeting(
     account_id: str, fan_id: int, sub: dict, cfg: dict, model: str
 ) -> str:
-    """One Grok/LLM call → welcome text. Raises LLMCapExceeded when the daily
-    cap is hit (caller stops the run); any other failure raises to the caller."""
+    """One Grok/LLM call → bubble 1 for a fan we could not name. Bubble 2 is the
+    same deterministic `_activity_bubble` every other fan gets, so this call owns
+    the greeting and nothing else. Raises LLMCapExceeded when the daily cap is hit
+    (caller stops the run); any other failure raises to the caller."""
     name = (sub.get("name") or sub.get("username") or "").strip()
     _, name_instr = _fan_name_hint(sub.get("name"), sub.get("username"))
-    hour = _model_hour(cfg.get("utc_offset") or 0)
-    tod, activity = _time_activity(hour, cfg.get("time_activities") or {})
     res = await llm_client.chat(
         model=model,
         messages=[
-            {"role": "system", "content": _compose_system(cfg, name_instr, tod, activity)},
-            {"role": "user", "content": _compose_user(name, tod)},
+            {"role": "system", "content": _compose_system(cfg, name_instr)},
+            {"role": "user", "content": _compose_user(name)},
         ],
         purpose="welcome",
         account_id=account_id,
         fan_id=fan_id,
         temperature=_WELCOME_TEMPERATURE,
     )
-    return (res.content or "").strip()
+    return _one_line(res.content)
 
 
 # ── Vault image (network-rewrite of the DOM "bot" folder click) ───────
@@ -745,39 +757,39 @@ async def preview_compose(
         sub = {"id": 0, "name": test_name or name, "username": None}
 
     if name:
-        bubbles = _local_welcome_bubbles(name, cfg, hour=hour)
+        greeting = _local_greeting(name)
     else:
         model = model or cfg.get("model") or await resolve_model(account_id, "welcome", None)
-        bubbles = [await _generate_welcome(account_id, int(fan_id or 0), sub, cfg, model)]
-
-    # A PINNED slot line wins (unless the operator hit Regenerate → ignore_pin): show
-    # the exact approved line that will ship, weekday-refreshed, no LLM call.
+        greeting = await _generate_greeting(account_id, int(fan_id or 0), sub, cfg, model)
+    # A PINNED slot line IS bubble 2 (unless the operator hit Regenerate →
+    # ignore_pin): the exact approved line that will ship, weekday-refreshed, no LLM
+    # call. It ships even when the slot's raw activity was later blanked.
     restyled = False
     cap_hit = False
     pinned = False
-    pin = None if ignore_pin else (_pinned_line(cfg, hour) if name else None)
+    pin = None if ignore_pin else _pinned_line(cfg, hour)
     if pin is not None:
-        if len(bubbles) > 1:
-            bubbles[1] = pin
-        else:
-            bubbles.append(pin)  # pin ships even if the base activity was blanked
+        bubbles = [greeting, pin]
         pinned = True
-    elif restyle and name and len(bubbles) > 1:
-        # AI restyle of the activity bubble — exactly what ships. Cache-bypassed
-        # (fresh sample per regenerate; never touches the live run's _restyle_cache);
-        # a cap hit or any failure degrades to the verbatim line.
-        rmodel = model or cfg.get("model") or await resolve_model(account_id, "welcome", None)
-        try:
-            styled = await _restyle_activity(
-                account_id, int(fan_id or 0), cfg, rmodel, bubbles[1])
-            if styled and styled != bubbles[1]:
-                bubbles[1] = styled
-                restyled = True
-        except LLMCapExceeded:
-            cap_hit = True
-        except Exception:
-            log.debug("preview restyle failed account=%s — verbatim line", account_id,
-                      exc_info=True)
+    else:
+        bubbles = [greeting, *_activity_bubble(cfg, hour)]
+        if restyle and len(bubbles) > 1:
+            # AI restyle of the activity bubble — exactly what ships. Cache-bypassed
+            # (fresh sample per regenerate; never touches the live run's
+            # _restyle_cache); a cap hit or any failure degrades to the verbatim line.
+            rmodel = (model or cfg.get("model")
+                      or await resolve_model(account_id, "welcome", None))
+            try:
+                styled = await _restyle_activity(
+                    account_id, int(fan_id or 0), cfg, rmodel, bubbles[1])
+                if styled and styled != bubbles[1]:
+                    bubbles[1] = styled
+                    restyled = True
+            except LLMCapExceeded:
+                cap_hit = True
+            except Exception:
+                log.debug("preview restyle failed account=%s — verbatim line", account_id,
+                          exc_info=True)
 
     bubbles = [apply_word_restriction(b) for b in bubbles]
     if strip_emoji_on:
@@ -923,16 +935,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         sent_ok = False
         try:
             try:
-                # If we can resolve a real name (from the notif, the fan's real_name,
-                # or a stored nickname) → deterministic V1 'precious' template, ALWAYS
-                # prefix + stutter, no LLM. Only a random handle / number (no usable
-                # name) falls back to the LLM riff. The local template is TWO bubbles:
-                # the stutter greeting (image rides on it), then the activity line.
+                # Only the GREETING varies — a resolvable name (from the notif, the
+                # fan's real_name, or a stored nickname) gets the deterministic V1
+                # 'precious' stutter with no LLM; a random handle / number falls back
+                # to an LLM riff. Bubble 2 is chosen below and is the same either way,
+                # so the pin and restyle need no special case for a nameless fan.
                 name = await _resolve_welcome_name(account_id, fan_id, sub)
-                if name:
-                    bubbles = _local_welcome_bubbles(name, cfg)
-                else:
-                    bubbles = [await _generate_welcome(account_id, fan_id, sub, cfg, model)]
+                greeting = (_local_greeting(name) if name else
+                            await _generate_greeting(account_id, fan_id, sub, cfg, model))
             except LLMCapExceeded:
                 cap_hit = True
                 log.warning("send_welcome daily LLM cap reached account=%s — stopping run",
@@ -944,59 +954,56 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             account_id, fan_id, exc_info=True)
                 continue
 
-            # AI-restyle the activity bubble into the creator's casual texting voice
-            # so the templated line doesn't read canned. ONE cached rewrite per
-            # slot line is shared by every fan (the rewrites are near-identical
-            # paraphrases — no point paying per fan); a fan who already texted us
-            # gets a fresh per-fan call instead. Best-effort: any failure (cap
-            # included) falls back to the verbatim template line — a restyle
-            # hiccup must never cost a fan their welcome. Once the daily cap trips
-            # we stop attempting restyles for the rest of the run.
-            # An operator-PINNED line for this slot wins over the AI restyle: send
-            # exactly the approved line (weekday refreshed to today), no LLM call,
-            # for every fan this slot. That is the whole point of the pin — "reroll
-            # until I like one, then use THAT" — so it also overrides the payload's
-            # restyle flag and the texted-fan fresh-call path.
-            pinned = _pinned_line(cfg, hour) if name else None
+            # An operator-PINNED line for this slot IS bubble 2: send exactly the
+            # approved line (weekday refreshed to today), no LLM call, for every fan
+            # this slot. That is the whole point of the pin — "reroll until I like
+            # one, then use THAT" — so it overrides the payload's restyle flag, the
+            # texted-fan fresh-call path, and a slot whose raw activity was later
+            # blanked.
+            pinned = _pinned_line(cfg, hour)
             if pinned is not None:
-                # The pin is the operator's explicit "send THIS line" — authoritative
-                # even if they later blanked the slot's raw activity (then there's no
-                # bubble 2 to replace, so we ADD one).
-                if len(bubbles) > 1:
-                    bubbles[1] = pinned
-                else:
-                    bubbles.append(pinned)
+                bubbles = [greeting, pinned]
                 pinned_used += 1
-            elif name and restyle and len(bubbles) > 1 and not restyle_capped:
-                ck = (str(account_id), bubbles[1])
-                fresh = fan_id in texted_ids
-                cached = None if fresh else _restyle_cache.get(ck)
-                if cached is not None:
-                    if cached != bubbles[1]:
-                        restyled_cached += 1
-                    bubbles[1] = cached
-                else:
-                    try:
-                        styled = await _restyle_activity(
-                            account_id, fan_id, cfg, model, bubbles[1])
-                        if not fresh:
-                            # Cache even a verbatim echo — a model that refuses to
-                            # rewrite shouldn't be re-asked for every fan this slot.
-                            _restyle_cache[ck] = styled
-                            while len(_restyle_cache) > _RESTYLE_CACHE_MAX:
-                                _restyle_cache.pop(next(iter(_restyle_cache)))
-                        if styled != bubbles[1]:
-                            restyled += 1
-                            bubbles[1] = styled
-                    except LLMCapExceeded:
-                        cap_hit = True
-                        restyle_capped = True
-                        log.warning("send_welcome restyle capped account=%s — verbatim "
-                                    "activity line for the rest of this run", account_id)
-                    except Exception:
-                        log.warning("send_welcome restyle failed account=%s fan=%s — "
-                                    "sending verbatim line", account_id, fan_id,
-                                    exc_info=True)
+            else:
+                # AI-restyle the activity bubble into the creator's casual texting
+                # voice so the templated line doesn't read canned. ONE cached rewrite
+                # per slot line is shared by every fan (the rewrites are near-identical
+                # paraphrases — no point paying per fan); a fan who already texted us
+                # gets a fresh per-fan call instead. Best-effort: any failure (cap
+                # included) falls back to the verbatim template line — a restyle
+                # hiccup must never cost a fan their welcome. Once the daily cap trips
+                # we stop attempting restyles for the rest of the run.
+                bubbles = [greeting, *_activity_bubble(cfg, hour)]
+                if restyle and len(bubbles) > 1 and not restyle_capped:
+                    ck = (str(account_id), bubbles[1])
+                    fresh = fan_id in texted_ids
+                    cached = None if fresh else _restyle_cache.get(ck)
+                    if cached is not None:
+                        if cached != bubbles[1]:
+                            restyled_cached += 1
+                        bubbles[1] = cached
+                    else:
+                        try:
+                            styled = await _restyle_activity(
+                                account_id, fan_id, cfg, model, bubbles[1])
+                            if not fresh:
+                                # Cache even a verbatim echo — a model that refuses to
+                                # rewrite shouldn't be re-asked for every fan this slot.
+                                _restyle_cache[ck] = styled
+                                while len(_restyle_cache) > _RESTYLE_CACHE_MAX:
+                                    _restyle_cache.pop(next(iter(_restyle_cache)))
+                            if styled != bubbles[1]:
+                                restyled += 1
+                                bubbles[1] = styled
+                        except LLMCapExceeded:
+                            cap_hit = True
+                            restyle_capped = True
+                            log.warning("send_welcome restyle capped account=%s — verbatim "
+                                        "activity line for the rest of this run", account_id)
+                        except Exception:
+                            log.warning("send_welcome restyle failed account=%s fan=%s — "
+                                        "sending verbatim line", account_id, fan_id,
+                                        exc_info=True)
 
             # Last-mile per bubble: double the first vowel of any OF-restricted word
             # (V1 ran apply_word_restriction on EVERY welcome). Covers the local
