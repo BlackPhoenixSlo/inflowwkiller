@@ -240,11 +240,24 @@ _REJECT: tuple[tuple[str, re.Pattern[str]], ...] = (
     # these. A clock time or a named recurring day is an availability window, and
     # an availability window attached to a home is the second half of the opening
     # failure case.
+    # Widened 2026-07-27 by the FIRST shadow run, which is what shadow is for.
+    # It surfaced a real fan message giving a full week of availability — "have to
+    # be there by 8.... Monday and Thursday 730 as it's order day … swing shift …
+    # there at 1130, half hour break at 4 and back on at 430" — and the pattern
+    # below let it through on three counts at once: `730`/`1130`/`430` are not
+    # `\d{1,2}:\d{2}`, `by` was not a preposition here, and "Monday and Thursday"
+    # is neither "every Monday" nor "on Mondays".
+    #
+    # So: ANY weekday name now counts. Naming the days you are somewhere IS an
+    # availability window, and the vague routine prose this topic wants ("up
+    # late, films in the afternoon") never names one. And a preposition followed
+    # by digits counts up to four of them, which catches bare 24h clock times.
+    # "at 3 different sites" trips it too — a false positive costs one un-pinned
+    # paragraph, which is the direction this list is built to fail in.
     ("schedule", re.compile(
-        r"(\b\d{1,2}\s*(am|pm)\b|\b\d{1,2}:\d{2}\b|"
-        r"\bevery (mon|tues|wednes|thurs|fri|satur|sun)day\b|"
-        r"\bon (mon|tues|wednes|thurs|fri|satur|sun)days\b|"
-        r"\b(from|until|till|between|after|before) \d{1,2}\b)")),
+        r"(\b\d{1,2}\s*(am|pm)\b|\b\d{1,2}[:.]\d{2}\b|"
+        r"\b(mon|tues|wednes|thurs|fri|satur|sun)days?\b|"
+        r"\b(from|until|till|between|after|before|by|at|around) \d{1,4}\b)")),
     # Roleplay / hypothetical framing. A bare `if` is in here on purpose and it is
     # the widest pattern in the file by a distance. It is kept because the thing
     # it guards against — a fantasy premise pinned as though it were a fact about
