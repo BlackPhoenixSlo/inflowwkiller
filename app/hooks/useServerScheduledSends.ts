@@ -25,6 +25,12 @@ const KEY = "scheduled-sends";
 
 export interface ServerScheduledSend {
   job_id: number;
+  /** `scheduled_send` = a human queued this exact text (body known, cancellable).
+   *  `ai_reply` = Human Rhythm paused ai_chatter mid-thread and scheduled its own
+   *  wake; `text` is always "" because the draft doesn't exist at defer time, and
+   *  it is not cancellable. Absent on responses from an older relay — treat a
+   *  missing kind as `scheduled_send`, which is what that relay only ever sent. */
+  kind?: "scheduled_send" | "ai_reply";
   fan_id: number;
   run_at: string;        // ISO 8601 (UTC, "…Z")
   status: string;        // 'pending' | 'running'
@@ -83,14 +89,20 @@ export function useCancelServerScheduled() {
 /** Convert a queued send into an OFMessage-shaped pseudo-row so the existing
  *  MessageList renderer shows it as a faded, dashed "scheduled" bubble with a
  *  cancel button — no special-casing in the list. `ownerUserId` makes it render
- *  on the outgoing (right) side. */
+ *  on the outgoing (right) side.
+ *
+ *  An `ai_reply` row rides the same path but withholds `_scheduleJobId`, which
+ *  is what the cancel button gates on — a pending AI reply is a countdown, not
+ *  something a chatter can call back. */
 export function scheduledToPseudoMessage(
   s: ServerScheduledSend,
   ownerUserId: number | null,
 ): OFMessage {
+  const ai = s.kind === "ai_reply";
   return {
-    id: `sched-${s.job_id}`,
-    _scheduleJobId: s.job_id,
+    id: ai ? `ai-${s.job_id}` : `sched-${s.job_id}`,
+    _scheduleJobId: ai ? undefined : s.job_id,
+    _aiPending: ai,
     _isFutureScheduled: true,
     _fireAt: s.run_at,
     _pending: true,

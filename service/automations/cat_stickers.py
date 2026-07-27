@@ -3,8 +3,9 @@
 A reply from the AI chatter can end with a cat reaction gif — occasionally the
 gif IS the whole reply (he says "good morning" → just a waking-up kitten), the
 way a real girl texts. The protocol mirrors `>>OFFER`: the model ends its reply
-with a line that is exactly `STICKER: <tag>`; the line is ALWAYS stripped
-before anything reaches the fan, and the tag maps here to a giphy id sent via
+with a line that is exactly `STICKER: <tag>`; the marker is ALWAYS stripped
+before anything reaches the fan — wherever it lands and however it is dressed
+up, see `_MARKER_RE` — and the tag maps here to a giphy id sent via
 `of_client.send_message(fan_id, "", giphy_id=...)` (top-level `giphyId`,
 GIF-only empty-text sends verified live 2026-05-23).
 
@@ -24,6 +25,8 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
+
+from ._markers import protocol_marker_re
 
 # tag -> (when-to-use line for the prompt, giphy ids to rotate among)
 _CATALOG: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -95,22 +98,41 @@ _last_sent: dict[tuple[str, int], datetime] = {}
 # restart is the wrong trade. Worst case on restart is a single repeat.
 _last_pick: dict[tuple[str, int], tuple[str, str]] = {}
 
-# A well-formed marker (capture the tag) vs ANY marker-ish line (strip-all —
-# the fan must never see the protocol, malformed included). Same split as the
-# >>OFFER regex pair.
-_MARKER_RE = re.compile(r"^[ \t]*STICKER:[ \t]*([a-z_]+)[ \t]*$", re.I | re.M)
-_LINE_RE = re.compile(r"^[ \t]*STICKER:.*$", re.I | re.M)
+# Six of the audited leaks were stickers, in three shapes — `*sticker: flirty*`
+# (5 of the 6), the marker appended inline after a real question, and a
+# one-letter typo. The COLON is this protocol's discriminator, and it is what
+# makes anchorless matching safe here: the same audit turned up fan-facing lines
+# like "you design stickers that make people obey" (he designs stickers for a
+# living), and no colon means untouched. See `_markers` for the rest.
+_MARKER_RE = protocol_marker_re(r"STICKERS?[ \t]*:")
+
+
+def _tag_for(words: str) -> str | None:
+    """The catalog tag a marker asked for — None when the pack holds no such
+    reaction, which is a silent no-gif and never a leak.
+
+    Tolerant on purpose: a tag is two words as often as one (`miss you`), the
+    model varies the separator, and an unambiguous prefix resolves so that
+    `eyerol` — live, one letter short of `eyeroll` — still buys its gif."""
+    parts = [p for p in re.split(r"[^A-Za-z]+", (words or "").lower()) if p]
+    for take in (2, 1):
+        key = "_".join(parts[:take])
+        if not key:
+            return None
+        if key in _CATALOG:
+            return key
+        near = [t for t in _CATALOG if t.startswith(key)]
+        if len(near) == 1:
+            return near[0]
+    return None
 
 
 def parse_marker(raw: str) -> tuple[str, str | None]:
-    """Extract the FIRST well-formed STICKER tag (None when absent or not in
-    the catalog), then strip EVERY marker-ish line from the reply."""
+    """Strip EVERY sticker marker from the reply — the fan must never see the
+    protocol, malformed included — and return the tag it asked for."""
     m = _MARKER_RE.search(raw or "")
-    tag = m.group(1).lower() if m else None
-    if tag is not None and tag not in _CATALOG:
-        tag = None
-    clean = _LINE_RE.sub("", raw or "").strip()
-    return clean, tag
+    clean = _MARKER_RE.sub("", raw or "").strip()
+    return clean, (_tag_for(m.group(1)) if m else None)
 
 
 def roll_mode(rng, on_cooldown: bool,
@@ -209,8 +231,9 @@ def pick_gif(tag: str, rng, account_id: str, fan_id: int) -> str | None:
 
 
 def prompt_block(mode: str) -> str:
-    """The prompt section for 'allow'/'solo' rolls ('' otherwise). Wording is
-    the one validated on real convos (0 invalid tags across 90 samples)."""
+    """The prompt section for 'allow'/'solo' rolls ('' otherwise). The tag
+    protocol is the wording validated on real convos (0 invalid tags across 90
+    samples); the last rule was added later, unvalidated — see below."""
     if mode not in ("allow", "solo"):
         return ""
     tag_lines = "\n".join(f"- {t}: {when}" for t, (when, _) in _CATALOG.items())
@@ -225,7 +248,14 @@ def prompt_block(mode: str) -> str:
         "- A sticker can BE the whole reply — when a reaction says it all, "
         "output ONLY the STICKER line, no text.\n"
         "- Max ONE sticker per reply. The STICKER line is protocol — it's "
-        "stripped before sending, the fan only sees the gif."
+        "stripped before sending, the fan only sees the gif.\n"
+        # The only leak class a regex cannot touch. Three fans got prose instead
+        # of a gif ("a cat sticker feels right here", "sticker works for this"):
+        # the model narrating the reaction rather than emitting the marker. No
+        # strip can catch that without also eating the fan who genuinely talks
+        # about stickers, so it has to be prevented upstream, here.
+        "- NEVER mention or describe the sticker in your text. The marker sends "
+        "it, or nothing does."
     )
     if mode == "solo":
         block += (

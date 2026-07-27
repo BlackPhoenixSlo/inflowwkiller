@@ -757,6 +757,16 @@ function Bubble({
               onClick={() => onJumpTo?.(replyTo.id)}
             />
           )}
+          {/* A pending AI reply carries no body — rhythm defers before the reply
+           *  LLM runs, so there is nothing drafted yet to preview. The bubble
+           *  would otherwise render empty and read as a bug, so say what the gap
+           *  actually is; the footer below carries the wake time. */}
+          {msg._aiPending && !msg.text && (
+            <span className="inline-flex items-center gap-1.5 italic text-fg-dim">
+              <span className="animate-pulse">•••</span>
+              pausing before she replies
+            </span>
+          )}
           {msg.text && (
             <span className="inline-flex flex-wrap items-baseline gap-1.5 align-baseline">
               {/* Per-text FREE / PAID badge — only on outbound PPV bubbles.
@@ -853,7 +863,8 @@ function Bubble({
         >
           <div className="flex items-center gap-1.5 flex-wrap">
           {scheduled
-            ? <ScheduledStatus fireAt={msg._fireAt ?? msg.createdAt} mediaCount={msg.mediaCount ?? 0} />
+            ? <ScheduledStatus fireAt={msg._fireAt ?? msg.createdAt} mediaCount={msg.mediaCount ?? 0}
+                               ai={msg._aiPending} />
             : <span>{fmtTime(msg.createdAt)}</span>}
           {/* Delivered / seen receipts on outgoing real-server messages.
            *  We can only assert "delivered" once OF has assigned a real
@@ -1472,10 +1483,14 @@ function DateSeparator({ label }: { label: string }) {
   );
 }
 
+const AI_PAUSE_TITLE =
+  "She's seen his message and is pausing before she answers (Human Rhythm). Not cancellable.";
+
 /** Live countdown that re-renders every 20s. Short enough to feel
  *  responsive ("Sending in 1 min" → fires shortly after); long enough
  *  to not be wasteful across many pending bubbles in one chat. */
-function ScheduledStatus({ fireAt, mediaCount = 0 }: { fireAt: string; mediaCount?: number }) {
+function ScheduledStatus({ fireAt, mediaCount = 0, ai = false }:
+                         { fireAt: string; mediaCount?: number; ai?: boolean }) {
   const [, tick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => tick((n) => n + 1), 20_000);
@@ -1483,11 +1498,12 @@ function ScheduledStatus({ fireAt, mediaCount = 0 }: { fireAt: string; mediaCoun
   }, []);
   const clip = mediaCount > 0 ? ` · 📎 ${mediaCount}` : "";
   const ms = new Date(fireAt).getTime() - Date.now();
-  if (ms <= 0) return <span className="text-accent">⏱ sending now…{clip}</span>;
   const mins = Math.max(1, Math.round(ms / 60_000));
-  return (
-    <span className="text-accent">
-      ⏱ scheduled · {fmtTime(fireAt)} (in {mins} min){clip}
-    </span>
-  );
+  // An elapsed AI countdown isn't stuck — the executor ticks every ~30s and takes
+  // one job per (account, kind) — so "writing" is the honest word for it.
+  const label = ms <= 0
+    ? (ai ? "🤖 writing…" : `⏱ sending now…${clip}`)
+    : (ai ? `🤖 AI reply · ${fmtTime(fireAt)} (in ${mins} min)`
+          : `⏱ scheduled · ${fmtTime(fireAt)} (in ${mins} min)${clip}`);
+  return <span className="text-accent" title={ai ? AI_PAUSE_TITLE : undefined}>{label}</span>;
 }

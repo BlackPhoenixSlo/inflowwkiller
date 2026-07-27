@@ -9,7 +9,9 @@ refresh-if-stale hook — and (M3) adds selling from the content catalog
 (catalog_scripts / catalog_items, offers in content_offers).
 
 Who it talks to (code-side gates, never prompt-side):
-  • fan spoke last (the "You:" sidebar skip — same as of_ai_chat),
+  • fan spoke last (the "You:" sidebar skip — same as of_ai_chat). A BROADCAST
+    (ppv_send / funnel / mass_nudge, or an untagged OF-app blast) does NOT count
+    as us speaking: she still answers a message a blast landed on top of,
   • lifetime_spend_cents < max_lifetime_spend_cents (default $1000) — fans at or
     over the gate are WHALES: pure human-chatter territory, never touched,
   • blacklist / skip_list respected, EXCEPT of_ai_chat's graduation reasons
@@ -63,6 +65,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / lease / cooldown seams
 import llm_client                  # call .chat at runtime so tests can patch it
+import of_shapes                   # pure readers for OF's wire shapes (quote-reply)
 import ownership                   # the one home for owned-media semantics
 from attribution import write_outbound_attribution
 from automation_registry import register
@@ -87,6 +90,7 @@ from ._leash import (  # noqa: F401 — re-exported for fans.py / tests
     _last_money_at, _paid_spend_by_window, _Quota, _quota_gate, _TIP_KINDS,
     _write_quota_audit, daily_quotas, read_leash, spend_caps, spend_windows,
 )
+from ._markers import protocol_marker_re
 from ._persona import fan_claims_block, persona_register_age
 from ._outbound import ConsistencyCtx, finalize_draft
 from . import _language
@@ -246,6 +250,15 @@ _DEFAULTS: dict = {
     "unsend_expired_offer": True,        # on expiry, pull (unsend) the unpurchased
                                          # PPV/offer message from the chat (per-chat
                                          # unsend; bounded by OF's 24h window)
+    # Quote-reply context: OF lets a fan answer ONE specific bubble, and the prompt is
+    # a flat FAN/YOU transcript, so that pointer was thrown away. Marks the bubble he
+    # quoted instead of leaving the model to guess the referent.
+    # ON by default: it costs no API call and changes nothing about what is SENT — a
+    # thread with no quote-reply builds a byte-identical prompt. Measured 07-27 over
+    # 14 days of prod: ~5% of inbound are quote-replies, 34% of those are ≤4 words
+    # (unreadable without the referent), and ~4/day quote a LIVE PPV — a man asking
+    # about the locked item, which is the strongest buying signal we had been dropping.
+    "reply_context_enabled": True,
 
     # ── Cadence controller (items 10/17/18/21) — the stop-condition subsystem.
     # ON by default (2026-07-22): "chat/sell forever" was never the behavior anyone
@@ -619,7 +632,8 @@ class _Cand:
     __slots__ = ("fan_id", "fan_msg_n", "last_dir", "last_body", "messages",
                  "last_in_at", "last_out_at", "last_human_out_at", "session_out_n",
                  "day_out_n", "total_out_n", "first_at", "her_last_at", "pic_sent",
-                 "last_out_was_gif", "last_in_text", "first_in_at")
+                 "last_out_was_gif", "last_in_text", "first_in_at",
+                 "msg_ids", "reply_ctx")
 
     def __init__(self, fan_id: int):
         self.fan_id = fan_id
@@ -633,6 +647,9 @@ class _Cand:
         # free on, because a gif neither answers nor asks anything (rhythm's
         # `after_gif_solo`).
         self.last_out_was_gif = False
+        # Direction of the last message that TOOK A TURN — broadcasts are transparent
+        # here (see _gather), so a blast fired over his message does not read as
+        # "we spoke last" and silence the reply he is owed.
         self.last_dir = ""
         # The last message's HISTORY LINE — what the reply-LLM reads, and what the gif
         # seed keys off. For an inbound with media this carries a `[he sent: …]` vision
@@ -654,6 +671,15 @@ class _Cand:
         # the conversation does not start until he answers it.
         self.first_in_at: datetime | None = None
         self.messages: list[tuple[str, str]] = []  # (direction, body) oldest→newest
+        # OF's message_id per `messages` row — what resolves a quote-reply's target
+        # back to a line the model can see. PARALLEL to `messages` rather than folded
+        # into the tuple so every existing reader (thread_heat, _recent_ask_pattern,
+        # the fan-run scan, the tests that hand-build a _Cand) is untouched; both
+        # lists have exactly one writer, `add_message`, so they cannot drift.
+        self.msg_ids: list[int] = []
+        # The quote-reply he made, if any — filled per reply by `_reply_ctx`, read only
+        # by `_build_messages`. None = no quote, the overwhelming case.
+        self.reply_ctx: "QuoteRef | None" = None
         self.last_in_at: datetime | None = None
         # ANY outbound (human or bot) — the rhythm sampler's "how long has she been
         # gone" clock, which is what a cover line ("sorry babe was in the shower")
@@ -678,6 +704,12 @@ class _Cand:
         self.her_last_at: datetime | None = None # HER last reply (not a human's, not a
                                                  # bubble) — the clock the daily-quota
                                                  # backoff counts its silence from
+
+    def add_message(self, direction: str, text: str, message_id: int) -> None:
+        """Append one thread row. The ONE writer of both `messages` and `msg_ids`, so
+        a future `continue` in _gather cannot desync them behind our back."""
+        self.messages.append((direction, text))
+        self.msg_ids.append(int(message_id))
 
 
 # An untagged outbound sent verbatim to at least this many DIFFERENT fans is a
@@ -710,7 +742,18 @@ def _broadcast_bodies(rows) -> frozenset[str]:
     one pass over rows we have and needs no schema change.
 
     Empty bodies are skipped — a sticker send carries no text, and grouping them
-    would fold every gif on the account into one 'broadcast'."""
+    would fold every gif on the account into one 'broadcast'.
+
+    SWEEP-ONLY, deliberately. `_gather` is also called fan-scoped (W7 inbound
+    dispatch, the status endpoint, post_buy/aftercare); `rows` then holds ONE fan,
+    so `_BROADCAST_MIN_FANS` is unreachable and this returns empty. The account-wide
+    aggregate that would fix it (GROUP BY body HAVING COUNT(DISTINCT fan_id) >= 5)
+    measured 615ms on prod's biggest account — far too much for a path that runs on
+    every inbound DM, and this file already learned what blocking the relay costs.
+    The gap is bounded and cheap to live with: a blast sent through US carries a
+    mass_run_id and is caught on EVERY path, so the ~4/day turn-theft this guards is
+    fully covered fan-scoped too. Only an untagged OF-APP blast is missed there, and
+    the 30s full-account sweep picks that fan up on the next tick."""
     fans_per_body: dict[str, set[int]] = {}
     for row in rows:
         fan_id, direction, body, _created, automation_kind, mass_run_id = row[:6]
@@ -795,16 +838,20 @@ async def _gather(account_id: str,
     # Read as text, parse defensively, drop the bad row — never the account.
     async with get_session() as s:
         rows = (await s.execute(
+            # message_id goes LAST and must stay there: `_broadcast_bodies` reads
+            # `row[:6]` off these same rows, so anything inserted mid-list silently
+            # feeds it the wrong columns. It is an int — still no `raw_json` on this
+            # whole-account scan (see the docstring).
             select(Message.fan_id, Message.direction, Message.body,
                    created_at_text(), Message.automation_kind, Message.mass_run_id,
-                   Message.image_desc, Message.media_count)
+                   Message.image_desc, Message.media_count, Message.message_id)
             .where(*where)
             .order_by(Message.fan_id, Message.created_at, Message.message_id)
         )).all()
     bad_ts: list[int] = []   # fans that own a row with an unreadable created_at
     broadcast_bodies = _broadcast_bodies(rows)
     for (fan_id, direction, body, created_at_raw, automation_kind, mass_run_id,
-         image_desc, media_count) in rows:
+         image_desc, media_count, message_id) in rows:
         created_at = parse_ts(created_at_raw)
         if created_at is None and created_at_raw is not None:
             # Unreadable, not absent: the row can't be placed on the thread's
@@ -821,9 +868,27 @@ async def _gather(account_id: str,
         if c.first_at is None and created_at is not None:
             c.first_at = created_at
         text = _history_text(direction, body, image_desc)
-        c.messages.append((direction, text))
-        c.last_dir = direction
-        c.last_body = text
+        c.add_message(direction, text, message_id)
+        # Did WE broadcast this row? Read ONCE — the turn gate here, `hers` below and
+        # the human clock all key off it, and each used to re-derive its own answer
+        # from the same three columns. `mass_run_id` alone is NOT the question: a
+        # blast fired from the OF app is untagged, and `broadcast_bodies` is the only
+        # thing that catches it.
+        broadcast = (mass_run_id is not None
+                     or (automation_kind is None and body in broadcast_bodies))
+        # A broadcast does not take the turn. It stays in `messages` — she must know
+        # what she just sent him — but it must not move `last_dir`/`last_body`. A
+        # ppv_send / funnel blast landing on top of his message made the turn gate
+        # below read "we spoke last", and the reply he was owed was dropped: measured
+        # ~4/day across the roster over 14 days, on fans who had JUST messaged. Her
+        # own 1:1 sends (ai_chatter / ai_upseller) never carry a mass_run_id, so a
+        # real reply of hers still closes the turn and she cannot talk over her own
+        # open offer. `last_body` moves with `last_dir` or the reply path's intent
+        # detectors (content-ask / escalation / decline / haggle) would be reading her
+        # own PPV caption instead of his message.
+        if not broadcast:
+            c.last_dir = direction
+            c.last_body = text
         if direction == "in":
             c.fan_msg_n += 1
             c.last_in_at = created_at
@@ -837,7 +902,7 @@ async def _gather(account_id: str,
             mid_reply[fan_id] = False        # he spoke → her next row is a new reply
         else:
             c.last_out_at = created_at
-            hers = mass_run_id is None and automation_kind in _OUR_KINDS
+            hers = not broadcast and automation_kind in _OUR_KINDS
             # Was her latest outbound a GIF ON ITS OWN? Empty text + no media is the
             # solo-sticker wire shape (a text reply has a body, a media/PPV send has
             # media_count>0), so the fact is readable from the columns this scan
@@ -856,8 +921,7 @@ async def _gather(account_id: str,
             # message_id, so that split is a race between two writers of one message.)
             c.last_out_was_gif = (hers and not (body or "").strip()
                                   and int(media_count or 0) == 0)
-            if (automation_kind is None and mass_run_id is None
-                    and body not in broadcast_bodies):
+            if automation_kind is None and not broadcast:
                 c.last_human_out_at = created_at
             if hers and created_at is not None:
                 # Another bubble of the reply we already counted, or a new reply?
@@ -947,11 +1011,18 @@ async def _load_stop_lists(account_id: str) -> tuple[set[int], dict[int, str]]:
 
 # The offer marker protocol: the model writes its pitch as normal bubbles and
 # ends the reply with a line that is exactly ">>OFFER <catalog item id>". The
-# marker line is ALWAYS stripped before sending (even malformed ones), and an
-# offer only happens when the id survives every code-side guardrail.
-_OFFER_MARKER_RE = re.compile(r"^\s*>{1,}\s*OFFER\s+(\d+)\s*$",
-                              re.IGNORECASE | re.MULTILINE)
-_OFFER_LINE_RE = re.compile(r"^.*>>\s*OFFER.*$", re.IGNORECASE | re.MULTILINE)
+# marker is ALWAYS stripped before sending (even malformed ones), and an offer
+# only happens when the id survives every code-side guardrail.
+#
+# Two ways to be a marker, because "offer" is also an ordinary English word she
+# uses — 636 outbound bodies contain it and exactly ONE was a marker:
+#   • the ARROWS, in any case — unambiguous, and the shape the prompt asks for;
+#   • no arrows, but a bare id that ENDS the line. This is the leak the audit
+#     caught: `i dare ya 😏, OFFER 20` reached a fan on 07-14, because the old
+#     regexes both required the marker to start its own line. Anchoring the id
+#     to end-of-line is what keeps "well i usually offer 1k per custom vid but
+#     idkkk" — a real outbound body — from reading as offer #1.
+_OFFER_RE = protocol_marker_re(r">+[ \t]*OFFER|OFFER(?=[ \t]+\d+[ \t]*$)")
 
 # Anti-hallucination floor: on a catalog-bearing account, a bubble that names a
 # price — or numeric content specifics ("15 pics", "2 min vid") — WITHOUT a
@@ -1458,12 +1529,13 @@ def _second_offer_block(pending: ContentOffer, pend_item: CatalogItem | None,
 
 
 def _parse_offer_marker(raw: str) -> tuple[str, int | None]:
-    """Extract the FIRST well-formed >>OFFER id, then strip EVERY marker-ish
-    line (malformed ones too — a fan must never see the protocol)."""
-    m = _OFFER_MARKER_RE.search(raw or "")
-    offer_id = int(m.group(1)) if m else None
-    clean = _OFFER_LINE_RE.sub("", raw or "").strip()
-    return clean, offer_id
+    """Extract the FIRST >>OFFER id, then strip EVERY marker (malformed ones
+    too — a fan must never see the protocol). Mirrors cat_stickers.parse_marker;
+    both shapes come from `_markers.protocol_marker_re`."""
+    m = _OFFER_RE.search(raw or "")
+    ident = re.match(r"[ \t]*(\d+)", m.group(1)) if m else None
+    clean = _OFFER_RE.sub("", raw or "").strip()
+    return clean, (int(ident.group(1)) if ident else None)
 
 
 def _force_pick(offerable: dict[int, CatalogItem],
@@ -3240,6 +3312,128 @@ async def _buyer_facts(account_id: str, fan_id: int) -> list[str]:
     ]
 
 
+# How many of his recent inbounds to check for a quote-reply. He can quote a bubble
+# and then send "lol" on top of it, so "the newest row" alone misses it; three rows
+# covers a normal unanswered run at three tiny reads.
+_REPLY_CTX_SCAN = 3
+_QUOTE_CLIP = 120                # enough of the quoted bubble to identify it in prose
+
+
+class QuoteRef(NamedTuple):
+    """One resolved quote-reply: which of his messages answered which bubble.
+
+    Named rather than a 4-tuple because two of the fields are only legible with their
+    name attached — `locked_price_cents` is 0 for a FREE bubble *and* for one he has
+    already unlocked, and `quoted_is_his` is the difference between "your earlier
+    message" and a sentence that puts his words in her mouth."""
+    his_id: int
+    quoted_id: int
+    preview: str
+    locked_price_cents: int
+    quoted_is_his: bool
+
+
+async def _reply_ctx(account_id: str, fan_id: int) -> QuoteRef | None:
+    """His most recent inbound that QUOTE-REPLIED a bubble, else None.
+
+    Read here, per reply, and NOT in `_gather`: that is one query over the whole
+    account's messages and the quote lives in `raw_json`, 64KB a row (see _gather's
+    docstring). Here it is three rows on ix_messages_account_fan_time, only for a fan
+    we are already about to answer.
+
+    It returns the id of the message that CARRIED the quote — not "his last message".
+    He can quote-reply and then send "lol", and a prompt line claiming his LAST
+    message answered her bubble is a lie the model has no way to check. Annotating
+    the exact line stays true whatever he sent after it, which is also why there is no
+    time window here: the result describes a line of the transcript, not the state of
+    the turn. (An `AND created_at > her last outbound` window looked right and was
+    wrong — `last_out_at` moves on broadcasts too, so a PPV blast landing on top of
+    his quote would have hidden it, the same way it used to steal the turn.)
+
+    `locked_price_cents` is ZERO for an already-unlocked item: the price is only worth
+    surfacing while it is still an open offer, and calling a paid item "locked" is a
+    falsehood she would repeat to the man who bought it."""
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.message_id, Message.raw_json)
+            .where(Message.account_id == str(account_id),
+                   Message.fan_id == int(fan_id),
+                   Message.direction == "in",
+                   Message.raw_json.is_not(None))
+            .order_by(Message.created_at.desc(), Message.message_id.desc())
+            .limit(_REPLY_CTX_SCAN)
+        )).all()
+    for mid, raw in rows:
+        try:
+            quoted = of_shapes.quoted_reply(json.loads(raw or "{}"))
+        except (TypeError, ValueError):
+            continue          # truncated payload → no context, never a broken reply
+        if quoted is None or not quoted.get("id"):
+            continue
+        try:
+            price = float(quoted.get("price") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        quoted_from = (quoted.get("fromUser") or {}).get("id")
+        return QuoteRef(
+            his_id=int(mid), quoted_id=int(quoted["id"]),
+            preview=_strip_html(quoted.get("text"))[:_QUOTE_CLIP],
+            locked_price_cents=0 if quoted.get("isOpened") else int(round(price * 100)),
+            quoted_is_his=int(quoted_from or 0) == int(fan_id))
+    return None
+
+
+# `[A]` marks the bubble he answered, `[replying to A]` marks his answer. The pair
+# carries its own legend — a bare arrow or a bare number needs the model to infer a
+# convention, and ASCII beats a glyph it has to resolve first. ONE label, so the two
+# strings cannot drift apart (they were built by slicing `"[A]"`, which quietly
+# assumed the closing bracket).
+_QUOTE_LABEL = "A"
+
+
+def _locked(price_cents: int) -> str:
+    """`$25.20 LOCKED` — one formatter for both the marker and the prose."""
+    return f"${price_cents / 100:.2f} LOCKED"
+
+
+def _quote_desc(ref: "QuoteRef") -> str:
+    """The quoted bubble named in prose — the fallback for when it is NOT one of the
+    lines in the prompt, so there is nothing to point `[A]` at.
+
+    `whose` is load-bearing: he can quote-reply HIS OWN message, and "your earlier
+    message: …" would then hand her his words as something she said. A prompt block
+    whose only job is grounding must not invent a line she never wrote."""
+    whose = "his own" if ref.quoted_is_his else "your"
+    if ref.locked_price_cents > 0:
+        return f"{whose} {_locked(ref.locked_price_cents)} message"
+    return (f'{whose} earlier message: "{ref.preview}"' if ref.preview
+            else f"a photo {'he' if ref.quoted_is_his else 'you'} sent")
+
+
+def _reply_marks(ref: "QuoteRef | None", rendered: set[int]) -> dict[int, str]:
+    """{message_id: line suffix} for the ONE quote-reply in the tail.
+
+    `rendered` is the ids that actually became transcript lines — NOT the ids in the
+    tail. The convo join drops empty bodies, so a caption-less PPV or a bare photo
+    send is in `msg_ids` yet has no line, and marking it would put `[A]` nowhere while
+    `[replying to A]` pointed at it. When the target has no line we name it in prose
+    on HIS line instead, which is also the outside-the-tail path.
+
+    His own line missing (a media-only quote-reply, or it aged out) ⇒ nothing at all:
+    there is no line in the prompt to annotate."""
+    if ref is None or ref.his_id not in rendered:
+        return {}
+    if ref.quoted_id in rendered:
+        # The price rides the TARGET's mark: the transcript carries her caption but
+        # never what it cost, and "he is asking about the $25 he hasn't unlocked" is
+        # the whole reason this feature earns its ~4/day.
+        tag = (_QUOTE_LABEL if ref.locked_price_cents <= 0
+               else f"{_QUOTE_LABEL} · {_locked(ref.locked_price_cents)}")
+        return {ref.quoted_id: f" [{tag}]",
+                ref.his_id: f" [replying to {_QUOTE_LABEL}]"}
+    return {ref.his_id: f" [replying to {_quote_desc(ref)}]"}
+
+
 # ── v2 safe-state derived facts (spec §5/§6/§7). ALL of these are DERIVED (no new
 # column) — read from PAID messages / ladder_quote, exactly as §10.2 requires. They
 # are only ever computed when the gate lane is on, so an off flag costs nothing.
@@ -3605,8 +3799,24 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     personal_block = ("\n" + "\n".join(personal_lines)) if personal_lines else ""
 
     history = c.messages[-history_tail:]
+    # The same slice of the parallel id list. `add_message` keeps the two in step, so
+    # this only falls back for a _Cand assembled by hand (the unit tests, and any
+    # caller that sets `messages` directly): id 0 matches no message, so it degrades
+    # to today's prompt instead of labelling the wrong line.
+    ids = (c.msg_ids[-history_tail:] if len(c.msg_ids) == len(c.messages)
+           else [0] * len(history))
+    # Rendered lines FIRST, because `if b` drops empty bodies and the marks must key
+    # off what the model can actually see (see _reply_marks).
+    lines = [(d, b, mid) for (d, b), mid in zip(history, ids) if b]
+    # The quote-reply annotation lives ONLY in this string. `history` stays the raw
+    # (direction, body) tuples every gate below reads: `fan_just_asked` is a bare
+    # `"?" in`, so a question mark in HER quoted caption would read as his question,
+    # and `fan_low_effort` counts his words. Gluing generated text onto what a gate
+    # reads is the `[he sent: …]` bug twice over — see _Cand.last_body.
+    marks = _reply_marks(c.reply_ctx, {mid for _, _, mid in lines})
     convo = "\n".join(
-        f"{'FAN' if d == 'in' else 'YOU'}: {b}" for d, b in history if b
+        f"{'FAN' if d == 'in' else 'YOU'}: {b}{marks.get(mid, '')}"
+        for d, b, mid in lines
     )
 
     # Ask/breather smoothing — verbatim port of of_ai_chat's dice.
@@ -4073,6 +4283,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     cfg_offer_mode = str(cfg.get("offer_mode") or "ppv")
     intent_only = bool(cfg.get("intent_only"))
     pivot_on_escalation = bool(cfg.get("pivot_on_escalation"))
+    reply_ctx_on = bool(cfg.get("reply_context_enabled"))
     esc_min_msgs = int(cfg.get("min_fan_msgs_before_escalation_pitch") or 0)
     # Inert without the gate — force_ask rides ON gate_ok, and with the gate off the
     # gate never runs, so there is nothing to ride. Guarded here (not just at the call
@@ -4931,6 +5142,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                           and c.fan_msg_n >= esc_min_msgs
                           and _language.is_escalation(c.last_body, fan_lang))
             buyer_facts = await _buyer_facts(account_id, fan_id)
+            # Which bubble is he answering? Three tiny reads, and only for a fan who
+            # has cleared every gate and is getting a reply this tick.
+            if reply_ctx_on:
+                c.reply_ctx = await _reply_ctx(account_id, fan_id)
             # Cat-sticker roll (code-side rate control): most replies never see
             # the sticker protocol at all; "allow" lets the model judge, "solo"
             # nudges a sticker-ONLY reply. Deterministic per reply (fan + his

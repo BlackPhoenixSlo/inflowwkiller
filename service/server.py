@@ -5828,9 +5828,19 @@ async def create_scheduled_send(request: Request, body: _ScheduledSendBody = Bod
 
 @app.get("/api/of/v2/scheduled-sends")
 async def list_scheduled_sends(request: Request, fan_id: int | None = None):
-    """List this account's pending/running near-term scheduled sends — optionally
-    scoped to one fan. The chat thread renders these as ghost bubbles; any
-    chatter on the account sees the same rows."""
+    """List this account's pending/running near-term sends — optionally scoped to
+    one fan. The chat thread renders these as ghost bubbles; every chatter on the
+    account sees the same rows.
+
+    Two kinds ride this: a human's `scheduled_send` (body known, cancellable), and
+    `ai_reply` — Human Rhythm's own `rhythm_resume` wake, which answers "she's seen
+    his message and is sitting on it until 8:21". A rhythm row carries no body
+    (rhythm defers before the reply LLM runs) and is NOT cancellable: the DELETE
+    below scopes to `scheduled_send`, because cancelling a wake would strand
+    `rhythm_state.wake_at` with no job left to clear it.
+
+    ai_chatter enqueues its plain recurring ticks under that same kind, so
+    `rhythm_resume` — not the kind — is what marks a row as a real pending reply."""
     from db.engine import get_session
     from db.models import ScheduledJob
     from sqlalchemy import select
@@ -5841,7 +5851,7 @@ async def list_scheduled_sends(request: Request, fan_id: int | None = None):
             select(ScheduledJob)
             .where(
                 ScheduledJob.account_id == account_id,
-                ScheduledJob.kind == "scheduled_send",
+                ScheduledJob.kind.in_(("scheduled_send", "ai_chatter")),
                 ScheduledJob.status.in_(("pending", "running")),
             )
             .order_by(ScheduledJob.run_at)
@@ -5853,11 +5863,22 @@ async def list_scheduled_sends(request: Request, fan_id: int | None = None):
             p = json.loads(r.payload_json or "{}")
         except Exception:
             p = {}
-        if fan_id is not None and int(p.get("fan_id") or 0) != int(fan_id):
+        ai = r.kind == "ai_chatter"
+        if ai:
+            # A rhythm wake names its fan in `only_fan_ids`; ai_chatter's plain
+            # recurring tick has neither key and drops out here as fan 0.
+            row_fan = int((p.get("only_fan_ids") or [0])[0]) if p.get("rhythm_resume") else 0
+        else:
+            row_fan = int(p.get("fan_id") or 0)
+        if not row_fan or (fan_id is not None and row_fan != fan_id):
             continue
+        # A rhythm payload simply carries none of the body keys, so the very
+        # getters that shape a human's send yield the empty ghost an ai_reply
+        # wants. No second shape, no hardcoded blanks.
         out.append({
             "job_id": r.id,
-            "fan_id": p.get("fan_id"),
+            "kind": "ai_reply" if ai else "scheduled_send",
+            "fan_id": row_fan,
             "run_at": (r.run_at.isoformat() + "Z") if r.run_at else None,
             "status": r.status,
             "text": p.get("text") or "",

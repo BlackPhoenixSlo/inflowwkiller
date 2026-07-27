@@ -139,3 +139,21 @@ def giphy_dm_id(frame: dict) -> str | None:
         return None
     gid = str(frame.get("giphyId") or "").strip()
     return gid or None
+
+
+def quoted_reply(frame: dict) -> dict | None:
+    """The ORIGINAL message frame this one quote-replies to, else None.
+
+    OF renders a quote-reply by embedding the WHOLE original frame under
+    `replyToMessage` — its text, media array and price included. That embed is why
+    `has_video` above refuses to answer from a substring of the stored json: a photo
+    sent as a reply to a video post carries `"type": "video"` inside the quote.
+
+    Reading it on purpose is the other half of that story. The chat prompt is a flat
+    FAN/YOU transcript, so which bubble he answered is information only this field
+    carries — a four-word reply to a locked PPV is unreadable without it.
+
+    Returns the quoted frame, so callers get the predicate and the payload in one
+    call (same contract as `giphy_dm_id`)."""
+    q = frame.get("replyToMessage") if isinstance(frame, dict) else None
+    return q if isinstance(q, dict) else None

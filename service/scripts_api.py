@@ -204,6 +204,11 @@ def _validate_cfg(cfg: dict) -> dict:
         out["cadence_enabled"] = bool(cfg["cadence_enabled"])
     if "nudge_enabled" in cfg:
         out["nudge_enabled"] = bool(cfg["nudge_enabled"])
+    # Quote-reply context in the prompt (ships ON — see ai_chatter._DEFAULTS). Listed
+    # here because this validator DROPS any key it does not name, so an operator
+    # turning it off in the UI would otherwise silently keep it on.
+    if "reply_context_enabled" in cfg:
+        out["reply_context_enabled"] = bool(cfg["reply_context_enabled"])
     # 1:1 offer engine + human pacing + the editable line pack (all ship OFF).
     if "qualification_gate_enabled" in cfg:
         out["qualification_gate_enabled"] = bool(cfg["qualification_gate_enabled"])
