@@ -14,7 +14,6 @@ const BG_CTX: RelayContext = { priority: "background" };
 
 export interface BrainConfig {
   persona: string | null;
-  welcome_rules: string | null;
   location: string | null;
   /**
    * Structured creator canon pinned into every chat prompt — the facts she must

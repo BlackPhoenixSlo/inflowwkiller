@@ -2,7 +2,7 @@
 (`account_ai_config`) for the Automations → Brain panel.
 
 `account_ai_config` is the AI voice + caps a model speaks with: persona,
-welcome_rules, the 6 time-of-day activities + their per-slot vault images,
+the 6 time-of-day activities + their per-slot vault images,
 location/utc_offset (for the "it's <weekday> <tod> here" line), the daily spend
 cap, and the LLM model (global + optional per-purpose override). gen_info /
 send_welcome / send_followup / of_ai_chat all resolve it at run time, so this is
@@ -125,7 +125,6 @@ def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
     """The stored brain → a flat editor-friendly dict (scalar caps defaulted)."""
     return {
         "persona": row.persona if row else None,
-        "welcome_rules": row.welcome_rules if row else None,
         "location": row.location if row else None,
         "persona_facts": (_parse_obj(row.persona_facts_json) if row else {}),
         "language": (norm_lang(row.language) or "en") if row else "en",
@@ -177,7 +176,6 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     allowed = set(_model_options())
 
     persona = _clean_text(cfg.get("persona"), "persona")
-    welcome_rules = _clean_text(cfg.get("welcome_rules"), "welcome_rules")
     location = _clean_text(cfg.get("location"), "location")
     model = _validate_model(cfg.get("model"), "model", allowed)
 
@@ -278,7 +276,6 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     vals = {
         "account_id": body.account_id,
         "persona": persona,
-        "welcome_rules": welcome_rules,
         "location": location,
         "persona_facts_json": json.dumps(facts) if facts else None,
         "language": language,

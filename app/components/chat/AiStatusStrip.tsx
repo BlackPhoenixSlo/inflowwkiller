@@ -11,7 +11,7 @@
  */
 "use client";
 
-import { useAiStatus, type AiState } from "@/hooks/useAiStatus";
+import { useAiStatus, type AiState, type AiStatus } from "@/hooks/useAiStatus";
 import { cn } from "@/lib/utils";
 
 type Props = { accountId: string; fanId: number };
@@ -72,6 +72,79 @@ function money(cents: number | null): string {
   return `$${(cents / 100).toFixed(cents % 100 === 0 ? 0 : 2)}`;
 }
 
+/**
+ * WHY his daily ceiling is the number it is. Only the terms that LIFTED it above the
+ * stranger's ration are interesting — that attribution is the whole reason the gate
+ * reports a reason instead of a boolean, and it exists nowhere else in the UI.
+ */
+const DAILY_WHY: Record<string, string> = {
+  signal_lift: "Lifted above the base ration because he's showing a buying signal — a man reaching for his wallet is never the one she rations.",
+  spend_lift: "Lifted above the base ration by what he SPENDS. Spending buys a bigger allowance, never a smaller one.",
+  backoff_served: "He's over quota, but the silence has already been served — she's talking to him again.",
+  no_ladder: "Over quota with no backoff ladder configured, so nothing is being withheld.",
+};
+
+/** One decimal, trailing zero dropped: 3.6h, and 24h rather than 24.0h. The rung is
+ *  jittered ±25%, so the raw float is a number like 3.5858745856403846. */
+function hours(h: number): string {
+  return `${Number(h.toFixed(1))}h`;
+}
+
+type Chip = { text: string; tone: string; title: string };
+
+/**
+ * The daily ceiling as one chip. Dispatches on the gate's OWN verdict name — the UI
+ * does not re-derive "is he in his runway" from a null quota, because that would be
+ * _quota_gate's exit order copied into a component.
+ *
+ * Deliberately does NOT restate the wait or the dry streak in its TEXT: when a hold is
+ * being served the state badge beside it already says "Daily quota reached (35/15),
+ * she goes quiet for 19.4h…", and the same sentence twice on an 11px line is noise.
+ * Both stay in the title, which is also what covers the case where a rhythm break or a
+ * skip-list entry outranks the quota badge and suppresses it entirely.
+ */
+function dailyChip(d: NonNullable<AiStatus["cadence"]["daily"]>): Chip | null {
+  if (d.reason === "off") return null;
+
+  const dry = d.dry_days != null ? ` He hasn't paid in ${d.dry_days} days.` : "";
+  // Only meaningful when there is a hold to NOT serve. On a fan who is nowhere near
+  // his ceiling, "recorded, not served" describes nothing and reads as a warning.
+  const shadow = d.held && !d.enforced
+    ? " SHADOW — the hold was recorded, not served: she still replied." : "";
+
+  // Still being courted. Nearly every fan on a roster is here, so the chip has to earn
+  // the space: the countdown to when the ceiling starts applying is the only thing
+  // worth saying, and "no daily cap" — which is what this rendered before — said
+  // nothing at all about the fan you were looking at.
+  if (d.reason === "runway" && d.runway_left != null) {
+    return {
+      text: `📅 runway ${d.runway_left} left`,
+      tone: "text-fg-dim",
+      title:
+        `No daily ceiling yet — she owes him ${d.runway_left} more replies before one applies. ` +
+        `84% of everyone who ever bought did it inside 25 of her replies, so a fan inside ` +
+        `his runway is still being courted, not rationed.${shadow}`,
+    };
+  }
+  if (d.quota == null) {
+    return {
+      text: "📅 no daily cap",
+      tone: "text-emerald-400/80",
+      title: `He spends enough that no daily ceiling applies. A whale is never rationed.${shadow}`,
+    };
+  }
+
+  const wait = d.backoff_hours != null ? ` She's quiet for ${hours(d.backoff_hours)} from her last reply.` : "";
+  const why = DAILY_WHY[d.reason] ? ` ${DAILY_WHY[d.reason]}` : "";
+  return {
+    text: `📅 ${d.used}/${d.quota} today`,
+    tone: d.held ? "text-amber-400" : "text-fg-dim",
+    title:
+      `${d.used} of ${d.quota} replies used in the last 24h.${dry}${wait}${why} ` +
+      `A purchase or a content ask lifts this immediately.${shadow}`,
+  };
+}
+
 export default function AiStatusStrip({ accountId, fanId }: Props) {
   const { data, isLoading, error } = useAiStatus(accountId, fanId);
 
@@ -88,6 +161,7 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
   if (isLoading || !data) return null;
 
   const until = untilLabel(data.until);
+  const daily = data.cadence.daily ? dailyChip(data.cadence.daily) : null;
   const engineName =
     data.engine === "ai_upseller" ? "AI Upseller"
     : data.engine === "ai_chatter" ? "AI Chatter"
@@ -114,7 +188,7 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
         </span>
       )}
 
-      {/* Everything past the state chip is desktop-only: 11 chips that explain
+      {/* Everything past the state chip is desktop-only: a dozen chips that explain
           themselves through title= alone tower 8-10 lines high inside the phone
           header. `md:contents` keeps them DIRECT flex children at md, so the
           row's gaps are byte-identical to today. */}
@@ -156,6 +230,13 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
         <span className="text-emerald-400/80" title="No cap — he just paid, so she keeps talking.">
           💬 uncapped · {data.cadence.tier.replace(/_/g, " ")}
         </span>
+      )}
+
+      {/* The DAILY ceiling above the burst cap. The state badge names a hold at the
+          moment it bites, but only then — this is the running counter, so "why is she
+          getting quieter with him" is answerable BEFORE she goes silent. */}
+      {daily && (
+        <span className={daily.tone} title={daily.title}>{daily.text}</span>
       )}
 
       {/* She cannot randomly wander off mid-sell. */}

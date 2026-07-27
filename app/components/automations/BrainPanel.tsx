@@ -2,7 +2,7 @@
 
 /**
  * BrainPanel — the per-account "Brain" editor (account_ai_config) on
- * /automations. The voice + caps a model speaks with: persona, welcome_rules,
+ * /automations. The voice + caps a model speaks with: persona,
  * the 6 time-of-day activities + their per-slot vault images, location/utc_offset,
  * the daily spend cap, and the LLM model (global + per-purpose override).
  *
@@ -75,7 +75,6 @@ const PURPOSE_LABEL: Record<string, string> = {
 function isBlankBrain(c: BrainConfig): boolean {
   return (
     !c.persona &&
-    !c.welcome_rules &&
     !c.location &&
     !c.model &&
     Object.keys(c.time_activities || {}).length === 0
@@ -386,7 +385,6 @@ export default function BrainPanel() {
       ? {
           persona: form.persona,
           persona_facts: form.persona_facts,
-          welcome_rules: form.welcome_rules,
           location: form.location,
           utc_offset: form.utc_offset,
           time_activities: form.time_activities,
@@ -560,7 +558,7 @@ export default function BrainPanel() {
         <div className="text-sm text-fg-dim py-2">Loading…</div>
       ) : (
         <div className="space-y-4 pb-16 md:pb-0">
-          {/* Persona + welcome rules */}
+          {/* Persona */}
           <label className="block space-y-1">
             <span className="text-[11px] uppercase tracking-wide text-fg-dim">Persona</span>
             <textarea
@@ -568,16 +566,6 @@ export default function BrainPanel() {
               value={form.persona ?? ""}
               onChange={(e) => set("persona", e.target.value)}
               placeholder="Who this model is — name, vibe, how she talks…"
-              className={textareaCls}
-            />
-          </label>
-          <label className="block space-y-1">
-            <span className="text-[11px] uppercase tracking-wide text-fg-dim">Welcome rules</span>
-            <textarea
-              rows={3}
-              value={form.welcome_rules ?? ""}
-              onChange={(e) => set("welcome_rules", e.target.value)}
-              placeholder="Extra do/don'ts for welcomes…"
               className={textareaCls}
             />
           </label>

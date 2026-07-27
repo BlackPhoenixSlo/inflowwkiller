@@ -94,11 +94,25 @@ def burst_payload(*, tier: str, used: int, cap: int, stopped: bool, gap_min: int
 def daily_payload(q: Any, *, enforced: bool) -> dict[str, Any]:
     """The daily-ceiling numbers, straight off the engine's own `_Quota`. Same
     None-not-zero rule as above for an uncapped fan (a whale, or one still inside his
-    runway). `enforced` False means these are shadow figures — recorded, not served."""
+    runway). `enforced` False means these are shadow figures — recorded, not served.
+
+    `reason` is the gate's OWN verdict name, forwarded rather than re-derived. The
+    client used to infer the state from the numbers — `quota == null` plus a positive
+    runway meant "still being courted", a null quota without one meant "whale" — which
+    is an invariant of `_quota_gate`'s exit order living in a React component. The
+    engine already named every state (`QUOTA_*`); sending the name means the UI
+    dispatches on it the way the gate copy dispatches on the offer gate's `why`.
+
+    `runway_left` NOT `left`: `left` was `quota - used`, which the client can do
+    itself, while the runway — the number that says how long a fan has before the
+    ceiling starts applying at all — was computed by the engine and then dropped here.
+    Nearly every fan on a roster is inside his runway, so that was the one figure the
+    common case needed and the only one the payload refused to carry."""
     return {
+        "reason": q.reason,
         "used": q.used,
         "quota": q.quota or None,
-        "left": max(q.quota - q.used, 0) if q.quota else None,
+        "runway_left": q.runway_left or None,
         "held": bool(q.hold),
         "enforced": bool(enforced),
         "backoff_hours": q.wait_h or None,
@@ -127,8 +141,12 @@ def daily_quota_badge(q: Any, *, enforced: bool) -> Badge | None:
     paused when she is visibly still replying would be a lie the operator can see."""
     if not (q.hold and enforced):
         return None
+    # `:g` alone printed SIX significant figures of a jittered float — the rung is
+    # multiplied by a random ±25%, so a live thread read "She goes quiet for 3.58587h".
+    # Round first, then `:g`, so 24.0 still prints as "24" and not "24.0".
     return Badge("paused", f"Daily quota reached ({q.used}/{q.quota})",
                  f"She's made {q.used} replies to him in the last 24h, and he hasn't "
-                 f"paid in {q.dry_h / 24:.1f} days. She goes quiet for {q.wait_h:g}h, "
-                 f"then talks to him again — this slows her down, it never stops her. "
+                 f"paid in {q.dry_h / 24:.1f} days. She goes quiet for "
+                 f"{round(q.wait_h, 1):g}h, then talks to him again — this slows her "
+                 f"down, it never stops her. "
                  f"A purchase or a content ask resumes her immediately.")
