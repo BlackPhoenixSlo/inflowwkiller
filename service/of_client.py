@@ -202,11 +202,11 @@ class OFClient:
         if self._x_hash:
             return self._x_hash
         # This warmup fires on the FIRST signed request of every fresh client
-        # (and _make_client builds a new client every automation tick), so it
-        # must get the same CONNECT-403 retry as real OF calls — otherwise a
-        # single datacenter proxy blip fails the whole tick/job before
-        # _http_call's _proxy_retry is ever reached (it runs inside
-        # _signed_headers, ahead of the wrapped request).
+        # — once per pooled client now (see service/client_pool.py), so an
+        # eviction is what re-runs it. It must get the same CONNECT-403 retry
+        # as real OF calls, otherwise a single datacenter proxy blip fails the
+        # whole tick/job before _http_call's _proxy_retry is ever reached (it
+        # runs inside _signed_headers, ahead of the wrapped request).
         r = self._proxy_retry(lambda: self.http.get(
             f"{HASH_BASE}/?u={self.user_id}",
             headers={

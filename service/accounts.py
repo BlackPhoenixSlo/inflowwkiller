@@ -282,9 +282,13 @@ def latest_session_path(account_id: str) -> Path | None:
         return None
     try:
         meta = json.loads(latest.read_text())
-    except Exception:
+        sp = account_dir(account_id) / meta["session"]
+    except (ValueError, KeyError):
+        # A corrupt or half-written latest.json reads as "no session yet".
+        # Deliberately NOT `except Exception`: under fd exhaustion read_text()
+        # raises OSError, and swallowing it here reported a healthy account as
+        # "has no captured session. Run the bootstrap." Let OSError propagate.
         return None
-    sp = account_dir(account_id) / meta["session"]
     return sp if sp.exists() else None
 
 

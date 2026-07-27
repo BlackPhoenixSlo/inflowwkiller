@@ -43,6 +43,7 @@ import proxies as proxy_registry  # noqa: E402
 import live_rev  # noqa: E402
 import secrets_store  # noqa: E402  # UI-writable key store (Setup → Keys)
 from of_client import OFClient, OFAPIError  # noqa: E402
+import client_pool  # noqa: E402 — the relay's one OFClient pool
 from curl_cffi import requests as curl_requests  # noqa: E402  # proxy/network error types
 
 # Phase A — SQL persistence + SSE broadcaster. Both are additive: the
@@ -479,10 +480,8 @@ async def _persist_unhandled_errors(request: Request, call_next):
         raise
 
 
-# Lazy client pool — one OFClient per account_id. First request for an
-# account loads its session; subsequent requests reuse the pooled client.
+# The OFClient pool lives in client_pool (shared with the automation lane).
 # Hot-reload via /admin/reload-session?account_id=... or by re-bootstrapping.
-_clients: dict[str, OFClient] = {}
 
 # ── Realtime event bus ─────────────────────────────────────────
 # We connect ONCE to OF's WebSocket (wss://ws2.onlyfans.com/ws3/N) at startup
@@ -944,13 +943,13 @@ async def _stop_event_pumps() -> None:
 
 def _load_client(account_id: str) -> OFClient:
     """Return the OFClient for `account_id`, loading it the first time.
-    Raises a structured 503 if the account has no usable session yet."""
-    cached = _clients.get(account_id)
-    if cached is not None:
-        return cached
-    log.info("Loading account %s into OFClient", account_id)
+    Raises a structured 503 if the account has no usable session yet.
+
+    Pooling lives in client_pool; this is only the HTTP translation of the two
+    ways a build can fail. Routes and automations share the one pool, so an
+    account has one client (and one cookie jar), not one per lane."""
     try:
-        client = OFClient.from_account(account_id)
+        return client_pool.get(account_id)
     except FileNotFoundError as e:
         raise HTTPException(
             status_code=503,
@@ -971,10 +970,6 @@ def _load_client(account_id: str) -> OFClient:
                 "remedy": ["./venv/bin/python service/extract_rules.py"],
             },
         ) from None
-    _clients[account_id] = client
-    log.info("OFClient ready (account=%s user_id=%s rev=%s)",
-             account_id, client.user_id, client.x_of_rev)
-    return client
 
 
 def _resolve_account_id(request: Request | None) -> str:
@@ -1032,10 +1027,11 @@ def _get_client(request: Request | None = None) -> OFClient:
     return _load_client(_resolve_account_id(request))
 
 
-def _invalidate_client(account_id: str) -> None:
-    """Drop a pooled OFClient so the next request reloads from disk.
-    Used after re-bootstrap or proxy reassignment."""
-    _clients.pop(account_id, None)
+def _invalidate_client(account_id: str | None = None) -> None:
+    """Drop pooled OFClient(s) so the next request reloads from disk.
+    Used after re-bootstrap or proxy reassignment. None = every account (a
+    proxy edit can affect any of them)."""
+    client_pool.evict(account_id)
 
 
 def _kick_clear_session_dead(account_id: str) -> None:
@@ -7094,6 +7090,10 @@ def admin_proxies_upsert(body: _ProxyBody = Body(...)) -> dict[str, Any]:
         entry = proxy_registry.upsert(payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # An upsert edits host/port/credentials in place under the same label, so
+    # pooled clients would keep dialing the OLD proxy. Nothing cleared here
+    # before pooling reached the automation lane; now it has to.
+    _invalidate_client()
     _kick_db_sync(f"proxy-upsert-{body.label}")
     return {"ok": True, "proxy": entry}
 
@@ -7107,7 +7107,7 @@ def admin_proxies_remove(label: str) -> dict[str, Any]:
     # Proxy assignment is per session-file, but a session-file is owned by
     # exactly one account → invalidating the whole pool is the simplest
     # correct option (one network round-trip on next request per account).
-    _clients.clear()
+    _invalidate_client()
     _kick_db_sync(f"proxy-delete-{label}")
     return {"ok": True}
 
@@ -7131,7 +7131,7 @@ def admin_proxies_assign(body: _AssignBody = Body(...)) -> dict[str, Any]:
             entry = proxy_registry.assign(body.label, body.session_file)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    _clients.clear()
+    _invalidate_client()
     _kick_db_sync(f"proxy-assign-{body.label}")
     return {"ok": True, "proxy": entry}
 
@@ -7153,7 +7153,7 @@ def admin_proxies_unbind(label: str, body: _UnbindBody = Body(...)) -> dict[str,
         entry = proxy_registry.unbind_account(label, body.account_id)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    _clients.clear()
+    _invalidate_client()
     _kick_db_sync(f"proxy-unbind-{label}-{body.account_id}")
     return {"ok": True, "proxy": entry}
 
