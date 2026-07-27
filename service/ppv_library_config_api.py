@@ -285,8 +285,14 @@ async def _content_band_max_cents(account_id: str, stored: dict) -> int:
     clamps every 1:1 ladder quote into it (`library_bounds`), so a Max under the band
     top silently truncates the ceiling on the account's best content, and the operator
     would never see why. Bands come from `upsell.derive_band` (what humans actually
-    charged for that exact media, falling back to the account's median ask) — never
-    from duration, which is NULL on essentially every catalog row in prod."""
+    charged for that exact media, falling back to the account's median ask, then to
+    the operator's own sticker on the item) — never from duration, which is NULL on
+    essentially every catalog row in prod.
+
+    That third tier must be passed HERE too, not just at the chatter's quote site: an
+    account with no human 1:1 ask history gets the $3-$20 constant for every item, so
+    this warning would keep reporting a $30 ceiling while the chatter quotes the $90
+    rung — the one instrument meant to catch that truncation, blind to it."""
     async with get_session() as s:
         priced = (await s.execute(
             select(Message.media_ids, Message.price_cents)
@@ -296,9 +302,9 @@ async def _content_band_max_cents(account_id: str, stored: dict) -> int:
             .order_by(Message.created_at.desc())
             .limit(_BAND_SCAN_LIMIT))).all()
         catalog = (await s.execute(
-            select(CatalogItem.media_ids)
+            select(CatalogItem.media_ids, CatalogItem.price_cents)
             .where(CatalogItem.account_id == account_id,
-                   CatalogItem.enabled.is_(True)))).scalars().all()
+                   CatalogItem.enabled.is_(True)))).all()
 
     asks_by_key: dict[str, list[int]] = {}
     all_asks: list[int] = []
@@ -310,18 +316,21 @@ async def _content_band_max_cents(account_id: str, stored: dict) -> int:
             asks_by_key.setdefault(k, []).append(c)
     median = sorted(all_asks)[len(all_asks) // 2] if all_asks else None
 
-    # Every sellable media SET the account owns: the 1:1 catalog + this library.
-    media_sets: list[Any] = list(catalog)
-    media_sets += [p.get("media_ids") for p in (stored.get("ppvs") or [])
+    # Every sellable media SET the account owns, paired with its sticker: the 1:1
+    # catalog (priced by the operator) + this library (no per-PPV price here, so 0
+    # → derive_band falls through to the constant exactly as it always did).
+    media_sets: list[tuple[Any, int]] = [(ids, int(p or 0)) for ids, p in catalog]
+    media_sets += [(p.get("media_ids"), 0) for p in (stored.get("ppvs") or [])
                    if isinstance(p, dict)]
 
     best = 0
-    for ids in media_sets:
+    for ids, sticker in media_sets:
         key = media_key(ids)
         if not key:
             continue
         (_lo, hi), _src = derive_band(human_asks_cents=asks_by_key.get(key, []),
-                                      account_median_cents=median)
+                                      account_median_cents=median,
+                                      item_price_cents=sticker)
         best = max(best, int(hi))
     return min(best, _PRICE_CEIL_CENTS)
 
