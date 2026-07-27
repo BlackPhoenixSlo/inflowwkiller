@@ -227,11 +227,12 @@ _DEFAULTS: dict = {
     # (a $50 buyer gets the $60 video, not the $24 set re-run at cold-open lows).
     # Ships DARK: default off, zero behavior change until an account opts in.
     "proven_spend_floor_enabled": False,
-    "proven_spend_floor_mult": 0.38,     # floor = biggest single paid × this.
-                                         # 0.38 skips the cheapest sets (Dirk: no
-                                         # more $24 ask → cheapest ≈ $30) WITHOUT
-                                         # clamping every ask up to his ceiling —
-                                         # keeps mid-tier room to convert.
+    # 0.6 of his biggest-ever single PPV, plus a flat per-sale ratchet. The mult sets
+    # the base and must stay well under MAX_ASK_VS_HISTORY_MULT (3.0) — that is the
+    # CEILING, so a floor near it leaves no room to price in; `_add_cents` is what
+    # makes the ask climb. See upsell.MAX_ASK_VS_HISTORY_MULT for why 3x is the bound.
+    "proven_spend_floor_mult": 0.6,
+    "proven_spend_floor_add_cents": 0,   # +100 ⇒ every sale lifts his floor $1
     "max_offers_per_fan_per_day": 2,     # M3
     "min_fan_msgs_between_offers": 4,    # M3
     "pivot_on_escalation": True,         # closer pivots tease→offer when the fan
@@ -3177,43 +3178,59 @@ async def _ask_counters(account_id: str, now: datetime) -> tuple[dict[int, int],
     return by_fan, hour_n, len(rows)
 
 
-async def _max_single_paid_cents(account_id: str, fan_id: int) -> int:
-    """The LARGEST single PPV he has ever paid, in cents (0 if none). Read from PAID
-    messages, never from lifetime_spend_cents: spend is a SUM, and a fan who tipped
-    $5 forty times has never once paid $200. The one canonical 'proven ceiling'."""
+async def _paid_ppv_facts(account_id: str, fan_id: int) -> tuple[int, int]:
+    """(BIGGEST, MOST RECENT) single PPV he has paid, in cents — 0 for either when he
+    never has. The two facts every price decision needs, from ONE definition of "he
+    paid": the biggest is the history CEILING (never ask >3x it), the most recent is
+    the escalation BASE (`want = last_paid × 1.75`).
+
+    One definition on purpose. These were two queries over this same table twenty
+    lines apart with DIFFERENT where-clauses, which is the drift `_leash` was
+    extracted to end — the moment two predicates both mean "he paid", they answer
+    differently and nobody notices.
+
+    Read from PAID messages, never from lifetime_spend_cents: spend is a SUM, and a
+    fan who tipped $5 forty times has never once paid $200.
+
+    Mass-blast unlocks COUNT. He handed over the money; that a broadcast rather than
+    a 1:1 line prompted it does not un-prove he will pay. (Measured 2026-07-27:
+    excluding blasts would zero the proven spend of 100 fans who have demonstrably
+    bought, dropping them to the cold-open ceiling. The band deliberately excludes
+    blasts because it is inferring what CONTENT is worth from what humans charged;
+    this is inferring what a MAN will pay, which is a different question.)"""
     async with get_session() as s:
-        mx = (await s.execute(
-            select(func.max(Message.price_cents)).where(
-                Message.account_id == str(account_id),
-                Message.fan_id == int(fan_id),
-                Message.is_paid.is_(True))
-        )).scalar_one_or_none()
-    return int(mx or 0)
+        paid = (Message.account_id == str(account_id), Message.fan_id == int(fan_id),
+                Message.direction == "out", Message.is_paid.is_(True),
+                Message.price_cents > 0)
+        biggest = (await s.execute(
+            select(func.max(Message.price_cents)).where(*paid))).scalar_one_or_none()
+        latest = (await s.execute(
+            select(Message.price_cents).where(*paid)
+            .order_by(func.coalesce(Message.purchased_at, Message.created_at).desc())
+            .limit(1))).scalars().first()
+    return int(biggest or 0), int(latest or 0)
 
 
 async def _fan_ladder_state(account_id: str, fan_id: int, f: Fan | None,
                             ladder: LadderState | None) -> upsell.FanState:
     """The two facts the price actually depends on: the LARGEST single PPV he has
-    ever paid (the history ceiling — never ask >1.5x it) and the rung he JUST bought
-    (the escalation base)."""
-    max_paid = await _max_single_paid_cents(account_id, fan_id)
-    last_paid: int | None = None
+    ever paid (the history ceiling — never ask >3x it) and what he JUST paid (the
+    escalation base).
+
+    The escalation base used to read the newest PAID `ladder_quote` row, which only
+    exists for a CATALOG rung — so a convo-teaser unlock, a hot-thread teaser or a
+    human chatter's sale left it empty and the next ask opened COLD. It is now the
+    newest paid PPV of any kind, which is a strict superset: all 27 paid quote rows
+    in prod resolve to a paid message at the identical price, so nothing that query
+    could find is lost by not asking it."""
+    max_paid, last_paid = await _paid_ppv_facts(account_id, fan_id)
     # Only a HOT ladder escalates off the last rung — outside the hot window the
-    # next ask is a cold open again, not last_paid * 1.5 forever.
-    if ladder is not None and ladder.status == upsell.STATUS_HOT:
-        async with get_session() as s:
-            last_paid = (await s.execute(
-                select(LadderQuote.price_cents)
-                .where(LadderQuote.account_id == str(account_id),
-                       LadderQuote.fan_id == int(fan_id),
-                       LadderQuote.paid.is_(True))
-                .order_by(LadderQuote.paid_at.desc(), LadderQuote.id.desc())
-                .limit(1)
-            )).scalars().first()
-        last_paid = int(last_paid) if last_paid else None
+    # next ask is a cold open again, not last_paid * 1.75 forever.
+    hot = ladder is not None and ladder.status == upsell.STATUS_HOT
     ever = max_paid > 0 or int(getattr(f, "lifetime_spend_cents", 0) or 0) > 0
     return upsell.FanState(fan_id=int(fan_id), max_single_paid_cents=max_paid,
-                           last_paid_cents=last_paid, has_ever_paid=ever)
+                           last_paid_cents=(last_paid or None) if hot else None,
+                           has_ever_paid=ever)
 
 
 async def _next_tip_ask_cents(account_id: str, fan_id: int,
@@ -3570,14 +3587,27 @@ def _proven_floor_cents(fstate: upsell.FanState, cfg: dict) -> int:
     """The proven-spend price floor (cents) for this fan, or 0 when off / no
     history. Opt-in via `proven_spend_floor_enabled`; the floor is his biggest
     single paid PPV × `proven_spend_floor_mult` (default 1.0 → at least what he
-    already paid). Fed to _quote_item so cheaper items are skipped and he climbs
-    a tier — a $50 buyer gets the $60 video, never the $24 set again."""
+    already paid), plus the flat `proven_spend_floor_add_cents` ratchet. Fed to
+    _quote_item so cheaper items are skipped and he climbs a tier — a $50 buyer
+    gets the $60 video, never the $24 set again.
+
+    The additive term exists because a pure multiplier stalls: at mult=1.0 a fan
+    who buys at $8 has a floor of exactly $8 and can be re-offered $8 forever.
+    +$1 per sale guarantees the ask always moves, and it does the work down at the
+    cheap rungs where a percentage is pennies."""
     if not cfg.get("proven_spend_floor_enabled"):
         return 0
     mx = int(getattr(fstate, "max_single_paid_cents", 0) or 0)
     if mx <= 0:
         return 0
-    return int(mx * float(cfg.get("proven_spend_floor_mult") or 1.0))
+    # Indexed, not `.get(... ) or <literal>`: every cfg reaching here came through
+    # _load_config, which merges _DEFAULTS, so the key IS present — and a hardcoded
+    # inline default is exactly how this knob drifted (the declared default said one
+    # number, the docstring another). A KeyError on an unmerged cfg is the correct
+    # outcome; silently substituting a fourth value is not.
+    # round, not int(): 0.6 is not representable, so int(1000 * 0.6) truncates to 599.
+    return int(round(mx * float(cfg["proven_spend_floor_mult"]))) \
+        + int(cfg.get("proven_spend_floor_add_cents") or 0)
 
 
 def _quote_item(account_id: str, fan: upsell.FanState, item: CatalogItem, *,
@@ -3598,7 +3628,8 @@ def _quote_item(account_id: str, fan: upsell.FanState, item: CatalogItem, *,
     media = _item_media(item)
     key = upsell.media_key(media)
     human = [p for m in media for p in media_asks.get(m, [])]
-    band, _src = upsell.derive_band(human_asks_cents=human, account_median_cents=median)
+    band, _src = upsell.derive_band(human_asks_cents=human, account_median_cents=median,
+                                    item_price_cents=int(item.price_cents or 0))
     # Seeded per (fan, rung, media): a retry after a failed send re-quotes the SAME
     # price. A fan must never see the same clip at two prices in one thread.
     rng = random.Random(f"quote:{account_id}:{fan.fan_id}:{rung_index}:{key}")
@@ -5409,8 +5440,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     _t_sold = await _teaser_sold(account_id, fan_id,
                                                  int(_tstate["last_msg"]))
                 # Proven-spend soften floor (adaptive only): 38% of his biggest single
-                # PPV ever paid. One indexed max() query, only when the ladder can soften.
-                _t_max_paid = (await _max_single_paid_cents(account_id, fan_id)
+                # PPV ever paid. Only queried when the ladder can actually soften.
+                _t_max_paid = ((await _paid_ppv_facts(account_id, fan_id))[0]
                                if _tcfg.get("adaptive") else 0)
                 try:
                     _msgs_since = await _fan_msgs_since(account_id, fan_id, _since)
