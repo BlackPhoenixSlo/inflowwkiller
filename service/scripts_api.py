@@ -91,6 +91,10 @@ _INT_KNOBS = {
     "tip_ladder_base_cents": (100, 100_000),
     "tip_ladder_floor_cents": (100, 100_000),
     "tip_ladder_cap_cents": (100, 1_000_000),
+    # Flat ratchet on the proven-spend floor: +100 ⇒ every sale lifts his floor $1,
+    # so a fan who keeps buying is never re-asked the same price. Pairs with
+    # proven_spend_floor_mult in _FLOAT_KNOBS.
+    "proven_spend_floor_add_cents": (0, 20_000),
     # How many asks may sit unanswered at once (runtime floors this at 2).
     "max_open_offers": (1, 10),
     # Daily quota (item 21c) — the ceiling above the burst cap. 0 anywhere means

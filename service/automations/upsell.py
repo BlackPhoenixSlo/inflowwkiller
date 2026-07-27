@@ -83,6 +83,11 @@ COLD_OPEN_CEILING_CENTS = 5_900  # a fan who has never paid is never asked more 
 # 1.6-3x→52.5%, >3x→31.3%). The 1.6x line had zero predictive power and froze a $5
 # fan below $7.50 forever. A plain constant — the operator has no basis to answer it.
 MAX_ASK_VS_HISTORY_MULT = 3.0   # never ask >3x the largest single PPV he has EVER paid
+# This is a CEILING, so no price FLOOR may approach it (see ai_chatter's
+# proven_spend_floor_mult). A floor at 3x leaves a zero-width window in which to
+# price — every item collapses to the same number — and past ~$67 of proven spend
+# 3x exceeds OF_PRICE_MAX_CENTS, so `ceiling < floor` for the whole catalog and the
+# fan is silently never offered anything again. The best buyers go dark first.
 ESCALATION_MULT = 1.75          # after a PAID rung. One constant, not a preset.
 DISCOUNT_BAND = (0.60, 0.90)    # of the price HE SAW. Depth buys nothing (flat 20-25%
                                 # from 0.40x-0.90x; EV peaks 0.60-0.90x). 0.60 is a hard
@@ -585,6 +590,7 @@ def may_discount(ctx: DiscountCtx) -> tuple[bool, str]:
 
 
 def derive_band(*, human_asks_cents: list[int], account_median_cents: int | None,
+                item_price_cents: int = 0,
                 override: tuple[int, int] | None = None) -> tuple[tuple[int, int], str]:
     """The item's plausible price range → ((lo, hi), source).
 
@@ -592,7 +598,20 @@ def derive_band(*, human_asks_cents: list[int], account_median_cents: int | None
     be derived from duration, because `catalog_items.duration_sec` is populated on
     0 of 9 rows in prod: a duration-derived tier taxonomy would classify the entire
     vault by a NULL. So the band is derived EMPIRICALLY from what humans actually
-    charged for this exact media, and falls back to the account's own median ask."""
+    charged for this exact media, then the account's own median ask, then the price
+    the OPERATOR put on this item.
+
+    That third tier is not decoration. Without it an account whose every priced row is
+    a blast or the seller's own — both correctly excluded from the ask history by the
+    deflationary-spiral filter — got the `fallback` constant for EVERY item, and since
+    the ceiling is `hi × 1.5` that pinned the whole account at $30. Measured 2026-07-27:
+    4 of 8 accounts, all 346 of their quotes at (300, 2000), with 10 of one account's 12
+    catalog rungs unquotable to ANY fan for six days. An operator who prices an item at
+    $90 has stated what it is worth; that beats a constant written for a cold account.
+
+    `src` is provenance and is reported as such — a sticker-derived band must never
+    claim to be an `account` one, or every estimate computed off these quotes is
+    attributed to a median that was never involved."""
     if override:
         return (int(override[0]), int(override[1])), "override"
     asks = sorted(int(x) for x in (human_asks_cents or []) if x)
@@ -601,6 +620,8 @@ def derive_band(*, human_asks_cents: list[int], account_median_cents: int | None
         return (int(median * 0.6), int(median * 1.4)), "empirical"
     if account_median_cents:
         return (int(account_median_cents * 0.6), int(account_median_cents * 1.4)), "account"
+    if item_price_cents:
+        return (int(item_price_cents * 0.6), int(item_price_cents * 1.4)), "sticker"
     return (OF_PRICE_FLOOR_CENTS, 2_000), "fallback"
 
 
