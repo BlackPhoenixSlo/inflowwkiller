@@ -66,6 +66,7 @@ import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from . import _language
 from . import _openers  # the gen_info opener pool (the deepen phase)
+from . import _pins  # his own pinned long-form message (reader + writer)
 from . import rhythm  # tz_offset_for — the prompt clock (creator-local time)
 from attribution import write_outbound_attribution
 from automation_registry import register
@@ -1094,9 +1095,14 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # block's own tokens. "" for a fan with no deviations, which is most of them
     # once canon is filled.
     claims_block = fan_claims_block(f)
+    # His own long-form message, pinned on the thread and read back here (_pins).
+    # Same USER-message placement and the same reason as the claims block: per-fan
+    # text in the system prompt fragments the shared cached prefix. "" for every
+    # fan with no pins, which is nearly all of them.
     user = (
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
         f"{claims_block}"
+        f"{_pins.pins_block(f)}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Reply to his last message now, in the STYLE FOR THIS MESSAGE above."
     )
@@ -1569,6 +1575,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         await load_cat_sticker_tuning(account_id)             # per-account rate knobs
     account_lang = await _language.load_account_language(account_id)  # output language + guard gate
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
+    pins_on, pins_write = await _pins.load_flags(account_id)  # both default OFF
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     # Content-ask tip-ask: when a fan asks to SEE content, swap the gather question
     # for a natural "tip me $X" ask (the tip_reward automation delivers once he
@@ -2003,6 +2010,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                            profiles.get(fan_id), opener.slot)
             # Keep stored info current: refresh the profile when the gate says stale.
             await _maybe_refresh_profile(account_id, fan_id, c.fan_msg_n, now, f)
+            # Should his last message be pinned for later re-reading? Nearly always
+            # no, and the "no" costs one length check — see _pins' cost ladder.
+            await _pins.consider(account_id, f, c.last_body, client, lang=fan_lang,
+                                 enabled=pins_on, write=pins_write)
             sent += 1
             # We just replied → clear the unread badge. A mark-read failure must
             # never break the (already-persisted) send.

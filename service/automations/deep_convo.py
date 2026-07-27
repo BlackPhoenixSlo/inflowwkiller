@@ -79,6 +79,7 @@ import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from ._persona import compose_persona
 from . import _language
+from . import _pins  # his own pinned long-form message (reader only)
 from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
@@ -351,8 +352,10 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "code blocks, curly braces, or any metadata. Just text him back."
         f"{_language.output_language_directive(lang)}"
     )
+    # His own long-form message, pinned on the thread and read back here (_pins).
     user = (
         f"What you know about him:\n{facts_block}\n\n"
+        f"{_pins.pins_block(f)}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Don't apologize. Generate a brief, 1 verb max, casual, GIRLY reply (do girl "
         "things and the occasional little typo) that flirts and builds on his last "
@@ -901,7 +904,9 @@ def _leadin_messages(persona: str, f: Fan, c: _Candidate,
         f"{NONNATIVE_REGISTER if nonnative_on else ''}"
         f"{_language.output_language_directive(lang)}"
     )
-    user = f"Recent conversation (oldest→newest):\n{convo}\n\nAnswer his last message in one short sentence."
+    user = (f"{_pins.pins_block(f)}"
+            f"Recent conversation (oldest→newest):\n{convo}\n\n"
+            "Answer his last message in one short sentence.")
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 

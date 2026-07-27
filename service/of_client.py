@@ -1280,6 +1280,18 @@ class OFClient:
     def pin_message(self, message_id: int, user_id: int | str) -> Any:
         """POST /api2/v2/messages/{message_id}/pin/user/{user_id} → {success: true}.
 
+        ⚠️ THIS IS A TOGGLE, NOT AN ADD. Calling it on a message that is ALREADY
+        pinned UNPINS it — and still answers `{"success": true}`, so the response
+        cannot tell you which of the two things just happened. Probed live
+        2026-07-27 on a throwaway thread: pin → present, pin again → GONE, pin a
+        third time → back.
+
+        The consequence for any caller: "pin this" without first knowing whether
+        it is already pinned can silently DESTROY a pin while reporting success.
+        Check the chat's pinned list (`get_pinned_messages`) first and only call
+        this when the id is absent from it. `automations/_pins.consider` does
+        exactly that, and it found this behaviour the hard way.
+
         OF's web client uses the longer `/pin/user/{user_id}` form which scopes
         the pin to the chat partner. The shorter `/pin` form also returns 200
         but doesn't reliably make the message appear in the chat's pinned list.
@@ -1291,6 +1303,28 @@ class OFClient:
         """DELETE /api2/v2/messages/{message_id}/pin/user/{user_id} → {success: true}.
         Mirrors pin_message — same path, DELETE method."""
         return self.delete_json(f"{API_BASE}/messages/{message_id}/pin/user/{user_id}")
+
+    def get_pinned_messages(self, chat_id: str | int, *, limit: int = 50) -> list[dict]:
+        """GET /api2/v2/chats/{chat_id}/messages?filter=pinned — a chat's pinned
+        messages. ONE call, ONE page, the rows only.
+
+        `filter=pinned` is the ONLY form OF honours. `pinned=1` and `isPinned=1`
+        are silently IGNORED — they return an ordinary unfiltered page, which a
+        caller that trusts the param reads as "every message is pinned". Probed
+        read-only against live threads.
+
+        Returns the list rather than OF's envelope ON PURPOSE, because the
+        envelope's `hasMore` LIES on this filter: probed live it came back true
+        on a two-row response, and `offset=2` then returned nothing. Handing back
+        the rows makes the field that cannot be trusted unreachable. A pinned
+        list is a handful of messages by construction, so one page is all of it —
+        do not add pagination here."""
+        payload = self.get_json(
+            f"{API_BASE}/chats/{chat_id}/messages",
+            params={"limit": limit, "order": "desc", "skip_users": "all",
+                    "filter": "pinned"},
+        )
+        return (payload or {}).get("list") or []
 
     # ── Chat-level actions (VERIFIED LIVE) ─────────────────────
     # Found via the OnlyFansAPI public catalog. The OF endpoints follow a

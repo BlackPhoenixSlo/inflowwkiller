@@ -3648,6 +3648,26 @@ async def get_messages(
     return payload
 
 
+@app.get("/api/of/v2/chats/{chat_id}/pinned")
+async def get_pinned(chat_id: int) -> dict[str, Any]:
+    """The chat's pinned messages — ALL of them, straight from OF.
+
+    The rail used to derive its pins by filtering the LOADED BACKLOG for
+    `isPinned` (ChatSurface), so a pin older than the first page was invisible
+    and a thread holding two rendered "Pinned · 1". Verified live 2026-07-27: a
+    real thread's only pin sat outside the head page and the rail showed none.
+
+    Static path, and it must stay declared BEFORE `/chats/{chat_id}/messages/...`
+    is irrelevant here (different segment) — but it DOES have to come before any
+    future `/chats/{chat_id}/{something}` catch-all, same trap as mark-as-read.
+
+    Cheap enough to call per open chat: one OF request, no pagination (see
+    of_client.get_pinned_messages — `hasMore` lies on this filter)."""
+    rows = await asyncio.to_thread(
+        _proxy, lambda: _get_client().get_pinned_messages(chat_id))
+    return {"list": rows}
+
+
 @app.get("/api/of/v2/chats/{chat_id}/messages/all")
 def get_all_messages(
     chat_id: int,

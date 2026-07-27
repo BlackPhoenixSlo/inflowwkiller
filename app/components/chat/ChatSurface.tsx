@@ -25,6 +25,7 @@ import { useChatImageDesc } from "@/hooks/useChatImageDesc";
 import { useSendMessage } from "@/hooks/useSendMessage";
 import { useLikeMessage } from "@/hooks/useLikeMessage";
 import { useTogglePinMessage } from "@/hooks/useTogglePinMessage";
+import { useChatPinned } from "@/hooks/useChatPinned";
 import { useUnsendMessage } from "@/hooks/useUnsendMessage";
 import { useFan } from "@/hooks/useFan";
 import AiStatusStrip from "@/components/chat/AiStatusStrip";
@@ -678,12 +679,17 @@ export function ChatSurface({
     return [...real, ...scheduled.map((s) => scheduledToPseudoMessage(s, ownerUserId))];
   }, [handle.data, scheduledQ.data, ownerUserId]);
 
-  // Pinned slice sourced from the loaded messages cache — no extra OF
-  // fetch. Only pinned items inside the currently-loaded backlog show;
-  // scrolling up to load older pages will surface older pins too.
+  // Pinned slice asked of OF directly (one call, cached a minute), because
+  // filtering the loaded backlog UNDERCOUNTS: a pin older than the first page
+  // is invisible, so a thread holding two rendered "Pinned · 1" — verified live
+  // on a thread whose only pin sat outside the head page and showed as none.
+  // The backlog filter stays as the fallback for the moment before the fetch
+  // resolves, and for any account where the call fails.
+  const pinnedQ = useChatPinned(accountId, fanId);
   const pinnedMessages = useMemo(
-    () => (handle.data ?? []).filter((m) => m.isPinned),
-    [handle.data],
+    () => (pinnedQ.data?.length ? pinnedQ.data
+                                : (handle.data ?? []).filter((m) => m.isPinned)),
+    [pinnedQ.data, handle.data],
   );
 
   // Outbound-bubble "Sent by {employee}" label data. Anchored at the

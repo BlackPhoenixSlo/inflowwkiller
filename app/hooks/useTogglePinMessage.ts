@@ -51,12 +51,18 @@ export function useTogglePinMessage(accountId: string | null, fanId: number | nu
             { accountId },
           );
         }
+        // The rail reads `chat-pinned` (asked of OF, not filtered out of the
+        // loaded backlog), and that query knows nothing about this click. Without
+        // this it serves the pre-click set for its whole staleTime AND wins over
+        // the optimistic patch above, so the pin the operator just made appears
+        // to have been ignored.
+        qc.invalidateQueries({ queryKey: ["chat-pinned", accountId, String(fanId)] });
       } catch (err) {
         console.warn("[pin] failed — reverting", err);
         patchLocal(id, !next);
       }
     },
-    [accountId, fanId, patchLocal],
+    [accountId, fanId, patchLocal, qc],
   );
 
   return { toggle };
