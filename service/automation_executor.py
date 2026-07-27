@@ -64,6 +64,7 @@ from db.models import (
     SkipList,
 )
 from of_client import OFAPIError, OFClient
+import client_pool  # the relay's one OFClient pool (fd discipline lives there)
 from automation_registry import register, get_automation, load_automation_plugins
 import account_health
 import account_page  # free-vs-paid page (prime the cache off the recovery probe)
@@ -813,8 +814,11 @@ async def _materialize_due_rules() -> int:
 
 def _make_client(account_id: str) -> OFClient:
     """OFClient construction seam. Tests override this to inject a fake (no
-    network, no session files). Kept tiny so the override surface is one name."""
-    return OFClient.from_account(account_id)
+    network, no session files). Kept tiny so the override surface is one name.
+
+    Clients are pinned per account — see service/client_pool.py for why (an
+    OFClient per call was an fd per call, and it took the relay to EMFILE)."""
+    return client_pool.get(account_id)
 
 
 async def _upsert_message(
@@ -1402,14 +1406,18 @@ def _log_session_dead_skip(account_id: str, kind: str) -> None:
 
 async def _probe_dead_sessions() -> None:
     """Recovery sweep: for each flagged account whose last probe is older than
-    _SESSION_PROBE_INTERVAL_S, try a fresh-from-disk `client.me()` (NOT a
-    pooled client — a re-captured session on disk must be picked up). The
-    first success clears the flag; its parked jobs run on the next tick."""
+    _SESSION_PROBE_INTERVAL_S, try a fresh-from-disk `client.me()` — evict
+    first, because a re-captured session on disk must be picked up. Evicting
+    (rather than bypassing the pool) is load-bearing: a probe that proved the
+    session healthy while automations kept the stale pooled client would clear
+    the flag, fail, and re-flag forever. The first success clears the flag;
+    its parked jobs run on the next tick."""
     try:
         aids = await account_health.due_probe_ids(_SESSION_PROBE_INTERVAL_S)
         for aid in aids:
             await account_health.stamp_probe(aid)
             try:
+                client_pool.evict(aid)
                 client = _make_client(aid)
                 me = await asyncio.to_thread(client.me)
             except Exception as e:
