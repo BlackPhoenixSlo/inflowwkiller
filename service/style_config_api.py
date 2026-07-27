@@ -82,6 +82,9 @@ def _defaults() -> dict[str, Any]:
     out[CAT_STICKERS_KEY] = True
     # Sticker rate knobs — numeric (see load_cat_sticker_tuning).
     out.update({k: d for k, (d, _) in _NUMERIC_KNOBS.items()})
+    # Pins — both OFF, and NOT tri-state (mirrors _pins.load_flags exactly).
+    out[PINS_ENABLED_KEY] = False
+    out[PINS_WRITE_KEY] = False
     return out
 
 
@@ -116,6 +119,16 @@ def _resolved_view(stored: dict) -> dict[str, Any]:
     out[CAT_STICKERS_KEY] = bool(stored.get(CAT_STICKERS_KEY, True))
     # Numeric knobs: stored value clamped, absent/garbage → the default.
     out.update({k: _clamp_num(k, stored.get(k)) for k in _NUMERIC_KNOBS})
+    # Pins. OFF unless explicitly stored — same contract as the consistency keys,
+    # deliberately NOT the tri-state default.
+    #
+    # Rendered here because a switch you cannot read back is a switch you cannot
+    # trust: these keys PERSISTED correctly but the response omitted them, so an
+    # operator flipping shadow on saw a body with no `pins_*` in it and had no way
+    # to tell a successful save from a silently-dropped key. That matters most for
+    # `pins_write`, which is the one that starts mutating OnlyFans.
+    out[PINS_ENABLED_KEY] = bool(stored.get(PINS_ENABLED_KEY, False))
+    out[PINS_WRITE_KEY] = bool(stored.get(PINS_WRITE_KEY, False))
     return out
 
 
