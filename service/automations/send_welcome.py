@@ -18,11 +18,12 @@ It mirrors the scrape_chats reference in automation_executor.py:
   • of_client ONLY (no DOM), constructed via the executor's `_make_client` seam
     so tests inject a fake with no network.
   • its OWN AsyncSession per write.
-  • llm_client.chat() generates the welcome — that call writes the `grok_calls`
-    audit row AND enforces the per-account daily cost cap atomically, so we don't
-    re-implement either; persona / location / time-of-day come from
-    `account_ai_config` (the welcome's SHAPE is fixed in code — see
-    `_compose_system` — so every account's riff matches the local template).
+  • the welcome itself is DETERMINISTIC — `_local_greeting` + `_activity_bubble`,
+    no LLM, so a daily-cap trip can never cost a fan their welcome. persona /
+    location / time-of-day come from `account_ai_config`. The single remaining
+    llm_client.chat() call is the optional activity-bubble restyle (one per slot,
+    cached); that call writes the `grok_calls` audit row and enforces the
+    per-account daily cost cap atomically, so we don't re-implement either.
   • the existing optimistic send path: `of_client.send_message` →
     `attribution.write_outbound_attribution` (credits the system Automation
     employee, since no X-Employee-Id exists for a background run). The WS pump
@@ -93,7 +94,6 @@ log = logging.getLogger("of-relay.automation.send_welcome")
 
 _DEFAULT_NOTIF_LIMIT = 50      # how many subscribe-notifications to pull per tick
 _DEFAULT_MAX_WELCOMES = 25     # batch cap per run (logged when it bites)
-_WELCOME_TEMPERATURE = 0.85    # matches the spec's Grok call
 _GUARD_DEFAULT_H = 12.0        # cross-automation contact-guard window (payload override)
 # How long a fan rests after his welcome lands, before the chat engine may answer.
 #
@@ -107,8 +107,8 @@ _GUARD_DEFAULT_H = 12.0        # cross-automation contact-guard window (payload 
 # and it is the one somebody chose.
 _WELCOME_REST_S = 150          # 2.5 min — long enough not to talk over the welcome
 
-# First-letter → alliterative adjective for the real-name stutter trick (V1
-# _fan_name_hint / generate_welcome_local). e.g. S → "Sexy Sofie".
+# First-letter → alliterative adjective for the stutter greeting. e.g. S → "Sexy
+# Sofie". Drives every welcome now that the nameless riff is deterministic too.
 _ADJS = {
     "A": "Adoring", "B": "Brave", "C": "Cute", "D": "Dreamy", "E": "Epic", "F": "Flirty",
     "G": "Gorgeous", "H": "Handsome", "I": "Incredible", "J": "Juicy", "K": "Kind", "L": "Lovely",
@@ -116,12 +116,6 @@ _ADJS = {
     "S": "Sexy", "T": "Tasty", "U": "Unique", "V": "Vibrant", "W": "Wild", "X": "Xtra",
     "Y": "Yummy", "Z": "Zesty",
 }
-
-
-def _stutter_nick(first_word: str) -> tuple[str, str]:
-    """('S-S-S-Sofie', 'Sexy Sofie') — V1 alliteration trick for a real name."""
-    L = first_word[0].upper() if first_word else "B"
-    return (f"{L}-{L}-{L}-{first_word}", f"{_ADJS.get(L, 'Flirty')} {first_word}")
 
 
 # ── New-subscriber parsing (defensive — OF notification shape varies) ──
@@ -174,31 +168,6 @@ def _extract_new_subscribers(resp: object) -> list[dict]:
         seen.add(uid)
         out.append({"id": uid, "username": user.get("username"), "name": user.get("name")})
     return out
-
-
-# ── Prompt-shaping helpers (ports of the spec's pure helpers) ─────────
-
-def _fan_name_hint(display_name: str | None, username: str | None) -> tuple[str, str]:
-    """Classify the fan's name and return (type, instruction) for the prompt."""
-    target = (display_name or username or "").strip()
-    if not target:
-        return ("username", "Riff playfully on them being mysterious with no name yet.")
-    if re.fullmatch(r"u?\d+", target):
-        digits = re.sub(r"\D", "", target)
-        return ("number",
-                f"Make a playful joke about them being 'fan #{digits}' since they "
-                f"have no real name set yet.")
-    words = target.split()
-    if (1 <= len(words) <= 3 and not any(c.isdigit() for c in target)
-            and words[0][:1].isupper()):
-        first = words[0]
-        stutter, nickname = _stutter_nick(first)
-        return ("real_name",
-                f"Open with an excited stutter prefix on their first letter that runs "
-                f"straight into a flirty alliterative nickname (a flirty adjective "
-                f"starting with the same letter as their name) and an excited sign-off, "
-                f"like 'Hey {stutter[:6]}{nickname} ! !!'.")
-    return ("username", f"Riff playfully on their handle '{target}'.")
 
 
 def _model_hour(utc_offset: float | int | None) -> int:
@@ -311,39 +280,6 @@ def _slot_image_id(cfg: dict, hour: int) -> int | None:
         return int(val) if val is not None else None
     except (TypeError, ValueError):
         return None
-
-
-# The house greeting shape, in CODE — deliberately not operator-editable. It
-# replaces the per-account `welcome_rules` column, which still described the
-# retired V1 "Hello there," format and asked for a "drama line" nothing has ever
-# put in the prompt.
-#
-# The model writes the GREETING ONLY. Bubble 2 is `_activity_bubble` — the same
-# deterministic line a named fan gets — so there is nothing here about weekdays,
-# location or activities, and no way for the model to drop or invent a fact.
-_GREETING_RULES = (
-    'Write ONE line: an excited stutter greeting, exactly this shape — '
-    '"Hey A-A-A-Adoring Alex ! !!". Take the first letter of whatever you are '
-    'greeting them by, stutter it three times, run it straight into a flirty '
-    'adjective starting with that same letter, then the name or handle, then '
-    '" ! !!". Never write the word \'Stranger\'. No markdown, no questions, at '
-    'most one emoji. Output only the line — no preamble, no surrounding quotes.'
-)
-
-
-def _compose_system(cfg: dict, name_instr: str) -> str:
-    persona = (cfg.get("persona")
-               or "You are a warm, flirty OnlyFans creator welcoming a brand-new "
-                  "subscriber to your page.").strip()
-    parts = [persona, _GREETING_RULES]
-    if name_instr:
-        parts.append("Name handling: " + name_instr)
-    return "\n\n".join(parts)
-
-
-def _compose_user(name: str) -> str:
-    return (f"The new subscriber's name/handle is: {name}." if name
-            else "The new subscriber has not set a name.")
 
 
 # ── DB seams (own session each — house pattern) ───────────────────────
@@ -523,6 +459,30 @@ def _local_greeting(name: str) -> str:
     return f"Hey {L}-{L}-{L}-{_ADJS.get(L, 'Flirty')} {name} ! !!"
 
 
+# Longest run of letters in a handle — 'xx_rider_92' → 'rider'. 3+ so a separator
+# fragment ('xx', 'zz') never wins over the actual word.
+_HANDLE_WORD = re.compile(r"[A-Za-z]{3,}")
+
+
+def _greet_token(sub: dict) -> str:
+    """What to greet a fan by when `_resolve_welcome_name` found no real name in any
+    source — all that's left is the raw OF handle. Three shapes, resolved in code:
+
+        u4471223     → 'fan #4471223'   (a bare id is an id, not a name)
+        xx_rider_92  → 'rider'          (the word inside the handle)
+        (unusable)   → 'cutie'          (letterless handle — vanishingly rare)
+
+    This used to be an LLM call per nameless fan. It produced exactly this shape
+    ('Hey B-B-B-Bold bigdaddy69 ! !!'), so it was paying per fan for a table lookup
+    the named path already does for free — and a daily-cap trip cost those fans
+    their welcome entirely. Deterministic means no cost, no cap, no variance."""
+    target = (sub.get("name") or sub.get("username") or "").strip()
+    if re.fullmatch(r"u?\d+", target):
+        return f"fan #{re.sub(r'\D', '', target)}"
+    words = _HANDLE_WORD.findall(target)
+    return max(words, key=len).lower() if words else "cutie"
+
+
 def _activity_bubble(cfg: dict, hour: int | None = None) -> list[str]:
     """Bubble 2 — 'just woke up and made myself a coffee... it's Friday morning in
     Vancouver, Canada' — as a 0-or-1 element list, empty when the account has no
@@ -623,29 +583,6 @@ async def _restyle_activity(
         temperature=_RESTYLE_TEMPERATURE,
     )
     return _one_line(res.content) or line
-
-
-async def _generate_greeting(
-    account_id: str, fan_id: int, sub: dict, cfg: dict, model: str
-) -> str:
-    """One Grok/LLM call → bubble 1 for a fan we could not name. Bubble 2 is the
-    same deterministic `_activity_bubble` every other fan gets, so this call owns
-    the greeting and nothing else. Raises LLMCapExceeded when the daily cap is hit
-    (caller stops the run); any other failure raises to the caller."""
-    name = (sub.get("name") or sub.get("username") or "").strip()
-    _, name_instr = _fan_name_hint(sub.get("name"), sub.get("username"))
-    res = await llm_client.chat(
-        model=model,
-        messages=[
-            {"role": "system", "content": _compose_system(cfg, name_instr)},
-            {"role": "user", "content": _compose_user(name)},
-        ],
-        purpose="welcome",
-        account_id=account_id,
-        fan_id=fan_id,
-        temperature=_WELCOME_TEMPERATURE,
-    )
-    return _one_line(res.content)
 
 
 # ── Vault image (network-rewrite of the DOM "bot" folder click) ───────
@@ -756,11 +693,7 @@ async def preview_compose(
         name = _name_token(test_name) or "Alex"
         sub = {"id": 0, "name": test_name or name, "username": None}
 
-    if name:
-        greeting = _local_greeting(name)
-    else:
-        model = model or cfg.get("model") or await resolve_model(account_id, "welcome", None)
-        greeting = await _generate_greeting(account_id, int(fan_id or 0), sub, cfg, model)
+    greeting = _local_greeting(name or _greet_token(sub))
     # A PINNED slot line IS bubble 2 (unless the operator hit Regenerate →
     # ignore_pin): the exact approved line that will ship, weekday-refreshed, no LLM
     # call. It ships even when the slot's raw activity was later blanked.
@@ -935,19 +868,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         sent_ok = False
         try:
             try:
-                # Only the GREETING varies — a resolvable name (from the notif, the
-                # fan's real_name, or a stored nickname) gets the deterministic V1
-                # 'precious' stutter with no LLM; a random handle / number falls back
-                # to an LLM riff. Bubble 2 is chosen below and is the same either way,
-                # so the pin and restyle need no special case for a nameless fan.
+                # Only the greeting TOKEN varies — a resolvable name (from the notif,
+                # the fan's real_name, or a stored nickname), else a token derived
+                # from the raw handle. Same deterministic stutter either way, and no
+                # LLM: the daily cap can no longer cost a nameless fan their welcome.
                 name = await _resolve_welcome_name(account_id, fan_id, sub)
-                greeting = (_local_greeting(name) if name else
-                            await _generate_greeting(account_id, fan_id, sub, cfg, model))
-            except LLMCapExceeded:
-                cap_hit = True
-                log.warning("send_welcome daily LLM cap reached account=%s — stopping run",
-                            account_id)
-                break
+                greeting = _local_greeting(name or _greet_token(sub))
             except Exception:
                 errors += 1
                 log.warning("send_welcome generate failed account=%s fan=%s",

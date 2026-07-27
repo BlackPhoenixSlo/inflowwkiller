@@ -447,6 +447,12 @@ export interface OFMessage {
   _isFutureScheduled?: boolean;
   _fireAt?: string;
   _scheduleJobId?: number;
+  /** The pseudo-row is a pending AI reply (Human Rhythm paused ai_chatter and
+   *  scheduled its own wake), not a human's queued send. It has NO body — the
+   *  draft doesn't exist yet at defer time — so the bubble is time-only, and
+   *  `_scheduleJobId` is deliberately left unset so no cancel button renders:
+   *  cancelling the wake job would strand `rhythm_state.wake_at`. */
+  _aiPending?: boolean;
 }
 
 export interface OFChatItem {

@@ -38,8 +38,8 @@ not a reader cost at all, it is the writer's, and the writer is rare.
 It also picks up 6 human pins that already exist across 96 threads and that nothing
 in the stack has ever read.
 
-WHY A REJECT LIST AND NOT A RANKER
-----------------------------------
+WHY NOT A RANKER, AND WHY NOT A LEXICON EITHER (v2, 2026-07-27)
+---------------------------------------------------------------
 Two ranking shortcuts were tried against real prod data and BOTH pick the wrong
 message:
 
@@ -51,23 +51,62 @@ message:
     07-21, while the paragraph worth pinning landed on 07-26. It reliably picks
     the thin one.
 
-So selection is topic-anchored first and rich second, and it is a whole-message
-REJECT scan rather than a score threshold. The failure that shape exists to stop is
-specific and is not hypothetical: a calmly worded message about losing a job,
-separating from a wife, and when the kids are out of the apartment. No explicit
-term, no price, no illness — it passes every naive filter, and it would pin a man's
-crisis to the top of an erotic chat with an absence schedule attached.
+v1 replaced ranking with a lexicon: topic anchors to admit, a reject list to
+exclude. That was measured against the whole fleet on 2026-07-27 and it does not
+work. 359 real fan messages ≥400 chars were hand-labelled on one question — IS
+THIS A LONGER EXPLANATION OF WHAT HE DOES? — giving 83 that should be pinned. The
+v1 lexicon accepted **0 of the 83**, and the 4 messages it did accept were a
+seduction fantasy, a meal plan written for her, a page of compliments, and a man
+who says he likes his career without ever saying what it is.
+
+Both halves were aimed wrong:
+
+  • THE ANCHORS COUNT VOCABULARY, NOT DISCLOSURE. A love letter saying "cook
+    dinner / walk / sunset" scores 3; a man explaining he spent ten years in the
+    oilfields scores 1. Affection prose is dense in exactly these words.
+  • THE REJECT LIST FIRES ON INCIDENTAL WORDS. `money` killed the superintendent
+    on "what they need to PAY to fix it", the Ford man with a 2034 pension on
+    "paid", the ranch on "paid". `identifiers` killed four on "graduating high
+    SCHOOL", one on "Wall STREET", one on "ROAD". `explicit` killed "I'm a
+    FUCKING entrepreneur" and "STRIP club DJ". A man describing his working life
+    mentions money; that is what working lives contain.
+
+A better rule was then measured rather than assumed — first/second-person ratio,
+first-person indicative verbs, "my <noun>", numbers, URLs. It reaches 25% recall
+at 78% precision and cannot go further, because people describe their lives in the
+imperative ("wake up, get coffee, feed livestock"), in the first-person plural
+("we have our cows up in the high country"), as bare noun lists (eight named LA
+restaurants), and in four languages. Whether a paragraph states a durable fact
+about HIM is semantic, not lexical.
+
+So v2 asks a model. `judge()` is the gate, sitting behind every cheap check so it
+only ever runs on a long, unseen, uncooled candidate — about one fan a day across
+the fleet. The lexicon survives in exactly one place where it is still the right
+tool: scanning the pins HUMANS made, which no judge has ever seen (`_safe_to_read`).
+
+The failure the gate exists to stop is specific and is not hypothetical: a calmly
+worded message about losing a job, separating from a wife, and when the kids are
+out of the apartment. No explicit term, no price, no illness — it passes every
+naive filter, and it would pin a man's crisis to the top of an erotic chat with an
+absence schedule attached. That message is in the judge's prompt as a worked
+example of a refusal, and in `test_pins` as an assertion.
 
 ANY hit in ANY category rejects the WHOLE message. There is no scoring its way out,
 and no per-category severity. A false negative costs one un-pinned paragraph; a
 false positive is the paragraph above.
 
-WHY ENGLISH ONLY
-----------------
+WHY THE LEXICON IS ENGLISH ONLY — AND WHY THE JUDGE IS NOT
+-----------------------------------------------------------
 The reject lexicon is English. On a Spanish thread it would be blind — it would
 scan a message it cannot read and return "nothing to reject", which is the worst
-possible answer. `lang != "en"` is therefore a hard no-pin, not a degraded mode.
-Adding a language is adding its lexicon, and nothing else.
+possible answer. So `classify` still hard-refuses `lang != "en"`, and that is
+right for the job it now has: scanning human pins.
+
+The WRITER no longer has that limit, because the judge reads any language. This
+was not a nicety — four of the 83 pinnable messages found on 07-27 are Spanish or
+Italian, including a man explaining he trained in shiatsu in Naples at 25 and one
+walking through how he builds a house. Under v1 every one of them was unreachable
+by construction, and no amount of lexicon tuning would have found them.
 
 WHERE THE STATE LIVES
 ---------------------
@@ -99,6 +138,7 @@ from typing import NamedTuple
 
 from sqlalchemy import select
 
+import llm_client
 from db.engine import get_session
 from db.models import AccountAiConfig, Message
 from jsonsafe import load_dict
@@ -119,10 +159,30 @@ PINS_WRITE_KEY = "pins_write"        # ALSO mutate OnlyFans
 
 # Bumped whenever the rules below change. Stamped on every record, because it is
 # the only way to ask "what did the OLD classifier pin?" after a rule moves — and
-# the first thing you want when a pin turns out to be wrong.
-CLASSIFIER_VERSION = 1
+# the first thing you want when a pin turns out to be wrong. v2 = the judge.
+CLASSIFIER_VERSION = 2
 
-MIN_CHARS = 200              # below this it is a remark, not a paragraph
+# 400, not 200. Raised on the 07-27 labelling: of the 7,771 inbound messages ≥200
+# raw chars across the fleet, 1,829 fall under 200 the moment OF's <p>/<br /> is
+# stripped, and the ≥400 band is where the base rate of a genuinely pinnable
+# paragraph goes from 0.3% to 15%. It is also the cheapest gate in the module and
+# the one that keeps the judge rare — see the cost ladder in `consider`.
+MIN_CHARS = 400              # below this it is a remark, not a paragraph
+
+# The floor for rung 2, which measures `last_body` — text the ENGINES have already
+# stripped and clipped to their own `_MSG_CLIP`, which is also 400.
+#
+# It cannot be MIN_CHARS. `_history_text` hands us `_strip_html(body)[:400]`, so a
+# 900-character paragraph arrives as exactly 400 characters, and then `_clean`
+# collapses whitespace and strips the ends — landing at 397, or 385, or wherever
+# the runs of spaces fell. Comparing that against 400 rejects nearly every real
+# candidate while looking exactly like a working gate: the feature would ship
+# inert, and the log would say "no candidate" every time, truthfully.
+#
+# So rung 2 is deliberately slack. It is a COST gate — its only job is to avoid a
+# SELECT for the overwhelming majority of turns — and rung 4 re-measures the full
+# untruncated body against MIN_CHARS, which is the number that decides anything.
+_PREFILTER_CHARS = 340
 _READ_MIN_CHARS = 40         # below this a pin is prompt noise (see _safe_to_read)
 MIN_ANCHORS = 2              # "multiple topic signals in one neutral factual span"
 CAP = 2                      # how many pins WE keep on a thread (see CAP below)
@@ -155,6 +215,33 @@ def _off() -> bool:
 
 _TAGS = re.compile(r"<[^>]+>")
 _WS = re.compile(r"\s+")
+
+
+# The ONE thing no judge gets a vote on. Structural only — an address, a handle,
+# a link, a long digit run — because those are unambiguous and because storing one
+# is a doxx risk that survives every later change of mind about topic policy.
+#
+# Deliberately NOT the v1 `identifiers` word list. That list carried `school`,
+# `street`, `road`, `apartment`, `flight`, `hotel`, `instagram`, and on the 07-27
+# labelling it killed eight paragraphs that should have been pinned — four of them
+# on the word "school" inside "graduating high school", one on "Wall Street", one
+# on the road trip he was planning. Naming a school is not publishing an address.
+# Judging whether a mention identifies him is exactly the semantic call the judge
+# is here to make; matching an email address is not.
+_HARD_BLOCK = re.compile(
+    r"(\S+@\S+\.\w+|\bhttps?://|\bwww\.\w|\b[\w.-]+\.(com|net|org|io|co\.uk)\b|"
+    r"\+\d[\d\s().-]{7,}|\b\d{7,}\b|"
+    r"\b(whatsapp|telegram|snapchat|kik|discord)\b\s*[:@]?\s*\S*\d)",
+    re.IGNORECASE)
+
+
+def _hard_blocked(text: str) -> bool:
+    """Contact details or a link — never pinned, never judged, never stored.
+
+    Runs on the RAW clean text (not `_match`), because the patterns here are
+    case-insensitive by construction and one of them is an email address, where
+    casefolding is a lossy thing to do to the value you are about to reject on."""
+    return _HARD_BLOCK.search(text or "") is not None
 
 
 def _rejected(body: str) -> str | None:
@@ -309,12 +396,17 @@ class Pick(NamedTuple):
 
 
 def classify(text: str | None, lang: str = "en") -> Pick | None:
-    """The whole of §5.4 in one pure function: `Pick` if this message may be
-    pinned, `None` if it may not.
+    """The v1 lexicon. NO LONGER THE WRITER'S GATE — see the module docstring for
+    the measurement that retired it (0 of 83 correct on the labelled fleet).
 
-    PURE and cheap on purpose — it is the gate every other cost in this module
-    sits behind, so it must be safe to run on a message that will never be
-    pinned, which is nearly all of them."""
+    It survives for `_safe_to_read`, and only for the pins HUMANS made. A human
+    pin has been through no judge and no reject list, so a conservative
+    word-presence scan is the right tool there precisely BECAUSE it over-rejects:
+    the cost of hiding a human's pin from the model is one missing line, and the
+    cost of showing "his wife left him last month" to an erotic chat is the
+    failure this module was built around.
+
+    PURE and cheap, unchanged."""
     if lang != "en":                    # see WHY ENGLISH ONLY
         return None
     clean = _clean(text)                # what we would STORE — his own words
@@ -331,6 +423,76 @@ def classify(text: str | None, lang: str = "en") -> Pick | None:
         if len(anchors) >= MIN_ANCHORS and (best is None or len(anchors) > best.score):
             best = Pick(topic, len(anchors), clean[:_TEXT_CLIP])
     return best
+
+
+_JUDGE_SYSTEM = (
+    "You decide whether to keep one message a man sent an OnlyFans creator, so she "
+    "can re-read it weeks later and sound like someone who listened.\n\n"
+    "KEEP it only if it is a longer explanation of HIS OWN LIFE — what he does for "
+    "work, his daily routine, where he lives, his family, his history, his skills, "
+    "his health, his plans. The test: would a stranger reading only this message "
+    "learn something TRUE and LASTING about him?\n\n"
+    "KEEP even when it also mentions money, is negative or sad, names a relative, "
+    "or contains a swear word. Men describe their working lives in terms of pay and "
+    "overtime, and a hard year is still a fact about him. None of that disqualifies.\n\n"
+    "DO NOT KEEP:\n"
+    "- sexual fantasy or roleplay — everything in it is imagined, not true\n"
+    "- love letters, poems, song lyrics, compliments about HER\n"
+    "- promos, price lists, agency pitches, anything selling something\n"
+    "- requests for custom content, or questions about her\n"
+    "- complaints, accusations, goodbyes\n"
+    "- a passing mood or a one-off event with no lasting fact ('flying today', "
+    "'money is tight this month')\n"
+    "- anything that would identify him to a stranger: an address, an employer plus "
+    "a town, a handle, a phone number\n\n"
+    "Worked refusal — KEEP THIS ONE OUT even though it is calm, long and factual: a "
+    "man explaining he has lost his job, is separating from his wife, and when his "
+    "kids are out of the apartment. It is a crisis plus an absence schedule, and it "
+    "must never sit at the top of an erotic chat.\n\n"
+    "Any language. Reply as JSON: {\"keep\": true|false, \"topic\": \"<one or two "
+    "words: occupation, routine, family, history, health, plans, hobby, location>\", "
+    "\"fact\": \"<the single most useful thing it says about him, under 12 words>\"}"
+)
+
+
+async def judge(text: str, account_id: str, fan_id: int) -> Pick | None:
+    """Is this paragraph worth pinning? The v2 gate.
+
+    Returns a `Pick` to pin, or `None` for every other outcome INCLUDING failure:
+    a judge that cannot be reached must decline, never fall back to pinning. The
+    whole cost of being wrong here is asymmetric — a paragraph we skip costs one
+    missed pin and another will come, a paragraph we pin wrongly sits in front of
+    the model on every future reply until someone notices.
+
+    `score` is no longer an anchor count (there are no anchors); it is 1 for a
+    kept message, so `_rank`'s tie-breaks and the shadow log keep their shape.
+
+    NEVER raises. `consider` already wraps this, but the reply path is the product
+    and a judge is the newest, most failure-prone thing in it."""
+    from . import _common                    # local: _common imports this module
+    try:
+        model = await _common.resolve_model(account_id, "pins")
+        res = await llm_client.chat(
+            model=model,
+            messages=[{"role": "system", "content": _JUDGE_SYSTEM},
+                      {"role": "user", "content": text[:_TEXT_CLIP]}],
+            purpose="pins_judge",
+            account_id=str(account_id), fan_id=int(fan_id),
+            response_format={"type": "json_object"}, temperature=0.0,
+        )
+        parsed = res.parsed if isinstance(res.parsed, dict) else {}
+        if parsed.get("keep") is not True:
+            log.info("pins_judge_no account=%s fan=%s | %s", account_id, fan_id,
+                     str(parsed.get("fact") or "")[:120])
+            return None
+        topic = str(parsed.get("topic") or "").strip()[:24] or "life"
+        log.info("pins_judge_yes account=%s fan=%s topic=%s | %s", account_id,
+                 fan_id, topic, str(parsed.get("fact") or "")[:120])
+        return Pick(topic, 1, _clean(text)[:_TEXT_CLIP])
+    except Exception:                        # noqa: BLE001 — incl. LLMCapExceeded
+        log.warning("pins_judge_failed account=%s fan=%s", account_id, fan_id,
+                    exc_info=True)
+        return None
 
 
 # ── §5.3 THE READER ──────────────────────────────────────────────────
@@ -361,7 +523,7 @@ def pins_block(fan) -> str:
     slice is what stops that becoming N extra paragraphs competing with the live
     conversation."""
     safe = [p for p in _have(fan_state(fan, STATE_KEY))
-            if _safe_to_read(str(p.get("text") or ""))]
+            if _safe_to_read(str(p.get("text") or ""), str(p.get("src") or ""))]
     lines = [f"- {p['text']}" for p in _rank(safe)[:CAP]]
     return _pinned_block(
         "HE WROTE THIS TO YOU HIMSELF, IN HIS OWN WORDS. Treat it as something you "
@@ -370,10 +532,25 @@ def pins_block(fan) -> str:
         "never recite it as a list, and never let on that you have it saved:", lines)
 
 
-def _safe_to_read(text: str) -> bool:
-    """May this pin be shown to the model? The reject scan, at READ time.
+def _safe_to_read(text: str, src: str = "") -> bool:
+    """May this pin be shown to the model? The scan, at READ time.
 
-    Two reasons it cannot live only in the writer:
+    WHICH scan depends on who chose the pin, and that split is the whole point:
+
+      • `src == "us"` — a judge read the whole message and kept it, under the
+        policy in `_JUDGE_SYSTEM`. Re-running the v1 lexicon over it here would
+        undo that decision silently: the labelling found the lexicon rejects
+        "I'm a fucking entrepreneur" and "graduating high school", so the writer
+        would pin, the reader would hide, and the 24h cooldown would burn on a
+        pin nothing ever renders. That is the same two-implementations-of-one-
+        policy bug that `_rank` was built to end, and it would be back. So a
+        judged pin faces only `_hard_blocked` — the structural rule no judge
+        gets a vote on, re-applied because storage is not a promise.
+      • anything else — a HUMAN pinned it, and no judge has ever seen it. Keep
+        the conservative v1 lexicon there, where over-rejecting is the cheap
+        direction to fail in.
+
+    Two reasons the read-time scan cannot live only in the writer at all:
 
       1. MOST PINS IN STATE WERE NOT CHOSEN BY US. `_capture` deliberately takes
          every pin on the thread, human ones included — that is the point of
@@ -398,11 +575,17 @@ def _safe_to_read(text: str) -> bool:
     capitalisation now, and every pattern here is lowercase — scanning the raw
     copy would silently stop matching "Divorce" the moment storage stopped
     casefolding."""
-    if len(_clean(text)) < _READ_MIN_CHARS:
+    clean = _clean(text)
+    if len(clean) < _READ_MIN_CHARS:
         return False
+    if _hard_blocked(clean):
+        log.debug("pins_hidden category=hard_block src=%s", src or "?")
+        return False
+    if src == "us":
+        return True
     hit = _rejected(_match(text))
     if hit:
-        log.debug("pins_hidden category=%s", hit)
+        log.debug("pins_hidden category=%s src=human", hit)
     return hit is None
 
 
@@ -472,41 +655,58 @@ async def consider(account_id: str, fan, last_body: str | None, client, *,
     means this module needs no construction seam of its own — the engine's fake
     is the fake.
 
+    `lang` is still accepted, and is no longer a gate: the judge reads any
+    language (see WHY THE LEXICON IS ENGLISH ONLY). It stays in the signature
+    because both call sites pass it and because the reader's human-pin scan is
+    still English-bound, so the parameter has somewhere to go the moment that
+    scan needs it.
+
     THE COST LADDER, cheapest first — every rung is the gate for the next:
         1. two booleans                    (kill switches)
         2. a length check on text in hand  (cuts ~all turns, no I/O)
-        3. one regex pass                  (`classify`, pure)
-        4. one local SELECT                (the id + the UNCLIPPED body)
-        5. one regex pass on the full body (authoritative — see below)
-        6. ONE OF read                     (the only recurring network cost)
-        7. the OF writes                   (only when `write`)
+        3. one local SELECT                (the id + the UNCLIPPED body)
+        4. length + hard block on the full body
+        5. two dict lookups                (already ours / cooling down — FREE)
+        6. ONE LLM call                    (`judge` — the only per-candidate cost)
+        7. ONE OF read                     (the recurring network cost)
+        8. the OF writes                   (only when `write`)
 
-    Rung 3 runs on `last_body`, which the engines clip at 400 characters, so a
-    reject term living in the tail of a 695-character paragraph is invisible to
-    it. That is why rung 5 exists and why it re-classifies the FULL body: rung 3
-    can only produce false ACCEPTS, and rung 5 is where they die. Never collapse
-    the two — the clipped pass is a cost gate, not a safety one."""
+    Rung 2 runs on `last_body`, which the engines have already stripped and
+    clipped to 400 characters — the SAME number as MIN_CHARS. It therefore uses
+    `_PREFILTER_CHARS`, not MIN_CHARS, and the difference is the whole feature:
+    measured against 400 the clipped text loses a few characters to whitespace
+    collapse and fails, on every candidate, forever. Rung 4 re-measures the full
+    untruncated body against MIN_CHARS. Never collapse the two, and never raise
+    rung 2 to meet rung 4 — the clipped pass is a cost gate, not a safety one.
+
+    RUNGS 5 AND 6 ARE IN THAT ORDER ON PURPOSE. `judge` costs money, and both
+    checks above it are free dict reads, so a fan we already pinned or who is
+    inside his 24h cooldown never reaches the model. Moving the judge up would
+    bill one call per turn for every fan sitting on a long message we have already
+    decided about — which, on a chatty thread, is every turn for a day."""
     if _off() or not enabled:
         return
     try:
         fan_id = int(getattr(fan, "fan_id", 0) or 0)
-        if not fan_id or len(_clean(last_body)) < MIN_CHARS:
-            return
-        if classify(last_body, lang) is None:
+        if not fan_id or len(_clean(last_body)) < _PREFILTER_CHARS:
             return
 
         row = await _latest_inbound(account_id, fan_id)
         if row is None:
             return
         message_id, body = row
-        pick = classify(body, lang)          # authoritative pass on the full text
-        if pick is None:
+        clean = _clean(body)                 # authoritative: the FULL message
+        if len(clean) < MIN_CHARS or _hard_blocked(clean):
             return
 
         state = fan_state(fan, STATE_KEY)
         if any(_id(p) == message_id for p in _have(state)):
             return                           # already ours; idempotent by id
         if _cooling_down(state):
+            return
+
+        pick = await judge(clean, account_id, fan_id)
+        if pick is None:
             return
 
         # The ONE OF read — and the capture. Everything already pinned on this
