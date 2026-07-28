@@ -5,23 +5,31 @@ the team reads in the OF chat header is only rewritten when a fan next comes
 through of_ai_chat (`_maybe_push_nickname`) or gen_info (`_sync_of_nickname`).
 A quiet fan keeps a header that says he is called Canada. This sweeps them.
 
-    docker compose exec -T relay python service/fix_nicknames.py             # dry run
-    docker compose exec -T relay python service/fix_nicknames.py --apply
-    ... --account ACCOUNT_ID --limit 50 --include-lossy
+    docker compose exec -T -w /app/service relay python fix_nicknames.py      # dry run
+    docker compose exec -T -w /app/service relay python fix_nicknames.py --apply
+    ... --account ACCOUNT_ID --limit 50
 
 DRY RUN BY DEFAULT — `--apply` is the only thing that writes to OF.
 
-It reuses exactly what the live code uses: `build_structured_nickname` for the
-new label, `push_nick_and_notes` for the write (which also mirrors the result
-into `fans.custom_nickname`). So a swept fan lands on the same value the next
-convo tick would have produced anyway — this only makes it sooner.
+It reuses what the live code uses: `build_structured_nickname` for the label and
+`push_nick_and_notes` for the write (which also mirrors into
+`fans.custom_nickname`), so a swept fan lands where his next convo tick would
+have put him anyway — this only makes it sooner.
 
-LOSSY rows are held back. `build_structured_nickname` emits Name/City,Country/
-Age/Job from stored FACTS, so any extra segment a human typed — 'BJ,cowgirl',
-'Married', 'Whale' — is not in its output and would be destroyed by the rewrite.
-Those are skipped unless `--include-lossy` is passed, and always listed, because
-throwing away someone's curation to fix a cosmetic bug is a bad trade to make
-silently.
+THE REPAIR NEVER LOSES ANYTHING. `build_structured_nickname` emits Name/City,
+Country/Age/Job from stored FACTS, so a segment a human typed ('BJ,cowgirl',
+'Single dad', 'Married') is absent from its output — a straight rewrite would
+destroy it. So the rebuild is re-joined with whatever it dropped, and when we
+hold no facts at all the label is KEPT and only the name slot gets marked:
+
+    'Canada/BJ,cowgirl'       → '_/Canada/BJ,cowgirl'     (rebuild + the note back)
+    'Surrey,Canada/Single dad'→ '_/Surrey,Canada/Single dad'
+    'USA/Spender'             → '_/USA'                   (no facts: demote, drop tier)
+
+That is why there is no --include-lossy flag: nothing is lossy, so nothing needs
+a human to approve the loss. The derived spend tier is the one exception — the
+ledger authors Free/Buyer/Spender/Whale and build_structured_nickname omits them
+by design, so dropping one destroys nothing anybody wrote.
 """
 from __future__ import annotations
 
@@ -37,6 +45,8 @@ sys.path.insert(0, "/app/service")
 from automation_executor import _make_client            # noqa: E402
 from automations._common import push_nick_and_notes     # noqa: E402
 from automations.names import (                         # noqa: E402
+    _NICK_MAX, _NO_NAME,   # the 70-char cap and the empty-name marker — same two
+                           # constants the live push uses; don't re-declare them
     SPEND_TIERS, build_structured_nickname, is_greetable_name, name_token,
 )
 from db.engine import get_session                       # noqa: E402
@@ -67,7 +77,20 @@ def _lost(old: str, new: str) -> list[str]:
             if seg.lower() not in new_blob and seg.lower() not in _TIER_WORDS]
 
 
-async def _candidates(account: str | None) -> list[tuple[Fan, str, str, list[str]]]:
+def _repair(f: Fan, cur: str) -> str:
+    """The label this fan SHOULD carry — a rebuild that gives nothing back.
+
+    Rebuild from facts, then re-append every segment the rebuild dropped, so the
+    fix costs the team none of their own words. With no facts to rebuild from,
+    keep the label exactly as it is and only mark the empty name slot."""
+    new = build_structured_nickname(f)
+    if not new:
+        keep = [s for s in _segments(cur) if s.lower() not in _TIER_WORDS]
+        return "/".join([_NO_NAME] + keep)[:_NICK_MAX] if keep else ""
+    return "/".join([new] + _lost(cur, new))[:_NICK_MAX]
+
+
+async def _candidates(account: str | None) -> list[tuple[Fan, str, str]]:
     async with get_session() as s:
         q = select(Fan).where(Fan.custom_nickname.is_not(None), Fan.custom_nickname != "")
         if account:
@@ -85,9 +108,9 @@ async def _candidates(account: str | None) -> list[tuple[Fan, str, str, list[str
         here = (f.home_country or "", f.home_city or "")
         if is_greetable_name(name_token(cur), here=here):
             continue
-        new = build_structured_nickname(f)
+        new = _repair(f, cur)
         if new and new != cur:
-            out.append((f, cur, new, _lost(cur, new)))
+            out.append((f, cur, new))
     return out
 
 
@@ -96,29 +119,14 @@ async def main() -> int:
     ap.add_argument("--apply", action="store_true", help="actually push to OF")
     ap.add_argument("--account", help="limit to one account id")
     ap.add_argument("--limit", type=int, default=0, help="cap the number pushed")
-    ap.add_argument("--include-lossy", action="store_true",
-                    help="also rewrite labels that carry a human-typed extra segment")
     args = ap.parse_args()
 
-    rows = await _candidates(args.account)
-    safe = [r for r in rows if not r[3]]
-    lossy = [r for r in rows if r[3]]
-    print(f"wrong name slot: {len(rows)}   safe: {len(safe)}   lossy: {len(lossy)}")
-
-    if lossy:
-        print(f"\nHELD BACK — the rewrite would drop a human-typed segment"
-              f"{' (included anyway)' if args.include_lossy else ''}:")
-        for f, cur, new, lost in lossy[:25]:
-            print(f"   {f.fan_id:>10}  {cur[:40]!r:42} → {new[:40]!r}   loses {lost}")
-        if len(lossy) > 25:
-            print(f"   … and {len(lossy) - 25} more")
-
-    todo = safe + (lossy if args.include_lossy else [])
+    todo = await _candidates(args.account)
     if args.limit:
         todo = todo[:args.limit]
 
-    print(f"\n{'PUSHING' if args.apply else 'DRY RUN — would push'} {len(todo)}:")
-    for f, cur, new, _ in todo[:15]:
+    print(f"{'PUSHING' if args.apply else 'DRY RUN — would push'} {len(todo)}:")
+    for f, cur, new in todo[:15]:
         print(f"   {f.account_id}/{f.fan_id}  {cur[:40]!r:42} → {new[:40]!r}")
     if len(todo) > 15:
         print(f"   … and {len(todo) - 15} more")
@@ -133,7 +141,7 @@ async def main() -> int:
     ok = fail = 0
     clients: dict[str, object] = {}
     dead: dict[str, int] = {}
-    for f, cur, new, _ in todo:
+    for f, cur, new in todo:
         aid = f.account_id
         if aid in dead:
             dead[aid] += 1
