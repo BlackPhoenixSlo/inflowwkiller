@@ -84,8 +84,8 @@ from automation_registry import register
 from ._common import (apply_word_restriction, hold_with_typing,
                       load_hard_skip_ids, load_strip_emojis,
                       load_typing_indicator, load_typing_wpm, name_token,
-                      resolve_model, skip_unreachable_fan, strip_emojis,
-                      typing_delay_seconds)
+                      resolve_fan_name, resolve_model, skip_unreachable_fan,
+                      strip_emojis, typing_delay_seconds)
 from db.engine import get_session
 from db.models import AccountAiConfig, Fan, FanProfile, Message, WelcomeSent
 from llm_client import LLMCapExceeded
@@ -417,32 +417,29 @@ async def _resolve_welcome_name(account_id: str, fan_id: int, sub: dict) -> str:
 
     Precedence (CURATED beats the RAW OF name): the team relabels fans via
     `custom_nickname` ('Garrett/City/Tag') — that's what the whole UI shows — but a
-    fan's raw OF account name may be something else entirely (e.g. 'Kyle'). The OF
-    notification's `name` is that raw account name, so it sits DEAD LAST; otherwise
-    a fan curated as 'Garrett' gets welcomed as 'Kyle'. Mirrors `_common.resolve_fan_name`
-    (real_name → curated nick → OF display) with the live notif name as a final
-    fallback for brand-new subs we have nothing else for."""
-    real_name = gen_nick = cust_nick = disp = prof = None
+    fan's raw OF account name may be something else entirely (e.g. 'Kyle'); otherwise
+    a fan curated as 'Garrett' gets welcomed as 'Kyle'. That IS `resolve_fan_name`'s
+    order now, so this hands the row to the shared resolver instead of keeping a
+    second one — the two used to disagree on 154 fans, and welcome minted names the
+    chat lane refused to say ('Sparky10' → "hey Sparky"). Only the two sources a
+    WELCOME has ride along: the gen_info profile nickname (same shape as
+    generated_nickname) and the live notification name (same shape as a display
+    name, and dead last, so it fills in for a brand-new sub with no Fan row)."""
     async with get_session() as s:
         prof = (await s.execute(select(FanProfile.nickname).where(
             FanProfile.account_id == str(account_id),
             FanProfile.fan_id == int(fan_id)))).scalar_one_or_none()
         fan = (await s.execute(select(
-            Fan.real_name, Fan.generated_nickname, Fan.custom_nickname, Fan.of_display_name
+            Fan.real_name, Fan.generated_nickname, Fan.custom_nickname,
+            Fan.of_display_name, Fan.home_country, Fan.home_city
         ).where(Fan.account_id == str(account_id), Fan.fan_id == int(fan_id)))).first()
-    if fan:
-        real_name, gen_nick, cust_nick, disp = fan
-    for tok in (
-        _name_token(real_name),            # the guy's confirmed real name (gen_info)
-        _name_token(cust_nick, last=True), # team-curated 'Garrett/City/Tag' → 'Garrett'
-        _name_token(gen_nick, last=True),  # AI-generated nickname — keep the name slot
-        _name_token(prof, last=True),      # gen_info profile nickname
-        _name_token(disp),                 # stored OF display name
-        _name_token(sub.get("name")),      # RAW OF notif display name — last resort
-    ):
-        if tok:
-            return tok
-    return ""
+    row = dict(zip(("real_name", "generated_nickname", "custom_nickname",
+                    "of_display_name", "home_country", "home_city"), fan or ()))
+    row["generated_nickname"] = row.get("generated_nickname") or prof
+    row["of_display_name"] = row.get("of_display_name") or sub.get("name")
+    # resolve_fan_name may return a full display name ('garrett baydala'); a welcome
+    # greets by the first token. name_token is idempotent on one already ('Garrett').
+    return _name_token(resolve_fan_name(row))
 
 
 # A welcome is always [greeting] + the slot's activity line. The two halves are
