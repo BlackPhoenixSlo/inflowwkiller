@@ -29,6 +29,19 @@ services:
     image: chatterly-relay:latest
     container_name: chatterly-relay
     restart: unless-stopped
+    # Docker's default soft limit is 1024 descriptors, and the relay spends them
+    # on more than sockets: a curl handle per worker thread per account, three
+    # per SQLite connection (db + -wal + -shm), one per session file the
+    # isolation gate reads. A vault pane that releases 500 tiles at once used to
+    # sail past 1024 and the process started failing at the FLOOR — sqlite
+    # answering "unable to open database file", scandir answering EMFILE
+    # [Errno 24] (2026-07-28). `vault_stills._MAX_INFLIGHT_FETCHES` is the real
+    # fix; this is the headroom that keeps the NEXT uncapped fan-out from
+    # costing the whole process.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     ports:
       - "127.0.0.1:8787:8787"
     environment:

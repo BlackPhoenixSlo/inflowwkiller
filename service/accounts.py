@@ -198,6 +198,30 @@ def list_accounts() -> list[dict[str, Any]]:
     return out
 
 
+def list_account_ids() -> set[str]:
+    """Just the ids — ONE directory scan, no per-account file reads.
+
+    `list_accounts()` opens meta.json and stats latest.json for every account to
+    build its dicts. The account-isolation middleware runs on every `/admin/*`
+    request carrying an account_id and uses nothing from those dicts but `id`,
+    so it was paying ~2 file opens per account per request. On a vault pane that
+    releases 500 tiles at once, with 17 accounts, that is ~17k file opens
+    competing for the very descriptors the tiles need — it is what turned an
+    fd shortage into `OSError: [Errno 24] ... '/app/service/sessions/accounts'`
+    (2026-07-28).
+
+    A directory here IS an account: the gate's question is only "does this id
+    name a real account", and one whose meta is missing or unreadable still
+    does. That also fails CLOSED — `list_accounts()` drops such a directory,
+    which let an id it couldn't parse past the gate unchecked.
+    """
+    _ensure_dirs()
+    try:
+        return {d.name for d in ACCOUNTS_DIR.iterdir() if d.is_dir()}
+    except OSError:
+        return set()
+
+
 def get_account(account_id: str) -> dict[str, Any] | None:
     return load_meta(account_id)
 
