@@ -323,15 +323,50 @@ class _Quota(NamedTuple):
     quota: int = 0              # his effective replies-per-24h (0 = no ceiling)
     used: int = 0               # replies he has already had in that window
     wait_h: float = 0.0         # the backoff rung being served (hours, jittered)
-    # No `rung` here on purpose. It was carried as "for the log/UI" and read by
-    # nothing — not the ledger payload, not the endpoint, not a log line — and it is
-    # derivable from `dry_h` plus the account's ladder, both of which ARE recorded.
-    # A field whose comment promises a consumer it does not have is worse than no
-    # field: it makes the next reader believe the shadow week answers a question it
-    # cannot. If the rung is ever wanted, take it from dry_h.
+    # No `rung` here on purpose — it is DERIVED, by `quota_rung(dry_h, ladder)`, from
+    # two things that are both recorded. It was once carried as a field "for the
+    # log/UI" and read by nothing, which is worse than absent: it makes the next
+    # reader believe the shadow week answers a question it cannot. The status strip
+    # now does show the rung (2026-07-28) and takes it from that function, so the
+    # ladder and the name for it can never disagree — which a stored copy of a value
+    # computed from a config the operator can edit could not promise.
     dry_h: float = 0.0          # hours since his last money event (or first contact)
     reason: str = QUOTA_OFF     # which branch decided it (one of the QUOTA_* above)
     runway_left: int = 0        # replies of his per-fan runway still unspent
+
+
+def quota_ladder(cad: Any) -> list[float]:
+    """The backoff rungs as configured, cleaned of blanks and non-positives. One
+    reader, so the gate and the status copy cannot disagree about which rungs exist."""
+    return [float(h) for h in (cad.get("quota_backoff_hours") or ())
+            if float(h or 0) > 0]
+
+
+def quota_rung(dry_h: float, ladder: list[float]) -> int:
+    """Which rung a dry streak of `dry_h` hours stands on (0-based; -1 for no ladder).
+
+    The ladder is CYCLIC: `dry_h` is taken modulo its total, so the longest rung is
+    followed by the SHORTEST — 72h → 4h, not 72h → 72h.
+
+    Each band is exactly as wide as its own rung, which is the counter-intuitive part
+    and the reason this is worth naming: on the default [4, 12, 24, 72] the last rung
+    owns 72 of the 112 hours in a lap, so ~64% of the time a held fan is found on it.
+    He did not jump there — he walked the whole ladder to get there, repeatedly.
+
+    Shared with `fan_status_copy`, which has to name the rung the gate actually
+    served. `_Quota` deliberately carries no `rung` field (see its docstring), so
+    this function is the single home for the arithmetic rather than a stored value
+    that could go stale against the ladder it was computed from.
+    """
+    if not ladder:
+        return -1
+    phase = dry_h % sum(ladder)
+    acc = 0.0
+    for i, h in enumerate(ladder):
+        acc += h
+        if phase < acc:
+            return i
+    return len(ladder) - 1
 
 
 def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | None,
@@ -408,8 +443,7 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
         reason = lifted_by if used >= base else QUOTA_UNDER
         return _Quota(quota=quota, used=used, reason=reason, runway_left=runway_left)
 
-    ladder = [float(h) for h in (cad.get("quota_backoff_hours") or ())
-              if float(h or 0) > 0]
+    ladder = quota_ladder(cad)
     if not ladder:                                   # no ladder ⇒ nothing to serve
         return _Quota(quota=quota, used=used, reason=QUOTA_NO_LADDER,
                       runway_left=runway_left)
@@ -419,13 +453,7 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
     anchor = money_at or c.first_at
     dry_h = max((now - anchor).total_seconds() / 3600.0, 0.0) if anchor else 0.0
     cycle_h = sum(ladder)
-    phase = dry_h % cycle_h              # the cycle — 72h is followed by 4h, not 72h
-    rung, acc = len(ladder) - 1, 0.0
-    for i, h in enumerate(ladder):
-        acc += h
-        if phase < acc:
-            rung = i
-            break
+    rung = quota_rung(dry_h, ladder)
     # Jitter, because a woman who drifts back after EXACTLY 24.0 hours, every time, on
     # every fan, is a cron job wearing her name. Seeded on (fan, rung, cycle) so it is
     # stable across ticks — a wait that re-rolled each sweep would let a fan slip

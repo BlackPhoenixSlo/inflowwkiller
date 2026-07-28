@@ -67,6 +67,20 @@ function untilLabel(iso: string | null): string | null {
   return t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/** "05:55" today, "Thu 05:55" otherwise.
+ *
+ *  `untilLabel` prints the clock alone, which is right for the pauses it was built
+ *  for — those lift within the hour. The quota backoff runs to 72h, so a bare
+ *  "05:55" would read as this morning and be wrong by up to three days. */
+function whenLabel(iso: string | null): string | null {
+  if (!iso) return null;
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return null;
+  const clock = t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const sameDay = t.toDateString() === new Date().toDateString();
+  return sameDay ? clock : `${t.toLocaleDateString([], { weekday: "short" })} ${clock}`;
+}
+
 function money(cents: number | null): string {
   if (cents == null) return "";
   return `$${(cents / 100).toFixed(cents % 100 === 0 ? 0 : 2)}`;
@@ -134,13 +148,25 @@ function dailyChip(d: NonNullable<AiStatus["cadence"]["daily"]>): Chip | null {
     };
   }
 
-  const wait = d.backoff_hours != null ? ` She's quiet for ${hours(d.backoff_hours)} from her last reply.` : "";
+  const wait = d.backoff_hours != null ? ` She's quiet for ${hours(d.backoff_hours)} from her own last reply — a manual message or a mass send does not move it.` : "";
   const why = DAILY_WHY[d.reason] ? ` ${DAILY_WHY[d.reason]}` : "";
+  // Where he is on the ladder, drawn as the ladder. "4h · 12h · 24h · [72h]" says in
+  // one glance what the number alone cannot: that it CYCLES, so the rung after the
+  // longest is the shortest, and that he walked every rung to get where he is.
+  const rungs = d.ladder_hours && d.rung != null
+    ? d.ladder_hours.map((h, i) => (i === d.rung ? `[${hours(h)}]` : hours(h))).join(" · ")
+    : null;
+  const step = rungs && d.ladder_hours && d.rung != null
+    ? ` Ladder ${rungs}, then back to the first — next step ${hours(d.ladder_hours[(d.rung + 1) % d.ladder_hours.length])}.`
+    : "";
+  const free = d.held ? whenLabel(d.free_at) : null;
   return {
-    text: `📅 ${d.used}/${d.quota} today`,
+    text: `📅 ${d.used}/${d.quota} today`
+      + (d.held && d.rung != null && d.ladder_hours ? ` · rung ${d.rung + 1}/${d.ladder_hours.length}` : "")
+      + (free ? ` → ${free}` : ""),
     tone: d.held ? "text-amber-400" : "text-fg-dim",
     title:
-      `${d.used} of ${d.quota} replies used in the last 24h.${dry}${wait}${why} ` +
+      `${d.used} of ${d.quota} replies used in the last 24h.${dry}${wait}${step}${why} ` +
       `A purchase or a content ask lifts this immediately.${shadow}`,
   };
 }
