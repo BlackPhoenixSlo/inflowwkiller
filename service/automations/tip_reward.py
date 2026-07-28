@@ -908,6 +908,66 @@ def _next_convo_teaser_price(*, idx: int, prices: list[int], last_px: int,
     return idx, price, True
 
 
+def convo_teaser_forecast(*, tcfg: dict, state: dict, msgs_since: int,
+                          last_sold: bool = False, max_paid_cents: int = 0) -> dict:
+    """What the convo teaser will do NEXT, and how many of his messages away it is.
+
+    Pure and I/O-free — it runs `_next_convo_teaser_price`, the same policy the
+    sender runs, so the drawer can never quote a price the engine would not send.
+    It deliberately stops short of `pick_convo_teaser`: choosing the PHOTOS costs
+    OF folder resolution and a `VaultSend` dedup read, and a status endpoint must
+    not pay that (nor warm caches) just to render a countdown.
+
+    The soften cut is jittered (`cut_lo`..`cut_hi`), so on a decay the next ask is a
+    RANGE, not a number. Both ends are evaluated: `cents` is the low end and
+    `cents_max` the high one, equal whenever the outcome doesn't depend on the roll —
+    which is most of the time, because the floor and free-bait branches are fixed
+    prices. Reporting one jittered sample as "the" next ask would be a number the
+    operator could watch the engine contradict.
+    """
+    rungs = tcfg.get("rungs") or []
+    after = max(1, int(tcfg.get("after") or 20))
+    since = max(0, int(msgs_since or 0))
+    idx = max(0, min(int(state.get("rung") or 0), max(0, len(rungs) - 1)))
+    out: dict = {
+        "after": after,
+        "msgs_since": since,
+        "remaining": max(0, after - since),
+        "rung": idx if rungs else None,
+        "rungs": len(rungs),
+        "adaptive": bool(tcfg.get("adaptive")),
+        "cents": None, "cents_max": None, "softened": None,
+    }
+    if not rungs:
+        return out
+
+    prices = [max(0, int((r or {}).get("price_cents") or 0)) for r in rungs]
+    if not tcfg.get("adaptive"):
+        out["cents"] = out["cents_max"] = prices[idx]
+        out["softened"] = False
+        return out
+
+    last_px = max(0, int(state.get("last_price") or 0))
+    floor = max(int(tcfg.get("floor_cents") or 0),
+                int(round(float(tcfg.get("floor_pct") or 0.0) * max(0, int(max_paid_cents or 0)))))
+    lo = float(tcfg.get("cut_lo") or 0.65)
+    hi = float(tcfg.get("cut_hi") or 0.73)
+    if lo > hi:
+        lo, hi = hi, lo
+    step = float(tcfg.get("climb_step") or 2.0)
+    ends = [
+        _next_convo_teaser_price(
+            idx=idx, prices=prices, last_px=last_px, last_sold=last_sold,
+            last_was_free=bool(state.get("last_free")), floor=floor,
+            step=step, frac=f)
+        for f in (lo, hi)
+    ]
+    out["cents"] = min(e[1] for e in ends)
+    out["cents_max"] = max(e[1] for e in ends)
+    out["softened"] = any(e[2] for e in ends)
+    return out
+
+
 async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
                             msgs_since_last: int, rung: int,
                             last_price_cents: int = 0, last_sold: bool = False,

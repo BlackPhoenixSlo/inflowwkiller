@@ -164,6 +164,46 @@ describe("AiStatusStrip — daily quota chip", () => {
     expect(el?.textContent).toMatch(/→ (Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d{2}:\d{2}/);
   });
 
+  it("counts his messages down to the next tease and names the ask", async () => {
+    render(draw({
+      ...RUNWAY,
+      teaser: {
+        after: 20, msgs_since: 13, remaining: 7, rung: 4, rungs: 7,
+        adaptive: true, cents: 5472, cents_max: 5472, softened: true,
+      },
+    }));
+    const el = await screen.findByText(/🎁/);
+    expect(el.textContent).toBe("🎁 tease in 7 · $54.72");
+    expect(el.getAttribute("title")).toContain("13 of 20");
+    expect(el.getAttribute("title")).toContain("SOFTENED");
+  });
+
+  it("shows a RANGE when the soften roll is what decides the ask", async () => {
+    // 65-73% of the last ask. One end quoted as "the" price is a number the operator
+    // would watch the engine contradict.
+    render(draw({
+      ...RUNWAY,
+      teaser: {
+        after: 20, msgs_since: 20, remaining: 0, rung: 3, rungs: 7,
+        adaptive: true, cents: 5200, cents_max: 5840, softened: true,
+      },
+    }));
+    const el = await screen.findByText(/🎁/);
+    expect(el.textContent).toBe("🎁 tease due · $52–$58.40");
+    expect(el.className).toContain("amber");
+  });
+
+  it("says free rather than $0, which reads as a broken price", async () => {
+    render(draw({
+      ...RUNWAY,
+      teaser: {
+        after: 20, msgs_since: 2, remaining: 18, rung: 4, rungs: 7,
+        adaptive: true, cents: 0, cents_max: 0, softened: true,
+      },
+    }));
+    expect((await screen.findByText(/🎁/)).textContent).toBe("🎁 tease in 18 · free");
+  });
+
   it("still names a whale, which is the only fan the green pill should mean", async () => {
     render(draw(WHALE));
     const el = await chip();

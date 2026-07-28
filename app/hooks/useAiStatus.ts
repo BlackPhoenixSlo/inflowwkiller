@@ -75,6 +75,23 @@ export type AiStatus = {
       free_at: string | null;
     };
   };
+  /** The conversational teaser ladder: when the next tease fires and what it asks.
+   *  null when the account has no convo-teaser config at all. */
+  teaser?: {
+    after: number;        // HIS messages between teases (halved when no offer is working)
+    msgs_since: number;
+    remaining: number;    // 0 = the next reply can carry it
+    rung: number | null;  // 0-based position on the configured ladder
+    rungs: number;
+    adaptive: boolean;
+    /** The next ask. `cents_max` differs from `cents` ONLY on a jittered soften —
+     *  the floor and free-bait branches are fixed, so most of the time they match.
+     *  A range is reported rather than one sampled roll, which the engine would
+     *  visibly contradict. */
+    cents: number | null;
+    cents_max: number | null;
+    softened: boolean | null;
+  } | null;
   offer_caps_ok: boolean | null;
   /** A live ask or a fresh purchase → she cannot randomly wander off mid-sell. */
   break_proof: boolean;
