@@ -131,3 +131,8 @@ service/_out_/
 # (build_*.py, candidates/, __pycache__). Stays UNTRACKED by ruling; the
 # gifs are a bulk asset set, not source.
 cat_stickers/
+
+# Convo reader output — one big self-contained HTML, rebuilt by
+# scripts/convo-review.sh whenever you want it refreshed. Regenerable, and
+# the media cache it embeds lives in ~/.convo-review/.
+convo_review.html
