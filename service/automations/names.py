@@ -125,7 +125,11 @@ def name_token(s: str | None, *, last: bool = False) -> str:
         return ""
     # OF stores these fields HTML-ESCAPED ('Alex&amp;Sam', 'Sunny Shine &lt;33'),
     # and stripping the entity to letters invented names nobody has ('Chrisamp').
-    seg = html.unescape(str(s)).split("/")[0].strip()   # 'John/City/Tag' → 'John'
+    # First NON-EMPTY slot. A leading '/' is sloppy human input ('/Christopher/'),
+    # not a claim that the name is unknown — the empty name slot has an explicit
+    # marker now (_NO_NAME), so a bare gap no longer has to carry that meaning.
+    # Reading it literally cost Christopher his name.
+    seg = next((p.strip() for p in html.unescape(str(s)).split("/") if p.strip()), "")
     if "," in seg:                            # 'Whistler,Canada/Whale' has no name slot
         return ""                             # (a comma marks a City,Country location)
     # '&', brackets and semicolons separate words just like a space does — a couple
