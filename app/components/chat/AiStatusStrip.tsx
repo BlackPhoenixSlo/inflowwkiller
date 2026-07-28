@@ -171,6 +171,43 @@ function dailyChip(d: NonNullable<AiStatus["cadence"]["daily"]>): Chip | null {
   };
 }
 
+/**
+ * The convo teaser: how many of HIS messages until the next one, and what it asks.
+ *
+ * Both halves were invisible. The cadence lives in `teaser_convo_after_fan_msgs` and
+ * the price is decided at send time by a climb/soften/floor policy, so "when does she
+ * tease him again, and for how much" could only be answered by reading the engine —
+ * and the answer moves every time he types.
+ */
+function teaserChip(t: NonNullable<AiStatus["teaser"]>): Chip | null {
+  if (!t.rungs) return null;
+  const free = t.cents === 0 && t.cents_max === 0;
+  // A jittered soften spans a range; the floor and free-bait branches do not. Showing
+  // "$40–45" where the engine may send either beats quoting one end as though it were
+  // decided, which is what a single sampled roll would have done.
+  const ask = free
+    ? "free"
+    : t.cents == null
+      ? "?"
+      : t.cents_max != null && t.cents_max !== t.cents
+        ? `${money(t.cents)}–${money(t.cents_max)}`
+        : money(t.cents);
+  const due = t.remaining <= 0;
+  const rung = t.rung != null ? ` · rung ${t.rung + 1}/${t.rungs}` : "";
+  return {
+    text: `🎁 ${due ? "tease due" : `tease in ${t.remaining}`} · ${ask}`,
+    tone: due ? "text-amber-400" : "text-fg-dim",
+    title:
+      `${t.msgs_since} of ${t.after} of HIS messages since her last tease${rung}. ` +
+      (due ? "The next reply can carry it. " : "") +
+      (t.softened
+        ? "This ask is SOFTENED — the last tease didn't sell, so it decays toward his proven-spend floor and then alternates that with a free tease, rather than climbing. "
+        : "This is the ladder's own rung price — it climbs only when a tease actually SELLS. ") +
+      (t.adaptive ? "" : "Legacy mode: the rung climbs on every send, sold or not. ") +
+      "Her teases are a separate stream from the catalog PPVs.",
+  };
+}
+
 export default function AiStatusStrip({ accountId, fanId }: Props) {
   const { data, isLoading, error } = useAiStatus(accountId, fanId);
 
@@ -188,6 +225,7 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
 
   const until = untilLabel(data.until);
   const daily = data.cadence.daily ? dailyChip(data.cadence.daily) : null;
+  const teaser = data.teaser ? teaserChip(data.teaser) : null;
   const engineName =
     data.engine === "ai_upseller" ? "AI Upseller"
     : data.engine === "ai_chatter" ? "AI Chatter"
@@ -263,6 +301,9 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
           getting quieter with him" is answerable BEFORE she goes silent. */}
       {daily && (
         <span className={daily.tone} title={daily.title}>{daily.text}</span>
+      )}
+      {teaser && (
+        <span className={teaser.tone} title={teaser.title}>{teaser.text}</span>
       )}
 
       {/* She cannot randomly wander off mid-sell. */}

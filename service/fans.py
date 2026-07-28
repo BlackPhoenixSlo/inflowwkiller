@@ -578,6 +578,39 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
                 badge = copy.daily_quota_badge(leash.quota, enforced=enforce,
                                                cad=cfg, free_at=free_at) or badge
 
+    # ── The conversational teaser: how many of HIS messages until the next one, and
+    # at what price. `convo_teaser_forecast` runs the sender's own pricing policy, so
+    # this cannot quote a number the engine would not send — but it stops before
+    # choosing PHOTOS, which costs OF folder resolution and a dedup read. This
+    # endpoint promises no OF calls.
+    teaser: dict[str, Any] | None = None
+    from automations import tip_reward as _tip_reward
+    tcfg = await _tip_reward.convo_teaser_config(account_id)
+    if tcfg and fan is not None:
+        tstate = _tip_reward.teaser_state(fan)
+        since_at: datetime | None = None
+        if tstate.get("at"):
+            try:
+                since_at = datetime.fromisoformat(str(tstate["at"]))
+            except (TypeError, ValueError):
+                since_at = None
+        # The sender HALVES the gap to 10 when she has no offer working (ai_chatter
+        # ~L5425), which is the difference between "in 3" and "in 13" on the strip.
+        # Mirrored on `pending` only: the other half of its condition is whether she
+        # is about to make an offer THIS turn, which exists solely inside a run.
+        if not open_offers:
+            tcfg = {**tcfg, "after": min(int(tcfg.get("after") or 20), 10)}
+        last_px = int(tstate.get("last_price") or 0)
+        sold = False
+        if tcfg.get("adaptive") and last_px > 0 and tstate.get("last_msg"):
+            sold = await ac._teaser_sold(account_id, int(fan_id), int(tstate["last_msg"]))
+        teaser = _tip_reward.convo_teaser_forecast(
+            tcfg=tcfg, state=tstate,
+            msgs_since=await ac._fan_msgs_since(account_id, int(fan_id), since_at),
+            last_sold=sold,
+            max_paid_cents=((await ac._paid_ppv_facts(account_id, int(fan_id)))[0]
+                            if tcfg.get("adaptive") else 0))
+
     # Why she can't put a price in front of him even when she's talking.
     caps_ok = await ac._offer_caps_ok(account_id, int(fan_id), cfg) if gate_on else None
 
@@ -690,6 +723,7 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
         "engine": engine,
         "graduated": reason if reason in ac._GRADUATION_SKIPS else None,
         "cadence": cadence,
+        "teaser": teaser,
         "offer_caps_ok": caps_ok,
         "next_action": next_action,
         "gate": gate,
