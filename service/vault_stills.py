@@ -27,12 +27,19 @@ dead tile then costs one row read, not two doomed OF calls on every render.
 
 `serve` is the whole route body; the three endpoints in vault_ai_api differ only
 in which store they read and which url they pick out of a media dict.
+
+A disk hit is served straight off the filesystem, but a MISS is OF-bound, and a
+folder pane can ask for 500 of them at once. That path is therefore capped — see
+`_MAX_INFLIGHT_FETCHES`. File descriptors are a process resource: uncapped, a
+cold vault pane doesn't render slowly, it exhausts them and takes the DB and the
+send lane down with it.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import weakref
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
@@ -87,6 +94,41 @@ _IMAGE_MAGIC = (
     b"\x89PNG\r\n\x1a\n",  # PNG
     b"GIF87a", b"GIF89a",  # GIF
 )
+
+
+# How many stills may be OF-bound at once, process-wide.
+#
+# One folder pane can release 500+ <img> tags in a single paint (an AI-folder
+# lane runs to 569 items), and on a cold store EVERY one of them is a miss: a
+# thread off the shared to_thread pool, a curl handle, and up to two OF calls.
+# Unbounded, that is exactly the EMFILE `client_pool` was built to stop —
+# pinning the client capped handles per CALL, but nothing capped calls in
+# FLIGHT. Descriptors are a PROCESS resource, so running out doesn't fail the
+# tiles, it fails everything: sqlite can't open the DB ("unable to open
+# database file"), the isolation middleware can't scandir the session dir, sends
+# die. Observed on 2026-07-28 opening the AI-folders modal on a 1596-item vault.
+#
+# So this is a fairness device as much as an fd one — it also leaves the shared
+# executor room for the automation lane (see the 2026-07-04 starvation
+# incident, where OF-bound work pinned every thread and sends timed out).
+#
+# Queueing behind it is the POINT. A tile that waits renders late; a tile that
+# takes the last descriptor takes the relay down with it.
+_MAX_INFLIGHT_FETCHES = max(1, int(os.environ.get("VAULT_STILL_CONCURRENCY", "6")))
+
+# Per-loop, because the test harness runs each case in its own `asyncio.run()`
+# and an `asyncio.Semaphore` that has parked a waiter belongs to the loop it
+# parked it on. Weak keys so a finished loop doesn't pin its semaphore forever.
+_SLOTS: "weakref.WeakKeyDictionary[Any, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+
+
+def _fetch_slot() -> asyncio.Semaphore:
+    """The gate every OF-bound still fetch passes through."""
+    loop = asyncio.get_running_loop()
+    sem = _SLOTS.get(loop)
+    if sem is None:
+        sem = _SLOTS[loop] = asyncio.Semaphore(_MAX_INFLIGHT_FETCHES)
+    return sem
 
 
 def _looks_like_an_image(data: bytes) -> bool:
@@ -215,39 +257,52 @@ async def serve(account_id: str, media_id: int, path: Path, pick: Pick) -> Respo
     if path.is_file():
         return FileResponse(path, media_type="image/jpeg", headers=_HEADERS)
 
-    async with get_session() as s:
-        item = await s.get(VaultItem, (account_id, media_id))
-    # The negative cache. Set below (or by a collect sweep) when OF reported the
-    # media deleted; without it, every render of a dead tile pays two OF calls.
-    if item is not None and item.removed_at is not None:
-        raise HTTPException(status_code=404, detail="media_gone")
+    # Everything past here costs descriptors — a DB connection, a curl handle,
+    # a thread — so it runs `_MAX_INFLIGHT_FETCHES` at a time. A warm store
+    # never reaches this line; a cold one no longer takes the process down.
+    async with _fetch_slot():
+        # Re-check under the slot. A pane of 500 tiles queues requests for
+        # DIFFERENT media, but a re-render (scrolling back, a React remount)
+        # queues several for the SAME one, and whoever held the slot first has
+        # already written it. Without this they each pay the full OF round-trip
+        # to re-fetch bytes that are now sitting on disk.
+        if path.is_file():
+            return FileResponse(path, media_type="image/jpeg", headers=_HEADERS)
 
-    url: str | None = None
-    if item is not None:
-        url = pick(load_json(item.raw_json, {}) or {}) or item.thumb_url
-
-    client = await asyncio.to_thread(ax._make_client, account_id)
-    data = None
-    if url:
-        data = await asyncio.to_thread(fetch_bytes_sync, client, url)
-    if data is None:
-        # The stored url is dead (or we never had one) — re-sign and retry once.
-        fresh = await asyncio.to_thread(_resolve_fresh_sync, client, media_id)
-        if fresh.gone:
-            await _mark_gone(account_id, media_id)
+        async with get_session() as s:
+            item = await s.get(VaultItem, (account_id, media_id))
+        # The negative cache. Set below (or by a collect sweep) when OF reported
+        # the media deleted; without it, every render of a dead tile pays two
+        # OF calls.
+        if item is not None and item.removed_at is not None:
             raise HTTPException(status_code=404, detail="media_gone")
-        if fresh.media is None:
-            raise HTTPException(status_code=404, detail="fetch_failed")
-        await _refresh_mirror(account_id, media_id, fresh.media)
-        retry = pick(fresh.media)
-        if not retry or retry == url:
-            raise HTTPException(status_code=404, detail="fetch_failed")
-        data = await asyncio.to_thread(fetch_bytes_sync, client, retry)
-        if data is None:
-            raise HTTPException(status_code=404, detail="fetch_failed")
 
-    write(path, data)
-    return Response(content=data, media_type="image/jpeg", headers=_HEADERS)
+        url: str | None = None
+        if item is not None:
+            url = pick(load_json(item.raw_json, {}) or {}) or item.thumb_url
+
+        client = await asyncio.to_thread(ax._make_client, account_id)
+        data = None
+        if url:
+            data = await asyncio.to_thread(fetch_bytes_sync, client, url)
+        if data is None:
+            # The stored url is dead (or we never had one) — re-sign, retry once.
+            fresh = await asyncio.to_thread(_resolve_fresh_sync, client, media_id)
+            if fresh.gone:
+                await _mark_gone(account_id, media_id)
+                raise HTTPException(status_code=404, detail="media_gone")
+            if fresh.media is None:
+                raise HTTPException(status_code=404, detail="fetch_failed")
+            await _refresh_mirror(account_id, media_id, fresh.media)
+            retry = pick(fresh.media)
+            if not retry or retry == url:
+                raise HTTPException(status_code=404, detail="fetch_failed")
+            data = await asyncio.to_thread(fetch_bytes_sync, client, retry)
+            if data is None:
+                raise HTTPException(status_code=404, detail="fetch_failed")
+
+        write(path, data)
+        return Response(content=data, media_type="image/jpeg", headers=_HEADERS)
 
 
 def dir_stats(d: Path) -> dict[str, int]:

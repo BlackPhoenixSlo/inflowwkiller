@@ -259,7 +259,7 @@ async def _account_isolation_middleware(request: Request, call_next):
     if not candidates:
         return await call_next(request)
 
-    all_ids = {a["id"] for a in account_registry.list_accounts()}
+    all_ids = account_registry.list_account_ids()
     for cand in candidates:
         if cand in all_ids and cand not in allowed_ids:
             return Response("not your account", status_code=403)
