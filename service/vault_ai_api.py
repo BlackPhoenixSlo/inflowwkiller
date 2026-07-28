@@ -978,22 +978,14 @@ async def get_folder_plan(
     return await vault_scripts.plan_ai_folders(account_id, keep=keep)
 
 
-async def _sync_of_list_membership(client, account_id: str, of_list_id: int) -> int:
-    """Re-read ONE OF list and rewrite the mirror's per-item `of_folder_ids`.
-
-    Without this, mirroring is invisible in the UI. Item→folder membership is
-    written ONLY by a full collect (it is parsed from `listStates` on each media
-    dict), so a folder we just pushed to OF exists there but no cached item
-    claims to be in it — the picker asks "who is in list X", gets nothing, and
-    honestly renders "No media in this filter" while the dropdown, which counts
-    from OF, says 4. Real on OF, invisible locally.
+async def _read_of_list_members(client, of_list_id: int) -> set[int]:
+    """Every media id OF currently reports in ONE list.
 
     Membership is taken from OF rather than from the plan we just sent, because
     `add_media_to_vault_list` only ADDS: a list carries the union of every
     generation of the rules that has ever run. OF is the only thing that knows
     what is actually in there, so the mirror is made to agree with OF, not with
-    our intent. Both directions are written — ids gained AND ids dropped — or
-    a folder that shrinks would keep its stale members in the picker forever.
+    our intent.
     """
     live: set[int] = set()
     offset = 0
@@ -1012,7 +1004,31 @@ async def _sync_of_list_membership(client, account_id: str, of_list_id: int) -> 
             break
         offset += _PAGE
         await asyncio.sleep(_PAGE_SLEEP_S)
+    return live
 
+
+async def _apply_list_membership(
+    account_id: str, live_by_list: dict[int, set[int]],
+) -> int:
+    """Rewrite the mirror's per-item `of_folder_ids` for EVERY list we pushed,
+    in ONE pass over the vault.
+
+    Without this, mirroring is invisible in the UI. Item→folder membership is
+    written ONLY by a full collect (it is parsed from `listStates` on each media
+    dict), so a folder we just pushed to OF exists there but no cached item
+    claims to be in it — the picker asks "who is in list X", gets nothing, and
+    honestly renders "No media in this filter" while the dropdown, which counts
+    from OF, says 4. Real on OF, invisible locally.
+
+    This ran PER FOLDER once, and each run re-loaded every VaultItem for the
+    account: 12 folders on a 1600-item vault meant ~20k ORM hydrations and 12
+    commits inside the request the operator is sitting in front of. The item set
+    is identical every time — only the list id differs — so the loads collapse
+    into one. Both directions are still written, ids gained AND ids dropped, or
+    a folder that shrinks would keep its stale members in the picker forever.
+    """
+    if not live_by_list:
+        return 0
     touched = 0
     async with get_session() as s:
         items = (await s.execute(
@@ -1024,15 +1040,18 @@ async def _sync_of_list_membership(client, account_id: str, of_list_id: int) -> 
                 ids = [int(x) for x in ids if x is not None]
             except (ValueError, TypeError):
                 ids = []
-            has, should = int(of_list_id) in ids, int(item.media_id) in live
-            if has == should:
-                continue
-            if should:
-                ids.append(int(of_list_id))
-            else:
-                ids = [x for x in ids if x != int(of_list_id)]
-            item.of_folder_ids = json.dumps(ids)
-            touched += 1
+            before = list(ids)
+            for lid, live in live_by_list.items():
+                has, should = lid in ids, int(item.media_id) in live
+                if has == should:
+                    continue
+                if should:
+                    ids.append(lid)
+                else:
+                    ids = [x for x in ids if x != lid]
+            if ids != before:
+                item.of_folder_ids = json.dumps(ids)
+                touched += 1
         await s.commit()
     return touched
 
@@ -1050,11 +1069,30 @@ async def _mirror_ai_folders_to_of(
     already carries an `of_list_id` is reused. Failures are reported per folder
     and never roll back the internal folder — a folder that exists locally but
     not on OF is recoverable; losing the grouping is not.
+
+    Runs in two phases, and the ORDER is the point. Phase 1 is every write that
+    changes her OnlyFans account; phase 2 only re-READS what we just wrote so
+    the local picker agrees with it. They used to be interleaved per folder,
+    which made the cheap cosmetic read-back a barrier in front of the next
+    folder's create: on a 12-folder plan the request ran for minutes, the proxy
+    in front of the relay gave up, and the browser showed a bare "Internal
+    Server Error" while the relay had logged nothing at all (a client
+    disconnect cancels the handler with `CancelledError`, which is a
+    BaseException and so is invisible to the `except Exception` that records
+    server errors). The folders that hadn't been reached yet simply never got
+    made — the 2026-07-28 symptom of two `AI-` folders sitting with a NULL
+    `of_list_id`, and of "sometimes it works": a small plan finished inside the
+    timeout, a big one didn't.
+
+    Split, a request cut short still leaves every folder REAL on OF with its
+    media in it. Only the read-back is lost, and a re-run (or any collect)
+    restores that.
     """
     by_name = {f["name"]: f for f in plan.get("folders") or []}
     client = await asyncio.to_thread(ax._make_client, account_id)
     out: list[dict[str, Any]] = []
 
+    # ── Phase 1: the writes ──────────────────────────────────────────
     for made in created:
         spec = by_name.get(made["name"])
         media_ids = [int(i["media_id"]) for i in (spec or {}).get("items") or []]
@@ -1077,18 +1115,47 @@ async def _mirror_ai_folders_to_of(
                     await s.commit()
             if media_ids:
                 await asyncio.to_thread(client.add_media_to_vault_list, int(of_list_id), media_ids)
-            # Bind membership into the mirror NOW. A full re-collect would also
-            # do it, but making the operator re-page the whole vault to see the
-            # folder they just built is not a fix — and until they do, the grid
-            # shows nothing.
-            synced = await _sync_of_list_membership(client, account_id, int(of_list_id))
             out.append({**made, "of_list_id": int(of_list_id),
-                        "of_added": len(media_ids), "mirror_synced": synced})
+                        "of_added": len(media_ids)})
         except Exception as e:  # noqa: BLE001
             log.warning("OF mirror failed folder=%s name=%s",
                         made["folder_id"], made["name"], exc_info=True)
             out.append({**made, "of_error": str(e)[:200]})
+
+    # ── Phase 2: the read-back, off the request ──────────────────────
+    # Detached for the same reason Collect and the flags sweep are: it is one
+    # OF page per 100 items across every list, and holding the operator's
+    # request open for it is what made a 12-folder plan 500. Her account is
+    # already correct when this starts, so nothing here can fail in a way that
+    # costs a folder.
+    list_ids = [int(r["of_list_id"]) for r in out if r.get("of_list_id")]
+    if list_ids:
+        asyncio.create_task(_readback_membership(client, account_id, list_ids))
     return out
+
+
+async def _readback_membership(client, account_id: str, list_ids: list[int]) -> int:
+    """Make the mirror agree with OF about who is in the lists we just pushed.
+
+    Runs detached, so it owns its own error handling — an exception escaping a
+    bare `create_task` is only ever seen as an "exception was never retrieved"
+    warning at GC time.
+    """
+    live_by_list: dict[int, set[int]] = {}
+    for lid in list_ids:
+        try:
+            live_by_list[lid] = await _read_of_list_members(client, lid)
+        except Exception:  # noqa: BLE001
+            log.warning("OF membership read-back failed list=%s", lid, exc_info=True)
+    try:
+        synced = await _apply_list_membership(account_id, live_by_list)
+        log.info("mirror membership synced account=%s items=%s lists=%s",
+                 account_id, synced, len(live_by_list))
+        return synced
+    except Exception:  # noqa: BLE001
+        log.warning("mirror membership write failed account=%s", account_id,
+                    exc_info=True)
+        return 0
 
 
 @router.post("/admin/vault-ai/folder-plan/apply")

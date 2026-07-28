@@ -343,18 +343,21 @@ _DEFAULTS: dict = {
     # this many replies, the daily quota does not apply at all, and she may chat as
     # deep as the burst caps allow.
     #
-    # 100 is measured, not guessed. Of every fan who has ever bought, 84% did it inside
-    # 25 of her replies and 99% inside 100 — so a 100-reply runway forfeits essentially
-    # no conversions while still catching the long repeaters (one $0 fan was taking ~130
-    # replies A DAY). Past it, a man who has had a hundred replies and bought nothing is
-    # the population this quota exists for.
+    # 31 is an OPERATOR choice against a measured curve, not a derived number. Of every
+    # fan who has ever bought, 84% did it inside 25 of her replies and 99% inside 100.
+    # A 100-reply runway therefore forfeited essentially no conversions, but it carried
+    # the long free repeaters all the way (one $0 fan was taking ~130 replies A DAY).
+    # 31 sits just past that 84% knee: it buys a far cheaper tail, and it pays for it
+    # with the ~15% of buyers who convert somewhere between 25 and 100 replies. Move it
+    # back toward 100 if the held volume starts reading as lost sales rather than saved
+    # calls — the curve above is what to judge that against.
     #
     # HER REPLIES, deliberately — not message rows. Rows count both directions and count
     # bubbles, and the humanizer types one reply out as 2.82 rows on average (measured),
-    # so "100 rows" is really ~23 replies: it would start rationing before most fans had
-    # a fair run. Replies are also what actually costs an LLM call, so the runway is
+    # so "31 rows" would be nearer 11 replies: it would start rationing before most fans
+    # had a fair run. Replies are also what actually costs an LLM call, so the runway is
     # denominated in the thing being spent.
-    "daily_quota_free_replies": 100,
+    "daily_quota_free_replies": 31,
     # Extra replies for 24h after a sale, on top of whatever tier he already earns —
     # a man who just paid gets more room that day, not the stranger's ration.
     "daily_quota_after_sale": 5,
