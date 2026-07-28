@@ -213,9 +213,14 @@ _DEFAULTS: dict = {
     # complaining about price in-thread. Enabling this accepts that risk. The ONLY
     # thing that still halts the ladder is a MANUAL stop — blacklist, a skip_list
     # row (manual_restrict / of_restricted / unreachable), or a muted peer-creator —
-    # all enforced UPSTREAM in run() before this code is reached. Default OFF so
-    # every existing account keeps the full brake set byte-for-byte.
-    "teaser_convo_ignore_brakes": False,
+    # all enforced UPSTREAM in run() before this code is reached. Default ON since
+    # 2026-07-28 (operator call): the brakes were eating the ladder on exactly the
+    # fans it exists for — a $849-lifetime buyer who paid $147 that morning tripped
+    # the $300/7d spend cap, went COMPANION for 24h, and sat 94 messages past his
+    # `after: 20` threshold with the next rung gagged every single turn. Note the
+    # config API has NO branch for this key (it is dropped from any UI save), so an
+    # account can only opt back out via an explicit stored False or a code change.
+    "teaser_convo_ignore_brakes": True,
     "tiers": [
         {"name": "basic",   "min_basis_cents": 0,      "folders": []},
         {"name": "mid",     "min_basis_cents": 1000,   "folders": []},   # ≥ $10
