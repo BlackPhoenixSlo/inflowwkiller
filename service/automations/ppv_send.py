@@ -74,7 +74,7 @@ import vault_ai_to_chatter
 from automation_registry import register
 from db.engine import get_session
 from db.models import (
-    AccountAiConfig, AutomationRun, Blacklist, Fan,
+    AccountAiConfig, Blacklist, Fan, MassRun,
     Post, ScheduledJob, Transaction,
 )
 from ._common import load_hard_skip_ids
@@ -867,52 +867,58 @@ _CAP_WINDOWS = (("per_day", 86_400), ("per_week", 7 * 86_400), ("per_month", 30 
 _DUP_GAP_MIN_DEFAULT = 60.0
 
 
-async def _last_same_ppv_send(account_id: str, ppv_id: str, since: datetime) -> datetime | None:
-    """completed_at of the newest ppv_send run of THIS ppv that ACTUALLY sent
-    (cells_sent>0) since `since` — the duplicate-fire gate's ledger. Reads the
-    per-run stats blob, so a PARTIAL send counts too (a run that broadcast 2 of
-    3 cells before erroring is exactly the case the gate exists for)."""
+# Nothing older than the widest cap window can gate anything, so that is how far
+# back either gate ever has to look.
+_CAP_LOOKBACK = timedelta(seconds=max(w for _, w in _CAP_WINDOWS))
+
+
+async def _last_ppv_send(account_id: str, since: datetime,
+                         ppv_id: str | None = None) -> datetime | None:
+    """started_at of this account's newest DELIVERED ppv_send mass row since
+    `since` — the ledger under both gates. Pass `ppv_id` to ask the duplicate
+    gate's narrower question ("did THIS ppv go out?"); omit it for the cap's ("did
+    ANY ppv go out?"). Rows are per CELL, so a partial fire counts too — a fire
+    that broadcast 2 of 3 cells before dying is exactly what the gates exist for.
+
+    The ledger is `mass_runs`, NOT the automation run's stats blob. Rows are
+    written and stamped `ok` cell by cell as OF accepts each one; stats_json is
+    written once, at the END of the whole fire. A run cancelled in flight (relay
+    restart) is finalized `error` with NO stats — so keying on stats_json made a
+    fire that had already broadcast most of its cells look like it never
+    happened, and the requeued job re-blasted the whole audience. Live 2026-07-28
+    on Ava: run 814092 sent 13 of 14 cells, was cancelled, and its retry 4
+    minutes later re-sent the same PPV to the same 422 fans — under a 2/day cap.
+    Those 13 rows sat there `ok` the whole time.
+
+    `status == "ok"` carries exactly the weight the old `cells_sent > 0` did: OF
+    ACCEPTED this broadcast. It is not decoration — a row whose OF call then
+    RAISED stays `running` forever (nothing ever sets it to error), so counting
+    every row would let a dead session or dead proxy fail every cell, deliver
+    nothing, and still hold the account's next PPV for the whole even-spread gap.
+    """
+    q = select(func.max(MassRun.started_at)).where(
+        MassRun.account_id == str(account_id),
+        MassRun.automation_kind == "ppv_send",
+        MassRun.status == "ok",
+        MassRun.started_at >= since,
+    )
+    if ppv_id is not None:
+        # `$.ref` is the ppv id ppv_send stamps on every send payload.
+        q = q.where(func.json_extract(MassRun.audience_filter, "$.ref") == str(ppv_id))
     async with get_session() as s:
-        return (await s.execute(
-            select(func.max(AutomationRun.completed_at)).where(
-                AutomationRun.account_id == account_id,
-                AutomationRun.kind == "ppv_send",
-                AutomationRun.completed_at.is_not(None),
-                AutomationRun.completed_at >= since,
-                func.json_extract(AutomationRun.stats_json, "$.ppv_id") == str(ppv_id),
-                func.json_extract(AutomationRun.stats_json, "$.cells_sent") > 0,
-            )
-        )).scalar_one_or_none()
+        return (await s.execute(q)).scalar_one_or_none()
 
 
-async def _recent_ppv_send_times(account_id: str, now: datetime) -> list[datetime]:
-    """completed_at of this account's ppv_send fires that ACTUALLY sent (cells_sent>0)
-    in the last 30 days — the cap counter. AutomationRun.status is always 'ok' so we
-    key on the per-fire stats_json: a capped/skipped fire has no cells_sent."""
-    since = now - timedelta(days=30)
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(AutomationRun.completed_at).where(
-                AutomationRun.account_id == account_id,
-                AutomationRun.kind == "ppv_send",
-                AutomationRun.completed_at.is_not(None),
-                AutomationRun.completed_at >= since,
-                func.json_extract(AutomationRun.stats_json, "$.cells_sent") > 0,
-            )
-        )).scalars().all()
-    return sorted(r for r in rows if r is not None)
-
-
-def _cap_release(caps: dict, send_times: list, now: datetime):
+def _cap_release(caps: dict, last: datetime | None, now: datetime):
     """Even-spread throttle. With cap N per window W, enforce a MINIMUM gap of W/N
     between PPV sends — so 2/day becomes one every 12h, 3/day every 8h, etc. — measured
-    from the LAST send (the spacing restarts from the moment the previous one went /
-    the cap lifted). The widest required gap across the day/week/month caps wins.
+    from `last`, the account's newest delivered send (None = never sent; the spacing
+    restarts from the moment the previous one went / the cap lifted). The widest
+    required gap across the day/week/month caps wins.
     Returns (capped, release_at, which_cap): release_at = the earliest the next send is
     allowed (last_send + that gap). Clear to send now → (False, None, None)."""
-    if not send_times:
+    if last is None:
         return (False, None, None)
-    last = max(send_times)
     release = None
     which = None
     for key, window_s in _CAP_WINDOWS:
@@ -1078,7 +1084,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if not dry_run and not force_ids and any((caps.get(k) or 0) for k in
                                              ("per_day", "per_week", "per_month")):
         capped, release_at, which = _cap_release(
-            caps, await _recent_ppv_send_times(account_id, now), now)
+            caps, await _last_ppv_send(account_id, now - _CAP_LOOKBACK), now)
         if capped:
             job_id = await _defer_capped(account_id, ppv_id, release_at, now,
                                          is_resend=is_resend)
@@ -1102,8 +1108,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     except (TypeError, ValueError):
         dup_gap_min = _DUP_GAP_MIN_DEFAULT
     if not dry_run and not force_ids and dup_gap_min > 0:
-        last = await _last_same_ppv_send(
-            account_id, str(ppv_id), now - timedelta(minutes=dup_gap_min))
+        last = await _last_ppv_send(
+            account_id, now - timedelta(minutes=dup_gap_min), str(ppv_id))
         if last is not None:
             log.warning("ppv_send duplicate-fire gate account=%s ppv=%s "
                         "last_sent=%s gap_min=%s — skipping",
@@ -1194,6 +1200,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "price": price / 100,                 # OF wants dollars
             "included_users": fan_ids,
             "automation_kind": "ppv_send",        # Mass Messages tab attribution
+            "automation_ref": str(ppv_id),        # the duplicate gate's ledger key
             # Pause = the contact guard. 0 → guard OFF (send to everyone, the
             # default); >0 → skip fans messaged in the last N hours.
             "exclude_replied_hours": pause_hours,
@@ -1234,6 +1241,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "user_lists": ["fans"],                   # ALL active subscribers
             "excluded_users": known_ids,              # → Auto_Exclude (no double-send)
             "automation_kind": "ppv_send",
+            "automation_ref": str(ppv_id),
             "exclude_replied_hours": pause_hours,
             "exclude_inbound_hours": pause_hours,
         }

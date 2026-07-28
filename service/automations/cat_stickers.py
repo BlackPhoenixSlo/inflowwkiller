@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 
-from ._markers import protocol_marker_re
+from ._markers import bare_star_span, protocol_marker_re
 
 # tag -> (when-to-use line for the prompt, giphy ids to rotate among)
 _CATALOG: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -132,7 +132,27 @@ def parse_marker(raw: str) -> tuple[str, str | None]:
     protocol, malformed included — and return the tag it asked for."""
     m = _MARKER_RE.search(raw or "")
     clean = _MARKER_RE.sub("", raw or "").strip()
-    return clean, (_tag_for(m.group(1)) if m else None)
+    if m:
+        return clean, _tag_for(m.group(1))
+    # A bare emote that NAMES a reaction we own is the same request as the
+    # protocol, just without it: prod sent `*love*` as its whole reply, and
+    # `love` is a catalog tag with five gifs behind it. Answering with the gif
+    # beats the alternative, which is the narration strip emptying the draft and
+    # the fan getting no reply at all that turn.
+    #
+    # EXACT key, not `_tag_for` — that resolves prefixes, and prefix-matching a
+    # bare emote is how `*go on*` turns into a good_morning gif at a man
+    # mid-conversation. Silence is better than the wrong reaction.
+    #
+    # Only the two chat engines call this, so only they turn a bare `*love*` into
+    # a gif. In autoreply / deep_convo the same body reaches
+    # `_markers.strip_narration` unparsed and is simply dropped. That asymmetry is
+    # deliberate — those lanes have no sticker send path to reach.
+    if bare := bare_star_span(clean):
+        tag = bare.lower().replace(" ", "_")
+        if tag in _CATALOG:
+            return "", tag
+    return clean, None
 
 
 def roll_mode(rng, on_cooldown: bool,

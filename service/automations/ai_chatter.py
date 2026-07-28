@@ -107,6 +107,7 @@ from ._common import (
     CONTENT_ASK_RE, ESCALATION_RE, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER,
     BIO_CONSISTENCY_GUARDRAIL,
     nonempty,
+    NO_NARRATION_RULE,
     ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING, STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER,
     STYLE_MAX_BUBBLES,
     apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction, coerce_ids,
@@ -4089,8 +4090,8 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         "- VARY it every time — don't open the same way twice, and don't reuse a "
         "phrase or an emoji you've already used in this chat.\n"
         "- At most ONE question, never one he already answered (if his answer was "
-        "vague, ask a quick follow-up instead of re-asking). Don't narrate, no "
-        "paragraphs.\n"
+        "vague, ask a quick follow-up instead of re-asking). No paragraphs.\n"
+        f"{NO_NARRATION_RULE}"
         "- If he gets explicit early: don't go along with it — playfully tease and "
         "slow it down, then steer back to getting to know him. Warm and flirty, "
         "never cold or preachy.\n"
