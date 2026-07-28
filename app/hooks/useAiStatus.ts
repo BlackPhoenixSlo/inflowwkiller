@@ -61,6 +61,18 @@ export type AiStatus = {
       enforced: boolean; // false = shadow — recorded, but she still replied
       backoff_hours: number | null; // how long she stays quiet once held
       dry_days: number | null; // since his last money event (or first contact)
+      /** The backoff rungs themselves, in order. Sent as the shape rather than as
+       *  "rung 4 of 4" because the shape is what gets misread: each band is as wide
+       *  as its own rung, so the longest one owns most of the cycle and it looks
+       *  like the gate jumped straight to it. */
+      ladder_hours: number[] | null;
+      /** Which rung he stands on, 0-based. Cyclic — the last is followed by the
+       *  FIRST, so 72h is followed by 4h, never by another 72h. */
+      rung: number | null;
+      /** ISO instant the hold lifts, not a duration: this payload is cached and
+       *  re-rendered, and "in 65h" is only true when it is computed. Measured from
+       *  HER OWN last reply — a manual message or a mass send does not move it. */
+      free_at: string | null;
     };
   };
   offer_caps_ok: boolean | null;

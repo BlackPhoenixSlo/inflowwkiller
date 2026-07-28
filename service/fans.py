@@ -566,9 +566,17 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
         # served, and the UI must say so rather than claim she's paused when she isn't.
         if leash.quota is not None:
             enforce = bool(cfg.get("daily_quota_enforce"))
-            cadence["daily"] = copy.daily_payload(leash.quota, enforced=enforce)
+            # `cand.her_last_at` is HER OWN last reply (ai_chatter / ai_upseller only —
+            # a human's manual send and a mass row are both excluded upstream), which
+            # is the anchor the hold is actually measured from. Reading the last
+            # OUTBOUND row here instead would answer a different question and be wrong
+            # by days on any thread a person has typed into.
+            free_at = copy.quota_free_at(leash.quota, cand.her_last_at)
+            cadence["daily"] = copy.daily_payload(leash.quota, enforced=enforce,
+                                                  cad=cfg, free_at=free_at)
             if badge.state == "active":
-                badge = copy.daily_quota_badge(leash.quota, enforced=enforce) or badge
+                badge = copy.daily_quota_badge(leash.quota, enforced=enforce,
+                                               cad=cfg, free_at=free_at) or badge
 
     # Why she can't put a price in front of him even when she's talking.
     caps_ok = await ac._offer_caps_ok(account_id, int(fan_id), cfg) if gate_on else None

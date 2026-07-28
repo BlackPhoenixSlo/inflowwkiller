@@ -54,6 +54,7 @@ const RUNWAY: AiStatus = {
     daily: {
       reason: "runway", used: 2, quota: null, runway_left: 3,
       held: false, enforced: true, backoff_hours: null, dry_days: null,
+      ladder_hours: null, rung: null, free_at: null,
     },
   },
 };
@@ -66,6 +67,7 @@ const HELD: AiStatus = {
     daily: {
       reason: "held", used: 6, quota: 3, runway_left: null,
       held: true, enforced: true, backoff_hours: 3.5858745856403846, dry_days: 0.0,
+      ladder_hours: [4, 12, 24, 72], rung: 0, free_at: null,
     },
   },
 };
@@ -78,6 +80,7 @@ const WHALE: AiStatus = {
     daily: {
       reason: "unlimited", used: 6, quota: null, runway_left: null,
       held: false, enforced: true, backoff_hours: null, dry_days: null,
+      ladder_hours: null, rung: null, free_at: null,
     },
   },
 };
@@ -115,12 +118,50 @@ describe("AiStatusStrip — daily quota chip", () => {
   it("keeps the counter but does not retype the badge's sentence", async () => {
     render(draw(HELD));
     const el = await chip();
-    expect(el?.textContent).toBe("📅 6/3 today");
+    expect(el?.textContent).toBe("📅 6/3 today · rung 1/4");
     expect(el?.className).toContain("amber");
     // The wait belongs in the title; the state badge beside it already says it aloud.
     expect(el?.textContent).not.toContain("quiet");
     // …and it is rounded. `%g` on the jittered rung printed "3.58587h" on a live thread.
     expect(el?.getAttribute("title")).toContain("She's quiet for 3.6h");
+  });
+
+  it("draws the ladder so the longest rung doesn't read as a jump to it", async () => {
+    // A fan 20.9 days dry sits on the LAST rung — and every operator who saw "72h"
+    // asked whether it skipped 4/12/24. It didn't: the bands are as wide as their own
+    // rungs, so the last one owns 72 of the 112 hours in a lap.
+    render(draw({
+      ...HELD,
+      cadence: {
+        ...HELD.cadence,
+        daily: {
+          ...HELD.cadence.daily!, rung: 3, backoff_hours: 64.996,
+          free_at: "2026-07-30T03:54:43Z",
+        },
+      },
+    }));
+    const el = await chip();
+    expect(el?.textContent).toContain("rung 4/4");
+    // The ladder is drawn with HIS rung bracketed, and the next step named — the
+    // cycle is the whole point: 4 of 4 is followed by 1 of 4, not by more.
+    expect(el?.getAttribute("title")).toContain("Ladder 4h · 12h · 24h · [72h]");
+    expect(el?.getAttribute("title")).toContain("next step 4h");
+    // A manual reply does NOT move the clock, and the strip must not imply it does.
+    expect(el?.getAttribute("title")).toContain("her own last reply");
+  });
+
+  it("dates the release, because a 72h hold is not 'this morning'", async () => {
+    render(draw({
+      ...HELD,
+      cadence: {
+        ...HELD.cadence,
+        daily: { ...HELD.cadence.daily!, rung: 3, free_at: "2026-07-30T03:54:43Z" },
+      },
+    }));
+    const el = await chip();
+    // Rendered in the viewer's zone, so assert the SHAPE — a weekday must be present,
+    // never a bare clock that reads as today.
+    expect(el?.textContent).toMatch(/→ (Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d{2}:\d{2}/);
   });
 
   it("still names a whale, which is the only fan the green pill should mean", async () => {
