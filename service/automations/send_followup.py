@@ -399,7 +399,8 @@ async def _load_eligible_fans(account_id: str, limit: int) -> list[dict]:
     async with get_session() as s:
         rows = (await s.execute(
             select(Fan.fan_id, Fan.of_display_name, Fan.real_name,
-                   Fan.generated_nickname, Fan.custom_nickname)
+                   Fan.generated_nickname, Fan.custom_nickname,
+                   Fan.home_country, Fan.home_city)
             .where(
                 Fan.account_id == account_id,
                 Fan.lifetime_spend_cents >= _ELIGIBLE_MIN_SPEND_CENTS,
@@ -408,16 +409,14 @@ async def _load_eligible_fans(account_id: str, limit: int) -> list[dict]:
             .order_by(Fan.lifetime_spend_cents.desc())
             .limit(limit)
         )).all()
-    # resolve_fan_name walks real_name → generated_nickname → of_display_name and,
-    # when all are empty (the common case — OF messages carry no name), parses the
-    # team-curated custom_nickname ('John/City/Tag' → 'John') instead of emitting a
-    # literal 'Babe' downstream. of_username is intentionally dropped (handles aren't
-    # names). Empty '' here → _compose_user's soft 'babe' fallback as before.
+    # resolve_fan_name walks real_name → curated custom_nickname ('John/City/Tag' →
+    # 'John') → generated_nickname → of_display_name, instead of emitting a literal
+    # 'Babe' downstream. of_username is intentionally dropped (handles aren't names).
+    # home_country/home_city ride along because they are what the resolver checks a
+    # candidate against — without them 'Millbrook' passes as his name. Empty '' here →
+    # _compose_user's soft 'babe' fallback as before.
     return [
-        {"fan_id": int(r.fan_id), "name": resolve_fan_name({
-            "real_name": r.real_name, "generated_nickname": r.generated_nickname,
-            "of_display_name": r.of_display_name, "custom_nickname": r.custom_nickname,
-        })}
+        {"fan_id": int(r.fan_id), "name": resolve_fan_name(r)}
         for r in rows
     ]
 

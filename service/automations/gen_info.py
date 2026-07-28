@@ -58,8 +58,10 @@ from db.models import AccountAiConfig, Fan, FanProfile, Message, ScrapeHistory, 
 import llm_client
 from llm_client import LLMCapExceeded, LLMError
 from ._common import (
+    SPEND_TIERS,
     build_structured_nickname,
     coerce_ids,
+    is_greetable_name,
     is_substantive_msg,
     load_promo_spam_ids,
     push_nick_and_notes,
@@ -127,7 +129,8 @@ _SYSTEM_PROMPT = (
     'never write "Unknown" or "??". Keys:\n'
     '  "nickname": slash-joined tag "Name/City,Country/Age/Job/Bonus" (<=60 chars). '
     "The Name MUST be his real first name (from the chat or the KNOWN real name). "
-    "NEVER use a number, a fan id, a u<digits> handle, or a username as the Name — "
+    "NEVER use a number, a fan id, a u<digits> handle, a username, or a PLACE "
+    "(country/state/city — those belong in the second section) as the Name — "
     "leave the Name section EMPTY if you don't know it. Leave any unknown section "
     'EMPTY (no "??", no filler), e.g. "Garrett/Delta,Canada/30/Spender".\n'
     '  "short_bio": one sentence describing who he is and his spending,\n'
@@ -255,19 +258,28 @@ def _parse_events(raw: Any) -> list[str]:
     return [s] if s else []
 
 
+def _here(c: "_Candidate") -> tuple:
+    """This fan's own stored location — never his name. Passed to is_greetable_name
+    so a city no static list can hold ('Millbrook') is caught for THIS fan."""
+    return (c.known.get("home_country"), c.known.get("home_city"))
+
+
 def _guard_name(nickname: str, c: "_Candidate") -> str:
-    """Blank the Name slot (first '/'-segment) when it isn't a real first name. A
-    real first name is plain LETTERS, so anything with a digit (195382538, R342,
-    Hudzie10, u9745967, the fan id) or no letters at all (',', '.') is dropped — the
-    _name_hint fallback then re-adds the real OF name (W2h)."""
+    """Blank the Name slot (first '/'-segment) when it isn't a real first name —
+    `is_greetable_name`, the same predicate the senders greet by: a digit-handle
+    (111222333, T900, Sparky10, u7654321, the fan id), junk with no letters (',',
+    '.'), a place, or this fan's own city/country. With no name to be found the
+    model writes the COUNTRY into the Name slot ('Canada/Canada/office job'), which
+    every downstream sender then greeted him by. The _name_hint fallback re-adds a
+    real OF name afterwards (W2h) — it uses the same predicate, so it cannot hand
+    back what this just dropped."""
     if not nickname:
         return nickname
     parts = nickname.split("/")
     name = parts[0].strip()
     if not name:
         return nickname
-    bad = any(ch.isdigit() for ch in name) or not any(ch.isalpha() for ch in name)
-    if not bad:
+    if is_greetable_name(name, here=_here(c)):
         return nickname
     parts[0] = ""                       # drop the bad name; keep the rest of the tag
     return _clean_nickname("/".join(parts))
@@ -275,30 +287,29 @@ def _guard_name(nickname: str, c: "_Candidate") -> str:
 
 def _name_hint(c: "_Candidate") -> str:
     """A real first name to anchor the nickname — prefer the chat-extracted real
-    name, then the OF display name, then the OF USERNAME. Plain letters + len>=2, so
-    a bare number or the fan id is never used and digit-handles ('R342', 'Hudzie10',
-    'u9745967', 'wildman4you') + junk ('.', 'C') are skipped. The username fallback
-    means a fan whose display name is just their numeric id but whose handle is a
-    real word (e.g. id 195382538 / name 'mani k' → 'Mani') gets a name, never a
-    number. Capitalised (the user wants the real name/username used, never digits)."""
+    name, then the OF display name, then the OF USERNAME. `is_greetable_name` decides
+    what qualifies (same predicate as _guard_name and the senders), so a bare number
+    or the fan id is never used and digit-handles ('T900', 'Sparky10', 'u7654321',
+    'gamer4you'), junk ('.', 'C') and PLACES are skipped. Without the place check
+    this handed straight back what _guard_name had just dropped: a fan whose OF
+    display name is 'Canada' got 'Canada' re-installed as his name one line later.
+    The username fallback means a fan whose display name is just their numeric id but
+    whose handle is a real word (e.g. id 111222333 / name 'sam k' → 'Sam') gets a
+    name, never a number. Capitalised (real name/username used, never digits)."""
     for src in (c.known.get("real_name", ""), c.of_name, c.of_username):
         s = (src or "").strip()
         tok = s.split(" ")[0].strip(".,/") if s else ""
-        if len(tok) >= 2 and tok.isalpha():
+        if len(tok) >= 2 and tok.isalpha() and is_greetable_name(tok, here=_here(c)):
             return tok[:1].upper() + tok[1:]
     return ""
 
 
 # Spend tiers for the nickname's Bonus slot — DERIVED from real spend (cents), not
-# guessed. Thresholds in cents: Whale ≥ $500, Spender ≥ $50, Buyer > $0, else Free.
+# guessed. Whale ≥ $500, Spender ≥ $50, Buyer > $0, else Free. The labels + floors
+# live in names.SPEND_TIERS, which the name guard also reads — one source, so a new
+# tier can never become a fan's name.
 def _spend_tier(cents: int) -> str:
-    if cents >= 50000:
-        return "Whale"
-    if cents >= 5000:
-        return "Spender"
-    if cents > 0:
-        return "Buyer"
-    return "Free"
+    return next(label for label, floor in SPEND_TIERS if cents >= floor)
 
 
 def _tier_knobs(lifetime_cents: int, recent_cents: int,

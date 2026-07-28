@@ -1740,31 +1740,13 @@ def build_rich_note(bullet_points: str | None, short_bio: str = "",
     return "\n\n".join(parts)[:cap]
 
 
-# ── Live nickname + note push (V1 build_structured_nickname / apply_nickname) ──
-_NICK_MAX = 70
-
-
-def build_structured_nickname(f: Fan) -> str:
-    """`Name/City,Country/Age/Job` from a fan's facts (port of V1
-    build_structured_nickname; Job replaces V1's hobbies to match gen_info's
-    nickname format). Empty segments are dropped, so a thin profile yields a
-    short nickname. '' when nothing is known."""
-    # `custom_nickname` is the OUTPUT this function mirrors back (via
-    # of_ai_chat._maybe_push_nickname, every tick). Feeding the whole structured
-    # string back in as the Name made each tick re-append loc/age/job, growing
-    # 'Donovon/chef/25' → 'Donovon/chef/25/chef/25/chef/nanaimo,canada/25/…' until
-    # the 70-char cap. Pull only the NAME slot from it so the loop can't compound.
-    name = ((getattr(f, "real_name", None) or "").strip()
-            or name_token(getattr(f, "custom_nickname", None))
-            or (getattr(f, "of_display_name", None) or "").strip())
-    age = (f.his_age or "").strip()
-    country = (f.home_country or "").strip()
-    city = (f.home_city or "").strip()
-    job = (f.occupation or "").strip()
-    loc = ",".join(p for p in (city, country) if p)
-    parts = [p for p in (name, loc, age, job) if p]
-    return "/".join(parts)[:_NICK_MAX]
-
+# The fan-NAME cluster lives in names.py now (one concern, one file). Re-exported
+# here because nine modules already import it from _common — names.py is the
+# canonical home; this line is the bridge, not an abstraction.
+from .names import (  # noqa: F401  (re-export)
+    SPEND_TIERS, build_structured_nickname, is_greetable_name, is_place_word,
+    name_token, resolve_fan_name,
+)
 
 def facts_from_fan(f: Fan) -> dict:
     """The fact dict `build_facts_note` consumes, lifted off a Fan row."""
@@ -1814,76 +1796,6 @@ async def push_nick_and_notes(client, account_id: str, fan_id: int, *,
                 .on_conflict_do_update(index_elements=["account_id", "fan_id"], set_=mirror)
             )
     return nick_ok, note_ok
-
-
-def name_token(s: str | None, *, last: bool = False) -> str:
-    """Pull a real-NAME token (Capitalized, letters only, len≥2) out of a string,
-    or '' if it doesn't look like a name (handles like 'xx_gamer_99' / 'u123' are
-    rejected — they aren't Capitalized real names). Slash-structured nicknames
-    ('John/Orange City,USA/Horny-Fan') keep the first slot ('John'); pass last=True
-    for AI/curated nicknames so 'Sexy Sofie' → 'Sofie' (the name, not the adjective).
-
-    This is the canonical parser (lifted from send_welcome._name_token so every
-    sender derives names identically — single source of truth)."""
-    if not s:
-        return ""
-    seg = str(s).split("/")[0].strip()       # 'John/City/Tag' → 'John'
-    if "," in seg:                            # 'Whistler,Canada/Whale' has no name slot
-        return ""                             # (a comma marks a City,Country location)
-    words = re.split(r"\s+", seg) if seg else []
-    if not words:
-        return ""
-    raw = words[-1] if last else words[0]
-    if not raw[:1].isupper():                 # real names are Capitalized; handles aren't
-        return ""
-    # A SHOUTED token is a country/region code, never a first name. gen_info emits
-    # the name slot title-cased ('Mani'), so anything all-caps reaching here came
-    # from the location slot after _guard_name blanked an unusable name — without
-    # this, 'USA/Free' resolves to the greeting "u around USA?".
-    if raw.isupper() and len(raw) <= 4:
-        return ""
-    # Keep letters only, but UNICODE-correct: str.isalpha() preserves accented names
-    # (José, Ángel, Muñoz, Nicolás) that the old [^A-Za-z] strip mangled to Jos/ngel/Muoz.
-    w = "".join(ch for ch in raw if ch.isalpha())
-    return w if len(w) >= 2 else ""
-
-
-def resolve_fan_name(f) -> str:
-    """Single source of truth for 'what real first name do we greet this fan by'.
-
-    Why this exists: OF *message* payloads carry only `fromUser:{id}` — no name — so
-    `of_username`/`of_display_name` are empty for ~80% of fans, and the WS pump used
-    to clobber them to NULL on every message. The team-curated `custom_nickname`
-    ('John/City/Tag') is then the most reliable name signal we hold, but the senders
-    never consulted it and emitted a literal 'Babe'.
-
-    Precedence: real_name → generated_nickname → of_display_name → custom_nickname.
-    `of_username` is deliberately excluded — handles like 'u123' / 'alexnielsen'
-    aren't greetable names. Returns '' when we truly have nothing; callers keep their
-    own soft 'babe' fallback.
-
-    BOTH nickname columns hold a STRUCTURED LABEL, not a name: gen_info builds
-    `Name/City,Country/Age/Job/Tag` and, when it can't find a usable name, blanks the
-    first slot — `_clean_nickname` then drops the empty slot so the LOCATION slides
-    into first position ('Vancouver,Canada/39', 'USA/Free'). generated_nickname used
-    to be returned verbatim, so those labels reached the chat engines as the fan's
-    name and she greeted people with "hey Kentucky,USA u still there?". Both now go
-    through `name_token`, which keeps a real name slot and rejects a location one.
-
-    `f` may be a Fan ORM row or a dict of the same fields."""
-    def _g(attr: str) -> str:
-        if f is None:
-            return ""
-        if isinstance(f, dict):
-            return str(f.get(attr) or "").strip()
-        return str(getattr(f, attr, "") or "").strip()
-
-    # of_display_name is OF's own field (a real display name like 'garrett baydala'),
-    # so it stays verbatim; only the two label columns are parsed.
-    return (_g("real_name")
-            or name_token(_g("generated_nickname"), last=True)
-            or _g("of_display_name")
-            or name_token(_g("custom_nickname"), last=True))
 
 
 def substitute_placeholders(text: str, fan, *, name: str | None = None) -> str:
