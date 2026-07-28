@@ -126,21 +126,52 @@ async def main() -> int:
         print("\n(dry run — nothing written. re-run with --apply)")
         return 0
 
+    # An account with no captured session cannot reach OF at all — every fan on it
+    # raises the same FileNotFoundError. Probe ONCE per account and drop the whole
+    # group, so the run reports "no session" as the one fact it is instead of 162
+    # identical stack traces burying the real failures.
     ok = fail = 0
     clients: dict[str, object] = {}
+    dead: dict[str, int] = {}
     for f, cur, new, _ in todo:
+        aid = f.account_id
+        if aid in dead:
+            dead[aid] += 1
+            continue
         try:
-            client = clients.get(f.account_id) or clients.setdefault(
-                f.account_id, _make_client(f.account_id))
-            pushed, _n = await push_nick_and_notes(
-                client, f.account_id, f.fan_id, nick=new)
-            ok += pushed
-            fail += (not pushed)
-        except Exception as e:                      # one bad fan never stops the sweep
-            fail += 1
-            print(f"   ! {f.account_id}/{f.fan_id}: {type(e).__name__}: {e}")
+            if aid not in clients:
+                clients[aid] = _make_client(aid)
+        except Exception as e:
+            dead[aid] = 1
+            print(f"   – account {aid}: skipping all — {type(e).__name__}: "
+                  f"{str(e).splitlines()[0][:90]}")
+            continue
+        for attempt in (1, 2, 3):
+            try:
+                pushed, _n = await push_nick_and_notes(
+                    clients[aid], aid, f.fan_id, nick=new)
+                ok += pushed
+                fail += (not pushed)
+                break
+            except Exception as e:
+                # The relay is writing to the same SQLite the mirror updates; a
+                # busy moment is worth waiting out, not failing on. NB the OF push
+                # happens BEFORE the mirror inside push_nick_and_notes, so a lock
+                # here means OF already took the new label.
+                if "database is locked" in str(e) and attempt < 3:
+                    await asyncio.sleep(1.5 * attempt)
+                    continue
+                fail += 1
+                print(f"   ! {aid}/{f.fan_id}: {type(e).__name__}: "
+                      f"{str(e).splitlines()[0][:90]}")
+                break
         await asyncio.sleep(_PUSH_GAP_S)
-    print(f"\npushed ok: {ok}   failed: {fail}")
+    if dead:
+        print("\nskipped — account has no captured session on this host "
+              "(cannot reach OF; their labels stay as-is):")
+        for aid, n in sorted(dead.items(), key=lambda kv: -kv[1]):
+            print(f"   {aid}: {n} fans")
+    print(f"\npushed ok: {ok}   failed: {fail}   skipped (no session): {sum(dead.values())}")
     return 0 if not fail else 1
 
 
