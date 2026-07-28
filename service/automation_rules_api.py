@@ -128,7 +128,7 @@ _CATALOG: dict[str, dict[str, Any]] = {
         "knobs": [
             {"key": "limit", "type": "int", "min": 1, "hint": "fans scanned per tick"},
             {"key": "with_image", "type": "bool", "default": True, "hint": "attach an image"},
-            {"key": "step_hours", "type": "json", "hint": "[h1,h2,…] override per-step silence thresholds (hours)"},
+            {"key": "step_hours", "type": "json", "hint": "[h1,h2,…] override per-step silence thresholds (hours); must be under 168 — the drip stops at a week of silence"},
             {"key": "exclude_replied_hours", "type": "int", "min": 0, "default": 12, "hint": "contact guard: hold a due step while ANY automation/chatter touched the fan in the last N hours (0 = off)"},
             {"key": "model", "type": "str", "hint": "LLM override"},
             {"key": "dry_run", "type": "bool", "hint": "generate but don't send"},

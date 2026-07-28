@@ -88,12 +88,15 @@ _DEFAULT_FAN_LIMIT = 200           # eligible-fan sweep ceiling per tick
 # sends. Carried over from the DOM script unchanged (07 §pick_next_step).
 # Overridable per-rule via payload["step_hours"] = [h1, h2, h3] (see
 # _resolve_step_thresholds) — the Brain panel's "Follow-ups" delays write it.
-_STEP_THRESHOLDS_H = {1: 26, 2: 64, 3: 256}
+# Step 3 must sit UNDER _MAX_SILENCE_H or the cap retires the fan first and the
+# final nudge never fires (it was 256h > the 168h cap — dead for every fan).
+_STEP_THRESHOLDS_H = {1: 26, 2: 64, 3: 120}
 _MIN_GAP_H = 18
 # Hard cap: never follow up a fan who's been silent longer than this. A chat
 # cold for over a week is ghosted/dead — reminders just waste sends and draw
-# "Cannot send message to this user" rejections. (Caps the drip at ~1 week, so
-# the 256h step above effectively won't fire.)
+# "Cannot send message to this user" rejections. A fan retired here is not gone
+# for good: an inbound after the silence anchor restarts the cycle, same as a
+# finished drip (see _Entry.replied_since_anchor).
 _MAX_SILENCE_H = 24 * 7
 # Cross-automation contact guard window: skip a due step when ANY sender
 # touched the fan this recently. Nudges stamp only NudgeState (no messages
@@ -275,6 +278,13 @@ class _Entry:
             except Exception:
                 self.messages_sent = {}
 
+    def replied_since_anchor(self, last_fan: datetime | None) -> bool:
+        """Fan wrote back after we started counting his silence. Anchored on
+        `silence_started_at`, NOT the last outbound — any other automation's
+        send (a PPV blast a minute later) would otherwise bury the reply."""
+        return bool(last_fan and (self.silence_started_at is None
+                                  or last_fan > self.silence_started_at))
+
     def last_sent_dt(self) -> datetime | None:
         """Latest send timestamp across messages_sent (for the ≥18h gap)."""
         best: datetime | None = None
@@ -288,8 +298,11 @@ class _Entry:
 def _resolve_step_thresholds(payload: dict) -> dict[int, float]:
     """Per-step silence thresholds (hours). `payload['step_hours'] = [h1, h2, h3]`
     overrides the defaults; any missing/invalid entry falls back to that step's
-    default ({1:26, 2:64, 3:256}). Written by the Brain panel's "Follow-ups"
-    delays so an operator can tune the drip cadence per account."""
+    default ({1:26, 2:64, 3:120}). Written by the Brain panel's "Follow-ups"
+    delays so an operator can tune the drip cadence per account.
+
+    A threshold at/over _MAX_SILENCE_H counts as invalid: the cap retires the fan
+    before that step could ever fire, so honouring it would silently kill it."""
     out = dict(_STEP_THRESHOLDS_H)
     sh = (payload or {}).get("step_hours")
     if isinstance(sh, (list, tuple)):
@@ -299,8 +312,12 @@ def _resolve_step_thresholds(payload: dict) -> dict[int, float]:
                     val = float(sh[i])
                 except (TypeError, ValueError):
                     continue
-                if val > 0:
+                if 0 < val < _MAX_SILENCE_H:
                     out[step] = val
+                elif val >= _MAX_SILENCE_H:
+                    log.warning("send_followup step %s override %.0fh ignored "
+                                "(≥ %sh cap) — using %sh",
+                                step, val, _MAX_SILENCE_H, out[step])
     return out
 
 
@@ -672,8 +689,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         fid = fan["fan_id"]
         e = _Entry(state.get(fid))
 
-        if e.phase == "completed":
-            continue
         if e.phase in ("reply_cooldown", "restart_cooldown"):
             continue  # still cooling down (time transitions ran above)
 
@@ -683,8 +698,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
         fan_replied = bool(last_fan and (last_model is None or last_fan > last_model))
 
-        if e.phase == "all_sent_waiting":
-            if fan_replied:
+        # He wrote back after we stopped counting his silence — either the drip
+        # ran out of steps or the cap retired him. Same restart either way; the
+        # restart_cooldown expiry above owns the fresh cycle.
+        if e.phase in ("all_sent_waiting", "completed"):
+            if e.replied_since_anchor(last_fan):
                 e.phase = "restart_cooldown"
                 e.cooldown_until = now + timedelta(hours=_RESTART_COOLDOWN_H)
                 e.fan_last_reply_at = last_fan
