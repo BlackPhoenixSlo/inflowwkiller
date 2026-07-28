@@ -55,6 +55,7 @@ from dataclasses import dataclass
 from db.models import Fan
 
 from ._common import guard_offplatform, strip_emojis
+from ._markers import strip_narration
 from ._persona import verify_self_consistency
 
 log = logging.getLogger("of-relay.automation.outbound")
@@ -94,23 +95,30 @@ async def finalize_draft(
     into calling `guard_offplatform` itself.
 
     ORDER IS LOAD-BEARING:
-      1. `guard_offplatform` on the model's draft. It is the deterministic floor
-         under the prompt-level guardrail and must see the model's own words
-         before any later pass can disguise them (word-restriction turning "meet"
-         into "meeet" would hide a leak from it).
+      1. `_guard` on the model's draft — the narration strip and then
+         `guard_offplatform`. It is the deterministic floor under two
+         prompt-level rules at once, and must see the model's own words before
+         any later pass can disguise them (word-restriction turning "meet" into
+         "meeet" would hide a leak from it). An emote-only draft comes back ""
+         and every caller already drops an empty draft rather than send it.
       2. The consistency check, which may replace the draft with a model-written
          rewrite.
-      3. `guard_offplatform` AGAIN, but only on a rewrite. The floor exists
-         because model output is not trusted, and step 2's fix is model output;
-         letting it reach the wire unguarded would have left a hole exactly the
-         width of the guard. Skipped when the verifier returned the draft
-         unchanged, which is the common case (no contradiction ⇒ no rewrite), so
-         this costs nothing on the path that matters.
+      3. `_guard` AGAIN, but only on a rewrite. The floor exists because model
+         output is not trusted, and step 2's fix is model output; letting it
+         reach the wire unfloored would have left a hole exactly the width of
+         the guard — and, once narration joined the floor, exactly the width of
+         the strip too. Skipped when the verifier returned the draft unchanged,
+         which is the common case (no contradiction ⇒ no rewrite), so this costs
+         nothing on the path that matters.
       4. `strip_emojis` last, before the split, so the emoji-aware bubble logic
          downstream simply never sees them.
 
-    The rng seed is `f"{fan_id}:{text}"` — identical to what every engine passed,
-    so the deterministic deflection picked for a given draft does not change.
+    The rng seed is `f"{fan_id}:{text}"`, seeded off the draft as the strip left
+    it. For a draft with no `*...*` span — nearly all of them — that is
+    byte-identical to what every engine used to pass, so the deflection picked
+    for a given draft is unchanged. One that DID carry an emote may draw a
+    different deflection: a different choice from the same safe set, not a
+    different outcome.
     """
     text, leak = _guard(text, account_id=account_id, fan_id=fan_id, purpose=purpose)
     if consistency is not None:
@@ -132,9 +140,17 @@ async def finalize_draft(
 
 def _guard(text: str, *, account_id: str, fan_id: int,
            purpose: str) -> tuple[str, list[str]]:
-    """`guard_offplatform` plus the log line, so the two passes above cannot
-    drift in how they report. On a leak the guard REPLACES the draft with a
-    deflection — the returned text is already safe to send."""
+    """The whole floor under untrusted model output — narration strip, then
+    `guard_offplatform`, then the log line — so the two passes above cannot drift
+    in what they enforce OR in how they report. On a leak the guard REPLACES the
+    draft with a deflection; the returned text is already safe to send.
+
+    Narration lives HERE rather than once at the top of `finalize_draft` for the
+    same reason step 3 re-runs the guard: the consistency fix is itself model
+    output, and a rewrite is exactly as likely to arrive wearing `*giggles*` as
+    the original draft was. One line in the shared floor covers both drafts;
+    stripping at the top would have covered only the first."""
+    text = strip_narration(text)
     text, leak = guard_offplatform(text, random.Random(f"{fan_id}:{text}"))
     if leak:
         log.info("%s off-platform leak guarded account=%s fan=%s reasons=%s",

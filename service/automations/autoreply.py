@@ -56,7 +56,7 @@ from db.models import (
 from llm_client import LLMCapExceeded
 from ._common import (
     BIO_CONSISTENCY_GUARDRAIL,
-    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING,
+    LIVE_PROOF_GUARDRAIL, NO_NARRATION_RULE, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING,
     STYLE_3LINE, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction,
     build_tip_ask_block, hold_with_typing, apply_typo_throttle, is_content_ask,
@@ -185,7 +185,8 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
             "- Don't apologize for being slow or mention the delay — just reply "
             "naturally, warm and easy, never needy.\n"
             "- SHORT and human: lowercase, contractions, u/ur/ya, 0-1 emoji, vary "
-            "your wording. No paragraphs, no narrating.\n"
+            "your wording. No paragraphs.\n"
+            f"{NO_NARRATION_RULE}"
         )
     else:
         hard_rules = (
@@ -199,8 +200,9 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
             "- Match the vibe of the recent messages: if it was getting sexual, keep "
             "it flirty/suggestive; if it was casual, stay casual.\n"
             "- SHORT and human: lowercase, contractions, u/ur/ya, 0-1 emoji, vary "
-            "your wording — never reuse a line or emoji you've already used here. No "
-            "paragraphs, no narrating.\n"
+            "your wording — never reuse a line or emoji you've already used here. "
+            "No paragraphs.\n"
+            f"{NO_NARRATION_RULE}"
         )
 
     # The prompt clock ("" when the account has no tz configured → byte-equal

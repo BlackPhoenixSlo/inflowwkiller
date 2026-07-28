@@ -628,6 +628,19 @@ LIVE_PROOF_GUARDRAIL = (
 # rule is that an improvised detail becomes binding the moment it is said. That
 # is what makes this compose with the claimed-facts ledger rather than fight it:
 # the guardrail states the rule, the ledger supplies the remembered answers.
+# The prompt half of the narration rule; `_markers.strip_narration` is the
+# deterministic floor under it. ONE definition because both chat engines state it
+# and a house rule the two of them word differently is a house rule in name only —
+# these two prompts have already drifted once (of_ai_chat carries a nudes rule
+# ai_chatter doesn't). Kept next to the other guardrails, which is where every
+# engine already looks for shared prompt text.
+NO_NARRATION_RULE = (
+    "- NEVER narrate. No *asterisk actions*, no describing your face or your "
+    "body or what you're doing, no writing about yourself from the outside. "
+    "Real people type words, not stage directions. If the only thing left to "
+    "send is a reaction, send nothing at all.\n"
+)
+
 BIO_CONSISTENCY_GUARDRAIL = (
     "WHO YOU ARE (hard rule): everything about yourself — your age, birthday, "
     "height, where you grew up, where you live now, your job, your studies, your "

@@ -144,6 +144,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Attribution tag for MassRun / optimistic rows (Mass Messages tab badge). A
     # caller like ppv_send passes its own kind; default is this automation's name.
     attr_kind = str(payload.get("automation_kind") or "send_mass_message")
+    # Optional caller-side id for this send (ppv_send stamps the PPV id), stored on
+    # the mass_runs row so the caller's duplicate gate has a ledger that survives a
+    # mid-run cancel — see `_last_ppv_send` in ppv_send.py.
+    attr_ref = payload.get("automation_ref")
 
     # ── 1) Resolve text + audience (funnels / lists / fans) ──────────────
     async with get_session() as s:
@@ -281,6 +285,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "included_users": recipients,
             "excluded_users": sorted(excl_set),
             "list_ids": list_ids,
+            "ref": str(attr_ref) if attr_ref else None,
         })
         async with get_session() as s:
             mr = MassRun(

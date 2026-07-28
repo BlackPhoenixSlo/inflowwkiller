@@ -78,7 +78,7 @@ from db.models import (
 from llm_client import LLMCapExceeded
 from ._common import (
     BIO_CONSISTENCY_GUARDRAIL, nonempty,
-    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING,
+    LIVE_PROOF_GUARDRAIL, NO_NARRATION_RULE, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING,
     STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction,
     build_facts_note, build_structured_nickname, build_tip_ask_block, coerce_ids,
@@ -1072,8 +1072,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "- VARY it every time — don't open the same way twice, and don't reuse a "
         "phrase or an emoji you've already used in this chat.\n"
         "- At most ONE question, never one he already answered (if his answer was "
-        "vague, ask a quick follow-up instead of re-asking). Don't narrate, no "
-        "paragraphs.\n"
+        "vague, ask a quick follow-up instead of re-asking). No paragraphs.\n"
+        f"{NO_NARRATION_RULE}"
         f"{nudes_rule}"
         f"{_good_examples(f, asked, have_durable_name)}\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
