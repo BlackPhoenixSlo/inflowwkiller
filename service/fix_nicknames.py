@@ -85,8 +85,13 @@ def _repair(f: Fan, cur: str) -> str:
     keep the label exactly as it is and only mark the empty name slot."""
     new = build_structured_nickname(f)
     if not new:
+        # Nothing to rebuild from: keep every word a human contributed and mark the
+        # name slot. When even that is empty the label was pure derived tier
+        # ('Spender/Buyer') — it carries no information at all, so the marker ALONE
+        # is the honest value. A bare '_' says "we don't know his name"; leaving
+        # 'Spender' there says he is called Spender.
         keep = [s for s in _segments(cur) if s.lower() not in _TIER_WORDS]
-        return "/".join([_NO_NAME] + keep)[:_NICK_MAX] if keep else ""
+        return "/".join([_NO_NAME] + keep)[:_NICK_MAX]
     return "/".join([new] + _lost(cur, new))[:_NICK_MAX]
 
 
@@ -103,10 +108,15 @@ async def _candidates(account: str | None) -> list[tuple[Fan, str, str]]:
         slot0 = _segments(cur)[0] if _segments(cur) else ""
         # slot 0 CLAIMS to be his name. It's wrong when it isn't one — a place, a
         # spend tier, a handle, or his own city. '_' is the marker: already fixed.
-        if not slot0 or slot0 == "_":
+        if not slot0 or slot0 == _NO_NAME:
             continue
         here = (f.home_country or "", f.home_city or "")
-        if is_greetable_name(name_token(cur), here=here):
+        # Ask is_greetable_name about SLOT 0 itself, not about name_token's reading
+        # of it. name_token additionally demands a capital and 2+ letters — fine for
+        # picking a name to say out loud, wrong for judging a stored label: it
+        # reported 26 perfectly good ones ('jay', 'A', 'RG/Vancouver Island,Canada')
+        # as broken. A comma still marks a location slot, which is not a name.
+        if "," not in slot0 and is_greetable_name(slot0, here=here):
             continue
         new = _repair(f, cur)
         if new and new != cur:

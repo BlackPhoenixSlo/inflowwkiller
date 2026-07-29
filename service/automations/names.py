@@ -41,6 +41,9 @@ SPEND_TIERS = (("Whale", 50000), ("Spender", 5000), ("Buyer", 1), ("Free", 0))
 # the per-fan home_country check catches those without costing a real Chad his
 # name. Multi-word entries are matched against the whole segment; their tail
 # word is listed too because `last=True` picks it ('New Zealand' → 'Zealand').
+# The bare CODES (usa/uk/gb/uae/nz) are here rather than only in name_token's
+# all-caps rule: is_greetable_name is what the senders and the nickname sweep
+# ask, and it happily accepted 'USA' as somebody's first name.
 _PLACE_WORDS = frozenset("""
 afghanistan albania algeria america american andorra angola arab arabia
 argentina argentine argentinian armenia aruba asia asian australia australian
@@ -75,6 +78,7 @@ massachusetts michigan minnesota mississippi missouri nebraska nevada ohio
 oklahoma oregon pennsylvania tennessee texas utah vermont washington wisconsin
 wyoming manitoba nunavut ontario quebec saskatchewan yukon newfoundland
 unknown null blank none
+usa us uk gb uae nz
 """.split()) | frozenset({
     "new zealand", "north macedonia", "south africa", "south korea",
     "north korea", "puerto rico", "saudi arabia", "sri lanka", "costa rica",
