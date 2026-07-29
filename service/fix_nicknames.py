@@ -72,9 +72,22 @@ def _lost(old: str, new: str) -> list[str]:
     build_structured_nickname deliberately omits it, so 'Canada/Spender' →
     '_/Canada' drops nothing anybody wrote. Without this the guard held back
     two thirds of the sweep for a word the machine had put there itself."""
-    new_blob = new.lower()
-    return [seg for seg in _segments(old)[1:]
-            if seg.lower() not in new_blob and seg.lower() not in _TIER_WORDS]
+    new_blob, segs = new.lower(), _segments(old)
+    out = [seg for seg in segs[1:]
+           if seg.lower() not in new_blob and seg.lower() not in _TIER_WORDS]
+    # The note can live INSIDE slot 0 — 'Alex- rough sex kink. Gets paid on the
+    # 1st' is ONE segment, so the loop above sees nothing to lose and the rebuild
+    # would have kept 'Alex' and thrown the rest away. Rescue whatever of that slot
+    # the rebuild didn't take. Skipped when slot 0 is a LOCATION (has a comma):
+    # build_structured_nickname reconstructs the location itself, so re-appending
+    # it would just duplicate the country.
+    head = segs[0] if segs else ""
+    if head and "," not in head:
+        leftover = head.replace(name_token(head), "", 1).strip(" -,;/")
+        if (any(c.isalpha() for c in leftover) and leftover.lower() not in new_blob
+                and leftover.lower() not in _TIER_WORDS):
+            out.insert(0, leftover)
+    return out
 
 
 def _repair(f: Fan, cur: str) -> str:
