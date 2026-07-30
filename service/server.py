@@ -259,10 +259,11 @@ async def _account_isolation_middleware(request: Request, call_next):
     if not candidates:
         return await call_next(request)
 
-    all_ids = account_registry.list_account_ids()
-    for cand in candidates:
-        if cand in all_ids and cand not in allowed_ids:
-            return Response("not your account", status_code=403)
+    # Own ids are subtracted first — a free set hit, so the common case never
+    # touches the filesystem. `is_account` raises rather than guessing if it
+    # can't read the tree: a gate that can't answer must not answer "allow".
+    if any(account_registry.is_account(c) for c in candidates - allowed_ids):
+        return Response("not your account", status_code=403)
     return await call_next(request)
 
 # ── Share-link gate ────────────────────────────────────────────

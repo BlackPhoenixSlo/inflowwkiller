@@ -49,8 +49,68 @@ def _ensure_dirs() -> None:
     ACCOUNTS_DIR.mkdir(exist_ok=True)
 
 
+class NotAnAccountId(ValueError):
+    """The verdict, as a TYPE — not as a message anyone has to string-match.
+
+    `account_dir` raises this to mean "that string cannot name an account".
+    `_account_path` catches *only* this, so a ValueError raised from BELOW the
+    guard can never be mistaken for "no such account". Three of those exist and
+    are all reachable: `json.JSONDecodeError` (a ValueError), `mkdir`'s
+    "embedded null character", and `str.encode`'s UnicodeEncodeError on a lone
+    surrogate. While the verdict was a bare ValueError the last of those was
+    answered *correctly by accident* — swallowed by an `except` written for
+    something else entirely.
+
+    Subclasses ValueError so every existing `except ValueError` still works.
+    """
+
+
 def account_dir(account_id: str) -> Path:
-    return ACCOUNTS_DIR / str(account_id)
+    """The one place an id becomes a path — so the rule lives here, not at the
+    eleven call sites (two of which write and one of which `rmtree`s).
+
+    An id is a single directory NAME, never a path, and it must be a name the
+    filesystem can actually hold: `ACCOUNTS_DIR / "/etc"` is `/etc`; NAME_MAX
+    is 255 **bytes**, not characters; NUL and lone surrogates are legal in a
+    `str` and illegal in a filename. Every one of those arrived as real request
+    input — the first two as `?account_id=`, the surrogate as a JSON body.
+
+    A string that cannot name one directory here is not an account, and saying
+    so is an ANSWER — hence `NotAnAccountId`. OSError still means "I could not
+    look" and must never be swallowed.
+
+    WRITERS call this directly and let it raise: refusing to `mkdir` or
+    `rmtree` a path we can't name is the point. READERS go through
+    `_account_path`, which turns the same raise into "no such account".
+    """
+    aid = str(account_id)
+    try:
+        raw = aid.encode()          # NAME_MAX counts BYTES, so ask for bytes
+    except UnicodeEncodeError:
+        raw = None                  # a lone surrogate is not a filename at all
+    if (raw is None or len(raw) > 255 or b"\x00" in raw
+            or aid in ("", ".", "..") or "/" in aid or "\\" in aid):
+        raise NotAnAccountId(f"not an account id: {aid[:40]!r}")
+    return ACCOUNTS_DIR / aid
+
+
+def _account_path(account_id: str, *parts: str) -> Path | None:
+    """A reader's view of `account_dir`: None exactly where a writer raises.
+
+    The one place the verdict becomes a return value. Every read surface goes
+    through it — `is_account`, `load_meta`, `latest_session_path`,
+    `get_active_account_id` — because when each of them owned its own
+    `except` instead, fixing one left the next one raising, and a raise out of
+    a reader is a 500 per request for any authed principal
+    (`/admin/accounts/{id}` calls `get_account` before its 404 check).
+
+    `NotAnAccountId`, never bare ValueError: a verdict is an answer, and
+    anything else that failed is not one.
+    """
+    try:
+        return account_dir(account_id).joinpath(*parts)
+    except NotAnAccountId:
+        return None
 
 
 # ─── Migration of legacy flat layout ────────────────────────────
@@ -159,8 +219,8 @@ def _initialise_account_from_sessions(account_id: str) -> None:
 # ─── Meta CRUD ──────────────────────────────────────────────────
 
 def load_meta(account_id: str) -> dict[str, Any] | None:
-    p = account_dir(account_id) / "meta.json"
-    if not p.exists():
+    p = _account_path(account_id, "meta.json")
+    if p is None or not p.exists():
         return None
     try:
         return json.loads(p.read_text())
@@ -198,28 +258,23 @@ def list_accounts() -> list[dict[str, Any]]:
     return out
 
 
-def list_account_ids() -> set[str]:
-    """Just the ids — ONE directory scan, no per-account file reads.
+def is_account(account_id: str) -> bool:
+    """Does this id name a real account? ONE stat, no descriptor.
 
-    `list_accounts()` opens meta.json and stats latest.json for every account to
-    build its dicts. The account-isolation middleware runs on every `/admin/*`
-    request carrying an account_id and uses nothing from those dicts but `id`,
-    so it was paying ~2 file opens per account per request. On a vault pane that
-    releases 500 tiles at once, with 17 accounts, that is ~17k file opens
-    competing for the very descriptors the tiles need — it is what turned an
-    fd shortage into `OSError: [Errno 24] ... '/app/service/sessions/accounts'`
-    (2026-07-28).
+    The isolation gate asks about one candidate, so it wants membership, never
+    the whole set — enumerating cost a descriptor per request, which is how an
+    fd shortage twice took account isolation down with it (2026-07-28, 07-30).
+    `stat(2)` takes a path, so this keeps answering while the process is out
+    of fds. A directory here IS an account, even one with unreadable meta.
 
-    A directory here IS an account: the gate's question is only "does this id
-    name a real account", and one whose meta is missing or unreadable still
-    does. That also fails CLOSED — `list_accounts()` drops such a directory,
-    which let an id it couldn't parse past the gate unchecked.
+    Errors are NOT swallowed: False means "not an account", a raise means "I
+    could not look". Collapsing those is what turned the gate off — the caller
+    reads a negative as "let it through", so a falsy default on OSError here
+    is fail-OPEN, not fail-closed. `_account_path` is the one exception, and
+    only for `NotAnAccountId`: that IS the verdict "this can't name an account".
     """
-    _ensure_dirs()
-    try:
-        return {d.name for d in ACCOUNTS_DIR.iterdir() if d.is_dir()}
-    except OSError:
-        return set()
+    p = _account_path(account_id)
+    return p is not None and p.is_dir()
 
 
 def get_account(account_id: str) -> dict[str, Any] | None:
@@ -278,7 +333,8 @@ def get_active_account_id() -> str | None:
     account that has a session (so a fresh install just works)."""
     with _lock:
         active = _read_active_unlocked()
-    if active and (account_dir(active) / "latest.json").exists():
+    latest = _account_path(active, "latest.json") if active else None
+    if latest is not None and latest.exists():
         return active
 
     # Fallback: most-recently-used account with a session
@@ -301,14 +357,19 @@ def set_active_account_id(account_id: str | None) -> None:
 def latest_session_path(account_id: str) -> Path | None:
     """Return the absolute path to the account's current session JSON,
     or None if the account has no session yet."""
-    latest = account_dir(account_id) / "latest.json"
-    if not latest.exists():
+    latest = _account_path(account_id, "latest.json")
+    if latest is None or not latest.exists():
         return None
     try:
-        meta = json.loads(latest.read_text())
-        sp = account_dir(account_id) / meta["session"]
-    except (ValueError, KeyError):
-        # A corrupt or half-written latest.json reads as "no session yet".
+        # `latest.parent` IS the account dir — no second `account_dir` call,
+        # so nothing in this try can raise the verdict.
+        sp = latest.parent / json.loads(latest.read_text())["session"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        # Exactly the three ways a corrupt or half-written latest.json reads as
+        # "no session yet": unparseable, no "session" key, or parsed to a
+        # non-dict (`null` / a list — TypeError, which the old `ValueError` here
+        # did NOT catch, so that case was a 500).
+        #
         # Deliberately NOT `except Exception`: under fd exhaustion read_text()
         # raises OSError, and swallowing it here reported a healthy account as
         # "has no captured session. Run the bootstrap." Let OSError propagate.
