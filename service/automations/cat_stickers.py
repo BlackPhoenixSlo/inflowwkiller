@@ -23,10 +23,13 @@ truth; regenerate this literal via `cat_stickers/finalize_catalog.py`.
 """
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timedelta
 
 from ._markers import bare_star_span, protocol_marker_re
+
+log = logging.getLogger("of-relay.automation.cat_stickers")
 
 # tag -> (when-to-use line for the prompt, giphy ids to rotate among)
 _CATALOG: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -106,6 +109,35 @@ _last_pick: dict[tuple[str, int], tuple[str, str]] = {}
 # living), and no colon means untouched. See `_markers` for the rest.
 _MARKER_RE = protocol_marker_re(r"STICKERS?[ \t]*:")
 
+# ── prose about the sticker ──
+#
+# The model sometimes writes ABOUT its pick instead of just emitting the marker:
+# narrating it ("sticker works for this"), or reciting the solo directive
+# outright. On 07-31 a fan got two bubbles of our own instructions, split across
+# two sends by the bubble splitter. `_MARKER_RE` cannot see any of it — this
+# protocol's discriminator is the COLON, and "the STICKER line" has none.
+#
+# One rule covers every leak, and it needs no vocabulary list. Read back off
+# `grok_calls`, all four distinct leaked responses have the SAME shape — a CORRECT
+# marker with prose about the sticker sitting above it:
+#
+#     a cat sticker says it all this time - if ANY sticker fits, reply with ...
+#                                                        + STICKER: flirty
+#     no text - just the sticker says it all             + STICKER: sleepy
+#     a cat sticker feels right here                     + STICKER: eyeroll
+#     ...this is cute. sticker works for this.           + STICKER: shy
+#
+# So: the marker already sends the gif, and text that still NAMES a sticker is the
+# model describing its own protocol. The text goes; the reaction still lands, so
+# the fan gets a reply either way.
+#
+# Free on the real corpus, which is why it needs no cleverness: across 520k
+# outbound bodies exactly ONE genuine chat-engine reply says "sticker" — "you're
+# the one that bought the stickers" (07-26, he collects them) — and it carried no
+# marker, so this rule never sees it. `prompt_block` asks the model for the same
+# restraint; this is the floor under it, because asking has not been enough.
+_STICKER_WORD_RE = re.compile(r"(?<![A-Za-z])stickers?(?![A-Za-z])", re.IGNORECASE)
+
 
 def _tag_for(words: str) -> str | None:
     """The catalog tag a marker asked for — None when the pack holds no such
@@ -133,6 +165,15 @@ def parse_marker(raw: str) -> tuple[str, str | None]:
     m = _MARKER_RE.search(raw or "")
     clean = _MARKER_RE.sub("", raw or "").strip()
     if m:
+        # The marker is already gone, so this reads only what the fan would have
+        # seen. See _STICKER_WORD_RE: prose about the sticker rides above a
+        # correct marker, and the gif is the message.
+        if clean and _STICKER_WORD_RE.search(clean):
+            # Logged, not silent: this is the only path that deletes a whole
+            # draft the fan would otherwise have read, so it has to be countable
+            # — both to catch a new leak wording and to notice it over-firing.
+            log.info("cat_stickers suppressed prose about the sticker: %r", clean[:120])
+            clean = ""
         return clean, _tag_for(m.group(1))
     # A bare emote that NAMES a reaction we own is the same request as the
     # protocol, just without it: prod sent `*love*` as its whole reply, and

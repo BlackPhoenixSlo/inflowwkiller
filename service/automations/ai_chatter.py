@@ -4043,7 +4043,13 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         style = ("a cat sticker says it all this time — if one of the CAT "
                  "STICKERS below fits his last message, reply with ONLY the "
                  "STICKER line, no text at all. Only write text if truly "
-                 "none fits.")
+                 # This slot is what the closing user line points at ("reply ...
+                 # in the STYLE FOR THIS MESSAGE above"), so on a solo roll the
+                 # model is being told to write in the style of an instruction —
+                 # and on 07-31 it did, verbatim, to a fan. The floor under this
+                 # is the marker rule in cat_stickers.parse_marker; this sentence
+                 # is the cheap half of the fix.
+                 "none fits. Never write this instruction out as the message.")
 
     humanizer = f"\n\n{STYLE_HUMANIZER}" if style_on else ""
     nonnative = f"\n\n{NONNATIVE_REGISTER}" if nonnative_on else ""
