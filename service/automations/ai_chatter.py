@@ -2522,12 +2522,43 @@ def _breakproof(ask_at: datetime | None, now: datetime) -> bool:
 # One gentle re-engage opener (item 18). {name} → his greetable name (or "babe").
 # Deliberately templated, not LLM-generated: a nudge is one unsolicited line, so we
 # keep it cheap, predictable, and easy to audit.
+#
+# Written in the non-native register (NONNATIVE_REGISTER) BY HAND. These lines never
+# pass through a model, so the prompt block that carries broken grammar everywhere
+# else cannot reach them — and apply_nonnative_style is dictionary-only, a provable
+# no-op on strings holding none of its words. Baking it into the text is the only
+# thing that works. Same reason the space-before-'?' habit is baked at 4-in-15 rather
+# than rolled: _NONNATIVE_SPACE_Q_RATE is 0.26 and _run_nudge has no seeded rng.
+#
+# Not gated on nonnative_ai_chatter: that flag defaults ON (_STYLE_DEFAULT_ON) and
+# prod has 10 accounts explicitly on, 7 defaulted on, ZERO off — a second native pool
+# would guard a case that does not exist. Add one the day an account turns it off.
+#
+# Three per beat so a repeatedly-nudged fan does not redraw the same line. 'hiw' (the
+# NONNATIVE_MISSPELLINGS fingerprint for 'how') appears ONCE on purpose: the dict
+# header measures 'how' at 2.4% of sends, so more than one line here would read as a
+# tic rather than a fingerprint.
 _NUDGE_LINES = (
-    "hey {name} u still there? 🙈",
-    "miss talking to u {name} 🥺 what are u up to",
-    "u went quiet on me {name}.. everything ok?",
-    "cant stop thinking about our chat 😏 u around {name}?",
-    "hey u 👀 dont leave me hanging {name}",
+    # still there?
+    "hey {name} u still there ? 🙈",
+    "{name} u still there 🙈 or no",
+    "hey {name} u are still with me ? 🙈",
+    # miss talking / what are u up to
+    "i miss to talk with u {name} 🥺 what u doing",
+    "miss talk with u {name} 🥺 what u up to now",
+    "i am missing u {name} 🥺 hiw is ur day",
+    # went quiet / everything ok
+    "{name} why u so quiet.. all ok with u",
+    "u become so quiet {name}.. everything is ok ?",
+    "u go quiet on me {name}.. is everything fine",
+    # cant stop thinking / u around
+    "i cant stop to think about our chat 😏 u are around {name}?",
+    "our chat is still in my head 😏 u around {name} ?",
+    "cant stop think about what we say 😏 {name} u there",
+    # dont leave me hanging
+    "hey u 👀 {name} dont make me wait so much",
+    "hey u 👀 dont leave me like this {name}",
+    "{name} 👀 dont let me waiting here",
 )
 
 
