@@ -54,7 +54,9 @@ class LeashCand(Protocol):
     fan_id: int
     last_body: str
     session_out_n: int      # her replies in the CURRENT burst
-    day_out_n: int          # her replies in the trailing 24h (from her last reply)
+    day_out_n: int          # her replies in the current quota day (see `quota_used`)
+    day_out_n_at_stop: int  # …and what that count stood at when she last spoke: the
+                            # ration that put her on a rung, frozen while she serves it
     total_out_n: int        # her replies over the whole thread
     her_last_at: datetime | None
     first_at: datetime | None
@@ -285,10 +287,15 @@ def daily_quotas(spend_by_window: dict[int, dict[int, int]],
 
 # ── The daily ceiling ───────────────────────────────────────────────────────────
 
-# A "day" is a rolling 24h measured from HER LAST REPLY, never a calendar day: a
-# midnight rollover would hand every throttled fan a fresh ration at the same
-# instant and make the whole roster lurch.
+# How long a quota day lasts once it has opened. Never a CALENDAR day: a midnight
+# rollover would hand every throttled fan a fresh ration at the same instant and make
+# the whole roster lurch. It opens on one of her replies instead — see `quota_used`.
 QUOTA_WINDOW = timedelta(hours=24)
+
+# …and it also closes early on this much of her silence. Twelve hours is "she went to
+# bed and got on with her day": past it, the sitting that spent the ration is plainly
+# over, and holding its count against him is holding yesterday against him.
+QUOTA_IDLE_RESET = timedelta(hours=12)
 
 # ±25% on every backoff rung. Enough that no two fans come back on the same schedule
 # and no fan comes back on the same one twice; small enough that a 4h rung stays a
@@ -330,9 +337,54 @@ class _Quota(NamedTuple):
     # now does show the rung (2026-07-28) and takes it from that function, so the
     # ladder and the name for it can never disagree — which a stored copy of a value
     # computed from a config the operator can edit could not promise.
-    dry_h: float = 0.0          # hours since his last money event (or first contact)
+    dry_h: float = 0.0          # hours dry (since his last money event, or first
+                                # contact) AS OF her last reply — the streak that
+                                # picked the rung, not the one running now
     reason: str = QUOTA_OFF     # which branch decided it (one of the QUOTA_* above)
     runway_left: int = 0        # replies of his per-fan runway still unspent
+
+
+def quota_used(times, now: datetime, *, window: timedelta = QUOTA_WINDOW,
+               idle: timedelta = QUOTA_IDLE_RESET) -> int:
+    """How many replies of hers the CURRENT quota day has spent — the `used` half of
+    the daily ceiling, folded over the reply times `_gather` already collected.
+
+    The day TUMBLES. It opens on a reply of hers and is over only once BOTH of its
+    rules are satisfied — `idle` since her last reply AND `window` since her first.
+    Widest wins, the same fold `ppv_send._cap_release` makes across its day/week/month
+    caps: two rules, take the one that asks for more. Whichever of the two is still
+    outstanding keeps the day open, and until it closes the count stands.
+
+    Requiring BOTH is what makes it a ration rather than a nap. On `idle` alone, a
+    long night would hand back a fresh cap every morning and the ceiling would be a
+    12-hour one wearing a day's name; on `window` alone, a day that opened at breakfast
+    would reset at breakfast whether or not she was mid-conversation.
+
+    What it must NOT be is either sliding window. Slid against `now` the count DECAYS —
+    the replies that tripped the quota age out one by one, the fan reads as under quota
+    again, and a 72h rung would expire in 24h. Slid against HER LAST REPLY (which is
+    what this was until 2026-07-31) it never decays but it never MOVES either, because
+    the anchor is a reply she is not allowed to send: the count freezes and only serving
+    the whole rung ever clears it. That is the ratchet this replaces — live, fans sat at
+    `used=106` against a quota of 10, dripping one reply per rung for days, and a man who
+    had paid $503 in eleven days went 64 hours dark with eight of his messages unanswered.
+
+    Note this decides the RATION ONLY, never the silence: a fan part-way through a
+    backoff rung keeps serving it even after his day has turned over. `_quota_gate`
+    owns that, and reads this function twice to keep the two questions apart.
+
+    Pure, so the bot and the drawer share one number instead of two implementations of
+    it; the empty history and the closed day are the same answer, 0."""
+    def closed(at: datetime, opened: datetime, last: datetime) -> bool:
+        """Is a day that opened at `opened` and last spoke at `last` over, as of `at`?"""
+        return at - opened >= window and at - last >= idle
+
+    start, n = None, 0
+    for i, t in enumerate(times):
+        if start is None or closed(t, start, times[i - 1]):
+            start, n = t, 0              # the next reply landed past both rules
+        n += 1
+    return 0 if start is None or closed(now, start, times[-1]) else n
 
 
 def quota_ladder(cad: Any) -> list[float]:
@@ -393,8 +445,10 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
       • at least his spend quota, which may be UNLIMITED for a whale.
 
     Past the quota she goes quiet for one rung of `quota_backoff_hours`, chosen by how
-    long he has been DRY (no money since `money_at`, or since first contact if he has
-    never paid). The ladder is CYCLIC: `dry_h` is taken modulo the ladder's total, so a
+    long he had been DRY when she stopped answering (no money since `money_at`, or
+    since first contact if he has never paid) — chosen ONCE, at that moment, so the
+    rung cannot climb under a fan who is already serving it. The ladder is CYCLIC:
+    `dry_h` is taken modulo the ladder's total, so a
     fan who never pays walks 4h → 12h → 24h → 72h and then starts again at 4h rather
     than being frozen at the last rung forever.
 
@@ -438,7 +492,15 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
     # A non-positive quota means "no daily ceiling", matching `cap` in _cadence_gate.
     if quota <= 0:
         return _Quota(used=used, reason=QUOTA_UNLIMITED, runway_left=runway_left)
-    if used < quota or c.her_last_at is None:
+    # Two different questions, and conflating them is what this gate got wrong.
+    #   `used`  — what TODAY's ration has left, which is what she may spend next.
+    #   `spent` — what she had spent WHEN SHE WENT QUIET, which is what put her on a
+    #             rung. It is the ration's own final count and never moves while she
+    #             is silent, so a fan whose day turns over mid-backoff keeps serving
+    #             the rung he was given: the day resets his ALLOWANCE, never his wait.
+    # They are equal until a day closes under him, which is exactly when it matters.
+    spent = int(c.day_out_n_at_stop or 0)
+    if spent < quota or c.her_last_at is None:
         # Only credit a lift when the base ration would NOT have covered him anyway.
         reason = lifted_by if used >= base else QUOTA_UNDER
         return _Quota(quota=quota, used=used, reason=reason, runway_left=runway_left)
@@ -450,8 +512,20 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
 
     # Dry streak → which rung. `first_at` stands in for a fan who has never paid at
     # all; with neither anchor we cannot judge him, so he starts at the shortest rung.
+    #
+    # Measured to HER LAST REPLY — the moment the hold began — and NOT to `now`. The
+    # hold is served from that same frozen anchor, so reading the streak at `now`
+    # lets the rung climb while the fan is already waiting on it, and his release
+    # date runs away from him: live, a fan on the 24h rung was recomputed onto the
+    # 72h one a day into his own hold and had his return pushed out 36.7 hours,
+    # having done nothing but wait. Worse, it is self-reinforcing — she is silent, so
+    # he cannot buy, so the streak he is being judged on can only grow.
+    #
+    # It is the argument the jitter below already makes, one step earlier: a wait
+    # that re-rolls every sweep is not a wait. Both halves of it must hold still.
     anchor = money_at or c.first_at
-    dry_h = max((now - anchor).total_seconds() / 3600.0, 0.0) if anchor else 0.0
+    dry_h = (max((c.her_last_at - anchor).total_seconds() / 3600.0, 0.0)
+             if anchor else 0.0)
     cycle_h = sum(ladder)
     rung = quota_rung(dry_h, ladder)
     # Jitter, because a woman who drifts back after EXACTLY 24.0 hours, every time, on
@@ -463,9 +537,18 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
         1.0 - _QUOTA_JITTER, 1.0 + _QUOTA_JITTER)
     wait_h = ladder[rung] * jitter
     hold = (now - c.her_last_at) < timedelta(hours=wait_h)
+    # `backoff_served` means what it says — over quota, but the silence is done, so
+    # this reply is on credit. A fan whose DAY turned over while he waited is not on
+    # credit: he is simply under quota again, and labelling his fresh ration as
+    # served backoff would make the ledger read as a roster on permanent drip.
+    if hold:
+        reason = QUOTA_HELD
+    elif used >= quota:
+        reason = QUOTA_BACKOFF_SERVED
+    else:
+        reason = lifted_by if used >= base else QUOTA_UNDER
     return _Quota(hold=hold, quota=quota, used=used, wait_h=wait_h,
-                  dry_h=dry_h, runway_left=runway_left,
-                  reason=QUOTA_HELD if hold else QUOTA_BACKOFF_SERVED)
+                  dry_h=dry_h, runway_left=runway_left, reason=reason)
 
 
 async def _write_quota_audit(account_id: str, rows: list[tuple[int, _Quota]], *,

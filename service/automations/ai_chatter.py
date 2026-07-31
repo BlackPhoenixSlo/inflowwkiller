@@ -85,10 +85,11 @@ from . import cat_stickers, rhythm, script_packs, tip_ladder, upsell
 from ._leash import (  # noqa: F401 — re-exported for fans.py / tests
     HOT_TIERS, QUOTA_BACKOFF_SERVED, QUOTA_HELD, QUOTA_NO_LADDER, QUOTA_OFF,
     QUOTA_RUNWAY, QUOTA_SIGNAL_LIFT, QUOTA_SPEND_LIFT, QUOTA_UNDER, QUOTA_UNLIMITED,
-    QUOTA_WINDOW, SPEND_QUOTA_UNLIMITED, TIER_BASELINE, TIER_BUYING_SIGNAL,
-    TIER_NO_SIGNAL, TIER_PIC_SENT, TIER_POST_PURCHASE, _cadence_gate,
-    _last_money_at, _paid_spend_by_window, _Quota, _quota_gate, _TIP_KINDS,
-    _write_quota_audit, daily_quotas, read_leash, spend_caps, spend_windows,
+    QUOTA_IDLE_RESET, QUOTA_WINDOW, SPEND_QUOTA_UNLIMITED, TIER_BASELINE,
+    TIER_BUYING_SIGNAL, TIER_NO_SIGNAL, TIER_PIC_SENT, TIER_POST_PURCHASE,
+    _cadence_gate, _last_money_at, _paid_spend_by_window, _Quota, _quota_gate,
+    _TIP_KINDS, _write_quota_audit, daily_quotas, quota_used, read_leash,
+    spend_caps, spend_windows,
 )
 from ._markers import protocol_marker_re
 from ._persona import fan_claims_block, persona_register_age
@@ -636,7 +637,8 @@ async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
 class _Cand:
     __slots__ = ("fan_id", "fan_msg_n", "last_dir", "last_body", "messages",
                  "last_in_at", "last_out_at", "last_human_out_at", "session_out_n",
-                 "day_out_n", "total_out_n", "first_at", "her_last_at", "pic_sent",
+                 "day_out_n", "day_out_n_at_stop", "total_out_n", "first_at",
+                 "her_last_at", "pic_sent",
                  "last_out_was_gif", "last_in_text", "first_in_at",
                  "msg_ids", "reply_ctx")
 
@@ -696,10 +698,14 @@ class _Cand:
                                  # cap counter) — REPLIES, not bubbles; only
                                  # populated when _gather is called with
                                  # session_gap_min > 0
-        self.day_out_n = 0       # HER OWN replies in the trailing 24h (item 21c
-                                 # daily quota) — same REPLIES-not-bubbles unit as
-                                 # session_out_n; only populated when _gather is
-                                 # called with day_window set
+        self.day_out_n = 0       # HER OWN replies in the CURRENT quota day (item 21c
+                                 # daily quota; see _leash.quota_used) — same
+                                 # REPLIES-not-bubbles unit as session_out_n; only
+                                 # populated when _gather is called with day_window set
+        self.day_out_n_at_stop = 0  # …the same count as of HER LAST REPLY: the ration
+                                 # that put her on a backoff rung. Unlike day_out_n it
+                                 # cannot move while she is quiet, so it decides the
+                                 # WAIT while day_out_n decides the next ALLOWANCE
         self.total_out_n = 0     # HER replies over the WHOLE thread (item 21c's
                                  # per-fan runway) — same REPLIES-not-bubbles unit,
                                  # never reset; only populated with day_window set
@@ -789,8 +795,9 @@ async def _gather(account_id: str,
 
       `session_out_n`  (`session_gap_min > 0`)  her replies in the CURRENT burst: the
                        tail since her own last silence longer than `session_gap_min`.
-      `day_out_n`      (`day_window` set)       her replies within that window of HER
-                       LAST REPLY — the daily ceiling above the burst cap (item 21c).
+      `day_out_n`      (`day_window` set)       her replies in the current quota day,
+                       which opens on a reply of hers and closes `day_window` later
+                       or on her silence — the ceiling above the burst (item 21c).
       `total_out_n`    (always)                 her replies over the whole thread —
                        the per-fan runway the daily ceiling waits out.
 
@@ -985,15 +992,21 @@ async def _gather(account_id: str,
                 c.session_out_n = n
 
         if day_window is not None:
-            # THE DAY — her replies within `day_window` of HER LAST REPLY, and that
-            # anchor is the whole design. Measured against `now` the count DECAYS: the
-            # ten replies that tripped the quota slide out of a trailing 24h on their
-            # own, the fan reads as under quota again, and the backoff releases him
-            # early — a 72h hold would expire in 24h and the long rungs could never
-            # bite. Anchored on her last reply it holds still while she stays quiet,
-            # so a hold lasts exactly as long as it is supposed to.
-            cutoff = times[-1] - day_window if times else None
-            c.day_out_n = sum(1 for t in times if cutoff is not None and t >= cutoff)
+            # THE DAY — her replies in the current quota day, which TUMBLES: it opens
+            # on a reply of hers and is over only once BOTH `day_window` has run and
+            # she has been quiet for QUOTA_IDLE_RESET. Why not either sliding window
+            # (both are the obvious answer and both are wrong) is argued in
+            # `quota_used`, which owns the rule so the bot and the drawer cannot each
+            # keep their own.
+            #
+            # Asked TWICE, at two instants, because the ceiling asks two things: what
+            # today's ration has left (`now`), and what she had spent when she stopped
+            # talking (`times[-1]`) — the count that put her on a backoff rung. The
+            # second cannot move while she is silent, so a day turning over mid-rung
+            # hands back her allowance without cutting her wait short.
+            c.day_out_n = quota_used(times, now, window=day_window)
+            c.day_out_n_at_stop = (quota_used(times, times[-1], window=day_window)
+                                   if times else 0)
     return out
 
 

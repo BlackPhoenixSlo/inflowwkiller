@@ -100,7 +100,11 @@ def quota_free_at(q: Any, her_last_at: datetime | None) -> datetime | None:
     and a mass/PPV row are both excluded from it by the engine, so neither pushes this
     time out. That surprises people (it surprised me), and it is the whole reason this
     is computed from the engine's own anchor rather than from "the last outbound row",
-    which would answer a different question and be wrong by days."""
+    which would answer a different question and be wrong by days.
+
+    The rung alone, deliberately un-capped by the quota day's own expiry: a day that
+    turns over mid-backoff hands his ALLOWANCE back, not his wait, so the rung really
+    is the whole answer to "when does she speak to him again"."""
     if her_last_at is None or not q.hold or not q.wait_h:
         return None
     return her_last_at + timedelta(hours=float(q.wait_h))
