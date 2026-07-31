@@ -1020,7 +1020,10 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         style = ("a cat sticker says it all this time — if one of the CAT "
                  "STICKERS below fits his last message, reply with ONLY the "
                  "STICKER line, no text at all. Only write text if truly "
-                 "none fits.")
+                 # See ai_chatter's copy: this slot is what the closing user line
+                 # points at, so the directive is echo-able by construction. The
+                 # marker rule in cat_stickers.parse_marker is the floor under it.
+                 "none fits. Never write this instruction out as the message.")
     # When selling, force a single teasing line — a multi-line/breather variant
     # would fight the "ONE short line" tip-ask block. Beats a solo roll too: a
     # tip-ask must carry text (the gif can still ride after it).
