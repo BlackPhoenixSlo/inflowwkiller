@@ -15,7 +15,14 @@ import os
 import sqlite3
 
 DB = os.environ.get("CONTENT_GAP_DB", "chatterly.db")
-BRAIN_OWNER = "BRAIN_OWNER_ACCOUNT_ID"  # Jaka — the brain owner, not a sellable model
+# The brain-owner account is excluded from the report — it is the operator's own
+# account, not a sellable model. From the ENV, like DB above, because the literal
+# is a real account id and this file ships to a PUBLIC mirror: hardcoding it once
+# leaked it, and scrubbing the literal out of the public copy then made the two
+# versions diverge, so every deploy silently pushed a placeholder over a working
+# constant. Unset → nothing is excluded, which is visible in the report rather
+# than silently wrong.
+BRAIN_OWNER = os.environ.get("BRAIN_OWNER_ACCOUNT_ID", "")
 
 
 def _j(raw):
