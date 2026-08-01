@@ -5465,7 +5465,23 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # (enforced upstream in run()) halts it. `_leak` is a ToS content guard,
             # NOT a fan-state brake, so it is honoured regardless.
             _teaser_ignore_brakes = bool((convo_teaser_cfg or {}).get("ignore_brakes"))
+            # `offer_item is None` — the SAME guard the hot teaser carries, and for the
+            # same reason: the send site is an `if offer_item … / elif teaser …`, so a
+            # catalog PPV going out THIS TURN wins the priced attach and the teaser's
+            # media never reaches the wire. Without this the teaser was still picked and
+            # then still RECORDED (`teaser_msg_id` is set unconditionally below), which
+            # burned its media out of the unseen pool without showing it to him, stamped
+            # `last_price` with a price he was never charged, and advanced the rung on a
+            # sale that could not have happened. Measured 2026-08-01: 71 such messages
+            # across 6 accounts since 07-18, carrying two VaultSend price sets each
+            # (e.g. a $35.28 PPV and a $10.00 teaser rung on one message id).
+            #
+            # This gates ONLY on a PPV leaving on this turn. It deliberately does NOT
+            # gate on `pending` (an OPEN, unopened PPV) or on the ask caps: when
+            # ai_chatter has nothing to send — no candidate item, or its caps are
+            # spent — the teaser is the fan's only offer and must still fire.
             if (teaser is None and convo_teaser_cfg is not None and not dry_run
+                    and offer_item is None
                     and not _leak and (not seller_off or _teaser_ignore_brakes)):
                 # Adaptive cadence: if nobody is selling him a PPV (none pending, none
                 # going out this turn), the convo-teaser is his ONLY offer — fire it
@@ -5476,34 +5492,29 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     _tcfg = {**convo_teaser_cfg,
                              "after": min(int(convo_teaser_cfg.get("after") or 20), 10)}
                 _tstate = _tip_reward.teaser_state(f)
-                _since = None
-                if _tstate.get("at"):
-                    try:
-                        _since = datetime.fromisoformat(str(_tstate["at"]))
-                    except Exception:
-                        _since = None
+                _since = _tip_reward.teaser_last_at(_tstate)
                 # Adaptive ladder climb/soften signal: did HER last teaser sell? Only
                 # her own teaser unlock counts (Message.is_paid on that id) — an
                 # ai_chatter catalog buy never moves this ladder. Queried only in
-                # adaptive mode, only when the last teaser was priced.
-                _t_last_price = int(_tstate.get("last_price") or 0)
-                _t_last_free = bool(_tstate.get("last_free"))
+                # adaptive mode, only when the last teaser was priced. This and his
+                # payment history are the only two facts NOT already in `_tstate`,
+                # which is why they are the only two still passed separately.
                 _t_sold = False
-                if (_tcfg.get("adaptive") and _t_last_price > 0
+                if (_tcfg.get("adaptive") and int(_tstate.get("last_price") or 0) > 0
                         and _tstate.get("last_msg")):
                     _t_sold = await _teaser_sold(account_id, fan_id,
                                                  int(_tstate["last_msg"]))
-                # Proven-spend soften floor (adaptive only): 38% of his biggest single
-                # PPV ever paid. Only queried when the ladder can actually soften.
+                # Has he EVER paid? The soften floor is the $3 wire minimum until he
+                # has and the rung's SET price after (tip_reward.convo_teaser_floors).
+                # Only queried when the ladder can actually soften.
                 _t_max_paid = ((await _paid_ppv_facts(account_id, fan_id))[0]
                                if _tcfg.get("adaptive") else 0)
                 try:
                     _msgs_since = await _fan_msgs_since(account_id, fan_id, _since)
                     teaser = await _tip_reward.pick_convo_teaser(
-                        client, account_id, fan_id, tcfg=_tcfg,
-                        msgs_since_last=_msgs_since, rung=int(_tstate.get("rung") or 0),
-                        last_price_cents=_t_last_price, last_sold=_t_sold,
-                        last_was_free=_t_last_free, max_paid_cents=_t_max_paid, now=now)
+                        client, account_id, fan_id, tcfg=_tcfg, state=_tstate,
+                        msgs_since_last=_msgs_since, last_sold=_t_sold,
+                        max_paid_cents=_t_max_paid, now=now)
                 except Exception:
                     log.debug("ai_chatter convo_teaser pick failed account=%s fan=%s",
                               account_id, fan_id, exc_info=True)
@@ -6074,7 +6085,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _tip_reward.record_hot_teaser(
                     account_id, fan_id, media_ids=teaser["media_ids"],
                     message_id=teaser_msg_id, price_cents=teaser["price_cents"],
-                    is_free=teaser["is_free"], set_rung=teaser.get("next_rung"))
+                    is_free=teaser["is_free"], set_rung=teaser.get("next_rung"),
+                    unbought=teaser.get("unbought"))
                 hot_teasers_sent += 1
                 if teaser["price_cents"] > 0:
                     hot_teaser_paid_tick += 1

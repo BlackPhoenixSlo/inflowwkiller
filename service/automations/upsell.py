@@ -89,9 +89,16 @@ MAX_ASK_VS_HISTORY_MULT = 3.0   # never ask >3x the largest single PPV he has EV
 # 3x exceeds OF_PRICE_MAX_CENTS, so `ceiling < floor` for the whole catalog and the
 # fan is silently never offered anything again. The best buyers go dark first.
 ESCALATION_MULT = 1.75          # after a PAID rung. One constant, not a preset.
-DISCOUNT_BAND = (0.60, 0.90)    # of the price HE SAW. Depth buys nothing (flat 20-25%
-                                # from 0.40x-0.90x; EV peaks 0.60-0.90x). 0.60 is a hard
-                                # floor no LLM proposal may cross.
+DISCOUNT_BAND = (0.80, 0.90)    # of the price HE SAW — a cut of 10-20%, never more.
+                                # House policy (operator, 2026-08-01): the set price is
+                                # the price, with only an OCCASIONAL cut of up to 20%.
+                                # This band used to open at 0.60 (a 40% cut) on the
+                                # measurement that depth buys nothing — flat 20-25%
+                                # conversion anywhere from 0.40x to 0.90x. That finding
+                                # is why narrowing it is SAFE rather than a sacrifice:
+                                # if a 40% cut converts no better than a 20% one, the
+                                # extra 20 points were margin given away for nothing.
+                                # 0.80 is a hard floor no LLM proposal may cross.
 OF_PRICE_FLOOR_CENTS = 300      # OF rejects priced messages under $3.00
 OF_PRICE_MAX_CENTS = 20_000     # ...and over $200. A HARD INVARIANT, enforced in
                                 # next_price's caps, in human_cents, AND re-clamped at
@@ -471,8 +478,17 @@ def next_price(*, fan: FanState, band: tuple[int, int], last_paid_cents: int | N
     # BINDING one is recorded on the quote: a quote silently truncated at the library
     # max would otherwise bias every estimate the price arm produces, for an unknown
     # subset of fans.
+    # The item's own ceiling is the WIDER of the band's 1.5x and 3x the operator's
+    # sticker (house policy: "you can price the content up to 3x the set price").
+    # A sticker-derived band tops out at 1.4x, so `hi * 1.5` alone capped every such
+    # item at 2.1x its own price — below the stated policy, and invisibly so.
+    # MAX, not a third `caps` entry: `caps` is minimised below, so an entry there could
+    # only ever LOWER the ceiling and could never raise it to 3x.
+    item_caps = [(int(hi * 1.5), "band")]
+    if catalog_floor_cents:
+        item_caps.append((int(catalog_floor_cents * 3.0), "sticker_3x"))
     caps: list[tuple[int, str]] = [
-        (int(hi * 1.5), "band"),
+        max(item_caps, key=lambda c: c[0]),
         (int(hi_b), "library"),
         (OF_PRICE_MAX_CENTS, "of_max"),     # HARD invariant — the $200 wire max, always
     ]
@@ -486,8 +502,23 @@ def next_price(*, fan: FanState, band: tuple[int, int], last_paid_cents: int | N
     # sourcing the band from the item's sticker opened it to the full $200 catalog.
     # Measured 2026-07-27: 160 prod fans have tipped (avg $31, up to $200) and never
     # bought a PPV. Gate both on max_single_paid_cents so exactly one always applies.
+    #
+    # PAYING NEVER LOWERS YOUR CEILING. The history cap is floored at the cold-open
+    # ceiling a fan who has NEVER paid already gets, because the acquisition strategy
+    # deliberately drives the first purchase down to the $3 wire minimum — and a $3
+    # first buy read literally puts his ceiling at $9, i.e. BELOW the $59 he had while
+    # he was still a stranger. Buying would make him less sellable than not buying.
+    # Measured 2026-08-01 on Isabelle (337749380): a fan whose only purchases were two
+    # $3 convo teasers could be quoted 2 of her 15 catalog items; the other 13 returned
+    # None and he was silently offered nothing at all.
+    #
+    # A cheap trial is CENSORED evidence — it proves "he will pay at least $3", never
+    # "he will pay at most $9". Only a purchase that clears the cold-open ceiling is
+    # evidence of a HIGHER ceiling, which is exactly what `max` keeps: past $19.67 paid
+    # (3 x 19.67 > 5900) history takes over and the floor stops binding.
     if fan.max_single_paid_cents:
-        caps.append((int(fan.max_single_paid_cents * hist_mult), "history"))
+        caps.append((max(int(fan.max_single_paid_cents * hist_mult),
+                         COLD_OPEN_CEILING_CENTS), "history"))
     if last_paid_cents is None and not fan.max_single_paid_cents:
         caps.append((COLD_OPEN_CEILING_CENTS, "cold_ceiling"))
     # His stated cap ("keep it at 30") is a CEILING only, never a floor. Applied at 1.6x

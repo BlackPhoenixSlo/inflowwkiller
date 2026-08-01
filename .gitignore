@@ -83,6 +83,7 @@ service/_live_*.py
 service/_probe_*.py
 service/_verify_*.py
 service/_apply_*.py
+service/_proto_*.py
 service/_dirk*.txt
 service/_dirk*.out
 service/_dirk_full_section.md
@@ -136,3 +137,6 @@ cat_stickers/
 # scripts/convo-review.sh whenever you want it refreshed. Regenerable, and
 # the media cache it embeds lives in ~/.convo-review/.
 convo_review.html
+
+# operator scratch note — kept on disk, never tracked
+wwwwwwwww

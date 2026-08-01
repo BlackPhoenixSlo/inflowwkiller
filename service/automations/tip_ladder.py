@@ -10,11 +10,10 @@ tip_request) own their own config + per-fan state and pass the knobs in.
    biggest-ever tip (a proven $50 tipper is never asked less), and rounds to a
    human-looking figure ($15/$20/$35, not $17.40).
 
-2. bundle_photo_count — how many vault photos ride a tip/PPV at a given PRICE,
-   so value scales with the ask: a floor of ≥3 photos over $30 and ≥5 over $50,
-   a small free taste at $0, growing past the floor for bigger asks. Paired with
-   bundle_weight, which scores a bundle by folder tier (free 0 / standard 1 /
-   premium 3) — the "premium photos are worth more" knob the operator asked for.
+2. bundle_plan — how many vault photos ride a tip/PPV at a given PRICE, so value
+   scales with the ask: `BundleSizing` in, a per-tier `BundlePlan` out. Paired
+   with bundle_weight, which scores a bundle by folder tier (free 0 / standard 1
+   / premium 3) — the "premium photos are worth more" knob the operator asked for.
 """
 from __future__ import annotations
 
@@ -101,32 +100,49 @@ class BundlePlan(NamedTuple):
     weight: int
 
 
-def bundle_plan(
-    price_cents: int,
-    *,
-    cents_per_weight: int = 1_000,
-    free_count: int = 1,
-    hard_cap: int = 12,
-    w_premium: int = WEIGHT_PREMIUM,
-) -> BundlePlan:
+class BundleSizing(NamedTuple):
+    """How many photos a send carries, in the operator's OWN numbers.
+
+    One value, passed whole, so "how big is this send" has a single home and no
+    caller can half-supply it. The names are the Tip Reward tab's fields, because
+    that is where every one of them comes from ($ per image → cents_per_photo,
+    Minimum → min_photos, Maximum → max_photos); `free_photos` is the $0 rung's
+    taste. Building one from a config is the config module's job — this module
+    stays pure policy and never learns a config key.
+    """
+    cents_per_photo: int
+    min_photos: int
+    max_photos: int
+    free_photos: int
+
+
+def bundle_plan(price_cents: int, sizing: BundleSizing, *,
+                w_premium: int = WEIGHT_PREMIUM) -> BundlePlan:
     """Compose a price-scaled photo bundle by WEIGHT BUDGET (the operator's model).
 
-    Budget = round(price / $10). Fill PREMIUM-first (each worth `w_premium`),
-    the remainder as NORMAL (worth 1), then PAD with FREE photos so the bundle
-    still SHOWS `budget` photos total — a full-looking set whose value is
-    concentrated in the premium shots. A $0 ask sends `free_count` free photos.
+    Budget = round(price / `cents_per_photo`), floored at `min_photos` and capped
+    at `max_photos`. Fill PREMIUM-first (each worth `w_premium`), the remainder as
+    NORMAL (worth 1), then PAD with FREE photos so the bundle still SHOWS `budget`
+    photos total — a full-looking set whose value is concentrated in the premium
+    shots. A $0 ask sends `free_photos` free photos, and `free_photos=0` means no
+    free tease at all — on EVERY caller, the one rule.
 
-    Worked example (the operator's): $80 → budget 8 → 8//3 = 2 premium (w6) +
-    2 normal (w2) + 4 free = 8 photos, weight 8. A softened ~$40 → budget 4 →
-    1 premium + 1 normal + 2 free = 4 photos. This auto-satisfies the ≥3-over-$30
-    and ≥5-over-$50 floors. Capped at `hard_cap` so a whale can't drain a folder."""
+    Worked example (the operator's, at $10/photo): $80 → budget 8 → 8//3 = 2
+    premium (w6) + 2 normal (w2) + 4 free = 8 photos, weight 8. A softened ~$40 →
+    budget 4 → 1 premium + 1 normal + 2 free = 4 photos.
+
+    The `min_photos` floor is what stops a SOFTENED ask landing under one weight
+    unit and rounding to a lonely single — live on 337749380, a $13.34 tease sent
+    exactly one image at $10/photo, as did its $6.67 predecessor. `max_photos`
+    stays the hard ceiling, clamping the floor if the two ever cross."""
     price = int(price_cents or 0)
     if price <= 0:
-        fc = max(0, int(free_count))
+        fc = max(0, int(sizing.free_photos))
         return BundlePlan(premium=0, normal=0, free=fc, total=fc, weight=0)
     wp = max(1, int(w_premium))
-    budget = max(1, round(price / max(1, int(cents_per_weight))))
-    budget = min(budget, max(1, int(hard_cap)))
+    budget = max(1, round(price / max(1, int(sizing.cents_per_photo))))
+    budget = max(budget, max(1, int(sizing.min_photos)))
+    budget = min(budget, max(1, int(sizing.max_photos)))
     premium = budget // wp
     normal = budget - premium * wp          # remainder, each worth 1
     paid = premium + normal
@@ -135,12 +151,6 @@ def bundle_plan(
     weight = premium * wp + normal
     return BundlePlan(premium=premium, normal=normal, free=free,
                       total=total, weight=weight)
-
-
-def bundle_photo_count(price_cents: int, **kw) -> int:
-    """Total photos in the bundle at `price_cents` — thin wrapper over bundle_plan
-    for callers that only need the count (e.g. a single-folder teaser)."""
-    return bundle_plan(price_cents, **kw).total
 
 
 def bundle_weight(

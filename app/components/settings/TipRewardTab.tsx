@@ -172,6 +172,14 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     if (saveM.isSuccess || saveM.isError) saveM.reset();
   };
 
+  // One handler for the three sizing numbers, wherever they're rendered.
+  const patchSizing = (p: { perImage?: number; min?: number; max?: number }) => {
+    markDirty();
+    if (p.perImage !== undefined) setDollarsPerImage(p.perImage);
+    if (p.min !== undefined) setMinImages(p.min);
+    if (p.max !== undefined) setMaxImages(p.max);
+  };
+
   const setTier = (i: number, patch: Partial<TierForm>) => {
     markDirty();
     setTiers((ts) => ts.map((t, j) => (j === i ? { ...t, ...patch } : t)));
@@ -342,23 +350,19 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
             {/* How many images */}
             <div className="space-y-2">
               <div className="text-xs font-medium text-fg">How many to send</div>
-              <div className="flex flex-wrap gap-4">
-                <NumField
-                  label="$ per image" hint="1 image for every this many dollars"
-                  value={dollarsPerImage} min={1} max={10000} suffix="$"
-                  onChange={(n) => { markDirty(); setDollarsPerImage(n); }}
-                />
-                <NumField
-                  label="Minimum" hint="floor for any tip (even under $/image)"
-                  value={minImages} min={0} max={50}
-                  onChange={(n) => { markDirty(); setMinImages(n); }}
-                />
-                <NumField
-                  label="Maximum (cap)" hint="a whale tip never sends more than this"
-                  value={maxImages} min={1} max={50}
-                  onChange={(n) => { markDirty(); setMaxImages(n); }}
-                />
-              </div>
+              <BundleSizingFields
+                dollarsPerImage={dollarsPerImage} minImages={minImages}
+                maxImages={maxImages}
+                minHint="floor for any tip or tease"
+                maxHint="a whale tip never sends more than this"
+                onChange={patchSizing}
+              />
+              <p className="text-[11px] text-fg-dim/80 leading-relaxed">
+                These three size the <b>priced teases</b> below too, not just tip
+                rewards: a ${dollarsPerImage} tease sends 1 pic, a $
+                {dollarsPerImage * 3} tease sends 3, never fewer than {minImages} or
+                more than {maxImages}.
+              </p>
             </div>
 
             {/* Caption */}
@@ -748,10 +752,32 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
                 onChange={(n) => { markDirty(); setCvAfter(n); }}
               />
               <NumField
-                label="Pics per tease" hint="unseen vault items each rung"
+                label="Pics per tease" hint="fallback count when no tiers are set"
                 value={cvCount} min={1} max={50}
                 onChange={(n) => { markDirty(); setCvCount(n); }}
               />
+            </div>
+
+            {/* How the tease is SIZED. The count scales with the ask off the same
+                three numbers the reward uses — before this was wired, a softened
+                $13 ask silently shipped a single photo. */}
+            <div className="space-y-2">
+              <p className="text-[11px] text-fg-dim/80 leading-relaxed">
+                <b>How many pics a tease carries</b> is set by the ask: 1 per $
+                {dollarsPerImage}, never fewer than {minImages} or more than{" "}
+                {maxImages} — so a ${dollarsPerImage * 3} tease sends 3. &ldquo;Pics
+                per tease&rdquo; above only applies when no tier folders are
+                configured and the pull falls back to the rung&apos;s own folder.
+              </p>
+              {!enabled && (
+                <BundleSizingFields
+                  dollarsPerImage={dollarsPerImage} minImages={minImages}
+                  maxImages={maxImages}
+                  minHint="floor for any tease"
+                  maxHint="never send more than this"
+                  onChange={patchSizing}
+                />
+              )}
             </div>
 
             {/* Adaptive climb — the price only escalates on an actual sale. */}
@@ -1047,6 +1073,41 @@ function Toggle({
         }`}
       />
     </button>
+  );
+}
+
+/** The three numbers that size EVERY send — a tip reward and a priced tease
+ *  alike. Rendered in both sections because either one can be the only one an
+ *  operator has open, and a number you can't see is how the teaser ended up
+ *  sizing on a ladder nobody had set. */
+function BundleSizingFields({
+  dollarsPerImage, minImages, maxImages, minHint, maxHint, onChange,
+}: {
+  dollarsPerImage: number;
+  minImages: number;
+  maxImages: number;
+  minHint: string;
+  maxHint: string;
+  onChange: (patch: { perImage?: number; min?: number; max?: number }) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-4">
+      <NumField
+        label="$ per image" hint="1 image for every this many dollars"
+        value={dollarsPerImage} min={1} max={10000} suffix="$"
+        onChange={(n) => onChange({ perImage: n })}
+      />
+      <NumField
+        label="Minimum" hint={minHint}
+        value={minImages} min={0} max={50}
+        onChange={(n) => onChange({ min: n })}
+      />
+      <NumField
+        label="Maximum (cap)" hint={maxHint}
+        value={maxImages} min={1} max={50}
+        onChange={(n) => onChange({ max: n })}
+      />
+    </div>
   );
 }
 
