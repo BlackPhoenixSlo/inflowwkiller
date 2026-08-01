@@ -159,13 +159,47 @@ STATUS_AFTERCARE = "aftercare"
 #
 # Measured hit rates on 86,051 real inbounds: HARD 0.03% · SOFT 0.09% · BARE-NO 0.16%.
 
+# The intensifiers that turn a VOCATIVE "you liar" (flirting) into an ACCUSATION.
+# Named once because both liar branches below need it and, written out twice, the two
+# copies immediately drifted — one carried `\s+` inside each alternative, the other
+# outside. One list, one meaning.
+_LIAR_INTENSIFIER = r"(?:fuckin[g']?|fckin[g']?|fkin[g']?|stupid|lying|damn)"
+
 # HARD — he is angry or gone. Permanent stop, no more paid messages, ever.
 _HARD_STOP_RE = re.compile(
     # `disput(e|ing)` — the pattern had only `dispute`, so "im disputing this charge"
     # (present participle: how a man actually types it while doing it) was invisible.
     # Same word-form bug as `tapped out` vs "wallet is tapping out".
     r"\b(charge ?back|refund|disput(?:e|ing) (?:this|the charge|it)|"
-    r"report(?:ing)? you|scam(?:mer)?|"
+    # `scam(?:mer)?` could not match "scammed"/"scamming": after `scam` the next char
+    # is `m`, so the trailing \b fails and the ALTERNATIVE `mer` never gets a look-in.
+    # "you scammed me" — the commonest way a cheated man says it — scored None.
+    r"report(?:ing)? you|scam(?:med|mer|ming)?|"
+    # ── The DECEIVED-BUYER exit ────────────────────────────────────────────────
+    # A buyer who believes he was lied to about what he PAID FOR is the highest-value
+    # hard stop there is: he is a chargeback and a lost account, in that order. This
+    # whole shape used to score None on every detector, so no offers-pause and no
+    # make_right apology fired and the seller kept selling into it.
+    #
+    # Deliberately NOT a bare \bliar\b, and not a bare "you liar" either. "liar!",
+    # "liar lol" and the VOCATIVE "you liar 😏" are ordinary flirty banter, and a
+    # false hit here costs a 72h selling blackout PLUS an apology for a mistake that
+    # never happened. So an accusation only counts when it is DECLARATIVE (a copula:
+    # "you're a liar") or carries an intensifier ("you stupid liar"). Same discipline
+    # as `broke`-the-adjective vs `broke`-the-verb below.
+    rf"(?:you'?re|youre|you are|u r|ur)\s+(?:a\s+)?(?:{_LIAR_INTENSIFIER}\s+)?liar|"
+    rf"(?:you|u)\s+{_LIAR_INTENSIFIER}\s+liar|"
+    # `lied` stops at the object: "you lied to me" is an accusation, "you lied about
+    # being a redhead lol" is teasing. Note this still catches "you lied TO ME about
+    # the photo" — the optional `to me` group gives the match a shorter form to fall
+    # back on, so only the bare `lied about ...` tease is excluded.
+    r"(?:you|u)\s+lied(?:\s+to\s+me)?(?!\s+about)|"
+    # Writing off money already handed over. The amount needs an EXPLICIT currency
+    # mark: a bare `\d+` here matched "keep the 5 photos coming" — a fan ASKING FOR
+    # MORE CONTENT — and eight other ordinary lines, every one of which would have
+    # bought a 72h selling blackout plus an apology for a mistake that never happened.
+    # An unmarked amount is not lost either: it rides the `liar` clause beside it.
+    r"keep (?:my|the) (?:money|cash|[\$€£]\d+)|"
     r"unsubscrib\w*|stop messaging|blocked you|blocking you)\b", re.I)
 
 # SOFT — a poverty plea. Stop SELLING for 24h. KEEP TALKING. This is the highest-value
