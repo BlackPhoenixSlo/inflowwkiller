@@ -20,7 +20,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { proxyImage, type OFMedia, type OFMessage } from "@/lib/relay";
+import { describeLoadError, proxyImage, type OFMedia, type OFMessage } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { blurImageClass, useBlurMode } from "@/hooks/useBlurMode";
 import { useCompactMedia } from "@/hooks/useCompactMedia";
@@ -341,10 +341,16 @@ export function MessageList(props: MessageListProps) {
       </div>
     );
   }
-  if (isError) {
+  // A refresh that fails is only fatal when there is NOTHING to show. If we
+  // already hold cached history, the thread stays readable and the failure
+  // becomes a strip at the top of it (below the AI status strip in the header)
+  // — see `staleNotice` in the populated branch. A fan who deletes his OF
+  // account 404s every poll forever; blanking the whole conversation on that
+  // threw away the only remaining copy of it.
+  if (isError && messages.length === 0) {
     return (
       <div className="flex-1 min-h-0 grid place-items-center p-8 text-center text-sm text-err">
-        Failed to load: {error?.message || "unknown"}
+        {describeLoadError(error, "This fan's OnlyFans account no longer exists.")}
       </div>
     );
   }
@@ -391,6 +397,20 @@ export function MessageList(props: MessageListProps) {
       style={{ overflowAnchor: "none" }}
       className="h-full overflow-y-auto overflow-x-hidden px-2 md:px-4 py-3 space-y-2"
     >
+      {/* The refresh failed but we still have history — say so WITHOUT taking
+       *  the thread away. `sticky` (not `absolute`) so it never covers the
+       *  first message and never shifts the column: it rides the top of the
+       *  scroll viewport and scrolls with the content underneath it. */}
+      {isError && (
+        <div
+          role="status"
+          className="sticky top-0 z-20 -mx-2 md:-mx-4 -mt-3 mb-1 px-3 py-1.5 text-[11px] leading-snug
+                     bg-err/10 text-err border-b border-err/30 backdrop-blur-sm"
+        >
+          {describeLoadError(error, "This fan's OnlyFans account no longer exists.")}{" "}
+          <span className="text-fg-dim">Showing the last messages we saved.</span>
+        </div>
+      )}
       {/* Sentinel for IntersectionObserver auto-load + an explicit
        *  click-to-load button. Scroll-up alone isn't enough when the
        *  visible page is short (a chat with only a few recent messages

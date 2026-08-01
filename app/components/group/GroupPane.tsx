@@ -23,6 +23,7 @@ import { useAccountLabel } from "@/hooks/useAccounts";
 import { useChatMessages } from "@/hooks/useChatMessages";
 import { useSendMessage } from "@/hooks/useSendMessage";
 import {
+  describeLoadError,
   proxyImage,
   relay,
   type OFChatItem,
@@ -256,7 +257,7 @@ export function GroupPane({
         )}
         {handle.isError && (
           <div className="text-[11px] text-err text-center py-4">
-            Failed to load: {(handle.error as Error)?.message || "unknown"}
+            {describeLoadError(handle.error as Error, "This conversation no longer exists on OnlyFans.")}
           </div>
         )}
         {!handle.isLoading && !handle.isError && messages.length === 0 && (
