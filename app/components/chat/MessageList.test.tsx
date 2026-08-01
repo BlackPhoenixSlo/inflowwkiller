@@ -141,3 +141,68 @@ describe("MessageList PPV unlock (isOpened || isPaid)", () => {
     expect(container.textContent).toContain("unlocked");
   });
 });
+
+/**
+ * A failed refresh must not delete the conversation.
+ *
+ * A fan who deletes his OnlyFans account 404s on every poll, forever. The
+ * error branch used to return a full-pane "Failed to load: upstream 404:
+ * {"error":{"code":0,"message":"User not found"}}" — blanking a thread whose
+ * cached copy was, at that point, the only one left anywhere.
+ */
+describe("load errors never hide cached history", () => {
+  const err = new Error('upstream 404: {"error":{"code":0,"message":"User not found"}}');
+
+  it("keeps rendering cached messages when the refresh 404s", () => {
+    const { container } = renderWithProviders(
+      <MessageList
+        {...baseProps}
+        isError
+        error={err}
+        messages={[msg({ id: 1, text: "cached line" })]}
+        ownerUserId={555}
+      />,
+    );
+    expect(container.textContent).toContain("cached line");
+  });
+
+  it("shows the failure as a notice above the thread, not instead of it", () => {
+    const { container } = renderWithProviders(
+      <MessageList
+        {...baseProps}
+        isError
+        error={err}
+        messages={[msg({ id: 1, text: "cached line" })]}
+        ownerUserId={555}
+      />,
+    );
+    const notice = container.querySelector('[role="status"]');
+    expect(notice).not.toBeNull();
+    // Plain-language, and it does NOT leak the raw upstream json at the operator.
+    expect(notice!.textContent).toContain("no longer exists");
+    expect(container.textContent).not.toContain('{"error"');
+    // `sticky`, never `absolute` — an absolute banner would cover message #1.
+    expect(notice!.className).toContain("sticky");
+  });
+
+  it("still blocks with the error when there is nothing cached to show", () => {
+    const { container } = renderWithProviders(
+      <MessageList {...baseProps} isError error={err} messages={[]} ownerUserId={555} />,
+    );
+    expect(container.textContent).toContain("no longer exists");
+  });
+
+  it("distinguishes transient failures, because those ARE worth retrying", () => {
+    const { container } = renderWithProviders(
+      <MessageList
+        {...baseProps}
+        isError
+        error={new Error("upstream timeout: ...")}
+        messages={[]}
+        ownerUserId={555}
+      />,
+    );
+    expect(container.textContent).toContain("timed out");
+    expect(container.textContent).not.toContain("no longer exists");
+  });
+});

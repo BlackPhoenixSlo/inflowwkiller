@@ -41,7 +41,7 @@ import {
 } from "@/hooks/useChatFolders";
 import { useScope } from "@/contexts/ScopeContext";
 import { cn, decodeHtmlEntities, fmtRelTime, interpretSubStatus } from "@/lib/utils";
-import { proxyImage, relay, type OFChatItem, type OFMessage, type OFMessagesResp, type OFUserMini } from "@/lib/relay";
+import { describeLoadError, proxyImage, relay, type OFChatItem, type OFMessage, type OFMessagesResp, type OFUserMini } from "@/lib/relay";
 
 /** Built-in OF chat filters — most are server-side filters supported
  *  by /chats. `owe-reply` is CLIENT-SIDE only: there's no OF filter for
@@ -935,7 +935,7 @@ export function ChatList({
       >
         {q.isError && (
           <div className="p-4 text-xs text-err">
-            failed to load: {(q.error as Error)?.message || "unknown"}
+            {describeLoadError(q.error as Error)}
           </div>
         )}
         {!q.isError && rows.length === 0 && q.isFetched && (
@@ -1284,7 +1284,7 @@ function FolderPicker({
           )}
           {all.isError && (
             <div className="p-4 text-xs text-err">
-              Failed to load: {(all.error as Error)?.message || "unknown"}
+              {describeLoadError(all.error as Error)}
             </div>
           )}
           {!all.isFetching && rows.length === 0 && !all.isError && (

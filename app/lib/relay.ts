@@ -124,6 +124,35 @@ async function parseResponse<T>(r: Response): Promise<T> {
 }
 
 /**
+ * Turn one of the error strings built above into a line an operator can act on.
+ *
+ * It lives HERE, next to the code that formats `upstream <status>: <body>`,
+ * because the two have to agree on that shape — a humaniser parked in one
+ * component drifts the moment this formatter changes, and every other error
+ * surface keeps printing the raw blob.
+ *
+ * What the operator actually sees today is the upstream body verbatim:
+ * `upstream 404: {"error":{"code":0,"message":"User not found"}}` — which reads
+ * like a crash and buries the only fact that matters. The permanent case is
+ * separated from the transient ones on purpose: "retry" is the right instinct
+ * for a timeout and a waste of time on a 404.
+ */
+export function describeLoadError(
+  error: { message?: string } | null | undefined,
+  /** What a 404 means HERE. The generic default is deliberate: only the caller
+   *  knows whether the missing thing is a fan, a thread or a vault list, and
+   *  "this fan's account no longer exists" is simply false on a list query. */
+  notFound = "OnlyFans no longer has this.",
+): string {
+  const raw = error?.message || "";
+  if (/User not found/i.test(raw) || /upstream 404/.test(raw)) return notFound;
+  if (/proxy_unreachable|network/i.test(raw)) return "Can't reach OnlyFans right now.";
+  if (/timeout/i.test(raw)) return "OnlyFans timed out.";
+  if (/upstream 401|upstream 403/.test(raw)) return "This account's OnlyFans session expired.";
+  return `Couldn't refresh: ${raw || "unknown error"}`;
+}
+
+/**
  * Core fetch wrapper. Most callers use the verb helpers (get/post/patch/delete)
  * but `request()` is here for the long tail of mixed verbs / streaming bodies.
  *
