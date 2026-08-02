@@ -85,7 +85,7 @@ _BACKUP_KEEP = 20
 # the day that column was added. (No count in this comment on purpose: the old
 # "17" had drifted to 21 unnoticed, which is exactly the rot the test prevents.)
 CONFIG_SCALAR_COLS = ("persona", "welcome_rules", "utc_offset", "timezone", "location",
-                      "language", "daily_cost_cap_cents", "model")
+                      "language", "voice", "daily_cost_cap_cents", "model")
 CONFIG_JSON_COLS = ("persona_facts_json",
                     "time_activities_json", "time_images_json", "welcome_pinned_json",
                     "model_by_purpose", "nudge_config_json", "webhook_config_json",

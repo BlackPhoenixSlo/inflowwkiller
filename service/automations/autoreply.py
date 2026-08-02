@@ -47,6 +47,7 @@ import llm_client
 from ._persona import compose_persona
 from . import _language
 from . import _pins  # his own pinned long-form message (reader only)
+from . import _voice  # whose voice this account writes in (NULL → 'her')
 from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
@@ -56,11 +57,15 @@ from db.models import (
 from llm_client import LLMCapExceeded
 from ._common import (
     BIO_CONSISTENCY_GUARDRAIL,
-    LIVE_PROOF_GUARDRAIL, NO_NARRATION_RULE, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING,
+    # PAINFUL_TEXTING / LIVE_PROOF_GUARDRAIL are NOT imported here: both vary by
+    # creator voice, so this engine reads them off `_voice.blocks(...)` instead.
+    # `_common` still exports the female lane for the engines that don't.
+    NO_NARRATION_RULE, ONPLATFORM_GUARDRAIL,
     STYLE_3LINE, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction,
     build_tip_ask_block, hold_with_typing, apply_typo_throttle, is_content_ask,
-    load_nonnative_flags, load_spacing_flags, load_painful_texting_flag,
+    load_nonnative_flags, load_spacing_flags, load_voice_blocks,
+    load_painful_texting_flag,
     load_strip_emojis, load_style_flags, load_tip_ask_config,
     load_typing_indicator, load_typing_wpm, load_typo_flags, load_hard_skip_ids,
     load_promo_spam_ids,
@@ -157,15 +162,26 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
                     tip_ask_block: str = "",
                     painful_on: bool = True,
                     lang: str = "en",
-                    clock: str = "") -> list[dict]:
+                    clock: str = "",
+                    v: "_voice.VoiceBlocks" = _voice.HER) -> list[dict]:
     facts = []
     nm = resolve_fan_name(f)
     if nm:
         facts.append(f"name: {nm.split('/')[0][:40]}")
+    # `likes` is boobs/ass and nothing else — it exists to route a straight man to
+    # the right body content out of a WOMAN's vault, and `gen_info` fills it
+    # fleet-wide. On a male account it asserts, inside a facts block the model is
+    # told never to contradict, a preference for a body the creator does not have.
+    # Dropped for the male lane rather than re-mapped: what a submissive man is
+    # into is a different axis entirely and `fetishes` already carries it as free
+    # text. Resolved BEFORE the tuple so the lane check is one named decision
+    # rather than a branch buried in a literal.
+    likes = "" if v.is_male else ("boobs" if f.likes_boobs
+                                 else ("ass" if f.likes_ass else ""))
     for label, val in (("age", f.his_age), ("city", f.home_city),
                        ("country", f.home_country), ("job", f.occupation),
                        ("hobbies", f.hobbies), ("recent", f.recent_events),
-                       ("likes", "boobs" if f.likes_boobs else ("ass" if f.likes_ass else ""))):
+                       ("likes", likes)):
         if val:
             facts.append(f"{label}: {str(val).strip()[:80]}")
     facts_block = "\n".join(f"- {x}" for x in facts) if facts else "- (not much on file)"
@@ -189,10 +205,30 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
             f"{NO_NARRATION_RULE}"
         )
     else:
-        hard_rules = (
-            "HARD RULES:\n"
+        # ⚠️ THE NEVER-SELL RULE AND THE CUSTOMS CARVE-OUT ARE THE SAME PROMPT.
+        # `v.live_proof` below says "ONE THING YOU DO OFFER: a paid CUSTOM"; this
+        # rule said "NEVER offer, mention, or hint at PPV, paid content, pics, or
+        # videos". Both rendered, ~30 lines apart, and which one the model obeyed
+        # was a coin flip per generation — so week one produced either no customs
+        # at all (and the wrong conclusion that customs don't sell) or a violation
+        # of the lane's defining rule, with no way to tell from outside which.
+        #
+        # The ban stays absolute for everything Auto Convo has never sold. It now
+        # names the single exception the account has explicitly opted into, so the
+        # two rules describe one policy instead of contradicting each other. With
+        # `sell_customs` off this is byte-identical to what has always shipped.
+        _never_sell = (
             "- NEVER offer, mention, or hint at PPV, paid content, pics, or videos. "
             "This is purely keeping the conversation going.\n"
+            if not v.sell_customs else
+            "- NEVER offer, mention, or hint at PPV, pics, or videos — this is "
+            "keeping the conversation going, not selling. The ONE exception is a "
+            "custom voice note (see the LIVE PROOF rule below): you may mention "
+            "that if it comes up naturally. Nothing else, ever.\n"
+        )
+        hard_rules = (
+            "HARD RULES:\n"
+            f"{_never_sell}"
             "- You already KNOW him — do NOT re-ask his name, age, location, job or "
             "hobbies. Use what you know to make it personal.\n"
             "- Don't apologize for being slow or mention the delay — just reply "
@@ -216,12 +252,12 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         "A fan you've already been chatting with MESSAGED YOU and is waiting for a "
         "reply — keep the conversation going naturally. Reply to his last message "
         "like you just got back to your phone. You are 100% human, never a bot.\n\n"
-        f"{PAINFUL_TEXTING + chr(10) + chr(10) if painful_on else ''}"
+        f"{v.painful_texting + chr(10) + chr(10) if painful_on else ''}"
         f"{clock_block}"
         f"{directive}\n\n"
         f"{hard_rules}\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
-        f"{LIVE_PROOF_GUARDRAIL}\n\n"
+        f"{v.live_proof}\n\n"
         f"{BIO_CONSISTENCY_GUARDRAIL}\n\n"
         f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
         f"{NONNATIVE_REGISTER + chr(10) + chr(10) if nonnative_on else ''}"
@@ -401,6 +437,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
     account_lang = await _language.load_account_language(account_id)  # output language + guards
+    # Whose voice this account writes in AND whether it may sell customs, as one
+    # resolved bundle off ONE row read. Built once per run beside the language for
+    # the same reason: both are account-constant and cannot change mid-sweep.
+    # NULL → 'her' → every string below renders exactly as it always has.
+    voice_blocks = await load_voice_blocks(account_id)
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
     # Space-before-"?" — its own tri-state key, read independently but only
@@ -463,7 +504,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     tip_ask_enabled, tip_amount, tip_template = await load_tip_ask_config(account_id)
     # Off (per-account toggle) → empty block; the content-ask just gets keep-warm
     # banter, no tip-ask.
-    tip_ask_block = (build_tip_ask_block(tip_amount, tip_template)
+    tip_ask_block = (build_tip_ask_block(tip_amount, tip_template,
+                                         voice_blocks.sell_customs)
                      if tip_ask_enabled else "")
     # Double-pitch guard: when ai_chatter (the closer) owns this account, IT handles
     # selling — Auto Convo stays purely keep-warm even on a content-ask.
@@ -545,7 +587,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         msgs = _build_messages(persona, f, history, style, style_on=style_on,
                                nonnative_on=nonnative_on, lang=fan_lang,
                                content_ask=content_ask, tip_ask_block=tip_ask_block,
-                               painful_on=painful_on, clock=_clock_line(clock_tz))
+                               painful_on=painful_on, clock=_clock_line(clock_tz),
+                               v=voice_blocks)
         try:
             res = await llm_client.chat(model=model, messages=msgs, purpose=_PURPOSE,
                                         account_id=account_id, fan_id=fid,
@@ -568,7 +611,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # `consistency_autoreply` flag to switch on (see _common.CONSISTENCY_AUTOMATIONS).
         raw, _leak = await finalize_draft(
             raw, account_id=account_id, fan_id=fid, purpose=_PURPOSE,
-            strip_emoji=strip_emoji_on)
+            strip_emoji=strip_emoji_on, v=voice_blocks)
         parts = [apply_word_restriction(p)[:_REPLY_MAX_CHARS]
                  for p in split_for_bubbles(raw, max_bubbles,
                                             rng=random.Random(f"split:{f.fan_id}:{raw}"))

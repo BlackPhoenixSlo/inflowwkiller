@@ -24,6 +24,15 @@ export interface BrainConfig {
   persona_facts: Record<string, string>;
   /** ISO 639-1 the creator writes in; "en" default. Gates output language + guard vocab. */
   language: string;
+  /**
+   * Whose voice this account writes in: "her" (every account that has ever run
+   * here) or "him" (the male lane). No control renders it yet — it is set through
+   * the API — but it MUST stay on this type and travel with the form, because
+   * Save PUTs the whole config object back. A field the type doesn't know about
+   * is a field a rebuild silently drops, and dropping this one puts a male
+   * creator back in the female lane mid-conversation.
+   */
+  voice: string;
   /** IANA zone (e.g. America/Vancouver). Wins over utc_offset; DST-correct. */
   timezone: string | null;
   utc_offset: number;

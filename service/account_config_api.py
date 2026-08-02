@@ -52,6 +52,7 @@ PURPOSES: tuple[str, ...] = (
 # Languages the account can be set to. The code is the routing/guard key; the label is
 # for the editor dropdown. Sourced from the language layer so there's one list.
 from automations._language import KNOWN_LANGS, LANG_DISPLAY, norm_lang  # noqa: E402
+from automations._voice import VOICE_HER, VOICE_HIM, norm_voice, parse_voice  # noqa: E402
 LANGUAGES: tuple[dict, ...] = tuple(
     {"code": c, "label": LANG_DISPLAY.get(c, c)} for c in KNOWN_LANGS
 )
@@ -128,6 +129,7 @@ def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
         "location": row.location if row else None,
         "persona_facts": (_parse_obj(row.persona_facts_json) if row else {}),
         "language": (norm_lang(row.language) or "en") if row else "en",
+        "voice": (norm_voice(row.voice) if row else VOICE_HER),
         "timezone": row.timezone if row else None,
         "utc_offset": row.utc_offset if row else 0,
         "daily_cost_cap_cents": row.daily_cost_cap_cents if row else 100,
@@ -206,6 +208,34 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     if lang_raw and not language:
         raise HTTPException(422, f"language {lang_raw!r} is not a supported code")
     language = language or None
+    # voice: whose voice this account writes in. An unknown value is a 422 rather
+    # than a silent fallback — a typo'd 'hom' resolving to "her" is exactly the
+    # silent-wrong-gender failure the lane exists to prevent — which is why this
+    # uses `parse_voice` (None == unrecognised) and not `norm_voice` (which
+    # collapses everything to "her", the right rule for reads and the wrong one
+    # here).
+    #
+    # ⚠️ An ABSENT key means UNCHANGED, not "reset to the default lane". This
+    # endpoint upserts, so a key missing from `vals` is preserved on an existing
+    # row — the same treatment `nudge_config_json` gets below, and for a sharper
+    # reason: BRAIN_DEFAULTS has no `voice` key, so a client that rebuilds its form
+    # from the defaults (the Brain panel does, on any blank brain — which a
+    # brand-new male account is) posts without it. Treating absent as "clear it"
+    # meant the documented rollout — set voice='him', then type the persona and hit
+    # Save — silently put the account back in the female lane on that first Save.
+    #
+    # "" IS TREATED THE SAME AS ABSENT, on purpose. A blank string is what an empty
+    # form field posts, not a considered choice, and the only value it could
+    # possibly mean here is the default lane — which is the one outcome that must
+    # never happen by accident. Clearing a male account back to female stays
+    # possible and stays EXPLICIT: post the literal "her".
+    voice_raw = cfg.get("voice")
+    voice = parse_voice(voice_raw)
+    voice_sent = "voice" in cfg and voice_raw not in (None, "")
+    if voice_raw not in (None, "") and voice is None:
+        raise HTTPException(
+            422, f"voice {voice_raw!r} is not supported (expected "
+                 f"{VOICE_HER!r} or {VOICE_HIM!r})")
     if language == "en":
         language = None                      # NULL == en; keeps the column sparse
 
@@ -288,6 +318,11 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
         "time_images_json": json.dumps(imgs) if imgs else None,
         "updated_at": now,
     }
+    # `voice` only joins the upsert when the caller sent a REAL value, so neither a
+    # missing key nor a blank field can clear the lane while saving something else.
+    # NULL == "her" keeps the column sparse.
+    if voice_sent:
+        vals["voice"] = voice if voice == VOICE_HIM else None
     # nudge_config_json is intentionally absent → preserved on existing rows.
     set_ = {k: v for k, v in vals.items() if k != "account_id"}
     async with get_session() as s:

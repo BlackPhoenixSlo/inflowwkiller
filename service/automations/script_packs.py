@@ -20,6 +20,11 @@ from __future__ import annotations
 import re
 from random import Random
 
+# `_voice` is a leaf: text + normalisation, no DB and no sibling imports, so a
+# top-level import here cannot cycle. (`_language` below stays lazy because it
+# is not one.)
+from . import _voice
+
 # Slots the engine actually fires. A slot that nothing references is dead weight —
 # `bump_no_reply` (the "you're ignoring me 🥺" guilt line) was deliberately CUT from
 # every shipping path: it is aimed at the majority who did NOT buy, it is the
@@ -259,17 +264,128 @@ PACK_SL: dict[str, list[str]] = {
 # for any language/slot not present. Seam for adding more languages later.
 PACKS: dict[str, dict[str, list[str]]] = {"en": PACK, "es": PACK_ES, "sl": PACK_SL}
 
+# ── The MALE lane (creator is a man) ─────────────────────────────────
+# Same slots, same job, opposite power axis. This exists because the pack is a
+# DETERMINISTIC send path: `_pack_line` fires on nudge / post-buy / aftercare
+# turns with no model in the loop, and those turns are reached BEFORE the engine
+# loads any per-account flag. So on a male account the shipped pack was not a
+# tone problem — it sent "make my pussy wet" and "watch me strip here in my
+# bedroom" verbatim to a fan, from a man, with nothing able to intercept it.
+#
+# Written to the same rules as the female pack with one addition:
+#
+#   • NO female anatomy, and no line that only works if the creator is desired
+#     rather than doing the desiring. In the male lane the fan pursues.
+#   • NO word from `_common._RESTRICTED_WORDS`. That list is OnlyFans' soft-block
+#     set and `apply_word_restriction` doubles a vowel in each to slip the filter
+#     ("slave" → "slaave"). The operator has accepted that trade for MODEL output,
+#     where it is rare and contextual — but a canned line is sent verbatim every
+#     time it is picked, so a restricted word here would be a permanent visible
+#     typo in a fixed string. The dom register has plenty of vocabulary that
+#     isn't on the list; this pack uses that.
+#   • Terse. Brevity reads as authority, and it is the one stylistic property that
+#     survives the lane flip unchanged.
+#
+# English only for now: `_language.localized` falls back to the English line for
+# any language a pack omits, so an es/sl male account degrades to English here
+# rather than to a grammatically-female Spanish or Slovenian line. That is the
+# correct failure direction and it is why no PACK_HIM_ES exists yet.
+PACK_HIM: dict[str, list[str]] = {
+    "question_hook": [
+        "you been slacking or working? {name}",
+        "whats your excuse today",
+        "still awake. figured youd be up too",
+        "tell me what youve actually done this week",
+        "hows the training going, honestly",
+        "you around {name}",
+    ],
+    "rung_open": [
+        "made this. tell me what you think",
+        "have a look at this one",
+        "this ones worth your time",
+        "put this together earlier. see what you make of it",
+        "you'll want to see this",
+    ],
+    "rung_escalate": [
+        "{name}. you want this or not",
+        "stop overthinking it. you already know you want it",
+        "this is the one you've been waiting for. dont waste it",
+        "youve earned a look at this one",
+        "last one like this for a while. your call",
+    ],
+    "post_buy_bridge": [
+        "good. what did you think",
+        "knew youd like that one",
+        "tell me it was worth it",
+    ],
+    "edge_hold": [
+        "you know im right",
+        "go on then",
+        "thats a yes",
+    ],
+    "pre_ppv_stall": [
+        "give me two mins, recording it now",
+        "hold on. getting it ready",
+        "one sec, setting up",
+    ],
+    "objection_price": [
+        "thats what it costs. its a full one, not a clip",
+        "its worth more than that and you know it",
+    ],
+    "haggle_counter": [
+        "{price}. thats the last time i move on it",
+    ],
+    "discount_resend": [
+        "you went quiet. made this anyway — {price}, and only because its you",
+        "put it back up cheaper. {price}. dont make me do that twice",
+    ],
+    "soft_broke_ack": [
+        "no rush. it'll still be here",
+        "fair enough. sort yourself out first",
+        "all good. we're just talking",
+    ],
+    "aftercare": [
+        "good man. talk tomorrow",
+        "get some sleep",
+        "no pressure. youre alright",
+        "night. message me when youre up",
+    ],
+    "companion_ack": [
+        "this is fine too. no pressure",
+        "im happy just talking",
+        "yeah, this works",
+    ],
+}
+
+# lang → pack, per voice. The male registry is English-only on purpose (see above).
+# Keyed on `_voice`'s own constants, not the bare strings: this dict and the lane
+# must be unable to disagree about what a voice is called.
+PACKS_HIM: dict[str, dict[str, list[str]]] = {"en": PACK_HIM}
+PACKS_BY_VOICE: dict[str, dict[str, dict[str, list[str]]]] = {
+    _voice.VOICE_HER: PACKS,      # every account that has ever run here
+    _voice.VOICE_HIM: PACKS_HIM,
+}
+
+
 _PLACEHOLDER_RE = re.compile(r"\{(name|price)\}")
 
 
 def render(slot: str, *, rng: Random, name: str = "babe", price_cents: int | None = None,
-           overrides: dict[str, list[str]] | None = None, lang: str = "en") -> str | None:
+           overrides: dict[str, list[str]] | None = None, lang: str = "en",
+           voice: str = _voice.VOICE_HER) -> str | None:
     """Pick one line for `slot` and fill its placeholders.
 
     `overrides` is the account's edited pack (UI). An override REPLACES the shipped
     pool for that slot; an empty list falls back to the default rather than sending
-    an empty message. `lang` selects the language pack (PACKS); a language/slot the
-    pack omits falls back to the English line."""
+    an empty message. `lang` selects the language pack; a language/slot the pack
+    omits falls back to the English line.
+
+    `voice` selects the REGISTRY (see PACKS_BY_VOICE). It matters more here than
+    anywhere else the lane reaches: these lines are sent VERBATIM with no model in
+    the loop, on turns that fire before the engine loads any flag, so a female line
+    on a male account is not a bad-sounding reply — it is anatomically impossible
+    text from the creator, unintercepted. Anything that is not "him" resolves to the
+    female registry, so the default is byte-identical."""
     pool = None
     if overrides:
         candidate = overrides.get(slot)
@@ -277,7 +393,11 @@ def render(slot: str, *, rng: Random, name: str = "babe", price_cents: int | Non
             pool = [str(x) for x in candidate if str(x).strip()]
     if pool is None:
         from . import _language
-        pool = _language.localized(PACKS, lang, slot) or []
+        # `_voice.norm_voice`, not a hand-rolled strip/lower — this is the one send
+        # path with no model in the loop, and a second copy of the normalisation
+        # would drift the day the first one changes.
+        registry = PACKS_BY_VOICE[_voice.norm_voice(voice)]
+        pool = _language.localized(registry, lang, slot) or []
     if not pool:
         return None
 

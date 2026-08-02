@@ -41,6 +41,7 @@ from db.models import Fan
 from jsonsafe import load_dict, load_json
 from llm_client import LLMCapExceeded
 
+from . import _voice
 from ._common import nonempty
 
 log = logging.getLogger("of-relay.persona")
@@ -206,7 +207,7 @@ def _parse_persona_facts(raw) -> dict:
     return {k: v for k, v in load_dict(raw).items() if k in dict(PERSONA_FACT_FIELDS)}
 
 
-def _persona_facts_block(raw) -> str:
+def _persona_facts_block(raw, voice=None) -> str:
     """Internal to compose_persona — the pinned-canon block for the chat prompts. "" when nothing is set, so an
     un-enriched account sends a byte-identical prompt — same discipline as the
     clock and location blocks.
@@ -214,10 +215,19 @@ def _persona_facts_block(raw) -> str:
     Rendered as an imperative, not an inventory. The passive "What you know about
     him" list is the one the model demonstrably ignores (it asked a $691 fan his
     job with `occupation` populated and injected); the imperative clock line is
-    the one that held. This block copies the clock's voice."""
+    the one that held. This block copies the clock's voice.
+
+    `voice` re-labels the three third-person-female slots for the male lane. It
+    matters here more than anywhere else those labels appear: this block asserts
+    its contents as facts the model may never contradict, so on a male account
+    the un-lane'd labels do not merely read oddly — they pin the creator's gender
+    as canon. Default None → `VOICE_HER` → `overrides` is empty → every label
+    unchanged."""
     facts = _parse_persona_facts(raw)
+    overrides = _voice.fact_labels(voice)
     lines = []
-    for key, label in PERSONA_FACT_FIELDS:
+    for key, declared in PERSONA_FACT_FIELDS:
+        label = overrides.get(key, declared)
         val = facts.get(key)
         if isinstance(val, (list, tuple)):
             val = ", ".join(str(v).strip() for v in val if str(v).strip())
@@ -489,7 +499,12 @@ def compose_persona(cfg, *, fallback: str) -> str:
     location = _persona_location_line(getattr(cfg, "location", None)).rstrip()
     if location:
         persona = f"{persona}\n{location}"
-    facts = _persona_facts_block(getattr(cfg, "persona_facts_json", None))
+    # The voice rides on `cfg`, which every caller already holds — so the lane
+    # reaches the canon labels with no signature change and no engine has to know
+    # this module consults it. `getattr` because the tests (and any caller with a
+    # hand-built config object) predate the column.
+    facts = _persona_facts_block(getattr(cfg, "persona_facts_json", None),
+                                 getattr(cfg, "voice", None))
     return f"{persona}\n\n{facts}".rstrip() if facts else persona
 
 

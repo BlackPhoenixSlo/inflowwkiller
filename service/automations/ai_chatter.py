@@ -95,6 +95,7 @@ from ._markers import protocol_marker_re
 from ._persona import fan_claims_block, persona_register_age
 from ._outbound import ConsistencyCtx, finalize_draft
 from . import _language
+from . import _voice
 from . import _openers  # the gen_info opener pool (the deepen phase)
 from . import _pins  # his own pinned long-form message (reader + writer)
 # ppv_send owns the ONE price authority (`price_bounds`); ownership.py owns
@@ -109,7 +110,12 @@ from ._common import (
     BIO_CONSISTENCY_GUARDRAIL,
     nonempty,
     NO_NARRATION_RULE,
-    ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING, STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER,
+    # PAINFUL_TEXTING is NOT imported here: it varies by creator voice, so this
+    # engine reads it off the `_voice.VoiceBlocks` bundle `load_voice_blocks`
+    # returns. (There is no LIVE_PROOF_GUARDRAIL in this prompt at all — which is
+    # why _manifest_block has to carry the customs fence itself.)
+    ONPLATFORM_GUARDRAIL, STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER,
+    load_voice_blocks,
     STYLE_MAX_BUBBLES,
     apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction, coerce_ids,
     load_consistency_flags,
@@ -538,6 +544,14 @@ async def _load_config(account_id: str) -> dict:
     # Account language rides on cfg so scripted surfaces (script packs, the intent
     # gate, unlock reactions) localize without threading a param through every call.
     merged["_account_lang"] = _language.norm_lang(getattr(cfg, "language", None)) or "en"
+    # The voice rides on cfg for the SAME reason the language does — and one more.
+    # `_pack_line` sends a script-pack line VERBATIM, with no model in the loop, on
+    # the nudge / post-buy / aftercare turns. Those turns return from run() BEFORE
+    # any per-account flag is loaded (see the payload branches at the top of run),
+    # so a voice resolved later in run() would never reach them. Stamping it here,
+    # off the row this function already holds, is what makes those paths lane-aware
+    # at zero query cost. NULL → "her" → every pack pick is unchanged.
+    merged["_account_voice"] = _voice.norm_voice(getattr(cfg, "voice", None))
     return merged
 
 
@@ -1355,7 +1369,8 @@ async def _offer_caps_ok(account_id: str, fan_id: int, cfg: dict) -> bool:
 
 def _manifest_block(offerable: dict[int, CatalogItem],
                     scripts: dict[int, CatalogScript], cfg_mode: str,
-                    quotes: dict[int, upsell.Quote] | None = None) -> str:
+                    quotes: dict[int, upsell.Quote] | None = None,
+                    sell_customs: bool = False) -> str:
     lines = []
     for iid, it in sorted(offerable.items()):
         mode = _effective_mode(it, cfg_mode)
@@ -1368,9 +1383,34 @@ def _manifest_block(offerable: dict[int, CatalogItem],
         lines.append(f"- [id {iid}] {it.kind}{dur} — {it.label or 'untitled'}: "
                      f"{(it.description_for_ai or '').strip()} — "
                      f"{_terms_str(it, mode, q.price_cents if q else None)}{theme}")
+    # "never customs" is CONDITIONAL. The ban exists because the catalog is the
+    # only thing that provably exists, so a promised custom was a promise with no
+    # delivery owner. An account that has opted in (`_common.SELL_CUSTOMS_KEY`)
+    # has an owner, and leaving the ban would have the engine refuse the product
+    # the account sells — silently, discovered only by wondering why no custom
+    # order ever landed.
+    #
+    # ⚠️ THE PERMISSION AND ITS FENCE SHIP TOGETHER, ALWAYS. Deleting two words
+    # from the ban is NOT a carve-out: the surrounding sentence still says "NEVER
+    # promise anything not on this list", so on its own it produces a contradiction
+    # and no boundary at all. Worse, unlike the conversational engines this one does
+    # NOT carry the live-proof guardrail at all, so there is no other rule anywhere
+    # in this prompt telling the model what a custom may not be. The fence
+    # therefore has to arrive with the permission, in this same block.
+    #
+    # It is `_voice.CUSTOMS_CONDITIONS` verbatim, NOT a restatement. This block used
+    # to write its own and the two fell out of sync on the exact clause that matters
+    # most: it still said "never promise a specific time or day" after the other two
+    # surfaces had been tightened to ban durations too, so "give me an hour" was a
+    # compliant reply here — on the one engine that actually closes the sale.
+    _no_customs = "" if sell_customs else "never customs, "
+    _customs_rule = ("\n- CUSTOMS: a custom (a VOICE NOTE recorded to order) is the "
+                     "ONE thing you may offer that is not on the list above. "
+                     f"{_voice.CUSTOMS_CONDITIONS}"
+                     if sell_customs else "")
     return (
         "CONTENT YOU CAN ACTUALLY SEND HIM (these are real, already filmed — "
-        "NEVER invent or promise anything not on this list, never customs, and "
+        f"NEVER invent or promise anything not on this list, {_no_customs}and "
         "describe a piece using ONLY its description):\n" + "\n".join(lines) + "\n\n"
         "SELLING RULES:\n"
         "- Selling is a side effect of good chat, not the goal of every message. "
@@ -1398,6 +1438,7 @@ def _manifest_block(offerable: dict[int, CatalogItem],
         "re-describe it. Never invent new sets, lengths, counts, or prices. If "
         "he wants more and the list is empty-ish, tell him you're filming more "
         "soon — never promise specifics."
+        f"{_customs_rule}"
     )
 
 
@@ -1525,14 +1566,16 @@ async def _last_unpaid_teaser(account_id: str, fan_id: int) -> dict | None:
 def _second_offer_block(pending: ContentOffer, pend_item: CatalogItem | None,
                         offerable: dict[int, CatalogItem],
                         scripts: dict[int, CatalogScript], cfg_mode: str,
-                        quotes: dict[int, upsell.Quote] | None) -> str:
+                        quotes: dict[int, upsell.Quote] | None,
+                        sell_customs: bool = False) -> str:
     """He has ONE unpaid PPV on the table and you may send a SECOND (and FINAL) one:
     a DIFFERENT piece, or the SAME piece re-priced lower if he's balking on price.
     After this second one there are two unpaid offers open, so the pitch stops."""
     plabel = (pend_item.label if pend_item else None) or "it"
     pprice = int(pending.price_cents or pending.tip_unlock_cents or 0) // 100
     return (
-        _manifest_block(offerable, scripts, cfg_mode, quotes=quotes or None)
+        _manifest_block(offerable, scripts, cfg_mode, quotes=quotes or None,
+                        sell_customs=sell_customs)
         + "\n\nSECOND OFFER — you already sent him "
         f"'{plabel}' for ${pprice} and he hasn't unlocked it yet. You MAY send ONE "
         "more piece THIS message (your second and last unpaid offer):\n"
@@ -3793,13 +3836,20 @@ async def _trigger_make_right_apology(account_id: str, fan_id: int) -> None:
 def _pack_line(slot: str, cfg: dict, fan_id: int, *, name: str = "babe",
                price_cents: int | None = None) -> str | None:
     """One line from the account's script pack (UI overrides > shipped defaults), in
-    the account's language (cfg._account_lang; English per-slot fallback)."""
+    the account's language (cfg._account_lang; English per-slot fallback) and the
+    account's voice (cfg._account_voice; "her" unless the row says otherwise).
+
+    Both ride on cfg rather than being threaded as parameters because every caller
+    already holds it — and because this is the one send path with no model in the
+    loop, so a caller that forgot to pass the voice would send a female line from a
+    male creator with nothing able to intercept it."""
     overrides = cfg.get("script_pack_overrides")
     return script_packs.render(
         slot, rng=random.Random(f"pack:{slot}:{fan_id}:{datetime.utcnow():%Y%m%d%H%M}"),
         name=name, price_cents=price_cents,
         overrides=overrides if isinstance(overrides, dict) else None,
-        lang=cfg.get("_account_lang", "en"))
+        lang=cfg.get("_account_lang", "en"),
+        voice=cfg.get("_account_voice", _voice.VOICE_HER))
 
 
 # ── Prompt (forked from of_ai_chat._build_messages — adds the sell seam) ─────
@@ -3822,6 +3872,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     clock: str = "",
                     sticker_mode: str = "skip",
                     opener: "_openers.Opener | None" = None,
+                    v: "_voice.VoiceBlocks" = _voice.HER,
                     ) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — of_ai_chat's girly info-gather prompt
     with one structural difference: `sell_block`. Empty (M2) → the no-offers
@@ -4128,13 +4179,14 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         f"{offers_line} "
         "He may send several texts in a row — read them all, reply to "
         "the latest.\n\n"
-        f"{PAINFUL_TEXTING + chr(10) + chr(10) if painful_on else ''}"
+        f"{v.painful_texting + chr(10) + chr(10) if painful_on else ''}"
         f"{clock_block}"
         f"{need_block}{dodge_note}{call_him}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         # Register (text young and casual), NOT a claim about her age — derived
         # from the persona so a 49yo persona isn't told to text like a 22yo.
-        f"HOW YOU TEXT (a real {persona_register_age(persona)}yo girl, not an assistant):\n"
+        f"HOW YOU TEXT (a real {persona_register_age(persona)}yo {v.texter_noun}, "
+        "not an assistant):\n"
         "- Short and casual. lowercase, contractions, u/ur/ya. React to what he "
         "said in a few words first.\n"
         "- VARY it every time — don't open the same way twice, and don't reuse a "
@@ -4280,6 +4332,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     sticker_skip_w, sticker_solo_w, sticker_gap_min = \
         await load_cat_sticker_tuning(account_id)             # per-account rate knobs
     account_lang = await _language.load_account_language(account_id)  # output language + guard gate
+    # Whose voice this account writes in AND whether it may promise a CUSTOM —
+    # one bundle off ONE row read, resolved once per run like the language above.
+    # The two axes stay independent (some female accounts sell voice notes, some
+    # male ones will not); they just resolve together so no engine can take half.
+    # NULL voice + customs off → the manifest keeps its "never customs" ban and
+    # every prompt below is byte-identical to what shipped.
+    voice_blocks = await load_voice_blocks(account_id)
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     persona = await _load_persona(account_id)
 
@@ -5211,10 +5270,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     if second_offer:
                         sell_block = _second_offer_block(
                             pending, await _get_item(int(pending.item_id)),
-                            offerable, scripts, cfg_offer_mode, quotes or None)
+                            offerable, scripts, cfg_offer_mode, quotes or None,
+                            sell_customs=voice_blocks.sell_customs)
                     else:
                         sell_block = _manifest_block(offerable, scripts, cfg_offer_mode,
-                                                     quotes=quotes or None)
+                                                     quotes=quotes or None,
+                                                     sell_customs=voice_blocks.sell_customs)
 
             # fan_lang resolved above (haggle detection) — drives the reply language
             # AND the bilingual buy-signal detectors below.
@@ -5280,7 +5341,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                                          if fan_id in old_fan_ids
                                                          else 0),
                                               buyer_facts=buyer_facts,
-                                              clock=_clock_line(clock_tz))
+                                              clock=_clock_line(clock_tz),
+                                              v=voice_blocks)
             try:
                 res = await llm_client.chat(
                     model=model,
@@ -5380,7 +5442,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 consistency=ConsistencyCtx(
                     fan=f, persona=persona, model=model,
                     last_inbound=c.last_body or "") if consistency_on else None,
-                strip_emoji=strip_emoji_on)
+                strip_emoji=strip_emoji_on, v=voice_blocks)
             if _leak:
                 offer_item = None  # a guarded reply must not carry a paid attach
             # Hot-thread teaser — the thread is HOT, nothing priced is going out this
