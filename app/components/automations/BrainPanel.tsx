@@ -89,9 +89,9 @@ function isBlankBrain(c: BrainConfig): boolean {
 // `voice` is identity in exactly that sense and is preserved for exactly that
 // reason. BRAIN_DEFAULTS has no voice key, so spreading it alone dropped the
 // field entirely — and this function runs on the FIRST render of any blank brain,
-// which is what a newly-created male account is. Without this line the rollout
-// (set voice='him' via the API, then fill in the persona and Save) reset the lane
-// on that very first Save, with nothing logged.
+// which is what a newly-created male account is. There is a Creator dropdown now,
+// but this line is what stops "Reset to defaults" from quietly un-maling an
+// account whose operator only meant to reset its brain text.
 function defaultsWithImages(defaults: BrainConfig, current: BrainConfig): BrainConfig {
   return { ...defaults, time_images: current.time_images ?? {},
            timezone: current.timezone ?? null,
@@ -578,7 +578,7 @@ export default function BrainPanel() {
             />
           </label>
 
-          {/* Location / language / offset / cap */}
+          {/* Location / voice / language / offset / cap */}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <label className="block space-y-1">
               <span className="text-[11px] uppercase tracking-wide text-fg-dim">Location</span>
@@ -587,6 +587,23 @@ export default function BrainPanel() {
                 onChange={(e) => set("location", e.target.value)}
                 placeholder="e.g. Vancouver Island"
               />
+            </label>
+            {/* The creator's own gender. A dropdown and not a checkbox on purpose:
+                it is a lane the account is IN, not a feature that is on — and the
+                API speaks the same two values ("her" / "him"), so what the operator
+                picks is exactly what gets stored. Saving "Female" writes NULL, which
+                is what every account that has ever run here already has. */}
+            <label className="block space-y-1">
+              <span className="text-[11px] uppercase tracking-wide text-fg-dim">Creator</span>
+              <select
+                value={form.voice ?? "her"}
+                onChange={(e) => set("voice", e.target.value)}
+                className={selectCls}
+                title="Whose voice this account writes in. Female is the default every account runs on. Male rewrites the texting frame, the FaceTime refusal, the persona canon labels ('Why he started OF'), the off-platform deflections and the script pack — nothing else on the account changes, and no other account is affected."
+              >
+                <option value="her">Female (default)</option>
+                <option value="him">Male</option>
+              </select>
             </label>
             <label className="block space-y-1">
               <span className="text-[11px] uppercase tracking-wide text-fg-dim">Language</span>

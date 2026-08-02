@@ -217,12 +217,13 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     #
     # ⚠️ An ABSENT key means UNCHANGED, not "reset to the default lane". This
     # endpoint upserts, so a key missing from `vals` is preserved on an existing
-    # row — the same treatment `nudge_config_json` gets below, and for a sharper
-    # reason: BRAIN_DEFAULTS has no `voice` key, so a client that rebuilds its form
-    # from the defaults (the Brain panel does, on any blank brain — which a
-    # brand-new male account is) posts without it. Treating absent as "clear it"
-    # meant the documented rollout — set voice='him', then type the persona and hit
-    # Save — silently put the account back in the female lane on that first Save.
+    # row — the same treatment `nudge_config_json` gets below.
+    #
+    # The Brain panel now has a Creator dropdown and always sends this key, so the
+    # rule is belt-and-braces for that caller. It still matters for the others:
+    # BRAIN_DEFAULTS carries no `voice`, so any client rebuilding a config object
+    # from the defaults posts without it, and a settings-transfer import of a
+    # pre-lane backup would otherwise clear a male account back to female.
     #
     # "" IS TREATED THE SAME AS ABSENT, on purpose. A blank string is what an empty
     # form field posts, not a considered choice, and the only value it could
