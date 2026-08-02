@@ -20,6 +20,10 @@ defaults below run wide open (skip 0, gap 0).
 Catalog: 89 real-cat giphy gifs across 22 emotion tags, hand-picked in
 `cat_stickers/picker.html` (repo root) — `picks.json` there is the source of
 truth; regenerate this literal via `cat_stickers/finalize_catalog.py`.
+
+The MALE lane has its own pack (`_CATALOG_HIM`, 38 dog/wolf gifs across 13
+tags) — same protocol, same rate knobs, different pictures and a shorter tag
+list. `harvest_male.py` → contact sheets → `finalize_male.py` is its pipeline.
 """
 from __future__ import annotations
 
@@ -271,7 +275,8 @@ def open_with_gif(mode: str, *, turn_index: int, his_words: str) -> str:
     return "solo"
 
 
-def pick_gif(tag: str, rng, account_id: str, fan_id: int) -> str | None:
+def pick_gif(tag: str, rng, account_id: str, fan_id: int,
+             voice: str = "her") -> str | None:
     """The giphy id to send for `tag` — random among the tag's hand-picked gifs
     so the same reaction doesn't always land the same clip.
 
@@ -279,8 +284,17 @@ def pick_gif(tag: str, rng, account_id: str, fan_id: int) -> str | None:
     a visible repeat: the pools are 2-6 clips wide, so an independent draw per turn
     repeats ~25% of the time on a 4-clip tag, and the seed (fan + his text) does not
     help because his text differs every turn. Excluding is skipped when it would empty
-    the pool, so a 1-clip tag still sends rather than going silent."""
-    gifs = _CATALOG.get(tag, ("", ()))[1]
+    the pool, so a 1-clip tag still sends rather than going silent.
+
+    `voice` selects the pack. There is deliberately NO fallback to the female
+    pool on a male account: a tag `prompt_block` never offered him can still
+    arrive (the model invents one, or an old marker survives a config flip), and
+    sending a kitten from a dom is the failure this pack was built to remove.
+    None is the right answer — the reply goes out as text."""
+    if _is_him(voice):
+        gifs = _CATALOG_HIM.get(tag, ())
+    else:
+        gifs = _CATALOG.get(tag, ("", ()))[1]
     if not gifs:
         return None
     prev = _last_pick.get((str(account_id), int(fan_id)))
@@ -291,16 +305,92 @@ def pick_gif(tag: str, rng, account_id: str, fan_id: int) -> str | None:
     return rng.choice(gifs)
 
 
-def prompt_block(mode: str) -> str:
+# Tags a MALE creator may not send. The EMOTION each tag names carries a
+# register: `shy`, `pout`, `beg` and `miss_you` are submissive-appealing;
+# `kiss`, `love`, `dance`, `celebrate` and `excited` are eager-affectionate.
+# Every one reads as performing for approval, which is the exact register the
+# male lane exists to invert (see _voice._HUMANIZER_PUSHBACK). Kept as a named
+# frozenset rather than folded into the catalog below because it states the
+# INTENT — `test_cat_stickers` asserts the male catalog contains none of them,
+# so re-adding one has to be deliberate rather than a slipped curation pick.
+_TAGS_NOT_FOR_HIM = frozenset({
+    "shy", "pout", "beg", "miss_you", "kiss", "love", "dance", "celebrate",
+    "excited",
+})
+
+# The MALE pack — 38 gifs, dogs and wolves, hand-picked 2026-08-02 via
+# `cat_stickers/harvest_male.py` → contact sheets → `finalize_male.py`.
+#
+# Only the gif ids differ: a tag means the same thing in both lanes, so the
+# when-to-use lines are read from `_CATALOG` above and are never duplicated
+# here. That is what keeps `prompt_block` honest — one set of descriptions, one
+# place to edit, and a male tag list that is exactly this dict's keys.
+#
+# ⚠️ WHY NOT GYM AND COMBAT SPORTS, WHICH WERE ASKED FOR
+# Both were harvested (26 candidates across `shocked`/`money`, 15 for
+# `thumbs_up`) and both yielded ~nothing, for a structural reason worth keeping
+# written down so nobody re-runs it: giphy's supply for those terms is
+# RECOGNISABLE PEOPLE. "boxer shocked" is Joe Rogan and Dana White cageside;
+# "fighter cash money" is Mayweather and McGregor; "gym thumbs up" is stock
+# personal-trainer footage. A gif of an identifiable man, sent from the
+# creator's own account, is a worse failure than the tonal problem this lane
+# was opened to fix — the fan reads it as a photo of "him" (it is not, and a
+# reverse image search says so) or as a forwarded celebrity reaction, which no
+# real person sends as a selfie. The cat pack works precisely because a cat is
+# NOBODY. So the male pack is animals too, and `thumbs_up` keeps 2 clips rather
+# than borrowing a stranger's face to reach 3.
+_CATALOG_HIM: dict[str, tuple[str, ...]] = {
+    'laugh': ('FLKUJnRt6cGBG102B0', 'Ut0KxC3gnIwcEpmTZW', 'XN8YOV0H6YfVFFGxth'),
+    'flirty': ('sWBzg2D15WwQjHcxbt', 'eKP4xPPkYm7WyMyDR2', 'zZbkdtXpqqkARUomtQ'),
+    'sad': ('3o7WTutp8jXuC9IUMg', 'ZbE122VAmvzl3ijeHi', 'EW79wVgSajjv44E8Hs'),
+    'eyeroll': ('Wwn5NKv4At2CIc8XQa', '11nQ2iZnQpPkgo', 'TZC932cYxsgr87gowA'),
+    'shocked': ('ZK92FCOPbY8JaFhiMM', '1ZNI35FsYGMtko7m9k', 'hoictzHHdRbZr0XrqE'),
+    'confused': ('3ohc17IuNgUpALSaIM', 'nQx7UfXA79HCp5vF9E', 'gIfv29q3ULtqjYTR7B'),
+    'sleepy': ('d26dt3KtXoPeft6Lm6', '13MqteASr9UOGs', 'NFnR57Oj2LiWcJUb01'),
+    'good_morning': ('b9NywKMAEpmPm', 'ROjjp6hqqgACs', 'OssGz3OQzVqb6'),
+    'wave_hi': ('o22WjU9bIgFWM', 'ZacOWV6SEb9CcmBJZe', 'gVYk3rI8YjtAI'),
+    # 2, not 3 — see the gym/combat note above. Two is the floor the cat pass
+    # already set on `eyeroll` and `confused`: empty > wrong.
+    'thumbs_up': ('sbzW9cwJksYfO2CNty', '9qHJZZrXsgb1pp8Dqu'),
+    'grumpy': ('9IZKPmNdZ7juU', 'iOGwrvGQBlo613onPO', 'mcHOSTJMjCrjW'),
+    'waiting': ('hgT3tIssMXLTc7ZwwT', '1xV85u4aYIXfpVh8xW', 'UNkS45j4Rcam9TyOQ2'),
+    'money': ('RoS4JYcw0RvK8', 'VRwGkD5zYcbW8', '12pJ8OxSWwO86Y'),
+}
+
+# The pack's own name reaches the model, and "cat" is a fact about the pictures
+# rather than a style knob: a male account whose prompt says "you have a pack of
+# cat reaction gifs" gets a tag list of dogs and wolves described as cats, and
+# the one leak class no regex catches is the model narrating the sticker (see
+# prompt_block's last rule). Naming it correctly is cheaper than any strip.
+_PACK_NOUN = {"her": "cat", "him": "dog & wolf"}
+
+
+def _is_him(voice: str) -> bool:
+    return str(voice or "").strip().lower() == "him"
+
+
+def prompt_block(mode: str, voice: str = "her") -> str:
     """The prompt section for 'allow'/'solo' rolls ('' otherwise). The tag
     protocol is the wording validated on real convos (0 invalid tags across 90
     samples); the last rule was added later, unvalidated — see below."""
     if mode not in ("allow", "solo"):
         return ""
-    tag_lines = "\n".join(f"- {t}: {when}" for t, (when, _) in _CATALOG.items())
+    male = _is_him(voice)
+    # The male tag list IS the male catalog's keys — a tag offered with no gif
+    # behind it is a turn where the model emits a marker and `pick_gif` returns
+    # None, i.e. a silently dropped reaction.
+    items = [(t, w) for t, (w, _) in _CATALOG.items()
+             if not male or t in _CATALOG_HIM]
+    tag_lines = "\n".join(f"- {t}: {when}" for t, when in items)
+    # "the kind real girls spam in texts" is the framing, and it is the sentence
+    # that tells the model WHO is sending. Left as-is on a male account it asks a
+    # dom to text like a girl, in the same prompt that just told him not to.
+    frame = ("the kind you fire off when a word would be too much"
+             if male else "the kind real girls spam in texts")
+    noun = _PACK_NOUN["him" if male else "her"]
     block = (
-        "CAT STICKERS — you have a pack of cat reaction gifs, the kind real "
-        "girls spam in texts. Tags you can send:\n" + tag_lines + "\n"
+        f"{noun.upper()} STICKERS — you have a pack of {noun} reaction gifs, "
+        f"{frame}. Tags you can send:\n" + tag_lines + "\n"
         "Sticker rules:\n"
         "- MOST replies need NO sticker — use one only when the emotion is "
         "strong. Never force it.\n"

@@ -336,6 +336,23 @@ describe("NotificationToaster — tip/purchase toast href carries ?refresh=media
 // Pinned here because it is invisible: a refactor that routes all three lanes
 // through one helper will happily "tidy" the toasts lane into gating on the
 // ping, and nothing else in this suite notices.
+//
+// ⚠️ NEVER PIN A DATE IN A PURCHASE FIXTURE.
+// `appendNotifHistory` prunes rows older than HISTORY_TTL_MS (7 days), so a
+// hardcoded `created_at` writes a row that the store drops on the way in — and
+// it does so SILENTLY, one week after the test was written. That is exactly what
+// happened here: pinned at 2026-07-23, green until 07-30, red from 07-31 on, and
+// red in a shape that reads like a broken feature. The toast case kept passing
+// (toasts aren't pruned) while every history assertion failed, so the suite
+// looked like it had caught a regression in history mirroring. It hadn't.
+//
+// Keep the ZONED "+00:00" shape — several cases below exist to prove `toUtcIso`
+// passes an explicit offset through untouched, which is a real past bug.
+const RECENT_OF_TS = new Date(Date.now() - 60_000).toISOString()
+  .replace("Z", "+00:00");
+/** What that timestamp must look like once stored (normalised to UTC "Z"). */
+const RECENT_OF_TS_UTC = new Date(Date.parse(RECENT_OF_TS)).toISOString();
+
 describe("NotificationToaster — muted arrivals still refresh the notif-list", () => {
   function spyInvalidate() {
     return vi.spyOn(QueryClient.prototype, "invalidateQueries")
@@ -381,7 +398,7 @@ describe("NotificationToaster — muted arrivals still refresh the notif-list", 
         __account_id: "701",
         purchase_notified: {
           notif_id: "7002", fan_id: 772, message_id: 9, amount_cents: 500,
-          created_at: "2026-07-23T21:28:24+00:00", name: "Quiet",
+          created_at: RECENT_OF_TS, name: "Quiet",
         },
       });
 
@@ -428,7 +445,7 @@ describe("NotificationToaster — purchase_notified PPV unlock", () => {
     fan_id: 4242,
     message_id: 10491720677794,
     amount_cents: 820,
-    created_at: "2026-07-23T21:28:24+00:00",
+    created_at: RECENT_OF_TS,
     name: "Daniel",
     ...over,
   });
@@ -459,7 +476,7 @@ describe("NotificationToaster — purchase_notified PPV unlock", () => {
     const [row] = readNotifHistory()["401"] ?? [];
     expect(row?.id).toBe("117301756206");
     expect(row?.typeKey).toBe("purchases");
-    expect(row?.createdAt).toBe("2026-07-23T21:28:24.000Z");
+    expect(row?.createdAt).toBe(RECENT_OF_TS_UTC);
     expect(row?.user?.name).toBe("Daniel");
   });
 
