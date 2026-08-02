@@ -28,6 +28,13 @@ export interface StyleConfig {
   factground_of_ai_chat?: boolean;
   // account-wide brevity/emotion framing ("painful texting") — default ON
   painful_texting?: boolean;
+  // May this creator sell CUSTOMS — a paid voice note recorded to order and
+  // delivered here later? DEFAULT **OFF**, unlike every other flag on this type,
+  // because it governs what the bot may PROMISE a fan who has already paid.
+  // Independent of the tip-ask toggle: on its own it opens customs in Auto Convo,
+  // of_ai_chat and the AI Chatter manifest. Fulfilment is manual — nothing in the
+  // product records the owed recording.
+  sell_customs?: boolean;
   // cat-sticker reaction pack (AI Chatter ends some replies with a cat gif) — default ON
   cat_stickers?: boolean;
   // sticker rate knobs (numeric): % of replies that never see the pack (default 0),

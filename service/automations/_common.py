@@ -32,6 +32,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 # The per-fan state blob lives in its own leaf module — see fan_state.py for why
 # storage does not belong in here. apply_typo_throttle below is a consumer like
 # any other; this is NOT a re-export, so importers go to the leaf directly.
+from . import _voice
 from .fan_state import fan_state, put_fan_state
 
 log = logging.getLogger("of-relay.automation.common")
@@ -537,45 +538,12 @@ STYLE_BRIEF = (
 )
 
 # ── The felt cost of texting (governs everything below it) ────────────
-# Operator's framing, verbatim source intent:
-#   "texting is painful — we write as few words as possible while still saying
-#    all we can. we dont overthink shortening: if typing a little longer is
-#    easier than agonizing over the perfect short line, do that. usually short
-#    works perfectly. writing a little longer JUST to amuse ourselves is worth
-#    it. but if a short text punches the emotion, we take the short one. in
-#    short: typing is painful UNLESS we get positive emotion out of it."
-# Injected at the TOP of the conversational system prompt (of_ai_chat /
-# ai_chatter) as the governing feel, above the mechanical HOW-YOU-TEXT rules.
-PAINFUL_TEXTING = (
-    "THE FEEL OF TEXTING (read first — this governs everything below):\n"
-    "texting is a chore, a little painful, like a real girl half-glued to her "
-    "phone. so you write the LEAST you can while still saying what you actually "
-    "mean. dont labor over the perfect tiny line — if a slightly longer line "
-    "comes out easier than agonizing, thats fine, but usually short just works. "
-    "the reasons worth spending more than the bare minimum: it amuses YOU to, a "
-    "longer line lands the emotion harder, or you get to make HIM feel something "
-    "(stirring him up, making him grin, turning him on) — enriching his emotion "
-    "is its own little pleasure, so those words arent wasted. otherwise every "
-    "extra word is effort you skip. a short line that PUNCHES the feeling beats a "
-    "long one that explains — every single time.\n"
-    # (#2) a floor so 'short' never collapses into a dead one-word filler / echo,
-    # (tuned) but the floor MUST NOT become a licence to ramble — fewest words wins
-    "but short NEVER means dead or dodgy: even a tiny reply has to carry heat, a "
-    "tease, or warmth AND actually engage what mattered in his message — never a "
-    "flat 'ok'/'lol'/'nice'/'haha' anyone could've sent, never just his own words "
-    "parroted back, and never a cute one-liner that sidesteps his real point. the "
-    "target is the FEWEST words that land the feeling AND address him: almost "
-    "always ONE line, occasionally two, basically never more — dont pile on extra "
-    "bubbles, dont explain yourself, dont pad it.\n"
-    # (#3) brevity doesn't get to dodge a real question he asked — but stay tight
-    "if he actually ASKED you something, answer it — but in as few words as it "
-    "takes and then STOP; dont let 'answering him' balloon into a paragraph.\n"
-    "the get-to-know-you question is a JUDGEMENT CALL, not a habit: sometimes "
-    "slipping in a little backend-info question is exactly what the moment wants, "
-    "sometimes dropping the question entirely and just reacting hits harder, and "
-    "sometimes keeping the question you had in mind is right. read the moment — "
-    "dont ask on autopilot and dont drop it on autopilot either."
-)
+# Re-exported from `_voice`, which owns every block whose wording depends on
+# whether the creator is a woman or a man. This name is the FEMALE lane and is
+# byte-identical to the text that has always shipped, so the six modules that
+# import it keep working untouched. A male account does not read this constant
+# — it reads `_voice.blocks(voice).painful_texting`.
+PAINFUL_TEXTING = _voice.HER.painful_texting
 
 # ── On-platform guardrail (ALWAYS ON — not gated on any opt-in) ───────
 # OF auto-flags any text that arranges off-platform meetings or swaps contact
@@ -603,16 +571,9 @@ ONPLATFORM_GUARDRAIL = (
 # and DIRECT — a flat "I don't do that" with NO apology and NO fumbling — while
 # staying flirty and redirecting back to the chat. Inject into every
 # conversational system prompt alongside ONPLATFORM_GUARDRAIL.
-LIVE_PROOF_GUARDRAIL = (
-    "LIVE PROOF / FACETIME (hard rule): if he asks to FaceTime, video/live call, "
-    "verify you're real, 'prove it', 'show it now', or send a live/on-demand "
-    "selfie, be BLUNT and DIRECT — clearly say you don't do facetime / live calls "
-    "/ on-demand proof. NO apology, NO 'hm okay', NO coy fumbling, and never half-"
-    "agree or play along. Stay flirty and in character, then redirect straight "
-    "back to chatting or teasing. Keep it to one short flat refusal + one pivot "
-    "line, e.g. \"i don't do facetime babe, but stay n talk to me\" or \"no live "
-    "calls hun, you get me right here\"."
-)
+# Re-exported from `_voice` (female lane), same as PAINFUL_TEXTING above: the
+# rule is identical in both lanes, only its two worked examples carry a voice.
+LIVE_PROOF_GUARDRAIL = _voice.HER.live_proof
 
 # ── Self-consistency guardrail (ALWAYS ON — not gated on any opt-in) ──
 # The creator-side twin of the fan-facts block. The prompt carries only the last
@@ -917,6 +878,74 @@ async def load_painful_texting_flag(account_id: str) -> bool:
         return True
     val = stored.get(PAINFUL_TEXTING_KEY)
     return True if val is None else bool(val)
+
+
+async def load_sell_customs_flag(account_id: str) -> bool:
+    """May this creator SELL CUSTOMS — content recorded to order after he pays,
+    delivered on OnlyFans later (a voice note, a short clip)?
+
+    Reads the 'sell_customs' key of account_ai_config.style_config_json.
+
+    DEFAULT **OFF**, and deliberately NOT tri-state: an ABSENT key reads False.
+    Every other realism flag defaults on because the cost of being wrong is a
+    slightly worse-reading message. This one governs what the model may PROMISE a
+    fan who has paid — a creator who does not make customs must never have the bot
+    agree to one on her behalf, and the only safe way to guarantee that fleet-wide
+    is to require the opt-in.
+
+    ⚠️ "Opt-in" means the key is PRESENT and truthy, not that it is literally
+    `true`. `style_config_api._persist` stores `bool(v)` for every boolean key, so
+    a caller posting the STRING "false" writes True here. That coercion is
+    fleet-wide and predates this flag — `pins_write`, the switch that starts
+    mutating OnlyFans, has the identical shape — so it is not fixed here; fixing
+    it belongs in `_persist` where it would change every flag at once. The
+    property this flag actually rests on, and the one that matters, is that a row
+    which has never been written stays OFF.
+
+    Independent of the voice lane: some female accounts sell voice notes and some
+    male accounts will not, so this cannot ride on `voice`.
+
+    NOT covered by STYLE_FORCE_OFF: that switch kills the realism stack, and this
+    is a commercial capability rather than a realism layer. Forcing it off would
+    make a live product vanish on an unrelated panic flip."""
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    return _sell_customs_from_row(cfg)
+
+
+def _sell_customs_from_row(cfg) -> bool:
+    """The SELL_CUSTOMS_KEY read, given an already-loaded row. Split out so
+    `load_voice_blocks` below can resolve both lane axes from ONE row instead of
+    querying for this one separately."""
+    raw = getattr(cfg, "style_config_json", None) if cfg else None
+    if not raw:
+        return False
+    try:
+        stored = json.loads(raw) or {}
+    except Exception:
+        return False
+    return bool(stored.get(SELL_CUSTOMS_KEY, False))
+
+
+async def load_voice_blocks(account_id: str) -> "_voice.VoiceBlocks":
+    """The account's resolved voice bundle — BOTH lane axes, ONE row read.
+
+    Engines call exactly this and read every voice-varying block off the result.
+    That is the whole point: the two axes used to be two separate awaits
+    (`load_account_voice` + `load_sell_customs_flag`), which cost two round-trips
+    to the same row and — far worse — let an engine resolve one and forget the
+    other. `of_ai_chat` did exactly that: it loaded `sell_customs` and never
+    loaded `voice`, so a male account got a customs tip-ask wrapped in a female
+    texting frame, female refusal examples and female canned deflections, with
+    nothing anywhere reporting the half-state.
+
+    One function returning one object makes taking half of it inexpressible.
+
+    Absent row → the default lane with customs off, same as both loaders gave."""
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    return _voice.blocks(getattr(cfg, "voice", None) if cfg else None,
+                         _sell_customs_from_row(cfg))
 
 
 async def load_cat_stickers_flag(account_id: str) -> bool:
@@ -1264,6 +1293,12 @@ async def load_nonnative_flags(account_id: str) -> dict[str, bool]:
 FACTGROUND_KEY = "factground_of_ai_chat"
 # Account-wide toggle key (style_config_json) for the PAINFUL_TEXTING framing block.
 PAINFUL_TEXTING_KEY = "painful_texting"
+# Account-wide toggle key (style_config_json): may this creator sell CUSTOMS —
+# paid content recorded to order (a voice note, a short clip) and delivered on
+# OnlyFans later? Independent of `voice` on purpose: a male account may not sell
+# them and a female account may, so tying it to the lane would be wrong in both
+# directions. See load_sell_customs_flag for why the default is OFF.
+SELL_CUSTOMS_KEY = "sell_customs"
 # Account-wide toggle key (style_config_json) for the cat-sticker reaction pack.
 CAT_STICKERS_KEY = "cat_stickers"
 # Cat-sticker rate knobs (style_config_json, account-wide, NUMERIC not bool —
@@ -1993,15 +2028,9 @@ _OFF_PATTERNS = (
 )
 
 # Warm, on-voice redirects back to the chat. Emojis are fine — deep_convo strips
-# them in _send; everywhere else they read normally.
-_OFF_DEFLECTIONS = (
-    "u dont need my number when ur right here 😏 keep me company",
-    "mmm i only do this on here babe, talk to me",
-    "lets keep it just between us right here 😉 tell me more",
-    "ur sweet but im all yours on here, what else u thinkin about",
-    "i stay on here only, come closer n tell me more",
-    "no need to go anywhere, ive got u right here babe",
-)
+# them in _send; everywhere else they read normally. Re-exported from `_voice`
+# (female lane); the male set lives beside it there.
+_OFF_DEFLECTIONS = _voice.HER.off_deflections
 
 
 def scan_offplatform(text: str) -> list[str]:
@@ -2013,14 +2042,25 @@ def scan_offplatform(text: str) -> list[str]:
     return [label for label, rx in _OFF_PATTERNS if rx.search(text)]
 
 
-def guard_offplatform(text: str, rng) -> tuple[str, list[str]]:
+def guard_offplatform(text: str, rng,
+                      v: "_voice.VoiceBlocks" = _voice.HER) -> tuple[str, list[str]]:
     """If `text` leaks off-platform content, swap the WHOLE message for a canned
     on-platform deflection; else pass it through. Returns (text, reasons) so the
-    caller can log when it fired. `rng` is a seeded random.Random for stable picks."""
+    caller can log when it fired. `rng` is a seeded random.Random for stable picks.
+
+    `v` is the account's voice bundle and DEFAULTS TO THE REAL FEMALE ONE, not to
+    a sentinel. The first cut took a bare `deflections: tuple = ()` threaded down
+    from `finalize_draft` through `_guard`, so "the default lane" was spelled as
+    an empty tuple at three levels and then recovered by a truthiness fallback
+    here. The bundle says what it is, cannot be empty, and deletes the fallback.
+
+    Worth threading a lane this far down for one reason: this is the only place a
+    canned line reaches a fan with the model cut out of the loop entirely, so on
+    a male account it is the one string no prompt work can correct."""
     reasons = scan_offplatform(text)
     if not reasons:
         return text, reasons
-    return rng.choice(_OFF_DEFLECTIONS), reasons
+    return rng.choice(v.off_deflections), reasons
 
 
 # ── "Fan asked to see content via text" → natural tip-ask ─────────────
@@ -2278,7 +2318,8 @@ async def load_tip_ask_config(account_id: str) -> tuple[bool, int | None, str]:
     return enabled, amount, template
 
 
-def build_tip_ask_block(amount_dollars: int | None = None, template: str = "") -> str:
+def build_tip_ask_block(amount_dollars: int | None = None, template: str = "",
+                        sell_customs: bool = False) -> str:
     """The system-prompt directive for the 'fan just asked to see content' branch:
     ask him to TIP for it in the creator's OWN voice — ONE short human line, teasing
     not needy, and NEVER the bare word "tip". Two natural ways to tip (the model
@@ -2288,7 +2329,11 @@ def build_tip_ask_block(amount_dollars: int | None = None, template: str = "") -
     `amount_dollars` is set she SUGGESTS that figure; when None she asks for a tip
     WITHOUT naming a price (no static number). An optional `template` (with an
     optional {amount} placeholder) seeds the phrasing; the model still says it in
-    voice. Shared by of_ai_chat + autoreply so it reads identically."""
+    voice. Shared by of_ai_chat + autoreply so it reads identically.
+
+    `sell_customs` (account opt-in, default off) turns the generic tip-ask into a
+    CUSTOM VOICE NOTE ask — see the block below. Off → byte-identical to the
+    tip-ask that has always shipped."""
     has_amt = amount_dollars is not None
     amt = max(1, int(amount_dollars)) if has_amt else 0
     chat_tip = (f"tip you ${amt} right here" if has_amt
@@ -2307,6 +2352,23 @@ def build_tip_ask_block(amount_dollars: int | None = None, template: str = "") -
         f"{example} or \"drop a lil tip under a post u like n ill spoil u 😈\". "
         "Don't attach anything now and don't name a specific piece — just the "
         "teasing tip-ask (the content goes out once he tips)."
+        # ── The customs framing (account opt-in, DEFAULT OFF) ──
+        # Operator ruling 2026-08-02: on a customs account the tip-ask IS the
+        # custom ask, and v1 is a VOICE NOTE specifically — "start with voicenotes
+        # as its what mostly is, rest is non important". Short clips and calls are
+        # explicitly out of scope for now.
+        #
+        # The SELLING lead-in is this surface's own; the fence after it is
+        # `_voice.CUSTOMS_CONDITIONS`, shared verbatim with the refusal rule and the
+        # ai_chatter manifest. It has to be here at all because the block above says
+        # "the content goes out once he tips", which on its own reads as
+        # *immediately* — and a custom does not, so a model that says it will has
+        # made a promise the manual fulfilment path cannot keep.
+        + ("\n\nWHAT HE IS TIPPING FOR: a CUSTOM VOICE NOTE — you record it for "
+           "him personally, after he tips. Make that clear in your own words so he "
+           "knows what he's buying: it is made FOR HIM, and it comes a little "
+           f"later, not this second. {_voice.CUSTOMS_CONDITIONS}"
+           if sell_customs else "")
     )
     tmpl = (template or "").strip()
     if tmpl:

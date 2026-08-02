@@ -118,6 +118,29 @@ function StyleSection({ accountId }: { accountId: string | null }) {
           </span>
         </span>
       </label>
+      {/* The ONLY switch that lets the bot promise a fan something that does not
+          exist yet. Default OFF and it must stay that way — see
+          _common.load_sell_customs_flag. It is deliberately NOT tied to the tip-ask
+          toggle: ticking this opens customs conversationally in Auto Convo,
+          of_ai_chat AND the AI Chatter manifest, whether or not the tip-ask is on. */}
+      <label className="flex items-start gap-2.5 cursor-pointer rounded-lg border border-border bg-bg-elev-1 px-3 py-2.5">
+        <input type="checkbox" className="h-4 w-4 mt-0.5 accent-[var(--accent)] cursor-pointer"
+          checked={form.sell_customs ?? false}
+          onChange={(e) => set({ sell_customs: e.target.checked })} />
+        <span className="space-y-0.5">
+          <span className="block text-sm">Sell customs 🎙️ (paid voice notes)</span>
+          <span className="block text-[11px] text-fg-dim/70">
+            Lets the bot offer a CUSTOM VOICE NOTE — he pays first, you record it later,
+            it goes out in this chat when it’s made. Opens it everywhere at once: Auto
+            Convo, the info-gather chat and the AI Chatter offer list, plus the tip-ask
+            if that’s on too. The bot never names a delivery time, never turns it into a
+            call, and only ever offers a voice note — not a video, not a photo set.{" "}
+            <strong>Fulfilment is manual:</strong> nothing records the order, so watch
+            for the tip and send the recording yourself. OFF by default — leave it off
+            for any creator who doesn’t actually make customs.
+          </span>
+        </span>
+      </label>
       <div className="rounded-lg border border-border bg-bg-elev-1 px-3 py-2.5 space-y-2.5">
         <label className="flex items-start gap-2.5 cursor-pointer">
           <input type="checkbox" className="h-4 w-4 mt-0.5 accent-[var(--accent)] cursor-pointer"

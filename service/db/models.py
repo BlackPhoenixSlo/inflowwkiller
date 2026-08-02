@@ -1331,6 +1331,14 @@ class AccountAiConfig(Base):
     # resolve_language + the Spanish guard layer). Nullable, no server_default: NULL is
     # treated as "en" in code, so init_db materializes it on prod with zero risk.
     language: Mapped[str | None] = mapped_column(String)
+    # Whose voice this account writes in: NULL/'her' == a female creator (every
+    # account that has ever run here), 'him' == the male lane. Same shape and same
+    # reasoning as `language` directly above: nullable, no server_default, and
+    # normalised in code (automations/_voice.norm_voice) rather than by a CHECK or
+    # an enum — a corrupt value must degrade to the shipped lane, never raise on a
+    # send path. NULL keeps every existing account byte-identical, which is the
+    # whole safety argument for a second lane and is asserted in test_voice_lane.
+    voice: Mapped[str | None] = mapped_column(String)
     # JSON dict {morning_1, morning_2, afternoon_1, afternoon_2, evening, night}
     time_activities_json: Mapped[str | None] = mapped_column(Text)
     # Parallel per-slot vault image IDs, same 6 keys → media_id (int). When set,

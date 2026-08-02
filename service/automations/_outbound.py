@@ -54,6 +54,7 @@ from dataclasses import dataclass
 
 from db.models import Fan
 
+from . import _voice
 from ._common import guard_offplatform, strip_emojis
 from ._markers import strip_narration
 from ._persona import verify_self_consistency
@@ -86,6 +87,7 @@ async def finalize_draft(
     purpose: str,
     consistency: ConsistencyCtx | None = None,
     strip_emoji: bool = False,
+    v: "_voice.VoiceBlocks" = _voice.HER,
 ) -> tuple[str, list[str]]:
     """Run the whole-draft guards and return `(text, leak_reasons)`.
 
@@ -120,14 +122,16 @@ async def finalize_draft(
     different deflection: a different choice from the same safe set, not a
     different outcome.
     """
-    text, leak = _guard(text, account_id=account_id, fan_id=fan_id, purpose=purpose)
+    text, leak = _guard(text, account_id=account_id, fan_id=fan_id, purpose=purpose,
+                        v=v)
     if consistency is not None:
         fixed = await verify_self_consistency(
             account_id, fan_id, consistency.fan, text, consistency.persona,
             consistency.model, purpose, last_inbound=consistency.last_inbound)
         if fixed != text:
             fixed, refix = _guard(fixed, account_id=account_id, fan_id=fan_id,
-                                  purpose=f"{purpose}/consistency-fix")
+                                  purpose=f"{purpose}/consistency-fix",
+                                  v=v)
             # Merged, not replaced: a caller acting on `leak` (ai_chatter drops the
             # paid attach) must hear about a leak from EITHER pass. Order-preserving
             # de-dupe keeps the reason list readable when both fire on the same tell.
@@ -138,8 +142,8 @@ async def finalize_draft(
     return text, leak
 
 
-def _guard(text: str, *, account_id: str, fan_id: int,
-           purpose: str) -> tuple[str, list[str]]:
+def _guard(text: str, *, account_id: str, fan_id: int, purpose: str,
+           v: "_voice.VoiceBlocks" = _voice.HER) -> tuple[str, list[str]]:
     """The whole floor under untrusted model output — narration strip, then
     `guard_offplatform`, then the log line — so the two passes above cannot drift
     in what they enforce OR in how they report. On a leak the guard REPLACES the
@@ -151,7 +155,7 @@ def _guard(text: str, *, account_id: str, fan_id: int,
     the original draft was. One line in the shared floor covers both drafts;
     stripping at the top would have covered only the first."""
     text = strip_narration(text)
-    text, leak = guard_offplatform(text, random.Random(f"{fan_id}:{text}"))
+    text, leak = guard_offplatform(text, random.Random(f"{fan_id}:{text}"), v)
     if leak:
         log.info("%s off-platform leak guarded account=%s fan=%s reasons=%s",
                  purpose, account_id, fan_id, leak)

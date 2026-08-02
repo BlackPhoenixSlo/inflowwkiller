@@ -28,7 +28,8 @@ from db.engine import get_session
 from db.models import AccountAiConfig
 from automations._common import (
     STYLE_AUTOMATIONS, STYLE_CONSISTENCY_KEYS, typo_flag_key, nonnative_flag_key, spacing_flag_key,
-    FACTGROUND_KEY, PAINFUL_TEXTING_KEY, CAT_STICKERS_KEY, CAT_STICKER_SKIP_PCT_KEY,
+    FACTGROUND_KEY, PAINFUL_TEXTING_KEY, SELL_CUSTOMS_KEY, CAT_STICKERS_KEY,
+    CAT_STICKER_SKIP_PCT_KEY,
     CAT_STICKER_SOLO_PCT_KEY, CAT_STICKER_GAP_MIN_KEY)
 from automations._pins import PINS_ENABLED_KEY, PINS_WRITE_KEY
 
@@ -78,6 +79,10 @@ def _defaults() -> dict[str, Any]:
     out[FACTGROUND_KEY] = True
     # Account-wide brevity/emotion framing — DEFAULT ON (see load_painful_texting_flag).
     out[PAINFUL_TEXTING_KEY] = True
+    # May this creator sell CUSTOMS (paid content recorded to order, delivered
+    # here later)? DEFAULT **OFF** — it governs what the bot may promise a paying
+    # fan, so it takes an explicit opt-in (see load_sell_customs_flag).
+    out[SELL_CUSTOMS_KEY] = False
     # Cat-sticker reaction pack — DEFAULT ON (see load_cat_stickers_flag).
     out[CAT_STICKERS_KEY] = True
     # Sticker rate knobs — numeric (see load_cat_sticker_tuning).
@@ -115,6 +120,10 @@ def _resolved_view(stored: dict) -> dict[str, Any]:
     # DEFAULT ON (matches load_painful_texting_flag): absent → True, so the box renders
     # checked and a save never flips the implicit-ON to explicit-OFF.
     out[PAINFUL_TEXTING_KEY] = bool(stored.get(PAINFUL_TEXTING_KEY, True))
+    # DEFAULT OFF unless explicitly stored — deliberately NOT the tri-state
+    # default. Mirrors load_sell_customs_flag: a creator who does not make customs
+    # must never have the bot agree to one on her behalf.
+    out[SELL_CUSTOMS_KEY] = bool(stored.get(SELL_CUSTOMS_KEY, False))
     # DEFAULT ON (matches load_cat_stickers_flag) — same absent → True contract.
     out[CAT_STICKERS_KEY] = bool(stored.get(CAT_STICKERS_KEY, True))
     # Numeric knobs: stored value clamped, absent/garbage → the default.
@@ -151,7 +160,8 @@ def _persist(cfg: dict) -> dict[str, Any]:
         | {nonnative_flag_key(k) for k in STYLE_AUTOMATIONS} \
         | {spacing_flag_key(k) for k in STYLE_AUTOMATIONS} \
         | set(STYLE_CONSISTENCY_KEYS) \
-        | {"strip_emojis", FACTGROUND_KEY, PAINFUL_TEXTING_KEY, CAT_STICKERS_KEY,
+        | {"strip_emojis", FACTGROUND_KEY, PAINFUL_TEXTING_KEY, SELL_CUSTOMS_KEY,
+           CAT_STICKERS_KEY,
            PINS_ENABLED_KEY, PINS_WRITE_KEY}
     out: dict[str, Any] = {k: bool(v) for k, v in cfg.items() if k in known}
     # Numeric knobs keep their number — bool() would turn "skip 30%" into True.

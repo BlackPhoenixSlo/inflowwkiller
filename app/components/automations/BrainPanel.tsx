@@ -85,9 +85,17 @@ function isBlankBrain(c: BrainConfig): boolean {
 // timezone AND her facts are account identity (who SHE is, where SHE lives), not
 // brain voice — a reset must never move the creator to another city or wipe the
 // birthplace her fans have already been told.
+//
+// `voice` is identity in exactly that sense and is preserved for exactly that
+// reason. BRAIN_DEFAULTS has no voice key, so spreading it alone dropped the
+// field entirely — and this function runs on the FIRST render of any blank brain,
+// which is what a newly-created male account is. Without this line the rollout
+// (set voice='him' via the API, then fill in the persona and Save) reset the lane
+// on that very first Save, with nothing logged.
 function defaultsWithImages(defaults: BrainConfig, current: BrainConfig): BrainConfig {
   return { ...defaults, time_images: current.time_images ?? {},
            timezone: current.timezone ?? null,
+           voice: current.voice ?? "her",
            persona_facts: current.persona_facts ?? {} };
 }
 

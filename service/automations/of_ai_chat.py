@@ -65,6 +65,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from . import _language
+from . import _voice  # whose voice this account writes in (NULL → 'her')
 from . import _openers  # the gen_info opener pool (the deepen phase)
 from . import _pins  # his own pinned long-form message (reader + writer)
 from . import rhythm  # tz_offset_for — the prompt clock (creator-local time)
@@ -78,7 +79,12 @@ from db.models import (
 from llm_client import LLMCapExceeded
 from ._common import (
     BIO_CONSISTENCY_GUARDRAIL, nonempty,
-    LIVE_PROOF_GUARDRAIL, NO_NARRATION_RULE, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING,
+    # PAINFUL_TEXTING / LIVE_PROOF_GUARDRAIL are NOT imported here: both vary by
+    # creator voice, so this engine reads them off the `_voice.VoiceBlocks` bundle
+    # `load_voice_blocks` returns. `_common` still exports the female lane for the
+    # engines that have not been laned yet.
+    NO_NARRATION_RULE, ONPLATFORM_GUARDRAIL,
+    load_voice_blocks,
     STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction,
     build_facts_note, build_structured_nickname, build_tip_ask_block, coerce_ids,
@@ -405,9 +411,13 @@ def split_for_bubbles(text: str, max_bubbles: int = 2, rng=None) -> list[str]:
         each line on commas + sentence boundaries + dash + (for a long chunk) emoji /
         WH word. A per-reply STRATEGY randomiser (_strategy_target) then picks the
         bubble count — length-based / split-every-clause / terse — so replies don't
-        all chop the same way. Pass `rng` (seeded off the reply) for a stable result.
+        all chop the same way.
       • non-style (cap 2) → the model's two-line style, else a single dash / a
         MID-LINE emoji break (2/3 of the time), else a trailing-emoji drop (1/3).
+
+    EVERY random draw on both paths goes through `rng`, so passing one seeded off
+    the reply (the senders use `Random(f"split:{fan_id}:{raw}")`) makes the split
+    stable — the same draft re-run after a retry bubbles the same way.
     """
     _rng = rng if rng is not None else random
     text = text.strip()
@@ -430,17 +440,17 @@ def split_for_bubbles(text: str, max_bubbles: int = 2, rng=None) -> list[str]:
         before, after = text[:dm.start()].strip(), text[dm.end():].strip()
         if before and after:
             return [_strip_dash(before), _strip_dash(after)]
-    if random.random() < (2.0 / 3.0):
+    if _rng.random() < (2.0 / 3.0):
         for m in _EMOJI_RE.finditer(text):
             after = text[m.end():].strip()
             if not after:                       # trailing emoji → not a mid-break
                 continue
             before = text[:m.end()].strip()     # keep the emoji on bubble 1…
-            if random.random() < 0.5:
+            if _rng.random() < 0.5:
                 before = text[:m.start()].strip()   # …but drop it half the time
             if before:
                 return [_strip_dash(before), _strip_dash(after)]
-    if random.random() < (1.0 / 3.0):
+    if _rng.random() < (1.0 / 3.0):
         stripped = _TRAIL_EMOJI_RE.sub("", text).strip()
         if stripped and stripped != text:
             return [_strip_dash(stripped)]
@@ -860,6 +870,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
                     clock: str = "",
                     sticker_mode: str = "skip",
                     opener: "_openers.Opener | None" = None,
+                    v: "_voice.VoiceBlocks" = _voice.HER,
                     ) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — a faithful port of V1
     prompts.create_chat_response: a short, GIRLY, 100%-human reply that flirts
@@ -1062,14 +1073,15 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "— never sound like a bot or an assistant. Use only what you've learned "
         f"about him; don't share your own info unless he asks; {offer_clause}he may "
         "send several texts in a row — read them all, reply to the latest.\n\n"
-        f"{PAINFUL_TEXTING + chr(10) + chr(10) if painful_on else ''}"
+        f"{v.painful_texting + chr(10) + chr(10) if painful_on else ''}"
         f"{clock_block}"
         f"{need_block}{dodge_note}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         # The age here is the VOICE (text young and casual), not a claim about
         # her — derived from the persona so a 49yo persona isn't told to text
         # like a 22-year-old. See _common.persona_register_age.
-        f"HOW YOU TEXT (a real {persona_register_age(persona)}yo girl, not an assistant):\n"
+        f"HOW YOU TEXT (a real {persona_register_age(persona)}yo {v.texter_noun}, "
+        "not an assistant):\n"
         "- Short and casual. lowercase, contractions, u/ur/ya. React to what he "
         "said in a few words first.\n"
         "- VARY it every time — don't open the same way twice, and don't reuse a "
@@ -1080,7 +1092,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"{nudes_rule}"
         f"{_good_examples(f, asked, have_durable_name)}\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
-        f"{LIVE_PROOF_GUARDRAIL}\n\n"
+        f"{v.live_proof}\n\n"
         f"{BIO_CONSISTENCY_GUARDRAIL}"
         f"{humanizer}{nonnative}{stickers}\n\n"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
@@ -1577,6 +1589,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     sticker_skip_w, sticker_solo_w, sticker_gap_min = \
         await load_cat_sticker_tuning(account_id)             # per-account rate knobs
     account_lang = await _language.load_account_language(account_id)  # output language + guard gate
+    # Whose voice this account writes in AND whether it may sell customs — one
+    # bundle off ONE row read, resolved once per run beside the language. This
+    # engine used to resolve only the customs half, which is how it ended up
+    # offering a custom in a female texting frame on a male account.
+    # NULL voice + customs off → every string below is byte-identical to what has
+    # always shipped.
+    voice_blocks = await load_voice_blocks(account_id)
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     pins_on, pins_write = await _pins.load_flags(account_id)  # both default OFF
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
@@ -1588,7 +1607,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     tip_ask_enabled, tip_ask_amount, tip_ask_template = await load_tip_ask_config(account_id)
     # Off (per-account toggle) → empty block, so `selling` stays False and the
     # content-ask just gets a normal reply instead of a tip-ask.
-    tip_ask_block = (build_tip_ask_block(tip_ask_amount, tip_ask_template)
+    tip_ask_block = (build_tip_ask_block(tip_ask_amount, tip_ask_template,
+                                         voice_blocks.sell_customs)
                      if tip_ask_enabled else "")
     persona = await _load_persona(account_id)
     clock_tz = await _load_clock_tz(account_id)  # None ⇒ no clock line in the prompt
@@ -1791,7 +1811,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 profile=profiles.get(fan_id) if factground_on else None,
                 clock=_clock_line(clock_tz),
                 sticker_mode=sticker_mode,
-                opener=opener)
+                opener=opener, v=voice_blocks)
             try:
                 res = await llm_client.chat(
                     model=model,
@@ -1842,7 +1862,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 consistency=ConsistencyCtx(
                     fan=f, persona=persona, model=model,
                     last_inbound=c.last_body or "") if consistency_on else None,
-                strip_emoji=strip_emoji_on)
+                strip_emoji=strip_emoji_on, v=voice_blocks)
             # Count the turn the moment a reply is GENERATED — a "try" counts
             # whether or not it lands. An undeliverable fan (no-id) or an echo-only
             # drop never bumps via the confirmed-send path, so its turn_counter
