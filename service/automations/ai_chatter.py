@@ -4150,7 +4150,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     nonnative = f"\n\n{NONNATIVE_REGISTER}" if nonnative_on else ""
     # Sticker protocol enters the prompt only on an allow/solo roll — a model
     # that can't see it can't over-use it (measured 48% attach when always on).
-    _sticker_block = cat_stickers.prompt_block(sticker_mode)
+    _sticker_block = cat_stickers.prompt_block(sticker_mode, v.voice)
     stickers = f"\n\n{_sticker_block}" if _sticker_block else ""
 
     # M3 seam: with no catalog in play the no-offers rule applies (chat-only,
@@ -5984,7 +5984,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 gid = cat_stickers.pick_gif(
                     sticker_tag,
                     random.Random(f"gif:{account_id}:{fan_id}:{c.last_body}"),
-                    account_id=account_id, fan_id=fan_id)
+                    account_id=account_id, fan_id=fan_id,
+                    voice=voice_blocks.voice)
                 if gid is not None:
                     srng = random.Random(f"sdelay:{fan_id}:{gid}")
                     # A gif that IS the reply carries the rhythm delay, exactly as
