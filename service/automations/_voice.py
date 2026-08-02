@@ -359,11 +359,92 @@ def fact_labels(voice: object) -> dict[str, str]:
     return dict(_FACT_LABELS[norm_voice(voice)])
 
 
+# ── The humanizer: pushback register + emoji vocabulary ──────────────
+# STYLE_HUMANIZER is the opt-in "text like a real person" block. Almost all of it
+# is genuinely neutral — lowercase, no em-dash, don't echo his words, vary the
+# length, at most one question — and transfers to a male creator untouched.
+#
+# TWO SPANS DO NOT.
+#
+# 1. "tease, be a lil BRATTY, push back sometimes". Bratty is a submissive-playful
+#    register: it reads as someone performing for approval. On a dom it inverts the
+#    whole power axis the lane exists to establish — and it is the one line in the
+#    block that tells the model what ATTITUDE to hold, so it is load-bearing
+#    exactly where being wrong costs most.
+#
+# 2. "0-1 emoji, never the same emoji twice" names a BUDGET and no VOCABULARY. The
+#    model then picks from what it associates with an OF creator, which is the
+#    female sexting set — 🥺 🥰 😘 💦 🥵 💕. Those do not read as flirty-from-a-man,
+#    they read as a woman typing. Naming the set is the whole fix; the budget was
+#    never the problem.
+_HUMANIZER_PUSHBACK = {
+    VOICE_HER: (
+        "- dont be relentlessly upbeat or agreeable. tease, be a lil bratty, push "
+        "back sometimes.\n"
+    ),
+    VOICE_HIM: (
+        "- never eager, never agreeable by default, and NEVER seeking his approval. "
+        "you tease by withholding, not by performing. push back, call him on things, "
+        "let a flat one-liner do the work — amusement and certainty, not enthusiasm. "
+        "you are not trying to be liked.\n"
+    ),
+}
+# 0-1 emoji stays the budget in BOTH lanes — this only names which ones exist.
+# Deliberately short: a long list gets sampled evenly and reads like a rotation.
+# These are the ones that survive coming from a man without softening him.
+_EMOJI_VOCAB = {
+    VOICE_HER: "",     # unchanged — the shipped block names no set, and must not
+    VOICE_HIM: (
+        "- your emoji set is SMALL and dry: 😏 😈 🔥 💪 👊 🖤 🥊 🐺. one at most, "
+        "often none, and never two replies in a row. NEVER use 🥺 🥰 😘 💕 💦 🥵 😍 "
+        "🙈 ✨ 💅 or any cutesy/pleading face — those read as a woman typing and "
+        "undo everything else in this block.\n"
+    ),
+}
+
+
 # ── The texter noun ──────────────────────────────────────────────────
 # "guy" and not "man": the whole line exists to set a TEXTING register (short,
 # lowercase, casual), and "man" reads formal enough to pull the register the
 # wrong way. The age beside it already carries the seniority.
 _TEXTER_NOUN = {VOICE_HER: "girl", VOICE_HIM: "guy"}
+
+# What the creator calls a fan whose real name we could not resolve. This IS
+# creator voice, not fan gender: "babe" is what SHE says, and it is the fallback
+# baked into send_followup. From a male creator to a straight male fan it is the
+# same wrong-register tell as a female FaceTime refusal. "man" works in both male
+# registers (the dom one and the companion one) and reads as neutral address
+# rather than endearment.
+_FAN_ADDRESS = {VOICE_HER: "babe", VOICE_HIM: "man"}
+
+
+def _humanizer(voice: str) -> str:
+    """The "text like a real person" block, built from its varying spans.
+
+    Female output is byte-identical to the STYLE_HUMANIZER that shipped before
+    this module existed (asserted against the golden, not assumed) — the female
+    pushback line IS the original line, and the female emoji vocab is "" because
+    the shipped block deliberately names no set."""
+    return (
+        "TEXT LIKE A REAL PERSON, NOT AN AI:\n"
+        "- lowercase always. dont capitalize sentence starts or 'i'.\n"
+        "- NEVER an em-dash or semicolon. ever.\n"
+        "- NEVER repeat or quote his words back. dont echo his message, and dont "
+        "restate it with an adjective ('sounds gorgeous', 'thats a whole mood', "
+        "'dangerous in the best way') — biggest bot tell. react in your OWN words.\n"
+        "- vary length wildly: sometimes one word, sometimes a short line, sometimes "
+        "just dive straight into the thought with no reaction word at all.\n"
+        "- DONT open every text with a reaction sound, and NEVER reuse the same opener "
+        "two replies in a row (no 'oof' every time, no 'oof'->'oof'->'oof'). most "
+        "replies should just start with the actual thing you're saying.\n"
+        "- texting sounds are fine in MODERATION and ROTATED: lol, lmao, omg, ugh, hmm, "
+        "wait, stop, oof — pick a different one each time, dont lean on any single one.\n"
+        "- a tiny typo or missing apostrophe is fine (dont, im, ur, gonna).\n"
+        f"{_HUMANIZER_PUSHBACK[voice]}"
+        "- AT MOST ONE question, ever. never stack two questions in one reply.\n"
+        f"{_EMOJI_VOCAB[voice]}"
+        "- never explain yourself or over-clarify. 0-1 emoji, never the same emoji twice."
+    )
 
 
 # ── The bundle ───────────────────────────────────────────────────────
@@ -379,6 +460,10 @@ class VoiceBlocks:
     painful_texting: str
     live_proof: str
     off_deflections: tuple[str, ...]
+    # The opt-in "text like a real person" block. Laned for two spans: the
+    # pushback ATTITUDE (bratty inverts a dom) and the emoji VOCABULARY (unnamed,
+    # the model reaches for the female sexting set).
+    humanizer: str
     # The noun in "HOW YOU TEXT (a real 22yo girl, not an assistant)" — the style
     # header of both forked chat builders. One word, but it sits four lines above
     # the live-proof rule, so laning the blocks around it and leaving this would
@@ -386,6 +471,8 @@ class VoiceBlocks:
     # A contradicting prompt is worse than a consistently wrong one: the model
     # picks per generation and the account reads as female in some replies only.
     texter_noun: str
+    # What to call a fan whose name we could not resolve — "babe" is hers.
+    fan_address: str
     sell_customs: bool = False
 
     @property
@@ -408,7 +495,9 @@ def blocks(voice: object, sell_customs: bool = False) -> VoiceBlocks:
         painful_texting=_painful_texting(v),
         live_proof=_live_proof_guardrail(v, sell_customs),
         off_deflections=OFF_DEFLECTIONS[v],
+        humanizer=_humanizer(v),
         texter_noun=_TEXTER_NOUN[v],
+        fan_address=_FAN_ADDRESS[v],
         sell_customs=bool(sell_customs),
     )
 

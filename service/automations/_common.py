@@ -496,25 +496,12 @@ STYLE_AUTOMATIONS = ("of_ai_chat", "autoreply", "deep_convo", "ai_chatter")
 CONSISTENCY_AUTOMATIONS = ("of_ai_chat", "ai_chatter")
 
 # The "not-AI" block — the tells that make automated chat read like a person.
-STYLE_HUMANIZER = (
-    "TEXT LIKE A REAL PERSON, NOT AN AI:\n"
-    "- lowercase always. dont capitalize sentence starts or 'i'.\n"
-    "- NEVER an em-dash or semicolon. ever.\n"
-    "- NEVER repeat or quote his words back. dont echo his message, and dont "
-    "restate it with an adjective ('sounds gorgeous', 'thats a whole mood', "
-    "'dangerous in the best way') — biggest bot tell. react in your OWN words.\n"
-    "- vary length wildly: sometimes one word, sometimes a short line, sometimes "
-    "just dive straight into the thought with no reaction word at all.\n"
-    "- DONT open every text with a reaction sound, and NEVER reuse the same opener "
-    "two replies in a row (no 'oof' every time, no 'oof'->'oof'->'oof'). most "
-    "replies should just start with the actual thing you're saying.\n"
-    "- texting sounds are fine in MODERATION and ROTATED: lol, lmao, omg, ugh, hmm, "
-    "wait, stop, oof — pick a different one each time, dont lean on any single one.\n"
-    "- a tiny typo or missing apostrophe is fine (dont, im, ur, gonna).\n"
-    "- dont be relentlessly upbeat or agreeable. tease, be a lil bratty, push back sometimes.\n"
-    "- AT MOST ONE question, ever. never stack two questions in one reply.\n"
-    "- never explain yourself or over-clarify. 0-1 emoji, never the same emoji twice."
-)
+# Re-exported from `_voice` (female lane), same as PAINFUL_TEXTING above. Two
+# spans in this block carry a voice: the pushback ATTITUDE ("a lil bratty"
+# inverts a dom) and the emoji VOCABULARY, which the shipped block never names
+# — so a male account's model reaches for the female sexting set by default.
+STYLE_HUMANIZER = _voice.HER.humanizer
+
 # A 3-line micro-text style (fed into split_for_bubbles' newline path → 3 bubbles).
 # Pairs with STYLE_MAX_BUBBLES=3: under a 2-cap the line-3 payload would truncate.
 STYLE_3LINE = (
