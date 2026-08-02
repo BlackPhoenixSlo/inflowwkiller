@@ -85,7 +85,7 @@ from ._common import (
     # engines that have not been laned yet.
     NO_NARRATION_RULE, ONPLATFORM_GUARDRAIL,
     load_voice_blocks,
-    STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
+    STYLE_3LINE, STYLE_BRIEF, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction,
     build_facts_note, build_structured_nickname, build_tip_ask_block, coerce_ids,
     facts_from_fan, hold_with_typing, apply_typo_throttle, is_content_ask,
@@ -1043,7 +1043,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
 
     # When the "human texting style" opt-in is ON, append the humanizer block —
     # the not-AI tells (no echo-with-adjective, vary length, one question, etc.).
-    humanizer = f"\n\n{STYLE_HUMANIZER}" if style_on else ""
+    humanizer = f"\n\n{v.humanizer}" if style_on else ""
     # When the "non-native English" opt-in is ON, append the register block (the dict
     # in the send path guarantees the signature misspellings; this sets the grammar).
     nonnative = f"\n\n{NONNATIVE_REGISTER}" if nonnative_on else ""

@@ -55,11 +55,12 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from . import rhythm  # tz_offset_for — IANA timezone beats the legacy utc_offset
+from . import _voice  # whose voice this account writes in (NULL → 'her')
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
 from ._common import (
-    LIVE_PROOF_GUARDRAIL, apply_word_restriction, load_strip_emojis,
+    _sell_customs_from_row, apply_word_restriction, load_strip_emojis,
     quarantine_if_undeliverable, resolve_fan_name,
     resolve_model, skip_unreachable_fan, strip_emojis,
 )
@@ -210,6 +211,11 @@ def _slot_image_id(cfg: dict, hour: int) -> int | None:
 
 def _compose_system(cfg: dict, tod: str, activity: str, clock: str,
                     fan_name: str, fan_bio: str) -> str:
+    # The FaceTime refusal is voice-varying: the female one names the fan "babe"
+    # and "hun", which from a male creator reads as a woman typing. cfg carries
+    # the resolved bundle (see _load_ai_config); absent → the female lane, which
+    # is what every account that has ever run this engine gets.
+    v = cfg.get("_voice") or _voice.HER
     persona = (cfg.get("persona")
                or "You are a warm, flirty OnlyFans creator re-engaging a fan "
                   "who has gone quiet.").strip()
@@ -237,15 +243,19 @@ def _compose_system(cfg: dict, tod: str, activity: str, clock: str,
         "never sound desperate or needy. Output only the message text — no "
         "surrounding quotes, no preamble."
     )
-    parts.append(LIVE_PROOF_GUARDRAIL)
+    parts.append(v.live_proof)
     return "\n\n".join(parts)
 
 
-def _compose_user(step: int, fan_name: str, silence_hours: float) -> str:
+def _compose_user(step: int, fan_name: str, silence_hours: float,
+                  fan_address: str = "babe") -> str:
     """Per-fan user turn: personalises the step instruction with the fan's
     first name and the actual hours of silence (V1 injected both; V2 had a
     static template). Keeps each nudge AI-generated per fan, not a template."""
-    name = (fan_name or "").strip() or "babe"
+    # A male creator calling a straight male fan "babe" is the same
+    # wrong-register tell as the refusal above — fall back to something the
+    # male lane can say. (The female lane keeps "babe" byte-for-byte.)
+    name = (fan_name or "").strip() or fan_address
     header = (f"Fan first name: {name}\n"
               f"Hours of silence: ~{silence_hours:.0f}h\n"
               f"Follow-up step: {step} of 3\n\n")
@@ -367,6 +377,12 @@ async def _load_ai_config(account_id: str) -> dict:
             "time_activities": acts,
             "time_images": imgs,
             "model": cfg.model,
+            # The voice bundle rides on cfg because BOTH _compose_system call
+            # sites already receive it, and it is resolved off the row this
+            # function already holds — no second query. NULL voice → the female
+            # bundle → byte-identical to what this engine has always sent.
+            "_voice": _voice.blocks(getattr(cfg, "voice", None),
+                                    _sell_customs_from_row(cfg)),
         }
 
 
@@ -598,7 +614,9 @@ async def preview_compose(
         messages=[
             {"role": "system", "content": _compose_system(
                 cfg, tod, activity, clock, name, bio)},
-            {"role": "user", "content": _compose_user(step, name, silence_hours)},
+            {"role": "user", "content": _compose_user(
+                step, name, silence_hours,
+                (cfg.get("_voice") or _voice.HER).fan_address)},
         ],
         purpose=_PURPOSE,
         account_id=account_id,
@@ -768,7 +786,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             cfg, tod, activity, clock,
                             fan["name"], bios.get(fid, ""))},
                         {"role": "user", "content": _compose_user(
-                            next_step, fan["name"], silence_hours)},
+                            next_step, fan["name"], silence_hours,
+                            (cfg.get("_voice") or _voice.HER).fan_address)},
                     ],
                     purpose=_PURPOSE,
                     account_id=account_id,

@@ -61,7 +61,7 @@ from ._common import (
     # creator voice, so this engine reads them off `_voice.blocks(...)` instead.
     # `_common` still exports the female lane for the engines that don't.
     NO_NARRATION_RULE, ONPLATFORM_GUARDRAIL,
-    STYLE_3LINE, STYLE_HUMANIZER, STYLE_MAX_BUBBLES,
+    STYLE_3LINE, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction,
     build_tip_ask_block, hold_with_typing, apply_typo_throttle, is_content_ask,
     load_nonnative_flags, load_spacing_flags, load_voice_blocks,
@@ -259,7 +259,7 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         f"{ONPLATFORM_GUARDRAIL}\n\n"
         f"{v.live_proof}\n\n"
         f"{BIO_CONSISTENCY_GUARDRAIL}\n\n"
-        f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
+        f"{v.humanizer + chr(10) + chr(10) if style_on else ''}"
         f"{NONNATIVE_REGISTER + chr(10) + chr(10) if nonnative_on else ''}"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
         f"{_language.output_language_directive(lang)}"

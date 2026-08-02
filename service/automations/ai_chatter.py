@@ -114,7 +114,7 @@ from ._common import (
     # engine reads it off the `_voice.VoiceBlocks` bundle `load_voice_blocks`
     # returns. (There is no LIVE_PROOF_GUARDRAIL in this prompt at all — which is
     # why _manifest_block has to carry the customs fence itself.)
-    ONPLATFORM_GUARDRAIL, STYLE_3LINE, STYLE_BRIEF, STYLE_HUMANIZER,
+    ONPLATFORM_GUARDRAIL, STYLE_3LINE, STYLE_BRIEF,
     load_voice_blocks,
     STYLE_MAX_BUBBLES,
     apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction, coerce_ids,
@@ -4146,7 +4146,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                  # is the cheap half of the fix.
                  "none fits. Never write this instruction out as the message.")
 
-    humanizer = f"\n\n{STYLE_HUMANIZER}" if style_on else ""
+    humanizer = f"\n\n{v.humanizer}" if style_on else ""
     nonnative = f"\n\n{NONNATIVE_REGISTER}" if nonnative_on else ""
     # Sticker protocol enters the prompt only on an allow/solo roll — a model
     # that can't see it can't over-use it (measured 48% attach when always on).
