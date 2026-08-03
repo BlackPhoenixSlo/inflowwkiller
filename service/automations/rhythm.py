@@ -252,6 +252,59 @@ PRE_PPV_STALL = [
     "one sec baby, setting my phone up",
 ]
 
+# ── The MALE pools ───────────────────────────────────────────────────────────
+# This module was the LAST blocker on running ai_chatter for a male creator, and
+# the nastiest kind: `ai_chatter._DEFAULTS` has `"rhythm_enabled": True`, so
+# switching the engine on switched these on too. `_pick_cover` prepends the line
+# as its own bubble with only `apply_word_restriction` between it and the fan —
+# no model, no voice check — so "sorry babe was in the shower 🚿" was one config
+# tick away from a 38-year-old combat-sports coach.
+#
+# Hers apologise for the gap and offer domestic reasons (shower, dinner, sister
+# called). His do not apologise for working: he was training, with a client, or
+# he simply left the phone face down. COVER_BUSY[4] is the one that carries the
+# register — he saw it and chose not to answer yet, which is the male equivalent
+# of her missing him and should not be softened.
+#
+# Deliberately spread across five DIFFERENT excuses. The first draft put three of
+# five in a gym; with COVER_REPEAT_DAYS=7 a fan sees these rarely, but a pool that
+# is all one theme reads as a script the moment he sees the second one.
+COVER_BUSY_HIM = [
+    "was on the mats. phone was in my bag",
+    "clients back to back all afternoon",
+    "was driving",
+    "just got in, straight in the shower 🚿",
+    "phone was face down all evening. on purpose",
+]
+COVER_ASLEEP_HIM = [
+    "i was out cold. training day",
+    "im up at 5 for a session so i went to bed early",
+    "morning. your message was sitting there when i woke up",
+]
+COVER_LONG_HIM = [
+    "im back. come here",
+    "camp week. i saw your messages, i just didnt answer them yet",
+]
+# Each keeps a "you" — the stall only sells if he is doing it FOR him — and keeps
+# the wait to seconds. "two minutes" hands the fan permission to leave the app.
+# ⚠️ PRE_PPV_STALL has NO caller anywhere in the tree (verified 2026-08-03). Laned
+# regardless: an unused female-only constant is exactly what someone wires up
+# later without noticing it only has one voice.
+PRE_PPV_STALL_HIM = [
+    "two secs, filming it for you now 🎥",
+    "hold on. setting the camera up",
+    "stay there. nearly ready for you 😈",
+]
+
+# kind -> (hers, his). `_pick_cover` takes the KIND, not the list, so a call site
+# can't reach past the voice by naming a pool directly.
+_COVER_POOLS: dict[str, tuple[list[str], list[str]]] = {
+    "busy": (COVER_BUSY, COVER_BUSY_HIM),
+    "asleep": (COVER_ASLEEP, COVER_ASLEEP_HIM),
+    "long": (COVER_LONG, COVER_LONG_HIM),
+    "pre_ppv": (PRE_PPV_STALL, PRE_PPV_STALL_HIM),
+}
+
 
 @dataclass(frozen=True)
 class RhythmCtx:
@@ -272,6 +325,11 @@ class RhythmCtx:
     tz_offset_minutes: int | None = None  # creator-local offset from UTC
     no_sleep: bool = False               # skip the overnight sleep; only short breaks
     last_cover_at: datetime | None = None
+    # Which cover-line pool. Default "her" keeps every existing caller and test
+    # byte-identical; ai_chatter passes voice_blocks.voice. A cover line is sent
+    # VERBATIM with no model in the loop, so this is the only thing standing
+    # between a male creator and "sorry babe was in the shower".
+    voice: str = "her"
     # Is an ANSWER OWED on this turn? True when his last inbound asked something or
     # volunteered real content (`_common.is_qualifying_inbound`), False for a
     # dead-end reaction ("lol", an emoji, a gif). This is the ONE gate on every
@@ -394,13 +452,18 @@ def _lognormal(rng: Random, mu: float, sigma: float, clamp: tuple[int, int]) -> 
     return float(min(max(v, clamp[0]), clamp[1]))
 
 
-def _pick_cover(rng: Random, pool: list[str], ctx: RhythmCtx,
+def _pick_cover(rng: Random, kind: str, ctx: RhythmCtx,
                 utc_now: datetime) -> str | None:
-    """One cover line per gap, and never the same fan twice in a week."""
+    """One cover line per gap, and never the same fan twice in a week.
+
+    Takes the KIND ("busy"/"asleep"/"long"), not the list, so the voice is
+    resolved HERE and a call site cannot reach past it by naming a pool. Both
+    lanes are the same length, so the rng draw is unchanged for her."""
     if ctx.last_cover_at is not None:
         if (utc_now - ctx.last_cover_at) < timedelta(days=COVER_REPEAT_DAYS):
             return None
-    return rng.choice(pool)
+    hers, his = _COVER_POOLS[kind]
+    return rng.choice(his if str(ctx.voice or "").strip().lower() == "him" else hers)
 
 
 def decide_availability(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decision | None:
@@ -424,7 +487,7 @@ def decide_availability(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decis
             # Wake with a human stagger — she does not answer 40 fans at 10:00:00.
             wake_utc += timedelta(seconds=rng.randint(0, 45 * 60))
             return Decision(delay_s=0.0, context=CONTEXT_UNAVAILABLE, wake_at=wake_utc,
-                            cover_line=_pick_cover(rng, COVER_ASLEEP, ctx, utc_now))
+                            cover_line=_pick_cover(rng, "asleep", ctx, utc_now))
 
     # ── 2. She's a person: roll a break — but ONLY when the scene is COLD. A hot chat
     # never breaks (heat→0 break prob); a boring, sale-less one does, more the colder it
@@ -449,7 +512,7 @@ def decide_availability(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decis
                 break_s = _lognormal(rng, _BREAK_MU, _BREAK_SIGMA, _BREAK_CLAMP)
             wake_utc = utc_now + timedelta(seconds=min(break_s, MAX_DELAY_S))
             return Decision(delay_s=0.0, context=CONTEXT_UNAVAILABLE, wake_at=wake_utc,
-                            cover_line=_pick_cover(rng, COVER_BUSY, ctx, utc_now))
+                            cover_line=_pick_cover(rng, "busy", ctx, utc_now))
 
     return None
 
@@ -661,8 +724,8 @@ def decide(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decision:
     # Apologising for every 20-min gap is itself the tell.
     cover = None
     if gap_s >= COVER_MIN_GAP_S and rng.random() < _cover_roll_for(gap_s):
-        pool = COVER_LONG if gap_s >= 4 * 3600 else COVER_BUSY
-        cover = _pick_cover(rng, pool, ctx, utc_now)
+        kind = "long" if gap_s >= 4 * 3600 else "busy"
+        cover = _pick_cover(rng, kind, ctx, utc_now)
 
     if delay > INLINE_MAX_S:
         # Too long to hold the lease for. Hand it to the scheduler (the wake_at poll).

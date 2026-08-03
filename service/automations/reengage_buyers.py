@@ -38,6 +38,9 @@ from ._common import (
     resolve_fan_name, typing_delay_seconds,
 )
 
+from . import _voice
+from ._common import load_voice_blocks
+
 log = logging.getLogger("of-relay.automation")
 
 _BUY_KINDS = ("ppv_message", "tip", "ppv_post")
@@ -63,6 +66,47 @@ _FALLBACK_TAILS = [
 
 _PET_DEFAULT = "babe"
 
+# ── The MALE pools ───────────────────────────────────────────────────────────
+# Hers pine — "been thinking about you", "miss talking to you", "cant stop
+# thinking about you". That is the mechanic: the fan comes back to be wanted. A
+# dom does not miss anyone; he NOTICED the absence and is calling him back, which
+# is the same pull with the direction reversed.
+#
+# ⚠️ NO LINE HERE MAY CONTAIN AN ADDRESS WORD. `compose_opener` does
+# `name = clean_name(...) or _PET_DEFAULT`, and the male default is "boy" — so a
+# frame that also said "boy" produced "boy. ... boy?" in one message on the ~80%
+# of fans OF gives us no name for. Hers has the identical hazard with "babe" and
+# avoids it the same way: the {name} token is the ONLY address.
+_FRAMES_SOFT_HIM = [
+    "{name}. you went quiet on me",
+    "{name}. noticed you disappeared",
+    "been a while {name}",
+    "{name}. you still around or what",
+]
+_FRAMES_FLIRTY_HIM = [
+    "{name}. i keep coming back to last time 😏",
+    "you left right when it got good {name}",
+    "{name}. i wasnt finished with you 😈",
+    "you owe me the rest of that conversation {name}",
+]
+_FALLBACK_TAILS_HIM = [
+    "so what have you been doing with yourself",
+    "hows the week been",
+    "come keep me company",
+]
+
+_MALE_FRAMES = {
+    id(_FRAMES_SOFT): _FRAMES_SOFT_HIM,
+    id(_FRAMES_FLIRTY): _FRAMES_FLIRTY_HIM,
+    id(_FALLBACK_TAILS): _FALLBACK_TAILS_HIM,
+}
+
+
+def _lane(pool: list[str], voice: str) -> list[str]:
+    if str(voice or "").strip().lower() != "him":
+        return pool
+    return _MALE_FRAMES.get(id(pool), pool)
+
 
 def _nz(s) -> str:
     return str(s).strip() if s and str(s).strip() else ""
@@ -79,24 +123,27 @@ def clean_name(raw: str) -> str:
     return first if re.fullmatch(r"[A-Za-zÀ-ɏ][A-Za-zÀ-ɏ'’\-]{1,19}", first) else ""
 
 
-def compose_opener(f: Fan, p: FanProfile | None, tone: str, rng: Random) -> str:
+def compose_opener(f: Fan, p: FanProfile | None, tone: str, rng: Random,
+                   voice: str = "her") -> str:
     """TWO lines: a warm re-connection greeting, then one of HIS stored lines (a
     gen_info tease or question) underneath — so it reads as two bubbles, not one
     run-on. Flirty leans on teases, soft on questions; either falls back to the
     other, then to a generic tail. Name → a real given name if we have one, else
-    a pet name ('babe') — never a raw location/tag."""
-    name = clean_name(resolve_fan_name(f) or "") or _PET_DEFAULT
+    the LANE's address ('babe' / 'boy') — never a raw location/tag."""
+    name = (clean_name(resolve_fan_name(f) or "")
+            or _voice.blocks(voice).fan_address)
 
     teases = [_nz(x) for x in ((p.tease1, p.tease2, p.tease3) if p else ()) if _nz(x)]
     quests = [_nz(x) for x in ((p.q1, p.q2, p.q3) if p else ()) if _nz(x)]
 
     flirty = tone == "flirty"
-    frame = rng.choice(_FRAMES_FLIRTY if flirty else _FRAMES_SOFT).replace("{name}", name)
+    frame = rng.choice(_lane(_FRAMES_FLIRTY if flirty else _FRAMES_SOFT,
+                           voice)).replace("{name}", name)
 
     first, second = (teases, quests) if flirty else (quests, teases)
     line = rng.choice(first) if first else (rng.choice(second) if second else "")
     if not line:
-        line = rng.choice(_FALLBACK_TAILS)
+        line = rng.choice(_lane(_FALLBACK_TAILS, voice))
     # Greeting on line 1, his line on line 2 (two bubbles).
     return f"{frame}\n{line}".strip()
 
@@ -183,13 +230,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                      FanProfile.fan_id.in_(picks)))).scalars().all()}
         s.expunge_all()
 
+    _v = (await load_voice_blocks(account_id)).voice
     plans = []
     for fid in picks:
         f = fans.get(fid)
         if f is None:
             continue
         rng = Random(f"reengage:{account_id}:{fid}:{run_id}")
-        plans.append((fid, f, compose_opener(f, profs.get(fid), tone, rng)))
+        plans.append((fid, f, compose_opener(f, profs.get(fid), tone, rng, _v)))
 
     if dry_run:
         return {"dry_run": True, "candidates": len(cold), "would_send": len(plans),
