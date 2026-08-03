@@ -77,7 +77,8 @@ from db.models import (
     AccountAiConfig, Blacklist, Fan, MassRun,
     Post, ScheduledJob, Transaction,
 )
-from ._common import load_hard_skip_ids
+from ._common import load_hard_skip_ids, load_voice_blocks
+from . import _voice
 
 log = logging.getLogger("of-relay.automation.ppv_send")
 
@@ -233,6 +234,126 @@ PPV_CAPTION_POOLS: dict[str, list[str]] = {
     ],
 }
 _FALLBACK_CAPTION = "made somethin for u 🙈 unlock it"
+
+# ── MALE caption pools (voice="him") ─────────────────────────────────────────
+# Same 13 keys, same line counts, different person. Selected by `_pick_caption`
+# off the account's `voice` column; anything not "him" gets the pools above,
+# byte-identical.
+#
+# WHY THESE COULD NOT JUST BE THE FEMALE LINES WITH THE PET NAMES SWAPPED
+# The register is the product here, not the vocabulary. Hers sells by lowering
+# herself: "im a lil nervous to send this ngl", "please dont judge me ok",
+# "be gentle with it", "dont leave me hangin", "u forgot about me?? rude". That
+# works because the fan buys to reassure her — the ask and the flattery are the
+# same sentence. Run it from a dom and every line reads as a man begging, which
+# is the one thing the persona cannot survive.
+#
+# So his invert the direction of the favour. He is not nervous, not asking to be
+# forgiven, and never seeking permission: the content is good, he decided the fan
+# gets it, and the fan can take it or leave it. "dont make me wait" becomes "your
+# call". The urgency stays (it sells) but it comes from his scarcity, not his
+# need. No line asks a question that could read as fishing for approval.
+#
+# EMOJI: constrained to the male lane's own set (`_voice._EMOJI_VOCAB`) —
+# 😏 😈 🔥 💪 👊 🖤 plus neutral 👀. Every 🙈 🥺 🥰 😘 💕 💋 😻 🤭 ✨ 🌟 🤍 in the
+# pools above is BANNED for him by that same rule, which is exactly the
+# contradiction that made these pools worth writing rather than reusing.
+PPV_CAPTION_POOLS_HIM: dict[str, list[str]] = {
+    "intro_new": [
+        "dont normally send these out this early. you get one anyway, go look",
+        "youve been solid with me so youre getting this first. barely costs anything",
+        "shot this earlier and figured youd appreciate it. its yours if you want it",
+        "first one is basically free. open it, tell me what you think",
+        "not everyone gets this one. you do 👀",
+        "new here, so consider this a hello. go see",
+    ],
+    "standard_active": [
+        "been sitting on this one a while. sending it to you 😏 go on",
+        "you know what you like and this is it. open it",
+        "this might be the best thing ive shot. dont sleep on it",
+        "shouldnt be doing this on a tuesday. its waiting for you",
+        "filmed something earlier and thought of you. yours if you want it",
+        "stop stalling and open it 😏 you already know",
+    ],
+    "vip_whale": [
+        "three people are getting this. youre one. keep it to yourself",
+        "this one never goes public. its for the ones who actually show up 🖤",
+        "went all out on this. more than i usually give anyone",
+        "you take care of me so heres my best work. go see what i did",
+        "the real stuff stays off the feed. unlock it and youll get why",
+    ],
+    "winback_dormant": [
+        "look who it is. made this a while back — {off} off, was {was} now {now}",
+        "you went quiet. heres something to fix that, basically nothing 😏",
+        "figured youd be back. unlock this and were good, {off} off so its {now}",
+        "been a minute. this was {was}, taking {off} off for {now}. dont waste it",
+        "kept this one aside for whenever you turned up. {now} ({off} off). go on",
+    ],
+    "teaser_free": [
+        "thats the preview. the rest is a different thing entirely 👀",
+        "this is all youre getting for free. the rest is better",
+        "small taste. want the whole thing, say so",
+        "couldnt help myself today. this is the tame version",
+        "call it a teaser. youll be thinking about the rest 😏",
+    ],
+    "photoset_striptease": [
+        "starts one way. does NOT end that way. unlock and see",
+        "started this shoot in a lot more than i finished it in. your call 😏",
+        "gets better with every shot. dont stop at the first one",
+        "watch the kit come off one frame at a time. the last few are the point",
+        "the whole set is a story. youll want to see how it lands",
+    ],
+    "video_ppv": [
+        "couldnt keep still in this one 😏 its a video. unlock it",
+        "made you a clip. first few seconds are tame, give it a minute",
+        "this ones longer than i usually shoot. worth it. press play",
+        "one take, barely edited. all me 💪",
+        "you said you wanted to see me move. here. play it",
+    ],
+    "followup_nonunlocker": [
+        "you left that one sitting there 👀 it hasnt expired yet",
+        "still unopened. you good?",
+        "ill make it easier since youve been busy. same one, cheaper",
+        "you forget what i sent you? its still there",
+        "not chasing you. just saying its still available 😏",
+    ],
+    "bundle_anchor": [
+        "doing something stupid — the whole bundle for about 80 off. its a lot. take it",
+        "clearing the vault. everything, one price. wont be up long",
+        "never dropped this much at once. all of it, one unlock, well under what its worth",
+        "big drop, real ones only. tons of content one price. dont overthink it",
+    ],
+    # ── long-form, multi-paragraph sales copy (the "screenshot" look)
+    "bundle_long": [
+        "🔥 {off} off the full bundle, today only\n\nunlock it and you get everything — every set, every clip, the stuff that never goes on the feed\n\nwas {was}, its {now} right now. i wont leave it up long 😏",
+        "alright, dropping the big one 🔥\n\nthis is everything ive been holding back. the whole thing, nothing cut, and its yours for good the second you open it\n\nnormally {was}. taking it to {now} for the ones who actually show up 🖤 go before i change my mind",
+        "doing something reckless tonight 😈\n\nyou take care of me so heres the whole vault in one drop. every angle, every tease, all of it\n\n{off} off, so {now} instead of {was}. youll be glad you did",
+        "almost didnt put this together 👀\n\nbut its my biggest bundle yet and youre getting it. tons of content, one unlock, well past what its worth\n\nwas {was}, yours for {now} today. your call",
+    ],
+    # ── short, punchy discount blasts with urgency
+    "flash_discount": [
+        "🔥 {off} OFF today only 🔥 never sold it this cheap. was {was}, now {now}. unlock before it goes back up",
+        "sale 😈 {off} off for the next few hours. {now} instead of {was}. move",
+        "{now} for what youre getting? was {was}. today only. thank me after 😏",
+        "flash deal 🔥 {off} off, {now} (was {was}). ends tonight 👀",
+        "feeling generous 😏 {off} off the newest set. was {was}, its {now} now. dont make me regret it",
+    ],
+    # ── "you're on my list" exclusivity + a bulleted what's-inside
+    "exclusive_list": [
+        "⚠️ this isnt a mass dm. youre on a short list 😏\n\nyoure getting the new bundle before anyone else. whats in it (yours for good):\n\n▪️ the full set\n▪️ every angle\n▪️ the shots you keep asking about\n▪️ more\n\n{off} off so its {now} (was {was}). dont go telling people",
+        "not sending this to everyone. just the real ones 🖤\n\nput together an exclusive drop and youre on the list. whats included:\n\n▪️ the newest shots\n▪️ a clip that never got posted\n▪️ the close-ups\n\n{now} for you (was {was}, thats {off} off). keep it between us",
+        "youre one of a handful getting this 👀\n\nbrand new bundle, way too much to put in front of everyone. so its the short list only. the rundown:\n\n▪️ full set\n▪️ behind the scenes\n▪️ the best of it\n\nyours for {now} (was {was}) 😏 dont share it",
+    ],
+    # ── personal / rarely-shown, WITHOUT the apology. He is not nervous.
+    "intimate_reveal": [
+        "took a while before id show anyone this side of me. youre getting it. dont make me regret it",
+        "this is about as personal as ive filmed 😈 dont share it",
+        "everyone has one thing they keep to themselves. this is mine. here 🖤",
+        "ive never put this on here before. thats all im going to say about it 😏",
+        "almost kept this one. something about you made me send it anyway. its yours",
+    ],
+}
+_FALLBACK_CAPTION_HIM = "made you something 😏 unlock it"
 
 # ── Spanish message pools (es) — same keys as PPV_CAPTION_POOLS; _pick_caption
 #    falls back to the English pool PER KEY for anything omitted, so a partial set
@@ -493,6 +614,50 @@ PPV_FEED_CAPTION_POOLS: dict[str, list[str]] = {
     ],
 }
 
+# MALE feed pools — same keys and counts as PPV_FEED_CAPTION_POOLS. Public-feed
+# voice, so no "just for you" framing in either lane; what changes is the same
+# thing as in the DM pools — no coy 🙈, no pleading, no "babe".
+PPV_FEED_CAPTION_POOLS_HIM: dict[str, list[str]] = {
+    "feed_new_drop": [
+        "posted something new 😏 its locked below",
+        "new set is up 🔥 go unlock it",
+        "couldnt sit on this one. locked below 👀",
+        "fresh content just dropped 😈 tap to unlock",
+        "put something up today. its all below",
+    ],
+    "feed_flash_sale": [
+        "🔥 {off} OFF today only 🔥 was {was}, now {now}. unlock before it goes back up",
+        "flash sale 😈 {off} off, {now} (was {was}). dont sleep on it",
+        "{now} instead of {was} for the next few hours 👀 move",
+        "feeling generous 😏 {off} off, was {was} now {now}. unlock below",
+        "on sale for a bit — {off} off, {now} (was {was}) 🔥",
+    ],
+    "feed_bundle_drop": [
+        "huge bundle just dropped 🔥 everything in one unlock, well past what its worth",
+        "biggest set ive put up 😈 tons of content, one price below",
+        "new bundle is live 💪 every shot and clip in one. dont miss it",
+        "{off} off the full bundle today 🔥 was {was} now {now}. everything below",
+    ],
+    "feed_teaser": [
+        "thats the preview. the full thing is locked below 👀",
+        "small taste of what went up 😏 unlock for the rest",
+        "want the full version? its right below",
+        "call that the tame one. the real version is locked below 😈",
+    ],
+    "feed_video_drop": [
+        "new video is up 🔥 unlock below and press play",
+        "put a clip up today 👀 its locked below",
+        "filmed something worth watching. all yours below 😈",
+        "new vid just dropped 😏 worth every second. unlock below",
+    ],
+    "feed_photoset": [
+        "new set is up 😏 starts one way, does NOT end that way. unlock below",
+        "put a whole set up today 🔥 gets better with every shot",
+        "strip set is live 😈 kit comes off one frame at a time. below",
+        "new shots are up 👀 the last few are the point. unlock to see",
+    ],
+}
+
 # Spanish feed pools (es) — public-feed voice. Same keys; English per-key fallback.
 PPV_FEED_CAPTION_POOLS_ES: dict[str, list[str]] = {
     "feed_new_drop": [
@@ -628,18 +793,35 @@ def _pct_off(now_cents: int, was_cents: int) -> int:
     return round((1 - now_cents / was_cents) * 100)
 
 
-def _pick_caption(ppv: dict, cell_price_cents: int, lang: str = "en") -> str:
+def _pick_caption(ppv: dict, cell_price_cents: int, lang: str = "en",
+                  voice: str = _voice.VOICE_HER) -> str:
     """Random caption (custom caption_texts win over the pool), discount tokens filled:
     {now} = this segment's price, {was} = an auto anchor ~4x above (always a discount),
     {off} = the resulting percent off (e.g. '75%'). `lang` selects the language pool
-    (English per-key fallback); a custom caption_texts always wins, in any language."""
+    (English per-key fallback); a custom caption_texts always wins, in any language.
+
+    `voice` selects the POOL SET. A caption is the single highest-volume canned
+    surface in the product — every PPV send is one of these lines, verbatim, with
+    no model in the loop — so an unlaned pool means a male account markets itself
+    in a woman's voice on every send it makes.
+
+    Male + non-English falls back to his ENGLISH pool, not to her translated one:
+    every localized line is female-voiced by construction (Spanish marks gender
+    on the adjective — "empecé vestida" — and Slovene on the verb — "naredila").
+    A grammatically female Spanish line from a male creator is worse than an
+    English one. Adding real es/sl male pools is the same edit as the tables."""
     from automations import _language
+    male = _voice.norm_voice(voice) == _voice.VOICE_HIM
     texts = ppv.get("caption_texts")
     if not (isinstance(texts, list) and texts):
         key = str(ppv.get("caption_pool_key") or "")
-        texts = _language.localized(PPV_CAPTION_POOLS_BY_LANG, lang, key) or []
+        texts = ((PPV_CAPTION_POOLS_HIM.get(key) or []) if male
+                 else _language.localized(PPV_CAPTION_POOLS_BY_LANG, lang, key) or [])
     norm = _language.norm_lang(lang) or "en"
-    line = random.choice(texts) if texts else _FALLBACK_CAPTION_BY_LANG.get(norm, _FALLBACK_CAPTION)
+    if male:
+        line = random.choice(texts) if texts else _FALLBACK_CAPTION_HIM
+    else:
+        line = random.choice(texts) if texts else _FALLBACK_CAPTION_BY_LANG.get(norm, _FALLBACK_CAPTION)
     if "{now}" in line or "{was}" in line or "{off}" in line:
         was = _anchor_price(cell_price_cents)
         line = (line.replace("{now}", _money(cell_price_cents))
@@ -655,7 +837,8 @@ def _rotate_preview(pool: list, idx: int) -> list[int]:
     return [pool[idx % len(pool)]] if pool else []
 
 
-def pick_feed_caption(ppv: dict, base_cents: int, lang: str = "en") -> tuple[str, bool]:
+def pick_feed_caption(ppv: dict, base_cents: int, lang: str = "en",
+                      voice: str = _voice.VOICE_HER) -> tuple[str, bool]:
     """Caption for the FEED post (public voice, NEVER the 1:1 message caption).
     Priority: the PPV's own feed_captions → its feed_caption_pool_key
     (PPV_FEED_CAPTION_POOLS) → the feed pool mapped from the message caption_pool_key
@@ -670,7 +853,11 @@ def pick_feed_caption(ppv: dict, base_cents: int, lang: str = "en") -> tuple[str
     key = str(ppv.get("feed_caption_pool_key") or "").strip()
     if not (key and key in PPV_FEED_CAPTION_POOLS):
         key = _MSG_TO_FEED_POOL.get(str(ppv.get("caption_pool_key") or "").strip(), "feed_new_drop")
-    pool = _language.localized(PPV_FEED_CAPTION_POOLS_BY_LANG, lang, key) or PPV_FEED_CAPTION_POOLS[key]
+    if _voice.norm_voice(voice) == _voice.VOICE_HIM:
+        pool = PPV_FEED_CAPTION_POOLS_HIM[key]      # his english; see _pick_caption
+    else:
+        pool = (_language.localized(PPV_FEED_CAPTION_POOLS_BY_LANG, lang, key)
+                or PPV_FEED_CAPTION_POOLS[key])
     return _pick_caption({"caption_texts": pool}, base_cents), True
 
 
@@ -731,7 +918,9 @@ async def post_to_feed(account_id: str, ppv: dict, *, employee_id: int | None = 
     else:
         from automations import _language
         _feed_lang = await _language.load_account_language(account_id)
-        caption, used_feed_caption = pick_feed_caption(ppv, base_cents, _feed_lang)
+        _feed_v = await load_voice_blocks(account_id)
+        caption, used_feed_caption = pick_feed_caption(
+            ppv, base_cents, _feed_lang, _feed_v.voice)
     price = base_cents / 100   # OF wants dollars
 
     client = await asyncio.to_thread(ax._make_client, account_id)
@@ -1032,6 +1221,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # win, in whatever language they were authored). cfg_row is already loaded above.
     from automations import _language
     account_lang = _language.norm_lang(getattr(cfg_row, "language", None)) or "en"
+    # Same row, same read — the caption pool set is a second axis on this config,
+    # exactly like the language above it. NULL/unknown → her, byte-identically.
+    account_voice = _voice.norm_voice(getattr(cfg_row, "voice", None))
     # S8: a vault-AI-sourced draft (id `vai-…`) is a sendable offer ONLY once
     # explicitly armed — the adapter is the single arm gate (library master ON +
     # this entry `enabled`). An approved+exported-but-un-armed draft (enabled=False)
@@ -1170,7 +1362,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             plan.append({
                 "cell": key, "recipients": len(cell["fan_ids"]),
                 "price": price / 100,
-                "caption": _pick_caption(ppv, price, account_lang)[:80],
+                "caption": _pick_caption(ppv, price, account_lang, account_voice)[:80],
                 "preview": _rotate_preview(preview_pool, day_idx),
             })
         return {"dry_run": True, "ppv_id": ppv_id, "is_resend": is_resend,
@@ -1194,7 +1386,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         send_payload = {
             # Text is intentionally NOT locked — fans see the teaser caption free,
             # only the media sits behind the price (locked_text defaults off).
-            "text": _pick_caption(ppv, price, account_lang),
+            "text": _pick_caption(ppv, price, account_lang, account_voice),
             "media_files": media_ids,
             "previews": _rotate_preview(preview_pool, day_idx),
             "price": price / 100,                 # OF wants dollars
@@ -1234,7 +1426,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if broadcasting:
         known_ids = await _all_fan_ids(account_id)
         broadcast_payload = {
-            "text": _pick_caption(ppv, bcast_cents, account_lang),  # default-price caption
+            "text": _pick_caption(ppv, bcast_cents, account_lang, account_voice),  # default-price caption
             "media_files": media_ids,
             "previews": _rotate_preview(preview_pool, day_idx),
             "price": bcast_cents / 100,               # the DEFAULT price, clamped

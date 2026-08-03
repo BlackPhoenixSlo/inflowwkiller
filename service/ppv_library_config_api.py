@@ -618,7 +618,17 @@ async def preview_ppv_to_feed(body: _PreviewPostBody = Body(...)) -> dict[str, A
     media_ids = _int_list(chosen.get("media_ids"), _MAX_MEDIA)
     media_set = set(media_ids)
     previews = [x for x in _int_list(chosen.get("preview_options"), _MAX_PREVIEWS) if x in media_set]
-    caption, used_feed_caption = pick_feed_caption(chosen, base_cents)
+    # WYSIWYG means WYSIWYG: this endpoint exists so the operator sees the exact
+    # line `/post-now` would send, so it has to resolve the caption on the same two
+    # axes that path does. Neither was passed here — `lang` was already missing, so
+    # a Spanish account has always previewed English and posted Spanish; `voice`
+    # would have previewed her caption and posted his.
+    from automations import _language
+    from automations._common import load_voice_blocks
+    _fp_lang = await _language.load_account_language(body.account_id)
+    _fp_v = await load_voice_blocks(body.account_id)
+    caption, used_feed_caption = pick_feed_caption(
+        chosen, base_cents, _fp_lang, _fp_v.voice)
 
     return {
         "account_id": body.account_id,
