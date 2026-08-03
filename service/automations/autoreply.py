@@ -259,7 +259,13 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         f"{ONPLATFORM_GUARDRAIL}\n\n"
         f"{v.live_proof}\n\n"
         f"{BIO_CONSISTENCY_GUARDRAIL}\n\n"
-        f"{v.humanizer + chr(10) + chr(10) if style_on else ''}"
+        # The emoji VOCABULARY is a fact about who the creator is, not a style
+        # preference — but it ships inside the humanizer, which is opt-in per
+        # automation. An account with `autoreply: false` in style_config therefore
+        # had NO emoji guidance at all, and the prompt still asks for emoji, so the
+        # model picked the female set. `v.emoji_vocab` is "" for her, so this is a
+        # no-op on every female account whichever branch it takes.
+        f"{v.humanizer + chr(10) + chr(10) if style_on else v.emoji_vocab}"
         f"{NONNATIVE_REGISTER + chr(10) + chr(10) if nonnative_on else ''}"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
         f"{_language.output_language_directive(lang)}"

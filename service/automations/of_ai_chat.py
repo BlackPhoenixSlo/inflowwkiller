@@ -1043,7 +1043,9 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
 
     # When the "human texting style" opt-in is ON, append the humanizer block —
     # the not-AI tells (no echo-with-adjective, vary length, one question, etc.).
-    humanizer = f"\n\n{v.humanizer}" if style_on else ""
+    # style_on gates the humanizer, but NOT the emoji vocabulary inside it: the set
+    # a creator types from is a lane fact, not an opt-in. "" for her either way.
+    humanizer = f"\n\n{v.humanizer}" if style_on else v.emoji_vocab
     # When the "non-native English" opt-in is ON, append the register block (the dict
     # in the send path guarantees the signature misspellings; this sets the grammar).
     nonnative = f"\n\n{NONNATIVE_REGISTER}" if nonnative_on else ""
