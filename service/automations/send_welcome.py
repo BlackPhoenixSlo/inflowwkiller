@@ -81,7 +81,7 @@ from . import rhythm  # tz_offset_for — IANA timezone beats the legacy utc_off
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
-from ._common import (apply_word_restriction, hold_with_typing,
+from ._common import (apply_word_restriction, hold_with_typing, load_voice_blocks,
                       load_hard_skip_ids, load_strip_emojis,
                       load_typing_indicator, load_typing_wpm, name_token,
                       resolve_fan_name, resolve_model, skip_unreachable_fan,
@@ -89,6 +89,8 @@ from ._common import (apply_word_restriction, hold_with_typing,
 from db.engine import get_session
 from db.models import AccountAiConfig, Fan, FanProfile, Message, WelcomeSent
 from llm_client import LLMCapExceeded
+
+from . import _voice
 
 log = logging.getLogger("of-relay.automation.send_welcome")
 
@@ -116,6 +118,31 @@ _ADJS = {
     "S": "Sexy", "T": "Tasty", "U": "Unique", "V": "Vibrant", "W": "Wild", "X": "Xtra",
     "Y": "Yummy", "Z": "Zesty",
 }
+
+# The male table. These describe the FAN, who is male in both lanes — so this is
+# not a pronoun fix. It is a REGISTER fix: "Yummy Mike" / "Juicy Mike" / "Cute
+# Mike" is what SHE calls him, and a dom does not hand out those words. His
+# vocabulary is what a man in charge notices about someone who just subscribed —
+# eager, hungry, obedient, willing — which does the same alliterative job and
+# lands the power dynamic in the first three words of the first message.
+_ADJS_HIM = {
+    "A": "Ambitious", "B": "Bold", "C": "Cocky", "D": "Devoted", "E": "Eager",
+    "F": "Fearless", "G": "Game", "H": "Hungry", "I": "Impatient", "J": "Jumpy",
+    "K": "Keen", "L": "Loyal", "M": "Mighty", "N": "Needy", "O": "Obedient",
+    "P": "Patient", "Q": "Quick", "R": "Ready", "S": "Solid", "T": "Tough",
+    "U": "Unruly", "V": "Vicious", "W": "Willing", "X": "Xtra", "Y": "Yearning",
+    "Z": "Zealous",
+}
+_ADJ_DEFAULT = {"her": "Flirty", "him": "Eager"}
+# What to call a subscriber whose handle yields no usable word at all.
+_NAMELESS_GREET = {"her": "cutie", "him": "boy"}
+
+
+def _adjs(voice: str) -> tuple[dict, str]:
+    """(table, default) for this lane. Anything but "him" gets hers, unchanged."""
+    if str(voice or "").strip().lower() == "him":
+        return _ADJS_HIM, _ADJ_DEFAULT["him"]
+    return _ADJS, _ADJ_DEFAULT["her"]
 
 
 # ── New-subscriber parsing (defensive — OF notification shape varies) ──
@@ -448,12 +475,16 @@ async def _resolve_welcome_name(account_id: str, fan_id: int, sub: dict) -> str:
 # can't name take the LLM greeting and the SAME deterministic activity line as
 # everyone else — so the pin and the restyle downstream need no special case.
 
-def _local_greeting(name: str) -> str:
+def _local_greeting(name: str, voice: str = "her") -> str:
     """V1 'precious' bubble 1 (NO LLM): 'Hey S-S-S-Sexy Sofie ! !!' — the stutter
     prefix sits on the first letter and leads into the alliterative nickname. The
-    vault image rides this bubble."""
+    vault image rides this bubble.
+
+    This is the FIRST thing a new subscriber ever reads, so the adjective sets the
+    register before anything else does — see `_ADJS_HIM`."""
     L = name[0].upper()
-    return f"Hey {L}-{L}-{L}-{_ADJS.get(L, 'Flirty')} {name} ! !!"
+    table, default = _adjs(voice)
+    return f"Hey {L}-{L}-{L}-{table.get(L, default)} {name} ! !!"
 
 
 # Longest run of letters in a handle — 'xx_rider_92' → 'rider'. 3+ so a separator
@@ -461,7 +492,7 @@ def _local_greeting(name: str) -> str:
 _HANDLE_WORD = re.compile(r"[A-Za-z]{3,}")
 
 
-def _greet_token(sub: dict) -> str:
+def _greet_token(sub: dict, voice: str = "her") -> str:
     """What to greet a fan by when `_resolve_welcome_name` found no real name in any
     source — all that's left is the raw OF handle. Three shapes, resolved in code:
 
@@ -477,7 +508,13 @@ def _greet_token(sub: dict) -> str:
     if re.fullmatch(r"u?\d+", target):
         return f"fan #{re.sub(r'\D', '', target)}"
     words = _HANDLE_WORD.findall(target)
-    return max(words, key=len).lower() if words else "cutie"
+    if words:
+        return max(words, key=len).lower()
+    # Nothing usable in the handle at all. NOT `v.fan_address` — hers is "cutie"
+    # here and "babe" there, and reaching for the bundle silently changed what 17
+    # live accounts greet a nameless subscriber with. Its own dict, its own words.
+    return _NAMELESS_GREET["him" if str(voice or "").strip().lower() == "him"
+                           else "her"]
 
 
 def _activity_bubble(cfg: dict, hour: int | None = None) -> list[str]:
@@ -669,6 +706,7 @@ async def preview_compose(
 
     Returns the send-shape as `bubbles` (image rides on bubble 1) + joined `text`,
     plus `image`, `name`, `slot`, and `restyled`/`cap_hit`/`pinned` flags."""
+    _wv = (await load_voice_blocks(account_id)).voice
     cfg = await _load_ai_config(account_id)
     # Draft override wins over the saved brain (None never clobbers); the UI sends the
     # full time_activities/time_images dicts, so a shallow merge is correct.
@@ -690,7 +728,7 @@ async def preview_compose(
         name = _name_token(test_name) or "Alex"
         sub = {"id": 0, "name": test_name or name, "username": None}
 
-    greeting = _local_greeting(name or _greet_token(sub))
+    greeting = _local_greeting(name or _greet_token(sub, _wv), _wv)
     # A PINNED slot line IS bubble 2 (unless the operator hit Regenerate →
     # ignore_pin): the exact approved line that will ship, weekday-refreshed, no LLM
     # call. It ships even when the slot's raw activity was later blanked.
@@ -736,6 +774,7 @@ async def preview_compose(
 @register("send_welcome")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     payload = payload or {}
+    _wv = (await load_voice_blocks(account_id)).voice
     dry_run = bool(payload.get("dry_run"))
     with_image = payload.get("with_image", True)
     limit = int(payload.get("limit") or _DEFAULT_NOTIF_LIMIT)
@@ -870,7 +909,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # from the raw handle. Same deterministic stutter either way, and no
                 # LLM: the daily cap can no longer cost a nameless fan their welcome.
                 name = await _resolve_welcome_name(account_id, fan_id, sub)
-                greeting = _local_greeting(name or _greet_token(sub))
+                greeting = _local_greeting(name or _greet_token(sub, _wv), _wv)
             except Exception:
                 errors += 1
                 log.warning("send_welcome generate failed account=%s fan=%s",

@@ -85,6 +85,7 @@ from automation_registry import register
 from db.engine import get_session
 from db.models import AccountAiConfig, Blacklist, Fan, FanProfile, Message, SkipList
 from llm_client import LLMCapExceeded
+from . import _voice
 from ._common import (
     nonempty,
     BIO_CONSISTENCY_GUARDRAIL,
@@ -93,7 +94,7 @@ from ._common import (
     apply_word_restriction, build_facts_note,
     build_structured_nickname, casualize_qtease, coerce_ids, facts_from_fan,
     hold_with_typing, apply_typo_throttle, load_nonnative_flags,
-    load_painful_texting_flag, load_style_flags,
+    load_painful_texting_flag, load_style_flags, load_voice_blocks,
     load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
     quarantine_if_undeliverable, resolve_fan_name, resolve_model,
     should_skip_muted_creator, skip_unreachable_fan, typing_delay_seconds,
@@ -307,7 +308,8 @@ async def _gather_messages(account_id: str, fan_ids: set[int]) -> dict[int, _Can
 def _build_messages(persona: str, f: Fan, c: _Candidate,
                     style_on: bool = False, nonnative_on: bool = False,
                     painful_on: bool = True, lang: str = "en",
-                    clock: str = "") -> list[dict]:
+                    clock: str = "",
+                    v: "_voice.VoiceBlocks" = _voice.HER) -> list[dict]:
     """Compose the (system, user) pair for an in-between reply during the drill
     (the Q + Tease themselves are sent verbatim from the profile — not generated)."""
     facts = []
@@ -339,14 +341,14 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "getting-to-know-you stage, so be more playful, flirty and a little naughty, "
         "building on what he just said. No need to say 'Hey!' or use his name at the "
         "start. Keep it short, 1 question max, max 2 verbs. Never sound like a bot — "
-        "you are 100% human, girly, warm. Don't offer pics or videos. Do NOT use any "
-        "emojis in this reply.\n\n"
-        f"{PAINFUL_TEXTING + chr(10) + chr(10) if painful_on else ''}"
+        f"you are 100% human, {v.human_self}. Don't offer pics or videos. Do NOT "
+        "use any emojis in this reply.\n\n"
+        f"{v.painful_texting + chr(10) + chr(10) if painful_on else ''}"
         f"{clock_block}"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
-        f"{LIVE_PROOF_GUARDRAIL}\n\n"
+        f"{v.live_proof}\n\n"
         f"{BIO_CONSISTENCY_GUARDRAIL}\n\n"
-        f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
+        f"{v.humanizer + chr(10) + chr(10) if style_on else v.emoji_vocab}"
         f"{NONNATIVE_REGISTER + chr(10) + chr(10) if nonnative_on else ''}"
         "IMPORTANT: your reply is ONLY the chat message text. Never include JSON, "
         "code blocks, curly braces, or any metadata. Just text him back."
@@ -357,9 +359,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"What you know about him:\n{facts_block}\n\n"
         f"{_pins.pins_block(f)}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
-        "Don't apologize. Generate a brief, 1 verb max, casual, GIRLY reply (do girl "
-        "things and the occasional little typo) that flirts and builds on his last "
-        "message. Reply now."
+        f"Don't apologize. Generate a brief, 1 verb max, casual {v.reply_register} "
+        "that flirts and builds on his last message. Reply now."
     )
     return [{"role": "system", "content": system},
             {"role": "user", "content": user}]
@@ -521,6 +522,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]    # thumb-typo opt-in
     nonnative_on = (await load_nonnative_flags(account_id))[_PURPOSE]  # non-native opt-in
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
+    voice_blocks = await load_voice_blocks(account_id)   # ONE row, both axes
     typing_wpm = await load_typing_wpm(account_id)            # per-bubble pacing
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     persona = await _load_persona(account_id)
@@ -691,7 +693,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 if _fan_asked(c):
                     lead = await _generate_leadin(model, persona, f, c, account_id, fan_id,
                                                   style_on=style_on, nonnative_on=nonnative_on,
-                                                  lang=fan_lang, clock=_clock_line(clock_tz))
+                                                  lang=fan_lang, clock=_clock_line(clock_tz),
+                                                  v=voice_blocks)
                     if lead:
                         await _send(client, account_id, fan_id, lead,
                                     typing_wpm=typing_wpm, typing_indicator=typing_indicator,
@@ -717,7 +720,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 reply = await _generate(model, persona, f, c, account_id, fan_id,
                                        style_on=style_on, nonnative_on=nonnative_on,
                                        painful_on=painful_on, lang=fan_lang,
-                                       clock=_clock_line(clock_tz))
+                                       clock=_clock_line(clock_tz), v=voice_blocks)
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -741,7 +744,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 reply = await _generate(model, persona, f, c, account_id, fan_id,
                                        style_on=style_on, nonnative_on=nonnative_on,
                                        painful_on=painful_on, lang=fan_lang,
-                                       clock=_clock_line(clock_tz))
+                                       clock=_clock_line(clock_tz), v=voice_blocks)
                 if reply is _CAP:
                     cap_hit = True
                     break
@@ -843,7 +846,8 @@ async def _generate(model: str, persona: str, f: Fan, c: _Candidate,
                     account_id: str, fan_id: int,
                     style_on: bool = False, nonnative_on: bool = False,
                     painful_on: bool = True, lang: str = "en",
-                    clock: str = "") -> str | object:
+                    clock: str = "",
+                    v: "_voice.VoiceBlocks" = _voice.HER) -> str | object:
     """Generate ONE in-between reply. Returns the text, '' on a generation error,
     or the _CAP sentinel when the daily LLM cap is hit (caller stops the run)."""
     try:
@@ -851,7 +855,7 @@ async def _generate(model: str, persona: str, f: Fan, c: _Candidate,
             model=model,
             messages=_build_messages(persona, f, c, style_on=style_on,
                                      nonnative_on=nonnative_on, painful_on=painful_on,
-                                     lang=lang, clock=clock),
+                                     lang=lang, clock=clock, v=v),
             purpose=_PURPOSE,
             account_id=account_id,
             fan_id=fan_id,
@@ -880,7 +884,8 @@ def _fan_asked(c: _Candidate) -> bool:
 
 def _leadin_messages(persona: str, f: Fan, c: _Candidate,
                      style_on: bool = False, nonnative_on: bool = False,
-                     lang: str = "en", clock: str = "") -> list[dict]:
+                     lang: str = "en", clock: str = "",
+                     v: "_voice.VoiceBlocks" = _voice.HER) -> list[dict]:
     history = c.messages[-_HISTORY_TAIL:]
     convo = "\n".join(f"{'FAN' if d == 'in' else 'YOU'}: {b}" for d, b in history if b)
     # The lead-in DIRECTLY answers his last message — "what time is it there?"
@@ -898,9 +903,9 @@ def _leadin_messages(persona: str, f: Fan, c: _Candidate,
         "down warmly instead. No emojis. Output ONLY the message text.\n\n"
         f"{clock_block}"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
-        f"{LIVE_PROOF_GUARDRAIL}\n\n"
+        f"{v.live_proof}\n\n"
         f"{BIO_CONSISTENCY_GUARDRAIL}\n\n"
-        f"{STYLE_HUMANIZER + chr(10) + chr(10) if style_on else ''}"
+        f"{v.humanizer + chr(10) + chr(10) if style_on else v.emoji_vocab}"
         f"{NONNATIVE_REGISTER if nonnative_on else ''}"
         f"{_language.output_language_directive(lang)}"
     )
@@ -913,7 +918,8 @@ def _leadin_messages(persona: str, f: Fan, c: _Candidate,
 async def _generate_leadin(model: str, persona: str, f: Fan, c: _Candidate,
                            account_id: str, fan_id: int,
                            style_on: bool = False, nonnative_on: bool = False,
-                           lang: str = "en", clock: str = "") -> str:
+                           lang: str = "en", clock: str = "",
+                           v: "_voice.VoiceBlocks" = _voice.HER) -> str:
     """A short bubble that answers the fan's question BEFORE the scripted Q goes out,
     so the Q doesn't read like a bot talking past him. Best-effort — any failure
     (incl. the LLM cap) just skips the lead-in and we send the Q alone."""
@@ -921,7 +927,7 @@ async def _generate_leadin(model: str, persona: str, f: Fan, c: _Candidate,
         res = await llm_client.chat(
             model=model, messages=_leadin_messages(persona, f, c, style_on=style_on,
                                                     nonnative_on=nonnative_on, lang=lang,
-                                                    clock=clock),
+                                                    clock=clock, v=v),
             purpose=_PURPOSE,
             account_id=account_id, fan_id=fan_id, temperature=_REPLY_TEMPERATURE,
         )

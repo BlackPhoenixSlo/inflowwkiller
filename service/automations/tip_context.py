@@ -18,6 +18,7 @@ import logging
 import llm_client                       # module import so tests can patch .chat
 from automations._common import resolve_model
 from db.engine import get_session
+from ._common import load_voice_blocks
 from db.models import Message, VaultItem
 from sqlalchemy import select
 
@@ -29,8 +30,10 @@ _CANDIDATES_MAX = 150
 _DESC_LEN = 160
 
 
-async def _recent_thread_lines(account_id: str, fan_id: int, n_msgs: int) -> list[str]:
-    """The last `n_msgs` non-unsent messages as 'FAN:/HER:' lines, oldest first.
+async def _recent_thread_lines(account_id: str, fan_id: int, n_msgs: int,
+                               voice: str = "her") -> list[str]:
+    """The last `n_msgs` non-unsent messages as 'FAN:/HER:' lines ('HIM:' on the
+    male lane), oldest first.
     PPV/tip markers ride along so the matcher can see what was promised vs paid."""
     async with get_session() as s:
         rows = (await s.execute(
@@ -43,7 +46,8 @@ async def _recent_thread_lines(account_id: str, fan_id: int, n_msgs: int) -> lis
         )).all()
     lines: list[str] = []
     for direction, body, price_cents, is_tip in reversed(rows):
-        who = "FAN" if direction == "in" else "HER"
+        _me = "HIM" if str(voice or "").strip().lower() == "him" else "HER"
+        who = "FAN" if direction == "in" else _me
         tag = ""
         if is_tip:
             tag = " [tip]"
@@ -92,7 +96,9 @@ async def pick_context_media(account_id: str, fan_id: int, *, seen: set[int],
         candidates = await _candidates(account_id, seen)
         if not candidates:
             return []
-        lines = await _recent_thread_lines(account_id, fan_id, n_msgs)
+        lines = await _recent_thread_lines(
+            account_id, fan_id, n_msgs,
+            (await load_voice_blocks(account_id)).voice)
         if not lines:
             return []
         catalog = "\n".join(f"{mid}: {text}" for mid, text in candidates)
