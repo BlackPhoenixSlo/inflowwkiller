@@ -4159,7 +4159,9 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                  # is the cheap half of the fix.
                  "none fits. Never write this instruction out as the message.")
 
-    humanizer = f"\n\n{v.humanizer}" if style_on else ""
+    # style_on gates the humanizer, but NOT the emoji vocabulary inside it: the set
+    # a creator types from is a lane fact, not an opt-in. "" for her either way.
+    humanizer = f"\n\n{v.humanizer}" if style_on else v.emoji_vocab
     nonnative = f"\n\n{NONNATIVE_REGISTER}" if nonnative_on else ""
     # Sticker protocol enters the prompt only on an allow/solo roll — a model
     # that can't see it can't over-use it (measured 48% attach when always on).
