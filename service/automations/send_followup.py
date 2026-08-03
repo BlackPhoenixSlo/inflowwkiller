@@ -244,7 +244,11 @@ def _compose_system(cfg: dict, tod: str, activity: str, clock: str,
         "surrounding quotes, no preamble."
     )
     parts.append(v.live_proof)
-    return "\n\n".join(parts)
+    # This engine carries no humanizer, so the emoji vocabulary that rides inside
+    # it never reached here — the instruction above asks for "real emojis" and
+    # names none, which lets the model default to the female set. Hers is "", so
+    # the female prompt is byte-identical; his gains the one rule he was missing.
+    return "\n\n".join(parts) + v.emoji_vocab
 
 
 def _compose_user(step: int, fan_name: str, silence_hours: float,

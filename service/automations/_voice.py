@@ -402,6 +402,30 @@ _EMOJI_VOCAB = {
     ),
 }
 
+# ⚠️ The vocabulary above lives inside the HUMANIZER, which is an OPT-IN style
+# block (`style_config_json`, per automation). That is fine for the engines that
+# carry the humanizer — and a trap for the ones that do not.
+#
+# `send_followup` is one that does not. Its prompt asks for "real emojis" and then
+# says nothing at all about WHICH, so the model picks, and a model writing a
+# flirty DM picks 😘🥰🥺 — the female set — with nothing to stop it. On the male
+# accounts the only thing holding that back was `strip_emojis: true`, i.e. an
+# account-wide switch that removes ALL emoji, including the dry ones he should be
+# using. Turning that switch off to "let his emoji through" would have handed the
+# model a free choice it gets wrong.
+#
+# So the vocabulary is exposed as a STANDALONE bundle field too. Hers is "" —
+# every prompt that appends it is byte-identical for her, which is why this can be
+# added to an engine without touching the female lane at all.
+EMOJI_VOCAB_RULE = {
+    VOICE_HER: "",
+    VOICE_HIM: (
+        "\n\nEMOJI (hard rule): your set is SMALL and dry — 😏 😈 🔥 💪 👊 🖤 🥊 🐺. "
+        "One at most, often none. NEVER use 🥺 🥰 😘 💕 💦 🥵 😍 🙈 ✨ 💅 or any "
+        "cutesy/pleading face — those read as a woman typing."
+    ),
+}
+
 
 # ── The texter noun ──────────────────────────────────────────────────
 # "guy" and not "man": the whole line exists to set a TEXTING register (short,
@@ -604,6 +628,8 @@ class VoiceBlocks:
     aftercare: str
     # Canned re-engage pool, model-free. Hers types banned-for-him emoji.
     nudge_lines: tuple[str, ...]
+    # The emoji set as a STANDALONE rule, for engines with no humanizer. "" for her.
+    emoji_vocab: str
     # The one worked example the sell-caption prompt shows the model.
     sell_caption_example: str
     sell_customs: bool = False
@@ -635,6 +661,7 @@ def blocks(voice: object, sell_customs: bool = False) -> VoiceBlocks:
         unlock_prompt=UNLOCK_PROMPT_FALLBACK[v],
         aftercare=AFTERCARE_FALLBACK[v],
         nudge_lines=NUDGE_LINES[v],
+        emoji_vocab=EMOJI_VOCAB_RULE[v],
         sell_caption_example=SELL_CAPTION_EXAMPLE[v],
         sell_customs=bool(sell_customs),
     )
