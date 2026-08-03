@@ -436,10 +436,19 @@ _TEXTER_NOUN = {VOICE_HER: "girl", VOICE_HIM: "guy"}
 # What the creator calls a fan whose real name we could not resolve. This IS
 # creator voice, not fan gender: "babe" is what SHE says, and it is the fallback
 # baked into send_followup. From a male creator to a straight male fan it is the
-# same wrong-register tell as a female FaceTime refusal. "man" works in both male
-# registers (the dom one and the companion one) and reads as neutral address
-# rather than endearment.
-_FAN_ADDRESS = {VOICE_HER: "babe", VOICE_HIM: "man"}
+# same wrong-register tell as a female FaceTime refusal.
+#
+# "boy" over the original "man": operator call 2026-08-03, off live output. The
+# dom lane was already landing it unprompted — a fan opened "Yes Sir, please" and
+# the reply came back "Good boy." — so it is the word the persona actually uses,
+# and it carries the power dynamic that "man" (neutral, peer-to-peer) throws away.
+#
+# ⚠️ THIS FIRES ON A MISSING NAME, NOT ON A DYNAMIC. `of_display_name` is empty
+# for ~80% of fans, so whatever sits here is what the account calls a STRANGER on
+# an unsolicited nudge or a post-buy bridge. That rules out anything a fan has to
+# have opted into — harder degradation belongs in the model's in-scene reply,
+# where it can read his signals, not in a constant keyed off an empty column.
+_FAN_ADDRESS = {VOICE_HER: "babe", VOICE_HIM: "boy"}
 
 
 def _humanizer(voice: str) -> str:
