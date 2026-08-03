@@ -1116,12 +1116,7 @@ def _unbacked_talk(p: str) -> bool:
 # Watcher reaction when an unlock lands while the fan isn't mid-conversation —
 # static pool (no LLM dependency in the watcher); the bot reacts in full voice
 # the next time the fan actually speaks.
-_UNLOCK_REACTIONS = (
-    "omg enjoy babe 😘",
-    "mmm enjoy 🙈 tell me what u think after",
-    "ur the best 😏 enjoy",
-    "eeek ok enjoy 💕 dont be shy after",
-)
+_UNLOCK_REACTIONS = _voice.UNLOCK_REACTIONS[_voice.VOICE_HER]
 # Localized watcher reactions. 'en' is the fallback; add sl/pt/fr/de/it the same way.
 _UNLOCK_REACTIONS_BY_LANG: dict[str, tuple[str, ...]] = {
     "en": _UNLOCK_REACTIONS,
@@ -1137,6 +1132,15 @@ _UNLOCK_REACTIONS_BY_LANG: dict[str, tuple[str, ...]] = {
         "najboljši si 😏 uživaj",
         "iii ok uživaj 💕 ne bodi sramežljiv potem",
     ),
+}
+# The MALE table. Only `en` is written, and the fallback below is deliberately to
+# HIS english rather than to the table above: every localized line there is
+# female-voiced by construction — "bebé", "srček", and the `sl` block says so in
+# its own comment — so a Spanish male account sending her Spanish is a worse
+# outcome than sending his English. Wrong language beats wrong person. Adding
+# "es"/"sl" for him is the same one-line edit as the table above.
+_UNLOCK_REACTIONS_BY_LANG_HIM: dict[str, tuple[str, ...]] = {
+    "en": _voice.UNLOCK_REACTIONS[_voice.VOICE_HIM],
 }
 
 # Fast-path window: only re-read a chat from OF (isOpened) when the fan was
@@ -1920,8 +1924,15 @@ async def _deliver_unlocked(client, account_id: str, offer: ContentOffer,
     PPV already delivered inside the locked message, so just react. Returns the
     sent message id (None = send failed; caller retries next tick)."""
     _ul_lang = await _language.load_account_language(account_id)
+    # The voice is read HERE rather than threaded from `run()`: this function is
+    # also reached on the disabled-account path (paid-but-undelivered protection),
+    # which returns before `run()` ever loads the bundle. One extra read on an
+    # unlock — a rare event — and symmetric with the language read above.
+    _ul_v = await load_voice_blocks(account_id)
+    _ul_table = (_UNLOCK_REACTIONS_BY_LANG_HIM if _ul_v.is_male
+                 else _UNLOCK_REACTIONS_BY_LANG)
     caption = _language.apply_word_restriction(
-        random.choice(_UNLOCK_REACTIONS_BY_LANG.get(_ul_lang, _UNLOCK_REACTIONS)), _ul_lang)
+        random.choice(_ul_table.get(_ul_lang) or _ul_v.unlock_reactions), _ul_lang)
     media = _item_media(item)
     try:
         if by == "tip":
@@ -2562,7 +2573,18 @@ def _breakproof(ask_at: datetime | None, now: datetime) -> bool:
     return ask_at is not None and (now - ask_at) <= _ASK_BREAKPROOF_WINDOW
 
 
-# One gentle re-engage opener (item 18). {name} → his greetable name (or "babe").
+def _greetable(f, v: "_voice.VoiceBlocks") -> str:
+    """His greetable name, or the lane's address for a fan we could not name.
+
+    Seven sites did this by hand with `or "babe"` inline. That is not a rare
+    branch to leave unlaned: `of_display_name` is empty for ~80% of fans, so on a
+    male account the fallback IS the normal path and "babe" was what a dom called
+    every unnamed man. One helper so the next site cannot re-type the literal."""
+    return (resolve_fan_name(f) if f else "").split("/")[0][:20] or v.fan_address
+
+
+# One gentle re-engage opener (item 18). {name} → his greetable name, or the
+# lane's address (`_greetable`) for the ~80% of fans OF gives us no name for.
 # Deliberately templated, not LLM-generated: a nudge is one unsolicited line, so we
 # keep it cheap, predictable, and easy to audit.
 #
@@ -2581,28 +2603,9 @@ def _breakproof(ask_at: datetime | None, now: datetime) -> bool:
 # NONNATIVE_MISSPELLINGS fingerprint for 'how') appears ONCE on purpose: the dict
 # header measures 'how' at 2.4% of sends, so more than one line here would read as a
 # tic rather than a fingerprint.
-_NUDGE_LINES = (
-    # still there?
-    "hey {name} u still there ? 🙈",
-    "{name} u still there 🙈 or no",
-    "hey {name} u are still with me ? 🙈",
-    # miss talking / what are u up to
-    "i miss to talk with u {name} 🥺 what u doing",
-    "miss talk with u {name} 🥺 what u up to now",
-    "i am missing u {name} 🥺 hiw is ur day",
-    # went quiet / everything ok
-    "{name} why u so quiet.. all ok with u",
-    "u become so quiet {name}.. everything is ok ?",
-    "u go quiet on me {name}.. is everything fine",
-    # cant stop thinking / u around
-    "i cant stop to think about our chat 😏 u are around {name}?",
-    "our chat is still in my head 😏 u around {name} ?",
-    "cant stop think about what we say 😏 {name} u there",
-    # dont leave me hanging
-    "hey u 👀 {name} dont make me wait so much",
-    "hey u 👀 dont leave me like this {name}",
-    "{name} 👀 dont let me waiting here",
-)
+# Both pools live in `_voice.NUDGE_LINES` — his is native English and drops the
+# 🙈/🥺 his own emoji rule bans. The text moved; nothing else did.
+_NUDGE_LINES = _voice.NUDGE_LINES[_voice.VOICE_HER]
 
 
 async def _run_nudge(account_id: str, payload: dict, cfg: dict) -> dict:
@@ -2625,6 +2628,7 @@ async def _run_nudge(account_id: str, payload: dict, cfg: dict) -> dict:
         )).scalars().all()
     fans = {int(f.fan_id): f for f in fan_rows}
     client = await asyncio.to_thread(ax._make_client, account_id)
+    _nudge_v = await load_voice_blocks(account_id)
 
     nudged = skipped = 0
     for fan_id in fan_ids:
@@ -2649,9 +2653,9 @@ async def _run_nudge(account_id: str, payload: dict, cfg: dict) -> dict:
             skipped += 1
             continue
         try:
-            name = (resolve_fan_name(f) if f else "").split("/")[0][:20] or "babe"
+            name = _greetable(f, _nudge_v)
             line = apply_word_restriction(
-                random.choice(_NUDGE_LINES).replace("{name}", name))[:_REPLY_MAX_CHARS]
+                random.choice(_nudge_v.nudge_lines).replace("{name}", name))[:_REPLY_MAX_CHARS]
             await hold_with_typing(account_id, fan_id,
                                    typing_delay_seconds(line, typing_wpm),
                                    typing_indicator=typing_indicator)
@@ -2749,7 +2753,7 @@ async def _run_post_buy(account_id: str, payload: dict, cfg: dict) -> dict:
     client = await asyncio.to_thread(ax._make_client, account_id)
     bridged = rung_fired = 0
     try:
-        name = (resolve_fan_name(f) if f else "").split("/")[0][:20] or "babe"
+        name = _greetable(f, await load_voice_blocks(account_id))
         bridge = _pack_line("post_buy_bridge", cfg, fan_id, name=name)
         if bridge and await _send_free_bubble(client, account_id, fan_id, bridge,
                                               typing_wpm=typing_wpm,
@@ -2845,7 +2849,8 @@ async def _fire_post_buy_rung(client, account_id: str, cfg: dict, fan_id: int,
     media = _item_media(item)
     px = int(quote.price_cents) if quote is not None else int(item.price_cents or 0)
     px = max(upsell.OF_PRICE_FLOOR_CENTS, min(px, upsell.OF_PRICE_MAX_CENTS))
-    line = _pack_line("rung_escalate", cfg, fan_id) or "unlock this babe 😏"
+    line = (_pack_line("rung_escalate", cfg, fan_id)
+            or (await load_voice_blocks(account_id)).unlock_prompt)
     line = apply_word_restriction(line)[:_REPLY_MAX_CHARS]
     kwargs = {"price": px / 100, "locked_text": False, "media_files": media}
     previews = _item_previews(item)
@@ -2941,8 +2946,9 @@ async def _run_aftercare(account_id: str, payload: dict, cfg: dict) -> dict:
     client = await asyncio.to_thread(ax._make_client, account_id)
     sent = gifted = 0
     try:
-        name = (resolve_fan_name(f) if f else "").split("/")[0][:20] or "babe"
-        line = _pack_line("aftercare", cfg, fan_id, name=name) or "mmm come here 🥰"
+        _ac_v = await load_voice_blocks(account_id)
+        name = _greetable(f, _ac_v)
+        line = _pack_line("aftercare", cfg, fan_id, name=name) or _ac_v.aftercare
         # §7.2 gift — genuinely FREE unseen media, once, after >=2 paid rungs, never
         # after regret. Picked media-keyed against _seen_media (a mass-blast buy has no
         # content_offers row), and never something he already owns.
@@ -3833,7 +3839,7 @@ async def _trigger_make_right_apology(account_id: str, fan_id: int) -> None:
                     account_id, fan_id, exc_info=True)
 
 
-def _pack_line(slot: str, cfg: dict, fan_id: int, *, name: str = "babe",
+def _pack_line(slot: str, cfg: dict, fan_id: int, *, name: str | None = None,
                price_cents: int | None = None) -> str | None:
     """One line from the account's script pack (UI overrides > shipped defaults), in
     the account's language (cfg._account_lang; English per-slot fallback) and the
@@ -3842,7 +3848,14 @@ def _pack_line(slot: str, cfg: dict, fan_id: int, *, name: str = "babe",
     Both ride on cfg rather than being threaded as parameters because every caller
     already holds it — and because this is the one send path with no model in the
     loop, so a caller that forgot to pass the voice would send a female line from a
-    male creator with nothing able to intercept it."""
+    male creator with nothing able to intercept it.
+
+    `name` defaults to the LANE's address rather than the literal "babe" for the
+    same reason. Most callers pass a resolved name, but `rung_escalate` does not —
+    so a pack line holding {name} rendered "babe" from a male creator on the one
+    slot that fires at the moment of the ask."""
+    if name is None:
+        name = _voice.blocks(cfg.get("_account_voice")).fan_address
     overrides = cfg.get("script_pack_overrides")
     return script_packs.render(
         slot, rng=random.Random(f"pack:{slot}:{fan_id}:{datetime.utcnow():%Y%m%d%H%M}"),
@@ -4079,8 +4092,8 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
             need_block += (
                 "\n4. THEN SELL HIM WHAT HE JUST DESCRIBED. Pick the piece from WHAT YOU "
                 "CAN SELL that matches HIS OWN WORDS, and write the caption as the NEXT "
-                "LINE OF THIS SCENE — never as a product. 'here we go babe, legs spread "
-                "apart, waiting for you' — not 'check out my new video'. End with the "
+                "LINE OF THIS SCENE — never as a product. "
+                f"{v.sell_caption_example} — not 'check out my new video'. End with the "
                 ">>OFFER line. If he hasn't described anything yet, do step 2 first and "
                 "sell on the next message."
             )
@@ -4803,7 +4816,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # final. (COMPANION stays reserved for an explicit "just want to talk.")
                 await _save_ladder(account_id, fan_id,
                                    offers_paused_until=now + timedelta(hours=24))
-                name = (resolve_fan_name(f) or "").split("/")[0][:20] or "babe"
+                name = _greetable(f, voice_blocks)
                 ack = _pack_line("soft_broke_ack", cfg, fan_id, name=name)
                 if ack and not dry_run and await _send_free_bubble(
                         client, account_id, fan_id, ack, typing_wpm=typing_wpm,
@@ -4818,7 +4831,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # window; a companion fan re-enters SELLING only on his OWN future buy.
                 await _save_ladder(account_id, fan_id, status=upsell.STATUS_COMPANION,
                                    companion_until=now + timedelta(hours=24))
-                name = (resolve_fan_name(f) or "").split("/")[0][:20] or "babe"
+                name = _greetable(f, voice_blocks)
                 ack = _pack_line("companion_ack", cfg, fan_id, name=name)
                 if ack and not dry_run and await _send_free_bubble(
                         client, account_id, fan_id, ack, typing_wpm=typing_wpm,
@@ -4840,7 +4853,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # objection: stamp objection_at so an EARNED discount (§5) may
                     # follow a LATER fan turn (the "beat"), never this one.
                     await _save_ladder(account_id, fan_id, objection_at=now)
-                    name = (resolve_fan_name(f) or "").split("/")[0][:20] or "babe"
+                    name = _greetable(f, voice_blocks)
                     ack = _pack_line("soft_broke_ack", cfg, fan_id, name=name)
                     if ack and not dry_run and await _send_free_bubble(
                             client, account_id, fan_id, ack, typing_wpm=typing_wpm,

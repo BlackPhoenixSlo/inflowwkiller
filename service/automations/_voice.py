@@ -447,6 +447,128 @@ def _humanizer(voice: str) -> str:
     )
 
 
+# ── Unlock reactions ─────────────────────────────────────────────────
+# `ai_chatter`'s watcher fires one of these the instant an unlock lands, with NO
+# model in the loop — the bot only speaks "in voice" again the next time the fan
+# actually writes. That makes this the SECOND canned-text surface after
+# `OFF_DEFLECTIONS`, and the worse-placed of the two: it lands on the highest-
+# emotion beat in the funnel, immediately after money moved.
+#
+# Hers is squealing — "omg enjoy babe 😘", "eeek ok enjoy 💕 dont be shy after".
+# From a 38-year-old combat-sports coach that is not a wrong pet name, it is a
+# different person answering. His are flat approval: the sale is acknowledged and
+# the frame stays his.
+#
+# Equal length in both lanes, same reason as OFF_DEFLECTIONS — the caller picks
+# with a seeded rng and a matching count keeps the pick stable in shape.
+UNLOCK_REACTIONS = {
+    VOICE_HER: (
+        "omg enjoy babe 😘",
+        "mmm enjoy 🙈 tell me what u think after",
+        "ur the best 😏 enjoy",
+        "eeek ok enjoy 💕 dont be shy after",
+    ),
+    VOICE_HIM: (
+        "good man. enjoy",
+        "thats what i like. tell me what you think after",
+        "knew you would 😏 enjoy it",
+        "go on then. dont be shy after",
+    ),
+}
+
+# The fallback when the account's line pack has no rung for an escalation. NOT a
+# rare path — the prod catalog runs ~34% empty rungs, so this ships often.
+UNLOCK_PROMPT_FALLBACK = {
+    VOICE_HER: "unlock this babe 😏",
+    VOICE_HIM: "unlock it 😏",
+}
+
+# The aftercare fallback, same "pack has no line" path as above.
+AFTERCARE_FALLBACK = {
+    VOICE_HER: "mmm come here 🥰",
+    VOICE_HIM: "come here",
+}
+
+# ── Re-engage nudges ─────────────────────────────────────────────────
+# The THIRD model-free surface. `_run_nudge` picks one of these verbatim, so —
+# like OFF_DEFLECTIONS and UNLOCK_REACTIONS — no prompt rule can reach it.
+#
+# Hers leans on 🙈 and 🥺 six times across fifteen lines, and both of those are on
+# the male lane's EXPLICIT BAN list in `_EMOJI_VOCAB`. That is the sharpest form
+# of the drift this module exists to stop: the prompt tells him never to type 🥺
+# while the code types it for him, unprompted, into an unsolicited message.
+#
+# The register differs beyond emoji. Hers MISSES him — "i miss to talk with u",
+# "dont leave me like this" — which is the pull that works from her. The same
+# beat from a dom inverts: he is not pining, he noticed the silence and expects
+# an answer. Five beats, three lines each, mirroring hers so a repeatedly-nudged
+# fan never redraws the same line.
+#
+# ⚠️ HIS ARE NATIVE ENGLISH ON PURPOSE. Hers are hand-written in the non-native
+# register (see `_NUDGE_LINES`) because `nonnative_ai_chatter` defaults ON and
+# cannot reach canned text — including the space-before-'?' tic baked at 4-in-15.
+# Broken English is a fact about those personas, not about all creators: it reads
+# wrong on a 38-year-old English-speaking coach. If a male account ever wants the
+# non-native register, that is a second pool here, not an edit to these.
+NUDGE_LINES = {
+    VOICE_HER: (
+        # still there?
+        "hey {name} u still there ? 🙈",
+        "{name} u still there 🙈 or no",
+        "hey {name} u are still with me ? 🙈",
+        # miss talking / what are u up to
+        "i miss to talk with u {name} 🥺 what u doing",
+        "miss talk with u {name} 🥺 what u up to now",
+        "i am missing u {name} 🥺 hiw is ur day",
+        # went quiet / everything ok
+        "{name} why u so quiet.. all ok with u",
+        "u become so quiet {name}.. everything is ok ?",
+        "u go quiet on me {name}.. is everything fine",
+        # cant stop thinking / u around
+        "i cant stop to think about our chat 😏 u are around {name}?",
+        "our chat is still in my head 😏 u around {name} ?",
+        "cant stop think about what we say 😏 {name} u there",
+        # dont leave me hanging
+        "hey u 👀 {name} dont make me wait so much",
+        "hey u 👀 dont leave me like this {name}",
+        "{name} 👀 dont let me waiting here",
+    ),
+    VOICE_HIM: (
+        # still there?
+        "{name} you still there",
+        "still with me {name} or what",
+        "you there {name}",
+        # what are you up to — NOT "i miss you"
+        "what you up to {name}",
+        "{name} what you doing over there",
+        "hows your day going {name}",
+        # went quiet / everything ok
+        "{name} you went quiet.. all good",
+        "quiet all of a sudden {name}.. everything ok",
+        "you go quiet on me {name}.. all good over there",
+        # still thinking about the chat — confident, not pining
+        "been thinking about our chat 😏 you around {name}",
+        "our chat stuck with me 😏 {name} you there",
+        "still thinking about what you said 😏 {name}",
+        # dont keep me waiting — his time, not his longing
+        "{name} dont keep me waiting",
+        "dont leave me hanging {name} 👀",
+        "{name} 👀 im waiting",
+    ),
+}
+
+# ⚠️ The ONE worked example in the selling prompt — the model is shown exactly one
+# sentence of what a sell-caption sounds like, and writes every caption against it.
+# Hers puts the creator's own body in the frame in the second person's imagination,
+# which is the whole technique. Left unlaned it hands a male creator female anatomy
+# to narrate as his own, in the single most load-bearing line of the engine that
+# closes sales.
+SELL_CAPTION_EXAMPLE = {
+    VOICE_HER: "'here we go babe, legs spread apart, waiting for you'",
+    VOICE_HIM: "'this is me after the gym, still dripping, thinking about you'",
+}
+
+
 # ── The bundle ───────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -472,7 +594,18 @@ class VoiceBlocks:
     # picks per generation and the account reads as female in some replies only.
     texter_noun: str
     # What to call a fan whose name we could not resolve — "babe" is hers.
+    # NOT a rare path: `of_display_name` is empty for ~80% of fans, so on a male
+    # account this is the DEFAULT address, not the exception.
     fan_address: str
+    # Canned, model-free, fired the instant an unlock lands. See UNLOCK_REACTIONS.
+    unlock_reactions: tuple[str, ...]
+    # Fallback escalation line when the account's pack has no rung (~34% of prod).
+    unlock_prompt: str
+    aftercare: str
+    # Canned re-engage pool, model-free. Hers types banned-for-him emoji.
+    nudge_lines: tuple[str, ...]
+    # The one worked example the sell-caption prompt shows the model.
+    sell_caption_example: str
     sell_customs: bool = False
 
     @property
@@ -498,6 +631,11 @@ def blocks(voice: object, sell_customs: bool = False) -> VoiceBlocks:
         humanizer=_humanizer(v),
         texter_noun=_TEXTER_NOUN[v],
         fan_address=_FAN_ADDRESS[v],
+        unlock_reactions=UNLOCK_REACTIONS[v],
+        unlock_prompt=UNLOCK_PROMPT_FALLBACK[v],
+        aftercare=AFTERCARE_FALLBACK[v],
+        nudge_lines=NUDGE_LINES[v],
+        sell_caption_example=SELL_CAPTION_EXAMPLE[v],
         sell_customs=bool(sell_customs),
     )
 
