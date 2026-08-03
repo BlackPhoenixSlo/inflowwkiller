@@ -425,8 +425,24 @@ def classify(text: str | None, lang: str = "en") -> Pick | None:
     return best
 
 
-_JUDGE_SYSTEM = (
-    "You decide whether to keep one message a man sent an OnlyFans creator, so she "
+# The three spans that name the CREATOR's gender. The judge is internal — its
+# verdict never reaches a fan — but it is still a model being told, as fact, that
+# the account it is reasoning about belongs to a woman, and two of its DO-NOT-KEEP
+# rules turn on that ("compliments about HER", "questions about her"). On a male
+# account those rules describe a person who does not exist, so the classifier is
+# applying them by analogy rather than by reading.
+_JUDGE_PRONOUNS = {
+    "her": ("she", "HER", "her"),
+    "him": ("he", "HIM", "him"),
+}
+
+
+def _judge_system(voice: str = "her") -> str:
+    subj, obj_caps, obj = _JUDGE_PRONOUNS[
+        "him" if str(voice or "").strip().lower() == "him" else "her"]
+    return (
+    "You decide whether to keep one message a man sent an OnlyFans creator, so "
+    f"{subj} "
     "can re-read it weeks later and sound like someone who listened.\n\n"
     "KEEP it only if it is a longer explanation of HIS OWN LIFE — what he does for "
     "work, his daily routine, where he lives, his family, his history, his skills, "
@@ -437,9 +453,9 @@ _JUDGE_SYSTEM = (
     "overtime, and a hard year is still a fact about him. None of that disqualifies.\n\n"
     "DO NOT KEEP:\n"
     "- sexual fantasy or roleplay — everything in it is imagined, not true\n"
-    "- love letters, poems, song lyrics, compliments about HER\n"
+    f"- love letters, poems, song lyrics, compliments about {obj_caps}\n"
     "- promos, price lists, agency pitches, anything selling something\n"
-    "- requests for custom content, or questions about her\n"
+    f"- requests for custom content, or questions about {obj}\n"
     "- complaints, accusations, goodbyes\n"
     "- a passing mood or a one-off event with no lasting fact ('flying today', "
     "'money is tight this month')\n"
@@ -452,7 +468,12 @@ _JUDGE_SYSTEM = (
     "Any language. Reply as JSON: {\"keep\": true|false, \"topic\": \"<one or two "
     "words: occupation, routine, family, history, health, plans, hobby, location>\", "
     "\"fact\": \"<the single most useful thing it says about him, under 12 words>\"}"
-)
+    )
+
+
+# Back-compat: the shipped female prompt, byte-identical, for any caller that has
+# not been threaded a voice yet.
+_JUDGE_SYSTEM = _judge_system("her")
 
 
 async def judge(text: str, account_id: str, fan_id: int) -> Pick | None:
@@ -472,9 +493,10 @@ async def judge(text: str, account_id: str, fan_id: int) -> Pick | None:
     from . import _common                    # local: _common imports this module
     try:
         model = await _common.resolve_model(account_id, "pins")
+        _jv = (await _common.load_voice_blocks(account_id)).voice
         res = await llm_client.chat(
             model=model,
-            messages=[{"role": "system", "content": _JUDGE_SYSTEM},
+            messages=[{"role": "system", "content": _judge_system(_jv)},
                       {"role": "user", "content": text[:_TEXT_CLIP]}],
             purpose="pins_judge",
             account_id=str(account_id), fan_id=int(fan_id),

@@ -96,6 +96,7 @@ from attribution import write_outbound_attribution
 from automation_registry import register
 from ._common import (
     LIVE_PROOF_GUARDRAIL, apply_word_restriction, hold_with_typing,
+    load_voice_blocks,
     load_strip_emojis, load_typing_indicator,
     load_typing_wpm, resolve_model, skip_unreachable_fan, strip_emojis,
     typing_delay_seconds,
@@ -591,13 +592,16 @@ async def _step_texts(
         "Continue the funnel naturally and nudge the conversation forward."
     )
     convo = await _history_block(account_id, fan_id)
+    # This engine carries no humanizer, so `v.emoji_vocab` is the only thing
+    # naming an emoji set on a male account — "" for her, so hers is unchanged.
+    v = await load_voice_blocks(account_id)
     system = (
         f"{persona}\n\n"
         f"Funnel goal for this message: {prompt}\n\n"
         "Write ONE short reply (1-3 sentences, casual texting tone) as the "
         "creator. Output ONLY the message text — no quotes, no name prefix, no "
         "preamble.\n\n"
-        f"{LIVE_PROOF_GUARDRAIL}"
+        f"{v.live_proof}{v.emoji_vocab}"
     )
     user = (
         f"Recent conversation (oldest→newest):\n{convo}\n\n"

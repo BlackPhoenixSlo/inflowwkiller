@@ -61,6 +61,8 @@ from vault_ai_api import _describe_one as _vault_describe_one
 from vault_ai_api import _DRM_RETRY_AFTER  # shared DRM re-attempt cooldown
 from vault_ai_effective import is_locked
 
+from ._common import load_voice_blocks
+
 log = logging.getLogger("of-relay.automation.describe_media")
 
 _PURPOSE_COPY = "describe_media_copy"
@@ -78,7 +80,16 @@ _PURPOSE_COPY = "describe_media_copy"
 _IMAGE_KINDS = ("photo", "gif")
 _VIDEO_KINDS = ("video",)
 
-_COPY_SYSTEM_PROMPT = (
+# The one adjective that tells the model HOW the creator sounds selling his or her
+# own body. "sultry" is a word for a woman — a man writing sultry copy about
+# himself reads as someone impersonating one — and it is the only gendered span in
+# this prompt, so the rest is shared verbatim.
+_COPY_TONE = {"her": "sultry", "him": "blunt and filthy"}
+
+
+def _copy_system_prompt(voice: str = "her") -> str:
+    tone = _COPY_TONE["him" if str(voice or "").strip().lower() == "him" else "her"]
+    return (
     "You write sales copy for an OnlyFans creator's PPV send. You are given the "
     "FACTS a vision model recorded about one piece of vault media — what happens "
     "in it, in order, plus its clothing state, acts, props and heat level — "
@@ -86,11 +97,15 @@ _COPY_SYSTEM_PROMPT = (
     "Turn those facts into two short pieces of copy:\n"
     "  caption — 1 short line, teasing + intriguing, first-person from the "
     "creator, no hashtags, no @, <= 140 chars.\n"
-    "  script  — 2-4 short sentences, first-person, sultry + specific to what "
+    f"  script  — 2-4 short sentences, first-person, {tone} + specific to what "
     "is actually shown in the description, <= 500 chars.\n"
     "Respond with STRICT JSON only: "
     '{"caption": "<one line>", "script": "<a few sentences>"}.'
-)
+    )
+
+
+# Back-compat: the shipped female prompt, byte-identical.
+_COPY_SYSTEM_PROMPT = _copy_system_prompt("her")
 
 _JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -283,7 +298,9 @@ async def _copy_one(account_id: str, media_id: int, model: str) -> dict[str, Any
         result = await llm_client.chat(
             model=model,
             messages=[
-                {"role": "system", "content": _COPY_SYSTEM_PROMPT},
+                {"role": "system",
+                 "content": _copy_system_prompt(
+                     (await load_voice_blocks(account_id)).voice)},
                 {"role": "user", "content": user_body},
             ],
             purpose=_PURPOSE_COPY,
