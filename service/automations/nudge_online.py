@@ -46,6 +46,8 @@ from db.models import (
 from . import send_welcome  # reuse _slot_key / _resolve_welcome_name / _model_hour
 from ._common import substitute_placeholders
 
+from ._common import load_voice_blocks
+
 log = logging.getLogger("of-relay.automation.nudge_online")
 
 
@@ -371,6 +373,34 @@ _QA_MISSING = [
     ("his_age",    "how old are you btw? 😏 just curious"),
 ]
 
+# ── The MALE pools ───────────────────────────────────────────────────────────
+# ⚠️ ORDER IS LOAD-BEARING. `_try_qa` walks these in list order and returns on the
+# FIRST unasked match, so the topic sequence must stay identical to the female
+# lists above — reordering silently changes which question a fan gets first.
+#
+# Hers open warm and curious ("miss that lil face", "wanna know you better"). His
+# ask the same question flatly and expect an answer; the interest is real but it
+# is not eager. Same topic keys, same placeholders, one line each.
+_QA_KNOWN_HIM = [
+    ("pets",       "{pet} still running the house 🐾"),
+    ("hobbies",    "you still putting time into {hobby} or did that slide 😏"),
+    ("home_city",  "hows {city} treating you"),
+    ("occupation", "hows the {job} grind 😏"),
+]
+_QA_MISSING_HIM = [
+    ("home_city",  "where are you texting me from 👀"),
+    ("hobbies",    "what do you do with yourself when youre not on here"),
+    ("occupation", "whats the job 💼"),
+    ("his_age",    "how old are you. straight answer 😏"),
+]
+
+
+def _qa_pools(voice: str) -> tuple[list, list]:
+    """(known, missing) for this lane. Anything but "him" gets hers, unchanged."""
+    if str(voice or "").strip().lower() == "him":
+        return _QA_KNOWN_HIM, _QA_MISSING_HIM
+    return _QA_KNOWN, _QA_MISSING
+
 
 def _fan_has(fan, attr: str) -> bool:
     """True iff the fan has a usable value for `attr` (pets/recent_events JSON
@@ -385,7 +415,7 @@ def _fan_has(fan, attr: str) -> bool:
     return bool(v)
 
 
-def _try_qa(fan, name: str) -> tuple[str, str] | None:
+def _try_qa(fan, name: str, voice: str = "her") -> tuple[str, str] | None:
     """(text, qa_key) for a question to ask, or None to fall back to tease.
     qa_key is namespaced (`known:`/`ask:`) so the same fact isn't re-asked."""
     asked: set[str] = set()
@@ -394,10 +424,11 @@ def _try_qa(fan, name: str) -> tuple[str, str] | None:
             asked = set(json.loads(fan.questions_asked) or [])
         except Exception:
             asked = set()
-    for key, tmpl in _QA_KNOWN:
+    known, missing = _qa_pools(voice)
+    for key, tmpl in known:
         if _fan_has(fan, key) and f"known:{key}" not in asked:
             return substitute_placeholders(tmpl, fan, name=name), f"known:{key}"
-    for key, tmpl in _QA_MISSING:
+    for key, tmpl in missing:
         if not _fan_has(fan, key) and f"ask:{key}" not in asked:
             return substitute_placeholders(tmpl, fan, name=name), f"ask:{key}"
     return None
@@ -508,7 +539,7 @@ async def _compose_messages(
         mix_qa = random.random() < 0.5 if randomize else (seed + h) % 2 == 0
         want_qa = mode == "qa" or (mode == "mix" and mix_qa)
         if want_qa:
-            qa = _try_qa(fan, name)
+            qa = _try_qa(fan, name, (await load_voice_blocks(account_id)).voice)
             if qa is not None:
                 info_text, qa_key = qa
         if not info_text and texts:

@@ -56,6 +56,8 @@ from db.models import (
     Message, MessageMedia, ResolutionLog, Transaction, VaultSend,
 )
 from automations import tip_reward
+from . import _voice
+from ._common import load_voice_blocks as _load_voice_blocks
 from ._common import (
     hold_with_typing, load_hard_skip_ids, load_operator_stop_ids,
     load_typing_indicator, load_typing_wpm, resolve_fan_name,
@@ -157,6 +159,96 @@ _NUDGE_LINES = [
     "no rush — just wanted you to know i'm thinking of you 🥰",
     "hope you're doing ok 🙈 message me back when you can",
 ]
+
+# ── The MALE pools ───────────────────────────────────────────────────────────
+# Same keys, same counts. This engine ships DEFAULT OFF, but `ai_chatter` calls
+# `_trigger_make_right_apology` on a HARD decline (a fan saying stop selling to
+# me), so the day an operator ticks it on a male account these are what a fan
+# reads at the worst possible moment.
+#
+# ⚠️ HE STILL APOLOGISES, AND THAT IS THE POINT. The register inverts everywhere
+# else in the male lane; it must not here. A creator who cannot own a double
+# charge is not a dom, he is a scammer, and "make it right" is the one surface
+# where lowering yourself IS the correct move. What changes is the DELIVERY: he
+# names the error, says it is his, says what happens next, and stops. Hers add
+# "i feel awful" / "so not okay of me" — the fan is then expected to comfort her,
+# which is the mechanic that cannot survive the swap.
+#
+# ⚠️ NO LINE HERE MAY PROMISE A REFUND. This module NEVER moves money — the
+# header is explicit ("an operator-review flag, NEVER a silent auto-refund") and
+# `flag_refund` only raises a flag for a human. A first draft of these lines said
+# "the refund's going through now"; that is an automated false statement about a
+# fan's money, and it survived a rules pass because nothing about the WORDING is
+# wrong. Remediation here is free content plus a human looking at it. Hers never
+# promise money either — note "let me fix it right now" is deliberately vague.
+_APOLOGY_FRAMES_HIM = {
+    "dup_charge": [
+        "{name} you got charged twice for the same thing. thats my screwup, not yours. im fixing it",
+        "{name} i sent you something you already bought. my mistake. im on it now",
+        "{name} that hit you twice. mine to fix, and im fixing it",
+    ],
+    "paid_undelivered": [
+        "{name} you paid and i never sent it. thats on me. fixing it now",
+        "{name} money went out and nothing came back. my fault. im on it",
+        "{name} you paid, i left you with nothing. mine to fix",
+    ],
+    # NEVER a price in this lane — same rule as hers.
+    "hard_decline": [
+        "understood {name}. i pushed too hard on the paid stuff. thats done. youre still welcome here",
+        "heard you {name}. no more unlocks, no more asks. id rather keep the conversation",
+        "{name} you said it straight and you were right to. im done selling at you",
+    ],
+}
+# ⚠️ The four pools below carry NO {name}, exactly like their female twins, even
+# though the call sites all run .replace("{name}", name). Adding one would change
+# what a fan sees rather than just the wording — and these ride directly behind an
+# apology bubble that already opened with his name, so a second address in two
+# consecutive bubbles reads as a script.
+_GIFT_LEADS_HIM = [
+    "sending you something while i fix this. on me",
+    "this ones free. no strings",
+    "take this. no charge",
+]
+_FREE_LEADS_HIM = [
+    "heres another one. free",
+    "that one too",
+    "and this. still nothing to pay",
+    "last one, then im done",
+]
+# He never argues the value — a dom who tells a fan it is "worth the money" has
+# already conceded the price.
+_PPV_TEASES_HIM = [
+    "were square. made something new since. your call 😏",
+    "back to it. this ones new 🔥",
+    "since were good, theres something you havent seen 😈",
+]
+# Three different beats: available / noticing / handing him the move. Hers are all
+# one beat (permanent availability), which works because it reassures; from him it
+# reads as waiting around.
+_NUDGE_LINES_HIM = [
+    "still here when you want to pick this back up",
+    "you went quiet. all good?",
+    "doors open. your move",
+]
+
+_MALE_POOLS = {
+    id(_GIFT_LEADS): _GIFT_LEADS_HIM,
+    id(_FREE_LEADS): _FREE_LEADS_HIM,
+    id(_PPV_TEASES): _PPV_TEASES_HIM,
+    id(_NUDGE_LINES): _NUDGE_LINES_HIM,
+}
+
+
+def _lane(pool: list[str], voice: str) -> list[str]:
+    """His twin of `pool`, or `pool` itself for every other voice."""
+    if str(voice or "").strip().lower() != "him":
+        return pool
+    return _MALE_POOLS.get(id(pool), pool)
+
+
+def _apology_frames(voice: str) -> dict[str, list[str]]:
+    return (_APOLOGY_FRAMES_HIM
+            if str(voice or "").strip().lower() == "him" else _APOLOGY_FRAMES)
 
 
 async def _load_config(account_id: str) -> dict:
@@ -540,20 +632,26 @@ async def _pull_unseen(client, account_id: str, fan_id: int, folders: list[str],
                                    by_name, exclude, count)
 
 
-def _fan_first_name(fan: Fan | None) -> str:
-    """A real given name if we have one, else a pet name — never a raw location/tag."""
+def _fan_first_name(fan: Fan | None, voice: str = "her") -> str:
+    """A real given name if we have one, else the LANE's address — never a raw
+    location/tag. The fallback is not rare (of_display_name is empty for ~80% of
+    fans), so on a male account this was "babe" on the majority of apologies."""
     raw = resolve_fan_name(fan) or ""
     name = raw.split("/")[0].strip() if raw else ""
-    return name if (name and name.isalpha() and 1 < len(name) <= 20) else "babe"
+    if name and name.isalpha() and 1 < len(name) <= 20:
+        return name
+    return _voice.blocks(voice).fan_address
 
 
 def _apology_bubbles(fan: Fan | None, cfg: dict, rng: Random,
-                     kind: str = _DEFAULT_APOLOGY_KIND) -> list[str]:
+                     kind: str = _DEFAULT_APOLOGY_KIND,
+                     voice: str = "her") -> list[str]:
     """The apology turn — one warm bubble, worded to match the MISTAKE `kind`. An
     operator `apology_caption` overrides it. `{name}` → the fan's given/pet name."""
-    name = _fan_first_name(fan)
+    name = _fan_first_name(fan, voice)
     override = str(cfg.get("apology_caption") or "").strip()
-    frames = _APOLOGY_FRAMES.get(kind) or _APOLOGY_FRAMES[_DEFAULT_APOLOGY_KIND]
+    _frames = _apology_frames(voice)
+    frames = _frames.get(kind) or _frames[_DEFAULT_APOLOGY_KIND]
     frame = override if override else rng.choice(frames)
     return [frame.replace("{name}", name)]
 
@@ -763,18 +861,19 @@ async def _do_step(client, account_id: str, fan_id: int, action: str, cfg: dict,
       nudge                  → one gentle line (no media) when he's gone quiet
     A step with no fresh media still sends its line so the exchange never stalls; a
     missing PPV folder/price makes the ppv step a graceful no-op (the exchange closes)."""
-    name = _fan_first_name(fan)
+    _v = (await _load_voice_blocks(account_id)).voice
+    name = _fan_first_name(fan, _v)
     per_step = max(1, int(cfg.get("gift_pieces_per_step") or 1))
 
     if action in ("apology", "apology_gift"):
         bubbles = [{"text": b, "media": [], "price_cents": 0}
-                   for b in _apology_bubbles(fan, cfg, rng, kind)]
+                   for b in _apology_bubbles(fan, cfg, rng, kind, _v)]
         media_sent: list[int] = []
         if action == "apology_gift":
             gift = await _pull_unseen(client, account_id, fan_id,
                                       _free_folders(cfg, tip_cfg, 0), per_step)
             if gift:
-                bubbles.append({"text": rng.choice(_GIFT_LEADS).replace("{name}", name),
+                bubbles.append({"text": rng.choice(_lane(_GIFT_LEADS, _v)).replace("{name}", name),
                                 "media": gift, "price_cents": 0})
                 media_sent = gift
         ok, _ = await _send_bubbles(client, account_id, fan_id, bubbles, wpm, indicator, now)
@@ -783,7 +882,7 @@ async def _do_step(client, account_id: str, fan_id: int, action: str, cfg: dict,
     if action == "free":
         gift = await _pull_unseen(client, account_id, fan_id,
                                   _free_folders(cfg, tip_cfg, 0), per_step)
-        lead = rng.choice(_FREE_LEADS).replace("{name}", name)
+        lead = rng.choice(_lane(_FREE_LEADS, _v)).replace("{name}", name)
         ok, _ = await _send_bubbles(client, account_id, fan_id,
                                     [{"text": lead, "media": gift, "price_cents": 0}],
                                     wpm, indicator, now)
@@ -796,7 +895,7 @@ async def _do_step(client, account_id: str, fan_id: int, action: str, cfg: dict,
         if not media or price_cents <= 0:
             return True, []  # nothing to pitch → close gracefully
         tease = (str(cfg.get("ppv_caption") or "").strip()
-                 or rng.choice(_PPV_TEASES)).replace("{name}", name)
+                 or rng.choice(_lane(_PPV_TEASES, _v))).replace("{name}", name)
         ok, _ = await _send_bubbles(
             client, account_id, fan_id,
             [{"text": tease, "media": media, "price_cents": price_cents, "previews": media[:1]}],
@@ -812,7 +911,7 @@ async def _do_step(client, account_id: str, fan_id: int, action: str, cfg: dict,
         return True, media
 
     if action == "nudge":
-        line = rng.choice(_NUDGE_LINES).replace("{name}", name)
+        line = rng.choice(_lane(_NUDGE_LINES, _v)).replace("{name}", name)
         ok, _ = await _send_bubbles(client, account_id, fan_id,
                                     [{"text": line, "media": [], "price_cents": 0}],
                                     wpm, indicator, now)
@@ -1007,7 +1106,9 @@ async def _run_hard_decline(account_id: str, cfg: dict, hd: dict, *,
     if dry_run:
         rng = Random(f"make_right:{account_id}:{incident_key}:0")
         return {**base, "dry_run": True, "action": "would_open", "steps": steps,
-                "apology": _apology_bubbles(fan, cfg, rng, "hard_decline")[0]}
+                "apology": _apology_bubbles(
+                    fan, cfg, rng, "hard_decline",
+                    (await _load_voice_blocks(account_id)).voice)[0]}
 
     client = await asyncio.to_thread(ax._make_client, account_id)
     wpm = await load_typing_wpm(account_id)
@@ -1120,7 +1221,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # frame a real open would send. Both draws live ONLY here — a real
                 # open must not burn a vault lookup (gift_preview) it never uses.
                 rng = Random(f"make_right:{account_id}:{inc['incident_key']}:0")
-                apology = _apology_bubbles(fan, cfg, rng, inc["kind"])[0]
+                apology = _apology_bubbles(
+                    fan, cfg, rng, inc["kind"],
+                    (await _load_voice_blocks(account_id)).voice)[0]
                 gift_preview = await _pull_unseen(
                     client, account_id, fid,
                     _free_folders(cfg, tip_cfg, inc["wrongful_cents"]),

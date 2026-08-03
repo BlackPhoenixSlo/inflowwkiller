@@ -61,6 +61,8 @@ from db.engine import get_session
 from db.models import AccountAiConfig, NudgeState
 from . import send_welcome  # _model_hour / _model_weekday / _slot_key
 
+from ._common import load_voice_blocks
+
 log = logging.getLogger("of-relay.automation.mass_nudge")
 
 _DEFAULT_COOLDOWN_HOURS = 12   # default re-nudge window if the rule omits it
@@ -158,6 +160,39 @@ _DEFAULT_SLOTS: dict = {
 }
 
 
+# ── The MALE slots ───────────────────────────────────────────────────────────
+# A mass nudge goes to MANY fans at once but each one reads it inside a 1:1
+# thread, so nothing here may address a crowd. Hers get away with "morning loves"
+# and "who's online?" because the plural reads as a broadcast persona; from a dom
+# it reads as a man talking to a room the fan is not in. His are singular and
+# direct — he is messaging one person, and the fan has no way to know otherwise.
+#
+# Same slot keys and the same TWO lines per slot: `_pick_slot` indexes these, so a
+# missing slot is a silent no-send and a different count changes the rotation.
+_DEFAULT_SLOTS_HIM: dict = {
+    "default": {
+        "morning_1": {"text": ["up already 😏", "morning. talk to me"], "image": []},
+        "morning_2": {"text": ["you around this morning 👀", "still in bed or up?"], "image": []},
+        "afternoon_1": {"text": ["afternoon. what are you doing", "you free 😏"], "image": []},
+        "afternoon_2": {"text": ["bored? come here", "im around if you are"], "image": []},
+        "evening": {"text": ["evening. trainings done, im free 🔥", "you on tonight?"], "image": []},
+        "night": {"text": ["up late. im still here", "cant sleep either 😏"], "image": []},
+    },
+    "weekend": {
+        "evening": {"text": ["weekends yours. what are you doing with it 🔥",
+                             "its the weekend 😈 come here"], "image": []},
+    },
+}
+
+
+def _slots_for(cfg: dict, voice: str) -> dict:
+    """Operator slots always win. Otherwise the LANE's built-ins — a male account
+    with no configured slots must not fall through to "morning loves"."""
+    return cfg.get("slots") or (
+        _DEFAULT_SLOTS_HIM if str(voice or "").strip().lower() == "him"
+        else _DEFAULT_SLOTS)
+
+
 def _rotation_idx(n: int) -> int:
     """Time-derived index so the line rotates each hour without stored state."""
     if n <= 0:
@@ -184,7 +219,7 @@ async def preview_compose(account_id: str, payload: dict, *, hour: int | None = 
     h = int(hour) % 24 if hour is not None else send_welcome._model_hour(off)
     slot = send_welcome._slot_key(h)
     weekday = send_welcome._model_weekday(off)
-    slots = cfg.get("slots") or _DEFAULT_SLOTS
+    slots = _slots_for(cfg, (await load_voice_blocks(account_id)).voice)
     pool = _pick(slots, slot, weekday)
     texts = pool.get("text") or []
     if not texts:
@@ -207,7 +242,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     slot = send_welcome._slot_key(hour)
     weekday = send_welcome._model_weekday(off)
 
-    slots = cfg.get("slots") or _DEFAULT_SLOTS
+    slots = _slots_for(cfg, (await load_voice_blocks(account_id)).voice)
     pool = _pick(slots, slot, weekday)
     texts = pool.get("text") or []
     if not texts:
