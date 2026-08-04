@@ -135,9 +135,13 @@ function StyleSection({ accountId }: { accountId: string | null }) {
             Convo, the info-gather chat and the AI Chatter offer list, plus the tip-ask
             if that’s on too. The bot never names a delivery time, never turns it into a
             call, and only ever offers a voice note — not a video, not a photo set.{" "}
-            <strong>Fulfilment is manual:</strong> nothing records the order, so watch
-            for the tip and send the recording yourself. OFF by default — leave it off
-            for any creator who doesn’t actually make customs.
+            <strong>Fulfilment is manual</strong> — you record it and send it. The
+            order IS recorded though: a qualifying tip tags the fan{" "}
+            <code>Custom</code> on OnlyFans, parks him in{" "}
+            <a href="/customs" className="underline">Customs owed</a>, and stops the
+            bot selling to him until it ships. Needs the{" "}
+            <code>customs_watch</code> automation on for that account. OFF by default
+            — leave it off for any creator who doesn’t actually make customs.
           </span>
         </span>
       </label>

@@ -1413,6 +1413,40 @@ def _manifest_block(offerable: dict[int, CatalogItem],
                      "ONE thing you may offer that is not on the list above. "
                      f"{_voice.CUSTOMS_CONDITIONS}"
                      if sell_customs else "")
+    # ── The BOUGHT-OUT case: nothing left on the list, but a custom to sell ──
+    # This is not an edge case for the male lane, it is the PREMISE — "the vault
+    # is spent, the primary sale is a custom". The catalogue block cannot be
+    # reused here: it opens "CONTENT YOU CAN ACTUALLY SEND HIM … NEVER invent
+    # anything not on this list" over an EMPTY list, and then instructs the model
+    # to "pick the best-fitting piece and tease it from its description". Handed
+    # no pieces, that is an invitation to invent one — the exact failure the
+    # header exists to prevent.
+    #
+    # So the customs-only variant says the true thing instead: there is nothing
+    # filmed to send, and the one thing on offer is made to order.
+    if not lines:
+        if not sell_customs:
+            return ""            # nothing to sell and nothing to offer — say nothing
+        return (
+            "WHAT YOU CAN OFFER HIM: nothing pre-made. You have NO filmed content "
+            "to send and you must never claim otherwise, invent a piece, or hint "
+            "that something already exists.\n"
+            "- The ONE thing you can offer is a paid CUSTOM, made for him. "
+            f"{_voice.CUSTOMS_CONDITIONS}\n\n"
+            "SELLING RULES:\n"
+            "- Selling is a side effect of good chat, not the goal of every "
+            "message. Offer the custom ONLY when the vibe is warm or he is asking "
+            "for content — never twice in a row, never pushy, and never apologise "
+            "for the price.\n"
+            "- If he ASKS to see something, do not stall and do not be coy: tell "
+            "him plainly you will make him one, and what it costs.\n"
+            "- He TIPS for it. One short human line in your own voice, e.g. "
+            "\"tip me and ill record it for you 😏\". NEVER write the bare word "
+            "\"tip\" on its own.\n"
+            "- If he is not asking and the vibe is not warm, just talk to him. A "
+            "custom you did not need to mention is a custom he asks for later."
+        )
+
     return (
         "CONTENT YOU CAN ACTUALLY SEND HIM (these are real, already filmed — "
         f"NEVER invent or promise anything not on this list, {_no_customs}and "
@@ -5302,8 +5336,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         amt = await _next_tip_ask_cents(account_id, fan_id, it, cfg,
                                                         cap_cents=tip_cap)
                         quotes[iid] = dataclasses.replace(quotes[iid], price_cents=int(amt))
-                if offerable:
-                    if second_offer:
+                # `offerable` is the CATALOGUE. Gating the whole manifest on it
+                # meant the customs carve-out — the one thing sellable when the
+                # vault is bought out — only rendered for accounts that still had
+                # something else to sell. Backwards for the account it was
+                # written for, and silent: no error, just an engine that never
+                # mentions the product.
+                if offerable or voice_blocks.sell_customs:
+                    # `_second_offer_block` describes "one more piece alongside
+                    # the pending one" and takes the same catalogue — with an
+                    # empty one it has nothing to describe, so the customs-only
+                    # manifest owns the bought-out case on both branches.
+                    if second_offer and offerable:
                         sell_block = _second_offer_block(
                             pending, await _get_item(int(pending.item_id)),
                             offerable, scripts, cfg_offer_mode, quotes or None,
