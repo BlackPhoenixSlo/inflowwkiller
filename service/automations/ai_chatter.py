@@ -485,6 +485,12 @@ _DEFAULTS: dict = {
     # Human reply timing: sleep window, variable delays, cover lines. ON by default
     # (2026-07-22) — instant answers around the clock is the single loudest bot tell.
     "rhythm_enabled": True,
+    # Sample ordinary reply latency from the OPERATOR's distribution (85% inside
+    # 2min / 10% 2-6 / 4% 6-15 / 1% 15-60) instead of the archive-fitted
+    # lognormal, and drop the separate break roll — see rhythm.PACE_BUCKETS.
+    # DEFAULT OFF: six live accounts run rhythm on a curve fitted to their own
+    # data and must not be re-paced by a setting they never chose.
+    "rhythm_pace_buckets": False,
     # No-sleep pacing: keep the hot/cold/busy variable delays + short "stepped away"
     # breaks, but NEVER the long overnight sleep — and it needs no timezone. For a
     # creator who wants "she's a person who gets busy" without an 8-hour night gap.
@@ -4984,6 +4990,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 away = rhythm.decide_availability(rhythm.RhythmCtx(
                     account_id=str(account_id), fan_id=fan_id,
                     voice=voice_blocks.voice,
+                    pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
                     last_inbound_at=c.last_in_at, last_outbound_at=c.last_out_at,
                     # A live ladder suppresses break rolls: never strand a sell. A
                     # HUMAN's unpaid PPV is just as live a sell as one of ours — without
@@ -5208,6 +5215,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     rctx_gate = rhythm.RhythmCtx(
                         account_id=str(account_id), fan_id=fan_id,
                         voice=voice_blocks.voice,
+                        pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
                         sleep_window=sleep_win, tz_offset_minutes=tz_off,
                         no_sleep=rhythm_no_sleep, enabled=rhythm_on)
                     # Same creator-local day the WRITE path stamps (see daily_day
@@ -5818,6 +5826,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 d = rhythm.decide(rhythm.RhythmCtx(
                     account_id=str(account_id), fan_id=fan_id,
                     voice=voice_blocks.voice,
+                    pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
                     text=(parts[0] if parts else ""),
                     typing_delay_s=(typing_delay_seconds(parts[0], typing_wpm)
                                     if parts else 0.0),

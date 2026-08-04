@@ -231,6 +231,8 @@ def _validate_cfg(cfg: dict) -> dict:
         out["rhythm_enabled"] = bool(cfg["rhythm_enabled"])
     if "rhythm_no_sleep" in cfg:
         out["rhythm_no_sleep"] = bool(cfg["rhythm_no_sleep"])
+    if "rhythm_pace_buckets" in cfg:
+        out["rhythm_pace_buckets"] = bool(cfg["rhythm_pace_buckets"])
     # v2/v3 upsell lane — the hard takeover + the "after a buy" behaviors. All are
     # gated by qualification_gate_enabled at RUNTIME, so storing True with the gate
     # off is inert; we still persist the operator's choice.
