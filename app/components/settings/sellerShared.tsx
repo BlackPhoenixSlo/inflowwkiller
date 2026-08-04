@@ -30,7 +30,7 @@ import { useSaveStyleConfig, useStyleConfig } from "@/hooks/useStyleConfig";
 import {
   useAiChatterConfig, useDeleteScript, useImportFolder, usePasteImport,
   useSaveAiChatterConfig, useSaveScriptItems, useUpsertScript,
-  type AiChatterConfig, type CatalogItemT, type CatalogScriptT,
+  type AiChatterConfig, type CatalogItemT, type CatalogScriptT, type PaceBand,
 } from "@/hooks/useCatalog";
 
 export const INPUT =
@@ -506,7 +506,138 @@ export function ScriptCard({ accountId, sc }: { accountId: string; sc: CatalogSc
 
 /* ── Human Rhythm — how long she waits before answering ────────────── */
 
-export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effective }: {
+/** The shipped bands, shown when the account hasn't authored its own. Mirrors
+ *  rhythm.PACE_BUCKETS — if that moves, this caption is the thing that lies. */
+export const SHIPPED_PACE: PaceBand[] = [
+  { pct: 85, up_to_min: 2 },
+  { pct: 10, up_to_min: 6 },
+  { pct: 4, up_to_min: 15 },
+  { pct: 1, up_to_min: 60 },
+];
+
+/** "2 min" / "1 h 30" — the band edges read as durations, not decimals. */
+function fmtMin(m: number): string {
+  if (!Number.isFinite(m) || m <= 0) return "0";
+  if (m < 60) return `${+m.toFixed(m < 1 ? 2 : 0)} min`;
+  const h = Math.floor(m / 60);
+  const rest = Math.round(m - h * 60);
+  return rest ? `${h} h ${rest}` : `${h} h`;
+}
+
+/** The reply-time curve: how often she answers fast, and how often she doesn't.
+ *  Rows are CUT POINTS — each band starts where the one above it ended — so the
+ *  editor cannot produce a gap or an overlap, only an out-of-order edge (flagged). */
+function PaceCurveEditor({ cfg, set }: {
+  cfg: AiChatterConfig;
+  set: (p: Partial<AiChatterConfig>) => void;
+}) {
+  const rows: PaceBand[] = cfg.rhythm_pace_curve?.length
+    ? cfg.rhythm_pace_curve : SHIPPED_PACE;
+  const on = !!cfg.rhythm_pace_buckets;
+  const total = rows.reduce((a, r) => a + (Number(r.pct) || 0), 0);
+  // The server normalises, so 99 or 101 is not an error — but it does mean the
+  // number in the box is not the number she runs. Show both rather than pretend.
+  const skewed = Math.abs(total - 100) > 0.01 && total > 0;
+  const outOfOrder = rows.some((r, i) =>
+    !(r.up_to_min > 0) || (i > 0 && r.up_to_min <= rows[i - 1].up_to_min));
+
+  const write = (next: PaceBand[]) => set({ rhythm_pace_curve: next });
+  const edit = (i: number, patch: Partial<PaceBand>) =>
+    write(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+
+  return (
+    <div className="pl-6 space-y-2">
+      <label className="flex items-start gap-2 cursor-pointer">
+        <input type="checkbox" className="mt-0.5" checked={on}
+          onChange={(e) => set({
+            rhythm_pace_buckets: e.target.checked,
+            // Same reasoning as no-sleep: the curve is a Rhythm sub-mode, and a
+            // ticked box that does nothing because the parent is off is a bug report.
+            ...(e.target.checked ? { rhythm_enabled: true } : {}),
+          })} />
+        <span className="text-xs">
+          <span className="font-medium text-fg">Use my own reply-time curve</span>
+          <span className="block text-fg-dim">
+            Off, she replies on a curve measured from her own message history. On, she
+            uses the percentages below. Only affects ordinary replies — the pause after
+            a gif and the first few messages of a new chat keep their own timing.
+          </span>
+        </span>
+      </label>
+
+      <div className={cn("space-y-1.5", !on && "opacity-50 pointer-events-none")}>
+        <div className="flex items-center gap-2 text-[11px] text-fg-dim">
+          <span className="w-16">Share</span>
+          <span>replies within</span>
+        </div>
+        {rows.map((r, i) => {
+          const from = i === 0 ? 0 : rows[i - 1].up_to_min;
+          const share = total > 0 ? (Number(r.pct) || 0) / total : 0;
+          return (
+            <div key={i} className="flex items-center gap-2 text-xs">
+              <div className="flex items-center gap-1">
+                <input type="number" min={0} max={100} step="any"
+                  className={`${INPUT} w-14 text-right`}
+                  value={r.pct}
+                  onChange={(e) => edit(i, { pct: Number(e.target.value) })} />
+                <span className="text-fg-dim">%</span>
+              </div>
+              <span className="text-fg-dim w-20 shrink-0">
+                {from > 0 ? `${fmtMin(from)} –` : "under"}
+              </span>
+              <input type="number" min={0} step="any"
+                className={`${INPUT} w-16 text-right`}
+                value={r.up_to_min}
+                onChange={(e) => edit(i, { up_to_min: Number(e.target.value) })} />
+              <span className="text-fg-dim">min</span>
+              {skewed && (
+                <span className="text-fg-dim/70">
+                  → runs as {(share * 100).toFixed(1)}%
+                </span>
+              )}
+              {rows.length > 1 && (
+                <button type="button" className="text-fg-dim hover:text-red-400 ml-auto"
+                  title="Remove this band"
+                  onClick={() => write(rows.filter((_, j) => j !== i))}>
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </div>
+          );
+        })}
+
+        <div className="flex items-center gap-3 pt-0.5">
+          <button type="button" className="text-[11px] text-accent hover:underline"
+            onClick={() => write([...rows, {
+              pct: 1,
+              up_to_min: (rows[rows.length - 1]?.up_to_min ?? 0) * 2 || 2,
+            }])}>
+            + band
+          </button>
+          <button type="button" className="text-[11px] text-fg-dim hover:underline"
+            onClick={() => set({ rhythm_pace_curve: null })}>
+            reset to 85 / 10 / 4 / 1
+          </button>
+          <span className={cn("text-[11px] ml-auto",
+            skewed ? "text-amber-400" : "text-fg-dim")}>
+            {total.toFixed(total % 1 ? 1 : 0)}%
+            {skewed && " — scaled to 100 when she runs it"}
+          </span>
+        </div>
+
+        {outOfOrder && (
+          <div className="text-[11px] text-red-400">
+            Each row&apos;s minutes must be larger than the row above it — this curve
+            won&apos;t save.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effective,
+                                houseDefault = ["02:00", "06:00"] }: {
   cfg: AiChatterConfig;
   set: (p: Partial<AiChatterConfig>) => void;
   tz: string;
@@ -514,6 +645,9 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
   utcOffset: number;
   derived: [string, string];
   effective: [string, string];
+  /** rhythm.DEFAULT_SLEEP, handed back by the server so the label and the engine
+   *  can't drift apart. */
+  houseDefault?: [string, string];
 }) {
   const [advanced, setAdvanced] = useState(false);
   const tzKnown = !!tz.trim() || utcOffset !== 0;
@@ -521,10 +655,11 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
   // No-sleep mode needs no timezone, so it can be enabled with none set.
   const canEnable = tzKnown || noSleep;
   const override = cfg.sleep_window ?? null;
+  const sleepSource = cfg.rhythm_sleep_source ?? "default";
   const zones = tz && !TIMEZONES.includes(tz) ? [tz, ...TIMEZONES] : TIMEZONES;
 
   const setWindow = (i: 0 | 1, v: string) => {
-    const base: [string, string] = override ?? [derived[0], derived[1]];
+    const base: [string, string] = override ?? [houseDefault[0], houseDefault[1]];
     const next: [string, string] = i === 0 ? [v, base[1]] : [base[0], v];
     set({ sleep_window: next });
   };
@@ -600,7 +735,9 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
           She sleeps <span className="text-fg font-medium">
             {fmtClock(effective[0])}–{fmtClock(effective[1])}
           </span>{" "}
-          {override ? "(you set this)." : "(your team's quiet hours)."}{" "}
+          {override ? "(you set this)."
+            : sleepSource === "derived" ? "(her own quiet hours)."
+            : "(the house default)."}{" "}
           <button type="button" className="text-accent hover:underline"
             onClick={() => setAdvanced((v) => !v)}>
             {advanced ? "close" : "change"}
@@ -612,32 +749,55 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
         <details open className="text-xs text-fg-dim pl-6">
           <summary className="cursor-pointer select-none font-medium">Advanced</summary>
           <div className="mt-2 space-y-2">
-            <label className="flex items-center gap-2">
-              <input type="checkbox" checked={!!override}
-                onChange={(e) => set({
-                  sleep_window: e.target.checked ? [derived[0], derived[1]] : null,
-                })} />
-              Set her sleep window myself (otherwise it&apos;s read off her own send history)
+            {/* Three sources, one radio group. It was a single "set it myself"
+                checkbox, with derive-from-history as the silent otherwise — which
+                made the house default unreachable on any account that had enough
+                sends to derive from, i.e. all of them. */}
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="radio" name="rhythm-sleep-source" className="mt-0.5"
+                checked={!override && sleepSource !== "derived"}
+                onChange={() => set({ rhythm_sleep_source: "default", sleep_window: null })} />
+              <span>
+                House default — <span className="text-fg">
+                  {fmtClock(houseDefault[0])}–{fmtClock(houseDefault[1])}
+                </span> on her own clock
+              </span>
             </label>
-            <div className={override ? "flex items-center gap-2" : "flex items-center gap-2 opacity-50 pointer-events-none"}>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="radio" name="rhythm-sleep-source" className="mt-0.5"
+                checked={!override && sleepSource === "derived"}
+                onChange={() => set({ rhythm_sleep_source: "derived", sleep_window: null })} />
+              <span>
+                Her own quiet hours, read off her send history —{" "}
+                <span className="text-fg">{fmtClock(derived[0])}–{fmtClock(derived[1])}</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="radio" name="rhythm-sleep-source" className="mt-0.5"
+                checked={!!override}
+                onChange={() => set({ sleep_window: [houseDefault[0], houseDefault[1]] })} />
+              <span>Set her sleep window myself</span>
+            </label>
+            <div className={override ? "flex items-center gap-2 pl-6" : "flex items-center gap-2 pl-6 opacity-50 pointer-events-none"}>
               <span>Asleep from</span>
               <input type="time" className={`${INPUT} w-28`}
-                value={(override ?? derived)[0]}
+                value={(override ?? houseDefault)[0]}
                 onChange={(e) => setWindow(0, e.target.value)} />
               <span>until</span>
               <input type="time" className={`${INPUT} w-28`}
-                value={(override ?? derived)[1]}
+                value={(override ?? houseDefault)[1]}
                 onChange={(e) => setWindow(1, e.target.value)} />
             </div>
             <div className="text-fg-dim/70">
-              From her own sends, her quiet hours look like{" "}
-              <span className="text-fg">{fmtClock(derived[0])}–{fmtClock(derived[1])}</span>.
-              While she&apos;s asleep an incoming message is answered when she wakes up, not
-              instantly — and she says so.
+              While she&apos;s asleep an incoming message is answered when she wakes up,
+              not instantly — and she says so.
             </div>
           </div>
         </details>
       )}
+
+      {/* ── the reply-time curve ── */}
+      <PaceCurveEditor cfg={cfg} set={set} />
     </div>
   );
 }
@@ -885,9 +1045,15 @@ export function useSellerConfig(accountId: string | null) {
     for (const [k, v] of Object.entries(base)) {
       if (v !== d[k]) out[k] = v;
     }
-    // Authoritative, never sparse: null equals the default so the pass above would
-    // drop them, but dropping would leave a stale server override alive.
+    // Authoritative, never sparse: these equal the default when cleared, so the pass
+    // above would drop them — and dropping would leave a stale server override alive.
+    // `rhythm_sleep_source` is the subtle one: it's a plain string, so switching an
+    // account BACK from "derived" to the house default matches d[k] and vanishes
+    // from the payload, leaving "derived" stored. The setting would look like it
+    // moved and wouldn't have.
     out.sleep_window = base.sleep_window ?? null;
+    out.rhythm_pace_curve = base.rhythm_pace_curve ?? null;
+    out.rhythm_sleep_source = base.rhythm_sleep_source ?? "default";
     out.script_pack_overrides = packOverrides;
     return out as AiChatterConfig;
   };

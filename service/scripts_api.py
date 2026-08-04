@@ -125,6 +125,9 @@ _FLOAT_KNOBS = {
 }
 _MODES = ("backup", "always")
 _OFFER_MODES = ("tip", "ppv", "both")
+# Where her sleep window comes from with no explicit override — the house night, or
+# her own outbound histogram. See ai_chatter._DEFAULTS["rhythm_sleep_source"].
+_SLEEP_SOURCES = ("default", "derived")
 # msg_limits_by_signal is a NESTED object; validate its four tier caps against the
 # built-in defaults (single source of truth) and always emit the COMPLETE dict so
 # _load_config's shallow merge can never drop a tier. 0 = unlimited (see _cadence_gate).
@@ -162,6 +165,44 @@ def _validate_sleep_window(raw: Any) -> list[str] | None:
         out.append(f"{hh:02d}:{mm:02d}")
     if out[0] == out[1]:
         raise HTTPException(422, "sleep_window start and end can't be the same")
+    return out
+
+
+def _validate_pace_curve(raw: Any) -> list[dict[str, float]] | None:
+    """None ⇒ use the shipped 85/10/4/1 bands. Otherwise a list of
+    {"pct", "up_to_min"} cut points, checked HERE with real errors so a bad curve
+    is a 422 the operator can see — `rhythm.parse_pace_curve` deliberately returns
+    None for garbage on the send path, which would make a typo look like a
+    successful save that quietly changed nothing."""
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise HTTPException(422, "rhythm_pace_curve must be null or a non-empty list")
+    if len(raw) > rhythm.PACE_CURVE_MAX_ROWS:
+        raise HTTPException(422, f"at most {rhythm.PACE_CURVE_MAX_ROWS} pace bands")
+    out: list[dict[str, float]] = []
+    prev = 0.0
+    for i, row in enumerate(raw):
+        if not isinstance(row, dict):
+            raise HTTPException(422, f"pace band {i + 1} must be an object")
+        try:
+            pct = float(row.get("pct"))
+            up_to = float(row.get("up_to_min"))
+        except (TypeError, ValueError):
+            raise HTTPException(422, f"pace band {i + 1}: pct and up_to_min must be numbers")
+        if pct < 0:
+            raise HTTPException(422, f"pace band {i + 1}: pct can't be negative")
+        if not (0 < up_to <= rhythm.PACE_CURVE_MAX_MINUTES):
+            raise HTTPException(
+                422, f"pace band {i + 1}: up_to_min must be between 0 and "
+                     f"{rhythm.PACE_CURVE_MAX_MINUTES}")
+        if up_to <= prev:
+            raise HTTPException(422, f"pace band {i + 1}: up_to_min must be larger "
+                                     f"than the band above it ({prev:g})")
+        prev = up_to
+        out.append({"pct": pct, "up_to_min": up_to})
+    if sum(r["pct"] for r in out) <= 0:
+        raise HTTPException(422, "at least one pace band needs a percentage above 0")
     return out
 
 
@@ -233,6 +274,13 @@ def _validate_cfg(cfg: dict) -> dict:
         out["rhythm_no_sleep"] = bool(cfg["rhythm_no_sleep"])
     if "rhythm_pace_buckets" in cfg:
         out["rhythm_pace_buckets"] = bool(cfg["rhythm_pace_buckets"])
+    if "rhythm_pace_curve" in cfg:
+        out["rhythm_pace_curve"] = _validate_pace_curve(cfg["rhythm_pace_curve"])
+    if "rhythm_sleep_source" in cfg and cfg["rhythm_sleep_source"] is not None:
+        if cfg["rhythm_sleep_source"] not in _SLEEP_SOURCES:
+            raise HTTPException(
+                422, f"rhythm_sleep_source must be one of {_SLEEP_SOURCES}")
+        out["rhythm_sleep_source"] = cfg["rhythm_sleep_source"]
     # v2/v3 upsell lane — the hard takeover + the "after a buy" behaviors. All are
     # gated by qualification_gate_enabled at RUNTIME, so storing True with the gate
     # off is inert; we still persist the operator's choice.
@@ -411,9 +459,18 @@ async def _rhythm_view(account_id: str, row: AccountAiConfig | None,
     derived = rhythm.derive_sleep_window(
         await _outbound_hour_histogram(account_id, tz_off))
     override = stored.get("sleep_window")
-    effective = list(override) if isinstance(override, (list, tuple)) and len(override) == 2 \
-        else list(derived)
+    # Same precedence as ai_chatter._sleep_window, and it has to STAY the same: this
+    # is the number the card shows as "she sleeps X–Y", so a divergence here is the
+    # UI confidently reporting a window the engine isn't running.
+    source = str(stored.get("rhythm_sleep_source") or "default")
+    if isinstance(override, (list, tuple)) and len(override) == 2:
+        effective = list(override)
+    elif source == "derived":
+        effective = list(derived)
+    else:
+        effective = list(rhythm.DEFAULT_SLEEP)
     return {
+        "sleep_source": source,
         "timezone": tz,
         "utc_offset": utc_offset,
         # None ⇒ neither a timezone nor a non-zero utc_offset is set. Rhythm stays

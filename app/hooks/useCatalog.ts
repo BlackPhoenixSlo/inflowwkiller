@@ -39,6 +39,14 @@ export interface ScriptsResponse {
   singles: CatalogItemT[];
 }
 
+/** One band of the reply-time curve. `up_to_min` is a CUT POINT — the band runs
+ *  from the previous row's `up_to_min` (0 for the first) up to this one — so the
+ *  shape cannot express a gap or an overlap. `pct` is that band's share. */
+export interface PaceBand {
+  pct: number;
+  up_to_min: number;
+}
+
 export interface AiChatterConfig {
   enabled?: boolean;
   mode?: "backup" | "always";
@@ -139,8 +147,18 @@ export interface AiChatterConfig {
   /** No-sleep pacing: keep the hot/cold/busy delays + short "stepped away" breaks,
    *  but never the overnight sleep — and no timezone needed. OFF by default. */
   rhythm_no_sleep?: boolean;
-  /** null ⇒ DERIVED from the account's own outbound history (the server hands the
-   *  derived window back); ["HH:MM","HH:MM"] ⇒ the operator overrode it. */
+  /** Sample her reply delay from the editable curve below instead of the archive-
+   *  fitted lognormal. OFF by default — the accounts already earning keep theirs. */
+  rhythm_pace_buckets?: boolean;
+  /** The bands, as CUT POINTS: each row's floor is the row above it. null ⇒ the
+   *  shipped 85/10/4/1. Percentages are normalised server-side, so they don't have
+   *  to sum to exactly 100 while you're typing. */
+  rhythm_pace_curve?: PaceBand[] | null;
+  /** Where her sleep window comes from when nothing is overridden: the house night
+   *  ("default", 02:00–06:00 local) or her own outbound histogram ("derived"). */
+  rhythm_sleep_source?: "default" | "derived";
+  /** null ⇒ `rhythm_sleep_source` decides; ["HH:MM","HH:MM"] ⇒ the operator
+   *  overrode it, which outranks both sources. */
   sleep_window?: [string, string] | null;
   /** {slot: [lines]} over the shipped script pack. A slot the operator blanked is
    *  dropped on save, so it falls back to the shipped default — never an empty send. */
@@ -164,9 +182,13 @@ interface AiChatterConfigResponse {
   tz_offset_minutes: number | null;
   /** Computed server-side from the account's own outbound hour histogram. */
   derived_sleep_window: [string, string];
-  /** The override if one is set, else the derived window — what she'd actually do. */
+  /** What she'd ACTUALLY do: the override if set, else whichever source
+   *  `sleep_source` names. Resolved server-side so the card and the engine can't
+   *  disagree about which window is in force. */
   effective_sleep_window: [string, string];
   default_sleep_window: [string, string];
+  /** Which source produced `effective_sleep_window` absent an override. */
+  sleep_source: "default" | "derived";
 }
 
 /** The config blob + the `timezone` COLUMN travel together: the operator sets the
