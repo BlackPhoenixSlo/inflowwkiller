@@ -330,6 +330,10 @@ class RhythmCtx:
     # VERBATIM with no model in the loop, so this is the only thing standing
     # between a male creator and "sorry babe was in the shower".
     voice: str = "her"
+    # Sample ordinary reply latency from PACE_BUCKETS instead of the archive
+    # lognormal. Default False so every existing account keeps its measured
+    # curve — see the PACE_BUCKETS note.
+    pace_buckets: bool = False
     # Is an ANSWER OWED on this turn? True when his last inbound asked something or
     # volunteered real content (`_common.is_qualifying_inbound`), False for a
     # dead-end reaction ("lol", an emoji, a gif). This is the ONE gate on every
@@ -502,7 +506,13 @@ def decide_availability(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decis
     # this is deliberately NOT a turn-counter script: a gap at exchange 3 is fine
     # after a throwaway line and ruinous after a question, so position never
     # decides it.
-    if _context_of(ctx, utc_now) == CONTEXT_FREE_CHAT \
+    # `pace_buckets` REPLACES this roll rather than stacking with it. The operator
+    # specified a complete distribution — 85/10/4/1 summing to 100% — so its own
+    # top band IS the "she is away" case. Layering a 12% break on top produced 4%
+    # at 15-60min and 2% past an hour, measured: four times the tail asked for,
+    # plus one that was not asked for at all. The SLEEP window above still
+    # applies; a night is not a break.
+    if _context_of(ctx, utc_now) == CONTEXT_FREE_CHAT and not ctx.pace_buckets \
             and not ctx.answer_owed and not protected_start(ctx, utc_now):
         _, _, p_break = _heat_params(scene_heat(ctx, utc_now))
         if rng.random() < p_break:
@@ -608,6 +618,51 @@ def _fit(core: float, floor: float, ceiling: float, rng: Random) -> float:
     return core
 
 
+
+# ── The operator's own reply-time distribution (opt-in) ─────────────────────
+# Operator ruling 2026-08-04: 85% inside 2 minutes, 10% at 2-6, 4% at 6-15, 1%
+# at 15-60. That is a FASTER, more attentive creator than the archive-fitted
+# lognormal above, which sits at a 124s median hot / 415s cold and puts nothing
+# like 85% under two minutes.
+#
+# ⚠️ OPT-IN, AND THAT IS THE WHOLE DESIGN. Six live accounts run rhythm today
+# (523982374, 25166249, 267492960, 571598796, 515679424, 506355167) on a curve
+# measured from their OWN archive. Making this the default would re-pace all of
+# them overnight to a distribution nobody fitted to their data — the standing
+# rule is that the accounts already earning do not move. `RhythmCtx.pace_buckets`
+# defaults False, so every existing caller samples exactly what it sampled
+# before.
+#
+# Weights are declared, not derived, and they must sum to 1.0 — asserted at
+# import so a typo is a startup failure rather than a silently skewed curve.
+PACE_BUCKETS: tuple[tuple[float, float, float], ...] = (
+    # (weight, low_seconds, high_seconds)
+    (0.85, 0.0, 120.0),        # 0-2 min    — she is on her phone
+    (0.10, 120.0, 360.0),      # 2-6 min    — put it down for a moment
+    (0.04, 360.0, 900.0),      # 6-15 min   — genuinely doing something
+    (0.01, 900.0, 3600.0),     # 15-60 min  — gone, but not for the night
+)
+assert abs(sum(w for w, _, _ in PACE_BUCKETS) - 1.0) < 1e-9, \
+    "PACE_BUCKETS weights must sum to 1.0"
+
+
+def sample_pace_bucket(rng: Random) -> float:
+    """A latency in seconds from PACE_BUCKETS — pick a bucket by weight, then a
+    uniform point inside it.
+
+    Uniform WITHIN the bucket rather than another lognormal: the operator
+    specified the shape at bucket granularity, and layering a second curve inside
+    would quietly move the mass they asked for toward the low edge of each band."""
+    r = rng.random()
+    cum = 0.0
+    for weight, lo, hi in PACE_BUCKETS:
+        cum += weight
+        if r < cum:
+            return rng.uniform(lo, hi)
+    lo, hi = PACE_BUCKETS[-1][1], PACE_BUCKETS[-1][2]
+    return rng.uniform(lo, hi)          # float dust past the last edge
+
+
 def beat_applies(ctx: RhythmCtx) -> bool:
     """She sent a gif and he owes her nothing back ⇒ let it breathe. The one
     deliberate pause in the design, and the only condition that gets its own draw."""
@@ -627,6 +682,10 @@ def _draw(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> float:
         return rng.triangular(_BEAT_S[0], _BEAT_S[1], _BEAT_MODE_S)
     if in_opening(ctx):
         return _OPENING_S[ctx.turn_index - 1]
+    # Below the two DELIBERATE pauses (the gif beat, the opening arc) — those are
+    # staged moments and the operator's curve is about ordinary replies.
+    if ctx.pace_buckets:
+        return sample_pace_bucket(rng)
     mu, sigma, _ = _heat_params(scene_heat(ctx, utc_now))
     return rng.lognormvariate(mu, sigma)
 
