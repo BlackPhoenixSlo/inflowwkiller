@@ -52,6 +52,15 @@ interface CustomRow {
   chat_href: string;
 }
 
+interface ContextMsg {
+  message_id: number;
+  from_fan: boolean;
+  text: string;
+  at: string | null;
+  is_tip: boolean;
+  price_cents: number;
+}
+
 function money(cents: number | null | undefined): string {
   if (cents == null) return "—";
   return `$${(cents / 100).toFixed(2)}`;
@@ -83,6 +92,37 @@ function Section({
   onClear: (r: CustomRow) => void;
 }) {
   const isReview = rows[0]?.marked === false;
+  // Which row is expanded, and its thread. ONE at a time: this is a read-to-
+  // decide surface, and two open threads is two things to hold in your head.
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [ctx, setCtx] = useState<ContextMsg[] | null>(null);
+
+  const toggle = useCallback(
+    async (r: CustomRow) => {
+      const key = `${r.account_id}:${r.fan_id}`;
+      if (openKey === key) {
+        setOpenKey(null);
+        return;
+      }
+      setOpenKey(key);
+      setCtx(null);
+      try {
+        const q = new URLSearchParams({
+          account_id: r.account_id,
+          fan_id: String(r.fan_id),
+        });
+        if (r.tipped_at) q.set("at", r.tipped_at);
+        const res = await relay.get<{ messages: ContextMsg[] }>(
+          `/admin/customs/context?${q.toString()}`,
+        );
+        setCtx(res.messages || []);
+      } catch {
+        setCtx([]);
+      }
+    },
+    [openKey],
+  );
+
   return (
     <section className="mb-8">
       <h2 className="mb-2 text-sm font-semibold">
@@ -137,7 +177,17 @@ function Section({
                   <td className="py-2 pr-3 tabular-nums opacity-70">
                     {money(r.lifetime_spend_cents)}
                   </td>
-                  <td className="py-2 text-right">
+                  <td className="py-2 text-right whitespace-nowrap">
+                    {/* Read the thread WITHOUT leaving the page. The tip says a
+                        man paid; the messages around it say what he paid FOR,
+                        which is the whole decision on a review row. */}
+                    <button
+                      onClick={() => void toggle(r)}
+                      className="mr-2 rounded border px-2 py-1 text-xs hover:bg-black/5"
+                      title="Read the conversation around this tip"
+                    >
+                      {openKey === key ? "Hide" : "Read"}
+                    </button>
                     <button
                       disabled={busy === key}
                       onClick={() => onClear(r)}
@@ -153,6 +203,58 @@ function Section({
                   </td>
                 </tr>
               );
+            }).flatMap((row, i) => {
+              const r = rows[i];
+              const key = `${r.account_id}:${r.fan_id}`;
+              if (openKey !== key) return [row];
+              return [
+                row,
+                <tr key={`${key}:ctx`} className="border-b last:border-0">
+                  <td colSpan={6} className="bg-black/[0.03] px-3 py-3">
+                    {ctx === null && (
+                      <p className="text-xs opacity-60">Reading…</p>
+                    )}
+                    {ctx !== null && ctx.length === 0 && (
+                      <p className="text-xs opacity-60">
+                        No messages stored around this tip.
+                      </p>
+                    )}
+                    {ctx !== null && ctx.length > 0 && (
+                      <div className="space-y-1.5">
+                        {ctx.map((m) => (
+                          <div
+                            key={m.message_id}
+                            className={`flex gap-2 text-xs ${
+                              m.from_fan ? "" : "opacity-70"
+                            }`}
+                          >
+                            <span className="w-10 shrink-0 font-medium">
+                              {m.from_fan ? "fan" : "us"}
+                            </span>
+                            <span className="min-w-0">
+                              {/* A tip row has no body — show the money, which
+                                  is the thing being explained. */}
+                              {m.is_tip ? (
+                                <em className="not-italic font-semibold">
+                                  💸 tipped{" "}
+                                  {m.text.match(/\$[\d,.]+/)?.[0] ?? ""}
+                                </em>
+                              ) : (
+                                m.text || <span className="opacity-40">(media)</span>
+                              )}
+                              {m.price_cents > 0 && (
+                                <span className="ml-1 opacity-60">
+                                  [{money(m.price_cents)} locked]
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                </tr>,
+              ];
             })}
           </tbody>
         </table>

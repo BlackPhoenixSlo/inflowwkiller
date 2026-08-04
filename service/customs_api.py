@@ -44,7 +44,7 @@ from sqlalchemy import func, select
 from auth import assert_account_owned, clamp_account_filter
 from automations import _customs
 from db.engine import get_session
-from db.models import Account, AutomationRule, Fan, Transaction
+from db.models import Account, AutomationRule, Fan, Message, Transaction
 
 # How far back the REVIEW list reaches. A backlog to clear once, not a
 # permanent second queue.
@@ -55,21 +55,39 @@ log = logging.getLogger("of-relay.customs_api")
 router = APIRouter()
 
 
-def _newest_per_fan(rows) -> dict[tuple, tuple]:
-    """(account, fan) → the newest qualifying tip, from rows ordered occurred_at
-    DESC as (account_id, fan_id, amount_cents, occurred_at, message_id).
+# Fans STACK tips to reach a price. Live example (Amia / 142006425): $200 and
+# $100 twenty-five seconds apart, then $150 twenty minutes later — one $450
+# order, three rows. Showing only the newest told the operator "$150" for work
+# worth three times that, which is exactly the number they decide on. Same
+# pattern on 80511815 ($200+$100, 26s apart) and 21843747 ($200+$100, 13s).
+_BURST_MINUTES = 30
 
-    Both callers below needed this and both had their own copy — one keyed on a
-    `newest` dict, one on a `seen` set, thirty lines apart in the same file. Two
-    implementations of "collapse a fan's tips to the one that bought this" drift
-    the moment the qualifying rule moves, and the rule is already per-account."""
+
+def _newest_per_fan(rows) -> dict[tuple, tuple]:
+    """(account, fan) → (total_cents, anchor_at, anchor_msg_id) for the most
+    recent BURST of qualifying tips, from rows ordered occurred_at DESC as
+    (account_id, fan_id, amount_cents, occurred_at, message_id).
+
+    The anchor is the newest tip in the burst — what the chat link opens on and
+    what "waiting since" counts from. The amount is the burst TOTAL, because a
+    man who sent $200 then $100 bought one $300 thing, not a $100 thing.
+
+    Both callers had their own copy of the collapse before this existed — one on
+    a `newest` dict, one on a `seen` set, thirty lines apart in one file."""
     out: dict[tuple, tuple] = {}
     for acct, fid, cents, at, msg_id in rows:
         if fid is None:
             continue
         key = (acct, int(fid))
+        cents = int(cents or 0)
         if key not in out:            # first wins — the rows arrive newest-first
-            out[key] = (int(cents or 0), at, msg_id)
+            out[key] = (cents, at, msg_id)
+            continue
+        total, anchor_at, anchor_msg = out[key]
+        # Still inside the burst that the anchor belongs to? Add it on.
+        if anchor_at is not None and at is not None \
+                and (anchor_at - at) <= timedelta(minutes=_BURST_MINUTES):
+            out[key] = (total + cents, anchor_at, anchor_msg)
     return out
 
 
@@ -262,6 +280,89 @@ async def _untracked(allowed: list[str] | None) -> list[dict[str, Any]]:
     return [{"account_id": a, "account_name": names.get(a, a),
              "qualifying_tips": int(n), "biggest_cents": int(mx or 0)}
             for a, n, mx in tipped if a not in watching]
+
+
+@router.get("/admin/customs/context")
+async def customs_context(
+    account_id: str = Query(...),
+    fan_id: int = Query(...),
+    at: str | None = Query(None, description="ISO anchor; default = his newest qualifying tip"),
+    before: int = Query(18, ge=1, le=60),
+    after: int = Query(6, ge=0, le=60),
+) -> dict[str, Any]:
+    """The conversation AROUND the tip — what was actually ordered.
+
+    This is the answer to "how do we know what to do with this row". A tip on its
+    own says a man paid; the twenty messages around it say what he paid FOR. From
+    a real thread (Amia / 142006425): "I can start doing it babe immediately
+    after you tip for it" / "Make sure you talk dirty to daddy Dennis while
+    you're riding me" / $200 + $100 / "Wanna see me in a sexy lingerie" — a
+    complete work order, reconstructed from messages we already store.
+
+    COUNT-BASED, not a time window. A time window is empty on a slow thread and
+    unbounded on a fast one; N-before/M-after always returns something to read.
+
+    It also makes the chat deep-link's page bound stop mattering for the common
+    case: the context arrives WITH the row, so nobody has to reach a 700-hour-old
+    message in the OnlyFans-backed thread pane to make the call."""
+    assert_account_owned(account_id)
+
+    async with get_session() as s:
+        anchor_at = None
+        if at:
+            try:
+                anchor_at = datetime.fromisoformat(at.replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                raise HTTPException(422, "bad `at` timestamp")
+        if anchor_at is None:
+            anchor_at = (await s.execute(
+                select(func.max(Transaction.occurred_at))
+                .where(Transaction.account_id == str(account_id),
+                       Transaction.fan_id == int(fan_id),
+                       Transaction.kind.in_(_customs.ORDER_KINDS),
+                       Transaction.amount_cents >= _customs.MIN_CENTS)
+            )).scalar_one_or_none()
+        if anchor_at is None:
+            return {"anchor_at": None, "messages": []}
+
+        cols = (Message.message_id, Message.direction, Message.body,
+                Message.created_at, Message.is_tip, Message.price_cents)
+        older = (await s.execute(
+            select(*cols).where(Message.account_id == str(account_id),
+                                Message.fan_id == int(fan_id),
+                                Message.is_unsent.is_(False),
+                                Message.created_at <= anchor_at)
+            .order_by(Message.created_at.desc()).limit(before)
+        )).all()
+        newer = (await s.execute(
+            select(*cols).where(Message.account_id == str(account_id),
+                                Message.fan_id == int(fan_id),
+                                Message.is_unsent.is_(False),
+                                Message.created_at > anchor_at)
+            .order_by(Message.created_at.asc()).limit(after)
+        )).all()
+
+    # Reuse the canonical stripper rather than adding a FOURTH copy — there are
+    # already three in the tree (automation_executor, event_transcoder,
+    # transaction_ingest). Imported locally, like the OF client below, so this
+    # module stays importable without dragging the executor in at load time.
+    from automation_executor import _strip_html
+
+    def _row(r) -> dict[str, Any]:
+        mid, direction, body, created, is_tip, price = r
+        return {
+            "message_id": int(mid),
+            "from_fan": direction == "in",
+            # Bodies are stored as OF's HTML. The page renders text, so strip
+            # here rather than shipping markup to a React tree.
+            "text": _strip_html(body or ""),
+            "at": created.isoformat() if created else None,
+            "is_tip": bool(is_tip),
+            "price_cents": int(price or 0),
+        }
+
+    return {"anchor_at": anchor_at.isoformat(),
+            "messages": [_row(r) for r in reversed(older)] + [_row(r) for r in newer]}
 
 
 class _ClearBody(BaseModel):
