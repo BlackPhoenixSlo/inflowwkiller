@@ -95,6 +95,7 @@ from ._markers import protocol_marker_re
 from ._persona import fan_claims_block, persona_register_age
 from ._outbound import ConsistencyCtx, finalize_draft
 from . import _language
+from . import _customs
 from . import _voice
 from . import _openers  # the gen_info opener pool (the deepen phase)
 from . import _pins  # his own pinned long-form message (reader + writer)
@@ -3886,6 +3887,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     sticker_mode: str = "skip",
                     opener: "_openers.Opener | None" = None,
                     v: "_voice.VoiceBlocks" = _voice.HER,
+                    custom_owed: bool = False,
                     ) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — of_ai_chat's girly info-gather prompt
     with one structural difference: `sell_block`. Empty (M2) → the no-offers
@@ -4230,6 +4232,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         # OUTPUT-LANGUAGE block at the very END (prefix-cache safe); "" for en. It also
         # pins the >>OFFER token so a Spanish reply never leaks a translated marker.
         + _language.output_language_directive(lang)
+        + _customs.prompt_block(custom_owed, v.voice)
     )
     # TIER B — what she has ALREADY told THIS fan. USER message (per-fan, never
     # prefix-cached) — same placement and reasoning as of_ai_chat's. ai_chatter
@@ -4669,6 +4672,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     hard_stops = 0          # gate: chargeback/report/unsubscribe → ladder STOPPED
     soft_acks = 0           # gate: "i'm broke" → keep talking, stop selling 24h
     gate_blocked = 0        # gate: no price in front of this fan right now
+    customs_owed_skips = 0  # a paid custom has not shipped — talk, never sell
     offers_parked = 0       # …and the reason was transient → PendingOffer row
     rungs_quoted = 0        # priced rungs that actually went out (ladder_quote rows)
     taps_expired = 0        # tap-outs that served their TTL and reopened (not a life sentence)
@@ -4789,6 +4793,21 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # never do. Then COMPANION intent, then the three declines. ALL of these
             # are LADDER-scoped — none ever touches fans.automation_paused_until.
             seller_off = False       # COMPANION / cooldown / bot-accused ⇒ talk, don't sell
+            # A PAID-FOR CUSTOM THAT HAS NOT SHIPPED stops selling outright, and
+            # rides the same switch as the companion/cooldown brakes because it
+            # wants the identical behaviour: the conversation continues, the
+            # money asks stop. Operator ruling 2026-08-04 — "he doesn't sell more
+            # till it's delivered".
+            #
+            # Deliberately NOT gated on `gate_on`: the seller gate is a selling
+            # feature flag, and "we owe this man something he paid for" is not a
+            # selling decision. It also has NO timeout — a stale marker costs us
+            # revenue from one fan, while a timeout resumes asking a man for money
+            # when he never received what he already bought. The marker is cleared
+            # by the operator, or by `customs_watch` seeing the voice note go out.
+            if _customs.is_owed(f.custom_nickname):
+                seller_off = True
+                customs_owed_skips += 1
             bot_accused_turn = False
             image_dare_turn = False
             # A HARD decline WINS over the poverty/companion brakes — always. Otherwise a
@@ -5341,6 +5360,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 opener = _openers.next_for(f, profiles.get(fan_id),
                                            today=opener_day)
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
+                                              custom_owed=_customs.is_owed(f.custom_nickname),
                                               opener=opener,
                                               sticker_mode=sticker_mode,
                                               style_on=style_on,
@@ -6251,6 +6271,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "hard_stops": hard_stops,
         "soft_acks": soft_acks,
         "gate_blocked": gate_blocked,
+        "customs_owed_skips": customs_owed_skips,
         "offers_parked": offers_parked,
         "rungs_quoted": rungs_quoted,
         "taps_expired": taps_expired,

@@ -91,8 +91,11 @@ async def init_db() -> None:
          Alembic+SQLAlchemy 2.0.35+Python 3.13 hits a recursion bug on
          this schema's first run. The diffs in subsequent migrations are
          small enough that the bug doesn't trip.
-      3. If `alembic_version` already exists, run the normal
-         `alembic upgrade head` to apply pending migrations.
+      3. If `alembic_version` already exists, do the ADDITIVE catch-up below
+         (create_all for new tables + ALTER TABLE ADD COLUMN for new nullable
+         columns). ⚠️ We do NOT run `alembic upgrade head` — there is no
+         `command.upgrade(...)` call anywhere in this service. Any schema
+         change that is not additive-and-nullable simply never lands.
 
     On Postgres the same flow works; the recursion bug is Python-version
     sensitive and we keep the same code path for symmetry.

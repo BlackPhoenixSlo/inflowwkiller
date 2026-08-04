@@ -76,6 +76,7 @@ from webhook_config_api import router as _webhook_config_router  # noqa: E402
 from autoreply_config_api import router as _autoreply_config_router  # noqa: E402
 from tip_reward_config_api import router as _tip_reward_config_router  # noqa: E402
 from make_right_config_api import router as _make_right_config_router  # noqa: E402
+from customs_api import router as _customs_router  # noqa: E402
 from ppv_library_config_api import router as _ppv_library_config_router  # noqa: E402
 from vault_ai_api import router as _vault_ai_router  # noqa: E402
 from scripts_api import router as _scripts_router  # noqa: E402
@@ -182,6 +183,7 @@ app.include_router(_webhook_config_router)
 app.include_router(_autoreply_config_router)
 app.include_router(_tip_reward_config_router)
 app.include_router(_make_right_config_router)
+app.include_router(_customs_router)
 app.include_router(_ppv_library_config_router)
 app.include_router(_vault_ai_router)
 app.include_router(_scripts_router)
@@ -2117,8 +2119,13 @@ async def _perflog_evictor_loop() -> None:
 # Four append-only tables had NO prune and grew unbounded — so the DB crept
 # back toward bloat from the audit side even after the raw-payload columns were
 # capped. Each gets a retention window; one daily sweep DELETEs rows past it.
-# Row-deletes (auto_vacuum=INCREMENTAL on prod returns the freed pages to the OS
-# on the next payload-cap tick). Set any window to 0 to disable that table.
+# These are ROW-deletes only. ⚠️ Prod is auto_vacuum=NONE (measured 2026-08-04:
+# `PRAGMA auto_vacuum` → 0, freelist 97782 pages), so deleted pages go to the
+# freelist and the FILE NEVER SHRINKS — `_reclaim_freelist()` early-returns
+# until the DB is converted to INCREMENTAL. This comment previously claimed the
+# opposite, which is precisely why grok_calls was allowed to reach 1.3 GB while
+# looking self-healing. Reclaiming disk needs a deliberate offline VACUUM.
+# Set any window to 0 to disable that table.
 _AUTOMATION_RUNS_RETAIN_S = int(os.environ.get("AUTOMATION_RUNS_RETAIN_S", str(14 * 24 * 60 * 60)))
 _GROK_CALLS_RETAIN_S = int(os.environ.get("GROK_CALLS_RETAIN_S", str(30 * 24 * 60 * 60)))
 _SCHEDULED_JOBS_RETAIN_S = int(os.environ.get("SCHEDULED_JOBS_RETAIN_S", str(7 * 24 * 60 * 60)))

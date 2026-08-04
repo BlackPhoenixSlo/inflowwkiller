@@ -47,6 +47,7 @@ import llm_client
 from ._persona import compose_persona
 from . import _language
 from . import _pins  # his own pinned long-form message (reader only)
+from . import _customs
 from . import _voice  # whose voice this account writes in (NULL → 'her')
 from attribution import write_outbound_attribution
 from automation_registry import register
@@ -160,6 +161,7 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
                     nonnative_on: bool = False,
                     content_ask: bool = False,
                     tip_ask_block: str = "",
+                    custom_owed: bool = False,
                     painful_on: bool = True,
                     lang: str = "en",
                     clock: str = "",
@@ -191,7 +193,10 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
     # with a SALES line instead of pure keep-warm banter — a natural "tip me $X"
     # ask (the tip_reward automation delivers once he tips), NEVER the bare word
     # "tip" (the bug this fixes). Otherwise the usual never-sell rules apply.
-    selling = content_ask and bool(tip_ask_block)
+    # A paid-for custom that has not shipped outranks every selling surface —
+    # the fan already gave us money for something he has not received, so the
+    # tip-ask is suppressed in CODE and not merely discouraged in the prompt.
+    selling = content_ask and bool(tip_ask_block) and not custom_owed
     directive = tip_ask_block if selling else f"THIS MESSAGE — {style}"
     if selling:
         hard_rules = (
@@ -269,6 +274,7 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         f"{NONNATIVE_REGISTER + chr(10) + chr(10) if nonnative_on else ''}"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
         f"{_language.output_language_directive(lang)}"
+        f"{_customs.prompt_block(custom_owed, v.voice)}"
     )
     # His own long-form message, pinned on the thread and read back here (_pins).
     user = (
@@ -594,7 +600,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                nonnative_on=nonnative_on, lang=fan_lang,
                                content_ask=content_ask, tip_ask_block=tip_ask_block,
                                painful_on=painful_on, clock=_clock_line(clock_tz),
-                               v=voice_blocks)
+                               v=voice_blocks,
+                               custom_owed=_customs.is_owed(f.custom_nickname))
         try:
             res = await llm_client.chat(model=model, messages=msgs, purpose=_PURPOSE,
                                         account_id=account_id, fan_id=fid,

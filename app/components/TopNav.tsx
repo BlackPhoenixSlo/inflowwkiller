@@ -58,6 +58,9 @@ const LINKS: NavLink[] = [
   { href: "/inbox",     label: "Inbox"    },
   { href: "/messages",  label: "Messages" },
   { href: "/stats",       label: "Stats"    },
+  // Deliberately NOT chatterHidden: a chatter needs to know a fan is owed a
+  // custom, because the selling brake stops the bot but not a person.
+  { href: "/customs",     label: "Customs"  },
   { href: "/automations", label: "Automations", chatterHidden: true },
   { href: "/vault",       label: "Vault",       chatterHidden: true },
   { href: "/setup",       label: "Setup",    chatterHidden: true },

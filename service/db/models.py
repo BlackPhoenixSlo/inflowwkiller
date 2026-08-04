@@ -347,6 +347,19 @@ class Fan(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     applied_notes: Mapped[str | None] = mapped_column(Text)
     applied_notes_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # When an owed CUSTOM was last resolved for this fan (delivered, or cleared
+    # by an operator). `customs_watch` ignores tips at or before it.
+    #
+    # WITHOUT THIS the scanner had no "done" state at all: owed was derived from
+    # (a qualifying tip in the window) AND (no marker) AND (no detected
+    # delivery), so clearing the marker was indistinguishable from never having
+    # marked it — and the next sweep, 15 minutes later, re-marked the same tip.
+    # The operator's "Sent" click undid itself on a 72-hour loop.
+    #
+    # A timestamp rather than a seen-tips table: the fact being recorded is
+    # "everything this fan owed up to here is settled", which is one moment, not
+    # a set of rows. Nullable, so init_db's additive catch-up adds it in place.
+    customs_cleared_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     # ── Tags / custom fields ─────────────────────────────────
     tags: Mapped[str] = mapped_column(Text, nullable=False, default="[]")

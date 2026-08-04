@@ -95,17 +95,18 @@ _FALLBACK_TAILS_HIM = [
     "come keep me company",
 ]
 
-_MALE_FRAMES = {
-    id(_FRAMES_SOFT): _FRAMES_SOFT_HIM,
-    id(_FRAMES_FLIRTY): _FRAMES_FLIRTY_HIM,
-    id(_FALLBACK_TAILS): _FALLBACK_TAILS_HIM,
+# Keyed by NAME, not `id(pool)` — see the same note in make_right. Identity keys
+# resolve silently to the female pool the moment a list is rebound or copied.
+_POOLS: dict[str, tuple[list[str], list[str]]] = {
+    "soft": (_FRAMES_SOFT, _FRAMES_SOFT_HIM),
+    "flirty": (_FRAMES_FLIRTY, _FRAMES_FLIRTY_HIM),
+    "tails": (_FALLBACK_TAILS, _FALLBACK_TAILS_HIM),
 }
 
 
-def _lane(pool: list[str], voice: str) -> list[str]:
-    if str(voice or "").strip().lower() != "him":
-        return pool
-    return _MALE_FRAMES.get(id(pool), pool)
+def _lane(name: str, voice: str) -> list[str]:
+    hers, his = _POOLS[name]
+    return his if str(voice or "").strip().lower() == "him" else hers
 
 
 def _nz(s) -> str:
@@ -137,13 +138,12 @@ def compose_opener(f: Fan, p: FanProfile | None, tone: str, rng: Random,
     quests = [_nz(x) for x in ((p.q1, p.q2, p.q3) if p else ()) if _nz(x)]
 
     flirty = tone == "flirty"
-    frame = rng.choice(_lane(_FRAMES_FLIRTY if flirty else _FRAMES_SOFT,
-                           voice)).replace("{name}", name)
+    frame = rng.choice(_lane("flirty" if flirty else "soft", voice)).replace("{name}", name)
 
     first, second = (teases, quests) if flirty else (quests, teases)
     line = rng.choice(first) if first else (rng.choice(second) if second else "")
     if not line:
-        line = rng.choice(_lane(_FALLBACK_TAILS, voice))
+        line = rng.choice(_lane("tails", voice))
     # Greeting on line 1, his line on line 2 (two bubbles).
     return f"{frame}\n{line}".strip()
 
