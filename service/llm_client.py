@@ -27,15 +27,23 @@ daily rollup):
                         cross-provider account total would sum the provider rows
                         before reserving.
 
-Privacy (05 §8): prompt_json / response_json hold raw chat text → PII. They are
-written to the DB only and NEVER logged. Log lines here carry model / provider /
-purpose / latency / token counts — never message bodies.
+Privacy (05 §8): `prompt_json` holds the request with every base64 `data:` URI
+replaced by an `<img:mime:bytes:digest>` manifest — all prompt TEXT survives,
+no image bytes are persisted in any mode (the images are already cached in the
+vault, so the base64 was only ever a re-encoded copy). `LLM_PROMPT_AUDIT=receipt`
+drops the text too, for a further ~1 GB. `response_json` is not stored at all.
+`response_text` is the one column holding model output verbatim (capped at
+_RESP_TEXT_CAP) — it is PII, and it is kept because it is the documented
+first-line forensic tool. Nothing here is ever logged: log lines carry model /
+provider / purpose / latency / token counts, never message bodies. See the
+receipt block above _insert_pending_call.
 """
 
 from __future__ import annotations
 
 import json
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -479,6 +487,141 @@ async def _adjust_daily(day: str, account_id: str | None, cost_delta: int,
         )
 
 
+# ── Audit receipt (05 §8) ──────────────────────────────────────────────────
+#
+# `prompt_json` used to hold `json.dumps(request_body)` — the ENTIRE outbound
+# body, verbatim. For the vision lanes that body carries base64 `data:` URIs:
+# measured on prod 2026-08-03, `describe_media` averaged 203 KB/row and was
+# **99.3% base64**, making grok_calls 1,325 MB = 52% of the whole DB. Those
+# bytes are a re-encoded copy of vault media we already own, and the column
+# has never been read back — an exhaustive sweep (python/TS/shell/SQL/alembic)
+# found ZERO readers, and `grep -oE 'GrokCall\.[a-z_]+'` never names it.
+#
+# So we store a RECEIPT instead of a recording: what was sent, how big, and a
+# digest to tell two calls apart — never the bytes. Policy points the same way
+# (05 §8: "90-day retention is the privacy ceiling; pruning is mandatory, not
+# optional"); there is no retain-minimum for this table.
+#
+# The receipt lives IN `prompt_json` rather than in new columns, deliberately:
+# that column is `NOT NULL` with no server_default, and the boot-time schema
+# walker (db/engine.py:179) SKIPS exactly that shape while the service never
+# runs alembic (db/engine.py:114). Adding or dropping columns here is the one
+# change that could fail silently — `_insert_pending_call` swallows below — so
+# we make zero schema changes and the constraint stays satisfied.
+_DATA_URI_RE = re.compile(r'data:([a-zA-Z0-9.+/-]+);base64,([A-Za-z0-9+/=]+)')
+
+# What we keep of the prompt. Measured over real prod rows (2026-08-04):
+#   "text"    — the full body with every data: URI swapped for <img:…>. ALL
+#               prompt text survives. 1,199 MB -> 312 MB. DEFAULT: the images
+#               are already cached in the vault, so the base64 was only ever a
+#               re-encoded copy — but the TEXT is the part worth keeping.
+#   "receipt" — counts + digests only, text dropped. 1,199 MB -> 3.2 MB. A
+#               further ~1 GB, available if disk ever gets tight again.
+_PROMPT_AUDIT = (os.environ.get("LLM_PROMPT_AUDIT") or "text").strip().lower()
+_RESP_TEXT_CAP = int(os.environ.get("LLM_RESP_TEXT_CAP", "4000"))
+
+# Incremented whenever the receipt build fails and we fall back to a stub. A
+# non-zero value means the audit is degraded — surfaced, not silent.
+_AUDIT_DEGRADED = 0
+
+
+def _b64_decoded_len(payload: str) -> int:
+    """Decoded byte count of a base64 payload, without decoding it."""
+    return max(0, (len(payload) * 3) // 4 - payload.count("="))
+
+
+def _redact_body(body: Any) -> Any:
+    """Deep copy of `body` with every base64 `data:` URI replaced by a manifest.
+
+    MUST deep-copy: the caller's `messages` list is the SAME object that gets
+    POSTed (chat() passes `messages` straight into `body`, then httpx serializes
+    that dict). A shallow copy would rewrite the outbound request and send
+    `<img:…>` to the provider instead of the image — breaking every vision lane
+    on the first call.
+    """
+    if isinstance(body, dict):
+        return {k: _redact_body(v) for k, v in body.items()}
+    if isinstance(body, list):
+        return [_redact_body(v) for v in body]
+    if isinstance(body, str):
+        return _DATA_URI_RE.sub(
+            lambda m: f"<img:{m.group(1)}:{_b64_decoded_len(m.group(2))}b:"
+                      f"{hashlib.sha256(m.group(2).encode()).hexdigest()[:16]}>",
+            body,
+        )
+    return body
+
+
+def _receipt(request_body: dict, *, include_body: bool) -> str:
+    """Build the compact audit receipt stored in `prompt_json`.
+
+    Shape: {"v":1,"sha":<16 hex>,"chars":<text chars>,"img":[[bytes,sha16],…]}
+    plus "body" (the image-redacted full request) when include_body is set.
+    Never contains base64. Never mutates `request_body`.
+    """
+    imgs: list[list[Any]] = []
+    chars = 0
+    for msg in (request_body.get("messages") or []):
+        content = msg.get("content")
+        parts = [content] if isinstance(content, str) else (
+            [p.get("text") or (p.get("image_url") or {}).get("url") or ""
+             for p in content if isinstance(p, dict)]
+            if isinstance(content, list) else [])
+        for part in parts:
+            if not isinstance(part, str):
+                continue
+            found = _DATA_URI_RE.findall(part)
+            for _mime, payload in found:
+                imgs.append([_b64_decoded_len(payload),
+                             hashlib.sha256(payload.encode()).hexdigest()[:16]])
+            if not found:
+                chars += len(part)
+
+    receipt: dict[str, Any] = {
+        "v": 1,
+        "sha": hashlib.sha256(
+            json.dumps(_redact_body(request_body), sort_keys=True,
+                       ensure_ascii=False, default=str).encode()
+        ).hexdigest()[:16],
+        "chars": chars,
+    }
+    if imgs:
+        receipt["img"] = imgs
+    if include_body:
+        receipt["body"] = _redact_body(request_body)
+    return json.dumps(receipt, ensure_ascii=False, default=str)
+
+
+def _receipt_or_stub(request_body: dict, *, include_body: bool = False) -> str:
+    """`_receipt` that can never raise — a malformed body must not cost us the
+    audit row entirely (the caller swallows, so a raise here is invisible)."""
+    global _AUDIT_DEGRADED
+    try:
+        return _receipt(request_body, include_body=include_body)
+    except Exception:
+        _AUDIT_DEGRADED += 1
+        log.exception("llm_client: receipt build failed — storing stub")
+        return '{"v":1,"degraded":true}'
+
+
+def _redacted_json(request_body: dict) -> str:
+    """The full body with every data: URI manifested. All prompt text survives.
+    Never raises — a raise here would be invisible (the caller swallows)."""
+    global _AUDIT_DEGRADED
+    try:
+        return json.dumps(_redact_body(request_body), ensure_ascii=False, default=str)
+    except Exception:
+        _AUDIT_DEGRADED += 1
+        log.exception("llm_client: prompt redaction failed — storing stub")
+        return '{"v":1,"degraded":true}'
+
+
+def _prompt_audit_json(request_body: dict) -> str:
+    """What lands in `prompt_json` on the PENDING row, per _PROMPT_AUDIT."""
+    return (_receipt_or_stub(request_body) if _PROMPT_AUDIT == "receipt"
+            else _redacted_json(request_body))
+
+
 async def _insert_pending_call(*, purpose: str, provider: str, account_id: str | None,
                                fan_id: int | None, model: str, endpoint: str,
                                temperature: float, request_body: dict,
@@ -487,6 +630,7 @@ async def _insert_pending_call(*, purpose: str, provider: str, account_id: str |
     `provider` set and `status='pending'` (columns added in 0026). Returns the
     row id, or None if the audit write itself failed (never block the call on
     audit)."""
+    prompt_audit = _prompt_audit_json(request_body)
     try:
         async with get_session() as s:
             call = GrokCall(
@@ -498,7 +642,7 @@ async def _insert_pending_call(*, purpose: str, provider: str, account_id: str |
                 model=model,
                 endpoint=endpoint,
                 temperature=temperature,
-                prompt_json=json.dumps(request_body, ensure_ascii=False, default=str),
+                prompt_json=prompt_audit,
                 was_dry_run=False,
                 called_at=now,
             )
@@ -636,7 +780,12 @@ async def chat(
                             _LLM_MAX_ATTEMPTS, model, purpose)
                 await asyncio.sleep(_LLM_RETRY_BACKOFF_S * (attempt + 1))
                 continue
-            await _finalize_call(call_id, status="error", error_text=msg[:2000], latency_ms=latency_ms)
+            # On an error row, upgrade the receipt to carry the image-redacted
+            # body: `error_text` is the PROVIDER's sentence, not ours, so this
+            # is the only at-rest record of what we actually sent.
+            await _finalize_call(call_id, status="error", error_text=msg[:2000],
+                                 latency_ms=latency_ms,
+                                 prompt_json=_redacted_json(body))
             await _adjust_daily(day, account_id, -reserve_mc, -1, now, prov.name)  # release reservation
             log.warning("llm_client: %s call failed model=%s purpose=%s status=%s latency=%dms",
                         prov.name, model, purpose, e.response.status_code, latency_ms)
@@ -652,7 +801,9 @@ async def chat(
                             _LLM_MAX_ATTEMPTS, model, purpose, latency_ms)
                 await asyncio.sleep(_LLM_RETRY_BACKOFF_S * (attempt + 1))
                 continue
-            await _finalize_call(call_id, status="error", error_text=msg[:2000], latency_ms=latency_ms)
+            await _finalize_call(call_id, status="error", error_text=msg[:2000],
+                                 latency_ms=latency_ms,
+                                 prompt_json=_redacted_json(body))
             await _adjust_daily(day, account_id, -reserve_mc, -1, now, prov.name)
             log.warning("llm_client: %s call errored model=%s purpose=%s latency=%dms (%s)",
                         prov.name, model, purpose, latency_ms, type(e).__name__)
@@ -687,8 +838,12 @@ async def chat(
     await _finalize_call(
         call_id,
         status="done",
-        response_json=json.dumps(data, ensure_ascii=False, default=str),
-        response_text=content,
+        # response_json is NOT stored. Its only ever-reader was the one-shot
+        # `status` backfill in migration 20260604_0200 (which tested IS NOT
+        # NULL, never the content) and that has long since run. Everything we
+        # actually use from it — usage counts, finish_reason, fingerprint — is
+        # denormalized into columns right here.
+        response_text=(content or "")[:_RESP_TEXT_CAP],
         latency_ms=latency_ms,
         tokens_in=tokens_in,
         tokens_out=tokens_out,

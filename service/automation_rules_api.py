@@ -173,6 +173,26 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "push_to_of", "type": "bool", "hint": "write nickname + note onto OnlyFans (not just our DB)"},
         ],
     },
+    "customs_watch": {
+        "label": "Customs owed (tip → voice note)", "recurring": True, "surface": "rules",
+        "cadence_default_s": 900,
+        "summary": ("Tag fans who tipped for a custom and haven't got it yet, and "
+                    "stop the AI selling to them until it ships."),
+        "example": "every 15 min · min_cents 10000 · lookback 72h",
+        "knobs": [
+            # THE knob. What a $100 DM tip MEANS is per-account: on the male
+            # accounts it is an order, on the female ones it was generosity five
+            # times last month. Set it too low and the bot stops selling to a
+            # generous fan until a human notices.
+            {"key": "min_cents", "type": "int", "min": 1, "default": 10000,
+             "hint": "cents — a DM tip at least this big counts as a custom order ($100 = 10000)"},
+            {"key": "lookback_hours", "type": "int", "min": 1, "default": 72,
+             "hint": "how far back to scan for tips; keep short so switching on doesn't mark old ones"},
+            {"key": "limit", "type": "int", "min": 1, "hint": "tips scanned per tick"},
+            {"key": "only_fan_ids", "type": "ids", "hint": "[fan_id,…] restrict to these fans"},
+            {"key": "dry_run", "type": "bool", "hint": "report what it would mark, write nothing"},
+        ],
+    },
     "scrape_chats": {
         "label": "Backfill chat history", "recurring": True, "surface": "rules",
         "cadence_default_s": 86400, "group": "advanced",

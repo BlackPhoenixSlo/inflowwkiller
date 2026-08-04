@@ -231,19 +231,23 @@ _NUDGE_LINES_HIM = [
     "doors open. your move",
 ]
 
-_MALE_POOLS = {
-    id(_GIFT_LEADS): _GIFT_LEADS_HIM,
-    id(_FREE_LEADS): _FREE_LEADS_HIM,
-    id(_PPV_TEASES): _PPV_TEASES_HIM,
-    id(_NUDGE_LINES): _NUDGE_LINES_HIM,
+# Keyed by NAME, not by `id(pool)`. The first cut keyed this dict on the identity
+# of the module-level lists, which meant any rebinding, copy or slice silently
+# resolved to the FEMALE pool — the exact silent-wrong-gender failure this lane
+# exists to prevent, with no error anywhere to notice it by. A name also fails
+# loudly on a typo (KeyError) instead of quietly serving her words from him.
+_POOLS: dict[str, tuple[list[str], list[str]]] = {
+    "gift": (_GIFT_LEADS, _GIFT_LEADS_HIM),
+    "free": (_FREE_LEADS, _FREE_LEADS_HIM),
+    "ppv_tease": (_PPV_TEASES, _PPV_TEASES_HIM),
+    "nudge": (_NUDGE_LINES, _NUDGE_LINES_HIM),
 }
 
 
-def _lane(pool: list[str], voice: str) -> list[str]:
-    """His twin of `pool`, or `pool` itself for every other voice."""
-    if str(voice or "").strip().lower() != "him":
-        return pool
-    return _MALE_POOLS.get(id(pool), pool)
+def _lane(name: str, voice: str) -> list[str]:
+    """The pool called `name`, in this lane."""
+    hers, his = _POOLS[name]
+    return his if str(voice or "").strip().lower() == "him" else hers
 
 
 def _apology_frames(voice: str) -> dict[str, list[str]]:
@@ -873,7 +877,7 @@ async def _do_step(client, account_id: str, fan_id: int, action: str, cfg: dict,
             gift = await _pull_unseen(client, account_id, fan_id,
                                       _free_folders(cfg, tip_cfg, 0), per_step)
             if gift:
-                bubbles.append({"text": rng.choice(_lane(_GIFT_LEADS, _v)).replace("{name}", name),
+                bubbles.append({"text": rng.choice(_lane("gift", _v)).replace("{name}", name),
                                 "media": gift, "price_cents": 0})
                 media_sent = gift
         ok, _ = await _send_bubbles(client, account_id, fan_id, bubbles, wpm, indicator, now)
@@ -882,7 +886,7 @@ async def _do_step(client, account_id: str, fan_id: int, action: str, cfg: dict,
     if action == "free":
         gift = await _pull_unseen(client, account_id, fan_id,
                                   _free_folders(cfg, tip_cfg, 0), per_step)
-        lead = rng.choice(_lane(_FREE_LEADS, _v)).replace("{name}", name)
+        lead = rng.choice(_lane("free", _v)).replace("{name}", name)
         ok, _ = await _send_bubbles(client, account_id, fan_id,
                                     [{"text": lead, "media": gift, "price_cents": 0}],
                                     wpm, indicator, now)
@@ -895,7 +899,7 @@ async def _do_step(client, account_id: str, fan_id: int, action: str, cfg: dict,
         if not media or price_cents <= 0:
             return True, []  # nothing to pitch → close gracefully
         tease = (str(cfg.get("ppv_caption") or "").strip()
-                 or rng.choice(_lane(_PPV_TEASES, _v))).replace("{name}", name)
+                 or rng.choice(_lane("ppv_tease", _v))).replace("{name}", name)
         ok, _ = await _send_bubbles(
             client, account_id, fan_id,
             [{"text": tease, "media": media, "price_cents": price_cents, "previews": media[:1]}],
@@ -911,7 +915,7 @@ async def _do_step(client, account_id: str, fan_id: int, action: str, cfg: dict,
         return True, media
 
     if action == "nudge":
-        line = rng.choice(_lane(_NUDGE_LINES, _v)).replace("{name}", name)
+        line = rng.choice(_lane("nudge", _v)).replace("{name}", name)
         ok, _ = await _send_bubbles(client, account_id, fan_id,
                                     [{"text": line, "media": [], "price_cents": 0}],
                                     wpm, indicator, now)

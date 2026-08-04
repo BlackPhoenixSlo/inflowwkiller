@@ -65,6 +65,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from . import _language
+from . import _customs
 from . import _voice  # whose voice this account writes in (NULL → 'her')
 from . import _openers  # the gen_info opener pool (the deepen phase)
 from . import _pins  # his own pinned long-form message (reader + writer)
@@ -864,6 +865,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
                     nonnative_on: bool = False,
                     content_ask: bool = False,
                     tip_ask_block: str = "",
+                    custom_owed: bool = False,
                     painful_on: bool = True,
                     lang: str = "en",
                     profile: "FanProfile | None" = None,
@@ -959,7 +961,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # to make: the gather goal yields — this message asks him to tip (in voice),
     # not another interview question. (of_ai_chat itself never sells PPV; the
     # content is delivered by tip_reward once he tips.)
-    selling = content_ask and bool(tip_ask_block)
+    # A paid-for custom that has not shipped outranks every selling surface.
+    selling = content_ask and bool(tip_ask_block) and not custom_owed
 
     ask = bool(question_lines) and not selling
     if ask:
@@ -1105,6 +1108,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
            "sending — he only sees the gif)." if _sticker_block else "")
         # OUTPUT-LANGUAGE block appended at the very END (prefix-cache safe); "" for en.
         + _language.output_language_directive(lang)
+        + _customs.prompt_block(custom_owed, v.voice)
     )
     # TIER B — what she has ALREADY told THIS fan. In the USER message because it
     # is per-fan and therefore never prefix-cached: putting it in the system
@@ -1809,6 +1813,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 style_on=style_on, nonnative_on=nonnative_on,
                 content_ask=_language.is_content_ask(c.last_body, fan_lang),
                 tip_ask_block=tip_ask_block,
+                custom_owed=_customs.is_owed(f.custom_nickname),
                 painful_on=painful_on, lang=fan_lang,
                 profile=profiles.get(fan_id) if factground_on else None,
                 clock=_clock_line(clock_tz),
