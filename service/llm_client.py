@@ -29,14 +29,13 @@ daily rollup):
 
 Privacy (05 §8): `prompt_json` holds the request with every base64 `data:` URI
 replaced by an `<img:mime:bytes:digest>` manifest — all prompt TEXT survives,
-no image bytes are persisted in any mode (the images are already cached in the
-vault, so the base64 was only ever a re-encoded copy). `LLM_PROMPT_AUDIT=receipt`
-drops the text too, for a further ~1 GB. `response_json` is not stored at all.
-`response_text` is the one column holding model output verbatim (capped at
+no image bytes are persisted (the images are already cached in the vault, so
+the base64 was only ever a re-encoded copy). `response_json` is not stored at
+all. `response_text` is the one column holding model output verbatim (capped at
 _RESP_TEXT_CAP) — it is PII, and it is kept because it is the documented
 first-line forensic tool. Nothing here is ever logged: log lines carry model /
 provider / purpose / latency / token counts, never message bodies. See the
-receipt block above _insert_pending_call.
+redaction block above _insert_pending_call.
 """
 
 from __future__ import annotations
@@ -497,12 +496,13 @@ async def _adjust_daily(day: str, account_id: str | None, cost_delta: int,
 # has never been read back — an exhaustive sweep (python/TS/shell/SQL/alembic)
 # found ZERO readers, and `grep -oE 'GrokCall\.[a-z_]+'` never names it.
 #
-# So we store a RECEIPT instead of a recording: what was sent, how big, and a
-# digest to tell two calls apart — never the bytes. Policy points the same way
+# So we keep the WORDS and drop the PIXELS: every `data:` URI becomes an
+# `<img:mime:bytes:digest>` manifest, and everything else is stored verbatim.
+# Measured over real prod rows: 1,199 MB -> 318 MB. Policy points the same way
 # (05 §8: "90-day retention is the privacy ceiling; pruning is mandatory, not
 # optional"); there is no retain-minimum for this table.
 #
-# The receipt lives IN `prompt_json` rather than in new columns, deliberately:
+# This stays IN `prompt_json` rather than moving to new columns, deliberately:
 # that column is `NOT NULL` with no server_default, and the boot-time schema
 # walker (db/engine.py:179) SKIPS exactly that shape while the service never
 # runs alembic (db/engine.py:114). Adding or dropping columns here is the one
@@ -510,19 +510,19 @@ async def _adjust_daily(day: str, account_id: str | None, cost_delta: int,
 # we make zero schema changes and the constraint stays satisfied.
 _DATA_URI_RE = re.compile(r'data:([a-zA-Z0-9.+/-]+);base64,([A-Za-z0-9+/=]+)')
 
-# What we keep of the prompt. Measured over real prod rows (2026-08-04):
-#   "text"    — the full body with every data: URI swapped for <img:…>. ALL
-#               prompt text survives. 1,199 MB -> 312 MB. DEFAULT: the images
-#               are already cached in the vault, so the base64 was only ever a
-#               re-encoded copy — but the TEXT is the part worth keeping.
-#   "receipt" — counts + digests only, text dropped. 1,199 MB -> 3.2 MB. A
-#               further ~1 GB, available if disk ever gets tight again.
-_PROMPT_AUDIT = (os.environ.get("LLM_PROMPT_AUDIT") or "text").strip().lower()
 _RESP_TEXT_CAP = int(os.environ.get("LLM_RESP_TEXT_CAP", "4000"))
 
-# Incremented whenever the receipt build fails and we fall back to a stub. A
-# non-zero value means the audit is degraded — surfaced, not silent.
+# What a row stores when redaction itself failed. A literal, in one place, so
+# "is this row degraded?" is one grep and not a copy-pasted string.
+_DEGRADED_STUB = '{"v":1,"degraded":true}'
+
+# Incremented on every fallback to _DEGRADED_STUB. Exposed via
+# audit_degraded_count() -> /admin/stats/grok-calls.
 _AUDIT_DEGRADED = 0
+
+# If disk ever gets tight again, the lever is the retention window that already
+# exists — GROK_CALLS_RETAIN_S (server.py), 30d today. Dropping it to 7d frees
+# the same order of magnitude without a second storage format for this column.
 
 
 def _b64_decoded_len(payload: str) -> int:
@@ -552,74 +552,28 @@ def _redact_body(body: Any) -> Any:
     return body
 
 
-def _receipt(request_body: dict, *, include_body: bool) -> str:
-    """Build the compact audit receipt stored in `prompt_json`.
-
-    Shape: {"v":1,"sha":<16 hex>,"chars":<text chars>,"img":[[bytes,sha16],…]}
-    plus "body" (the image-redacted full request) when include_body is set.
-    Never contains base64. Never mutates `request_body`.
-    """
-    imgs: list[list[Any]] = []
-    chars = 0
-    for msg in (request_body.get("messages") or []):
-        content = msg.get("content")
-        parts = [content] if isinstance(content, str) else (
-            [p.get("text") or (p.get("image_url") or {}).get("url") or ""
-             for p in content if isinstance(p, dict)]
-            if isinstance(content, list) else [])
-        for part in parts:
-            if not isinstance(part, str):
-                continue
-            found = _DATA_URI_RE.findall(part)
-            for _mime, payload in found:
-                imgs.append([_b64_decoded_len(payload),
-                             hashlib.sha256(payload.encode()).hexdigest()[:16]])
-            if not found:
-                chars += len(part)
-
-    receipt: dict[str, Any] = {
-        "v": 1,
-        "sha": hashlib.sha256(
-            json.dumps(_redact_body(request_body), sort_keys=True,
-                       ensure_ascii=False, default=str).encode()
-        ).hexdigest()[:16],
-        "chars": chars,
-    }
-    if imgs:
-        receipt["img"] = imgs
-    if include_body:
-        receipt["body"] = _redact_body(request_body)
-    return json.dumps(receipt, ensure_ascii=False, default=str)
-
-
-def _receipt_or_stub(request_body: dict, *, include_body: bool = False) -> str:
-    """`_receipt` that can never raise — a malformed body must not cost us the
-    audit row entirely (the caller swallows, so a raise here is invisible)."""
-    global _AUDIT_DEGRADED
-    try:
-        return _receipt(request_body, include_body=include_body)
-    except Exception:
-        _AUDIT_DEGRADED += 1
-        log.exception("llm_client: receipt build failed — storing stub")
-        return '{"v":1,"degraded":true}'
-
-
 def _redacted_json(request_body: dict) -> str:
-    """The full body with every data: URI manifested. All prompt text survives.
-    Never raises — a raise here would be invisible (the caller swallows)."""
+    """What lands in `prompt_json`: the full body with every data: URI
+    manifested. All prompt text survives; no image bytes do.
+
+    Never raises. The caller (`_insert_pending_call`) swallows exceptions so a
+    failed audit can't take down a live LLM call — which means a raise here
+    would be INVISIBLE. `audit_degraded` on /admin/stats/grok-calls is how you
+    find out it happened.
+    """
     global _AUDIT_DEGRADED
     try:
         return json.dumps(_redact_body(request_body), ensure_ascii=False, default=str)
     except Exception:
         _AUDIT_DEGRADED += 1
         log.exception("llm_client: prompt redaction failed — storing stub")
-        return '{"v":1,"degraded":true}'
+        return _DEGRADED_STUB
 
 
-def _prompt_audit_json(request_body: dict) -> str:
-    """What lands in `prompt_json` on the PENDING row, per _PROMPT_AUDIT."""
-    return (_receipt_or_stub(request_body) if _PROMPT_AUDIT == "receipt"
-            else _redacted_json(request_body))
+def audit_degraded_count() -> int:
+    """How many audit rows fell back to the stub since boot. Read by
+    /admin/stats/grok-calls so a degraded audit is visible, not silent."""
+    return _AUDIT_DEGRADED
 
 
 async def _insert_pending_call(*, purpose: str, provider: str, account_id: str | None,
@@ -630,7 +584,7 @@ async def _insert_pending_call(*, purpose: str, provider: str, account_id: str |
     `provider` set and `status='pending'` (columns added in 0026). Returns the
     row id, or None if the audit write itself failed (never block the call on
     audit)."""
-    prompt_audit = _prompt_audit_json(request_body)
+    prompt_audit = _redacted_json(request_body)
     try:
         async with get_session() as s:
             call = GrokCall(

@@ -38,6 +38,9 @@ interface UntrackedRow {
 }
 
 interface CustomRow {
+  /** true = tagged Custom and owed. false = a qualifying tip nobody watched;
+   *  a REVIEW row, which may equally have been plain generosity. */
+  marked?: boolean;
   account_id: string;
   account_name: string;
   fan_id: number;
@@ -63,6 +66,99 @@ function waited(iso: string | null): { label: string; hours: number } {
   if (h < 1) return { label: `${Math.round(h * 60)}m`, hours: h };
   if (h < 48) return { label: `${Math.round(h)}h`, hours: h };
   return { label: `${Math.round(h / 24)}d`, hours: h };
+}
+
+
+function Section({
+  title,
+  note,
+  rows,
+  busy,
+  onClear,
+}: {
+  title: string;
+  note: string;
+  rows: CustomRow[];
+  busy: string | null;
+  onClear: (r: CustomRow) => void;
+}) {
+  const isReview = rows[0]?.marked === false;
+  return (
+    <section className="mb-8">
+      <h2 className="mb-2 text-sm font-semibold">
+        {title} <span className="ml-1 font-normal opacity-60">{note}</span>
+      </h2>
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse text-sm">
+          <thead>
+            <tr className="border-b text-left opacity-60">
+              <th className="py-2 pr-3 font-medium">
+                {isReview ? "Tipped" : "Waiting"}
+              </th>
+              <th className="py-2 pr-3 font-medium">Fan</th>
+              <th className="py-2 pr-3 font-medium">Model</th>
+              <th className="py-2 pr-3 font-medium">Paid</th>
+              <th className="py-2 pr-3 font-medium">Lifetime</th>
+              <th className="py-2 font-medium" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const w = waited(r.tipped_at);
+              const key = `${r.account_id}:${r.fan_id}`;
+              return (
+                <tr key={key} className="border-b last:border-0">
+                  {/* Two days of an UNPAID debt is a problem. Two days since a
+                      tip nobody tagged is just a date. */}
+                  <td
+                    className={`py-2 pr-3 tabular-nums ${
+                      !isReview && w.hours >= 48 ? "font-semibold text-red-500" : ""
+                    }`}
+                  >
+                    {w.label}
+                  </td>
+                  <td className="py-2 pr-3">
+                    {/* ?msg=<tip id> — the thread opens on the tip itself, the
+                        message that has to be read to decide. */}
+                    <Link
+                      href={r.chat_href}
+                      className="underline underline-offset-2 hover:opacity-70"
+                    >
+                      {r.display_name}
+                    </Link>
+                    {r.nickname && (
+                      <div className="text-xs opacity-50">{r.nickname}</div>
+                    )}
+                  </td>
+                  <td className="py-2 pr-3 opacity-80">{r.account_name}</td>
+                  <td className="py-2 pr-3 tabular-nums font-medium">
+                    {money(r.tip_cents)}
+                  </td>
+                  <td className="py-2 pr-3 tabular-nums opacity-70">
+                    {money(r.lifetime_spend_cents)}
+                  </td>
+                  <td className="py-2 text-right">
+                    <button
+                      disabled={busy === key}
+                      onClick={() => onClear(r)}
+                      className="rounded border px-3 py-1 text-xs hover:bg-black/5 disabled:opacity-40"
+                      title={
+                        isReview
+                          ? "Nothing owed here — settle it and stop showing it"
+                          : "Mark delivered; also clears the Custom tag on OnlyFans"
+                      }
+                    >
+                      {busy === key ? "…" : isReview ? "Dismiss" : "Sent"}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
 }
 
 export default function CustomsPage() {
@@ -115,7 +211,9 @@ export default function CustomsPage() {
     [],
   );
 
-  const owedTotal = (rows || []).reduce((n, r) => n + (r.tip_cents || 0), 0);
+  const owed = (rows || []).filter((r) => r.marked !== false);
+  const review = (rows || []).filter((r) => r.marked === false);
+  const owedTotal = owed.reduce((n, r) => n + (r.tip_cents || 0), 0);
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-8">
@@ -180,72 +278,31 @@ export default function CustomsPage() {
         </div>
       )}
 
-      {rows !== null && rows.length > 0 && (
-        <>
-          <div className="mb-3 text-sm opacity-70">
-            {rows.length} owed · {money(owedTotal)} taken
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr className="border-b text-left opacity-60">
-                  <th className="py-2 pr-3 font-medium">Waiting</th>
-                  <th className="py-2 pr-3 font-medium">Fan</th>
-                  <th className="py-2 pr-3 font-medium">Model</th>
-                  <th className="py-2 pr-3 font-medium">Paid</th>
-                  <th className="py-2 pr-3 font-medium">Lifetime</th>
-                  <th className="py-2 font-medium" />
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => {
-                  const w = waited(r.tipped_at);
-                  const key = `${r.account_id}:${r.fan_id}`;
-                  return (
-                    <tr key={key} className="border-b last:border-0">
-                      {/* Past two days reads as a problem, not a queue item. */}
-                      <td
-                        className={`py-2 pr-3 tabular-nums ${
-                          w.hours >= 48 ? "font-semibold text-red-500" : ""
-                        }`}
-                      >
-                        {w.label}
-                      </td>
-                      <td className="py-2 pr-3">
-                        <Link
-                          href={r.chat_href}
-                          className="underline underline-offset-2 hover:opacity-70"
-                        >
-                          {r.display_name}
-                        </Link>
-                        {r.nickname && (
-                          <div className="text-xs opacity-50">{r.nickname}</div>
-                        )}
-                      </td>
-                      <td className="py-2 pr-3 opacity-80">{r.account_name}</td>
-                      <td className="py-2 pr-3 tabular-nums font-medium">
-                        {money(r.tip_cents)}
-                      </td>
-                      <td className="py-2 pr-3 tabular-nums opacity-70">
-                        {money(r.lifetime_spend_cents)}
-                      </td>
-                      <td className="py-2 text-right">
-                        <button
-                          disabled={busy === key}
-                          onClick={() => void clear(r)}
-                          className="rounded border px-3 py-1 text-xs hover:bg-black/5 disabled:opacity-40"
-                        >
-                          {busy === key ? "…" : "Sent"}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
+      {/* TWO LISTS, not one table with a flag. A marked row is DEBT — money
+          taken, work owed, red past two days. An unmarked row is a QUESTION —
+          a tip that may equally have been generosity. Sorting them into one
+          oldest-first list buries a real 12-hour debt under a 50-day maybe,
+          and the "Waiting" column means a different thing in each. */}
+      {rows !== null && owed.length > 0 && (
+        <Section
+          title="Owed"
+          note={`${owed.length} · ${money(owedTotal)} taken`}
+          rows={owed}
+          busy={busy}
+          onClear={clear}
+        />
       )}
+
+      {rows !== null && review.length > 0 && (
+        <Section
+          title="Worth a look"
+          note={`${review.length} · tips big enough to be an order, never tagged`}
+          rows={review}
+          busy={busy}
+          onClear={clear}
+        />
+      )}
+
     </main>
   );
 }
