@@ -319,6 +319,11 @@ async def grok_calls(
         })
     total_mc = sum(r["cost_millicents"] for r in out)
     total_calls = sum(r["calls"] for r in out)
+    # Audit rows whose prompt redaction failed and fell back to a stub. The
+    # audit write is deliberately swallowed so it can never take down a live LLM
+    # call — which means a degraded audit is otherwise INVISIBLE. Non-zero here
+    # is the only signal that grok_calls has stopped recording what we sent.
+    from llm_client import audit_degraded_count
     return {
         "rows": out,
         "totals": {
@@ -326,6 +331,7 @@ async def grok_calls(
             "cost_millicents": total_mc,
             "cost_cents": round(total_mc / 100, 4),
         },
+        "audit_degraded": audit_degraded_count(),
     }
 
 

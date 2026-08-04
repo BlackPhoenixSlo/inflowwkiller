@@ -89,6 +89,11 @@ export function readCachedOwnerId(accountId: string): number | null {
   }
 }
 
+// How many pages of history the ?msg= anchor may pull. Each one is a live
+// OnlyFans request, so this bounds a repeatedly-clicked surface to a handful of
+// upstream calls rather than "page until found".
+const ANCHOR_MAX_PAGES = 6;
+
 export function ChatSurface({
   accountId, fanId, chat, forceDrawerOpen = false, forcePinnedPanelOpen = false, onBack,
 }: {
@@ -144,6 +149,9 @@ export function ChatSurface({
   const [translateOn, setTranslateOn] = useTranslateMode();
   const translateStatus = useTranslateStatus();
   const [highlightId, setHighlightId] = useState<number | null>(null);
+  // Which ?msg= target we've already resolved, and how many pages that cost.
+  const anchorRef = useRef<string | null>(null);
+  const anchorPagesRef = useRef(0);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
   // 👁 "Focus" — a phone reading mode. Collapses the AI status strip and the
@@ -657,6 +665,47 @@ export function ChatSurface({
     // through the next scroll-up that brings it back into view.
     setTimeout(() => setHighlightId((cur) => (cur === id ? null : cur)), 3000);
   }
+
+  // ── ?msg=<id> — open the thread ON a specific message ────────────────────
+  //
+  // /customs links here so an operator lands on the TIP that bought a custom,
+  // not just on the fan. The highlight machinery above only works on a bubble
+  // that is RENDERED, and the tip may be well above the first page, so this
+  // pages backwards until it finds it.
+  //
+  // ⚠️ BOUNDED TO ANCHOR_MAX_PAGES, and the bound is the point: every
+  // loadOlder() is a live OnlyFans API call, so an unbounded "page until found"
+  // turns one click into dozens of upstream requests and a rate-limit risk on a
+  // surface an operator clicks repeatedly. Past the bound the thread simply
+  // opens where it is — the /customs row already carries the tip's date and
+  // amount, so an old one stays findable by hand.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const want = new URLSearchParams(window.location.search).get("msg");
+    if (!want) return;
+    const key = `${accountId}:${fanId}:${want}`;
+    if (anchorRef.current === key) return;   // once per (thread, target)
+    if (handle.isLoading) return;
+
+    const target = String(want);
+    const rows = handle.data ?? [];
+    if (rows.some((m) => String(m.id) === target)) {
+      anchorRef.current = key;
+      jumpToMessage(Number(target));
+      // Strip the param so a refresh doesn't re-jump out from under a scroll.
+      const url = new URL(window.location.href);
+      url.searchParams.delete("msg");
+      window.history.replaceState({}, "", url.pathname + (url.search || ""));
+      return;
+    }
+    if (!handle.hasOlder || handle.isLoadingOlder) return;
+    if ((anchorPagesRef.current += 1) > ANCHOR_MAX_PAGES) {
+      anchorRef.current = key;               // give up quietly, stay put
+      return;
+    }
+    void handle.loadOlder();
+  }, [accountId, fanId, handle.data, handle.isLoading, handle.hasOlder,
+      handle.isLoadingOlder]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Server-scheduled sends live in a separate query; merge them into
   // the message stream as pseudo-bubbles so the operator sees what's

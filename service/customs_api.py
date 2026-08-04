@@ -46,9 +46,38 @@ from automations import _customs
 from db.engine import get_session
 from db.models import Account, AutomationRule, Fan, Transaction
 
+# How far back the REVIEW list reaches. A backlog to clear once, not a
+# permanent second queue.
+_REVIEW_DAYS = 60
+
 log = logging.getLogger("of-relay.customs_api")
 
 router = APIRouter()
+
+
+def _newest_per_fan(rows) -> dict[tuple, tuple]:
+    """(account, fan) → the newest qualifying tip, from rows ordered occurred_at
+    DESC as (account_id, fan_id, amount_cents, occurred_at, message_id).
+
+    Both callers below needed this and both had their own copy — one keyed on a
+    `newest` dict, one on a `seen` set, thirty lines apart in the same file. Two
+    implementations of "collapse a fan's tips to the one that bought this" drift
+    the moment the qualifying rule moves, and the rule is already per-account."""
+    out: dict[tuple, tuple] = {}
+    for acct, fid, cents, at, msg_id in rows:
+        if fid is None:
+            continue
+        key = (acct, int(fid))
+        if key not in out:            # first wins — the rows arrive newest-first
+            out[key] = (int(cents or 0), at, msg_id)
+    return out
+
+
+def _chat_href(account_id: str, fan_id: int, msg_id) -> str:
+    """The thread, anchored on the tip when we have its message id — landing on
+    the message that has to be READ to decide, not merely on the fan."""
+    base = f"/chat/{account_id}/{int(fan_id)}"
+    return f"{base}?msg={int(msg_id)}" if msg_id else base
 
 
 @router.get("/admin/customs")
@@ -80,17 +109,14 @@ async def list_customs(account_id: str | None = Query(None)) -> dict[str, Any]:
         keys = {(r[0], int(r[1])) for r in owed}
         tips = (await s.execute(
             select(Transaction.account_id, Transaction.fan_id,
-                   Transaction.amount_cents, Transaction.occurred_at)
+                   Transaction.amount_cents, Transaction.occurred_at,
+                   Transaction.message_id)
             .where(Transaction.kind.in_(_customs.ORDER_KINDS),
                    Transaction.amount_cents >= _customs.MIN_CENTS,
                    Transaction.account_id.in_({k[0] for k in keys}))
             .order_by(Transaction.occurred_at.desc())
         )).all()
-        newest: dict[tuple, tuple] = {}
-        for acct, fid, cents, at in tips:
-            k = (acct, int(fid or 0))
-            if k in keys and k not in newest:
-                newest[k] = (int(cents or 0), at)
+        newest = {k: v for k, v in _newest_per_fan(tips).items() if k in keys}
 
         names = {a: (n or a) for a, n in (await s.execute(
             select(Account.id, Account.nickname)
@@ -99,11 +125,12 @@ async def list_customs(account_id: str | None = Query(None)) -> dict[str, Any]:
 
     out = []
     for acct, fid, nick, disp, uname, spend in owed:
-        cents, at = newest.get((acct, int(fid)), (None, None))
+        cents, at, msg_id = newest.get((acct, int(fid)), (None, None, None))
         out.append({
             "account_id": acct,
             "account_name": names.get(acct, acct),
             "fan_id": int(fid),
+            "marked": True,
             # What the operator sees in the OF inbox — the marker included, so
             # the row on screen and the name in the app are the same string.
             "nickname": nick,
@@ -111,12 +138,85 @@ async def list_customs(account_id: str | None = Query(None)) -> dict[str, Any]:
             "tip_cents": cents,
             "tipped_at": at.isoformat() if at else None,
             "lifetime_spend_cents": int(spend or 0),
-            "chat_href": f"/chat/{acct}/{int(fid)}",
+            "chat_href": _chat_href(acct, fid, msg_id),
         })
+    out.extend(await _unmarked(allowed, {(r["account_id"], r["fan_id"]) for r in out}))
     # Oldest debt first: the man who has been waiting longest is the one at risk.
     out.sort(key=lambda r: (r["tipped_at"] or "9999"))
     return {"customs": out, "count": len(out),
             "untracked": await _untracked(allowed)}
+
+
+async def _unmarked(allowed: list[str] | None,
+                    already: set[tuple]) -> list[dict[str, Any]]:
+    """Qualifying tips carrying NO marker — the ones nothing was watching for.
+
+    Operator ruling 2026-08-04: *"show them in the customs field and we will
+    manually take a look and delete if needed"*. Before this they were a COUNT in
+    a banner, which tells you a problem exists without letting you resolve it;
+    every one had to be hunted down in OnlyFans by hand. As rows they get the
+    same Sent button, and clearing one stamps `customs_cleared_at` so it settles
+    and stops reappearing.
+
+    These are a REVIEW list, not a debt list — a $100 DM tip is an order on the
+    male accounts and was generosity five times on the female ones last month,
+    and nothing here can tell which. `marked: False` says so on the row, and the
+    settled ones are excluded so the list drains as it is worked.
+
+    Bounded to `_REVIEW_DAYS`: this is a backlog to clear once, not a permanent
+    second queue."""
+    since = datetime.utcnow() - timedelta(days=_REVIEW_DAYS)
+    async with get_session() as s:
+        q = (select(Transaction.account_id, Transaction.fan_id,
+                    Transaction.amount_cents, Transaction.occurred_at,
+                    Transaction.message_id)
+             .where(Transaction.kind.in_(_customs.ORDER_KINDS),
+                    Transaction.amount_cents >= _customs.MIN_CENTS,
+                    Transaction.occurred_at >= since,
+                    Transaction.fan_id.is_not(None))
+             .order_by(Transaction.occurred_at.desc()))
+        if allowed is not None:
+            q = q.where(Transaction.account_id.in_(allowed))
+        tips = (await s.execute(q)).all()
+        if not tips:
+            return []
+
+        keys = {(a, int(f)) for a, f, _, _, _ in tips} - already
+        if not keys:
+            return []
+        fans = {(f.account_id, int(f.fan_id)): f for f in (await s.execute(
+            select(Fan).where(Fan.account_id.in_({k[0] for k in keys})))
+        ).scalars().all()}
+        names = {a: (n or a) for a, n in (await s.execute(
+            select(Account.id, Account.nickname)
+            .where(Account.id.in_({k[0] for k in keys}))
+        )).all()}
+
+    out = []
+    for key, (cents, at, msg_id) in _newest_per_fan(tips).items():
+        if key not in keys:
+            continue
+        acct, fid = key
+        fan = fans.get(key)
+        # Already settled — delivered, or an operator cleared it. Not a question.
+        if fan is not None and fan.customs_cleared_at and at <= fan.customs_cleared_at:
+            continue
+        out.append({
+            "account_id": acct,
+            "account_name": names.get(acct, acct),
+            "fan_id": int(fid),
+            "marked": False,
+            "nickname": (fan.custom_nickname if fan else None),
+            "display_name": ((fan.of_display_name or fan.of_username) if fan else None)
+                            or f"fan #{fid}",
+            "tip_cents": int(cents or 0),
+            "tipped_at": at.isoformat() if at else None,
+            "lifetime_spend_cents": int((fan.lifetime_spend_cents if fan else 0) or 0),
+            # Anchor the chat on the tip itself — see the page for why the id
+            # matters more than the fan link alone.
+            "chat_href": _chat_href(acct, fid, msg_id),
+        })
+    return out
 
 
 async def _untracked(allowed: list[str] | None) -> list[dict[str, Any]]:
@@ -180,8 +280,12 @@ async def clear_custom(body: _ClearBody = Body(...)) -> dict[str, Any]:
         if fan is None:
             raise HTTPException(404, "fan not found")
         if not _customs.is_owed(fan.custom_nickname):
-            # Idempotent: two operators clicking the same row is not an error,
-            # and neither is `customs_watch` having cleared it first.
+            # No marker — either two operators clicked the same row, or this is
+            # a REVIEW row (a qualifying tip nothing was watching for). Either
+            # way it must SETTLE: without the stamp a review row reappears on
+            # every load and the backlog can never be worked down.
+            fan.customs_cleared_at = datetime.utcnow()
+            await s.commit()
             return {"ok": True, "already_clear": True,
                     "nickname": fan.custom_nickname}
         cleared = _customs.clear(fan.custom_nickname)
