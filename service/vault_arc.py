@@ -41,6 +41,8 @@ import random
 from datetime import datetime, timedelta
 from typing import Any
 
+from automations import rhythm
+
 log = logging.getLogger("chatterly.vault_arc")
 
 # The id prefix that marks a Library entry as owned by an arc. Deliberately NOT
@@ -54,7 +56,12 @@ ARC_PREFIX = "arc-"
 # the DM closes it at night.
 _BAND_WALL = (10 * 60, 15 * 60)     # feed posts + free nudges
 _BAND_CLOSE = (18 * 60, 23 * 60)    # the priced ask
-_DEFAULT_SLEEP = ("03:00", "10:00")
+# ONE house night, shared with the chat engine — this was a second copy of the
+# literal, and it kept the old ("03:00", "10:00") when rhythm's moved to 02:00-06:00.
+# Behaviour-neutral for the two bands above (both sit entirely outside either
+# window), which is exactly why the drift would have gone unnoticed until a band
+# moved.
+_DEFAULT_SLEEP = rhythm.DEFAULT_SLEEP
 
 # The tease audience: OF's built-in fans+following lists (server-side fan-out,
 # the same audience the daily premade blasts name) with the default 6h/2h

@@ -491,14 +491,32 @@ _DEFAULTS: dict = {
     # DEFAULT OFF: six live accounts run rhythm on a curve fitted to their own
     # data and must not be re-paced by a setting they never chose.
     "rhythm_pace_buckets": False,
+    # The bands themselves, editable per account: [{"pct": 85, "up_to_min": 2}, ...]
+    # (see rhythm.parse_pace_curve). None ⇒ the shipped 85/10/4/1. Only read when
+    # `rhythm_pace_buckets` is on.
+    "rhythm_pace_curve": None,
     # No-sleep pacing: keep the hot/cold/busy variable delays + short "stepped away"
     # breaks, but NEVER the long overnight sleep — and it needs no timezone. For a
     # creator who wants "she's a person who gets busy" without an 8-hour night gap.
-    # Default ON alongside rhythm: it is the variant that needs no timezone, so it is
-    # the only one that behaves correctly on an account nobody has set a tz for.
-    "rhythm_no_sleep": True,
-    # None ⇒ DERIVED from the account's own outbound hour histogram
-    # (rhythm.derive_sleep_window). ["HH:MM", "HH:MM"] ⇒ operator override.
+    #
+    # Flipped True→False 2026-08-04 on the operator's ruling that the house default
+    # is a four-hour night (rhythm.DEFAULT_SLEEP, 02:00-06:00 creator-local). The
+    # old default meant NO account on house settings ever went quiet, which made the
+    # sleep window a setting that existed and never ran. An account with no timezone
+    # still can't sleep — rhythm.tz_offset_for returns None and the sleep branch is
+    # skipped — so this changes nothing for accounts that never answered that
+    # question, only for the ones that did.
+    "rhythm_no_sleep": False,
+    # Where her sleep window COMES FROM when there is no explicit override:
+    #   "default" — rhythm.DEFAULT_SLEEP, the house night (02:00-06:00 local)
+    #   "derived" — the longest quiet block in her own outbound histogram
+    # Default "default" so that "the house night is 2-6am" is TRUE rather than
+    # true-only-for-accounts-with-thin-history. Derivation stays a per-account
+    # choice: it answers a real question, but it also silently outranked the house
+    # setting on every established account, which is not what a default means.
+    "rhythm_sleep_source": "default",
+    # None ⇒ the source above decides. ["HH:MM", "HH:MM"] ⇒ operator override, which
+    # outranks both.
     "sleep_window": None,
     # {slot: [lines]} over script_packs.PACK. An EMPTY / missing slot falls back
     # to the shipped default — script_packs.render never sends an empty message.
@@ -3066,14 +3084,23 @@ async def _load_cfg_row(account_id: str) -> AccountAiConfig | None:
 
 
 async def _sleep_window(account_id: str, tz_offset_minutes: int | None,
-                        override) -> tuple[str, str]:
-    """Her sleep window. An operator override wins; otherwise it is DERIVED from
-    her own outbound hour histogram — the UI does not ask a question the data
-    already answers. Too little history ⇒ rhythm.DEFAULT_SLEEP, never "always
-    awake" (a girl who never sleeps is a bot, and the absence of evidence has to
-    fail safe)."""
+                        override, source: str = "default") -> tuple[str, str]:
+    """Her sleep window, in creator-local HH:MM. Three sources, in precedence order:
+
+      1. an explicit operator override (`sleep_window`), which always wins;
+      2. `source="derived"` — the longest quiet block in her own outbound hour
+         histogram, the UI declining to ask a question the data already answers;
+      3. otherwise rhythm.DEFAULT_SLEEP, the house night.
+
+    Derivation used to be step 2 unconditionally, which meant the house default was
+    only ever reached by an account with too little history to argue — i.e. it was
+    a fallback wearing the word "default". It is now opt-in per account, and either
+    way the answer is never "always awake": a girl who never sleeps is a bot, and
+    the absence of evidence has to fail safe."""
     if isinstance(override, (list, tuple)) and len(override) == 2 and all(override):
         return (str(override[0]), str(override[1]))
+    if str(source or "").lower() != "derived":
+        return rhythm.DEFAULT_SLEEP
     async with get_session() as s:
         rows = (await s.execute(
             select(func.strftime("%H", Message.created_at), func.count())
@@ -4434,6 +4461,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     pricing_on = gate_on and bool(cfg.get("smart_pricing_enabled"))
     rhythm_on = bool(cfg.get("rhythm_enabled"))
     rhythm_no_sleep = bool(cfg.get("rhythm_no_sleep"))
+    # Parsed ONCE per run, not per fan: it is account-level config, and a malformed
+    # curve should be one parse (→ None → the shipped bands) rather than a silent
+    # re-parse inside every RhythmCtx.
+    rhythm_curve = rhythm.parse_pace_curve(cfg.get("rhythm_pace_curve"))
     # §3.7 — the "im filming it rn" active fiction. Default OFF; when on it only
     # biases the §3.6 PPV drop toward the top of its band (stalled=). Logged nowhere
     # else here — the stall LINE emission is a separate opt-in surface (not wired).
@@ -4461,7 +4492,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # prompt clock uses; an account with no timezone yields "" and the ration does
     # not apply, which is the pre-ration behaviour rather than a guessed boundary.
     opener_day = _openers.local_day(clock_tz)
-    sleep_win = (await _sleep_window(account_id, tz_off, cfg.get("sleep_window"))
+    sleep_win = (await _sleep_window(account_id, tz_off, cfg.get("sleep_window"),
+                                     str(cfg.get("rhythm_sleep_source") or "default"))
                  if rhythm_on else rhythm.DEFAULT_SLEEP)
     media_asks: dict[int, list[int]] = {}
     acct_median: int | None = None
@@ -4991,6 +5023,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     account_id=str(account_id), fan_id=fan_id,
                     voice=voice_blocks.voice,
                     pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
+                    pace_curve=rhythm_curve,
                     last_inbound_at=c.last_in_at, last_outbound_at=c.last_out_at,
                     # A live ladder suppresses break rolls: never strand a sell. A
                     # HUMAN's unpaid PPV is just as live a sell as one of ours — without
@@ -5216,6 +5249,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         account_id=str(account_id), fan_id=fan_id,
                         voice=voice_blocks.voice,
                         pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
+                        pace_curve=rhythm_curve,
                         sleep_window=sleep_win, tz_offset_minutes=tz_off,
                         no_sleep=rhythm_no_sleep, enabled=rhythm_on)
                     # Same creator-local day the WRITE path stamps (see daily_day
@@ -5827,6 +5861,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     account_id=str(account_id), fan_id=fan_id,
                     voice=voice_blocks.voice,
                     pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
+                    pace_curve=rhythm_curve,
                     text=(parts[0] if parts else ""),
                     typing_delay_s=(typing_delay_seconds(parts[0], typing_wpm)
                                     if parts else 0.0),

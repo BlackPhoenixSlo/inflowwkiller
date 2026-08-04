@@ -520,8 +520,9 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           tz={tz}
           setTz={setTz}
           utcOffset={cfgQ.data?.utc_offset ?? 0}
-          derived={cfgQ.data?.derived_sleep_window ?? ["03:00", "10:00"]}
-          effective={cfgQ.data?.effective_sleep_window ?? ["03:00", "10:00"]}
+          derived={cfgQ.data?.derived_sleep_window ?? ["02:00", "06:00"]}
+          effective={cfgQ.data?.effective_sleep_window ?? ["02:00", "06:00"]}
+          houseDefault={cfgQ.data?.default_sleep_window ?? ["02:00", "06:00"]}
         />
 
         {/* ── texting style ── */}

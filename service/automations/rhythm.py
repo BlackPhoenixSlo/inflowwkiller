@@ -214,10 +214,16 @@ _WARMUP_CEIL_S = max(480, _BEAT_S[1])
 # now that both live contexts share one draw).
 SCENE_TTL_S = 12 * 60
 
-# Fallback when an account has too little history to derive a sleep window. NOT
-# "always awake" — a girl who never sleeps is a bot, and the default has to be safe
-# in the absence of evidence.
-DEFAULT_SLEEP = ("03:00", "10:00")
+# The HOUSE NIGHT, on the creator's own clock. Operator ruling 2026-08-04: a
+# four-hour pause, 02:00-06:00. NOT "always awake" — a girl who never sleeps is a
+# bot, and the default has to be safe in the absence of evidence.
+#
+# It was ("03:00", "10:00") — seven hours, chosen as a conservative stand-in when
+# the only alternative was deriving one. Two things make four the better default
+# now: an OF creator who is dark from 3am to 10am misses the whole US morning, and
+# a shorter night is the one that fails cheaply — an account that should sleep
+# longer loses a little realism, an account that sleeps too long loses replies.
+DEFAULT_SLEEP = ("02:00", "06:00")
 
 CONTEXT_ASK_OPEN = "ask_open"      # an unpaid rung is live, or he paid < 60min ago
 CONTEXT_FREE_CHAT = "free_chat"    # banter / sext, no open ask
@@ -334,6 +340,11 @@ class RhythmCtx:
     # lognormal. Default False so every existing account keeps its measured
     # curve — see the PACE_BUCKETS note.
     pace_buckets: bool = False
+    # The operator's own bands, already parsed by `parse_pace_curve`. None ⇒ the
+    # shipped PACE_BUCKETS. Only consulted when `pace_buckets` is on, so an account
+    # that authored a curve and then turned the mode off keeps its measured
+    # lognormal rather than half of each.
+    pace_curve: tuple[tuple[float, float, float], ...] | None = None
     # Is an ANSWER OWED on this turn? True when his last inbound asked something or
     # volunteered real content (`_common.is_qualifying_inbound`), False for a
     # dead-end reaction ("lol", an emoji, a gif). This is the ONE gate on every
@@ -645,21 +656,70 @@ PACE_BUCKETS: tuple[tuple[float, float, float], ...] = (
 assert abs(sum(w for w, _, _ in PACE_BUCKETS) - 1.0) < 1e-9, \
     "PACE_BUCKETS weights must sum to 1.0"
 
+# Bounds on an operator-authored curve (`parse_pace_curve`). The row cap is a UI
+# affordance, not a modelling claim; the 24h ceiling is the honest one — anything
+# past MAX_DELAY_S is clamped downstream anyway, so a longer band would be a
+# number the UI shows and the engine quietly ignores.
+PACE_CURVE_MAX_ROWS = 8
+PACE_CURVE_MAX_MINUTES = 24 * 60
 
-def sample_pace_bucket(rng: Random) -> float:
-    """A latency in seconds from PACE_BUCKETS — pick a bucket by weight, then a
-    uniform point inside it.
 
-    Uniform WITHIN the bucket rather than another lognormal: the operator
+def parse_pace_curve(raw) -> tuple[tuple[float, float, float], ...] | None:
+    """An operator-authored reply-time curve → the same (weight, lo_s, hi_s) shape
+    as PACE_BUCKETS, or None when there is nothing usable to run.
+
+    Stored shape is a list of `{"pct": <0-100>, "up_to_min": <minutes>}` — CUT
+    POINTS, not intervals. Each row's lower edge is the previous row's upper edge,
+    so contiguity is structural: the UI cannot author a gap between 6 and 15
+    minutes, or two bands that overlap, because there is nowhere to express one.
+
+    Weights are NORMALISED rather than required to sum to 100. An operator typing
+    85/10/4/1 into four boxes will pass through 99 and 101 on the way, and a curve
+    that refuses to load at 99 means the engine silently reverts to a different
+    distribution mid-edit — the failure mode is invisible, so we don't create it.
+
+    Returns None (⇒ caller falls back to PACE_BUCKETS) for anything malformed. A
+    bad curve must never be an exception on a send path."""
+    if not isinstance(raw, (list, tuple)) or not raw:
+        return None
+    out: list[tuple[float, float, float]] = []
+    lo = 0.0
+    for row in list(raw)[:PACE_CURVE_MAX_ROWS]:
+        if not isinstance(row, dict):
+            return None
+        try:
+            pct = float(row.get("pct"))
+            up_to = float(row.get("up_to_min"))
+        except (TypeError, ValueError):
+            return None
+        if pct < 0 or not (0 < up_to <= PACE_CURVE_MAX_MINUTES):
+            return None
+        hi = up_to * 60.0
+        if hi <= lo:                     # cut points must strictly increase
+            return None
+        out.append((pct, lo, hi))
+        lo = hi
+    total = sum(w for w, _, _ in out)
+    if total <= 0:                       # every band at 0% is not a distribution
+        return None
+    return tuple((w / total, a, b) for w, a, b in out)
+
+
+def sample_pace_bucket(rng: Random, curve=None) -> float:
+    """A latency in seconds from `curve` (default PACE_BUCKETS) — pick a band by
+    weight, then a uniform point inside it.
+
+    Uniform WITHIN the band rather than another lognormal: the operator
     specified the shape at bucket granularity, and layering a second curve inside
     would quietly move the mass they asked for toward the low edge of each band."""
+    buckets = curve or PACE_BUCKETS
     r = rng.random()
     cum = 0.0
-    for weight, lo, hi in PACE_BUCKETS:
+    for weight, lo, hi in buckets:
         cum += weight
         if r < cum:
             return rng.uniform(lo, hi)
-    lo, hi = PACE_BUCKETS[-1][1], PACE_BUCKETS[-1][2]
+    lo, hi = buckets[-1][1], buckets[-1][2]
     return rng.uniform(lo, hi)          # float dust past the last edge
 
 
@@ -685,7 +745,7 @@ def _draw(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> float:
     # Below the two DELIBERATE pauses (the gif beat, the opening arc) — those are
     # staged moments and the operator's curve is about ordinary replies.
     if ctx.pace_buckets:
-        return sample_pace_bucket(rng)
+        return sample_pace_bucket(rng, ctx.pace_curve)
     mu, sigma, _ = _heat_params(scene_heat(ctx, utc_now))
     return rng.lognormvariate(mu, sigma)
 
