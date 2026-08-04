@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -63,32 +63,41 @@ router = APIRouter()
 _BURST_MINUTES = 30
 
 
-def _newest_per_fan(rows) -> dict[tuple, tuple]:
-    """(account, fan) → (total_cents, anchor_at, anchor_msg_id) for the most
-    recent BURST of qualifying tips, from rows ordered occurred_at DESC as
+def _orders_per_fan(rows, min_cents: int | None = None) -> dict[tuple, tuple]:
+    """(account, fan) → (total_cents, anchor_at, anchor_msg_id) for the fan's most
+    recent ORDER, from rows ordered occurred_at DESC as
     (account_id, fan_id, amount_cents, occurred_at, message_id).
 
-    The anchor is the newest tip in the burst — what the chat link opens on and
-    what "waiting since" counts from. The amount is the burst TOTAL, because a
-    man who sent $200 then $100 bought one $300 thing, not a $100 thing.
+    An ORDER is a BURST of tips, not one tip. Fans stack to reach a price, and
+    they do it constantly — Amia/142006425 sent $200 and $100 twenty-five seconds
+    apart then $150 twenty minutes later, one $450 order across three rows.
 
-    Both callers had their own copy of the collapse before this existed — one on
-    a `newest` dict, one on a `seen` set, thirty lines apart in one file."""
-    out: dict[tuple, tuple] = {}
+    ⚠️ THE FLOOR IS TESTED ON THE TOTAL, AND THAT IS THE WHOLE POINT. The first
+    version filtered each transaction against the floor in SQL and summed what
+    survived, which reintroduced the same understatement one layer down: prod is
+    full of $200+$80, $200+$50, $150+$80, $100+$54 — the sub-floor half was
+    dropped before the sum, so a $280 order displayed as $200. It also made
+    $60+$60 invisible entirely, and $120 is a real order.
+
+    So the caller passes EVERY tip in the window and this decides. The floor is a
+    question about the ORDER; asking it of each transaction is asking the wrong
+    thing about the wrong noun."""
+    floor = _customs.MIN_CENTS if min_cents is None else max(1, int(min_cents))
+    bursts: dict[tuple, tuple] = {}
     for acct, fid, cents, at, msg_id in rows:
-        if fid is None:
+        if fid is None or at is None:
             continue
         key = (acct, int(fid))
         cents = int(cents or 0)
-        if key not in out:            # first wins — the rows arrive newest-first
-            out[key] = (cents, at, msg_id)
+        if key not in bursts:         # first wins — the rows arrive newest-first
+            bursts[key] = (cents, at, msg_id)
             continue
-        total, anchor_at, anchor_msg = out[key]
-        # Still inside the burst that the anchor belongs to? Add it on.
-        if anchor_at is not None and at is not None \
-                and (anchor_at - at) <= timedelta(minutes=_BURST_MINUTES):
-            out[key] = (total + cents, anchor_at, anchor_msg)
-    return out
+        total, anchor_at, anchor_msg = bursts[key]
+        # Still inside the burst the anchor belongs to? Add it on. Anything older
+        # is a PREVIOUS order and is not this row's business.
+        if (anchor_at - at) <= timedelta(minutes=_BURST_MINUTES):
+            bursts[key] = (total + cents, anchor_at, anchor_msg)
+    return {k: v for k, v in bursts.items() if v[0] >= floor}
 
 
 def _chat_href(account_id: str, fan_id: int, msg_id) -> str:
@@ -130,11 +139,12 @@ async def list_customs(account_id: str | None = Query(None)) -> dict[str, Any]:
                    Transaction.amount_cents, Transaction.occurred_at,
                    Transaction.message_id)
             .where(Transaction.kind.in_(_customs.ORDER_KINDS),
-                   Transaction.amount_cents >= _customs.MIN_CENTS,
+                   # NO floor here — see _orders_per_fan: a sub-floor tip
+                   # stacked onto a qualifying one is part of the same order.
                    Transaction.account_id.in_({k[0] for k in keys}))
             .order_by(Transaction.occurred_at.desc())
         )).all()
-        newest = {k: v for k, v in _newest_per_fan(tips).items() if k in keys}
+        newest = {k: v for k, v in _orders_per_fan(tips).items() if k in keys}
 
         names = {a: (n or a) for a, n in (await s.execute(
             select(Account.id, Account.nickname)
@@ -189,7 +199,7 @@ async def _unmarked(allowed: list[str] | None,
                     Transaction.amount_cents, Transaction.occurred_at,
                     Transaction.message_id)
              .where(Transaction.kind.in_(_customs.ORDER_KINDS),
-                    Transaction.amount_cents >= _customs.MIN_CENTS,
+                    # NO floor — _orders_per_fan tests the burst TOTAL.
                     Transaction.occurred_at >= since,
                     Transaction.fan_id.is_not(None))
              .order_by(Transaction.occurred_at.desc()))
@@ -211,7 +221,7 @@ async def _unmarked(allowed: list[str] | None,
         )).all()}
 
     out = []
-    for key, (cents, at, msg_id) in _newest_per_fan(tips).items():
+    for key, (cents, at, msg_id) in _orders_per_fan(tips).items():
         if key not in keys:
             continue
         acct, fid = key
@@ -311,16 +321,27 @@ async def customs_context(
         anchor_at = None
         if at:
             try:
-                anchor_at = datetime.fromisoformat(at.replace("Z", "+00:00")).replace(tzinfo=None)
+                parsed = datetime.fromisoformat(at.replace("Z", "+00:00"))
             except ValueError:
                 raise HTTPException(422, "bad `at` timestamp")
+            # CONVERT to UTC before dropping the offset. `.replace(tzinfo=None)`
+            # alone DISCARDS it, so "03:11:48+02:00" anchored at 03:11 instead of
+            # 01:11 and read two hours of the wrong conversation. The column is
+            # tz-naive UTC; anything arriving with an offset has to be moved, not
+            # stripped. Naive input is already UTC by that same convention.
+            anchor_at = (parsed.astimezone(timezone.utc).replace(tzinfo=None)
+                         if parsed.tzinfo is not None else parsed)
         if anchor_at is None:
+            # His newest tip, floor-free. The floor is a question about an
+            # ORDER TOTAL now (see _orders_per_fan), so a $60+$60 order has a row
+            # in the queue but no single tip that clears it — asking for one here
+            # would return no anchor for a fan the queue is actively showing.
+            # Picking the anchor and judging significance are different jobs.
             anchor_at = (await s.execute(
                 select(func.max(Transaction.occurred_at))
                 .where(Transaction.account_id == str(account_id),
                        Transaction.fan_id == int(fan_id),
-                       Transaction.kind.in_(_customs.ORDER_KINDS),
-                       Transaction.amount_cents >= _customs.MIN_CENTS)
+                       Transaction.kind.in_(_customs.ORDER_KINDS))
             )).scalar_one_or_none()
         if anchor_at is None:
             return {"anchor_at": None, "messages": []}

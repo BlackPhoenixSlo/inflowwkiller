@@ -143,10 +143,11 @@ function Section({
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => {
+            {rows.flatMap((r) => {
               const w = waited(r.tipped_at);
               const key = `${r.account_id}:${r.fan_id}`;
-              return (
+              const open = openKey === key;
+              const cells = (
                 <tr key={key} className="border-b last:border-0">
                   {/* Two days of an UNPAID debt is a problem. Two days since a
                       tip nobody tagged is just a date. */}
@@ -203,12 +204,9 @@ function Section({
                   </td>
                 </tr>
               );
-            }).flatMap((row, i) => {
-              const r = rows[i];
-              const key = `${r.account_id}:${r.fan_id}`;
-              if (openKey !== key) return [row];
+              if (!open) return [cells];
               return [
-                row,
+                cells,
                 <tr key={`${key}:ctx`} className="border-b last:border-0">
                   <td colSpan={6} className="bg-black/[0.03] px-3 py-3">
                     {ctx === null && (
