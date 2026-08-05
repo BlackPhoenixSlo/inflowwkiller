@@ -8,9 +8,16 @@ unseen content) is gated + tuned per-account by this JSON. The Automations
   GET /admin/make-right-config?account_id=  → {config, defaults}
   PUT /admin/make-right-config              → upsert the JSON, returns {config}
 
-Default (absent/NULL) → DISABLED + PREVIEW-ONLY (enabled AND auto_send both off)
-until a creator ticks them on here. Refunds are NEVER auto-moved — `flag_refund`
-only raises an operator-review flag.
+Default (absent/NULL) → ON (house policy 2026-08-05: `enabled` AND `auto_send`
+both default True in `make_right._DEFAULTS`, so every model catches its own
+double-charges). Unticking either switch here stores a `false` that beats the
+default. Refunds are NEVER auto-moved — `flag_refund` only raises an
+operator-review flag.
+
+Saving also OWNS the account's `make_right` automation rule: the scanner never
+runs without one (a config alone is inert — the executor only materializes jobs
+from `automation_rules`), so a PUT creates/enables it when the master switch is
+on and disables it when it is off.
 """
 from __future__ import annotations
 
@@ -21,20 +28,29 @@ from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from auth import assert_account_owned
 from db.engine import get_session
-from db.models import AccountAiConfig
+from db.models import AccountAiConfig, AutomationRule
 from automations.make_right import _DEFAULTS
 
 log = logging.getLogger("of-relay.make_right_config_api")
 
 router = APIRouter()
 
+# Sweep cadence for the rule this module owns. The agent is a safety net, not a
+# chat engine: 15 min is fast enough to catch a double-charge and to advance an
+# open exchange after his reply (silence checks are self-scheduled on top), and
+# cheap — detection is pure SQL, no LLM call.
+SWEEP_EVERY_S = 900
+_RULE_NAME = "Make It Right (resolution agent)"
+
 # (key, min, max) — clamp every numeric knob so a typo can't over-gift.
 _INT_KNOBS = {
     "lookback_days": (1, 365),
+    "max_msgs_since_charge": (0, 1000),   # freshness gate; 0 = off (apologise however late)
     "per_fan_cap": (1, 10),
     "gift_piece_value_cents": (1, 100_000),
     "gift_min_count": (1, 20),
@@ -86,6 +102,30 @@ def _validate(cfg: dict) -> dict:
     return out
 
 
+async def ensure_rule(s, account_id: str, enable: bool) -> str:
+    """Create or update the account's `make_right` rule (15-min sweep, empty
+    payload). `automation_rules` has no unique (account, kind), so find-or-create
+    — mirrors nudge_config_api._ensure_rule. Returns 'created'|'updated'.
+
+    This is why the agent had never fired in prod: the config was saveable but
+    nothing ever wrote a rule, so `_materialize_due_rules` had nothing to schedule.
+    """
+    existing = (await s.execute(
+        select(AutomationRule).where(
+            AutomationRule.account_id == str(account_id),
+            AutomationRule.kind == "make_right").limit(1)
+    )).scalar_one_or_none()
+    trigger = json.dumps({"every_seconds": SWEEP_EVERY_S})
+    if existing is not None:
+        existing.trigger_json = trigger
+        existing.is_enabled = bool(enable)
+        return "updated"
+    s.add(AutomationRule(
+        account_id=str(account_id), name=_RULE_NAME, kind="make_right",
+        trigger_json=trigger, steps_json=json.dumps({}), is_enabled=bool(enable)))
+    return "created"
+
+
 @router.get("/admin/make-right-config")
 async def get_make_right_config(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
@@ -111,6 +151,7 @@ async def put_make_right_config(body: _ConfigBody = Body(...)) -> dict[str, Any]
     clean = _validate(body.config)
     now = datetime.utcnow()
     payload = json.dumps(clean)
+    enable = bool(clean.get("enabled", _DEFAULTS["enabled"]))
     async with get_session() as s:
         await s.execute(
             sqlite_insert(AccountAiConfig)
@@ -120,5 +161,8 @@ async def put_make_right_config(body: _ConfigBody = Body(...)) -> dict[str, Any]
                 index_elements=["account_id"],
                 set_={"make_right_config_json": payload, "updated_at": now})
         )
-    log.info("make_right_config_saved account=%s cfg=%s", body.account_id, clean)
-    return {"account_id": body.account_id, "config": clean}
+        rule = await ensure_rule(s, body.account_id, enable)
+    log.info("make_right_config_saved account=%s cfg=%s rule=%s enabled=%s",
+             body.account_id, clean, rule, enable)
+    return {"account_id": body.account_id, "config": clean,
+            "rule": rule, "rule_enabled": enable}

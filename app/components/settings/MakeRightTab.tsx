@@ -8,10 +8,12 @@
  * from the tip library, up to twice per fan, then hands him to an operator. Refunds
  * are flagged for a human, never moved automatically.
  *
- * Ships OFF + PREVIEW-ONLY. Preview (dry-run) → POST /admin/make-right-preview shows
- * the detected incidents + each proposed make-right. Nothing sends until BOTH
- * "Enabled" and "Auto-send" are ticked and saved; "Run now" enqueues the sweep.
- * Config persists on account_ai_config.make_right_config_json.
+ * ON by default on every model (house policy 2026-08-05) — "Enabled" + "Auto-send"
+ * both default true; untick either to opt this account out. Preview (dry-run) →
+ * POST /admin/make-right-preview shows the detected incidents + each proposed
+ * make-right without sending; "Run now" enqueues the sweep immediately.
+ * Config persists on account_ai_config.make_right_config_json, and saving also
+ * creates/enables the account's 15-min `make_right` rule (the config alone is inert).
  */
 
 import { useEffect, useState } from "react";
@@ -23,6 +25,7 @@ import { useEmployee } from "@/contexts/EmployeeContext";
 
 interface Cfg {
   enabled?: boolean; auto_send?: boolean; lookback_days?: number;
+  max_msgs_since_charge?: number;
   per_fan_cap?: number; gift_value_match?: boolean; gift_piece_value_cents?: number;
   gift_min_count?: number; gift_max_count?: number; gift_tier?: string;
   apology_caption?: string; flag_refund?: boolean; guard_hours?: number;
@@ -39,7 +42,7 @@ interface PreviewRow {
 interface PreviewResp {
   dry_run: boolean; preview_only_reason?: string | null; candidates: number;
   would_open?: number; operator_only?: number; in_progress?: number;
-  excluded?: number; already_handled?: number; preview: PreviewRow[];
+  excluded?: number; already_handled?: number; stale?: number; preview: PreviewRow[];
 }
 
 const INPUT = "w-24 bg-bg border border-border rounded-lg px-2 py-1.5 text-base md:text-sm focus:outline-none focus:border-accent";
@@ -64,7 +67,7 @@ function NumField({ label, hint, value, onChange, min = 0, max = 100000, step = 
 const ACTION_LABEL: Record<string, string> = {
   would_open: "start exchange", in_progress: "exchange in progress",
   operator_only: "operator only", excluded: "skipped (guarded)",
-  already_handled: "already handled",
+  already_handled: "already handled", stale: "too late — thread moved on",
 };
 
 export default function MakeRightTab({ accountId }: { accountId: string | null }) {
@@ -155,8 +158,9 @@ export default function MakeRightTab({ accountId }: { accountId: string | null }
           same content</b> — and makes him whole: a warm apology + a few <b>free, unseen</b>
           pieces from your tip library, valued at least what he was over-charged. It fires
           <b> up to twice per fan</b>, then hands him to you. <b>Refunds are flagged for you</b>,
-          never moved automatically. Ships off — nothing sends until you tick
-          <b> Enabled</b> + <b>Auto-send</b>. <b>Preview</b> first to see who&apos;d get what.
+          never moved automatically. <b>On by default</b> — untick <b>Enabled</b> or
+          <b> Auto-send</b> to opt this account out. <b>Preview</b> shows who&apos;d get what
+          without sending.
         </p>
       </div>
 
@@ -178,6 +182,9 @@ export default function MakeRightTab({ accountId }: { accountId: string | null }
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <NumField label="Look back" hint="days" value={form.lookback_days ?? 30} min={1} max={365}
               onChange={(n) => set({ lookback_days: n })} suffix="d" />
+            <NumField label="Only if fresh" hint="msgs since the charge (0 = any age)"
+              value={form.max_msgs_since_charge ?? 3} min={0} max={1000}
+              onChange={(n) => set({ max_msgs_since_charge: n })} suffix="msg" />
             <NumField label="Max per fan" hint="then operator" value={form.per_fan_cap ?? 2} min={1} max={10}
               onChange={(n) => set({ per_fan_cap: n })} />
             <NumField label="Free pieces min" value={form.gift_min_count ?? 2} min={1} max={20}
@@ -276,7 +283,8 @@ export default function MakeRightTab({ accountId }: { accountId: string | null }
                 <b>{preview.candidates}</b> incident(s): <b>{preview.would_open ?? 0}</b> would start an exchange,
                 {" "}<b>{preview.operator_only ?? 0}</b> operator-only,
                 {" "}{preview.in_progress ?? 0} already in progress,
-                {" "}{preview.excluded ?? 0} skipped, {preview.already_handled ?? 0} already handled.
+                {" "}{preview.excluded ?? 0} skipped, {preview.already_handled ?? 0} already handled,
+                {" "}<b>{preview.stale ?? 0}</b> too late (thread moved on).
                 {preview.preview_only_reason && (
                   <span className="text-fg-dim"> (preview-only: {preview.preview_only_reason})</span>
                 )}

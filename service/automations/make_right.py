@@ -25,14 +25,22 @@ Design:
     the tip_reward tip-library tiers (so the apology is never itself a repeat of
     the mistake), valued ≥ the amount he was wrongly charged (operator-tunable).
     Refunds are flagged for an operator, never moved automatically.
+  • FRESHNESS: an incident is only worth an apology while it is still the thing in
+    front of him — `max_msgs_since_charge` (default 3) skips any duplicate the thread
+    has already moved past. Detection is unbounded (`lookback_days`) so a preview
+    still shows the whole backlog; only the SEND is gated.
   • CAP: make-right fires UP TO TWICE per fan (a COUNT of status='resolved' rows),
     then STOPS — the 3rd detected incident lands 'operator_only' (no send). A fan
     who keeps hitting mistakes, or who could milk the free gifts, is a human
     problem, not another auto-gift.
   • IDEMPOTENCY: one resolution per `incident_key`, ever (`resolution_log`).
-  • Ships DEFAULT OFF + PREVIEW-ONLY: detection always runs (so an operator can
-    eyeball the dry-run), but NOTHING sends until both `enabled` AND `auto_send`
-    are ticked on. `dry_run` in the payload forces preview regardless.
+  • HOUSE DEFAULT (2026-08-05): ON for every model — `enabled` AND `auto_send`
+    both default True, so an account that never opened the tab still catches its
+    own double-charges. An operator can still untick either switch per account
+    (a stored False wins over the default), and `dry_run` in the payload forces
+    preview regardless. The two switches gate the dup-charge SCANNER only; the
+    riskier `detect_undelivered` class stays opt-in, and a refund is still never
+    moved automatically.
 """
 from __future__ import annotations
 
@@ -75,12 +83,20 @@ _CHARGE_TX_KINDS = ("ppv_message", "ppv_post", "tip")
 # "double sale". The one copy of the predicate lives with the ownership readers.
 _PAID_RESOLVED_BY = ownership.OWNED_RESOLVED_BY
 
-# Built-in defaults — DISABLED + preview-only so the agent is inert until a creator
-# enables it AND opts into auto-send. Every numeric knob is operator-tunable.
+# Built-in defaults — ON for every model (operator ruling 2026-08-05: a fan who was
+# charged twice must get the apology on every account, not only the ones somebody
+# remembered to tick). A stored `false` still wins, so an opt-OUT is one checkbox.
+# Every numeric knob is operator-tunable.
 _DEFAULTS: dict = {
-    "enabled": False,          # master switch (detection still runs for preview)
-    "auto_send": False,        # opt-in: send apologies. OFF → preview-only even on a real run
+    "enabled": True,           # master switch (detection still runs for preview)
+    "auto_send": True,         # send apologies. OFF → preview-only even on a real run
     "lookback_days": 30,       # scan this far back for duplicate charges
+    # FRESHNESS. An apology only lands while the mistake is still the thing in front
+    # of him: open ONLY if at most this many messages have passed in the thread since
+    # the duplicate charge (operator ruling 2026-08-05 — the first sweep apologised to
+    # a fan 403 messages after the fact, which reads as a bot, not as care). The
+    # delivery bubble of the purchase itself usually takes one slot. 0 = gate off.
+    "max_msgs_since_charge": 3,
     "per_fan_cap": 2,          # "up to twice" then operator_only (anti-milking)
     # Gift sizing — value it at ≥ the wrongful charge (default: match it). Pieces
     # come from the tip_reward tip-library tiers (the same giftable pool).
@@ -380,24 +396,31 @@ async def _detect_dup_charges(account_id: str, cfg: dict, now: datetime,
     since = now - timedelta(days=max(1, int(cfg.get("lookback_days") or 30)))
     _fan_in = [int(x) for x in only_fan_ids] if only_fan_ids else None
 
-    # (fan_id, message_id) -> charge accumulator {item_ids:set, amount:int|None, sources:set}
+    # (fan_id, message_id) -> charge accumulator
+    # {item_ids:set, amount:int|None, sources:set, at:datetime|None}
     charges: dict[tuple[int, int], dict] = {}
 
-    def _add(fan_id, message_id, *, item_id=None, amount=None, source):
+    def _add(fan_id, message_id, *, item_id=None, amount=None, at=None, source):
         if fan_id is None or message_id is None:
             return  # a charge with no message id can't be deduped/resolved by media
         key = (int(fan_id), int(message_id))
-        c = charges.setdefault(key, {"item_ids": set(), "amount": None, "sources": set()})
+        c = charges.setdefault(key, {"item_ids": set(), "amount": None,
+                                     "sources": set(), "at": None})
         if item_id is not None:
             c["item_ids"].add(int(item_id))
         if amount is not None and (c["amount"] is None or int(amount) > c["amount"]):
             c["amount"] = int(amount)
+        # WHEN the money moved — the anchor the freshness gate measures from. Sources
+        # disagree by seconds (a quote is sent before it is paid), so keep the LATEST.
+        if at is not None and (c["at"] is None or at > c["at"]):
+            c["at"] = at
         c["sources"].add(source)
 
     async with get_session() as s:
         # (a) transactions — the money-truth, present regardless of which automation
         # sent it (the lane-agnostic backstop for funnel/mass/teaser buys).
-        q_tx = select(Transaction.fan_id, Transaction.message_id, Transaction.amount_cents).where(
+        q_tx = select(Transaction.fan_id, Transaction.message_id, Transaction.amount_cents,
+                      Transaction.occurred_at).where(
             Transaction.account_id == str(account_id),
             Transaction.kind.in_(_CHARGE_TX_KINDS),
             Transaction.status.in_(("cleared", "pending")),
@@ -406,13 +429,14 @@ async def _detect_dup_charges(account_id: str, cfg: dict, now: datetime,
             Transaction.occurred_at >= since)
         if _fan_in:
             q_tx = q_tx.where(Transaction.fan_id.in_(_fan_in))
-        for fid, mid, amt in (await s.execute(q_tx)).all():
-            _add(fid, mid, amount=amt, source="txn")
+        for fid, mid, amt, occ in (await s.execute(q_tx)).all():
+            _add(fid, mid, amount=amt, at=occ, source="txn")
 
         # (b) delivered, NON-FREE content_offers — carry the item (→ media) and the
         # PPV message id. This is what caught the Daniel incident.
         q_off = select(ContentOffer.fan_id, ContentOffer.offer_message_id,
-                       ContentOffer.item_id, ContentOffer.price_cents).where(
+                       ContentOffer.item_id, ContentOffer.price_cents,
+                       ContentOffer.resolved_at).where(
             ContentOffer.account_id == str(account_id),
             ContentOffer.status == "delivered",
             ContentOffer.resolved_by.in_(_PAID_RESOLVED_BY),
@@ -420,20 +444,21 @@ async def _detect_dup_charges(account_id: str, cfg: dict, now: datetime,
             ContentOffer.resolved_at >= since)
         if _fan_in:
             q_off = q_off.where(ContentOffer.fan_id.in_(_fan_in))
-        for fid, msg, item, price in (await s.execute(q_off)).all():
-            _add(fid, msg, item_id=item, amount=price, source="offer")
+        for fid, msg, item, price, resolved in (await s.execute(q_off)).all():
+            _add(fid, msg, item_id=item, amount=price, at=resolved, source="offer")
 
         # (c) paid ladder quotes — same PPV message id, carry the item.
         q_lq = select(LadderQuote.fan_id, LadderQuote.message_id,
-                      LadderQuote.item_id, LadderQuote.price_cents).where(
+                      LadderQuote.item_id, LadderQuote.price_cents,
+                      LadderQuote.sent_at).where(
             LadderQuote.account_id == str(account_id),
             LadderQuote.paid.is_(True),
             LadderQuote.message_id.is_not(None),
             LadderQuote.sent_at >= since)
         if _fan_in:
             q_lq = q_lq.where(LadderQuote.fan_id.in_(_fan_in))
-        for fid, msg, item, price in (await s.execute(q_lq)).all():
-            _add(fid, msg, item_id=item, amount=price, source="quote")
+        for fid, msg, item, price, sent in (await s.execute(q_lq)).all():
+            _add(fid, msg, item_id=item, amount=price, at=sent, source="quote")
 
     if not charges:
         return []
@@ -514,11 +539,15 @@ async def _detect_dup_charges(account_id: str, cfg: dict, now: datetime,
                     overlap |= (media[comp_msgs[i]] & media[comp_msgs[j]])
             item_ids: set[int] = set()
             amounts: list[int] = []
+            last_at: datetime | None = None
             for m in comp_msgs:
                 item_ids |= charges[(fid, m)]["item_ids"]
                 amt = charges[(fid, m)]["amount"]
                 if amt:
                     amounts.append(int(amt))
+                at = charges[(fid, m)]["at"]
+                if at is not None and (last_at is None or at > last_at):
+                    last_at = at
             # He should have paid ONCE — the wrongful amount is everything past the
             # single largest legitimate charge.
             wrongful = sum(sorted(amounts, reverse=True)[1:]) if len(amounts) >= 2 else \
@@ -534,6 +563,9 @@ async def _detect_dup_charges(account_id: str, cfg: dict, now: datetime,
                 "item_ids": sorted(item_ids),
                 "overlap_media": sorted(overlap),
                 "wrongful_cents": int(wrongful),
+                # The freshness anchor: the LAST of the duplicate charges. An apology
+                # is owed for the charge he just made, not the one he made in July.
+                "last_charge_at": last_at,
                 "evidence": {"charge_count": len(comp_msgs),
                              "amounts_cents": amounts},
             })
@@ -605,6 +637,7 @@ async def _detect_paid_undelivered(account_id: str, cfg: dict, now: datetime,
             "message_ids": [int(t.message_id)] if t.message_id else [],
             "item_ids": [], "overlap_media": [],
             "wrongful_cents": int(t.amount_cents or 0),
+            "last_charge_at": occ,
             "evidence": {"amount_cents": int(t.amount_cents or 0), "tx_kind": t.kind,
                          "occurred_at": occ.isoformat() if occ else None},
         })
@@ -839,6 +872,31 @@ async def _enqueue_silence_check(account_id: str, fan_id: int, cfg: dict,
     except Exception:
         log.debug("make_right silence-check enqueue failed account=%s fan=%s",
                   account_id, fan_id, exc_info=True)
+
+
+async def _msgs_since_charge(account_id: str, fan_id: int,
+                             charged_at: datetime | None) -> int | None:
+    """How many messages the thread has moved on since the duplicate charge.
+
+    This is the freshness measure: an apology for a charge 400 messages back reads
+    as a machine noticing late, not as care. Counts BOTH directions (his replies and
+    hers) because "the third message after the purchase" is a position in the thread,
+    not a count of his typing — but excludes make_right's OWN sends so a re-open or a
+    retry can't inflate its own staleness.
+
+    Returns None when the charge time is unknown; the caller treats that as "cannot
+    prove it's fresh" and skips, because the whole point is to not apologise blind.
+    """
+    if charged_at is None:
+        return None
+    async with get_session() as s:
+        return int((await s.execute(
+            select(func.count()).select_from(Message).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.created_at > charged_at,
+                func.coalesce(Message.automation_kind, "") != "make_right")
+        )).scalar_one() or 0)
 
 
 async def _build_exclusions(account_id: str, guard_hours: int, now: datetime,
@@ -1290,7 +1348,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     stats = {"opened": 0, "advanced": 0, "resolved": 0, "nudged": 0,
              "closed_silent": 0, "operator_only": 0, "errors": 0,
-             "skipped_excluded": 0, "already_handled": 0}
+             "skipped_excluded": 0, "already_handled": 0, "stale": 0}
     preview: list[dict] = []
 
     # ── ADVANCE phase (real runs only) — continue open exchanges on his replies ──
@@ -1308,6 +1366,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # 0 is a valid "contact-guard off" — don't let `or 12` clobber it.
         gh = cfg.get("guard_hours", 12)
         guard_hours = int(gh) if gh is not None else 12
+        # 0 is a valid "freshness gate off" — same trap, same shape.
+        mm = cfg.get("max_msgs_since_charge", 3)
+        max_msgs = int(mm) if mm is not None else 3
         fan_ids = {int(i["fan_id"]) for i in incidents}
         excl = await _build_exclusions(account_id, guard_hours, now, fan_ids)
         resolved_counts = {fid: await _resolved_count(account_id, fid) for fid in fan_ids}
@@ -1329,6 +1390,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 stats["already_handled"] += 1
                 preview.append({**base, "action": "already_handled"})
                 continue
+            # FRESHNESS — before the cap, so a stale incident reads as "stale" and
+            # never burns a per-fan slot or an operator_only row it doesn't deserve.
+            if max_msgs > 0:
+                since = await _msgs_since_charge(account_id, fid, inc.get("last_charge_at"))
+                if since is None or since > max_msgs:
+                    stats["stale"] += 1
+                    preview.append({**base, "action": "stale",
+                                    "msgs_since_charge": since,
+                                    "reason": ("charge time unknown" if since is None
+                                               else f"{since} messages since the charge")})
+                    continue
             if resolved_counts.get(fid, 0) >= cap:
                 stats["operator_only"] += 1
                 if send_mode:
@@ -1407,6 +1479,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 "operator_only": sum(1 for p in preview if p["action"] == "operator_only"),
                 "excluded": stats["skipped_excluded"],
                 "already_handled": stats["already_handled"],
+                "stale": stats["stale"],
                 "in_progress": sum(1 for p in preview if p["action"] == "in_progress"),
                 "preview": preview[:25]}
     return {"status": "ok", **stats}
