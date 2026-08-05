@@ -250,6 +250,25 @@ async def start_collect(account_id: str = Query(...)) -> dict[str, Any]:
     return {"account_id": account_id, "run_id": run_id, "status": "running"}
 
 
+def _run_status(row: VaultCacheRun, account_id: str) -> str:
+    """What this run's status actually IS, not what it last managed to write.
+
+    A collect is a background task and its rows are finalised by the task
+    itself, so a relay restart mid-sweep leaves `running` behind with nothing
+    left to ever clear it. One prod row said `running / warming` for three days;
+    it is also why 1,046 clips were never warmed, and the status endpoint
+    reported the sweep as still in progress the whole time.
+
+    `_running` is the only place a live sweep is tracked and it is process-local,
+    so a row claiming to run for an account nobody is running IS orphaned — the
+    process that owned it is gone. Read, never written: the stored row stays the
+    honest record of what the task last wrote, and a reconciliation pass that
+    could itself be interrupted is machinery this does not need."""
+    if row.status == "running" and account_id not in _running:
+        return "interrupted"
+    return row.status
+
+
 # Which store(s) a `scope` names. One map, so stats and purge can't disagree about
 # what "all" covers.
 def _stores() -> dict[str, Path]:
@@ -319,7 +338,7 @@ async def collect_status(account_id: str = Query(...)) -> dict[str, Any]:
         "account_id": account_id,
         "run": {
             "id": row.id,
-            "status": row.status,
+            "status": _run_status(row, account_id),
             "phase": row.phase,
             "total_seen": row.total_seen,
             "upserted": row.upserted,
@@ -358,7 +377,8 @@ async def cache_summary(account_id: str = Query(...)) -> dict[str, Any]:
         "count": int(count or 0),
         "running": account_id in _running,
         "last_run": None if last is None else {
-            "id": last.id, "status": last.status, "total_seen": last.total_seen,
+            "id": last.id, "status": _run_status(last, account_id),
+            "total_seen": last.total_seen,
             "finished_at": last.finished_at.isoformat() if last.finished_at else None,
         },
     }

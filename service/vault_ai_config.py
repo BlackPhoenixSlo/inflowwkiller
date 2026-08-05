@@ -31,12 +31,17 @@ from typing import Any
 DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "suggest_only": True,
+    # `escalation` and `escalate_below_confidence` used to sit here. Nothing read
+    # either: `_describe_one` names its escalation model inline, and it escalates
+    # on a refusal or a blank, never on a confidence score — that second feature
+    # was designed and never built. A config key an operator can set and watch do
+    # nothing is worse than no key at all, and both of these had defaults equal
+    # to the hardcoded behaviour, so they read as working. If configurable
+    # escalation is ever wanted, add it deliberately with a reader attached.
     "models": {
         "describe": "qwen3-vl-30b",
-        "escalation": "qwen3-vl-235b",
         "caption": "deepseek-v4-flash",
         "script": "deepseek-v4-flash",
-        "escalate_below_confidence": 65,
     },
     "describe": {
         "cadence_hours": 6,
