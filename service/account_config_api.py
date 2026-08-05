@@ -53,6 +53,7 @@ PURPOSES: tuple[str, ...] = (
 # for the editor dropdown. Sourced from the language layer so there's one list.
 from automations._language import KNOWN_LANGS, LANG_DISPLAY, norm_lang  # noqa: E402
 from automations._voice import (  # noqa: E402
+    STORAGE_KEY_NOTE as _STORAGE_KEY_NOTE,
     VOICE_HER, VOICE_HIM, fact_labels, fact_placeholders, norm_voice, parse_voice,
     pronouns as _voice_pronouns)
 LANGUAGES: tuple[dict, ...] = tuple(
@@ -471,7 +472,7 @@ def _enrich_system(voice: object) -> str:
         # this file — so adding a 27th fact meant editing two places and only one
         # of them was enforced anywhere. They had not drifted yet; that is the
         # only reason this is a cheap fix rather than a bug hunt.
-        f"Keys: {_ENRICH_KEYS}.\n"
+        f"Keys: {_ENRICH_KEYS}.{_STORAGE_KEY_NOTE[norm_voice(voice)]}\n"
         "NEVER output `kinks`, `limits` or `tattoos` — the first two are the "
         "creator's own business decision, and the third is visible in "
         f"{p.possessive} photos."
