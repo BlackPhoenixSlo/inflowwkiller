@@ -164,3 +164,8 @@ wwwwwwwww
 # and every transcript under out/ is a rendered conversation.
 service/sim/
 service/tools/out/
+
+# HMAC keys — NEVER in this repo (it is public). Leaked once via the Flow A
+# file-copy, which had no dotfile exclusion; the rsync in Flow B always had one.
+service/.session_secret
+service/.chatter_secret
