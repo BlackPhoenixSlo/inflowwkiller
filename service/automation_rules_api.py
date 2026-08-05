@@ -193,6 +193,21 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "dry_run", "type": "bool", "hint": "report what it would mark, write nothing"},
         ],
     },
+    "make_right": {
+        "label": "Make It Right (resolution agent)", "recurring": True, "surface": "ready_made",
+        "cadence_default_s": 900,
+        "summary": ("Catches a fan who got the wrong outcome — above all charged "
+                    "TWICE for the same content — and makes him whole: apology + "
+                    "free unseen pieces, up to twice per fan, then an operator. "
+                    "Refunds are only ever flagged. On by default; the switches "
+                    "and gift sizing live in Automations → 🤝 Make It Right. The "
+                    "same sweep advances open exchanges when he replies."),
+        "example": "every 15 min · apology + free pieces · refund flagged, never moved",
+        "knobs": [
+            {"key": "dry_run", "type": "bool", "hint": "preview the incidents, send nothing"},
+            {"key": "only_fan_ids", "type": "ids", "hint": "[fan_id,…] scope the sweep to these fans"},
+        ],
+    },
     "scrape_chats": {
         "label": "Backfill chat history", "recurring": True, "surface": "rules",
         "cadence_default_s": 86400, "group": "advanced",
