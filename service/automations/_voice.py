@@ -509,6 +509,25 @@ def pronouns(voice: object) -> CreatorPronouns:
     return _PRONOUNS[norm_voice(voice)]
 
 
+# One canon KEY is spelled female — `her_type`. Keys are STORAGE and deliberately
+# never move (that is what lets an account be flipped either way without touching
+# `persona_facts_json`), so the male lane cannot rename it. But a prompt that
+# hands a model the key list has just written "her_type" into a male account's
+# authoring turn, and no word scan catches it: `\bher\b` does not match across an
+# underscore.
+#
+# So the male lane says out loud what the key is. "" for her — her keys read
+# correctly, so every prompt appending this is byte-identical in the female lane,
+# the same construction as `EMOJI_VOCAB_RULE` above.
+STORAGE_KEY_NOTE = {
+    VOICE_HER: "",
+    VOICE_HIM: (
+        " (`her_type` is a STORAGE key name, not a claim about him — it means the "
+        "type of person HE goes for. Output it under that exact key anyway.)"
+    ),
+}
+
+
 def assert_canon_parity(declared: tuple[tuple[str, str], ...]) -> None:
     """Bind both lane tables to the canon slate, AT IMPORT.
 
@@ -524,22 +543,35 @@ def assert_canon_parity(declared: tuple[tuple[str, str], ...]) -> None:
     the label column, where a value is one to three words NAMING a field — a scan
     is adequate for "Her ex" and inadequate for "content creator, waitressed
     before", which is exactly why the placeholder column is checked for COVERAGE
-    instead."""
+    instead.
+
+    ⚠️ `raise AssertionError`, never a bare `assert` — matching
+    `script_packs._assert_lane_parity` in mechanism as well as in timing. A bare
+    `assert` is stripped by `-O`/`PYTHONOPTIMIZE`, so the whole guard would
+    silently evaporate under a flag nobody sets today, which is exactly the kind
+    of "off in production only" that makes an import-time check worse than the
+    test it replaced."""
     import re
+
+    def _check(ok: object, msg: str) -> None:
+        if not ok:
+            raise AssertionError(msg)
+
     keys = {k for k, _ in declared}
     for lane, table in _FACT_PLACEHOLDERS.items():
-        assert set(table) == keys, (
-            f"{lane} placeholders vs canon slate — missing "
-            f"{sorted(keys - set(table))}, unknown {sorted(set(table) - keys)}")
+        _check(set(table) == keys,
+               f"{lane} placeholders vs canon slate — missing "
+               f"{sorted(keys - set(table))}, unknown {sorted(set(table) - keys)}")
     female = re.compile(r"\b(she|her|hers|herself|girl|girls|woman|women)\b", re.I)
     for lane, overrides in _FACT_LABELS.items():
-        assert not set(overrides) - keys, \
-            f"{lane} label override for an undeclared slot: {sorted(set(overrides) - keys)}"
+        _check(not set(overrides) - keys,
+               f"{lane} label override for an undeclared slot: "
+               f"{sorted(set(overrides) - keys)}")
     him = _FACT_LABELS[VOICE_HIM]
     ungendered = [k for k, label in declared if female.search(label) and k not in him]
-    assert not ungendered, f"gendered label with no male form: {ungendered}"
+    _check(not ungendered, f"gendered label with no male form: {ungendered}")
     still = [k for k, v in him.items() if female.search(v)]
-    assert not still, f"male label override is still female: {still}"
+    _check(not still, f"male label override is still female: {still}")
 
 
 # ── The humanizer: pushback register + emoji vocabulary ──────────────
