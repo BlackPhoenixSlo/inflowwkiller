@@ -10,54 +10,64 @@ sends anything to a fan. It only writes a nickname.
 
 WHERE THE STATE LIVES
 ---------------------
-`fans.custom_nickname`, with " Custom" appended, pushed to OnlyFans as
-`displayName`. See `_customs` for why a nickname beats a table: the operator
-works in the OF app, not in our admin, and the marker renders next to the fan's
-name in the inbox without anyone deciding to go and look.
+`fans.customs_owed_at` — one nullable timestamp, holding the moment the
+qualifying tip landed. NULL means nothing is owed. The operator sees the queue on
+/customs and clears it there.
 
-`custom_nickname` is the right column of the three:
-  • `generated_nickname` is gen_info's, and gen_info rewrites it wholesale on
-    every profile refresh — a marker there is erased by the next sweep.
-  • `fan_chosen_nickname` is the FAN's, and is not ours to touch.
-  • `custom_nickname` is the OPERATOR's, and `apply_profiles` reads
-    `fan_profiles.nickname` rather than this column, so the two never fight.
+⚠️ THIS MODULE USED TO WRITE A " Custom" SUFFIX ONTO `fans.custom_nickname` AND
+PUSH IT TO ONLYFANS, AND IT NEVER ONCE SURVIVED. `custom_nickname` has four other
+writers; `of_ai_chat._maybe_push_nickname` — reached from ai_chatter on EVERY tick
+— rebuilds the name from structured facts and drops anything that is not a
+structured fact, then writes the shortened name to OF and back into our row.
+ai_chatter runs every 60s and this runs every 900s, so the marker was erased about
+a minute after it was written. Prod, after days live: 204 runs, zero marks that
+outlived a tick. See `_customs`. NOTHING HERE MAY WRITE A NICKNAME AGAIN.
+
+Because the column holds the TIP's timestamp rather than a bare flag, this module
+also stopped needing its window fallback — see the clear loop.
 
 WHY IT CLEARS ITSELF TOO
 ------------------------
-The operator clearing the marker by hand is the authority and stays. But a
+The operator clearing the debt by hand is the authority and stays. But a
 hand-clear that is FORGOTTEN leaves the account unable to sell to its single
 best fan, forever — the brake has no timeout on purpose, since a timeout would
 resume selling to a man who never got what he paid for. So a delivery detected
 in the thread clears it as well. Whichever comes first wins; both are idempotent.
 
-TWO THINGS THIS DELIBERATELY DOES NOT DO
-----------------------------------------
+THREE THINGS THIS DELIBERATELY DOES NOT DO
+------------------------------------------
 1. It does not re-mark. `fans.customs_cleared_at` records the moment a fan's
    debt was settled and tips at or before it are ignored — otherwise clearing
-   the marker (delivered!) makes the next sweep see the same old tip and mark it
+   the debt (delivered!) makes the next sweep see the same old tip and mark it
    again, and the operator's click undoes itself on a 72-hour loop. That is not
    hypothetical: it is what this module did until 2026-08-04, and the delivery
    detector hid it in testing because a seeded voice note made the re-mark path
    unreachable.
-2. It does not count quantity. $400 is not two customs; the live transcript that
+2. It does not count quantity. $200 is not two customs; the live transcript that
    priced this feature shows the amount encoding LENGTH, and two customs means
    two separate tips.
+3. It does not touch OnlyFans at all. It reads our transactions and writes our
+   column; the operator's surface is /customs. That is what makes it impossible
+   for a nickname pipeline to undo it.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
-import automation_executor as ax
 from automation_registry import register
 from db.engine import get_session
 from db.models import Fan, Message, MessageMedia, Transaction
-from of_client import OFClient
 from . import _customs
 from ._common import coerce_ids
+
+# ⚠️ NO `of_client` / `automation_executor` IMPORT, AND THAT IS THE POINT.
+# This module reads our transactions and writes one of our columns. It has no
+# reason to reach OnlyFans, and the moment it does, the marker it writes is back
+# in the path of the nickname pipeline that erased it for days. If a future change
+# needs an OF call here, re-read this module's docstring first.
 
 log = logging.getLogger("of-relay.automation.customs_watch")
 
@@ -67,26 +77,25 @@ _DEFAULT_LOOKBACK_H = 72      # far enough back to catch a weekend, short enough
                               # historical $200 tip an account has ever taken
 _DEFAULT_LIMIT = 200
 
-
-async def _mark_of(account_id: str, fan_id: int, nick: str) -> bool:
-    """Push the nickname to OnlyFans. Failure is logged, never fatal — the DB
-    write is the source of truth and the next sweep retries the push."""
-    try:
-        client = await asyncio.to_thread(ax._make_client, account_id)
-        await asyncio.to_thread(client.set_fan_custom_name, int(fan_id), nick)
-        return True
-    except Exception:
-        log.warning("customs_watch: OF nickname push failed account=%s fan=%s",
-                    account_id, fan_id, exc_info=True)
-        return False
+# Transaction states that mean the money is real. Mirrors
+# `ai_chatter._tip_sum_since` deliberately — a tip is either an order everywhere
+# or nowhere, and these two were the pair that disagreed.
+_SETTLED_STATUSES = ("cleared", "pending")
 
 
 async def _delivered_since(account_id: str, fan_id: int,
                            since: datetime) -> bool:
-    """Did the creator send this fan a voice note (or a free video) since `since`?"""
+    """Did the creator send this fan a voice note since `since`?
+
+    The WHERE clause is the whole rule — outbound, not unsent, after the tip, and
+    a `DELIVERY_TYPES` medium. It used to select price/is_tip as well and re-test
+    each row through `_customs.is_delivery`, which mattered while a FREE video
+    also counted; with an audio-only product that predicate could only ever agree
+    with the query that fetched the row. Asking the database once beats asking it
+    and then asking Python the same question."""
     async with get_session() as s:
-        rows = (await s.execute(
-            select(MessageMedia.type, Message.price_cents, Message.is_tip)
+        hit = (await s.execute(
+            select(MessageMedia.media_id)
             .join(Message,
                   (Message.account_id == MessageMedia.account_id)
                   & (Message.fan_id == MessageMedia.fan_id)
@@ -97,8 +106,9 @@ async def _delivered_since(account_id: str, fan_id: int,
                    Message.is_unsent.is_(False),
                    Message.created_at >= since,
                    MessageMedia.type.in_(_customs.DELIVERY_TYPES))
-        )).all()
-    return any(_customs.is_delivery(t, p, bool(tip)) for t, p, tip in rows)
+            .limit(1)
+        )).first()
+    return hit is not None
 
 
 @register("customs_watch")
@@ -115,8 +125,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     since = datetime.utcnow() - timedelta(hours=lookback_h)
 
     stats = {"tips_seen": 0, "marked": 0, "cleared": 0, "already_marked": 0,
-             "skipped_delivered": 0, "pushed": 0, "push_failed": 0,
-             "already_settled": 0,
+             "skipped_delivered": 0, "already_settled": 0,
              "errors": 0, "dry_run": dry_run, "min_cents": floor}
 
     # ── 1. Qualifying tips in the window
@@ -125,6 +134,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     Transaction.occurred_at, Transaction.kind)
              .where(Transaction.account_id == str(account_id),
                     Transaction.kind.in_(_customs.ORDER_KINDS),
+                    # MONEY THAT ACTUALLY ARRIVED. Without this a refunded or
+                    # charged-back $200 marks the fan owed a voice note, and the
+                    # only way back is a human noticing. `ai_chatter._tip_sum_since`
+                    # has always filtered this way; this query did not, which made
+                    # two engines disagree about whether the same tip was real.
+                    # 'pending' counts: it is money in flight, and treating it as
+                    # an order is the safe direction — the fan believes he ordered.
+                    Transaction.status.in_(_SETTLED_STATUSES),
                     Transaction.amount_cents >= floor,
                     Transaction.occurred_at >= since)
              .order_by(Transaction.occurred_at.desc())
@@ -150,7 +167,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             async with get_session() as s:
                 fan = await s.get(Fan, {"account_id": str(account_id),
                                         "fan_id": int(fan_id)})
-                nick = (fan.custom_nickname or "") if fan else ""
+                owed = _customs.is_owed(fan)
                 settled = fan.customs_cleared_at if fan else None
             # ALREADY SETTLED. Without this the scanner re-marked a tip the
             # operator had just cleared, 15 minutes later, for as long as the tip
@@ -158,7 +175,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if settled is not None and tipped_at <= settled:
                 stats["already_settled"] += 1
                 continue
-            if _customs.is_owed(nick):
+            if owed:
                 stats["already_marked"] += 1
                 continue
             # He already got it — a tip that was fulfilled before this automation
@@ -166,51 +183,53 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if await _delivered_since(account_id, fan_id, tipped_at):
                 stats["skipped_delivered"] += 1
                 continue
-            marked = _customs.mark(nick)
             if dry_run:
                 stats["marked"] += 1
                 continue
+            # Re-read inside the write session and re-test: `is_owed` above was
+            # judged on a snapshot from a session that is now closed, and the
+            # operator may have cleared him in between. `mark` returning False is
+            # that race losing quietly, which is the correct outcome.
             async with get_session() as s:
                 fan = await s.get(Fan, {"account_id": str(account_id),
                                         "fan_id": int(fan_id)})
                 if fan is None:
                     continue
-                fan.custom_nickname = marked
+                if not _customs.mark(fan, tipped_at):
+                    stats["already_marked"] += 1
+                    continue
                 await s.commit()
             stats["marked"] += 1
-            if await _mark_of(account_id, fan_id, marked):
-                stats["pushed"] += 1
-            else:
-                stats["push_failed"] += 1
-            log.info("customs_watch OWED account=%s fan=%s nick=%r",
-                     account_id, fan_id, marked)
+            log.info("customs_watch OWED account=%s fan=%s tipped_at=%s",
+                     account_id, fan_id, tipped_at)
         except Exception:
             stats["errors"] += 1
             log.warning("customs_watch mark failed account=%s fan=%s",
                         account_id, fan_id, exc_info=True)
 
     # ── 2. Clear anyone whose custom has since gone out
+    #
+    # The column IS the query now. It also carries the ORDER's timestamp, which
+    # removes this loop's worst bug: it used to judge delivery from
+    # `by_fan.get(fan_id, since)`, falling back to the 72h SWEEP WINDOW whenever
+    # the originating tip had aged out of it. Any free outbound video in the last
+    # three days — a mass send, a tip_reward freebie, a chatter being nice — then
+    # settled a debt incurred a week earlier. `customs_owed_at` cannot age out, so
+    # there is nothing to fall back to and the question is always the right one:
+    # has a voice note gone out SINCE HE PAID?
     async with get_session() as s:
         owed_rows = (await s.execute(
-            select(Fan.fan_id, Fan.custom_nickname)
+            select(Fan.fan_id, Fan.customs_owed_at)
             .where(Fan.account_id == str(account_id),
-                   Fan.custom_nickname.is_not(None))
+                   Fan.customs_owed_at.is_not(None))
         )).all()
 
-    for fan_id, nick in owed_rows:
-        if not _customs.is_owed(nick):
-            continue
+    for fan_id, owed_at in owed_rows:
         if only and int(fan_id) not in only:
             continue
         try:
-            # Judge delivery from the tip that put the marker there when we can
-            # still see it; otherwise from the window, which is the conservative
-            # direction (a delivery older than the window leaves it owed, and a
-            # human can always clear it by hand).
-            mark_from = by_fan.get(int(fan_id), since)
-            if not await _delivered_since(account_id, fan_id, mark_from):
+            if not await _delivered_since(account_id, fan_id, owed_at):
                 continue
-            cleared = _customs.clear(nick)
             if dry_run:
                 stats["cleared"] += 1
                 continue
@@ -219,13 +238,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                         "fan_id": int(fan_id)})
                 if fan is None:
                     continue
-                fan.custom_nickname = cleared or None
-                fan.customs_cleared_at = datetime.utcnow()
+                if not _customs.clear(fan):
+                    continue
                 await s.commit()
             stats["cleared"] += 1
-            await _mark_of(account_id, fan_id, cleared)
-            log.info("customs_watch DELIVERED account=%s fan=%s nick=%r",
-                     account_id, fan_id, cleared)
+            log.info("customs_watch DELIVERED account=%s fan=%s owed_since=%s",
+                     account_id, fan_id, owed_at)
         except Exception:
             stats["errors"] += 1
             log.warning("customs_watch clear failed account=%s fan=%s",

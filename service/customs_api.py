@@ -1,38 +1,30 @@
-"""customs_api.py — the owed-customs queue.
+"""customs_api.py — the owed-customs queue. THE operator surface for this feature.
 
   GET  /admin/customs                  → every fan currently owed a custom
-  POST /admin/customs/clear            → mark one delivered (clears the marker)
+  POST /admin/customs/clear            → mark one delivered
 
 WHY IT IS CROSS-ACCOUNT BY DEFAULT
 ----------------------------------
 The queue exists so that nobody has to remember to go and look. A per-account
-page reintroduces exactly the thing the nickname marker was chosen to avoid — a
-surface you only see if you already suspect there is something on it. Omitting
-`account_id` returns every owed fan across every account the principal can see,
-newest tip first, so one glance covers the whole roster.
+page is a surface you only visit if you already suspect something is on it.
+Omitting `account_id` returns every owed fan across every account the principal
+can see, oldest debt first, so one glance covers the whole roster.
 
 WHAT "OWED" MEANS
 -----------------
-`fans.custom_nickname` ends in the ` Custom` marker — see `automations/_customs`.
-The marker is the ledger; this endpoint is a VIEW over it and a way to clear it.
-It deliberately holds no state of its own, so the page, the OF app and the
-automation can never disagree about who is owed what.
+`fans.customs_owed_at IS NOT NULL` — see `automations/_customs`. One column, one
+writer (`customs_watch`), and this endpoint plus the operator's button.
 
-⚠️ The suffix test is `_customs.is_owed`, never a substring — prod contains
-`Johny/Colombia/31/Customer Service` and matching "custom" loosely puts a fan in
-this queue forever.
-
-CLEARING PUSHES TO ONLYFANS
----------------------------
-The operator works in the OF app as much as here, and a marker cleared in one
-place but not the other is worse than no marker at all. So a clear writes the DB
-AND pushes the shortened nickname to OF. The DB write is the source of truth; an
-OF push failure is reported to the caller but does not roll it back, because
-`customs_watch` re-pushes on its next sweep.
+⚠️ IT USED TO BE A " Custom" SUFFIX ON THE FAN'S ONLYFANS NICKNAME, on the theory
+that the operator would see it in the OF inbox without having to come here. The
+theory was fine; the storage was not. `custom_nickname` is rewritten from
+structured facts by the chat engines on every tick, so the marker was erased about
+a minute after it was written and this queue was permanently, silently empty. The
+page is now the only surface, which is why the untracked-accounts warning below
+renders even when there is nothing owed.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -113,16 +105,19 @@ async def list_customs(account_id: str | None = Query(None)) -> dict[str, Any]:
     allowed = clamp_account_filter(account_id)
 
     async with get_session() as s:
-        q = select(Fan.account_id, Fan.fan_id, Fan.custom_nickname,
+        # `customs_owed_at IS NOT NULL` is the whole test now. It used to be a
+        # string suffix on `custom_nickname`, fetched for every fan on the roster
+        # and filtered in Python because a substring match would have caught
+        # "Johny/Colombia/31/Customer Service". A column indexes, cannot be
+        # ambiguous, and cannot be rewritten by the nickname pipeline.
+        q = select(Fan.account_id, Fan.fan_id, Fan.customs_owed_at,
                    Fan.of_display_name, Fan.of_username,
                    Fan.lifetime_spend_cents).where(
-            Fan.custom_nickname.is_not(None))
+            Fan.customs_owed_at.is_not(None))
         if allowed is not None:
             q = q.where(Fan.account_id.in_(allowed))
-        rows = (await s.execute(q)).all()
+        owed = (await s.execute(q)).all()
 
-        # Only the real markers — see the module docstring on Customer Service.
-        owed = [r for r in rows if _customs.is_owed(r[2])]
         if not owed:
             # STILL report untracked accounts. An empty queue plus a silent
             # config gap looks exactly like a healthy empty queue, and that is
@@ -152,19 +147,21 @@ async def list_customs(account_id: str | None = Query(None)) -> dict[str, Any]:
         )).all()}
 
     out = []
-    for acct, fid, nick, disp, uname, spend in owed:
+    for acct, fid, owed_at, disp, uname, spend in owed:
         cents, at, msg_id = newest.get((acct, int(fid)), (None, None, None))
         out.append({
             "account_id": acct,
             "account_name": names.get(acct, acct),
             "fan_id": int(fid),
             "marked": True,
-            # What the operator sees in the OF inbox — the marker included, so
-            # the row on screen and the name in the app are the same string.
-            "nickname": nick,
             "display_name": disp or uname or f"fan #{fid}",
             "tip_cents": cents,
-            "tipped_at": at.isoformat() if at else None,
+            # `customs_owed_at` is the ledger and therefore the authority on WHEN
+            # he paid. The transaction scan is a nicety that tells the operator
+            # how much; when it comes up empty (a tip older than its own lookback,
+            # a fan marked by hand) the row still has to age correctly, so fall
+            # back to the column rather than emitting null and sorting to the top.
+            "tipped_at": (at or owed_at).isoformat() if (at or owed_at) else None,
             "lifetime_spend_cents": int(spend or 0),
             "chat_href": _chat_href(acct, fid, msg_id),
         })
@@ -234,7 +231,6 @@ async def _unmarked(allowed: list[str] | None,
             "account_name": names.get(acct, acct),
             "fan_id": int(fid),
             "marked": False,
-            "nickname": (fan.custom_nickname if fan else None),
             "display_name": ((fan.of_display_name or fan.of_username) if fan else None)
                             or f"fan #{fid}",
             "tip_cents": int(cents or 0),
@@ -393,7 +389,12 @@ class _ClearBody(BaseModel):
 
 @router.post("/admin/customs/clear")
 async def clear_custom(body: _ClearBody = Body(...)) -> dict[str, Any]:
-    """Mark one custom delivered — strips the marker and pushes it to OF."""
+    """Mark one custom delivered — blanks `customs_owed_at` and stamps settled.
+
+    Nothing is pushed to OnlyFans. This used to also strip a " Custom" suffix from
+    the fan's OF display name and PUT the shortened name back; both halves are
+    gone with the suffix, and with them the failure mode where the push failed,
+    was reported as `pushed_to_of: false`, and was never retried by anything."""
     assert_account_owned(body.account_id)
 
     async with get_session() as s:
@@ -401,37 +402,15 @@ async def clear_custom(body: _ClearBody = Body(...)) -> dict[str, Any]:
                                 "fan_id": int(body.fan_id)})
         if fan is None:
             raise HTTPException(404, "fan not found")
-        if not _customs.is_owed(fan.custom_nickname):
-            # No marker — either two operators clicked the same row, or this is
-            # a REVIEW row (a qualifying tip nothing was watching for). Either
-            # way it must SETTLE: without the stamp a review row reappears on
-            # every load and the backlog can never be worked down.
+        # `clear` returns False when nothing was owed — either two operators
+        # clicked the same row, or this is a REVIEW row (a qualifying tip nothing
+        # was watching for). Either way it must SETTLE: without the stamp a review
+        # row reappears on every load and the backlog can never be worked down.
+        already = not _customs.clear(fan)
+        if already:
             fan.customs_cleared_at = datetime.utcnow()
-            await s.commit()
-            return {"ok": True, "already_clear": True,
-                    "nickname": fan.custom_nickname}
-        cleared = _customs.clear(fan.custom_nickname)
-        fan.custom_nickname = cleared or None
-        # THE thing that makes this button stick. `customs_watch` derives "owed"
-        # from live conditions, so without a settled-at stamp the same tip is
-        # still in its window on the next sweep and gets re-marked — this click
-        # used to undo itself within 15 minutes.
-        fan.customs_cleared_at = datetime.utcnow()
         await s.commit()
 
-    pushed = False
-    try:
-        import automation_executor as ax
-        client = await asyncio.to_thread(ax._make_client, str(body.account_id))
-        await asyncio.to_thread(client.set_fan_custom_name,
-                                int(body.fan_id), cleared)
-        pushed = True
-    except Exception:
-        # Not fatal, and not rolled back — the DB is the source of truth and
-        # customs_watch re-pushes on its next sweep.
-        log.warning("customs clear: OF push failed account=%s fan=%s",
-                    body.account_id, body.fan_id, exc_info=True)
-
-    log.info("customs CLEARED account=%s fan=%s nick=%r pushed=%s",
-             body.account_id, body.fan_id, cleared, pushed)
-    return {"ok": True, "nickname": cleared or None, "pushed_to_of": pushed}
+    log.info("customs CLEARED account=%s fan=%s already_clear=%s",
+             body.account_id, body.fan_id, already)
+    return {"ok": True, "already_clear": already}

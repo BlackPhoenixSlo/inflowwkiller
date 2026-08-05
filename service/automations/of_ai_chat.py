@@ -1607,15 +1607,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     # Content-ask tip-ask: when a fan asks to SEE content, swap the gather question
     # for a natural "tip me $X" ask (the tip_reward automation delivers once he
-    # tips). Account-level, so build the directive once. No double-pitch risk: when
-    # ai_chatter (the closer) owns this account, run() already short-circuited
-    # above, and mid-funnel fans are excluded from the candidate set below.
-    tip_ask_enabled, tip_ask_amount, tip_ask_template = await load_tip_ask_config(account_id)
+    # tips). No double-pitch risk: when ai_chatter (the closer) owns this account,
+    # run() already short-circuited above, and mid-funnel fans are excluded from
+    # the candidate set below.
+    #
+    # ⚠️ THE BLOCK ITSELF IS NO LONGER BUILT HERE. Its customs half is a PER-FAN
+    # decision (`_customs.may_offer`), so it is assembled in the loop off the
+    # narrowed voice bundle. `build_tip_ask_block` is pure string work on a path
+    # that is about to make an LLM call, so hoisting it bought nothing and cost a
+    # second precomputed variant plus a ternary to choose between them.
     # Off (per-account toggle) → empty block, so `selling` stays False and the
     # content-ask just gets a normal reply instead of a tip-ask.
-    tip_ask_block = (build_tip_ask_block(tip_ask_amount, tip_ask_template,
-                                         voice_blocks.sell_customs)
-                     if tip_ask_enabled else "")
+    tip_ask_enabled, tip_ask_amount, tip_ask_template = await load_tip_ask_config(account_id)
     persona = await _load_persona(account_id)
     clock_tz = await _load_clock_tz(account_id)  # None ⇒ no clock line in the prompt
     blacklist, skip_list = await _load_stop_lists(account_id)
@@ -1774,6 +1777,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             except Exception:
                 log.debug("of_ai_chat nick push failed account=%s fan=%s",
                           account_id, fan_id, exc_info=True)
+            # The account bundle + tip-ask narrowed to THIS fan: a custom is only
+            # offered to a man who has proven he pays (`_customs.may_offer`).
+            # Below the bar the customs permission and its price band are stripped
+            # from every block that carries them — including `live_proof`, which
+            # splices the carve-out — so the prompt never mentions customs at all.
+            v = _voice.for_fan(voice_blocks, f)
+            tip_ask_block = (
+                build_tip_ask_block(tip_ask_amount, tip_ask_template,
+                                    v.sell_customs)
+                if tip_ask_enabled else "")
             try:
                 asked = set(json.loads(f.questions_asked or "[]"))
             except Exception:
@@ -1813,12 +1826,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 style_on=style_on, nonnative_on=nonnative_on,
                 content_ask=_language.is_content_ask(c.last_body, fan_lang),
                 tip_ask_block=tip_ask_block,
-                custom_owed=_customs.is_owed(f.custom_nickname),
+                custom_owed=_customs.is_owed(f),
                 painful_on=painful_on, lang=fan_lang,
                 profile=profiles.get(fan_id) if factground_on else None,
                 clock=_clock_line(clock_tz),
                 sticker_mode=sticker_mode,
-                opener=opener, v=voice_blocks)
+                opener=opener, v=v)
             try:
                 res = await llm_client.chat(
                     model=model,
@@ -1869,7 +1882,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 consistency=ConsistencyCtx(
                     fan=f, persona=persona, model=model,
                     last_inbound=c.last_body or "") if consistency_on else None,
-                strip_emoji=strip_emoji_on, v=voice_blocks)
+                strip_emoji=strip_emoji_on, v=v)
             # Count the turn the moment a reply is GENERATED — a "try" counts
             # whether or not it lands. An undeliverable fan (no-id) or an echo-only
             # drop never bumps via the confirmed-send path, so its turn_counter
@@ -1980,7 +1993,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     sticker_tag,
                     random.Random(f"gif:{account_id}:{fan_id}:{c.last_body}"),
                     account_id=account_id, fan_id=fan_id,
-                    voice=voice_blocks.voice)
+                    voice=v.voice)
                 if gid is not None:
                     srng = random.Random(f"sdelay:{fan_id}:{gid}")
                     await hold_with_typing(account_id, fan_id,

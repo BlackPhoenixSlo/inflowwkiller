@@ -347,6 +347,24 @@ class Fan(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     applied_notes: Mapped[str | None] = mapped_column(Text)
     applied_notes_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # THE OWED-CUSTOM LEDGER. Set to the moment the qualifying tip landed; NULL
+    # means nothing is owed. This column IS the ledger — `_customs.is_owed` reads
+    # nothing else.
+    #
+    # ⚠️ IT USED TO BE A " Custom" SUFFIX ON `custom_nickname`, AND THAT COULD NOT
+    # WORK. `custom_nickname` has four other writers, and one of them —
+    # `of_ai_chat._maybe_push_nickname`, reached from ai_chatter on EVERY tick —
+    # rebuilds the name from structured facts via `names.build_structured_nickname`,
+    # which knows nothing about the marker and therefore drops it. ai_chatter runs
+    # every 60s; customs_watch every 900s. So the ledger was erased roughly a minute
+    # after it was written, in our DB and on OnlyFans both, and prod confirms it:
+    # 204 customs_watch runs, zero fans ever marked. Worse, the in-memory mutation
+    # happens BEFORE `_build_messages` reads it, so `_customs.prompt_block` — the
+    # "he has paid, stop selling" rule — never rendered once on the engine that
+    # closes the sale.
+    #
+    # A column has no other writers. Nothing about a fan's name can touch it.
+    customs_owed_at: Mapped[datetime | None] = mapped_column(DateTime)
     # When an owed CUSTOM was last resolved for this fan (delivered, or cleared
     # by an operator). `customs_watch` ignores tips at or before it.
     #

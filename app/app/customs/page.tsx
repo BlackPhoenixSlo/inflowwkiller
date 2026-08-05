@@ -3,8 +3,8 @@
 /**
  * /customs — the owed-customs queue.
  *
- * A fan tips $100-$200 and gets back a voice note (later, a short video) made
- * for him. Fulfilment is MANUAL, so this page is the work list: who paid, how
+ * A fan tips $100-$200 and gets back a VOICE NOTE made for him — audio, only
+ * ever audio. Fulfilment is MANUAL, so this page is the work list: who paid, how
  * much, how long ago, and a button that says it went out.
  *
  * WHY IT LIVES AT /customs AND NOT /admin/customs
@@ -12,12 +12,13 @@
  * shadow the relay endpoint of the same name and this page's own fetch would
  * resolve to its own HTML. Same trap /admin/manage documents.
  *
- * THE PAGE HOLDS NO STATE. "Owed" is the ` Custom` suffix on the fan's OF
- * nickname (see automations/_customs) — the same string the operator sees in the
- * OnlyFans inbox. This is a view over that, so the page, the OF app and the
- * automation can never disagree. Clearing here strips the suffix and pushes it
- * to OF; deleting it by hand in OF works exactly as well, and `customs_watch`
- * clears it too when it sees the voice note go out.
+ * THE PAGE HOLDS NO STATE. "Owed" is the
+ * column `fans.customs_owed_at` (see automations/_customs). This page is the
+ * ONLY operator surface for it: the marker used to live on the fan's OnlyFans
+ * nickname, but that field is rewritten from structured facts by the chat engines
+ * on every tick, so it was erased about a minute after it was written. Clearing
+ * here blanks the column and stamps it settled; `customs_watch` clears it too
+ * when it sees the voice note go out.
  *
  * Cross-account by default: the queue exists so nobody has to remember to look,
  * and a per-model page is a surface you only visit if you already suspect
@@ -44,7 +45,6 @@ interface CustomRow {
   account_id: string;
   account_name: string;
   fan_id: number;
-  nickname: string | null;
   display_name: string;
   tip_cents: number | null;
   tipped_at: string | null;
@@ -132,6 +132,10 @@ function Section({
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="border-b text-left opacity-60">
+              {/* The owed mark. It lives in fans.customs_owed_at now, so this
+                  column IS the ledger made visible — there is no longer a copy of
+                  it on OnlyFans to cross-check against. */}
+              <th className="w-6 py-2 pr-2 font-medium" aria-label="Owed" />
               <th className="py-2 pr-3 font-medium">
                 {isReview ? "Tipped" : "Waiting"}
               </th>
@@ -149,6 +153,27 @@ function Section({
               const open = openKey === key;
               const cells = (
                 <tr key={key} className="border-b last:border-0">
+                  {/* ✓ = tagged owed by customs_watch. ? = a qualifying tip that
+                      nothing was watching for, which may equally be generosity —
+                      so it gets a different glyph, not a quieter one. */}
+                  <td
+                    className="py-2 pr-2 text-center"
+                    title={
+                      isReview
+                        ? "Qualifying tip, never tagged — check the thread"
+                        : "Owed a custom"
+                    }
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={isReview ? "opacity-40" : "text-emerald-600"}
+                    >
+                      {isReview ? "?" : "✓"}
+                    </span>
+                    <span className="sr-only">
+                      {isReview ? "Needs review" : "Owed"}
+                    </span>
+                  </td>
                   {/* Two days of an UNPAID debt is a problem. Two days since a
                       tip nobody tagged is just a date. */}
                   <td
@@ -167,9 +192,6 @@ function Section({
                     >
                       {r.display_name}
                     </Link>
-                    {r.nickname && (
-                      <div className="text-xs opacity-50">{r.nickname}</div>
-                    )}
                   </td>
                   <td className="py-2 pr-3 opacity-80">{r.account_name}</td>
                   <td className="py-2 pr-3 tabular-nums font-medium">
@@ -208,7 +230,7 @@ function Section({
               return [
                 cells,
                 <tr key={`${key}:ctx`} className="border-b last:border-0">
-                  <td colSpan={6} className="bg-black/[0.03] px-3 py-3">
+                  <td colSpan={7} className="bg-black/[0.03] px-3 py-3">
                     {ctx === null && (
                       <p className="text-xs opacity-60">Reading…</p>
                     )}
@@ -321,9 +343,9 @@ export default function CustomsPage() {
         <div>
           <h1 className="text-2xl font-semibold">Customs owed</h1>
           <p className="mt-1 text-sm opacity-70">
-            Paid for, not yet sent. Clearing a row also removes the{" "}
-            <code className="rounded bg-black/10 px-1">Custom</code> tag from the
-            fan&rsquo;s OnlyFans nickname.
+            Paid for, not yet sent. Every custom is a voice note. Clearing a row
+            marks it delivered and stops the AI selling to him again &mdash; this
+            page is the only place that happens.
           </p>
         </div>
         <button
