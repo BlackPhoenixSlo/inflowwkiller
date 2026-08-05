@@ -368,7 +368,13 @@ export default function VaultManagePanel() {
     if (!accountId || describeSweep.busy) return;
     if (mode !== "new") {
       const n = mode === "force" ? (plan.data?.total ?? 0) : (plan.data?.restage ?? 0);
-      const est = ((promptVersion === "v2" ? 0.045 : 0.011) * n) / 100;
+      // Cents per item, MEASURED 2026-08-05 on 18 real stills at DeepInfra's
+      // live rates — not the bake-off's original figures. Those were taken when
+      // A sent 3 frames and B sent 9; the duration ladder now applies to BOTH,
+      // so A sends exactly as many images as B and saves only on the shorter
+      // output. A was quoted at 0.011 and really costs ~0.05 — a 5x under-count
+      // that made the cheap option look free.
+      const est = ((promptVersion === "v2" ? 0.052 : 0.046) * n) / 100;
       const what =
         mode === "force"
           ? `Re-describe ALL ${n} items`

@@ -133,6 +133,26 @@ def preview_ok(row: dict[str, Any]) -> bool:
         return False               # explicit / hardcore / untiered → never free
     if str(row["fields"].get("clothing_state") or "").lower() in _PREVIEW_BANNED_CLOTHING:
         return False               # nothing left to promise
+    # …and the same question asked of the FLAGS, which are the evidence the enum
+    # is only a summary of. Two independent holes closed here:
+    #
+    #   `partially_off` was never in the banned list, and by the derivation table
+    #   in `vault_ai_fix` it means BOTH regions exposed with something still on —
+    #   the single most revealing state we name, passing a gate that bans the
+    #   milder `pulled_aside`.
+    #
+    #   And the enum is guessed. Measured 2026-08-05 against an operator's own
+    #   labels on 10 explicit stills, all three vision models called
+    #   breasts-out/panties-on items `lingerie_on` — which reads as decent here
+    #   and would have handed a topless still over for free. The flags on those
+    #   same items were right (breasts `bare`), because a region is a direct
+    #   yes/no answered by looking, not a word chosen from a menu.
+    #
+    # `is_bare` reads unknown as False, so this only ever ADDS refusals to a gate
+    # the enum already passed; an unflagged item is still governed by the rung
+    # ceiling and the named-garment test below, exactly as before.
+    if any(vault_ai_brief.is_bare(row["fields"], r) for r in vault_ai_brief.VIS_REGIONS):
+        return False               # a bare region is the product, not the tease
     if _GARMENT_RE.search(row["text"]) is None and not row["fields"].get("clothing_items"):
         return False               # no garment named anywhere → can't call it dressed
     return True

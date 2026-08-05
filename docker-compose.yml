@@ -60,9 +60,14 @@ services:
       # once the local bytes are gone the mirror's stored url can no longer
       # re-fetch them and the tile stays blank forever. Bind-mounted here so
       # a rebuild keeps the pictures.
-      VAULT_THUMB_DIR: "/app/service/vault_thumbs"
-      VAULT_POSTER_DIR: "/app/service/vault_posters"
-      VAULT_IMAGE_DIR: "/app/service/vault_images"
+      # All three live UNDER one directory, which is the layout the deployed
+      # server uses: the writer does mkdir(parents=True), so thumbs/ images/
+      # posters/ appear under a single bind mount and there is one path to keep
+      # in step instead of three. Changing these paths ORPHANS the bytes already
+      # on the host — they are keyed by directory, not recorded in the DB.
+      VAULT_THUMB_DIR: "/app/service/vault_stills/thumbs"
+      VAULT_IMAGE_DIR: "/app/service/vault_stills/images"
+      VAULT_POSTER_DIR: "/app/service/vault_stills/posters"
       IMG_CACHE_DIR: "/app/service/img_cache"
       # LLM provider keys (Grok + DeepSeek) for service/llm_client.py. They also
       # ride in via the COPYed service/.env, but declaring them here means a host
@@ -95,10 +100,9 @@ services:
       # poster frames — keyed by media id, so they survive OF re-signing the
       # url. Same reasoning as the storyboard cache above, and the same
       # reason it has to be a bind mount: these bytes are unrecoverable once
-      # the signature they came from has expired.
-      - ./service/vault_thumbs:/app/service/vault_thumbs
-      - ./service/vault_posters:/app/service/vault_posters
-      - ./service/vault_images:/app/service/vault_images
+      # the signature they came from has expired. ONE mount for all three
+      # stores; the env above puts them in subdirectories of it.
+      - ./service/vault_stills:/app/service/vault_stills
       # Generic /img proxy byte cache (chat bubbles, avatars, wall media),
       # keyed by host+path with the signature stripped.
       - ./service/img_cache:/app/service/img_cache
