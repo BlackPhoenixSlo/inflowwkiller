@@ -21,7 +21,7 @@ import logging
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import case, delete, func, or_, select, update
@@ -31,6 +31,7 @@ import automation_executor as ax  # _make_client seam (same one automations use)
 # The permanent, signature-free picture stores (thumbs / full previews / DRM poster
 # frames), including the whole route body behind the three serve endpoints below.
 # This module keeps the SWEEP that fills them.
+import vault_frames
 import vault_mirror
 import vault_stills
 from of_shapes import giphy_dm_id, still_url  # shared OF payload-shape readers
@@ -51,69 +52,6 @@ _PAGE_SLEEP_S = 0.15      # pacing: automations bypass the relay's priority lane
 _running: set[str] = set()
 # In-memory storyboard-warming progress per account (surfaced in /collect/status).
 _warm_progress: dict[str, dict[str, Any]] = {}
-
-def _describe_image_of(files: dict | None) -> str | None:
-    """The image variant to send the VISION model — not the same choice as the UI
-    thumb. Takes a bare `files` dict (vault items store one); the ordering and the
-    centre-crop lesson behind it now live in `of_shapes.still_url`, shared with the
-    inbound-DM describe path so both ask the same question of the same payloads."""
-    return still_url({"files": files}) if isinstance(files, dict) else None
-
-
-def _video_url(m: dict) -> str | None:
-    """Signed progressive mp4 URL for a video (240p → 720p → full). None for
-    DRM-only videos (no sliceable source) — those can't be warmed."""
-    vs = m.get("videoSources")
-    if isinstance(vs, dict):
-        for k in ("240", "720"):
-            if vs.get(k):
-                return vs[k]
-    files = m.get("files")
-    full = files.get("full") if isinstance(files, dict) else None
-    if isinstance(full, dict) and full.get("url"):
-        return full["url"]
-    return None
-
-
-def _warm_one_sync(client: Any, url: str, dur: float) -> str:
-    """Extract + cache the 12-frame storyboard for ONE video, if not already
-    on disk. Incremental: `_storyboard_all_frames_present` short-circuits a
-    video we've already warmed (so re-collect only does NEW videos). Reuses
-    the relay's own storyboard helpers; downloads through the account's OF
-    client so the URL's source-IP signature matches."""
-    import server as srv  # lazy: avoid the server↔vault_ai_api import cycle
-
-    h = srv._video_path_hash(url)
-    if srv._storyboard_all_frames_present(h):
-        return "cached"
-    dest = srv._STORYBOARD_DIR / h
-    src_path = dest / "source.tmp"
-    try:
-        dest.mkdir(parents=True, exist_ok=True)
-        r = client.http.get(url, timeout=client.timeout_s, stream=True)
-        if r.status_code not in (200, 206):
-            return "dl_fail"
-        with src_path.open("wb") as f:
-            for chunk in r.iter_content(chunk_size=256 * 1024):
-                if chunk:
-                    f.write(chunk)
-        try:
-            r.close()
-        except Exception:  # noqa: BLE001
-            pass
-        ok = srv._storyboard_extract_batch(
-            src_path, dest, srv._ALL_FRAME_INDICES, max(0.1, dur or 1.0)
-        )
-        return "warmed" if ok else "extract_fail"
-    except Exception:  # noqa: BLE001
-        log.warning("warm storyboard failed url=%s", url[:100], exc_info=True)
-        return "error"
-    finally:
-        try:
-            src_path.unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001
-            pass
-
 
 async def _warm_store(client: Any, account_id: str, phase: str,
                       targets: list[tuple[Path, str]]) -> None:
@@ -168,19 +106,19 @@ async def _run_collect(account_id: str, run_id: int) -> None:
                     # here for the same reason as the thumb: after OF's signature
                     # expires we can no longer fetch it, and a lazily-filled
                     # store means whatever nobody happened to open is lost.
-                    still = _describe_image_of(
+                    still = vault_frames.describe_image_of(
                         m.get("files") if isinstance(m.get("files"), dict) else {}
                     )
                     if still:
                         stills.append((vals["media_id"], still))
                     if (m.get("type") == "video"):
-                        vurl = _video_url(m)
+                        vurl = vault_frames.video_url(m)
                         if vurl:
                             videos.append((vurl, float(m.get("duration") or 0)))
                         else:
                             # DRM: no sliceable mp4 → cache OF poster frames so
                             # the hover preview serves from disk, not a cold fetch.
-                            pf = _video_poster_frames(m)
+                            pf = vault_frames.poster_frames(m)
                             if pf:
                                 drm_posters.append((vals["media_id"], pf))
                     # Preserve AI / operator / describe fields on conflict —
@@ -250,7 +188,7 @@ async def _run_collect(account_id: str, run_id: int) -> None:
         _warm_progress[account_id] = {"phase": "warming", "warmed": 0, "warm_total": len(videos)}
         for vurl, vdur in videos:
             try:
-                await asyncio.to_thread(_warm_one_sync, client, vurl, vdur)
+                await asyncio.to_thread(vault_frames.warm_one_sync, client, vurl, vdur)
             except Exception:  # noqa: BLE001
                 log.warning("warm dispatch failed", exc_info=True)
             warmed += 1
@@ -434,31 +372,13 @@ async def cache_summary(account_id: str = Query(...)) -> dict[str, Any]:
 # dict — and that rule is written once, used for both the stored payload and the
 # re-signed one, so the two can't disagree.
 
-def _pick_thumb(m: dict) -> str | None:
-    return vault_mirror.thumb_of(m.get("files") if isinstance(m.get("files"), dict) else {})
-
-
-def _pick_image(m: dict) -> str | None:
-    """Aspect-preserving preview → full → …; the square only if the media exposes
-    nothing else."""
-    return _describe_image_of(m.get("files") if isinstance(m.get("files"), dict) else {})
-
-
-def _pick_poster(i: int) -> vault_stills.Pick:
-    """Frame `i` of the poster set, or None if the video has fewer frames."""
-    def pick(m: dict) -> str | None:
-        frames = _video_poster_frames(m)
-        return frames[i] if i < len(frames) else None
-    return pick
-
-
 @router.get("/admin/vault-ai/thumb")
 async def vault_thumb(account_id: str = Query(...), media_id: int = Query(...)):
     """The 300px square — the grid + picker tile."""
     assert_account_owned(account_id)
     return await vault_stills.serve(
         account_id, media_id, vault_stills.thumb_path(account_id, media_id),
-        _pick_thumb)
+        vault_frames.pick_thumb)
 
 
 @router.get("/admin/vault-ai/image")
@@ -476,7 +396,7 @@ async def vault_image(account_id: str = Query(...), media_id: int = Query(...)):
     assert_account_owned(account_id)
     return await vault_stills.serve(
         account_id, media_id, vault_stills.image_path(account_id, media_id),
-        _pick_image)
+        vault_frames.pick_image)
 
 
 @router.get("/admin/vault-ai/poster")
@@ -496,7 +416,7 @@ async def vault_poster(
     assert_account_owned(account_id)
     return await vault_stills.serve(
         account_id, media_id, vault_stills.poster_path(account_id, media_id, i),
-        _pick_poster(i))
+        vault_frames.pick_poster(i))
 
 
 def _overlay(item: VaultItem, manual_order: int | None = None) -> dict[str, Any]:
@@ -1365,6 +1285,34 @@ def _clip_arc(per_frame: list[dict[str, Any]]) -> str | None:
     return "escalates" if last > first else "reverses"
 
 
+async def _stamp_flags_failure(account_id: str, media_id: int, status: str,
+                               detail: str = "") -> None:
+    """Record WHY an item has no flags, in the item's own row.
+
+    Flags have no status column and do not need one: `_flags_todo` decides from
+    `flags_known()`, so a failed item is already retried by the next sweep. What
+    was missing is any way to ASK. The pass returned `no_image` to a caller that
+    logged it and moved on, so an operator looking at a described-but-unflagged
+    row had nothing to read — the failure existed only in a log line that had
+    long since rotated.
+
+    Deliberately does NOT write `_flags_v`: that stamp is what marks flags
+    CURRENT, and a failure must leave the item in the todo set."""
+    async with get_session() as s:
+        item = await s.get(VaultItem, (account_id, media_id))
+        if item is None:
+            return
+        fields = load_json(item.ai_fields_json, {}) or {}
+        fields["_flags_status"] = status
+        fields["_flags_failed_at"] = datetime.utcnow().isoformat()
+        if detail:
+            fields["_flags_error"] = detail[:200]
+        else:
+            fields.pop("_flags_error", None)
+        item.ai_fields_json = json.dumps(fields, ensure_ascii=False, default=str)
+        await s.commit()
+
+
 async def _flags_one(account_id: str, media_id: int,
                      model: str = "qwen3-vl-30b") -> dict[str, Any]:
     """Ask the three booleans for one item and MERGE them into its existing
@@ -1384,14 +1332,16 @@ async def _flags_one(account_id: str, media_id: int,
     is_video = item.kind == "video"
     raw = load_json(item.raw_json, {}) or {}
     want = _FLAGS_VIDEO_FRAMES if is_video else 1
-    images = await _collect_images(account_id, item, raw, want=want)
-    if not images:
-        return {"media_id": media_id, "ok": False, "status": "no_image"}
+    got = await vault_frames.collect(account_id, item, raw, want=want)
+    if not got.images:
+        status = _NO_IMAGE_STATUS.get(got.reason, "fetch_failed")
+        await _stamp_flags_failure(account_id, media_id, status)
+        return {"media_id": media_id, "ok": False, "status": status}
 
     per_frame: list[dict[str, Any]] = []
     cost = 0
     result = None
-    for img in images:
+    for img in got.images:
         content = [{"type": "text", "text": _FLAGS_PROMPT},
                    {"type": "image_url", "image_url": {"url": vision.shrink_data_url(img)}}]
         try:
@@ -1405,6 +1355,7 @@ async def _flags_one(account_id: str, media_id: int,
             break  # keep what we already read rather than losing the whole clip
         except LLMError as e:
             if not per_frame:
+                await _stamp_flags_failure(account_id, media_id, "error", str(e))
                 return {"media_id": media_id, "ok": False, "status": "error",
                         "detail": str(e)[:300]}
             break
@@ -1414,8 +1365,10 @@ async def _flags_one(account_id: str, media_id: int,
             per_frame.append(_ground_in_named_garment(parsed))
 
     if not per_frame:
+        raw_head = (result.content if result else "") or ""
+        await _stamp_flags_failure(account_id, media_id, "unparsed", raw_head)
         return {"media_id": media_id, "ok": False, "status": "unparsed",
-                "raw": (result.content if result else "" or "")[:200]}
+                "raw": raw_head[:200]}
 
     fields = load_json(item.ai_fields_json, {}) or {}
     data = _reconcile_with_acts(fields, _fold_clip_flags(per_frame))
@@ -1454,6 +1407,9 @@ async def _flags_one(account_id: str, media_id: int,
         fields.pop(dead, None)
     fields["_flags_model"] = model
     fields["_flags_v"] = _FLAGS_VERSION
+    # A recovered item must stop reporting the failure it recovered from.
+    for stale in ("_flags_status", "_flags_failed_at", "_flags_error"):
+        fields.pop(stale, None)
 
     async with get_session() as s:
         await s.execute(
@@ -1480,6 +1436,15 @@ _flags_progress: dict[str, dict[str, Any]] = {}
 # so 4 at a time turns ~18 minutes into ~5 without changing what is asked.
 _FLAGS_CONCURRENCY = 4
 
+# What a vision model can be shown. An audio file has no frame, so sweeping it is
+# not thoroughness — it is a row of guaranteed failure per pass (591 of them on
+# two accounts), and the 45 whose signatures were still valid had their MP3 bytes
+# posted to a vision endpoint as an image, which is what `describe_status =
+# 'failed'` recorded. The flags sweep has always filtered this way; the describe
+# sweep and its cost estimate never did, so the estimate quoted a total the sweep
+# could not meet.
+_DESCRIBABLE_KINDS = ("photo", "video")
+
 
 async def _flags_todo(account_id: str, *, force: bool = False,
                       only: set[int] | None = None, limit: int = 0) -> list[int]:
@@ -1488,7 +1453,7 @@ async def _flags_todo(account_id: str, *, force: bool = False,
         q = (select(VaultItem.media_id, VaultItem.ai_fields_json)
              .where(VaultItem.account_id == account_id,
                     VaultItem.removed_at.is_(None),
-                    VaultItem.kind.in_(("photo", "video"))))
+                    VaultItem.kind.in_(_DESCRIBABLE_KINDS)))
         if only:
             q = q.where(VaultItem.media_id.in_(only))
         rows = (await s.execute(q.order_by(VaultItem.created_at.asc()))).all()
@@ -2143,20 +2108,42 @@ _DESCRIBE_PROMPT_V2 = (
     "intimate' are all wrong answers — say exactly what is happening.\n"
     "2. Clothing must be stated exactly. If underwear is still ON but pushed/pulled to "
     "one side to expose her, that is 'pulled_aside' — NOT nude and NOT simply 'wearing "
-    "lingerie'. Pulled down to the thighs is 'pulled_down'. Only say fully_nude when no "
-    "garment is on her body.\n"
+    "lingerie'. Pulled down to the thighs is 'pulled_down'. Say fully_nude when nothing "
+    "is COVERING her breasts or her genitals. Socks, stockings, shoes, gloves, jewellery "
+    "and a garment pushed down around her ankles cover neither, and do not make her any "
+    "less nude — a woman in nothing but socks is fully_nude.\n"
     "2b. BEFORE you choose clothing_state, answer these two literally, by LOOKING at "
     "the frame rather than summarising the scene:\n"
     "    underwear_visible — is ANY garment visible anywhere on her body or pushed "
     "aside/down, however small? Waistband, strap, a thong string, lace at the hip, "
-    "stockings — all count as TRUE.\n"
+    "stockings, socks — all count as TRUE. Answer it on its own: this records what is "
+    "THERE, not what is covered, so a TRUE here is perfectly compatible with fully_nude. "
+    "Never adjust this answer to agree with the clothing_state you picked.\n"
+    # `genitals_covered` is asked for and then DELETED by the flags pass, which
+    # superseded it with the three-state `vulva_vis`. It stays because it is not
+    # an output — it is the second half of a scaffold the model reasons through
+    # before committing to a state. Deleting it as "unused" is a prompt change
+    # wearing the costume of a cleanup; re-measure before touching it.
+    #
+    # What this scaffold used to do was WORSE than nothing. It asserted that a
+    # visible garment rules out `fully_nude`, which is false: measured against an
+    # operator's own labels on 10 explicit stills (2026-08-05), 6 items were
+    # `fully_nude` WITH a garment visible — a nude woman in socks. Every model
+    # answer that reported `underwear_visible=True` was wrong about the state
+    # (0/8); every answer that reported False was right 19/22. The models were
+    # resolving the contradiction by suppressing `underwear_visible` — a
+    # `FLAG_KEY` the pricing tiers read. The rule poisoned the field it was
+    # built on. Presence and coverage are now asked as the separate questions
+    # they always were.
     "    genitals_covered — is her vulva covered by ANY fabric right now? Pushed aside "
     "so it is exposed = FALSE. Covered by a thong = TRUE. Out of frame or hidden by her "
     "pose/leg/hand rather than by fabric = FALSE (nothing is covering it).\n"
-    "    These two govern: if underwear_visible is true you must NOT say fully_nude, "
-    "whatever the overall impression. 'Nude except for a thong' is NOT fully_nude — it "
-    "is pulled_aside or lingerie_on. This is the single most common error on this "
-    "task, and a wrong answer here sells the wrong thing.\n"
+    "    COVERAGE is what governs, not presence: if a garment is COVERING her breasts "
+    "or her genitals then she is not fully_nude, whatever the overall impression. "
+    "'Nude except for a thong' is NOT fully_nude — it is pulled_aside or lingerie_on. "
+    "But 'nude except for socks' IS fully_nude, because socks cover neither. This is "
+    "the single most common error on this task, and a wrong answer here sells the "
+    "wrong thing.\n"
     "3. beats: for a clip, 2-6 short ordered steps describing how it PROGRESSES across "
     "the frames (what she starts doing, what changes, how it ends). For a single photo "
     "return [].\n"
@@ -2175,9 +2162,8 @@ _DESCRIBE_PROMPT_V2 = (
 
 # Frames per clip. V1 shipped a hardcoded 3 for a clip of ANY length (a 17-minute
 # video was summarised from 3 stills); the bake-off's other real lever was
-# raising this to 9. Photos always send exactly 1.
-_DESCRIBE_FRAMES = 9
-
+# raising this to 9 (`vault_frames.DESCRIBE_FRAMES`). Photos always send 1.
+#
 # …but a flat count is wrong in both directions: 12 stills of a 3-second clip is
 # 4× the tokens for the same one moment, and 9 stills of a 17-minute session
 # still misses most of it. Measured 2026-07-21 (`_probe_frames_vs_duration.py`,
@@ -2360,74 +2346,6 @@ _FLAGS_PROMPT = (
 
 
 
-def _video_poster_frames(raw: dict) -> list[str]:
-    """OF's own pre-extracted poster-frame URLs for a video
-    (`files.preview.options[]`). For SAMPLE-AES DRM clips — which ffmpeg can't
-    slice — these are the ONLY renderable representation (same frames the chat
-    VaultPicker slideshows). Falls back to the single poster thumb."""
-    files = raw.get("files") or {}
-    prev = files.get("preview") or {}
-    out = [o.get("url") for o in (prev.get("options") or []) if isinstance(o, dict) and o.get("url")]
-    if not out:
-        one = vault_mirror.thumb_of(files)
-        if one:
-            out = [one]
-    return out
-
-
-
-def _spread(n_have: int, want: int) -> list[int]:
-    """`want` frame indices spread evenly over `n_have` slots, endpoints
-    included. 12 frames → 3 gives [1,5,10]; → 9 gives [0,1,3,4,5,6,8,9,11].
-    Endpoints matter for `beats`: the model has to see how a clip ENDS."""
-    if want >= n_have:
-        return list(range(n_have))
-    if want <= 1:
-        return [n_have // 2]
-    step = (n_have - 1) / (want - 1)
-    return sorted({int(round(i * step)) for i in range(want)})
-
-
-async def _collect_images(account_id: str, item: VaultItem, raw: dict,
-                          want: int = _DESCRIBE_FRAMES) -> list[str]:
-    """Return base64 data-URLs to send the model. Photos → the thumb; videos →
-    up to `want` warmed storyboard frames (warmed on demand if missing).
-    Downloaded through the account's OF client so the URL's source-IP signature
-    matches."""
-    client = await asyncio.to_thread(ax._make_client, account_id)
-    if item.kind == "video":
-        import server as srv  # lazy
-        url = _video_url(raw)
-        if url:
-            # Progressive/sliceable → ffmpeg storyboard frames.
-            h = srv._video_path_hash(url)
-            if not srv._storyboard_all_frames_present(h):
-                await asyncio.to_thread(_warm_one_sync, client, url, float(raw.get("duration") or 0))
-            urls: list[str] = []
-            for i in _spread(srv._STORYBOARD_FRAMES, want):
-                p = srv._storyboard_frame_path(h, i)
-                if p.is_file():
-                    urls.append(vision.img_data_url(p.read_bytes()))
-            if urls:
-                return urls
-        # DRM-only (no sliceable mp4) or storyboard produced nothing → fall back
-        # to OF's pre-extracted poster frames. OF DOES serve these even for DRM,
-        # so we can still describe/tag the clip instead of giving up (blocked_drm).
-        return await vision.download_frames(client, _video_poster_frames(raw)[:want])
-    # photo / gif
-    files = raw.get("files") or {}
-    url = _describe_image_of(files) or item.thumb_url or item.full_url
-    if not url:
-        return []
-    try:
-        resp = await asyncio.to_thread(lambda: client.http.get(url, timeout=client.timeout_s))
-        if resp.status_code == 200 and resp.content:
-            return [vision.img_data_url(resp.content)]
-    except Exception:  # noqa: BLE001
-        log.warning("describe image fetch failed media=%s", item.media_id, exc_info=True)
-    return []
-
-
 def _parse_describe(text: str) -> dict[str, Any]:
     m = _re.search(r"\{.*\}", text or "", _re.DOTALL)
     if not m:
@@ -2459,20 +2377,21 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
         raise HTTPException(status_code=404, detail={"error": "not_in_mirror", "media_id": media_id})
     raw = load_json(item.raw_json, {}) or {}
     want = int(frames) if frames else _frames_for_duration(item.duration_seconds)
-    images = await _collect_images(account_id, item, raw, want=want)
-    if not images:
+    got = await vault_frames.collect(account_id, item, raw, want=want)
+    if not got.images:
+        status = _NO_IMAGE_STATUS.get(got.reason, "fetch_failed")
         async with get_session() as s:
             await s.execute(
                 update(VaultItem)
                 .where(VaultItem.account_id == account_id, VaultItem.media_id == media_id)
-                .values(describe_status="blocked_drm", describe_generated_at=datetime.utcnow())
+                .values(describe_status=status, describe_generated_at=datetime.utcnow())
             )
             await s.commit()
-        return {"media_id": media_id, "ok": False, "status": "blocked_drm"}
+        return {"media_id": media_id, "ok": False, "status": status}
 
     prompt = _DESCRIBE_PROMPT if str(prompt_version) == "v1" else _DESCRIBE_PROMPT_V2
     content = [{"type": "text", "text": prompt}]
-    content += [{"type": "image_url", "image_url": {"url": u}} for u in images]
+    content += [{"type": "image_url", "image_url": {"url": u}} for u in got.images]
 
     # Try 30b; on refusal/blank escalate ONCE to 235b (never overwrite a good
     # existing description with a blank).
@@ -2552,7 +2471,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
     # Stamp WHICH variant produced this row: a v1 row is a candidate for a later
     # v2 re-scan, and without the stamp "already described" is ambiguous.
     data = {**data, "_prompt_version": ("v1" if str(prompt_version) == "v1" else "v2"),
-            "_frames": len(images)}
+            "_frames": len(got.images)}
 
     # `ai_fields_json` is written whole from `data`, which holds ONLY what the
     # describe prompt answers — so re-describing an item used to silently drop
@@ -2590,7 +2509,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
         "describe_call_id": result.call_id if result else None,
         "describe_generated_at": datetime.utcnow(),
         "ai_fields_json": json.dumps(data, ensure_ascii=False, default=str),
-        "frames_sampled": len(images) if is_video else None,
+        "frames_sampled": len(got.images) if is_video else None,
     }
     if "tip_vault_flag" not in locked:
         vals["tip_vault_flag"] = sellable
@@ -2620,7 +2539,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
         "nsfw": nsfw, "sellable": sellable,
         "describe_model": used_model,
         "cost_millicents": result.cost_cents if result else 0,
-        "images_sent": len(images),
+        "images_sent": len(got.images),
     }
 
 
@@ -2674,6 +2593,24 @@ def _vision_gate() -> "asyncio.Semaphore":
         _vision_sema = asyncio.Semaphore(_VISION_GLOBAL_CONCURRENCY)
     return _vision_sema
 
+# Why a frameless item got no frames, as a `describe_status`.
+#
+# The two outcomes want OPPOSITE retry policies, and collapsing them is what made
+# the 2026-08-04 incident invisible: every failure was stamped `blocked_drm`, so
+# 1,777 items whose signatures had merely expired inherited the 7-day cool-off
+# meant for clips OF genuinely cannot render, and the next sweep skipped them.
+#   no_variant   → OF answered with a payload carrying nothing renderable.
+#                  Asking again changes nothing. Cool off.
+#   fetch_failed → we could not read bytes we have every reason to think exist.
+#                  Retry on the very next sweep, no cool-off.
+#   gone         → OF has deleted it. The still store already stamped
+#                  `removed_at`, which every candidate query filters on, so this
+#                  status is only ever read by whoever asked for THIS item.
+# Unknown reasons fall to the retryable side: over-retrying costs a fetch,
+# under-retrying costs a description nobody notices is missing.
+_NO_IMAGE_STATUS = {"no_variant": "blocked_drm", "fetch_failed": "fetch_failed",
+                    "gone": "gone"}
+
 # A blocked_drm item IS retried by a normal sweep (OF poster-frame fallback may
 # start working) — but not on EVERY sweep. Once it re-settles to blocked_drm we
 # cool it off this long before the next attempt, so a truly un-renderable clip
@@ -2700,7 +2637,8 @@ async def _run_describe_all(account_id: str, force: bool,
     try:
         async with get_session() as s:
             stmt = select(VaultItem.media_id).where(
-                VaultItem.account_id == account_id, VaultItem.removed_at.is_(None)
+                VaultItem.account_id == account_id, VaultItem.removed_at.is_(None),
+                VaultItem.kind.in_(_DESCRIBABLE_KINDS),
             )
             if force:
                 pass
@@ -2716,22 +2654,17 @@ async def _run_describe_all(account_id: str, force: bool,
                         f'%"_prompt_version": "{prompt_version}"%'))
                 )
             else:
-                # Skip only items already successfully described. blocked_drm is
-                # NO LONGER terminal — poster-frame fallback can now describe DRM
-                # clips — so a normal "Describe all" retries them (and refused/
-                # failed). But an un-renderable clip re-settles to blocked_drm on
-                # EVERY sweep, costing an OF poster-fetch each pass for nothing
-                # (cost-audit finding). Cool a freshly-blocked DRM item off for
-                # _DRM_RETRY_AFTER before retrying; force/restage still revisit it.
-                drm_cutoff = datetime.utcnow() - _DRM_RETRY_AFTER
-                stmt = stmt.where(
-                    VaultItem.describe_status.isnot("described"),
-                    or_(
-                        VaultItem.describe_status.isnot("blocked_drm"),
-                        VaultItem.describe_generated_at.is_(None),
-                        VaultItem.describe_generated_at < drm_cutoff,
-                    ),
-                )
+                # Everything not already described — INCLUDING blocked_drm, with
+                # no cool-off. `_DRM_RETRY_AFTER` exists so the RECURRING 6h
+                # `describe_media` sweep stops re-paying a poster-fetch on a clip
+                # OF cannot render; it still applies there. It has no business
+                # here. This is a button a person pressed, having just read the
+                # count on it, and the one thing it must do is attempt what that
+                # count promised. Honouring the cooldown made it silently skip
+                # 1,777 of the 1,777 items it offered to describe — the operator
+                # clicks, watches nothing happen, and has no way to find out why.
+                # A wasted fetch is cheaper than a control nobody can trust.
+                stmt = stmt.where(VaultItem.describe_status.isnot("described"))
             ids = [r[0] for r in (await s.execute(stmt)).all()]
         total = len(ids)
         done = 0
@@ -2796,8 +2729,17 @@ async def _run_describe_all(account_id: str, force: bool,
                         account_id, done, total, failed, capped, first_error)
         else:
             log.info("describe_all done account=%s done=%s/%s capped=%s", account_id, done, total, capped)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        # Into the progress snapshot, not just the log. `running` goes False in
+        # `finally` either way, so a sweep that DIED and a sweep that finished
+        # were previously distinguishable only by counting — and a caller that
+        # sees done<total has no way to know whether to wait or to press the
+        # button again.
         log.exception("describe_all failed account=%s", account_id)
+        _describe_progress[account_id] = {
+            **_describe_progress.get(account_id, {}),
+            "aborted": True, "error": f"{type(e).__name__}: {e}"[:200],
+        }
     finally:
         _describe_running.discard(account_id)
         # keep last progress snapshot for the status endpoint to report "done"
@@ -2836,7 +2778,8 @@ async def describe_all_plan(
     pv = "v1" if str(prompt_version) == "v1" else "v2"
     async with get_session() as s:
         live = select(VaultItem).where(VaultItem.account_id == account_id,
-                                       VaultItem.removed_at.is_(None))
+                                       VaultItem.removed_at.is_(None),
+                                       VaultItem.kind.in_(_DESCRIBABLE_KINDS))
         total = await s.scalar(
             select(func.count()).select_from(live.subquery()))
         undescribed = await s.scalar(select(func.count()).select_from(

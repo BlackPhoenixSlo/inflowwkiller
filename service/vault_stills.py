@@ -18,15 +18,20 @@ bind-mounted (see docker-compose.yml). Left on container-local disk they are
 destroyed by every rebuild — and once they are gone AND the stored signature has
 aged out, the picture is unrecoverable without re-asking OF.
 
-Which is what `serve` exists to do. On a disk miss it tries the url we have, and
-if that fails it re-reads the ONE media from OF for a freshly signed url set,
+Which is what `bytes_for` exists to do. On a disk miss it tries the url we have,
+and if that fails it re-reads the ONE media from OF for a freshly signed url set,
 writes the refreshed payload back to the mirror, and retries. That leaves exactly
-one unbounded case — media OF has actually deleted — so `serve` stamps the mirror
-row `removed_at` when OF says "not found" and short-circuits on it afterwards. A
-dead tile then costs one row read, not two doomed OF calls on every render.
+one unbounded case — media OF has actually deleted — so it stamps the mirror row
+`removed_at` when OF says "not found" and short-circuits on it afterwards. A dead
+tile then costs one row read, not two doomed OF calls on every render.
 
-`serve` is the whole route body; the three endpoints in vault_ai_api differ only
-in which store they read and which url they pick out of a media dict.
+`serve` is that ladder behind an HTTP response, and is the whole route body; the
+three endpoints in vault_ai_api differ only in which store they read and which
+url they pick out of a media dict. The DESCRIBE sweep calls `bytes_for` directly.
+It used to fetch the stored url itself with no disk read and no re-sign, so on
+2026-08-04 a sweep that ran 31 hours after the signatures expired recorded 979
+photos as un-renderable while their bytes sat on this disk — which is why the
+ladder is a function both callers share rather than a route body.
 
 A disk hit is served straight off the filesystem, but a MISS is OF-bound, and a
 folder pane can ask for 500 of them at once. That path is therefore capped — see
@@ -167,18 +172,33 @@ def fetch_bytes_sync(client: Any, url: str) -> bytes | None:
             return None
         return data
     except Exception:  # noqa: BLE001
-        pass
+        # Logged, not swallowed. This return is indistinguishable from "OF said
+        # 403" to the caller, and a describe sweep that stamps 2,000 rows
+        # `fetch_failed` needs SOME line in the log saying which failure it was.
+        log.warning("still fetch raised url=%.80s", url, exc_info=True)
     return None
 
 
 def write(p: Path, data: bytes) -> None:
     """Persist a fetched still. Best-effort — a full disk must not break the
-    response we already have in hand."""
+    response we already have in hand.
+
+    Written to a sibling temp file and RENAMED into place, because a disk hit
+    short-circuits every validation below: a partial file (full disk, killed
+    container, two writers racing the same media) would otherwise be cached as
+    that media's picture permanently, and the bytes it truncated are the only
+    copy that outlives OF's signature. `os.replace` is atomic within a
+    filesystem, so a reader sees the whole file or no file."""
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.part")
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(data)
+        tmp.write_bytes(data)
+        os.replace(tmp, p)
     except Exception:  # noqa: BLE001
-        pass
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class _Resolved(NamedTuple):
@@ -239,8 +259,42 @@ async def _mark_gone(account_id: str, media_id: int) -> None:
             await s.commit()
 
 
-async def serve(account_id: str, media_id: int, path: Path, pick: Pick) -> Response:
-    """Serve one still: disk if we have it, otherwise fetch it and keep it.
+class Still(NamedTuple):
+    """One still, plus WHY when there isn't one.
+
+    The reason is the whole point of this type. `bytes | None` was enough while
+    the only caller was an HTTP route that turns every miss into a 404, but the
+    describe sweep records its miss in the DB — and recording "un-renderable"
+    for what was really an expired signature is precisely the bug this module
+    exists to stop. `no_variant` and `fetch_failed` want opposite retry
+    policies, so the distinction has to survive the return."""
+
+    data: bytes | None
+    reason: str  # "ok" | "gone" | "no_variant" | "fetch_failed"
+
+
+async def resolve_fresh(account_id: str, media_id: int, client: Any) -> dict | None:
+    """Re-read one media from OF for a freshly signed url set, and write the
+    refreshed payload back over the mirror row.
+
+    Returns the fresh media dict, or None when OF has no answer we can use — a
+    deleted media additionally stamps `removed_at`, which is what stops the next
+    caller re-asking. Shared with the video path in `vault_ai_api`: a stale mp4
+    url is the same stale signature as a stale jpeg url, and re-deriving it from
+    the same fresh payload is what keeps the two from disagreeing about which
+    media they are looking at."""
+    fresh = await asyncio.to_thread(_resolve_fresh_sync, client, media_id)
+    if fresh.gone:
+        await _mark_gone(account_id, media_id)
+        return None
+    if fresh.media is None:
+        return None
+    await _refresh_mirror(account_id, media_id, fresh.media)
+    return fresh.media
+
+
+async def bytes_for(account_id: str, media_id: int, path: Path, pick: Pick) -> Still:
+    """One still's bytes: disk if we have them, otherwise fetch and keep them.
 
     `pick` reads the url for THIS store out of a media dict.
 
@@ -251,11 +305,11 @@ async def serve(account_id: str, media_id: int, path: Path, pick: Pick) -> Respo
     made every render endpoint a fetch-any-url proxy gated by a host substring
     check — and bought nothing, because the by-id read already covers it.
 
-    Raises 404 for a media we can't render: `media_gone` (OF has deleted it —
-    cheap and permanent after the first time) or `fetch_failed` (transient;
-    retrying is fine)."""
+    The disk hit is the reason this is worth calling from a background sweep and
+    not just from a route: a describe pass over an already-collected vault does
+    it 1,900 times and touches OF zero times."""
     if path.is_file():
-        return FileResponse(path, media_type="image/jpeg", headers=_HEADERS)
+        return Still(path.read_bytes(), "ok")
 
     # Everything past here costs descriptors — a DB connection, a curl handle,
     # a thread — so it runs `_MAX_INFLIGHT_FETCHES` at a time. A warm store
@@ -267,7 +321,7 @@ async def serve(account_id: str, media_id: int, path: Path, pick: Pick) -> Respo
         # already written it. Without this they each pay the full OF round-trip
         # to re-fetch bytes that are now sitting on disk.
         if path.is_file():
-            return FileResponse(path, media_type="image/jpeg", headers=_HEADERS)
+            return Still(path.read_bytes(), "ok")
 
         async with get_session() as s:
             item = await s.get(VaultItem, (account_id, media_id))
@@ -275,7 +329,7 @@ async def serve(account_id: str, media_id: int, path: Path, pick: Pick) -> Respo
         # the media deleted; without it, every render of a dead tile pays two
         # OF calls.
         if item is not None and item.removed_at is not None:
-            raise HTTPException(status_code=404, detail="media_gone")
+            return Still(None, "gone")
 
         url: str | None = None
         if item is not None:
@@ -287,22 +341,44 @@ async def serve(account_id: str, media_id: int, path: Path, pick: Pick) -> Respo
             data = await asyncio.to_thread(fetch_bytes_sync, client, url)
         if data is None:
             # The stored url is dead (or we never had one) — re-sign, retry once.
-            fresh = await asyncio.to_thread(_resolve_fresh_sync, client, media_id)
-            if fresh.gone:
-                await _mark_gone(account_id, media_id)
-                raise HTTPException(status_code=404, detail="media_gone")
-            if fresh.media is None:
-                raise HTTPException(status_code=404, detail="fetch_failed")
-            await _refresh_mirror(account_id, media_id, fresh.media)
-            retry = pick(fresh.media)
-            if not retry or retry == url:
-                raise HTTPException(status_code=404, detail="fetch_failed")
+            media = await resolve_fresh(account_id, media_id, client)
+            if media is None:
+                async with get_session() as s:
+                    again = await s.get(VaultItem, (account_id, media_id))
+                if again is not None and again.removed_at is not None:
+                    return Still(None, "gone")
+                return Still(None, "fetch_failed")
+            retry = pick(media)
+            if not retry:
+                # OF answered, and its answer has nothing this store can render.
+                # Not a transient failure — asking again changes nothing.
+                return Still(None, "no_variant")
+            if retry == url:
+                return Still(None, "fetch_failed")
             data = await asyncio.to_thread(fetch_bytes_sync, client, retry)
             if data is None:
-                raise HTTPException(status_code=404, detail="fetch_failed")
+                return Still(None, "fetch_failed")
 
         write(path, data)
-        return Response(content=data, media_type="image/jpeg", headers=_HEADERS)
+        return Still(data, "ok")
+
+
+async def serve(account_id: str, media_id: int, path: Path, pick: Pick) -> Response:
+    """The HTTP adapter over `bytes_for` — every render endpoint's whole body.
+
+    Raises 404 for a media we can't render: `media_gone` (OF has deleted it —
+    cheap and permanent after the first time), `no_variant` (OF offers nothing
+    this store can show) or `fetch_failed` (transient; retrying is fine)."""
+    # Ahead of `bytes_for`'s own disk read so a warm tile streams from disk
+    # instead of being loaded into memory — a folder pane paints 500 of these.
+    if path.is_file():
+        return FileResponse(path, media_type="image/jpeg", headers=_HEADERS)
+    still = await bytes_for(account_id, media_id, path, pick)
+    if still.data is None:
+        raise HTTPException(
+            status_code=404,
+            detail="media_gone" if still.reason == "gone" else still.reason)
+    return Response(content=still.data, media_type="image/jpeg", headers=_HEADERS)
 
 
 def dir_stats(d: Path) -> dict[str, int]:

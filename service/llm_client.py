@@ -150,15 +150,24 @@ MODELS: dict[str, LLMModel] = {
         input_per_1k_cents=0.0435, input_cache_hit_per_1k_cents=0.0003625,
         output_per_1k_cents=0.087, thinking=True,
     ),
-    # Qwen3-VL vision (DeepInfra). Cheap MoE primary + big escalation. Seed prices
-    # ~ DeepInfra published rates (cents per 1k = $/1M ÷ 10); the cap is what matters.
+    # Qwen3-VL vision (DeepInfra). Cheap MoE primary + big escalation.
+    #
+    # Prices READ FROM `https://api.deepinfra.com/models/list` on 2026-08-05
+    # (`pricing.cents_per_input_token` x1000 = cents per 1k), not estimated. The
+    # seeds they replace were wrong in BOTH directions and had been since the
+    # models were added: 30b was billed at 0.01/0.04 against a real 0.015/0.06,
+    # so every describe and every flags call — the entire vision spend — was
+    # metered ~35% LOW against the daily cap, and 235b at 0.03/0.12 against a
+    # real 0.02/0.088 made the escalation look pricier than it is. A cap that
+    # under-counts is the failure mode that matters: it is the only thing
+    # standing between a sweep and an unbounded bill.
     "qwen3-vl-30b": LLMModel(
         "qwen3-vl-30b", "deepinfra", api_model="Qwen/Qwen3-VL-30B-A3B-Instruct",
-        input_per_1k_cents=0.01, output_per_1k_cents=0.04,
+        input_per_1k_cents=0.015, output_per_1k_cents=0.06,
     ),
     "qwen3-vl-235b": LLMModel(
         "qwen3-vl-235b", "deepinfra", api_model="Qwen/Qwen3-VL-235B-A22B-Instruct",
-        input_per_1k_cents=0.03, output_per_1k_cents=0.12,
+        input_per_1k_cents=0.02, output_per_1k_cents=0.088,
     ),
 }
 
