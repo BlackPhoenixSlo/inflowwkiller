@@ -3,8 +3,8 @@
 /**
  * ScriptsTab — Automations → "🤖 AI Chatter".
  *
- * The base seller + conversation surface for the `ai_chatter` automation: WHO she
- * talks to, HOW she paces herself, AND her content library (Scripts, Singles,
+ * The base seller + conversation surface for the `ai_chatter` automation: WHO it
+ * talks to, HOW it paces itself, AND the content library (Scripts, Singles,
  * Simulate, Monitor) — because the base chatter sells from that catalog too. The
  * "sell harder" TUNING (the gate, smart pricing, price ladder, after-a-buy) lives in
  * the "💰 AI Upseller" tab (UpsellerTab). Both edit the same ai_chatter_config_json
@@ -118,7 +118,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
   // "Fill content": that fills media into a row that already has text, and
   // until now nothing produced the text, so an empty catalog stayed empty.
   //
-  // Suggestions are a PICK LIST, never auto-added: what she sells is the
+  // Suggestions are a PICK LIST, never auto-added: what the account sells is the
   // operator's call, and a button that silently appends 13 rows is one the
   // operator has to undo. Chosen rows land with ZERO content, which "Fill
   // content" then binds.
@@ -241,7 +241,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
       <Card className="p-4 space-y-3">
         <div className="flex items-center gap-2">
           <Bot size={16} />
-          <h3 className="text-sm font-medium">AI Chatter — how she talks &amp; who she talks to</h3>
+          <h3 className="text-sm font-medium">AI Chatter — how it talks &amp; who it talks to</h3>
           <div className="flex-1" />
           <EditRawJsonButton surface="ai-chatter-config" accountId={accountId} />
           <label className="flex items-center gap-2 text-sm">
@@ -254,7 +254,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
         <p className="text-xs text-fg-dim">
           The selling controls (offering content in the chat, pricing, the ladder,
           your content library) live in the <b>💰 AI Upseller</b> tab. This tab is
-          just her conversation behavior.
+          just its conversation behavior.
         </p>
 
         {/* ── engagement ── */}
@@ -369,7 +369,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
                 })} />
             </label>
             <div className="text-fg-dim text-xs">
-              Not every turn wants a question. At 100% every reply to a fan she has
+              Not every turn wants a question. At 100% every reply to a fan the account has
               finished getting to know carries one — which reads as an interview,
               not a conversation. 30% is the house default.
             </div>
@@ -495,19 +495,20 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
             <div className="mt-2 space-y-2 leading-relaxed">
               <p>
                 <span className="font-medium text-fg">Two separate systems that compose.</span>{" "}
-                <b>Cadence</b> is a COUNT — how many replies she sends in one conversation
+                <b>Cadence</b> is a COUNT — how many replies go out in one conversation
                 burst before backing off (a &quot;stop&quot; is a silent skip that reopens
                 on a real buying signal or after a new-burst gap of silence).{" "}
                 <b>Human Rhythm</b> (below) is TIMING — WHEN each reply lands, and whether
-                she takes a break at all.
+                a break happens at all.
               </p>
               <p>
                 <span className="font-medium text-fg">The &quot;goes for a walk&quot; break</span>{" "}
                 is Rhythm, and it is <em>per-fan</em> and <em>heat-driven</em>: a hot chat
-                (he&apos;s replying fast, an open offer, a fresh buy) → she answers fast; a
-                cold / boring / no-sales chat → her replies stretch out and she may take a
-                real multi-hour break. She is NOT cold right after a sale — a purchase makes
-                her hotter (strike while hot); the break comes once the hot window winds down.
+                (he&apos;s replying fast, an open offer, a fresh buy) → replies come fast; a
+                cold / boring / no-sales chat → replies stretch out and a real multi-hour
+                break becomes possible. A thread is NOT cold right after a sale — a purchase
+                makes it hotter (strike while hot); the break comes once the hot window
+                winds down.
               </p>
             </div>
           </details>
@@ -529,9 +530,9 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm border-t border-border pt-2">
           <span className="text-xs text-fg-dim">Texting style:</span>
           <label className="flex items-center gap-1.5">
-            <input type="checkbox" checked={style.girlStyle}
-              onChange={(e) => style.setGirlStyle(e.target.checked)} />
-            Girl style (bubbles + humanizer)
+            <input type="checkbox" checked={style.humanStyle}
+              onChange={(e) => style.setHumanStyle(e.target.checked)} />
+            Human style (bubbles + humanizer)
           </label>
           <label className="flex items-center gap-1.5">
             <input type="checkbox" checked={style.typosOn}
@@ -556,10 +557,10 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
             Cat stickers 🐱
           </label>
           <label className="flex items-center gap-1.5"
-            title="Before a reply sends, check it against what she has already told THIS fan (her pinned facts + the drawer's 'What she told him') and fix a contradiction. Only fires on replies that actually say something about her — costs a second AI call on those.">
+            title="Before a reply sends, check it against what this account has already told THIS fan (the pinned facts + the drawer's 'What this fan was told') and fix a contradiction. Only fires on replies that actually say something about the creator — costs a second AI call on those.">
             <input type="checkbox" checked={style.consistencyOn}
               onChange={(e) => style.setConsistencyOn(e.target.checked)} />
-            Never contradict herself
+            Never contradict what the creator already said
           </label>
           <Button size="sm" variant="ghost" disabled={style.saveStyleM.isPending}
             onClick={style.saveStyle}>
@@ -587,8 +588,8 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
         </div>
       </Card>
 
-      {/* ── content library — she sells from this whether or not the Upseller is on.
-          Tune HOW she sells (pricing, escalation) on the 💰 AI Upseller tab. ── */}
+      {/* ── content library — the seller works from this whether or not the Upseller
+          is on. Tune HOW it sells (pricing, escalation) on the 💰 AI Upseller tab. ── */}
       <div className="flex items-center gap-2">
         <h3 className="text-sm font-medium">Scripts (ordered sexting ladders)</h3>
         <span className="text-xs text-fg-dim">walks in order, ignoring requests</span>
@@ -607,7 +608,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
         <div className="flex items-baseline gap-2">
           <h3 className="text-sm font-medium">Singles (standalone pieces)</h3>
           <span className="text-xs text-fg-dim">
-            a flat pool — she picks what fits what he asks for. Grab prewritten ones from the 💰 AI Upseller tab.
+            a flat pool — whatever fits what he asks for is picked. Grab prewritten ones from the 💰 AI Upseller tab.
           </span>
         </div>
         <ItemsTable items={singles} setItems={setSingles} accountId={accountId} />
@@ -816,7 +817,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
         </div>
       </Card>
 
-      {/* ── re-engage cold buyers — a personal 1:1 win-back she runs, so it lives
+      {/* ── re-engage cold buyers — a personal 1:1 win-back the account runs, so it lives
           with the chatter (not the mass broadcasts). ── */}
       <div className="border-t border-border pt-4">
         <ReengageBuyersTab accountId={accountId} />

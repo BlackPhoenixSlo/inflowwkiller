@@ -47,6 +47,14 @@ export interface PaceBand {
   up_to_min: number;
 }
 
+/** One stage of the ghost cycle: chat for `chat_days`, then go dark for
+ *  `ghost_days`. The stages REPEAT from the top, and both are days (halves are
+ *  legal — the shipped cycle ends on 2.5). */
+export interface GhostStage {
+  chat_days: number;
+  ghost_days: number;
+}
+
 export interface AiChatterConfig {
   enabled?: boolean;
   mode?: "backup" | "always";
@@ -77,7 +85,7 @@ export interface AiChatterConfig {
    *  instead of chatting/selling forever. OFF by default (historical behavior). */
   cadence_enabled?: boolean;
   /** The "deepen" phase — work a mined gen_info detail into an ordinary reply once
-   *  her bio-gap list for that fan is empty. `rate` is 0..1 (0.30 = 30% of eligible
+   *  the bio-gap list for that fan is empty. `rate` is 0..1 (0.30 = 30% of eligible
    *  replies); at 1.0 every reply to a gathered fan carries a question. */
   profile_openers_enabled?: boolean;
   profile_openers_rate?: number;
@@ -104,8 +112,8 @@ export interface AiChatterConfig {
    *  The only cadence piece that SENDS — OFF by default even when cadence is on. */
   nudge_enabled?: boolean;
 
-  /** Sell in the chat (1:1): she may put a price in front of a fan who is actually
-   *  talking to her, and never in front of one who isn't replying. This is the 1:1
+  /** Sell in the chat (1:1): a price may go in front of a fan who is actually
+   *  in the conversation, and never in front of one who isn't replying. This is the 1:1
    *  seller ONLY — the same gate on the mass blast would delete the blast, whose
    *  whole job is reaching fans who are not mid-conversation. OFF by default. */
   qualification_gate_enabled?: boolean;
@@ -141,21 +149,28 @@ export interface AiChatterConfig {
   /** Never ask more than this multiple of his biggest-ever single PPV (default 3x).
    *  Raising past 3x is the "to the moon" lever — conversion drops past it. */
   max_ask_history_mult?: number;
-  /** Human reply timing — she sleeps, her delays vary, and she covers a long gap
-   *  in her own voice. Needs a timezone on the account. OFF by default. */
+  /** Human reply timing — the account sleeps, its delays vary, and it covers a long
+   *  gap in its own voice. Needs a timezone on the account. OFF by default. */
   rhythm_enabled?: boolean;
   /** No-sleep pacing: keep the hot/cold/busy delays + short "stepped away" breaks,
    *  but never the overnight sleep — and no timezone needed. OFF by default. */
   rhythm_no_sleep?: boolean;
-  /** Sample her reply delay from the editable curve below instead of the archive-
+  /** Sample the reply delay from the editable curve below instead of the archive-
    *  fitted lognormal. OFF by default — the accounts already earning keep theirs. */
   rhythm_pace_buckets?: boolean;
   /** The bands, as CUT POINTS: each row's floor is the row above it. null ⇒ the
    *  shipped 85/10/4/1. Percentages are normalised server-side, so they don't have
    *  to sum to exactly 100 while you're typing. */
   rhythm_pace_curve?: PaceBand[] | null;
-  /** Where her sleep window comes from when nothing is overridden: the house night
-   *  ("default", 02:00–06:00 local) or her own outbound histogram ("derived"). */
+  /** The ghost cycle: whole DAYS where the account doesn't answer this fan, on a
+   *  repeating schedule. PER FAN — each one runs off his own first message, so the
+   *  roster doesn't go dark together. OFF by default. */
+  rhythm_ghost_enabled?: boolean;
+  /** The stages, repeating. null ⇒ the shipped 3 days on / 1 off, 4 / 2, 5 / 2.5. */
+  rhythm_ghost_cycle?: GhostStage[] | null;
+  /** Where the sleep window comes from when nothing is overridden: the house night
+   *  ("default", 02:00–06:00 local) or this account's own outbound histogram
+   *  ("derived"). */
   rhythm_sleep_source?: "default" | "derived";
   /** null ⇒ `rhythm_sleep_source` decides; ["HH:MM","HH:MM"] ⇒ the operator
    *  overrode it, which outranks both sources. */
@@ -170,19 +185,29 @@ interface AiChatterConfigResponse {
   account_id: string;
   config: AiChatterConfig;
   defaults: AiChatterConfig;
-  /** The SHIPPED lines, {slot: [lines]} — pre-filled in the script-pack editor. */
+  /** The SHIPPED lines, {slot: [lines]} — pre-filled in the script-pack editor,
+   *  ALREADY resolved for this account's lane. Never assume the female pack: editing
+   *  one box stores the whole box, so wrong defaults here get persisted and sent. */
   script_pack: Record<string, string[]>;
+  /** {slot: "when it fires"} for the editor's hint line. Server-side because it names
+   *  the slots, and the slot schema is the server's (`script_packs.SLOTS`). */
+  slot_help: Record<string, string>;
+  /** "Load starter pack" — ten prewritten sellable pieces, ALREADY resolved for
+   *  this account's lane. Like `script_pack` above, `description_for_ai` is prompt
+   *  text the click persists onto the account, so the lane is decided server-side
+   *  and the browser holds none of it. */
+  starter_singles: CatalogItemT[];
   /** The creator's IANA zone (a COLUMN, not part of the config blob). */
   timezone: string | null;
   /** Legacy whole-hour offset — the fallback when `timezone` is null. */
   utc_offset: number;
   /** Resolved creator-local offset in MINUTES. null ⇒ neither a timezone nor a
    *  non-zero utc_offset is set, so Human Rhythm must stay blocked (a UTC default
-   *  would put a US creator to sleep through her best hours). */
+   *  would put a US creator to sleep through their best hours). */
   tz_offset_minutes: number | null;
   /** Computed server-side from the account's own outbound hour histogram. */
   derived_sleep_window: [string, string];
-  /** What she'd ACTUALLY do: the override if set, else whichever source
+  /** What it would ACTUALLY do: the override if set, else whichever source
    *  `sleep_source` names. Resolved server-side so the card and the engine can't
    *  disagree about which window is in force. */
   effective_sleep_window: [string, string];

@@ -132,6 +132,9 @@ function JsonConfigModal({
       relay.put(path, { account_id: accountId, config }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKey(accountId) });
+      // The account-config surface carries the VOICE column, and the seller payload
+      // is derived from it server-side — same coupling as useSaveAccountConfig.
+      if (surface === "account-config") qc.invalidateQueries({ queryKey: ["ai-chatter"] });
       qc.invalidateQueries({ queryKey: ["raw-json-config", surface, accountId] });
       onClose();
     },

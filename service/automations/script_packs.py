@@ -367,6 +367,82 @@ PACKS_BY_VOICE: dict[str, dict[str, dict[str, list[str]]]] = {
 }
 
 
+# ── The SLOT SCHEMA ──────────────────────────────────────────────────
+# What a slot IS, owned by neither lane. Every pack must carry exactly these, and
+# `_assert_lane_parity` below enforces it at import rather than leaving it to a test
+# that a new pack's author might not run: a slot in one lane and not the other is a
+# turn where `render` returns None and the caller sends nothing at all — silent, and
+# only on the lane nobody watches.
+#
+# The order is the EDITOR's order (the UI renders `slots()` top to bottom), which is
+# why this is a tuple and not a set.
+SLOTS: tuple[str, ...] = (
+    "question_hook", "rung_open", "rung_escalate", "post_buy_bridge", "edge_hold",
+    "pre_ppv_stall", "objection_price", "haggle_counter", "discount_resend",
+    "soft_broke_ack", "aftercare", "companion_ack",
+)
+
+
+# WHEN each slot fires, in plain English — the editor's help line for it.
+#
+# Here rather than in the browser for the same reason `SLOTS` is: this text NAMES the
+# slots, so a copy in TypeScript is a third enumeration of a schema the server owns,
+# and the one that drifts silently (a renamed slot just renders a blank hint).
+#
+# ⚠️ NAME THE ROLE, NEVER THE CREATOR'S GENDER. One table, both lanes. A creator
+# pronoun is unambiguous only while the creator and the fan differ in gender, and in
+# the male lane they do not — the fan is male in BOTH lanes, so "she drops the price"
+# has no male conjugation that stays readable ("he runs his thread" states the
+# opposite of what it means). `tests/test_voice_lane.py` asserts this table is clean.
+# The FAN stays "he": his half never varies.
+SLOT_HELP: dict[str, str] = {
+    "question_hook": "opens a scene — free, never has a price on it",
+    "rung_open": "the first thing the fan ever sees with a price on it",
+    "rung_escalate": "after he buys, another piece is offered and the price climbs",
+    "post_buy_bridge": "right after the unlock — free, keeps the conversation alive",
+    "edge_hold": "a short beat to keep him talking mid-scene",
+    "pre_ppv_stall": "the “im filming it right now” line, just before the paid message",
+    "objection_price": "he says it's too expensive — the answer is about the content, not his wallet",
+    "haggle_counter": "the price comes down once, and only once — never twice",
+    "discount_resend": "he didn't buy — the offer is pulled and re-sent cheaper",
+    "soft_broke_ack": "he says he's broke — the selling stops, the talking doesn't",
+    "aftercare": "the end of the ladder, then he's left alone",
+    "companion_ack": "he says he just wants to talk — the selling stops, the talking doesn't",
+}
+
+
+def _assert_lane_parity() -> None:
+    """Every lane's English pack carries the whole schema, checked when this module
+    loads.
+
+    Iterates `PACKS_BY_VOICE` — the registry the SENDERS read — rather than a
+    hand-kept pair. That alone would still miss a lane added to `_voice._VOICES`
+    with no registry entry (`PACKS_BY_VOICE[...]` would KeyError at send time, on
+    that lane only), so the first assertion is that the registry is COMPLETE. With
+    both, "a third lane is covered by existing, not by remembering" is true rather
+    than aspirational."""
+    missing_lanes = set(_voice._VOICES) - set(PACKS_BY_VOICE)
+    if missing_lanes:
+        raise AssertionError(
+            f"PACKS_BY_VOICE has no pack for {sorted(missing_lanes)} — every voice in "
+            f"_voice._VOICES needs one, or `render` KeyErrors on that lane alone")
+    if set(SLOT_HELP) != set(SLOTS):
+        raise AssertionError(
+            f"SLOT_HELP does not match SLOTS — "
+            f"missing={sorted(set(SLOTS) - set(SLOT_HELP))} "
+            f"extra={sorted(set(SLOT_HELP) - set(SLOTS))}")
+    for lane, packs in PACKS_BY_VOICE.items():
+        name, pack = f"PACKS_BY_VOICE[{lane!r}]['en']", packs["en"]
+        missing = [s for s in SLOTS if s not in pack]
+        extra = [s for s in pack if s not in SLOTS]
+        if missing or extra:
+            raise AssertionError(
+                f"{name} does not match SLOTS — missing={missing} extra={extra}")
+
+
+_assert_lane_parity()
+
+
 _PLACEHOLDER_RE = re.compile(r"\{(name|price)\}")
 
 
@@ -412,5 +488,32 @@ def render(slot: str, *, rng: Random, name: str = "babe", price_cents: int | Non
 
 
 def slots() -> list[str]:
-    """Slot names, for the UI's editor."""
-    return list(PACK)
+    """The slot names. Lane-independent, and now sourced from a lane-independent
+    place: this used to return `list(PACK)`, which made the FEMALE pack the schema
+    for both lanes — so "what is a slot?" had no owner, one lane silently defined the
+    other, and `scripts_api` built the override allowlist out of it."""
+    return list(SLOTS)
+
+
+def shipped_pack(voice: str = _voice.VOICE_HER) -> dict[str, list[str]]:
+    """The defaults the EDITOR shows — resolved for this account's lane.
+
+    Not a display nicety. The UI pre-fills each textarea from this and stores the
+    WHOLE box as an override the instant one line is edited, so an editor served the
+    wrong registry turns the operator's first keystroke into a persisted female pack
+    on a male account — and from then on `render` prefers that override and the lane
+    is dead for that slot. The editor and the sender therefore read the same map.
+
+    English on purpose: the editor has one box per slot and no language axis, and an
+    override replaces the pool for every language, so the English lines are the ones
+    it is actually editing.
+
+    Both lookups are hard indexes, not `.get(..., PACK)`. A registry with no English
+    or a slot missing from a lane is a packaging error, and the only "safe" fallback
+    available — the female pack — is the exact thing this function exists to prevent;
+    a KeyError at import-adjacent code is strictly better than silently serving the
+    other lane's words into an editor that persists them. `PACKS_HIM` carries "en"
+    and `test_voice_lane.case_both_lanes_carry_every_slot` pins slot parity, so
+    neither index can fail today."""
+    base = PACKS_BY_VOICE[_voice.norm_voice(voice)]["en"]
+    return {slot: list(base[slot]) for slot in SLOTS}

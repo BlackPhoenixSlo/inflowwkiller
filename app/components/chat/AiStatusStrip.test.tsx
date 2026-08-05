@@ -48,7 +48,7 @@ const BURST = {
 
 /** Fan 7001 — 2 of his 5 free replies spent, so no ceiling reaches him yet. */
 const RUNWAY: AiStatus = {
-  ...BASE, state: "active", label: "Active", detail: "She'll answer his next message",
+  ...BASE, state: "active", label: "Active", detail: "The AI answers his next message",
   cadence: {
     ...BURST,
     daily: {
@@ -74,7 +74,7 @@ const HELD: AiStatus = {
 
 /** Fan 7003 — $600 in 7 days. A whale is never rationed. */
 const WHALE: AiStatus = {
-  ...BASE, state: "active", label: "Active", detail: "She'll answer his next message",
+  ...BASE, state: "active", label: "Active", detail: "The AI answers his next message",
   cadence: {
     ...BURST, used: 6,
     daily: {
@@ -112,7 +112,7 @@ describe("AiStatusStrip — daily quota chip", () => {
     // rendered "no daily cap", which says nothing about the fan you are looking at.
     expect(el?.textContent).toBe("📅 runway 3 left");
     expect(el?.textContent).not.toContain("no daily cap");
-    expect(el?.getAttribute("title")).toContain("3 more replies before one applies");
+    expect(el?.getAttribute("title")).toContain("3 more replies are owed before one applies");
   });
 
   it("keeps the counter but does not retype the badge's sentence", async () => {
@@ -123,7 +123,7 @@ describe("AiStatusStrip — daily quota chip", () => {
     // The wait belongs in the title; the state badge beside it already says it aloud.
     expect(el?.textContent).not.toContain("quiet");
     // …and it is rounded. `%g` on the jittered rung printed "3.58587h" on a live thread.
-    expect(el?.getAttribute("title")).toContain("She's quiet for 3.6h");
+    expect(el?.getAttribute("title")).toContain("Quiet for 3.6h");
   });
 
   it("draws the ladder so the longest rung doesn't read as a jump to it", async () => {
@@ -147,7 +147,7 @@ describe("AiStatusStrip — daily quota chip", () => {
     expect(el?.getAttribute("title")).toContain("Ladder 4h · 12h · 24h · [72h]");
     expect(el?.getAttribute("title")).toContain("next step 4h");
     // A manual reply does NOT move the clock, and the strip must not imply it does.
-    expect(el?.getAttribute("title")).toContain("her own last reply");
+    expect(el?.getAttribute("title")).toContain("from the last reply");
   });
 
   it("dates the release, because a 72h hold is not 'this morning'", async () => {

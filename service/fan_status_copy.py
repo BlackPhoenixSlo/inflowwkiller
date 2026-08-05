@@ -34,7 +34,7 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() + "Z" if dt is not None else None
 
 
-ACTIVE = Badge("active", "Active", "She'll answer his next message")
+ACTIVE = Badge("active", "Active", "The AI answers his next message")
 
 
 def standing_badge(*, engine_on: bool, blacklisted: bool, skip_reason: str | None,
@@ -55,8 +55,8 @@ def standing_badge(*, engine_on: bool, blacklisted: bool, skip_reason: str | Non
                      "A skip_list row closes the thread to the AI.")
     if rhythm_wake_at is not None:
         return Badge("paused", "On a break",
-                     "Human Rhythm stepped her away to look human. She wakes on her "
-                     "own — a live ask or a recent purchase makes a thread "
+                     "Human Rhythm stepped this thread away to look human. It wakes on "
+                     "its own — a live ask or a recent purchase makes a thread "
                      "break-proof.", _iso(rhythm_wake_at))
     if paused_until is not None:
         return Badge("paused", "Cooling down", "Per-fan cooldown after a send.",
@@ -69,8 +69,8 @@ def standing_badge(*, engine_on: bool, blacklisted: bool, skip_reason: str | Non
                      _iso(companion_until))
     if post_buy_until is not None:
         return Badge("companion", "Talking, not selling",
-                     "Post-purchase ease-off — he just bought; she isn't charging "
-                     "again yet.", _iso(post_buy_until))
+                     "Post-purchase ease-off — he just bought; no price goes in "
+                     "front of him yet.", _iso(post_buy_until))
     return ACTIVE
 
 
@@ -160,7 +160,7 @@ def burst_badge(*, stopped: bool, tier: str, used: int, cap: int,
     if not stopped:
         return None
     return Badge("paused", f"Reply cap reached ({used}/{cap})",
-                 f"She's made {used} replies in this burst ({tier} tier). She resumes "
+                 f"{used} replies sent in this burst ({tier} tier). Replies resume "
                  f"on a real buying signal, or after {gap_min} min of silence starts "
                  f"a fresh burst.")
 
@@ -191,10 +191,10 @@ def daily_quota_badge(q: Any, *, enforced: bool, cad: dict[str, Any] | None = No
                 f"{round(ladder[rung], 1):g}h (jittered to {round(q.wait_h, 1):g}h), "
                 f"and the step after this one is {round(nxt, 1):g}h.")
     return Badge("paused", f"Daily quota reached ({q.used}/{q.quota}){where}",
-                 f"She's made {q.used} replies to him in the last 24h, and he hasn't "
-                 f"paid in {q.dry_h / 24:.1f} days. She goes quiet for "
-                 f"{round(q.wait_h, 1):g}h from her OWN last reply — a manual message "
-                 f"or a mass send does not move it — then talks to him again."
-                 f"{step} This slows her down, it never stops her. "
-                 f"A purchase or a content ask resumes her immediately.",
+                 f"{q.used} replies sent to him in the last 24h, and he hasn't "
+                 f"paid in {q.dry_h / 24:.1f} days. The thread goes quiet for "
+                 f"{round(q.wait_h, 1):g}h from the ACCOUNT'S OWN last reply — a "
+                 f"manual message or a mass send does not move it — then talks to "
+                 f"him again.{step} This slows the thread down, it never stops it. "
+                 f"A purchase or a content ask resumes it immediately.",
                  _iso(free_at))

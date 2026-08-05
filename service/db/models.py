@@ -2548,6 +2548,13 @@ class RhythmState(Base):
     # next RhythmCtx (recent_realized_s / his_last_latency_s). Subsumes v1's
     # recent_delays_json + the two style-share accumulators (one column, not three).
     recent_turns_json: Mapped[str | None] = mapped_column(Text)
+    # Ghost cycle (`_ghost.window`): when THIS fan's repeating chat/dark cycle
+    # started. Deliberately the only ghost state there is — the stage is derived by
+    # modulo off this one timestamp, so there is no pointer for a missed tick to
+    # leave stale. Set from his first inbound (so the roster is staggered by its own
+    # history instead of going dark on one calendar day), and pushed to `now` when
+    # the cycle restarts: a live sale, or a thread she was not present in anyway.
+    ghost_anchor: Mapped[datetime | None] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = _ts_now()
 
     __table_args__ = (Index("ix_rhythm_state_wake_at", "wake_at"),)

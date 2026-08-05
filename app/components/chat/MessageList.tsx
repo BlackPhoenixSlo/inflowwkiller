@@ -784,7 +784,7 @@ function Bubble({
           {msg._aiPending && !msg.text && (
             <span className="inline-flex items-center gap-1.5 italic text-fg-dim">
               <span className="animate-pulse">•••</span>
-              pausing before she replies
+              pausing before replying
             </span>
           )}
           {msg.text && (
@@ -1504,7 +1504,7 @@ function DateSeparator({ label }: { label: string }) {
 }
 
 const AI_PAUSE_TITLE =
-  "She's seen his message and is pausing before she answers (Human Rhythm). Not cancellable.";
+  "His message has been seen; the reply is pausing before it goes (Human Rhythm). Not cancellable.";
 
 /** Live countdown that re-renders every 20s. Short enough to feel
  *  responsive ("Sending in 1 min" → fires shortly after); long enough

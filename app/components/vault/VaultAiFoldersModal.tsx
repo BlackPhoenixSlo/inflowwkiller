@@ -369,7 +369,7 @@ export default function VaultAiFoldersModal({
             {result
               ? "Re-running refreshes these folders rather than making duplicates."
               : mirrorToOf
-                ? "Creates real folders on her OnlyFans account. Nothing is sent."
+                ? "Creates real folders on this OnlyFans account. Nothing is sent."
                 : "Nothing has been created yet. Your own folders are never touched."}
           </p>
           <div className="flex items-center gap-2">

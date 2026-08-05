@@ -153,38 +153,18 @@ PERSONA_FACT_FIELDS: tuple[tuple[str, str], ...] = (
 #       fills it.
 PERSONA_FACTS_OPERATOR_ONLY: frozenset[str] = frozenset({"kinks", "limits", "tattoos"})
 
-# Editor hints, served to the BrainPanel alongside the labels. They live here
-# rather than in the UI because a second enumeration of the 26 keys in TypeScript
-# is a second thing to forget: the field list moved server-side, but the
-# placeholder map had stayed behind and still listed every key.
-PERSONA_FACT_PLACEHOLDERS: dict[str, str] = {
-    "age": "22",
-    "birthday": "24 May",
-    "height": "165 cm / 5'5\"",
-    "job": "content creator, waitressed before",
-    "why_of": "to pay off her studies",
-    "school": "studied design, dropped out",
-    "home_city": "Córdoba",
-    "home_country": "Argentina",
-    "born_city": "Rosario",
-    "born_country": "Argentina",
-    "upbringing": "normal childhood, played in the street with her cousins",
-    "living_situation": "lives alone in a small flat",
-    "relationship": "single",
-    "ex": "3 years, ended badly, doesn't talk about him",
-    "kids": "none",
-    "family": "mum, one older brother",
-    "pets": "a grey cat, Nube",
-    "tattoos": "script on her ribs, small rose on left wrist",
-    "languages": "Spanish, some English",
-    "music": "grunge, mostly Alice in Chains",
-    "travel": "Chile once, wants to see Europe",
-    "dreams": "save for her own place",
-    "routine": "up late, films in the afternoon",
-    "her_type": "older, calm, makes her laugh",
-    "kinks": "you fill this in — Enrich never guesses",
-    "limits": "you fill this in — Enrich never guesses",
-}
+# The editor hints for these slots — the example text under each box — live in
+# `_voice._FACT_PLACEHOLDERS`, one lane each, read through `fact_placeholders()`.
+# They were here, in the female lane only, until the male lane needed them too:
+# every one of them is a worked example of the creator's own life, so unlike the
+# LABELS (21 of which just name the field) there is no lane-neutral version to
+# keep as a default. `_voice` owns text that reads differently per lane.
+#
+# This is the slate's home, so this is where both tables get bound to it: a canon
+# field with no male placeholder, or a gendered label with no male form, fails
+# HERE at import rather than serving her copy on his account.
+_voice.assert_canon_parity(PERSONA_FACT_FIELDS)
+
 _FACT_VALUE_CLIP = 240      # one fact should be a line, never a paragraph
 
 

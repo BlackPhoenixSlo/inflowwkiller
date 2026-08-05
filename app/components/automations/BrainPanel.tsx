@@ -238,24 +238,43 @@ export default function BrainPanel() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [followupRule?.id, followupRule?.is_enabled, followupRule?.every_seconds, JSON.stringify(followupRule?.payload)]);
+  // THE SELECTED LANE. The dropdown is form state until Save, so the stored
+  // column still holds the old lane while the operator is looking at the new one.
+  // Before the form exists there is no selection yet and the stored column IS the
+  // answer, which is what the seed below wants.
+  //
+  // Read STRICTLY out of the per-lane maps — there is deliberately no fallback to
+  // the singular `defaults` / `persona_fact_fields`. Those describe the STORED
+  // lane, so under a moved dropdown they are the female starter brain on a male
+  // account, i.e. the bug the maps were added to end, reachable through their own
+  // fallback. The version-skew they would have covered does not exist: relay and
+  // app rsync from one repo and rebuild together in one `docker compose up`
+  // (scripts/deploy-fastt.sh), both stopped first, so no browser ever sees a
+  // payload older than this file.
+  const lane = form?.voice ?? cfgQ.data?.config?.voice ?? "her";
+  // The canon field contract — keys, labels, placeholders and which are
+  // operator-only — comes wholly from the API. Nothing about it lives here.
+  // These labels are what the operator types against ("Why he started OF"), so a
+  // female label on a male account is an instruction to write female canon.
+  const factFields = cfgQ.data?.persona_fact_fields_by_voice?.[lane] ?? [];
+  // Reset writes prose INTO the account, so there is no half-answer here: either
+  // we hold the selected lane's brain or the button must not be clickable.
+  const laneDefaults = cfgQ.data?.defaults_by_voice?.[lane];
+
   // Seed once the config arrives. A blank account (never saved a brain) gets the
   // one account-derived defaults so it has a worked example to show, not an empty form;
   // an account with its own brain keeps it. Images are never seeded from defaults.
   useEffect(() => {
-    if (form === null && cfgQ.data) {
-      const { config, defaults } = cfgQ.data;
-      setForm(isBlankBrain(config) ? defaultsWithImages(defaults, config) : config);
+    if (form === null && cfgQ.data && laneDefaults) {
+      const { config } = cfgQ.data;
+      setForm(isBlankBrain(config) ? defaultsWithImages(laneDefaults, config) : config);
     }
-  }, [cfgQ.data, form]);
+  }, [cfgQ.data, form, laneDefaults]);
 
   const slots = cfgQ.data?.slots ?? [];
   const modelOptions = cfgQ.data?.model_options ?? [];
   const purposes = cfgQ.data?.purposes ?? [];
   const languages = cfgQ.data?.languages ?? [{ code: "en", label: "English" }];
-  // The canon field contract — keys, labels, placeholders and which are
-  // operator-only — comes wholly from the API. Nothing about it lives here.
-  const factFields = cfgQ.data?.persona_fact_fields ?? [];
-
   // Resolve the SAVED slot image ids (and the two preview image ids) back to
   // VaultMedia so the slots/preview render real thumbnails on load — mediaCache
   // only ever holds images the operator just picked this session. The lookup
@@ -308,9 +327,8 @@ export default function BrainPanel() {
   // Refill every brain field from the defaults, KEEPING this account's images
   // (defaults carry none). Doesn't persist — the operator reviews then Saves.
   function resetToDefaults() {
-    const defaults = cfgQ.data?.defaults;
-    if (!defaults || !form) return;
-    setForm(defaultsWithImages(defaults, form));
+    if (!laneDefaults || !form) return;
+    setForm(defaultsWithImages(laneDefaults, form));
     setMsg("Reset to defaults — review and Save brain to apply.");
   }
 
@@ -516,7 +534,7 @@ export default function BrainPanel() {
             size="sm"
             variant="ghost"
             onClick={resetToDefaults}
-            disabled={!form || !cfgQ.data?.defaults || saveM.isPending}
+            disabled={!form || !laneDefaults || saveM.isPending}
             title="Refill every field from the default brain (keeps this account's images)"
           >
             Reset to defaults
@@ -573,7 +591,7 @@ export default function BrainPanel() {
               rows={4}
               value={form.persona ?? ""}
               onChange={(e) => set("persona", e.target.value)}
-              placeholder="Who this model is — name, vibe, how she talks…"
+              placeholder="Who this model is — name, vibe, how they talk…"
               className={textareaCls}
             />
           </label>
@@ -611,7 +629,7 @@ export default function BrainPanel() {
                 value={form.language ?? "en"}
                 onChange={(e) => set("language", e.target.value)}
                 className={selectCls}
-                title="The language she writes in AND which safety-word list runs. Changing it re-generates each fan's saved lines on their next profile pass."
+                title="The language this account writes in AND which safety-word list runs. Changing it re-generates each fan's saved lines on their next profile pass."
               >
                 {languages.map((l) => (
                   <option key={l.code} value={l.code}>{l.label}</option>
@@ -624,7 +642,7 @@ export default function BrainPanel() {
                 value={form.timezone ?? ""}
                 onChange={(e) => set("timezone", e.target.value || null)}
                 className={selectCls}
-                title="The creator's IANA timezone — powers her clock in chat prompts and the sleep window. The offset is computed from it (DST-aware), so there's nothing else to set."
+                title="The creator's IANA timezone — powers the clock in chat prompts and the sleep window. The offset is computed from it (DST-aware), so there's nothing else to set."
               >
                 <option value="">— not set —</option>
                 {(form.timezone && !TIMEZONES.includes(form.timezone)
@@ -636,16 +654,16 @@ export default function BrainPanel() {
               </select>
               {form.timezone ? (
                 <span className="block text-[11px] text-fg-dim">
-                  {zoneOffsetLabel(form.timezone)} · her clock: {localTimeIn(form.timezone)}
+                  {zoneOffsetLabel(form.timezone)} · local time: {localTimeIn(form.timezone)}
                 </span>
               ) : form.utc_offset !== 0 ? (
                 <span className="block text-[11px] text-amber-400"
-                  title="A fixed offset drifts an hour every DST change — pick her real timezone above.">
+                  title="A fixed offset drifts an hour every DST change — pick the real timezone above.">
                   legacy UTC{form.utc_offset > 0 ? "+" : ""}{form.utc_offset} offset in use
                 </span>
               ) : (
                 <span className="block text-[11px] text-fg-dim">
-                  unset — she has no clock in chat
+                  unset — no clock in chat
                 </span>
               )}
             </label>
@@ -660,29 +678,35 @@ export default function BrainPanel() {
             </label>
           </div>
 
-          {/* ── Her facts (the canon the chat AI may never contradict) ── */}
+          {/* ── The canon the chat AI may never contradict ── */}
           <div className="space-y-2 border-t border-border pt-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-[11px] uppercase tracking-wide text-fg-dim">
-                Her facts
+                Creator facts
               </span>
               <button
                 type="button"
                 onClick={runEnrich}
-                disabled={enrichM.isPending || !form.persona}
+                // Also gated on the slate having rendered. Enrich replaces
+                // `persona_facts` wholesale and says "review, then Save" — so
+                // with no boxes on screen it would be asking for a review of
+                // something invisible, and Save would persist it unread. Same
+                // rule as Reset one section up: a control that cannot be
+                // answered for is not clickable.
+                disabled={enrichM.isPending || !form.persona || !factFields.length}
                 className="rounded border border-border px-2 py-1 text-[11px] hover:bg-bg-hover disabled:opacity-40"
                 title={
                   form.persona
-                    ? "Fill the empty fields from her persona, and work out her timezone from the city. Nothing is saved until you press Save."
-                    : "Write her persona first — enrich fills the gaps in it."
+                    ? "Fill the empty fields from the persona, and work out the timezone from the city. Nothing is saved until you press Save."
+                    : "Write the persona first — enrich fills the gaps in it."
                 }
               >
                 {enrichM.isPending ? "Enriching…" : "🪄 Enrich"}
               </button>
             </div>
             <p className="text-[11px] text-fg-dim">
-              Pinned into every chat prompt as facts she can never contradict — and as
-              material she can relate to a fan with. A blank field is one she&apos;ll
+              Pinned into every chat prompt as facts the creator can never contradict — and as
+              material to relate to a fan with. A blank field is one the model will
               improvise, differently each time it scrolls out of the conversation.
               Ordered by how often fans actually ask. 🔒 fields are yours alone; Enrich
               never guesses those.
@@ -705,7 +729,7 @@ export default function BrainPanel() {
                       {f.operator_only ? (
                         <span
                           className="ml-1 text-fg-dim"
-                          title="Enrich never fills this. What she will and won't do on camera is your call, not the model's — a wrong guess here either costs a sale or promises something she doesn't offer."
+                          title="Enrich never fills this. What the creator will and won't do on camera is your call, not the model's — a wrong guess here either costs a sale or promises something the creator doesn't offer."
                         >
                           🔒
                         </span>
@@ -789,7 +813,7 @@ export default function BrainPanel() {
                     <Input
                       value={form.time_activities[slot] ?? ""}
                       onChange={(e) => setActivity(slot, e.target.value)}
-                      placeholder="what she's doing…"
+                      placeholder="what they're doing…"
                       className="flex-1"
                     />
                     <SlotImage

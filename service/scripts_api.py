@@ -7,7 +7,8 @@ Next `/admin/:path*` rewrite — no next.config.ts change):
                                                   utc_offset, tz_offset_minutes,
                                                   derived_sleep_window,
                                                   effective_sleep_window,
-                                                  script_pack}
+                                                  script_pack,
+                                                  starter_singles, slot_help}
   PUT  /admin/ai-chatter-config                 → validate + upsert the JSON
                                                   (+ optional `timezone` column)
   GET  /admin/scripts?account_id=               → scripts(+items+stats) + singles
@@ -49,7 +50,8 @@ from db.models import (
     AccountAiConfig, AutomationRule, CatalogItem, CatalogProgress, CatalogScript,
     ContentOffer, Fan, Message, created_at_text, parse_ts,
 )
-from automations import rhythm, script_packs
+from automations import _ghost, _voice, rhythm, script_packs, starter_catalog
+from automations._common import load_voice_blocks
 from automations.ai_chatter import (
     _CONTENT_ASK_RE,
     _DEFAULTS as _AI_CHATTER_DEFAULTS,
@@ -105,6 +107,13 @@ _INT_KNOBS = {
     # The per-fan runway: HER replies to this fan before any ceiling applies. 0 retires
     # the runway (the quota then applies from his first reply) — set it deliberately.
     "daily_quota_free_replies": (0, 10_000),
+    # Post-purchase objection judge — the window it watches, in hours, and how many
+    # of HIS replies to the unlock it will spend a call on. Both are also the OFF
+    # switch (0 either side disarms it), which is why the ranges start at 0. The
+    # upper bounds are the spend guard: this is the only gate in the chat engine
+    # that buys an LLM call, and it is bounded by purchases × max_msgs.
+    "post_purchase_window_hours": (0, 168),
+    "post_purchase_max_msgs": (0, 20),
 }
 
 # Float-valued knobs (ladder aggressiveness). Clamped to sane ranges: the ceiling
@@ -206,6 +215,53 @@ def _validate_pace_curve(raw: Any) -> list[dict[str, float]] | None:
     return out
 
 
+def _validate_ghost_cycle(raw: Any) -> list[dict[str, float]] | None:
+    """None ⇒ the shipped 3/1, 4/2, 5/2.5 cycle. Otherwise a list of
+    `{"chat_days", "ghost_days"}` stages that REPEAT from the top.
+
+    Half days are legal (the shipped cycle ends on 2.5), so these stay floats.
+    A stage may declare `ghost_days: 0` — "chat 3 days, then chat 4 more" is odd
+    but honest, and rejecting it would lose a row's typing to a transient zero.
+    What is rejected is a cycle with no length at all: every stage zero means no
+    fan has a position inside it. Checked HERE with real errors, because
+    `_ghost.parse_cycle` deliberately returns None for garbage on the send
+    path — which would make a typo look like a save that silently changed
+    nothing (and, for THIS setting, silently reverted the account to the shipped
+    cycle rather than doing nothing at all)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise HTTPException(422, "rhythm_ghost_cycle must be null or a non-empty list")
+    if len(raw) > _ghost.MAX_ROWS:
+        raise HTTPException(422, f"at most {_ghost.MAX_ROWS} ghost stages")
+    out: list[dict[str, float]] = []
+    for i, row in enumerate(raw):
+        if not isinstance(row, dict):
+            raise HTTPException(422, f"ghost stage {i + 1} must be an object")
+        try:
+            chat = float(row.get("chat_days"))
+            ghost = float(row.get("ghost_days"))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                422, f"ghost stage {i + 1}: chat_days and ghost_days must be numbers")
+        for name, v in (("chat_days", chat), ("ghost_days", ghost)):
+            if not (0 <= v <= _ghost.MAX_DAYS):
+                raise HTTPException(
+                    422, f"ghost stage {i + 1}: {name} must be between 0 and "
+                         f"{_ghost.MAX_DAYS:g}")
+        out.append({"chat_days": chat, "ghost_days": ghost})
+    if sum(r["chat_days"] + r["ghost_days"] for r in out) <= 0:
+        raise HTTPException(422, "a ghost cycle needs at least one stage longer than 0 days")
+    # Belt to the per-row braces above. The checks here exist to name the offending
+    # ROW, which `_ghost.parse_cycle` cannot do (it degrades silently by contract) —
+    # but that means two predicates for one rule, and the day they drift is the day a
+    # cycle saves clean, reads back clean, and then quietly runs as the SHIPPED one
+    # because the engine's parser rejected it. Store nothing the engine won't run.
+    if _ghost.parse_cycle(out) is None:
+        raise HTTPException(422, "that ghost cycle isn't one the engine can run")
+    return out
+
+
 def _validate_pack_overrides(raw: Any) -> dict[str, list[str]]:
     """{slot: [lines]} over the SHIPPED slots only. A slot whose lines are all
     blank is DROPPED, not stored empty — script_packs.render falls back to the
@@ -254,6 +310,11 @@ def _validate_cfg(cfg: dict) -> dict:
     # turning it off in the UI would otherwise silently keep it on.
     if "reply_context_enabled" in cfg:
         out["reply_context_enabled"] = bool(cfg["reply_context_enabled"])
+    # Post-purchase objection judge (ships ON — see ai_chatter._DEFAULTS). Same
+    # reason as the line above: this validator DROPS any key it does not name, so
+    # an operator turning it off to stop the spend would have kept paying for it.
+    if "post_purchase_objection_check" in cfg:
+        out["post_purchase_objection_check"] = bool(cfg["post_purchase_objection_check"])
     # 1:1 offer engine + human pacing + the editable line pack (all ship OFF).
     if "qualification_gate_enabled" in cfg:
         out["qualification_gate_enabled"] = bool(cfg["qualification_gate_enabled"])
@@ -276,6 +337,12 @@ def _validate_cfg(cfg: dict) -> dict:
         out["rhythm_pace_buckets"] = bool(cfg["rhythm_pace_buckets"])
     if "rhythm_pace_curve" in cfg:
         out["rhythm_pace_curve"] = _validate_pace_curve(cfg["rhythm_pace_curve"])
+    # The ghost cycle — whole days dark on a fan, repeating. Inert without
+    # rhythm_enabled (guarded at runtime); we still persist the operator's choice.
+    if "rhythm_ghost_enabled" in cfg:
+        out["rhythm_ghost_enabled"] = bool(cfg["rhythm_ghost_enabled"])
+    if "rhythm_ghost_cycle" in cfg:
+        out["rhythm_ghost_cycle"] = _validate_ghost_cycle(cfg["rhythm_ghost_cycle"])
     if "rhythm_sleep_source" in cfg and cfg["rhythm_sleep_source"] is not None:
         if cfg["rhythm_sleep_source"] not in _SLEEP_SOURCES:
             raise HTTPException(
@@ -496,14 +563,33 @@ async def get_ai_chatter_config(account_id: str = Query(...)) -> dict[str, Any]:
             stored = json.loads(row.ai_chatter_config_json) or {}
         except Exception:
             stored = {}
+    voice = _voice.norm_voice(getattr(row, "voice", None) if row is not None else None)
     return {
         "account_id": account_id,
         "config": stored,
         "defaults": dict(_AI_CHATTER_DEFAULTS),
+        # "Load starter pack" — ten prewritten sellable pieces, resolved for this
+        # account's lane. Server-side for the same reason the pack below is:
+        # `description_for_ai` is the pitch contract the model is told the fan will
+        # SEE, and one click persists it onto the account. Deliberately NO `voice`
+        # field on this response — after these two, nothing in the browser needs to
+        # know what a lane is, and a second answer to "which lane?" on the far side
+        # of the wire is the thing that goes stale.
+        "starter_singles": starter_catalog.starter_singles(voice),
+        # {slot: "when it fires"} for the editor's hint line. Server-side because it
+        # NAMES the slots, and the slot schema is the server's — a copy in TypeScript
+        # would be a third enumeration, and the one that fails quietly (a renamed slot
+        # renders a blank hint rather than an error).
+        "slot_help": dict(script_packs.SLOT_HELP),
         # The shipped lines, PRE-FILLED in the editor. An account with no config
         # row at all still gets the full pack — that is the "plug in your content
         # and go" surface: the words are already written.
-        "script_pack": {slot: list(lines) for slot, lines in script_packs.PACK.items()},
+        #
+        # Served for THIS account's voice. It used to be `script_packs.PACK`
+        # unconditionally, which put female lines in a male account's editor — and
+        # because one keystroke in a box persists the whole box as an override, that
+        # was one edit away from a male creator sending them verbatim to a fan.
+        "script_pack": script_packs.shipped_pack(voice),
         **await _rhythm_view(account_id, row, stored),
     }
 
@@ -1168,21 +1254,30 @@ async def simulate(body: _SimulateBody = Body(...)) -> dict[str, Any]:
     assert_account_owned(body.account_id)
     from automations.ai_chatter import _Cand, _load_config  # local: avoid cycles
     cfg = await _load_config(body.account_id)
+    # The DRY RUN has to be built the way the live turn is, or it stops being a dry
+    # run and becomes a different prompt that happens to return text. The live path
+    # resolves this bundle and passes `v=` (ai_chatter's `_build_messages(... v=
+    # voice_blocks)`); leaving it to the `_voice.HER` default previewed a male
+    # account in a woman's voice — the one thing an operator opens Test it to check.
+    v = await load_voice_blocks(body.account_id)
     scripts, items = await _load_catalog(body.account_id)
     offerable = await _offerable_for_fan(body.account_id, 0,
                                          str(cfg.get("offer_mode") or "both"),
                                          scripts, items)
-    sell_block = (_manifest_block(offerable, scripts,
-                                  str(cfg.get("offer_mode") or "both"))
-                  if offerable else "")
+    # The live turn builds this surface for EVERY account now — customs included,
+    # which is the case with no catalogue at all — so the preview must not gate on
+    # `offerable` or it silently shows a bought-out account the no-offers prompt.
+    sell = _manifest_block(offerable, scripts,
+                           str(cfg.get("offer_mode") or "both"),
+                           sell_customs=v.sell_customs)
     persona = await _load_persona(body.account_id)
     c = _Cand(0)
     c.messages = [("in", body.fan_says.strip()[:400])]
     c.last_dir, c.last_body = "in", body.fan_says.strip()[:400]
     msgs, _presented = _build_messages(
         persona, Fan(account_id=body.account_id, fan_id=0), c, set(), 20,
-        sell_block=sell_block,
-        content_ask=bool(sell_block) and bool(_CONTENT_ASK_RE.search(c.last_body)))
+        sell=sell, v=v,
+        content_ask=bool(sell.close) and bool(_CONTENT_ASK_RE.search(c.last_body)))
     model = await _resolve_sim_model(body.account_id)
     res = await llm_client.chat(model=model, messages=msgs,
                                 purpose="ai_chatter_simulate",
@@ -1200,7 +1295,7 @@ async def simulate(body: _SimulateBody = Body(...)) -> dict[str, Any]:
             "is_free_teaser": bool(item.is_free_teaser),
         },
         "offerable_count": len(offerable),
-        "manifest_present": bool(sell_block),
+        "manifest_present": sell.live,
     }
 
 

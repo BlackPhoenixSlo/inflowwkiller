@@ -72,6 +72,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# Pure text, like this module — no database, no engine. The customs PRICE lives
+# there because that is where the order FLOOR lives, and a sell-side band that
+# can drift from the watch-side floor is the bug it exists to prevent.
+from . import _customs
+
 # NO database import, deliberately. This module is text + normalisation and
 # nothing else; the account read that resolves a bundle lives in `_common`
 # (`load_voice_blocks`), which already owns the account loaders and already reads
@@ -271,6 +276,10 @@ CUSTOMS_CONDITIONS = (
     "'by tomorrow', no estimate of any kind: you do not know, and a guess becomes a "
     "promise he will hold you to. And it NEVER turns a facetime/live-call request "
     "into a yes — the answer to a live call is still no."
+    # The price rides the SHARED fence for the same reason the scope sentence
+    # does: it is policy, it must be identical on all three surfaces, and the
+    # engine that closes the sale is the one that had no figure at all.
+    + _customs.PRICE_RULE
 )
 
 _CUSTOMS_CARVE_OUT = (
@@ -357,6 +366,180 @@ def fact_labels(voice: object) -> dict[str, str]:
     own dict to a caller is an escape hatch onto shared state that nothing needs;
     26 keys twice per render is not worth the class of bug it invites."""
     return dict(_FACT_LABELS[norm_voice(voice)])
+
+
+# ── Persona canon PLACEHOLDERS ───────────────────────────────────────
+# The example text under each canon box. Same column of the same concept as the
+# label above — what the operator writes AGAINST.
+#
+# ⚠️ TOTAL PER LANE, AND DELIBERATELY NOT THE SAME SHAPE AS `_FACT_LABELS`.
+#
+# The labels above are OVERRIDES because 21 of the 26 are the field's NAME, not
+# her copy: "Age", "Kids", "Pets" are what the slot is called, in any lane.
+# A placeholder is never that. It is a worked example of the creator's own life,
+# so every one of them carries a voice and there is no such thing as a neutral
+# default to fall back to. Both lanes are therefore written out in full and
+# `fact_placeholders` is TOTAL — the caller indexes it and cannot express
+# "fall through to the other lane", which is the whole point:
+#
+#   the first cut kept only HER table and derived his by regexing it for
+#   she/her/girl/woman and blanking the matches. It caught only what the word
+#   list knew — `job | "content creator, waitressed before"` sailed through, so
+#   21 of 26 shipped as her copy — and where it did fire it only DELETED, so
+#   `tattoos` lost its hint instead of getting one. Replacing the regex with a
+#   `.get(key, hers[key])` fallback would have kept the same defect in a quieter
+#   form: a canon slot added later with no male value silently serves hers.
+#
+# `assert_canon_parity` below binds both tables to the declared slate AT IMPORT,
+# so that slot cannot exist. Keys are storage and never move (`her_type` is
+# "His type" here, same column), so an account can be flipped either way without
+# touching `persona_facts_json`.
+_FACT_PLACEHOLDERS: dict[str, dict[str, str]] = {
+    # HER: the table exactly as it shipped, moved here from `_persona` — one
+    # column, one owner. It had no other reader.
+    VOICE_HER: {
+        "age": "22",
+        "birthday": "24 May",
+        "height": "165 cm / 5'5\"",
+        "job": "content creator, waitressed before",
+        "why_of": "to pay off her studies",
+        "school": "studied design, dropped out",
+        "home_city": "Córdoba",
+        "home_country": "Argentina",
+        "born_city": "Rosario",
+        "born_country": "Argentina",
+        "upbringing": "normal childhood, played in the street with her cousins",
+        "living_situation": "lives alone in a small flat",
+        "relationship": "single",
+        "ex": "3 years, ended badly, doesn't talk about him",
+        "kids": "none",
+        "family": "mum, one older brother",
+        "pets": "a grey cat, Nube",
+        "tattoos": "script on her ribs, small rose on left wrist",
+        "languages": "Spanish, some English",
+        "music": "grunge, mostly Alice in Chains",
+        "travel": "Chile once, wants to see Europe",
+        "dreams": "save for her own place",
+        "routine": "up late, films in the afternoon",
+        "her_type": "older, calm, makes her laugh",
+        "kinks": "you fill this in — Enrich never guesses",
+        "limits": "you fill this in — Enrich never guesses",
+    },
+    VOICE_HIM: {
+        "age": "32",
+        "birthday": "24 May",
+        "height": "185 cm / 6'1\"",
+        "job": "content creator, construction before",
+        "why_of": "to pay off his own gym",
+        "school": "trade school, never finished",
+        "home_city": "Austin",
+        "home_country": "United States",
+        "born_city": "Detroit",
+        "born_country": "United States",
+        "upbringing": "normal childhood, played ball in the street with his cousins",
+        "living_situation": "lives alone, small place near the gym",
+        "relationship": "single",
+        # "doesn't talk about it", not "about her" — the ex IS a woman here, so
+        # the pronoun would be correct, and a reader scanning for a leak would
+        # have to stop and work that out every time. Not worth the doubt.
+        "ex": "3 years, ended badly, doesn't talk about it",
+        "kids": "none",
+        "family": "mum, one older brother",
+        # Not a cat. The male lane's sticker pack is dogs and wolves for the same
+        # reason: the pet is register.
+        "pets": "a pitbull, Rocco",
+        "tattoos": "sleeve on his right arm, script across his chest",
+        "languages": "English, some Spanish",
+        "music": "grunge, mostly Alice in Chains",
+        "travel": "Mexico once, wants to see Europe",
+        "dreams": "save for his own gym",
+        "routine": "up early, trains, films at night",
+        "her_type": "younger, sharp, keeps up with him",
+        # Not examples at all — an instruction, and identical in both lanes on
+        # purpose: 🪄 Enrich never proposes either.
+        "kinks": "you fill this in — Enrich never guesses",
+        "limits": "you fill this in — Enrich never guesses",
+    },
+}
+
+
+def fact_placeholders(voice: object) -> dict[str, str]:
+    """The placeholder for EVERY declared canon slot, in this lane. TOTAL, not
+    overrides — see the block above for why this column cannot be sparse the way
+    `fact_labels` is.
+
+    A COPY, and `norm_voice` so a corrupt column reads as the shipped lane."""
+    return dict(_FACT_PLACEHOLDERS[norm_voice(voice)])
+
+
+# ── Talking ABOUT the creator, in the third person ───────────────────
+# Everything else in this module is text the creator SAYS. This is the one shape
+# that isn't: a prompt that instructs a model to author her background canon
+# ("fill in the profile of a creator so her chat AI never has to improvise an
+# answer about herself"). It is third-person instruction with no register in it —
+# the register lives in the `persona` box, which the operator writes — so unlike
+# a refusal example or a nudge line there is nothing to rewrite per lane except
+# the grammar.
+#
+# That is why this is three words and not a per-lane copy of the prompt, and it
+# is NOT the `base.replace(FRAME_HER, FRAME_HIM)` the header rejects: these are
+# interpolated INTO a template at the varying spans, the same way
+# `_PAINFUL_FRAME` is. Nothing patches a rendered string.
+#
+# ⚠️ Do not reach for this to de-gender creator VOICE. A reply, a caption or a
+# canned line carries register, and swapping its pronouns leaves a woman's
+# sentence with a man's pronouns in it — which is the entire reason every other
+# table in this file is written out twice.
+@dataclass(frozen=True)
+class CreatorPronouns:
+    subject: str        # she / he
+    possessive: str     # her / his
+    reflexive: str      # herself / himself
+
+
+_PRONOUNS = {
+    VOICE_HER: CreatorPronouns("she", "her", "herself"),
+    VOICE_HIM: CreatorPronouns("he", "his", "himself"),
+}
+
+
+def pronouns(voice: object) -> CreatorPronouns:
+    """The creator's third-person pronouns for THIS lane. See the block above for
+    the one job this has and the several it does not."""
+    return _PRONOUNS[norm_voice(voice)]
+
+
+def assert_canon_parity(declared: tuple[tuple[str, str], ...]) -> None:
+    """Bind both lane tables to the canon slate, AT IMPORT.
+
+    `_persona` owns the slate and calls this the moment it has declared it, so a
+    new canon field with no male form cannot boot the relay — the same discipline
+    as `script_packs._assert_lane_parity`, and stronger than a test, which only
+    fails for whoever runs it.
+
+    It lives here and takes the slate as an argument because the dependency runs
+    that way: `_persona` imports this module, never the reverse.
+
+    NOT a rediscovery of the regex this replaced. The word scan is applied ONLY to
+    the label column, where a value is one to three words NAMING a field — a scan
+    is adequate for "Her ex" and inadequate for "content creator, waitressed
+    before", which is exactly why the placeholder column is checked for COVERAGE
+    instead."""
+    import re
+    keys = {k for k, _ in declared}
+    for lane, table in _FACT_PLACEHOLDERS.items():
+        assert set(table) == keys, (
+            f"{lane} placeholders vs canon slate — missing "
+            f"{sorted(keys - set(table))}, unknown {sorted(set(table) - keys)}")
+    female = re.compile(r"\b(she|her|hers|herself|girl|girls|woman|women)\b", re.I)
+    for lane, overrides in _FACT_LABELS.items():
+        assert not set(overrides) - keys, \
+            f"{lane} label override for an undeclared slot: {sorted(set(overrides) - keys)}"
+    him = _FACT_LABELS[VOICE_HIM]
+    ungendered = [k for k, label in declared if female.search(label) and k not in him]
+    assert not ungendered, f"gendered label with no male form: {ungendered}"
+    still = [k for k, v in him.items() if female.search(v)]
+    assert not still, f"male label override is still female: {still}"
 
 
 # ── The humanizer: pushback register + emoji vocabulary ──────────────

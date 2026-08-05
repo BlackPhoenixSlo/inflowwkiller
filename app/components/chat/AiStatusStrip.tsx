@@ -38,21 +38,21 @@ const DOT: Record<AiState, string> = {
  */
 const GATE_WHY: Record<string, string> = {
   low_information:
-    "His last message was too thin to price against ('k', 'ok', 'lol'). She keeps talking — she just won't put a number in front of noise.",
+    "His last message was too thin to price against ('k', 'ok', 'lol'). The chat keeps going — it just won't put a number in front of noise.",
   we_spoke_last:
     "We spoke last. Selling into silence is the thing that doesn't work (0.67% vs 12.41% on a live thread), so the offer is PARKED and fires on his next real message.",
   stale: "His last message is too old for a live ask. Parked, not deleted.",
-  declined: "He turned an offer down. She keeps talking; no new price follows a 'no'.",
+  declined: "He turned an offer down. The chat keeps going; no new price follows a 'no'.",
   tapped:
     "He ignored the last ask, so the ladder tapped out. It decays — he isn't retired forever.",
   hard_stop:
-    "He threatened a chargeback or told her to stop. Only an operator clearing skip_list brings him back.",
+    "He threatened a chargeback or told the account to stop. Only an operator clearing skip_list brings him back.",
   offers_paused:
     "He said he's broke. Countering that with a cheaper offer is the one thing we never do — but if HE initiates a buy, it's honoured.",
   no_inbound: "He hasn't said anything yet.",
-  rung_gap: "The last ask was seconds ago. She won't stack a second price on top of it.",
+  rung_gap: "The last ask was seconds ago. No second price stacks on top of it.",
   near_bedtime:
-    "Too close to her sleep window to OPEN a ladder — a hot sell abandoned at 01:58 and resumed at 09:00 is a disaster.",
+    "Too close to the sleep window to OPEN a ladder — a hot sell abandoned at 01:58 and resumed at 09:00 is a disaster.",
   fan_daily_asks: "He's hit his daily limit on the number of asks.",
   fan_daily_cents: "He's hit his daily limit on how much he's been asked for.",
   account_hourly: "The whole account has hit its offers-per-hour ceiling.",
@@ -92,9 +92,9 @@ function money(cents: number | null): string {
  * reports a reason instead of a boolean, and it exists nowhere else in the UI.
  */
 const DAILY_WHY: Record<string, string> = {
-  signal_lift: "Lifted above the base ration because he's showing a buying signal — a man reaching for his wallet is never the one she rations.",
+  signal_lift: "Lifted above the base ration because he's showing a buying signal — a man reaching for his wallet is never the one to ration.",
   spend_lift: "Lifted above the base ration by what he SPENDS. Spending buys a bigger allowance, never a smaller one.",
-  backoff_served: "He's over quota, but the silence has already been served — she's talking to him again.",
+  backoff_served: "He's over quota, but the silence has already been served — the chat is open again.",
   no_ladder: "Over quota with no backoff ladder configured, so nothing is being withheld.",
 };
 
@@ -124,7 +124,7 @@ function dailyChip(d: NonNullable<AiStatus["cadence"]["daily"]>): Chip | null {
   // Only meaningful when there is a hold to NOT serve. On a fan who is nowhere near
   // his ceiling, "recorded, not served" describes nothing and reads as a warning.
   const shadow = d.held && !d.enforced
-    ? " SHADOW — the hold was recorded, not served: she still replied." : "";
+    ? " SHADOW — the hold was recorded, not served: the reply still went." : "";
 
   // Still being courted. Nearly every fan on a roster is here, so the chip has to earn
   // the space: the countdown to when the ceiling starts applying is the only thing
@@ -135,8 +135,8 @@ function dailyChip(d: NonNullable<AiStatus["cadence"]["daily"]>): Chip | null {
       text: `📅 runway ${d.runway_left} left`,
       tone: "text-fg-dim",
       title:
-        `No daily ceiling yet — she owes him ${d.runway_left} more replies before one applies. ` +
-        `84% of everyone who ever bought did it inside 25 of her replies, so a fan inside ` +
+        `No daily ceiling yet — ${d.runway_left} more replies are owed before one applies. ` +
+        `84% of everyone who ever bought did it inside 25 replies, so a fan inside ` +
         `his runway is still being courted, not rationed.${shadow}`,
     };
   }
@@ -148,7 +148,7 @@ function dailyChip(d: NonNullable<AiStatus["cadence"]["daily"]>): Chip | null {
     };
   }
 
-  const wait = d.backoff_hours != null ? ` She's quiet for ${hours(d.backoff_hours)} from her own last reply — a manual message or a mass send does not move it.` : "";
+  const wait = d.backoff_hours != null ? ` Quiet for ${hours(d.backoff_hours)} from the last reply — a manual message or a mass send does not move it.` : "";
   const why = DAILY_WHY[d.reason] ? ` ${DAILY_WHY[d.reason]}` : "";
   // Where he is on the ladder, drawn as the ladder. "4h · 12h · 24h · [72h]" says in
   // one glance what the number alone cannot: that it CYCLES, so the rung after the
@@ -198,13 +198,13 @@ function teaserChip(t: NonNullable<AiStatus["teaser"]>): Chip | null {
     text: `🎁 ${due ? "tease due" : `tease in ${t.remaining}`} · ${ask}`,
     tone: due ? "text-amber-400" : "text-fg-dim",
     title:
-      `${t.msgs_since} of ${t.after} of HIS messages since her last tease${rung}. ` +
+      `${t.msgs_since} of ${t.after} of HIS messages since the last tease${rung}. ` +
       (due ? "The next reply can carry it. " : "") +
       (t.softened
         ? "This ask is SOFTENED — the last tease didn't sell, so it decays toward his proven-spend floor and then alternates that with a free tease, rather than climbing. "
         : "This is the ladder's own rung price — it climbs only when a tease actually SELLS. ") +
       (t.adaptive ? "" : "Legacy mode: the rung climbs on every send, sold or not. ") +
-      "Her teases are a separate stream from the catalog PPVs.",
+      "Teases are a separate stream from the catalog PPVs.",
   };
 }
 
@@ -291,7 +291,7 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
         </span>
       )}
       {data.cadence.enabled && data.cadence.cap == null && data.cadence.tier && (
-        <span className="text-emerald-400/80" title="No cap — he just paid, so she keeps talking.">
+        <span className="text-emerald-400/80" title="No cap — he just paid, so the chat keeps going.">
           💬 uncapped · {data.cadence.tier.replace(/_/g, " ")}
         </span>
       )}
@@ -310,7 +310,7 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
       {data.break_proof && (
         <span
           className="text-fg-dim"
-          title="An ask went out in the last 30 min (or he just paid), so she can't wander off mid-sale. Past 30 min she's free to take a break again — and she'll cover for it when she's back ('sorry babe was in the shower 🚿')."
+          title="An ask went out in the last 30 min (or he just paid), so it can't wander off mid-sale. Past 30 min it's free to take a break again — and the next reply covers for it ('sorry was in the shower 🚿')."
         >
           🛡 can't wander off (30m)
         </span>
@@ -363,7 +363,7 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
       )}
 
       {data.force_ask && (
-        <span className="text-fg-dim" title="She attaches the ask even when the model doesn't volunteer one.">
+        <span className="text-fg-dim" title="The ask is attached even when the model doesn't volunteer one.">
           ⚡ force-ask
         </span>
       )}
