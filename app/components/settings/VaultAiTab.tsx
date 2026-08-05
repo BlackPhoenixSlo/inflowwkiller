@@ -455,7 +455,7 @@ export default function VaultAiTab({ accountId }: { accountId: string | null }) 
           <p className="text-xs text-fg-dim leading-relaxed">
             Approve once and every day&apos;s drop leaves on its own day — Human Rhythm
             picks the hour, so it never lands on the same clock minute twice and never
-            fires while she&apos;d be asleep. Each drop fires <b>once</b>; when the arc
+            fires while the account would be asleep. Each drop fires <b>once</b>; when the arc
             runs out it stops and waits for you.
           </p>
           <div className="flex items-center gap-3 flex-wrap">

@@ -322,8 +322,8 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
               />
             </div>
             <div className="text-[11px] text-fg-dim/70">
-              Leave blank (recommended) so she asks for a tip without naming a price.
-              Set a number only if you want her to suggest a specific amount.
+              Leave blank (recommended) so the ask goes out without naming a price.
+              Set a number only to suggest a specific amount.
             </div>
           </label>
         )}
@@ -567,8 +567,8 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
           Read what he sends so the AI can actually react to it. DEFAULT ON. */}
       <Section
         icon={<Eye size={15} />}
-        title="Read what he sends (so she can react to it)"
-        subtitle="Runs a vision model on every photo, gif or clip a fan sends and feeds the description into the AI's next reply — so she can rate a dick pic, clock what he's wearing, or answer “what do you think?” instead of a photo-only DM being a blank turn. A Giphy gif is named for free. Locked PPV media is skipped (there's nothing to see until it's unlocked)."
+        title="Read what he sends (so the reply can react to it)"
+        subtitle="Runs a vision model on every photo, gif or clip a fan sends and feeds the description into the AI's next reply — so the reply can rate a dick pic, clock what he's wearing, or answer “what do you think?” instead of a photo-only DM being a blank turn. A Giphy gif is named for free. Locked PPV media is skipped (there's nothing to see until it's unlocked)."
         toggle={
           <Toggle
             checked={imageDescribeEnabled}
@@ -646,12 +646,12 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       </Section>
 
       {/* ── HOT-THREAD TEASER ──────────────────────────────────────────────
-          The AI Seller attaches vault media to her reply when a thread goes hot —
+          The AI Seller attaches vault media to the reply when a thread goes hot —
           free warm-up for a $0 fan, a priced tease PPV for a proven buyer. */}
       <Section
         icon={<Flame size={15} />}
         title="Send pics when a chat gets hot"
-        subtitle="When a conversation turns sexual and nothing’s being sold, the AI Seller attaches a few unseen vault pics to her next reply — free to warm up a fan who’s never paid (capped), or a priced tease PPV for a proven buyer. The pics ARE the lead-up."
+        subtitle="When a conversation turns sexual and nothing’s being sold, the AI Seller attaches a few unseen vault pics to the next reply — free to warm up a fan who’s never paid (capped), or a priced tease PPV for a proven buyer. The pics ARE the lead-up."
         toggle={
           <Toggle
             checked={htEnabled}
@@ -719,7 +719,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
             </div>
 
             <p className="text-[11px] text-fg-dim/70 leading-relaxed">
-              Requires <b>AI Seller</b> (ai_chatter) enabled — the teaser rides her
+              Requires <b>AI Seller</b> (ai_chatter) enabled — the teaser rides the
               reply, so it never sends an extra message and never fires on a fan who
               said he’s broke.
             </p>
@@ -732,7 +732,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       <Section
         icon={<Flame size={15} />}
         title="Escalating teases during normal chat"
-        subtitle="Even when it isn’t sexual yet: after every N of his messages, drop the next rung — a free tease first, then the $10 one, then the $50 one. The price climbs as he actually buys (see the checkbox below). Rides her reply, so it’s never an extra message."
+        subtitle="Even when it isn’t sexual yet: after every N of his messages, drop the next rung — a free tease first, then the $10 one, then the $50 one. The price climbs as he actually buys (see the checkbox below). Rides the reply, so it’s never an extra message."
         toggle={
           <Toggle
             checked={cvEnabled}

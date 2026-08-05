@@ -9,7 +9,8 @@
  * base chatter sells from it too. Here:
  *   • Enable Upseller — one click writes the recommended "sell hard + take over" set.
  *   • Takeover, the gate, smart pricing, the price ladder knobs, after-a-buy behaviors.
- *   • Prewritten scaffolding: "Her lines" (the pitch pack) + Load-starter-pack templates.
+ *   • Prewritten scaffolding: the pitch pack + Load-starter-pack templates. Both
+ *     are LANED SERVER-SIDE and arrive resolved — this tab holds no lane.
  *
  * Shares ai_chatter_config_json with the AI Chatter tab via `useSellerConfig` — both
  * post the FULL sparse config, so neither clobbers the other.
@@ -23,10 +24,10 @@ import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { cn } from "@/lib/utils";
 import {
   useAiChatterConfig, useCatalogScripts, useSaveSingles,
-  type AiChatterConfig, type CatalogItemT,
+  type AiChatterConfig,
 } from "@/hooks/useCatalog";
 import {
-  ConfigLoadError, GuideCard, INPUT, NEW_ITEM, ScriptPackCard, dollars, useSellerConfig,
+  ConfigLoadError, GuideCard, INPUT, ScriptPackCard, dollars, useSellerConfig,
 } from "@/components/settings/sellerShared";
 
 /** The recommended "sell hard + take over" preset — written on "Enable Upseller". */
@@ -45,46 +46,10 @@ const RECOMMENDED: Partial<AiChatterConfig> = {
   rhythm_no_sleep: true,
 };
 
-/** Prewritten sellable pieces. Pitches + suggested prices are written; the operator
- *  only attaches media (media empty → "not offerable", so nothing sells by accident).
- *  Loading them appends to Singles, which is edited on the AI Chatter tab. */
-const STARTER_SINGLES: CatalogItemT[] = ([
-  { label: "Ass tease", kind: "video",
-    description_for_ai: "a short teasing clip of me turning around and playing with my ass for you",
-    price_cents: 800, tip_unlock_cents: 800 },
-  { label: "Feet set", kind: "image_set",
-    description_for_ai: "a set of photos of my bare feet and soles, close up",
-    price_cents: 1000, tip_unlock_cents: 1000 },
-  { label: "Lingerie set", kind: "image_set",
-    description_for_ai: "photos of me posing in my lingerie before I take it off",
-    price_cents: 1200, tip_unlock_cents: 1200 },
-  { label: "Shower strip", kind: "video",
-    description_for_ai: "a video of me slowly getting undressed and stepping into the shower",
-    price_cents: 1500, tip_unlock_cents: 1500 },
-  { label: "Full nude set", kind: "image_set",
-    description_for_ai: "a set of fully nude photos of me on my bed",
-    price_cents: 1800, tip_unlock_cents: 1800 },
-  { label: "Bed dance", kind: "video",
-    description_for_ai: "a video of me dancing and teasing on my bed for you",
-    price_cents: 2000, tip_unlock_cents: 2000 },
-  { label: "Dirty talk / JOI", kind: "video",
-    description_for_ai: "a video of me talking dirty and telling you exactly what to do",
-    price_cents: 2500, tip_unlock_cents: 2500 },
-  { label: "Toy play", kind: "video",
-    description_for_ai: "a video of me playing with my toy until I finish",
-    price_cents: 3500, tip_unlock_cents: 3500 },
-  { label: "Solo finish", kind: "video",
-    description_for_ai: "a longer video of me touching myself all the way to the end",
-    price_cents: 4500, tip_unlock_cents: 4500 },
-  { label: "B/G collab", kind: "video",
-    description_for_ai: "a video of me with a partner — the full scene",
-    price_cents: 6000, tip_unlock_cents: 6000 },
-] as Array<Partial<CatalogItemT>>).map((s) => ({ ...NEW_ITEM, ...s }));
-
 export default function UpsellerTab({ accountId }: { accountId: string | null }) {
   const cfgQ = useAiChatterConfig(accountId);
-  const { cfg, set, saveCfg, saveCfgM, configLoaded, shippedPack, packText, setPackText } =
-    useSellerConfig(accountId);
+  const { cfg, set, saveCfg, saveCfgM, configLoaded, shippedPack, packText, setPackText,
+    starterSingles, slotHelp } = useSellerConfig(accountId);
   const scriptsQ = useCatalogScripts(accountId);
   const saveSinglesM = useSaveSingles(accountId);
 
@@ -112,7 +77,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
   const loadStarter = () => {
     const cur = scriptsQ.data?.singles ?? [];
     const have = new Set(cur.map((s) => (s.label ?? "").trim().toLowerCase()));
-    const add = STARTER_SINGLES.filter((s) => !have.has((s.label ?? "").trim().toLowerCase()));
+    const add = starterSingles.filter((s) => !have.has((s.label ?? "").trim().toLowerCase()));
     if (add.length) saveSinglesM.mutate([...cur, ...add.map((s) => ({ ...s }))]);
   };
 
@@ -122,7 +87,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
       <Card className="p-4 space-y-3">
         <div className="flex items-center gap-2">
           <Sparkles size={16} className="text-accent" />
-          <h3 className="text-sm font-medium">AI Upseller — she sells in the chat, then hands back</h3>
+          <h3 className="text-sm font-medium">AI Upseller — sells in the chat, then hands back</h3>
           <div className="flex-1" />
           <EditRawJsonButton surface="ai-chatter-config" accountId={accountId} />
         </div>
@@ -157,7 +122,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
             One click turns on: <b>sell in the chat</b>, <b>smart pricing</b>, <b>full
             takeover</b>, a <b>follow-up after a buy</b> (engages a silent buyer), a
             <b> free thank-you</b> after a couple of buys, and <b>one win-back discount</b>
-            before she stops. The &quot;I&apos;m filming it now&quot; fiction stays off
+            before it stops. The &quot;I&apos;m filming it now&quot; fiction stays off
             (chargeback-safe). Requires AI Chatter to be enabled — this turns it on too.
           </p>
         </div>
@@ -172,9 +137,9 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
             <span className="font-medium">Take over the chat during a sale</span>
             <span className="block max-md:hidden text-fg-dim text-xs">
               Once a fan is actively buying (an open offer, a fresh purchase, a live
-              ladder), she runs his thread <b>even if AI Chatter is in backup or closer
+              ladder), the upseller owns that thread <b>even if AI Chatter is in backup or closer
               mode</b> — a sale is never left waiting on the SLA or skipped as
-              &quot;no intent.&quot; When the sale winds down she hands him back to
+              &quot;no intent.&quot; When the sale winds down the fan is handed back to
               normal chat automatically.
             </span>
           </span>
@@ -193,8 +158,8 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
           <span className="text-sm">
             <span className="font-medium">Sell in the chat (1:1)</span>
             <span className="block max-md:hidden text-fg-dim text-xs">
-              When a fan is actually talking to her, she can offer him content herself —
-              instead of waiting for the scheduled PPV blast. She never puts a price in
+              When a fan is actually in the chat, the upseller can offer him content directly —
+              instead of waiting for the scheduled PPV blast. A price never goes in
               front of a fan who isn&apos;t replying. (This is the 1:1 seller only — the
               same gate on the mass blast would delete the blast.)
             </span>
@@ -208,20 +173,20 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
           <span className="text-sm">
             <span className="font-medium">Smart pricing</span>
             <span className="block max-md:hidden text-fg-dim text-xs">
-              After a fan buys, she asks for more inside the hot window, and the price
-              climbs. If he doesn&apos;t buy, she offers the same clip once more, cheaper,
+              After a fan buys, another piece is offered inside the hot window, and the
+              price climbs. If he doesn&apos;t buy, the same clip comes back once more, cheaper,
               then stops. Prices stay between the Min and Max in <b>💸 PPV Library</b>.
             </span>
           </span>
         </label>
 
-        {/* ── When she actually pulls the trigger ──────────────────────────────
+        {/* ── When the seller actually pulls the trigger ──────────────────────────────
             The offer is written by the MODEL (an >>OFFER marker it may or may not
             emit). Live on one account that was 184 replies against 4 offers — the model,
             not the gate, is what stops the selling. These two take the trigger back. */}
         <div className={cn("rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-3",
           gateOn ? "" : "opacity-50 pointer-events-none")}>
-          <div className="text-fg-dim text-xs">When she actually asks for the money</div>
+          <div className="text-fg-dim text-xs">When the ask actually goes out</div>
 
           <label className="flex items-start gap-2 cursor-pointer">
             <input type="checkbox" className="mt-0.5" checked={!!cfg.force_ask}
@@ -230,11 +195,11 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
             <span className="text-sm">
               <span className="font-medium">Always sell into a hot chat</span>
               <span className="block max-md:hidden text-fg-dim text-xs">
-                When he&apos;s mid-scene with her — actually sexting, actually replying —
-                she attaches the PPV instead of hoping the AI volunteers one. That moment
+                When he&apos;s mid-scene — actually sexting, actually replying — the PPV is
+                attached instead of hoping the AI volunteers one. That moment
                 is <b>24× more likely to end in a sale</b> than an ordinary message, and
-                she was talking straight through it. She still won&apos;t price a man who
-                said he&apos;s broke, turned an offer down, or asked her to stop.
+                the AI was mid-conversation right through it. A man who said he&apos;s broke, turned an
+                offer down, or asked for it to stop is still never priced.
               </span>
             </span>
           </label>
@@ -254,8 +219,8 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
             <div className="max-md:hidden text-fg-dim text-xs">
               Some men never turn the chat sexual — they&apos;re friendly, they&apos;re
               chatting, and nobody ever asks them for a penny. After this many of{" "}
-              <b>his</b> messages with no offer in front of him (hers <i>or</i> a
-              chatter&apos;s), she puts one there anyway. 15 is a reasonable floor. The
+              <b>his</b> messages with no offer in front of him — the seller&apos;s{" "}
+              <i>or</i> a chatter&apos;s — one goes there anyway. 15 is a reasonable floor. The
               brakes still apply — a fan who said he&apos;s broke is never asked, however
               long he talks.
             </div>
@@ -353,8 +318,8 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
             <span>
               <span className="font-medium">Follow up after a buy (engage a silent buyer)</span>
               <span className="block text-fg-dim text-xs">
-                Even if he unlocks without a word, she sends one more offer while he&apos;s
-                hot. Off, she only reacts when he talks.
+                Even if he unlocks without a word, one more offer goes out while he&apos;s
+                hot. Off, nothing moves until he talks.
               </span>
             </span>
           </label>
@@ -385,7 +350,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
             <label className="space-y-1 text-sm">
-              <div className="text-fg-dim text-xs">7-day spend brake ($ — then she eases off)</div>
+              <div className="text-fg-dim text-xs">7-day spend brake ($ — then the selling eases off)</div>
               <input type="number" className={`${INPUT} w-full`} min={0}
                 value={dollars(cfg.spend_velocity_cap_7d_cents ?? 30000)}
                 onChange={(e) => set({ spend_velocity_cap_7d_cents: (parseInt(e.target.value || "0", 10) || 0) * 100 })} />
@@ -396,7 +361,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
               <span>
                 <span className="font-medium">&quot;I&apos;m filming it now&quot; fiction</span>
                 <span className="block text-fg-dim text-xs">
-                  She pretends she&apos;s recording it live before a PPV. Off by default —
+                  Pretends the clip is being recorded live, right before a PPV. Off by default —
                   it&apos;s a chargeback surface and adds no measured revenue.
                 </span>
               </span>
@@ -420,9 +385,10 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         </div>
       </Card>
 
-      {/* ── prewritten scaffolding: her lines + starter pack ── */}
+      {/* ── prewritten scaffolding: the creator's lines + starter pack ── */}
       <ScriptPackCard
         pack={shippedPack}
+        help={slotHelp}
         text={packText}
         setText={(slot, v) => setPackText((t) => ({ ...t, [slot]: v }))}
         onSave={() => saveCfg()}
@@ -444,7 +410,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
           {saveSinglesM.isSuccess && <span className="text-xs text-green-400">added ✓</span>}
         </div>
         <p className="text-xs text-fg-dim leading-relaxed">
-          Drops {STARTER_SINGLES.length} prewritten pieces (pitches + suggested prices) into
+          Drops {starterSingles.length} prewritten pieces (pitches + suggested prices) into
           your <b>Singles</b> — then attach media and edit them on the <b>🤖 AI Chatter</b>{" "}
           tab. Skips any already there; a piece with no media can&apos;t be offered, so nothing
           sells by accident. The price authority (Min/Max) is the <b>💸 PPV Library</b> tab.

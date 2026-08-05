@@ -26,8 +26,8 @@ export interface BrainConfig {
   language: string;
   /**
    * Whose voice this account writes in: "her" (every account that has ever run
-   * here) or "him" (the male lane). No control renders it yet — it is set through
-   * the API — but it MUST stay on this type and travel with the form, because
+   * here) or "him" (the male lane). Set from the Brain panel's Creator dropdown,
+   * and it MUST stay on this type and travel with the form, because
    * Save PUTs the whole config object back. A field the type doesn't know about
    * is a field a rebuild silently drops, and dropping this one puts a male
    * creator back in the female lane mid-conversation.
@@ -61,8 +61,16 @@ export interface LanguageOption {
 export interface AccountConfigResp {
   account_id: string;
   config: BrainConfig;
-  defaults: BrainConfig;    // one account-derived starter brain (no images) — seeds blank
-                            // accounts and backs the "Reset to defaults" button
+  defaults: BrainConfig;    // starter brain for the STORED lane (no images) — seeds
+                            // a blank account, which has no unsaved dropdown yet
+  /** Both lanes' starter brains. "Reset to defaults" reads this by the SELECTED
+   *  voice: the dropdown is local form state until Save, so resolving the lane from
+   *  the stored column refilled a male account with the female brain. */
+  defaults_by_voice: Record<string, BrainConfig>;
+  /** The canon field contract per lane. Read by the SELECTED voice for the same
+   *  reason as `defaults_by_voice`: the labels are what the operator types AGAINST,
+   *  and a female label is an instruction to write female canon. */
+  persona_fact_fields_by_voice: Record<string, PersonaFactField[]>;
   slots: string[];          // the 6 time-of-day slot keys, ordered
   model_options: string[];  // LLM model ids the account may pick
   purposes: string[];       // per-purpose override targets
@@ -90,7 +98,21 @@ export function useSaveAccountConfig(accountId: string | null) {
   return useMutation<{ account_id: string; config: BrainConfig }, Error, BrainConfig>({
     mutationFn: (config) =>
       relay.put("/admin/account-config", { account_id: accountId, config }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["account-config", accountId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["account-config", accountId] });
+      // …AND the seller payload, which is DERIVED from the lane this write moves.
+      // `GET /admin/ai-chatter-config` resolves `script_pack` and `starter_singles`
+      // from `account_ai_config.voice` server-side, but that query is keyed
+      // ["ai-chatter","config",id] with staleTime 60s — and BrainPanel (the Creator
+      // dropdown) and the seller tabs are mounted on the SAME page. So flipping an
+      // account to Male left the seller tab serving the female pack for the rest of
+      // the session, and "Load starter pack" then PERSISTED the female
+      // `description_for_ai` pitch contracts onto a male account. The prefix form
+      // also catches ["ai-chatter","scripts",id] — the Singles list that button
+      // writes into. `useSettingsTransfer.settingsQueryKeys` already pairs these two
+      // for exactly this reason; the narrower writers just never followed it.
+      qc.invalidateQueries({ queryKey: ["ai-chatter"] });
+    },
   });
 }
 

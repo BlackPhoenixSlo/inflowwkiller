@@ -526,7 +526,7 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
           there is no gate toggle here: the same qualification gate on a BROADCAST
           would delete the broadcast (its job is reaching fans who aren't replying). */}
       <div className="text-[11px] text-fg-dim/80 leading-relaxed rounded-lg border border-border p-3">
-        While she&apos;s selling to a fan 1:1, the mass PPV skips him — so he never gets
+        While the AI is selling to a fan 1:1, the mass PPV skips him — so he never gets
         the same clip twice.
       </div>
 
@@ -543,7 +543,7 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
         </label>
         <div className="text-[11px] text-fg-dim/80 leading-relaxed">
           {reachAll
-            ? <>After the per-tier sends to fans we know (whales pay more, cold fans less), it fires <b>one broadcast to her whole subscriber list</b> at the <b>default price (your Base price)</b> — reaching everyone, even silent/uncached subs. Everyone we already messaged is excluded, so no fan gets it twice.</>
+            ? <>After the per-tier sends to fans we know (whales pay more, cold fans less), it fires <b>one broadcast to the whole subscriber list</b> at the <b>default price (your Base price)</b> — reaching everyone, even silent/uncached subs. Everyone we already messaged is excluded, so no fan gets it twice.</>
             : <>Only fans already in the system get it (priced by tier). Silent/uncached subscribers are <b>not</b> reached.</>}
         </div>
         <label className="flex items-center gap-2 text-xs cursor-pointer flex-wrap pt-1">
@@ -1133,7 +1133,7 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
           <li><b>Skip fans who already bought it</b> — don&apos;t re-pitch content a fan already owns (recommended ON).</li>
           <li><b>Quiet hours</b> — never send between these hours (creator-local), e.g. while you sleep.</li>
           <li><b>Max PPVs per day/week/month</b> — a whole-account speed limit that <b>spreads sends evenly</b> (counts PPV sends, not single messages). E.g. 2/day = one about every 12h; a PPV due too soon waits its turn. 0 = no limit.</li>
-          <li><b>Send to everyone (all subscribers)</b> — after pricing the fans we know by tier, it sends <b>one broadcast to her entire subscriber list at the Base price</b> (everyone already messaged is excluded, so no doubles). This is how a PPV reaches silent/uncached subs — her whole free-page list, not just the few hundred cached.</li>
+          <li><b>Send to everyone (all subscribers)</b> — after pricing the fans we know by tier, it sends <b>one broadcast to the entire subscriber list at the Base price</b> (everyone already messaged is excluded, so no doubles). This is how a PPV reaches silent/uncached subs — the whole free-page list, not just the few hundred cached.</li>
           <li><b>Pause</b> — don&apos;t re-message the same fan for X hours. <b>Off by default</b> (send to everyone). Turn it on + set the hours if you want breathing room between touches.</li>
           <li><b>Library ON/OFF</b> — the master switch. OFF stops everything instantly.</li>
         </ul>

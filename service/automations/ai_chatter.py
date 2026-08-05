@@ -77,7 +77,7 @@ from db.models import (
     created_at_text, parse_ts,
 )
 from llm_client import LLMCapExceeded
-from . import cat_stickers, rhythm, script_packs, tip_ladder, upsell
+from . import _ghost, cat_stickers, rhythm, script_packs, tip_ladder, upsell
 # The reply-volume leash — both gates, the spend rules that lift them, and the
 # verdict ledger. Re-exported under these names because `fans.py` (the status
 # endpoint) and the tests reach for them as `ai_chatter.X`, and because reading the
@@ -96,6 +96,7 @@ from ._persona import fan_claims_block, persona_register_age
 from ._outbound import ConsistencyCtx, finalize_draft
 from . import _language
 from . import _customs
+from . import _objection  # which apology this turn owes him (regexes + the judge)
 from . import _voice
 from . import _openers  # the gen_info opener pool (the deepen phase)
 from . import _pins  # his own pinned long-form message (reader + writer)
@@ -465,6 +466,27 @@ _DEFAULTS: dict = {
     # accused) and the offer caps all still apply, so a man who said he's out of money is
     # never asked no matter how long he talks. 0 = off.
     "ask_after_fan_msgs": 0,
+    # ── Post-purchase objection judge (08-04) ────────────────────────────────
+    # The decline regexes are tuned for PRECISION, because a false hard stop costs
+    # a 72h selling blackout on a live thread. That trade has a price, and fan
+    # one buyer paid it: a polite "why did you have me pay for them?" scored None,
+    # argued with him for four bubbles and re-priced him twelve minutes later.
+    # `is_content_dispute` closes that exact sentence; it cannot close the ones
+    # nobody has written down yet.
+    #
+    # So RECALL is bought with one cheap LLM call, in the only window where a miss
+    # is expensive and a false positive is nearly free: the first few messages after
+    # he has actually PAID. A man who just spent money and is now unhappy is a
+    # chargeback and a deleted account. A man who just spent money and is happy is
+    # not going to be harmed by us declining to sell him something else for a bit.
+    #
+    # Volume is bounded by purchases, not by traffic: at most `max_msgs` calls per
+    # purchase (one per inbound turn), and only for a SUBSTANTIVE inbound — "😍" and
+    # "thanks babe" never reach the model. Live roster order-of-magnitude: tens of
+    # purchases a day across 12 accounts, against ~$0.17/day of total AI spend.
+    "post_purchase_objection_check": True,
+    "post_purchase_window_hours": 6,   # a complaint lands fast; 0 = off
+    "post_purchase_max_msgs": 3,       # his first N inbounds after the unlock
     # Up to this many UNPAID PPVs may ride at once (a 2nd "here's another / here's it
     # cheaper" is a normal close). Floored at 2 in code — never below.
     "max_open_offers": 2,
@@ -495,6 +517,17 @@ _DEFAULTS: dict = {
     # (see rhythm.parse_pace_curve). None ⇒ the shipped 85/10/4/1. Only read when
     # `rhythm_pace_buckets` is on.
     "rhythm_pace_curve": None,
+    # ── The ghost cycle: whole DAYS dark on a fan, on a repeating schedule.
+    # Manufactured scarcity — "she has a life, and you are not automatically in
+    # it". DEFAULT OFF, and it must stay that way: `rhythm_enabled` is default
+    # ON, so this flag is the only thing standing between the shipped config and
+    # an account that stops answering fans for days at a time.
+    "rhythm_ghost_enabled": False,
+    # The cycle itself, editable per account and REPEATING:
+    # [{"chat_days": 3, "ghost_days": 1}, {4, 2}, {5, 2.5}] — chat 3 days, dark 1,
+    # chat 4, dark 2, chat 5, dark 2.5, back to the top. None ⇒ that shipped
+    # default (`_ghost.DEFAULT_CYCLE`). Only read when the flag above is on.
+    "rhythm_ghost_cycle": None,
     # No-sleep pacing: keep the hot/cold/busy variable delays + short "stepped away"
     # breaks, but NEVER the long overnight sleep — and it needs no timezone. For a
     # creator who wants "she's a person who gets busy" without an 8-hour night gap.
@@ -1329,6 +1362,14 @@ async def _offerable_for_fan(account_id: str, fan_id: int, cfg_mode: str,
     owning an item's free-preview tease frames never kills the item — the
     operator's 07-23 ruling is that filler may repeat; only the payoff (videos +
     non-preview images) must be media the fan was never sold."""
+    # No catalogue ⇒ nothing to filter, and the three per-fan reads below would
+    # each go to the database to produce {}. This lives HERE rather than in the
+    # caller's branch condition on purpose: `run()` deliberately has no catalogue
+    # precondition on selling (a custom needs no rows), so the emptiness check
+    # belongs to the function that owns "what may this fan be offered from this
+    # list" — where it also covers the other two call sites.
+    if not items:
+        return {}
     seen = await _owned_or_seen_media(account_id, fan_id)
     hero = await _hero_media_map(account_id, items)
     async with get_session() as s:
@@ -1396,10 +1437,89 @@ async def _offer_caps_ok(account_id: str, fan_id: int, cfg: dict) -> bool:
     return True
 
 
+@dataclasses.dataclass(frozen=True)
+class _SellSurface:
+    """What may be sold this turn, and HOW to close it.
+
+    WHY THIS IS A VALUE AND NOT A STRING. Three separate directives in
+    `_build_messages` tell the model to convert — he asked for content, he's
+    leaning in, the thread is hot — and each of them used to spell out the
+    mechanics itself: "pick the piece from WHAT YOU CAN SELL … end with the
+    >>OFFER line". That is fine while there is exactly one way to close. The
+    moment a second appeared (a bought-out account sells a CUSTOM: no piece, no
+    id, no marker) every one of those directives needed to know which manifest
+    it got, and the intro line and the output contract did too. Six sites, one
+    fact, threaded through as a boolean.
+
+    So the manifest owns the mechanics and the directives own the MOMENT. Adding
+    a third sell surface is a third construction here, not a fifth branch there.
+
+    `close` doubles as "may we pitch at all this turn": empty means there is
+    something on screen but nothing to sell from it (`_pending_block` — he is
+    already holding the maximum unpaid PPVs, so the prompt describes them and
+    stops selling).
+
+    `section` is the block's OWN heading, and it is a field because both the
+    intro and the close point AT it from elsewhere in the prompt. Naming it once
+    is what makes those pointers resolve: they used to say "see WHAT YOU CAN
+    SELL below" / "pick the piece from WHAT YOU CAN SELL" while the section was
+    actually headed "CONTENT YOU CAN ACTUALLY SEND HIM" — a reference to a
+    heading that appeared nowhere in the rendered prompt, twice, on the lane
+    that earns the money. `test_voice_lane` now asserts every surface's pointer
+    is a substring of its own block, so a header rename cannot leave one
+    dangling again."""
+    block: str = ""       # the manifest text; "" ⇒ no sell section in the prompt
+    section: str = ""     # the block's heading — what `intro`/`close` point at
+    intro: str = ""       # the one-line pointer in the prompt's opening paragraph
+    close: str = ""       # how to convert; "" ⇒ this turn does not pitch
+    marker: bool = False  # may the reply end with `>>OFFER <id>`?
+
+    @property
+    def live(self) -> bool:
+        """Is there a sell section at all (whether or not we may pitch from it)?"""
+        return bool(self.block.strip())
+
+
+_NO_SELL = _SellSurface()
+
+# The section headings, verbatim as each block renders them. Every pointer below
+# is built from these rather than retyping the name.
+_SECTION_BY_ID = "CONTENT YOU CAN ACTUALLY SEND HIM"
+_SECTION_CUSTOM = "WHAT YOU CAN OFFER HIM"
+_SECTION_PENDING = "YOU ALREADY OFFERED HIM A PIECE"
+
+# The two ways to close, and the only thing that differs between a catalogue
+# account and a bought-out one. `_CLOSE_BY_ID` is the historical text, lifted
+# out of the three directives that each carried their own copy of it.
+_CLOSE_BY_ID = (f"Pick the piece from {_SECTION_BY_ID} that best fits, tease it "
+                "from its description, give the terms, and end with the >>OFFER "
+                "line.")
+# Names no section on purpose: there is exactly one thing on offer and the block
+# describes it, so there is no list to send the model back to.
+_CLOSE_CUSTOM = ("Offer to record him a custom and name the price. Don't name or "
+                 "promise a specific piece you haven't been handed, and write no "
+                 ">>OFFER line — there is nothing on the list to attach.")
+
+# The matching intro pointers (the prompt's opening paragraph, ~40 lines above
+# the section itself). The bought-out one deliberately does NOT deny having
+# pictures: the convo teaser ladder and tip_reward attach real vault media to
+# these same replies, so "you have no filmed content" was false and the model
+# was told to keep saying it.
+_INTRO_BY_ID = ("you DO have real content you can send or sell when the moment "
+                f"is right — see {_SECTION_BY_ID} below.")
+_INTRO_CUSTOM = ("there's nothing on your sell list to pitch him right now, but "
+                 f"you CAN record him a custom — see {_SECTION_CUSTOM} below.")
+# The pending surface pointed at the catalogue's heading too, which on that
+# branch names a section the prompt does not even contain — there is no
+# manifest, only the unpaid piece he is already holding.
+_INTRO_PENDING = ("he's still sitting on an offer you already made — see "
+                  f"{_SECTION_PENDING} below, and don't pitch anything new.")
+
+
 def _manifest_block(offerable: dict[int, CatalogItem],
                     scripts: dict[int, CatalogScript], cfg_mode: str,
                     quotes: dict[int, upsell.Quote] | None = None,
-                    sell_customs: bool = False) -> str:
+                    sell_customs: bool = False) -> _SellSurface:
     lines = []
     for iid, it in sorted(offerable.items()):
         mode = _effective_mode(it, cfg_mode)
@@ -1446,17 +1566,30 @@ def _manifest_block(offerable: dict[int, CatalogItem],
     # no pieces, that is an invitation to invent one — the exact failure the
     # header exists to prevent.
     #
-    # So the customs-only variant says the true thing instead: there is nothing
-    # filmed to send, and the one thing on offer is made to order.
+    # So the customs-only variant states the true, NARROWER thing: nothing is on
+    # the sell list to name and price, and the one thing offerable outright is
+    # made to order.
+    #
+    # ⚠️ IT USED TO SAY "You have NO filmed content to send and you must never
+    # claim otherwise" — AN OUTRIGHT FALSEHOOD ON A LIVE ACCOUNT. `catalog_items`
+    # is one inventory among several: the convo teaser ladder and tip_reward both
+    # attach REAL vault photos to these same replies, priced up to $200, and
+    # neither goes through this table. So the engine was telling the model to deny
+    # having pictures on the turn it was about to send him pictures — and the ban
+    # was absolute ("never claim otherwise"), so the model would keep denying it
+    # afterwards. The fence that was actually load-bearing is narrower and stays:
+    # never NAME, PRICE, or PROMISE a specific piece it has not been handed.
     if not lines:
         if not sell_customs:
-            return ""            # nothing to sell and nothing to offer — say nothing
-        return (
-            "WHAT YOU CAN OFFER HIM: nothing pre-made. You have NO filmed content "
-            "to send and you must never claim otherwise, invent a piece, or hint "
-            "that something already exists.\n"
-            "- The ONE thing you can offer is a paid CUSTOM, made for him. "
-            f"{_voice.CUSTOMS_CONDITIONS}\n\n"
+            return _NO_SELL      # nothing to sell and nothing to offer — say nothing
+        return _SellSurface(section=_SECTION_CUSTOM, intro=_INTRO_CUSTOM,
+                            close=_CLOSE_CUSTOM, marker=False, block=(
+            f"{_SECTION_CUSTOM}: nothing is on your sell list right now — no "
+            "specific piece to name, price, or promise. Never invent one, never "
+            "describe a set you have not been handed, and never tell him some "
+            "particular video is sitting there ready for him.\n"
+            "- The ONE thing you can offer outright is a paid CUSTOM, made for "
+            f"him. {_voice.CUSTOMS_CONDITIONS}\n\n"
             "SELLING RULES:\n"
             "- Selling is a side effect of good chat, not the goal of every "
             "message. Offer the custom ONLY when the vibe is warm or he is asking "
@@ -1469,10 +1602,11 @@ def _manifest_block(offerable: dict[int, CatalogItem],
             "\"tip\" on its own.\n"
             "- If he is not asking and the vibe is not warm, just talk to him. A "
             "custom you did not need to mention is a custom he asks for later."
-        )
+        ))
 
-    return (
-        "CONTENT YOU CAN ACTUALLY SEND HIM (these are real, already filmed — "
+    return _SellSurface(section=_SECTION_BY_ID, intro=_INTRO_BY_ID,
+                        close=_CLOSE_BY_ID, marker=True, block=(
+        f"{_SECTION_BY_ID} (these are real, already filmed — "
         f"NEVER invent or promise anything not on this list, {_no_customs}and "
         "describe a piece using ONLY its description):\n" + "\n".join(lines) + "\n\n"
         "SELLING RULES:\n"
@@ -1502,10 +1636,10 @@ def _manifest_block(offerable: dict[int, CatalogItem],
         "he wants more and the list is empty-ish, tell him you're filming more "
         "soon — never promise specifics."
         f"{_customs_rule}"
-    )
+    ))
 
 
-def _pending_block(offer: ContentOffer, item: CatalogItem | None) -> str:
+def _pending_block(offer: ContentOffer, item: CatalogItem | None) -> _SellSurface:
     desc = (item.description_for_ai or "").strip() if item else ""
     label = (item.label if item else None) or "it"
     terms = []
@@ -1520,8 +1654,22 @@ def _pending_block(offer: ContentOffer, item: CatalogItem | None) -> str:
         left = (int(offer.tip_unlock_cents) - accum + 99) // 100
         accum_note = (f"- He has already tipped ${accum // 100} toward it — when "
                       f"it fits, sweetly remind him it's only ${left} more.\n")
-    return (
-        f"YOU ALREADY OFFERED HIM A PIECE and he hasn't unlocked it yet: "
+    # `close` is EMPTY on purpose: he already holds the maximum unpaid PPVs, so
+    # this surface describes them and stops selling. That empty string is what
+    # keeps the three pitch directives off this turn — they used to be held off
+    # by a `bool(offerable)` test at each call site, which happened to be false
+    # here for an unrelated reason (no manifest was built) rather than because
+    # anyone decided it.
+    #
+    # `marker` is False for a reason visible in the last line below: this block
+    # says "never write >>OFFER", while the output contract used to grant the
+    # marker to ANY live sell section — so the prompt revoked on line 6 what it
+    # permitted 40 lines later. Nothing downstream accepted such a marker anyway
+    # (there is no manifest to back an id, so `unbacked_stripped` binned it); it
+    # only ever cost a pitch.
+    return _SellSurface(section=_SECTION_PENDING, intro=_INTRO_PENDING,
+                        close="", marker=False, block=(
+        f"{_SECTION_PENDING} and he hasn't unlocked it yet: "
         f"{label} — {desc} ({' or '.join(terms)}).\n"
         f"{accum_note}"
         "- If he asks about it, answer from that description. A light, playful "
@@ -1529,7 +1677,7 @@ def _pending_block(offer: ContentOffer, item: CatalogItem | None) -> str:
         "price every message — mostly just keep chatting like normal.\n"
         "- DON'T offer or promise any other content while this one is pending, "
         "and never write >>OFFER."
-    )
+    ))
 
 
 # The fan may end up with at most this many UNPAID offers open at once. Default 2:
@@ -1630,15 +1778,20 @@ def _second_offer_block(pending: ContentOffer, pend_item: CatalogItem | None,
                         offerable: dict[int, CatalogItem],
                         scripts: dict[int, CatalogScript], cfg_mode: str,
                         quotes: dict[int, upsell.Quote] | None,
-                        sell_customs: bool = False) -> str:
+                        sell_customs: bool = False) -> _SellSurface:
     """He has ONE unpaid PPV on the table and you may send a SECOND (and FINAL) one:
     a DIFFERENT piece, or the SAME piece re-priced lower if he's balking on price.
-    After this second one there are two unpaid offers open, so the pitch stops."""
+    After this second one there are two unpaid offers open, so the pitch stops.
+
+    Only ever called WITH a catalogue (see run()), so it extends the manifest's
+    surface rather than deciding its own mechanics — it is the same close, on a
+    narrower choice of piece."""
     plabel = (pend_item.label if pend_item else None) or "it"
     pprice = int(pending.price_cents or pending.tip_unlock_cents or 0) // 100
-    return (
-        _manifest_block(offerable, scripts, cfg_mode, quotes=quotes or None,
-                        sell_customs=sell_customs)
+    base = _manifest_block(offerable, scripts, cfg_mode, quotes=quotes or None,
+                           sell_customs=sell_customs)
+    return dataclasses.replace(base, block=(
+        base.block
         + "\n\nSECOND OFFER — you already sent him "
         f"'{plabel}' for ${pprice} and he hasn't unlocked it yet. You MAY send ONE "
         "more piece THIS message (your second and last unpaid offer):\n"
@@ -1649,7 +1802,7 @@ def _second_offer_block(pending: ContentOffer, pend_item: CatalogItem | None,
         "one-time thing for him — never beg).\n"
         "- If neither fits, DON'T pitch — just keep chatting; never write >>OFFER.\n"
         "- Do NOT stack a THIRD: only one new offer this message."
-    )
+    ))
 
 
 def _parse_offer_marker(raw: str) -> tuple[str, int | None]:
@@ -3147,6 +3300,80 @@ async def _save_rhythm(account_id: str, fan_id: int, **vals) -> None:
         )
 
 
+async def _ghost_gate(account_id: str, c: _Cand, rst: RhythmState | None,
+                      cycle: tuple[tuple[float, float], ...] | None,
+                      now: datetime, *, in_active_sale: bool,
+                      paid_at: datetime | None) -> bool:
+    """The ghost cycle (`_ghost.py`): True ⇒ she is dark on this fan today, skip
+    him. Owns the one column the feature has, so the candidate loop stays a list
+    of one-line verdicts instead of growing a second state machine inline.
+
+    Three outcomes, and only one of them is a skip:
+      • not in a dark stage        → talk to him (and remember his anchor)
+      • dark, but exempt           → restart his cycle (see the three below)
+      • dark                       → skip"""
+    stored = rst.ghost_anchor if rst is not None else None
+    # His FIRST message, not `now`: anchoring the roster the moment the operator
+    # ticks the box would put every fan on the same phase and take the whole
+    # account dark on one calendar day — a per-fan feature behaving like an
+    # account-wide blackout. Thread ages already differ by weeks, so his own
+    # history is the stagger. A brand-new fan starts at position 0 and gets the
+    # full first chat stage before any silence.
+    anchor = stored or c.first_in_at or now
+    win = _ghost.window(anchor, now, cycle)
+
+    if win is not None:
+        # Was she EVER there during the TALKING RUN this silence follows? Her last
+        # word predating that whole run means the thread was already cold and there
+        # is nothing to withdraw — ghosting a returning dormant fan stacks days of
+        # silence on days of silence, which reads as gone, not busy. Measured
+        # against `chat_started_at`, NOT the ghost's own start: she is SUPPOSED to
+        # have gone quiet at that boundary, so measuring from there would make
+        # every correctly-ghosted fan look dormant and the gate could never fire
+        # twice.
+        #   …and `her_last_at`, NOT `last_out_at`: the latter moves on ANY outbound,
+        # mass blasts included, and a broadcast is not her talking to him. A fan who
+        # wrote once, was never answered, and has only been blasted since would
+        # otherwise read as "she's been present" — i.e. the system would withhold a
+        # reply from someone it has never once replied to. It also means a thread
+        # only ever worked by a HUMAN never ghosts, which is the right way round.
+        never_present = c.her_last_at is None or c.her_last_at < win.chat_started_at
+        # 🚨 THE ONE THAT ACTUALLY PROTECTS A BUYER — `in_active_sale` alone does
+        # not. That flag is `recent_payers` (a ONE-HOUR window) plus an OPEN|HOT
+        # ladder (120 min, and only when the seller gate is on). A PPV unlock writes
+        # no inbound row, so a fan who pays and says nothing is not a candidate at
+        # all: the gate never runs, never restarts him, and both windows lapse
+        # unused. He writes four hours later, lands mid-dark-stage, and gets silence
+        # from the account he just paid.
+        #   Scoped to the RUN on purpose — a purchase from three runs ago buys no
+        # permanent exemption. Ghosting an established spender who is not currently
+        # buying is the operator's actual ask ("a good spender goes a day with no
+        # reply and wants one more"); this protects the fresh buy, not the buyer.
+        paid_this_run = paid_at is not None and paid_at >= win.chat_started_at
+        # A live sale outranks the schedule for the same reason money does: "a
+        # ladder stranded mid-sell is the worst outcome in the system", and the
+        # RESTART (rather than a one-tick skip) is what stops him dropping back into
+        # the same dark stage the moment the sale's own hot window lapses.
+        if never_present or in_active_sale or paid_this_run:
+            anchor, win = now, None      # restart: he is owed attention, not silence
+
+    # ONE write, whichever way that went. The anchor is frozen on FIRST SIGHT,
+    # dark or not: `first_in_at` is the oldest inbound in the loaded message
+    # window and that window slides, so an anchor left underived re-phases the fan
+    # on a later run — and a fan first seen mid-silence is precisely the one whose
+    # phase must not move. (Two earlier cuts got this wrong in opposite ways: one
+    # persisted only on the not-dark path, so ghosted fans were never pinned — a
+    # live run caught it at 37 fans evaluated, 32 anchors; the fix then wrote the
+    # row TWICE for a fan who was both newly-seen and restarted.)
+    if anchor != stored:
+        await _save_rhythm(account_id, c.fan_id, ghost_anchor=anchor)
+    if win is None:
+        return False
+    log.info("ai_chatter ghost account=%s fan=%s until=%s",
+             account_id, c.fan_id, win.ends_at)
+    return True
+
+
 def _recent_realized_s(rst: RhythmState | None) -> tuple[float, ...]:
     """spec §3.4 — the last ~20 REALIZED reply latencies parsed out of
     recent_turns_json, fed back into the next RhythmCtx so the soft fast-reply nudge
@@ -3883,11 +4110,18 @@ async def _handle_decline(account_id: str, fan_id: int, kind: str,
         await _close_ladder(account_id, fan_id, upsell.STATUS_TAPPED)
 
 
-async def _trigger_make_right_apology(account_id: str, fan_id: int) -> None:
+async def _trigger_make_right_apology(account_id: str, fan_id: int,
+                                      reason: str = "hard_decline") -> None:
     """Hand a hard-declining fan to make_right for the ONE de-escalation apology
     turn. The latest inbound message id keys the incident, so a webhook replay or
     the next sweep classifying the same message can't double-apologise.
-    Best-effort: losing the apology must never lose the decline handling."""
+    Best-effort: losing the apology must never lose the decline handling.
+
+    `reason` is the decline SUB-CLASS, so the apology owns the right mistake — a
+    man who says "why did you make me pay for these, they're on your profile"
+    must not be answered with "sorry i got carried away with the paid stuff".
+    make_right validates it and degrades to the generic wording if it does not
+    recognise the name."""
     try:
         async with get_session() as s:
             mid = (await s.execute(
@@ -3900,7 +4134,8 @@ async def _trigger_make_right_apology(account_id: str, fan_id: int) -> None:
         await ax.enqueue_job(
             account_id, "make_right",
             payload={"hard_decline": {"fan_id": int(fan_id),
-                                      "message_id": int(mid) if mid else None}})
+                                      "message_id": int(mid) if mid else None,
+                                      "reason": reason}})
         ax.wake_supervisor()
     except Exception:
         log.warning("hard-decline make_right enqueue failed account=%s fan=%s",
@@ -3939,7 +4174,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     history_tail: int = _HISTORY_TAIL,
                     style_on: bool = False,
                     nonnative_on: bool = False,
-                    sell_block: str = "",
+                    sell: _SellSurface = _NO_SELL,
                     content_ask: bool = False,
                     escalation: bool = False,
                     hot_thread: bool = False,
@@ -3957,10 +4192,17 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     custom_owed: bool = False,
                     ) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — of_ai_chat's girly info-gather prompt
-    with one structural difference: `sell_block`. Empty (M2) → the no-offers
-    line stays, byte-equal behavior. Non-empty (M3) → the catalog/offer rules
-    replace it. The ask/breather dice, the facts block, and the style variants
-    are copied verbatim so the voice can't drift from of_ai_chat's."""
+    with one structural difference: `sell`. `_NO_SELL` (M2) → the no-offers line
+    stays, byte-equal behavior. A live surface (M3) → the offer rules replace it.
+    The ask/breather dice, the facts block, and the style variants are copied
+    verbatim so the voice can't drift from of_ai_chat's.
+
+    NOTHING HERE KNOWS WHAT IS BEING SOLD. The three directives below pick the
+    MOMENT (he asked / he's leaning in / the thread is hot) and splice
+    `sell.close` for the mechanics; `sell.intro` and `sell.marker` do the same
+    for the opening line and the output contract. That is the whole reason
+    `_SellSurface` exists — see its docstring. Adding a way to sell means one
+    more construction there, not four more branches here."""
     questions = _questions_still_needed(f, asked)
     question_lines = "\n".join(line for _, line in questions)
     presented = [k for k, _ in questions]
@@ -4083,27 +4325,25 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         )
         presented = []
         ask = False
-    elif content_ask and sell_block.strip():
-        # He's asking for content and there's a live manifest: the gather goal
+    elif content_ask and sell.close:
+        # He's asking for content and there's something to sell: the gather goal
         # yields — this message is the pitch, not another interview question.
         need_block = (
             "HE IS ASKING FOR CONTENT RIGHT NOW — don't change the subject and "
-            "don't ask a get-to-know question this message. Pick the piece from "
-            "WHAT YOU CAN SELL that best fits the vibe, tease it from its "
-            "description, give the terms, and end with the >>OFFER line."
+            "don't ask a get-to-know question this message. Answer the ask: "
+            f"{sell.close}"
         )
         presented = []
         ask = False
-    elif escalation and sell_block.strip():
-        # He's leaning in / getting physical with a live manifest: stop teasing and
+    elif escalation and sell.close:
+        # He's leaning in / getting physical with something to sell: stop teasing and
         # convert. Softer than a content-ask (he didn't literally say "show me"), so
         # one flirty line THEN the offer — never a cold price-drop.
         need_block = (
             "HE'S CLEARLY INTO IT RIGHT NOW — leaning in, getting flirty/physical. "
             "This is the moment to SELL, not tease again. Don't ask a get-to-know "
-            "question. Match his heat with one short line, then pick the piece from "
-            "WHAT YOU CAN SELL that fits the vibe, tease it from its description, give "
-            "the terms, and end with the >>OFFER line."
+            "question. Match his heat with one short line, then close it: "
+            f"{sell.close}"
         )
         presented = []
         ask = False
@@ -4157,14 +4397,13 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
             "3. MIRROR IT BACK, HOTTER. When he tells you, say it back in your own "
             "words, escalated, as if it's already happening."
         )
-        if sell_block.strip():
+        if sell.close:
             need_block += (
-                "\n4. THEN SELL HIM WHAT HE JUST DESCRIBED. Pick the piece from WHAT YOU "
-                "CAN SELL that matches HIS OWN WORDS, and write the caption as the NEXT "
-                "LINE OF THIS SCENE — never as a product. "
-                f"{v.sell_caption_example} — not 'check out my new video'. End with the "
-                ">>OFFER line. If he hasn't described anything yet, do step 2 first and "
-                "sell on the next message."
+                f"\n4. THEN SELL HIM WHAT HE JUST DESCRIBED. {sell.close} Write it "
+                "matched to HIS OWN WORDS, as the NEXT LINE OF THIS SCENE — never as "
+                f"a product. {v.sell_caption_example} — not 'check out my new video'. "
+                "If he hasn't described anything yet, do step 2 first and sell on the "
+                "next message."
             )
         presented = []
         ask = False
@@ -4241,11 +4480,9 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # current of_ai_chat behavior); with one, a short pointer goes in the intro
     # and the FULL sell block lands as its own section near the end of the
     # prompt (high salience — inlining 20 manifest lines mid-sentence buried it).
-    has_sell = bool(sell_block.strip())
-    offers_line = ("you DO have real content you can send or sell when the "
-                   "moment is right — see WHAT YOU CAN SELL below."
-                   if has_sell else "don't offer pics or videos yet.")
-    sell_section = f"\n\n{sell_block.strip()}\n\n" if has_sell else "\n\n"
+    has_sell = sell.live
+    offers_line = sell.intro if has_sell else "don't offer pics or videos yet."
+    sell_section = f"\n\n{sell.block.strip()}\n\n" if has_sell else "\n\n"
 
     # The prompt clock ("" when the account has no tz configured → byte-equal
     # prompt) — same block as of_ai_chat. "what time is it where you are?" is
@@ -4286,10 +4523,13 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         f"{BIO_CONSISTENCY_GUARDRAIL}"
         f"{humanizer}{nonnative}{stickers}"
         f"{sell_section}"
+        # The >>OFFER carve-out is granted only by a surface that has ids behind
+        # it — never by the bought-out manifest (nothing to point at) and never
+        # by the pending block (which bans the marker in its own text).
         + ("Your reply is ONLY the message text — no JSON, quotes, or metadata. "
            "The ONE exception: the final >>OFFER line when you pitch a piece "
            "(it's stripped before sending — the fan never sees it)."
-           if has_sell else
+           if sell.marker else
            "Your reply is ONLY the message text — no JSON, quotes, or metadata.")
         # Without this carve-out the contract line above suppresses the marker
         # entirely — verified live: 4/4 solo rolls produced no STICKER line
@@ -4465,6 +4705,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # curve should be one parse (→ None → the shipped bands) rather than a silent
     # re-parse inside every RhythmCtx.
     rhythm_curve = rhythm.parse_pace_curve(cfg.get("rhythm_pace_curve"))
+    # The ghost cycle rides ON rhythm rather than beside it: it is the same
+    # "she's a person with a life" lane at a different timescale, and its only
+    # state lives in the rhythm_state row that `rhythm_on` already loads. Off ⇒
+    # the cycle is never even parsed and not one fan is touched.
+    ghost_on = rhythm_on and bool(cfg.get("rhythm_ghost_enabled"))
+    ghost_cycle = _ghost.parse_cycle(cfg.get("rhythm_ghost_cycle")) if ghost_on else None
     # §3.7 — the "im filming it rn" active fiction. Default OFF; when on it only
     # biases the §3.6 PPV drop toward the top of its band (stalled=). Logged nowhere
     # else here — the stall LINE emission is a separate opt-in surface (not wired).
@@ -4561,7 +4807,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # hot lead is never demoted to never-sell keep-warm. Mirrors engaged_subset.
     recent_payers = await recent_payer_fans(account_id, list(by_fan.keys()))
     # Newest money-event time per fan — the post-purchase talk window (item 17).
-    money_at = await _last_money_at(account_id, by_fan.keys()) if cadence_on else {}
+    # Also loaded for the ghost lane: a fan who PAID during his current talking
+    # run must never be met with a scheduled silence, and `recent_payers` only
+    # sees the last hour.
+    money_at = (await _last_money_at(account_id, by_fan.keys())
+                if (cadence_on or ghost_on) else {})
     # Proven-spend cap floor per fan (item 21b) — {fid: highest cap his rolling-window
     # paid spend earns}, folded into the cadence gate. Only computed when cadence is on
     # AND at least one spend rule is configured, so an off flag / empty list costs nil.
@@ -4585,8 +4835,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # What the HUMANS did in these threads: a chatter's unpaid PPV is a live ask, and a
     # PPV he unlocked is a purchase — neither has ever been visible to this engine.
     # Read whenever the gate or rhythm is on, because both are misled without it.
+    #
+    # ...and whenever the post-purchase judge is on, because `last_paid_at` IS its
+    # trigger. Left at `gate_on or rhythm_on` the judge would be silently dead on
+    # every account with both flags down — which is 5 of the 12 live accounts, and
+    # the same gating mistake that kept the content-dispute regex from ever seeing
+    # the fan on the gate-off account. It costs one grouped query over the candidate
+    # set on those accounts; a missed chargeback costs more.
+    pp_on = _objection.judge_on(cfg)
     human_money = (await _human_money_signals(account_id, by_fan.keys(), datetime.utcnow())
-                   if (gate_on or rhythm_on) else {})
+                   if (gate_on or rhythm_on or pp_on) else {})
     # gen_info profiles (bio / bullet notes / teases) → the prompt, so the AI knows
     # his story, not just his tags. Always loaded (personalization is not gated).
     profiles = await _load_profiles(account_id, by_fan.keys())
@@ -4627,6 +4885,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_whale = 0       # at/over the spend gate → human territory
     skipped_sla_fresh = 0   # backup mode: inbound younger than the SLA
     skipped_manual = 0      # a human chatted too recently (cautious resume)
+    skipped_ghost = 0       # ghost cycle: she is dark on this fan for whole days
 
     for fan_id, c in by_fan.items():
         forced = fan_id in force_ids
@@ -4712,6 +4971,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 if c.last_in_at is None or c.last_in_at > now - timedelta(seconds=sla_s):
                     skipped_sla_fresh += 1
                     continue
+            # ── The ghost cycle: whole days dark on this fan (see `_ghost.py`).
+            # LAST of the soft gates on purpose — it is the only one that WRITES,
+            # and a fan the cheaper gates above already dropped must not cost an
+            # upsert to anchor. Unlike every other discretionary silence in the
+            # product this one fires on a fan who is owed an answer; that is the
+            # feature, and the exemptions inside the gate are what keep it sane.
+            if ghost_on and await _ghost_gate(
+                    account_id, c, rstates.get(fan_id), ghost_cycle, now,
+                    in_active_sale=_in_active_sale(fan_id),
+                    paid_at=money_at.get(fan_id)):
+                skipped_ghost += 1
+                continue
         if fan_id in old_fan_ids:
             old_fans_engaged += 1
         candidates.append(c)
@@ -4742,6 +5013,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     quota_held_fans: list[str] = []   # "fan:used/quota@waith(dryNd)" for the log line
     quota_rows: list[tuple[int, "_Quota"]] = []   # every verdict → the audit ledger
     hard_stops = 0          # gate: chargeback/report/unsubscribe → ladder STOPPED
+    letdown_stops = 0       # post-purchase: he paid and was disappointed → 24h brake
     soft_acks = 0           # gate: "i'm broke" → keep talking, stop selling 24h
     gate_blocked = 0        # gate: no price in front of this fan right now
     customs_owed_skips = 0  # a paid custom has not shipped — talk, never sell
@@ -4888,16 +5160,34 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # and takes the 24h regret pause instead of the HARD consequence — the 72h
             # offers-pause + the make_right de-escalation apology. The hard signal must
             # keep its own, stronger handling even when softer tokens ride along.
-            hard_decline = (gate_on and
-                            upsell.classify_decline(c.last_body) == upsell.DECLINE_HARD)
-            if hard_decline:
-                await _handle_decline(account_id, fan_id, upsell.DECLINE_HARD, now)
+            #
+            # Which apology (if any) this turn owes him — regexes then, only if they
+            # found nothing and only inside the post-purchase window, one LLM call.
+            # The precedence and the cost discipline live in `_objection`; what is
+            # left here is the CONSEQUENCE, which is identical for every verdict.
+            objection = await _objection.decide(
+                account_id, fan_id, f, c, cfg=cfg, model=model,
+                last_paid_at=human_money.get(fan_id, (None, None))[1], now=now)
+            if objection:
+                # The brake rides WITH the apology — a billing claim takes the 72h
+                # stop, a man who is merely disappointed takes 24h. Both keep talking.
+                await _handle_decline(account_id, fan_id, objection.decline, now)
                 if not dry_run:
-                    await _trigger_make_right_apology(account_id, fan_id)
-                hard_stops += 1
-                log.info("ai_chatter HARD decline account=%s fan=%s — 72h offers-pause "
-                         "+ make_right apology (never a permanent bot stop)",
-                         account_id, fan_id)
+                    await _trigger_make_right_apology(account_id, fan_id,
+                                                      objection.reason)
+                # Counted apart, because they mean different things to whoever reads
+                # the run stats: `hard_stops` is "a fan threatened a chargeback or
+                # said he already owned it", `letdown_stops` is "a fan was
+                # disappointed". Folding the second into the first made the headline
+                # number report chargeback risk that wasn't there.
+                if objection.decline == upsell.DECLINE_HARD:
+                    hard_stops += 1
+                else:
+                    letdown_stops += 1
+                log.info("ai_chatter post-purchase objection account=%s fan=%s "
+                         "reason=%s brake=%s — offers-pause + make_right apology "
+                         "(never a permanent bot stop)",
+                         account_id, fan_id, objection.reason, objection.decline)
                 continue
             if gate_on and upsell.detect_spend_regret(c.last_body):
                 # §6.1 — poverty brake. 24h offers-PAUSE (never a proactive push, never a
@@ -5092,7 +5382,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # The offer context: a pending offer pins the prompt to it; else the
             # manifest of what THIS fan may be offered (caps + pinning + unseen
             # all enforced here, never by the model).
-            sell_block = ""
+            sell = _NO_SELL
             offerable: dict[int, CatalogItem] = {}
             quotes: dict[int, upsell.Quote] = {}
             # Did THE GATE say we may put a price in front of this fan on this turn?
@@ -5217,8 +5507,23 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 pass
             elif pending is not None and open_count >= max_open_offers:
                 # Max unpaid PPVs already on the table — stop pitching, just chat.
-                sell_block = _pending_block(pending, await _get_item(int(pending.item_id)))
-            elif catalog_items and await _offer_caps_ok(account_id, fan_id, caps_cfg):
+                sell = _pending_block(pending, await _get_item(int(pending.item_id)))
+            # ⚠️ THERE IS NO CATALOGUE PRECONDITION ON SELLING. There used to be —
+            # `elif catalog_items and ...` — and it is the reason bb4125b's fix did
+            # nothing: that commit corrected the manifest's own gate (`if offerable
+            # or voice_blocks.sell_customs`), which lives INSIDE this branch, so on
+            # an account with an empty catalogue the branch holding it never ran.
+            #
+            # The catalogue was never the only thing for sale. A custom is recorded
+            # to order and needs no rows at all; the teaser ladder and tip_reward
+            # send real vault media that is not in `catalog_items` either. Gating
+            # the sell surface on the one inventory that happens to have a table
+            # silently switched selling off for every account that uses the others.
+            #
+            # Costs nothing when there IS nothing: with no catalogue and customs
+            # off, `_manifest_block` returns "" and the prompt is byte-identical to
+            # never having entered here.
+            elif await _offer_caps_ok(account_id, fan_id, caps_cfg):
                 offerable = await _offerable_for_fan(account_id, fan_id,
                                                      cfg_offer_mode, scripts,
                                                      catalog_items)
@@ -5390,23 +5695,31 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # empty one it has nothing to describe, so the customs-only
                     # manifest owns the bought-out case on both branches.
                     if second_offer and offerable:
-                        sell_block = _second_offer_block(
+                        sell = _second_offer_block(
                             pending, await _get_item(int(pending.item_id)),
                             offerable, scripts, cfg_offer_mode, quotes or None,
                             sell_customs=voice_blocks.sell_customs)
                     else:
-                        sell_block = _manifest_block(offerable, scripts, cfg_offer_mode,
-                                                     quotes=quotes or None,
-                                                     sell_customs=voice_blocks.sell_customs)
+                        sell = _manifest_block(offerable, scripts, cfg_offer_mode,
+                                               quotes=quotes or None,
+                                               sell_customs=voice_blocks.sell_customs)
 
             # fan_lang resolved above (haggle detection) — drives the reply language
             # AND the bilingual buy-signal detectors below.
-            content_ask = bool(offerable) and _language.is_content_ask(c.last_body, fan_lang)
-            # Lean-in pivot: he's getting physical/horny (ESCALATION) with a live
-            # manifest and HAS chatted a bit — ride it as an offer instead of teasing
+            #
+            # `sell.close` — "may we pitch at all" — replaces the `bool(offerable)`
+            # these both used to test. Same answer on every catalogue path, and it
+            # fixes the bought-out one: `offerable` is empty there BY DEFINITION, so
+            # "show me something" — the strongest buying signal there is — was the
+            # one turn guaranteed to sell nothing.
+            content_ask = (bool(sell.close)
+                           and _language.is_content_ask(c.last_body, fan_lang))
+            # Lean-in pivot: he's getting physical/horny (ESCALATION) with something
+            # to sell and HAS chatted a bit — ride it as an offer instead of teasing
             # again. An explicit content-ask already owns the pivot, so don't
-            # double-count. Offer pacing caps still gate whether `offerable` is live.
-            escalation = (bool(offerable) and pivot_on_escalation and not content_ask
+            # double-count. Offer pacing caps still gate whether the surface is live.
+            escalation = (bool(sell.close) and pivot_on_escalation
+                          and not content_ask
                           and c.fan_msg_n >= esc_min_msgs
                           and _language.is_escalation(c.last_body, fan_lang))
             buyer_facts = await _buyer_facts(account_id, fan_id)
@@ -5451,7 +5764,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                               sticker_mode=sticker_mode,
                                               style_on=style_on,
                                               nonnative_on=nonnative_on,
-                                              sell_block=sell_block,
+                                              sell=sell,
                                               content_ask=content_ask,
                                               escalation=escalation,
                                               hot_thread=hot_thread,
@@ -6342,6 +6655,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_whale": skipped_whale,
         "skipped_sla_fresh": skipped_sla_fresh,
         "skipped_manual": skipped_manual,
+        "skipped_ghost": skipped_ghost,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
         "skipped_no_intent": skipped_no_intent,
@@ -6357,6 +6671,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # Capped: this is a run-stats line, not a report — the DB has the full picture.
         "quota_held_fans": quota_held_fans[:20],
         "hard_stops": hard_stops,
+        "letdown_stops": letdown_stops,
         "soft_acks": soft_acks,
         "gate_blocked": gate_blocked,
         "customs_owed_skips": customs_owed_skips,

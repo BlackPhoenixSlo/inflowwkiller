@@ -112,7 +112,7 @@ export default function ReengageBuyersTab({ accountId }: { accountId: string | n
           Finds fans who <b>bought recently</b> but got <b>no follow-up</b>, and sends
           each ONE warm, personal opener made from his own stored lines (his teases /
           questions + name) — then the AI Chatter takes over his reply. It skips anyone
-          she messaged recently, is mid-sale with, or is on a stop list. <b>Preview
+          the account messaged recently, is mid-sale with, or is on a stop list. <b>Preview
           first</b> to see the exact openers.
         </p>
       </div>

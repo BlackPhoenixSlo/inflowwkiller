@@ -175,11 +175,13 @@ _HARD_STOP_RE = re.compile(
     # is `m`, so the trailing \b fails and the ALTERNATIVE `mer` never gets a look-in.
     # "you scammed me" — the commonest way a cheated man says it — scored None.
     r"report(?:ing)? you|scam(?:med|mer|ming)?|"
-    # ── The DECEIVED-BUYER exit ────────────────────────────────────────────────
-    # A buyer who believes he was lied to about what he PAID FOR is the highest-value
-    # hard stop there is: he is a chargeback and a lost account, in that order. This
-    # whole shape used to score None on every detector, so no offers-pause and no
-    # make_right apology fired and the seller kept selling into it.
+    # ── The DECEIVED-BUYER exit (prod incident, 2026-07-31) ────────────────────
+    # He asked three times whether the unlock was what he wanted, paid, got something
+    # else, and left: "Goodbye, you stupid liar; keep my 4s for that fucking photo 🖕".
+    # That scored None on every detector, so no 72h offers-pause and no make_right
+    # apology fired — the seller's next line was "thought u were smarter than that".
+    # A man who believes he was lied to about what he BOUGHT is the highest-value
+    # hard stop there is: he is a chargeback and a deleted account, in that order.
     #
     # Deliberately NOT a bare \bliar\b, and not a bare "you liar" either. "liar!",
     # "liar lol" and the VOCATIVE "you liar 😏" are ordinary flirty banter, and a
@@ -198,9 +200,82 @@ _HARD_STOP_RE = re.compile(
     # mark: a bare `\d+` here matched "keep the 5 photos coming" — a fan ASKING FOR
     # MORE CONTENT — and eight other ordinary lines, every one of which would have
     # bought a 72h selling blackout plus an apology for a mistake that never happened.
-    # An unmarked amount is not lost either: it rides the `liar` clause beside it.
+    # "keep my 4s" (the corpus line) is not lost: it is already carried by `liar`.
     r"keep (?:my|the) (?:money|cash|[\$€£]\d+)|"
     r"unsubscrib\w*|stop messaging|blocked you|blocking you)\b", re.I)
+
+# ── The CONTENT DISPUTE (prod incident, 2026-08-04) ──────────────────────────
+# He paid $8.28 for a 10-piece set, opened it, and 17 SECONDS later wrote:
+#
+#     a calm, polite question: had he already seen these, they are on the
+#     public page, so why was he charged for them?
+#
+# Every detector above scored that None, because he never reached for an insult —
+# he stated a fact. So no 72h offers-pause and no make_right apology fired: the
+# seller ARGUED WITH HIM four times ("no, that set really is different") through
+# a video he sent as evidence, and then priced him a fresh $10 PPV twelve minutes
+# later. Same shape as the deceived-buyer exit documented above, one
+# rung worse: that buyer was lied to about what he was buying, this one can open
+# the creator's public wall and prove it.
+#
+# TWO tokens are required, and that is the whole design. Either half alone is
+# ordinary conversation, measured on 6,712 real inbounds:
+#   • REPEAT alone → 198 hits, and they are fans being NICE: telling her they
+#     already own it, or ASKING whether a piece is on the page or has to be
+#     bought. Firing a 72h
+#     selling blackout on those is the expensive error, and a fan who owns it but
+#     isn't angry belongs to `make_right`'s dup_charge detector, not to a decline.
+#   • PAYMENT alone → 1 hit, and it was a complaint about QUALITY, not a
+#     grievance about a charge already taken.
+# Both together → 3 hits in 6,712 (0.0022% of all 135,040 inbounds, vs HARD's
+# 0.03%), and all three are the real complaint. The third is on a DIFFERENT
+# account and a different creator, who phrased it as being made to pay for
+# "social media photos" — which is why `social media <photos>` counts as a
+# public-content marker: the same accusation, the other word for a public feed.
+#
+# ⚠️ `already paid for` is deliberately NOT a repeat marker. With it, a real line
+# from a man HAGGLING — listing what he had already paid for this month to argue
+# a price down — satisfied both halves and scored a hard stop. It is
+# a sentence about money, not about repetition. Same reason `i paid for` needs a
+# demonstrative object: the bare form matched "...than I paid for in a month".
+
+# The GRIEVANCE half: he is challenging a charge that already happened. Every
+# form here is second-person accusatory or first-person past-tense — never
+# "how much", never the prospective "do i pay for it".
+_DISPUTE_PAYMENT_RE = re.compile(
+    r"(?:why|how come)\s+(?:the\s+fuck\s+)?"
+    r"(?:did|would|do|does|d)?\s*(?:you|u)\s+(?:make|makin[g']?|have|had|let)\s+me\s+pay"
+    r"|(?:why|how come)\s+(?:did|do|would|should|must)?\s*i\s+(?:have to\s+)?pay"
+    r"|why\s+am\s+i\s+paying"
+    r"|(?:made|make|makes|making)\s+me\s+pay\s+for"
+    r"|i\s+(?:just\s+)?(?:paid|payed)\s+for\s+(?:this|these|that|those|it|them)\b", re.I)
+
+# The CONTENT half: what he paid for was already his, or is public.
+_DISPUTE_REPEAT_RE = re.compile(
+    r"\balready\s+(?:seen|got|have|had|own|bought)\b"
+    r"|\bsocial\s+media\s+(?:photos?|pics?|pictures?|content)\b"
+    r"|\bseen\s+(?:these|this|them|it|that|those)\b"
+    r"|\b(?:these|they|this|it|those)\s+are\s+(?:all\s+)?the\s+same\b"
+    r"|\b(?:the\s+same\s+\w+\s+twice|twice\s+for\s+the\s+same)\b"
+    r"|\b(?:free|posted|up|public)\s+on\s+(?:your|ur|the)\s+(?:profile|page|wall|feed)\b"
+    r"|\bon\s+(?:your|ur)\s+(?:profile|page|wall|feed)\b"
+    r"|\bsent\s+(?:me\s+)?(?:this|these|the same)\s+(?:again|twice)\b", re.I)
+
+
+def is_content_dispute(text: str | None) -> bool:
+    """He is disputing a charge for content he says he already had, or that is
+    free on the creator's public page. A HARD decline (see classify_decline), and
+    the one decline class that must ALSO reach `make_right` with its own apology —
+    "i got carried away with the paid stuff" does not own THIS mistake.
+
+    Exposed separately from classify_decline because the caller needs to know
+    WHICH apology to send, and because it is the only decline that is not a
+    selling decision: the money is already gone."""
+    t = norm_text(text).strip()
+    if not t:
+        return False
+    return bool(_DISPUTE_PAYMENT_RE.search(t)) and bool(_DISPUTE_REPEAT_RE.search(t))
+
 
 # SOFT — a poverty plea. Stop SELLING for 24h. KEEP TALKING. This is the highest-value
 # moment to be a person: he is still here, he is just broke this week.
@@ -253,6 +328,13 @@ def classify_decline(text: str | None) -> str | None:
     if not t:
         return None
     if _HARD_STOP_RE.search(t):
+        return DECLINE_HARD
+    # Same consequence as the words above (72h offers-pause + apology), reached by
+    # a man who never raised his voice. See _DISPUTE_PAYMENT_RE for why it takes
+    # two tokens. Checked before SOFT: "why did you make me pay for these, i cant
+    # afford to be buying the same set twice" is a dispute first, a poverty plea
+    # second, and the softer read would cost him the apology he is owed.
+    if is_content_dispute(t):
         return DECLINE_HARD
     if _SOFT_BROKE_RE.search(t):
         return DECLINE_SOFT

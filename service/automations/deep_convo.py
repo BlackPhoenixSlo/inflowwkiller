@@ -89,8 +89,8 @@ from . import _voice
 from ._common import (
     nonempty,
     BIO_CONSISTENCY_GUARDRAIL,
-    LIVE_PROOF_GUARDRAIL, ONPLATFORM_GUARDRAIL, PAINFUL_TEXTING,
-    STYLE_HUMANIZER, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style,
+    ONPLATFORM_GUARDRAIL,
+    NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style,
     apply_word_restriction, build_facts_note,
     build_structured_nickname, casualize_qtease, coerce_ids, facts_from_fan,
     hold_with_typing, apply_typo_throttle, load_nonnative_flags,
@@ -447,7 +447,7 @@ async def _send(client, account_id: str, fan_id: int, text: str,
                 *, typing_wpm: float | None = None,
                 typing_indicator: bool | None = None,
                 typo: bool = False, nonnative: bool = False, protect=(),
-                lang: str = "en") -> bool:
+                lang: str = "en", v: "_voice.VoiceBlocks" = _voice.HER) -> bool:
     """Send one message + persist it through the optimistic path. Returns True on
     a 200 (whether or not OF echoed an id). Raises on a transport failure so the
     caller can leave state un-advanced and retry next tick.
@@ -470,7 +470,7 @@ async def _send(client, account_id: str, fan_id: int, text: str,
     # check — deep_convo does not implement it.
     text, _leak = await finalize_draft(
         text, account_id=account_id, fan_id=fan_id, purpose=_PURPOSE,
-        strip_emoji=True)
+        strip_emoji=True, v=v)
     if nonnative:  # opt-in: deterministic non-native misspellings (BEFORE word restrict)
         text = apply_nonnative_spacing(
             apply_nonnative_style(text, protect=protect),
@@ -699,13 +699,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         await _send(client, account_id, fan_id, lead,
                                     typing_wpm=typing_wpm, typing_indicator=typing_indicator,
                             typo=typo_on, nonnative=nonnative_on, protect=typo_protect,
-                            lang=fan_lang)
+                            lang=fan_lang, v=voice_blocks)
                         if _STEP_GAP_S:
                             await hold_with_typing(account_id, fan_id, _jittered_gap(),
                                                    typing_indicator=typing_indicator)
                 await _send(client, account_id, fan_id, q,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
-                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect)
+                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect, v=voice_blocks)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now, deep_convo_state=_S_Q_SENT,
                                   deep_convo_q_text=q, deep_convo_tease_text=tease,
@@ -733,7 +733,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _send(client, account_id, fan_id, reply,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
                             typo=typo_on, nonnative=nonnative_on, protect=typo_protect,
-                            lang=fan_lang)
+                            lang=fan_lang, v=voice_blocks)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now,
                                   deep_convo_state=_S_CHATTED_1, **reset)
@@ -759,7 +759,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _send(client, account_id, fan_id, reply,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
                             typo=typo_on, nonnative=nonnative_on, protect=typo_protect,
-                            lang=fan_lang)
+                            lang=fan_lang, v=voice_blocks)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now,
                                   deep_convo_state=_S_CHATTED_2, **reset)
@@ -770,7 +770,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                            typing_indicator=typing_indicator)
                 await _send(client, account_id, fan_id, tease_text,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
-                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect)
+                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect, v=voice_blocks)
                 await _save_state(account_id, fan_id, now, deep_convo_state=_S_DONE)
                 sent += 1
                 completed += 1
@@ -783,7 +783,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 tease_text = f.deep_convo_tease_text or tease
                 await _send(client, account_id, fan_id, tease_text,
                             typing_wpm=typing_wpm, typing_indicator=typing_indicator,
-                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect)
+                            typo=typo_on, nonnative=nonnative_on, protect=typo_protect, v=voice_blocks)
                 sent_ok = True
                 await _save_state(account_id, fan_id, now, deep_convo_state=_S_DONE)
                 sent += 1

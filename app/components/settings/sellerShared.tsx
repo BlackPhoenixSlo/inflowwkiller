@@ -2,7 +2,7 @@
 
 /**
  * sellerShared — pieces shared by the two seller tabs:
- *   • 🤖 AI Chatter  (ScriptsTab)  — how she talks / who she talks to / her pacing
+ *   • 🤖 AI Chatter  (ScriptsTab)  — how the account talks / who it talks to / its pacing
  *   • 💰 AI Upseller (UpsellerTab) — the selling brain + content
  *
  * Both tabs read and write the SAME `ai_chatter_config_json` (the save REPLACES the
@@ -30,7 +30,8 @@ import { useSaveStyleConfig, useStyleConfig } from "@/hooks/useStyleConfig";
 import {
   useAiChatterConfig, useDeleteScript, useImportFolder, usePasteImport,
   useSaveAiChatterConfig, useSaveScriptItems, useUpsertScript,
-  type AiChatterConfig, type CatalogItemT, type CatalogScriptT, type PaceBand,
+  type AiChatterConfig, type CatalogItemT, type CatalogScriptT, type GhostStage,
+  type PaceBand,
 } from "@/hooks/useCatalog";
 
 export const INPUT =
@@ -94,21 +95,6 @@ export const TIMEZONES: string[] = [
   "Asia/Tokyo", "Asia/Seoul", "Australia/Perth", "Australia/Brisbane",
   "Australia/Sydney", "Pacific/Auckland",
 ];
-
-/** WHEN each shipped slot fires, in plain English. */
-export const SLOT_HELP: Record<string, string> = {
-  question_hook: "she opens a scene — free, never has a price on it",
-  rung_open: "the first thing he ever sees with a price on it",
-  rung_escalate: "after he buys, she asks for more",
-  post_buy_bridge: "right after he unlocks — free, keeps the conversation alive",
-  edge_hold: "a short beat to keep him talking mid-scene",
-  pre_ppv_stall: "while she's “filming it right now”, just before the paid message",
-  objection_price: "he says it's too expensive — she answers about the content, not his wallet",
-  haggle_counter: "she drops the price once, and only once",
-  discount_resend: "he didn't buy — she takes it down and offers it cheaper",
-  soft_broke_ack: "he says he's broke — she stops selling and keeps talking",
-  aftercare: "the end of the ladder, then she leaves him alone",
-};
 
 /** Text-area text → the stored line list (blank rows dropped). */
 export const linesOf = (text: string): string[] =>
@@ -504,7 +490,17 @@ export function ScriptCard({ accountId, sc }: { accountId: string; sc: CatalogSc
   );
 }
 
-/* ── Human Rhythm — how long she waits before answering ────────────── */
+/* ── Human Rhythm — how long a reply waits before it goes ──────────── */
+
+/** Ticking any Rhythm SUB-MODE also turns Rhythm itself on. A ticked box that
+ *  does nothing because its parent is off is a bug report waiting to be filed,
+ *  and there are three of these now — the rule belongs in one place rather than
+ *  re-derived (and re-commented) at every checkbox. Unticking is deliberately
+ *  NOT the inverse: dropping a sub-mode must not switch the whole lane off. */
+type RhythmSubMode = "rhythm_no_sleep" | "rhythm_pace_buckets" | "rhythm_ghost_enabled";
+
+const rhythmSubMode = (key: RhythmSubMode, on: boolean): Partial<AiChatterConfig> =>
+  ({ [key]: on, ...(on ? { rhythm_enabled: true } : {}) });
 
 /** The shipped bands, shown when the account hasn't authored its own. Mirrors
  *  rhythm.PACE_BUCKETS — if that moves, this caption is the thing that lies. */
@@ -524,7 +520,7 @@ function fmtMin(m: number): string {
   return rest ? `${h} h ${rest}` : `${h} h`;
 }
 
-/** The reply-time curve: how often she answers fast, and how often she doesn't.
+/** The reply-time curve: how often a reply is fast, and how often it isn't.
  *  Rows are CUT POINTS — each band starts where the one above it ended — so the
  *  editor cannot produce a gap or an overlap, only an out-of-order edge (flagged). */
 function PaceCurveEditor({ cfg, set }: {
@@ -536,7 +532,7 @@ function PaceCurveEditor({ cfg, set }: {
   const on = !!cfg.rhythm_pace_buckets;
   const total = rows.reduce((a, r) => a + (Number(r.pct) || 0), 0);
   // The server normalises, so 99 or 101 is not an error — but it does mean the
-  // number in the box is not the number she runs. Show both rather than pretend.
+  // number in the box is not the number it runs. Show both rather than pretend.
   const skewed = Math.abs(total - 100) > 0.01 && total > 0;
   const outOfOrder = rows.some((r, i) =>
     !(r.up_to_min > 0) || (i > 0 && r.up_to_min <= rows[i - 1].up_to_min));
@@ -549,17 +545,13 @@ function PaceCurveEditor({ cfg, set }: {
     <div className="pl-6 space-y-2">
       <label className="flex items-start gap-2 cursor-pointer">
         <input type="checkbox" className="mt-0.5" checked={on}
-          onChange={(e) => set({
-            rhythm_pace_buckets: e.target.checked,
-            // Same reasoning as no-sleep: the curve is a Rhythm sub-mode, and a
-            // ticked box that does nothing because the parent is off is a bug report.
-            ...(e.target.checked ? { rhythm_enabled: true } : {}),
-          })} />
+          onChange={(e) => set(rhythmSubMode("rhythm_pace_buckets", e.target.checked))} />
         <span className="text-xs">
           <span className="font-medium text-fg">Use my own reply-time curve</span>
           <span className="block text-fg-dim">
-            Off, she replies on a curve measured from her own message history. On, she
-            uses the percentages below. Only affects ordinary replies — the pause after
+            Off, replies follow the timing curve measured from this agency's own chat
+            archive — the same one for every account. On, they use the percentages
+            below. Only affects ordinary replies — the pause after
             a gif and the first few messages of a new chat keep their own timing.
           </span>
         </span>
@@ -621,7 +613,7 @@ function PaceCurveEditor({ cfg, set }: {
           <span className={cn("text-[11px] ml-auto",
             skewed ? "text-amber-400" : "text-fg-dim")}>
             {total.toFixed(total % 1 ? 1 : 0)}%
-            {skewed && " — scaled to 100 when she runs it"}
+            {skewed && " — scaled to 100 when it runs"}
           </span>
         </div>
 
@@ -631,6 +623,120 @@ function PaceCurveEditor({ cfg, set }: {
             won&apos;t save.
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ── The ghost cycle — whole days she doesn't answer him ───────────────── */
+
+/** The shipped cycle, shown when the account hasn't authored its own. Mirrors
+ *  _ghost.DEFAULT_CYCLE — if that moves, this is the thing that lies. */
+const SHIPPED_GHOST: GhostStage[] = [
+  { chat_days: 3, ghost_days: 1 },
+  { chat_days: 4, ghost_days: 2 },
+  { chat_days: 5, ghost_days: 2.5 },
+];
+
+/** "1 day" / "2.5 days" / "12 h" — a stage reads as a duration, not a decimal. */
+function fmtDays(d: number): string {
+  if (!Number.isFinite(d) || d <= 0) return "0";
+  if (d < 1) return `${Math.round(d * 24)} h`;
+  return `${+d.toFixed(2)} ${d === 1 ? "day" : "days"}`;
+}
+
+/** Chat a while, go dark a while, repeat. Per fan — each one's schedule runs off
+ *  his OWN first message, so the roster never goes quiet on the same day. */
+function GhostCycleEditor({ cfg, set }: {
+  cfg: AiChatterConfig;
+  set: (p: Partial<AiChatterConfig>) => void;
+}) {
+  const rows: GhostStage[] = cfg.rhythm_ghost_cycle?.length
+    ? cfg.rhythm_ghost_cycle : SHIPPED_GHOST;
+  const on = !!cfg.rhythm_ghost_enabled;
+  const chat = rows.reduce((a, r) => a + (Number(r.chat_days) || 0), 0);
+  const dark = rows.reduce((a, r) => a + (Number(r.ghost_days) || 0), 0);
+  const total = chat + dark;
+  const negative = rows.some((r) =>
+    !(Number(r.chat_days) >= 0) || !(Number(r.ghost_days) >= 0));
+
+  const write = (next: GhostStage[]) => set({ rhythm_ghost_cycle: next });
+  const edit = (i: number, patch: Partial<GhostStage>) =>
+    write(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+
+  return (
+    <div className="pl-6 space-y-2">
+      <label className="flex items-start gap-2 cursor-pointer">
+        <input type="checkbox" className="mt-0.5" checked={on}
+          onChange={(e) => set(rhythmSubMode("rhythm_ghost_enabled", e.target.checked))} />
+        <span className="text-xs">
+          <span className="font-medium text-fg">
+            Go quiet for whole days — the account has a life
+          </span>
+          <span className="block text-fg-dim">
+            After a stretch of chatting, the account stops answering him for a day or
+            two, then comes back. <b>Per fan</b>, on his own schedule — a good spender
+            goes a day with no reply and wants one more. Everything else keeps running:
+            this only silences the 1:1 AI chat.
+          </span>
+        </span>
+      </label>
+
+      <div className={cn("space-y-1.5", !on && "opacity-50 pointer-events-none")}>
+        {rows.map((r, i) => (
+          <div key={i} className="flex items-center gap-2 text-xs">
+            <span className="text-fg-dim w-10 shrink-0">chat</span>
+            <input type="number" min={0} step="any"
+              className={`${INPUT} w-16 text-right`}
+              value={r.chat_days}
+              onChange={(e) => edit(i, { chat_days: Number(e.target.value) })} />
+            <span className="text-fg-dim">days, then quiet</span>
+            <input type="number" min={0} step="any"
+              className={`${INPUT} w-16 text-right`}
+              value={r.ghost_days}
+              onChange={(e) => edit(i, { ghost_days: Number(e.target.value) })} />
+            <span className="text-fg-dim">days</span>
+            {rows.length > 1 && (
+              <button type="button" className="text-fg-dim hover:text-red-400 ml-auto"
+                title="Remove this stage"
+                onClick={() => write(rows.filter((_, j) => j !== i))}>
+                <Trash2 size={13} />
+              </button>
+            )}
+          </div>
+        ))}
+
+        <div className="flex items-center gap-3 pt-0.5">
+          <button type="button" className="text-[11px] text-accent hover:underline"
+            onClick={() => write([...rows, {
+              chat_days: rows[rows.length - 1]?.chat_days ?? 3,
+              ghost_days: rows[rows.length - 1]?.ghost_days ?? 1,
+            }])}>
+            + stage
+          </button>
+          <button type="button" className="text-[11px] text-fg-dim hover:underline"
+            onClick={() => set({ rhythm_ghost_cycle: null })}>
+            reset to 3/1 · 4/2 · 5/2.5
+          </button>
+          <span className="text-[11px] text-fg-dim ml-auto">
+            {total > 0
+              ? `repeats every ${fmtDays(total)} — quiet ${fmtDays(dark)} of it `
+                + `(${Math.round((dark / total) * 100)}%)`
+              : "every stage is 0 — this won't save"}
+          </span>
+        </div>
+
+        {negative && (
+          <div className="text-[11px] text-red-400">
+            Days can&apos;t be negative — this cycle won&apos;t save.
+          </div>
+        )}
+
+        <div className="text-[11px] text-fg-dim/70">
+          A fan mid-sale is never left hanging: a live offer or a payment cancels his
+          quiet stretch and restarts his cycle. Editing the numbers re-reads where every
+          fan already is, so a save can move someone into or out of a quiet day at once.
+        </div>
       </div>
     </div>
   );
@@ -672,9 +778,9 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
           disabled={!canEnable}
           onChange={(e) => set({ rhythm_enabled: e.target.checked })} />
         <span>
-          <span className="font-medium">Human Rhythm — she replies like a person, not a bot</span>
+          <span className="font-medium">Human Rhythm — replies land like a person&apos;s, not a bot&apos;s</span>
           <span className="block text-fg-dim text-xs">
-            Fast when you&apos;re mid-conversation, slower when it&apos;s quiet, and she
+            Fast when you&apos;re mid-conversation, slower when it&apos;s quiet, and the account
             steps away sometimes.
           </span>
         </span>
@@ -683,17 +789,13 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
       {/* No-sleep mode: hot/cold/busy pacing + short breaks, no overnight sleep, no tz. */}
       <label className="flex items-start gap-2 cursor-pointer pl-6">
         <input type="checkbox" className="mt-0.5" checked={noSleep}
-          onChange={(e) => set({
-            rhythm_no_sleep: e.target.checked,
-            // Turning on no-sleep is also turning Rhythm on (it's a Rhythm sub-mode).
-            ...(e.target.checked ? { rhythm_enabled: true } : {}),
-          })} />
+          onChange={(e) => set(rhythmSubMode("rhythm_no_sleep", e.target.checked))} />
         <span className="text-xs">
-          <span className="font-medium text-fg">No sleep — she just gets busy (no timezone needed)</span>
+          <span className="font-medium text-fg">No sleep — just gets busy (no timezone needed)</span>
           <span className="block text-fg-dim">
             Keeps the hot/cold pacing and short &ldquo;stepped away&rdquo; breaks (~up to
             2 h — yoga, an errand), but <b>never an 8-hour night gap</b>. Use this instead of
-            the sleep window when you don&apos;t want her going dark overnight.
+            the sleep window when you don&apos;t want the account going dark overnight.
           </span>
         </span>
       </label>
@@ -701,13 +803,13 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
       {!canEnable && (
         <div className="text-xs text-amber-400 pl-6">
           Set this creator&apos;s timezone first (or turn on <b>No sleep</b> above) —
-          otherwise she&apos;d sleep through her best hours.
+          otherwise the account would sleep through its best hours.
         </div>
       )}
 
       {!!cfg.rhythm_enabled && noSleep && (
         <div className="text-xs text-fg-dim pl-6">
-          She never sleeps — when it&apos;s quiet she takes a short break (up to ~2 h) and
+          It never sleeps — when it&apos;s quiet the account takes a short break (up to ~2 h) and
           comes back. No overnight gap, no timezone required.
         </div>
       )}
@@ -732,11 +834,11 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
 
       {!!cfg.rhythm_enabled && !noSleep && (
         <div className="text-xs text-fg-dim pl-6">
-          She sleeps <span className="text-fg font-medium">
+          Asleep <span className="text-fg font-medium">
             {fmtClock(effective[0])}–{fmtClock(effective[1])}
           </span>{" "}
           {override ? "(you set this)."
-            : sleepSource === "derived" ? "(her own quiet hours)."
+            : sleepSource === "derived" ? "(this account's own quiet hours)."
             : "(the house default)."}{" "}
           <button type="button" className="text-accent hover:underline"
             onClick={() => setAdvanced((v) => !v)}>
@@ -760,7 +862,7 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
               <span>
                 House default — <span className="text-fg">
                   {fmtClock(houseDefault[0])}–{fmtClock(houseDefault[1])}
-                </span> on her own clock
+                </span> on the creator&apos;s own clock
               </span>
             </label>
             <label className="flex items-start gap-2 cursor-pointer">
@@ -768,7 +870,7 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
                 checked={!override && sleepSource === "derived"}
                 onChange={() => set({ rhythm_sleep_source: "derived", sleep_window: null })} />
               <span>
-                Her own quiet hours, read off her send history —{" "}
+                This account&apos;s own quiet hours, read off its send history —{" "}
                 <span className="text-fg">{fmtClock(derived[0])}–{fmtClock(derived[1])}</span>
               </span>
             </label>
@@ -776,7 +878,7 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
               <input type="radio" name="rhythm-sleep-source" className="mt-0.5"
                 checked={!!override}
                 onChange={() => set({ sleep_window: [houseDefault[0], houseDefault[1]] })} />
-              <span>Set her sleep window myself</span>
+              <span>Set the sleep window myself</span>
             </label>
             <div className={override ? "flex items-center gap-2 pl-6" : "flex items-center gap-2 pl-6 opacity-50 pointer-events-none"}>
               <span>Asleep from</span>
@@ -789,8 +891,8 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
                 onChange={(e) => setWindow(1, e.target.value)} />
             </div>
             <div className="text-fg-dim/70">
-              While she&apos;s asleep an incoming message is answered when she wakes up,
-              not instantly — and she says so.
+              While asleep, an incoming message is answered at wake-up rather than
+              instantly — and the reply says so.
             </div>
           </div>
         </details>
@@ -798,21 +900,30 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
 
       {/* ── the reply-time curve ── */}
       <PaceCurveEditor cfg={cfg} set={set} />
+
+      <GhostCycleEditor cfg={cfg} set={set} />
     </div>
   );
 }
 
 /* ── The script pack — the words are already written ───────────────── */
 
-export function ScriptPackCard({ pack, text, setText, onSave, saving, saved, error, canSave = true }: {
+/** The pack editor. Takes NO lane: the copy names roles, and the
+ *  lines themselves arrive in `pack` already resolved for the account's voice by
+ *  `script_packs.shipped_pack` on the server — which is the half that matters,
+ *  because editing one box persists the whole box onto the account. */
+export function ScriptPackCard({ pack, help, text, setText, onSave, saving, saved, error,
+  canSave = true }: {
   pack: Record<string, string[]>;
+  /** {slot: "when it fires"} — from the server, which owns the slot schema. */
+  help: Record<string, string>;
   text: Record<string, string>;
   setText: (slot: string, v: string) => void;
   onSave: () => void;
   saving: boolean;
   saved: boolean;
   /** Why the last save was rejected. Without it a failed save looks like nothing
-   *  happened, and the operator walks away believing her lines are stored. */
+   *  happened, and the operator walks away believing the lines are stored. */
   error?: string | null;
   /** False while the config hasn't loaded — saving then REPLACES it with placeholders. */
   canSave?: boolean;
@@ -822,13 +933,16 @@ export function ScriptPackCard({ pack, text, setText, onSave, saving, saved, err
     <Card className="p-4 space-y-3">
       <div className="flex items-center gap-2">
         <BookOpen size={16} />
-        <h3 className="text-sm font-medium">Her lines — already written, edit if you want</h3>
+        <h3 className="text-sm font-medium">
+          The lines — already written, edit if you want
+        </h3>
       </div>
       <p className="text-xs text-fg-dim leading-relaxed">
-        These are the words she uses at each moment of a sale. They ship filled in, so
-        you can leave every box alone and just attach your content above. One line per
-        row — she picks one at random. Empty a box and she goes back to the lines that
-        ship with the app. <span className="font-mono text-accent">{"{name}"}</span> becomes
+        These are the words sent at each moment of a sale, in this account&apos;s own
+        voice. They ship filled in, so you can leave every box alone and just attach
+        your content above. One line per row — one is picked at random. Empty a box
+        and the lines that ship with the app come back.{" "}
+        <span className="font-mono text-accent">{"{name}"}</span> becomes
         the fan&apos;s name, <span className="font-mono text-accent">{"{price}"}</span> the price.
       </p>
 
@@ -841,7 +955,7 @@ export function ScriptPackCard({ pack, text, setText, onSave, saving, saved, err
             <div key={slot} className="rounded-lg border border-border bg-bg-elev-1 p-3 space-y-1.5">
               <div className="flex items-baseline gap-2 flex-wrap">
                 <span className="text-xs font-mono text-fg">{slot}</span>
-                <span className="text-[11px] text-fg-dim">· {SLOT_HELP[slot] ?? ""}</span>
+                <span className="text-[11px] text-fg-dim">· {help[slot] ?? ""}</span>
                 <div className="flex-1" />
                 <span className="text-[11px] text-fg-dim/70">
                   {linesOf(cur).length || shipped.length} line(s)
@@ -860,7 +974,7 @@ export function ScriptPackCard({ pack, text, setText, onSave, saving, saved, err
                 onChange={(e) => setText(slot, e.target.value)} />
               {linesOf(cur).length === 0 && (
                 <div className="text-[11px] text-fg-dim/70">
-                  Empty — she&apos;ll use the {shipped.length} line(s) that ship with the app.
+                  Empty — the {shipped.length} line(s) that ship with the app are used.
                 </div>
               )}
             </div>
@@ -1053,6 +1167,12 @@ export function useSellerConfig(accountId: string | null) {
     // moved and wouldn't have.
     out.sleep_window = base.sleep_window ?? null;
     out.rhythm_pace_curve = base.rhythm_pace_curve ?? null;
+    // Same nullable-list shape as the pace curve, and the same reason: null is
+    // both "reset me to the shipped cycle" and the default, so the sparse pass
+    // above cannot tell a reset from a no-op. Getting it wrong here leaves the
+    // OLD cycle stored — i.e. an account that keeps going dark on days the
+    // operator thought they had just cleared.
+    out.rhythm_ghost_cycle = base.rhythm_ghost_cycle ?? null;
     out.rhythm_sleep_source = base.rhythm_sleep_source ?? "default";
     out.script_pack_overrides = packOverrides;
     return out as AiChatterConfig;
@@ -1074,19 +1194,28 @@ export function useSellerConfig(accountId: string | null) {
     saveCfgM.mutate({ config: buildSparse(base), timezone: tz.trim() || null });
   };
 
+  /** The starter templates, resolved for the account's lane by the server. `[]`
+   *  until the response lands, which the button already handles (nothing to add). */
+  const starterSingles = useMemo(
+    () => cfgQ.data?.starter_singles ?? [], [cfgQ.data?.starter_singles]);
+
+  /** {slot: "when it fires"}, from the server beside the slots it names. */
+  const slotHelp = useMemo(
+    () => cfgQ.data?.slot_help ?? {}, [cfgQ.data?.slot_help]);
+
   return {
-    cfgQ, saveCfgM, configLoaded, eff, cfg, setCfg, set, tz, setTz,
+    cfgQ, saveCfgM, configLoaded, eff, cfg, setCfg, set, tz, setTz, starterSingles, slotHelp,
     shippedPack, packText, setPackText, packOverrides, sparseCfg, saveCfg,
   };
 }
 
-/** Texting-style opt-ins (girl voice / typos / non-native) — the style_config_json
+/** Texting-style opt-ins (human style / typos / non-native) — the style_config_json
  *  store the Auto Convo tab + rule editor use. Chatter-tab only, but shared here so
  *  the load/save shape is written once. */
 export function useSellerStyle(accountId: string | null) {
   const styleQ = useStyleConfig(accountId);
   const saveStyleM = useSaveStyleConfig(accountId);
-  const [girlStyle, setGirlStyle] = useState(false);
+  const [humanStyle, setHumanStyle] = useState(false);
   const [typosOn, setTyposOn] = useState(false);
   const [nonnativeOn, setNonnativeOn] = useState(false);
   const [catStickers, setCatStickers] = useState(true);
@@ -1094,7 +1223,7 @@ export function useSellerStyle(accountId: string | null) {
   const [spacingOn, setSpacingOn] = useState(true);
   useEffect(() => {
     const c = { ...(styleQ.data?.defaults ?? {}), ...(styleQ.data?.config ?? {}) } as Record<string, unknown>;
-    setGirlStyle(Boolean(c["ai_chatter"]));
+    setHumanStyle(Boolean(c["ai_chatter"]));
     setTyposOn(Boolean(c["typos_ai_chatter"]));
     setNonnativeOn(Boolean(c["nonnative_ai_chatter"]));
     // account-wide, default ON — absent (older relay) still renders checked
@@ -1107,11 +1236,11 @@ export function useSellerStyle(accountId: string | null) {
     setSpacingOn(c["nonnative_spacing_ai_chatter"] !== false);
   }, [styleQ.data]);
   const saveStyle = () => saveStyleM.mutate({
-    ai_chatter: girlStyle, typos_ai_chatter: typosOn, nonnative_ai_chatter: nonnativeOn,
+    ai_chatter: humanStyle, typos_ai_chatter: typosOn, nonnative_ai_chatter: nonnativeOn,
     cat_stickers: catStickers, consistency_ai_chatter: consistencyOn,
     nonnative_spacing_ai_chatter: spacingOn,
   });
-  return { saveStyleM, girlStyle, setGirlStyle, typosOn, setTyposOn, nonnativeOn, setNonnativeOn,
+  return { saveStyleM, humanStyle, setHumanStyle, typosOn, setTyposOn, nonnativeOn, setNonnativeOn,
            catStickers, setCatStickers, consistencyOn, setConsistencyOn,
            spacingOn, setSpacingOn, saveStyle };
 }

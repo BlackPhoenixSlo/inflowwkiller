@@ -60,8 +60,38 @@ _MARKER_RE = re.compile(r"\s*\b" + MARKER + r"\s*$", re.I)
 # but it does get accepted, so it is an order.
 MIN_CENTS = 10_000
 
+# The CEILING the chatter may quote — operator ruling 2026-08-04: *"price is
+# 100-400 for voice custom"*.
+#
+# ⚠️ THE FLOOR AND THE ASK ARE ONE POLICY, AND THEY USED TO LIVE IN DIFFERENT
+# HALVES OF THE SYSTEM. `MIN_CENTS` is what makes a tip an ORDER on the WATCH
+# side; nothing on the SELL side named a figure at all, so the model picked one.
+# A model that asks for $30 gets paid $30, `qualifies` says no, the nickname is
+# never marked, and the fan waits for a voice note nobody was ever told to
+# record. Silent, and it costs the fan money — so the band ships with the
+# permission for the same reason the fence does.
+MAX_CENTS = 40_000
+
 # Only a DM tip. `tip_post`/`tip_stream` are generosity, not an order.
 ORDER_KINDS = ("tip",)
+
+
+# The price sentence spliced onto `_voice.CUSTOMS_CONDITIONS`, so every surface
+# that may OFFER a custom also names what it costs. Built from the two constants
+# above rather than written out, so the figure the model quotes and the figure
+# `qualifies` accepts cannot be edited apart.
+#
+# The amount is the LENGTH, not the quantity — see the module docstring: the
+# transcript that priced this feature shows $200 buying ONE longer piece, not two
+# shorter ones. Leading space: it joins the end of a sentence.
+PRICE_RULE = (
+    f" IT COSTS ${MIN_CENTS // 100}-${MAX_CENTS // 100}. The amount is the "
+    f"LENGTH — ${MIN_CENTS // 100} buys a short one, ${MAX_CENTS // 100} the "
+    "longest — so quote a real number inside that range when you name a price. "
+    f"NEVER go below ${MIN_CENTS // 100}: a smaller tip does not buy a custom, "
+    "and taking one means he pays and gets nothing. Never discount it, never "
+    "offer a cheaper short version or a free sample, and never apologise for it."
+)
 
 
 def is_owed(nickname: str | None) -> bool:

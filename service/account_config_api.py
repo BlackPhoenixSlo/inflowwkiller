@@ -31,7 +31,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import llm_client
 from auth import assert_account_owned
 from automations._persona import PERSONA_FACT_FIELDS, PERSONA_FACTS_OPERATOR_ONLY
-from brain_defaults import BRAIN_DEFAULTS
+from brain_defaults import brain_defaults
 from db.engine import get_session
 from db.models import AccountAiConfig
 from geo_timezones import resolve_timezone_for_place
@@ -52,7 +52,9 @@ PURPOSES: tuple[str, ...] = (
 # Languages the account can be set to. The code is the routing/guard key; the label is
 # for the editor dropdown. Sourced from the language layer so there's one list.
 from automations._language import KNOWN_LANGS, LANG_DISPLAY, norm_lang  # noqa: E402
-from automations._voice import VOICE_HER, VOICE_HIM, norm_voice, parse_voice  # noqa: E402
+from automations._voice import (  # noqa: E402
+    VOICE_HER, VOICE_HIM, fact_labels, fact_placeholders, norm_voice, parse_voice,
+    pronouns as _voice_pronouns)
 LANGUAGES: tuple[dict, ...] = tuple(
     {"code": c, "label": LANG_DISPLAY.get(c, c)} for c in KNOWN_LANGS
 )
@@ -81,15 +83,30 @@ def _persona_facts_operator_only() -> frozenset[str]:
     return PERSONA_FACTS_OPERATOR_ONLY
 
 
-def _persona_fact_meta() -> list[dict[str, Any]]:
+def _persona_fact_meta(voice: object) -> list[dict[str, Any]]:
     """The creator-canon fields as editor metadata: {key, label, operator_only,
     placeholder}. Single source of truth — the BrainPanel renders entirely from
     this. The placeholder rides along because a separate 26-key map in TypeScript
-    is a second enumeration to forget."""
-    from automations._persona import PERSONA_FACT_PLACEHOLDERS
+    is a second enumeration to forget.
+
+    LANED. `_voice.fact_labels` exists precisely to override the gendered labels
+    ("Why she started OF"), and it had exactly one caller — the PROMPT. So the model
+    was told "why HE started OF" while the operator filling the box read "why SHE
+    started OF", on the same field, on the same account. Labels are what the operator
+    types AGAINST; a female label is an instruction to write female canon into a male
+    account's prompt."""
     operator_only = _persona_facts_operator_only()
-    return [{"key": k, "label": label, "operator_only": k in operator_only,
-             "placeholder": PERSONA_FACT_PLACEHOLDERS.get(k, "")}
+    # Both lane columns come from `_voice`, which owns text that reads differently
+    # per lane. Placeholders are indexed, not `.get`-with-a-default: the table is
+    # total for every declared slot (`_voice.assert_canon_parity`, at import), so
+    # there is no "this lane has no answer" case for the loop to invent one for —
+    # and no way to spell "fall through to the other lane", which is how her copy
+    # reached his boxes twice already. Labels ARE `.get`, because 21 of the 26
+    # declared ones name the field rather than the creator; the gendered five are
+    # bound by the same import-time assert.
+    labels, placeholders = fact_labels(voice), fact_placeholders(voice)
+    return [{"key": k, "label": labels.get(k, label),
+             "operator_only": k in operator_only, "placeholder": placeholders[k]}
             for k, label in _persona_fact_fields()]
 
 
@@ -145,13 +162,40 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     async with get_session() as s:
         row = await s.get(AccountAiConfig, account_id)
+    cfg = _serialize(row)
+    # Built once per lane, and the SINGULAR fields below are indexed out of these
+    # rather than recomputed. Two calls that "obviously" agree are still two
+    # answers to one question: nothing forced `defaults == defaults_by_voice[voice]`,
+    # and it was that possible disagreement the client then had to defend against.
+    # Indexing makes the agreement structural and drops three `deepcopy`s and two
+    # 26-row builds per request on the way.
+    brains = {v: brain_defaults(v) for v in (VOICE_HER, VOICE_HIM)}
+    canon = {v: _persona_fact_meta(v) for v in (VOICE_HER, VOICE_HIM)}
     return {
         "account_id": account_id,
-        "config": _serialize(row),
-        # The Ava-derived starter brain (no images). The editor seeds a blank
-        # account from this and the "Reset to defaults" button refills from it —
-        # so every model has a worked example to show, not an empty form.
-        "defaults": BRAIN_DEFAULTS,
+        "config": cfg,
+        # The starter brain (no images), RESOLVED for this account's lane. The
+        # editor seeds a blank account from this and the "Reset to defaults"
+        # button refills from it — so every model has a worked example to show,
+        # not an empty form.
+        #
+        # It served the Ava capture unconditionally, three lines under a
+        # `_serialize` that already reports the voice correctly. Reset is the
+        # sharp end: BrainPanel's `defaultsWithImages` preserves `voice` across a
+        # refill but copies the persona and the six time-of-day lines wholesale,
+        # so one click turned a male account into a 22-year-old woman with the
+        # right value still in the voice dropdown. 2024813 was seeded that way
+        # and ran her yoga/beach/cat lines under a red-pill-dom persona.
+        "defaults": brains[cfg["voice"]],
+        # Both lanes, because "Reset to defaults" must follow the CREATOR DROPDOWN,
+        # not the stored column. The dropdown writes local form state; the column
+        # only moves on Save. So switching to Male and pressing Reset — the exact
+        # flow the male starter brain was built for — refilled with Ava, and the
+        # panel had no way to know better: the lane had already been resolved away
+        # server-side. The singular above stays for the readers that have no
+        # dropdown (the blank-account seed, the chat drawer's canon list), which
+        # genuinely want the stored lane.
+        "defaults_by_voice": brains,
         "slots": list(TIME_SLOTS),
         "model_options": _model_options(),
         "purposes": list(PURPOSES),
@@ -160,7 +204,12 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         # purposes / languages above. The editor renders straight off this, so
         # the 26-field list has ONE home — a duplicated copy in the UI would
         # drift silently and give an operator a box that never reaches a fan.
-        "persona_fact_fields": _persona_fact_meta(),
+        "persona_fact_fields": canon[cfg["voice"]],
+        # Per lane, for the same reason `defaults_by_voice` is: the Creator dropdown
+        # is local form state until Save, so a panel that only ever saw the STORED
+        # lane relabels "Why she started OF" one Save too late — after the operator
+        # has already filled the box under the wrong prompt.
+        "persona_fact_fields_by_voice": canon,
     }
 
 
@@ -221,7 +270,7 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     #
     # The Brain panel now has a Creator dropdown and always sends this key, so the
     # rule is belt-and-braces for that caller. It still matters for the others:
-    # BRAIN_DEFAULTS carries no `voice`, so any client rebuilding a config object
+    # The starter brains carry no `voice`, so any client rebuilding a config object
     # from the defaults posts without it, and a settings-transfer import of a
     # pre-lane backup would otherwise clear a male account back to female.
     #
@@ -362,53 +411,76 @@ _ENRICH_KEYS = ", ".join(
     k for k, _ in PERSONA_FACT_FIELDS if k not in PERSONA_FACTS_OPERATOR_ONLY
 )
 
-_ENRICH_SYSTEM = (
-    "You fill in the background profile of an OnlyFans creator persona so her "
-    "chat AI never has to improvise an answer about herself and contradict it "
-    "later. You are given her existing persona text and any facts already "
-    "confirmed. Respond with a SINGLE JSON object and nothing else.\n"
-    "RULES:\n"
-    "- Anything the persona already states, COPY EXACTLY. Never change a stated "
-    "fact — those are locked.\n"
-    "- Fill only what is MISSING, and stay strictly consistent with what is "
-    "stated (a persona that says Argentina gets an Argentine city, never a "
-    "Chilean one).\n"
-    "- You are AUTHORING a persona, not extracting facts about a real person. So "
-    "where the persona is silent, INVENT something ordinary and plausible and "
-    "commit to it — a home city, who she lives with, whether she has kids, a "
-    "sentence about her childhood. Leaving these blank is the WORST outcome, not "
-    "the safe one: the chat AI will then improvise a DIFFERENT answer every time "
-    "a fan asks, and fans notice. A committed invention beats an improvised one.\n"
-    "- Keep every value SHORT and concrete: a city name, one clause, a plain "
-    "phrase. `upbringing` is at most one sentence.\n"
-    "- Prefer a real, ordinary, plausible place a real person would be from. No "
-    "celebrities, no landmarks, nothing exotic or newsworthy.\n"
-    "- Use \"\" ONLY when a value would risk contradicting something already "
-    "stated. Never leave a slot empty merely because the persona did not spell it "
-    "out — that is the slot you are here to fill.\n"
-    "- Do NOT output a timezone, an offset, or a time — those are computed.\n"
-    "- NEVER output `tattoos` at all — not a description and not \"none\". Body "
-    "art is visible in her photos, so both an invented tattoo and a wrongly "
-    "denied one are things a fan can see are false.\n"
-    "- `birthday` must agree with `age`. `height` in both cm and feet if stated.\n"
-    "- These are also rapport material, not just a consistency check: `music`, "
-    "`travel`, `dreams`, `her_type` and `school` are what she RELATES to a fan "
-    "with, so make them specific enough to start a conversation ('grunge, mostly "
-    "Alice in Chains' beats 'rock').\n"
-    # DERIVED, never retyped. This list used to be a literal spelled out three
-    # lines below the two constants it restates — both imported at the top of this
-    # file — so adding a 27th fact meant editing two places and only one of them
-    # was enforced anywhere. They had not drifted yet; that is the only reason
-    # this is a cheap fix rather than a bug hunt.
-    f"Keys: {_ENRICH_KEYS}.\n"
-    "NEVER output `kinks`, `limits` or `tattoos` — the first two are the "
-    "creator's own business decision, and the third is visible in her photos."
-)
+def _enrich_system(voice: object) -> str:
+    """The 🪄 Enrich system prompt, LANED.
+
+    ⚠️ This is the male lane's ONLY canon-authoring path — `brain_defaults`
+    deliberately ships `persona_facts: {}` on both starter brains because Enrich
+    is what fills them — and its output lands, after one operator Save, inside
+    `_persona`'s "THESE ARE THE FACTS ABOUT YOU … you must never say anything
+    that contradicts them". It shipped hardcoded female through eleven review
+    rounds: the labels beside the boxes said "Why he started OF" while the model
+    filling them was told nine times that its subject was a woman. A model handed
+    a male persona in the user turn and a female subject as a system RULE takes
+    the rule — the same argument `_voice.py`'s header opens with.
+
+    `voice` is REQUIRED, deliberately. A default would read as "caller didn't
+    say ⇒ female", which is how this got here; with no default the interpreter is
+    the guard and a new call site cannot forget."""
+    p = _voice_pronouns(voice)
+    return (
+        "You fill in the background profile of an OnlyFans creator persona so "
+        f"{p.possessive} chat AI never has to improvise an answer about "
+        f"{p.reflexive} and contradict it later. You are given {p.possessive} "
+        "existing persona text and any facts already confirmed. Respond with a "
+        "SINGLE JSON object and nothing else.\n"
+        "RULES:\n"
+        "- Anything the persona already states, COPY EXACTLY. Never change a "
+        "stated fact — those are locked.\n"
+        "- Fill only what is MISSING, and stay strictly consistent with what is "
+        "stated (a persona that says Argentina gets an Argentine city, never a "
+        "Chilean one).\n"
+        "- You are AUTHORING a persona, not extracting facts about a real "
+        "person. So where the persona is silent, INVENT something ordinary and "
+        "plausible and commit to it — a home city, who "
+        f"{p.subject} lives with, whether {p.subject} has kids, a sentence about "
+        f"{p.possessive} childhood. Leaving these blank is the WORST outcome, "
+        "not the safe one: the chat AI will then improvise a DIFFERENT answer "
+        "every time a fan asks, and fans notice. A committed invention beats an "
+        "improvised one.\n"
+        "- Keep every value SHORT and concrete: a city name, one clause, a plain "
+        "phrase. `upbringing` is at most one sentence.\n"
+        "- Prefer a real, ordinary, plausible place a real person would be from. "
+        "No celebrities, no landmarks, nothing exotic or newsworthy.\n"
+        "- Use \"\" ONLY when a value would risk contradicting something already "
+        "stated. Never leave a slot empty merely because the persona did not "
+        "spell it out — that is the slot you are here to fill.\n"
+        "- Do NOT output a timezone, an offset, or a time — those are computed.\n"
+        "- NEVER output `tattoos` at all — not a description and not \"none\". "
+        "Body art is visible in "
+        f"{p.possessive} photos, so both an invented tattoo and a wrongly denied "
+        "one are things a fan can see are false.\n"
+        "- `birthday` must agree with `age`. `height` in both cm and feet if "
+        "stated.\n"
+        "- These are also rapport material, not just a consistency check: "
+        "`music`, `travel`, `dreams`, `her_type` and `school` are what "
+        f"{p.subject} RELATES to a fan with, so make them specific enough to "
+        "start a conversation ('grunge, mostly Alice in Chains' beats 'rock').\n"
+        # DERIVED, never retyped. This list used to be a literal spelled out three
+        # lines below the two constants it restates — both imported at the top of
+        # this file — so adding a 27th fact meant editing two places and only one
+        # of them was enforced anywhere. They had not drifted yet; that is the
+        # only reason this is a cheap fix rather than a bug hunt.
+        f"Keys: {_ENRICH_KEYS}.\n"
+        "NEVER output `kinks`, `limits` or `tattoos` — the first two are the "
+        "creator's own business decision, and the third is visible in "
+        f"{p.possessive} photos."
+    )
 
 
 class EnrichBody(BaseModel):
     account_id: str
-    # Optional operator steer, e.g. "she's from Rosario, lives with a roommate".
+    # Optional operator steer, e.g. "from Rosario, lives with a roommate".
     hint: str | None = None
 
 
@@ -435,11 +507,15 @@ async def enrich_account_config(body: EnrichBody = Body(...)) -> dict[str, Any]:
         "already_confirmed": known,
         "operator_hint": (body.hint or "").strip(),
     }
-    model = row.model or BRAIN_DEFAULTS.get("model") or "deepseek-v4-flash"
+    voice = norm_voice(row.voice)
+    # `model` does not vary by lane (the test pins it equal), but passing the row's
+    # voice anyway keeps this off the list of calls that take the shipped lane by
+    # DEFAULT — the distinction the guard exists to make is "chose it" vs "didn't say".
+    model = row.model or brain_defaults(voice).get("model") or "deepseek-v4-flash"
     try:
         res = await llm_client.chat(
             model=model,
-            messages=[{"role": "system", "content": _ENRICH_SYSTEM},
+            messages=[{"role": "system", "content": _enrich_system(voice)},
                       {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
             purpose="enrich_persona",
             account_id=body.account_id,

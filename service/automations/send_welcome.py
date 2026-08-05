@@ -90,7 +90,6 @@ from db.engine import get_session
 from db.models import AccountAiConfig, Fan, FanProfile, Message, WelcomeSent
 from llm_client import LLMCapExceeded
 
-from . import _voice
 
 log = logging.getLogger("of-relay.automation.send_welcome")
 

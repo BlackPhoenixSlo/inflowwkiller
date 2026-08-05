@@ -109,6 +109,15 @@ _DEFAULTS: dict = {
     # the dup-charge SCANNER; this is the decline-policy consequence — the fan is
     # never ghosted over a classifier verdict, he gets a de-escalation apology.
     "on_hard_decline": True,
+    # How many EXTRA free turns the objection-triggered apology gets after its
+    # opening one (operator ruling 2026-08-05: "i like this more steps each time").
+    # 0 restores the original single turn.
+    #
+    # More turns is not a drip: `_advance_phase` sends the next piece only after HE
+    # writes back, so the exchange is paced by his own engagement and closes itself
+    # to an operator if he goes quiet. A price is never appended in this lane —
+    # `steps` here cannot contain `ppv`, whatever `ppv_folder` says.
+    "apology_free_steps": 2,
 }
 
 # Warm, human apology openers (bubble 1), keyed to the MISTAKE so the words match
@@ -132,6 +141,37 @@ _APOLOGY_FRAMES = {
         "ok {name} you're right and i'm sorry 💕 forget the unlocks, that was pushy of me. i'd rather just have you here",
         "hey {name}, i'm sorry if i made this feel like a cash grab 🙈 that's not what i want with you. no more pushing, promise",
     ],
+    # He paid for something he'd already seen, or that is free on the public page.
+    # These get their OWN frames because the `hard_decline` set above answers a
+    # different sentence: it apologises for PUSHING, and he is not complaining
+    # about being pushed — he is telling us we charged him for something that was
+    # already his. An apology aimed at the wrong grievance reads as not listening,
+    # which is exactly what the seller did for four bubbles in the 08-04 incident.
+    #
+    # ⚠️ None of these argues the content. "that set really is different" may even
+    # be TRUE — it does not matter, and saying it is what turned a $8.28 complaint
+    # into a fight. He believes he paid twice for the same thing; the only move is
+    # to own it and stop charging. Same no-refund-promise rule as every pool here.
+    "content_dispute": [
+        "oh no {name} 🙈 if you'd already seen those then i've charged you for nothing and that's completely on me, i'm sorry",
+        "{name} i'm so sorry 🥺 you shouldn't be paying me for stuff you've already got — that's my mistake, not yours",
+        "ugh {name} you're right and i feel awful 💕 i should be checking what you've already seen before i send you anything paid",
+    ],
+    # He paid, it WAS new, and it still wasn't what he hoped for. Nothing was
+    # double-charged, so none of these may say it was: "you got charged twice" at a
+    # man who is simply disappointed is a false admission about his money AND an
+    # answer to a question he never asked.
+    #
+    # ⚠️ No line here defends the content, and none of them promises a specific
+    # thing next time. Measured on prod, the fans in this class say exactly what
+    # they wanted ("didn't see any dick in those", "only showed me the side boob of
+    # one titty") — the recovery is to hear it and hand him something, not to argue
+    # that the set was good or to book a custom she may not deliver.
+    "content_letdown": [
+        "aw {name} i'm sorry that one missed 🙈 that's on me for not reading you better — let me make it up to you",
+        "{name} i hear you 🥺 that wasn't what you were hoping for and i'd rather know than have you not say it",
+        "ugh sorry {name} 💕 not my best call on what to send you. tell me what you actually want to see",
+    ],
 }
 _DEFAULT_APOLOGY_KIND = "dup_charge"
 # Bubble 2 lead-in for the FIRST free gift (rides the apology).
@@ -144,7 +184,11 @@ _GIFT_LEADS = [
 _FREE_LEADS = [
     "here's another one just because 🥰",
     "and this one too, on me 😘",
-    "take this one as well babe 💕",
+    # `{name}`, not a literal "babe" — these leads are substituted like every other
+    # pool here. With a one-turn exchange the line was rare; at three turns it lands
+    # on most recoveries, and calling a man "babe" two bubbles after the apology
+    # used his actual name is the tell that nobody is really there.
+    "take this one as well {name} 💕",
     "one more little treat for you 🙈",
 ]
 # The soft pivot back to selling — a priced tease after we've made things right.
@@ -197,6 +241,22 @@ _APOLOGY_FRAMES_HIM = {
         "understood {name}. i pushed too hard on the paid stuff. thats done. youre still welcome here",
         "heard you {name}. no more unlocks, no more asks. id rather keep the conversation",
         "{name} you said it straight and you were right to. im done selling at you",
+    ],
+    # He owns the error and stops — he does not perform feeling awful about it,
+    # and he does not defend the content. See the female twin for why arguing the
+    # set is the one move that cannot be made here.
+    "content_dispute": [
+        "{name} you paid for something you already had. thats my error. it doesnt happen again",
+        "youre right {name}. i charged you for what you already own. mine to fix, and im fixing it",
+        "{name} i should have checked what youd already seen. i didnt. thats on me",
+    ],
+    # He names the miss and asks what the man wanted — he does not perform regret
+    # and he does not defend the set. Same no-billing-admission rule as the female
+    # twin: nothing here says he was charged twice, because he wasn't.
+    "content_letdown": [
+        "{name} that one missed. my call, not your fault. tell me what you actually want",
+        "not what you were after {name}. noted. what should i have sent",
+        "{name} i read that wrong. say what you want to see and ill sort it",
     ],
 }
 # ⚠️ The four pools below carry NO {name}, exactly like their female twins, even
@@ -886,6 +946,15 @@ async def _do_step(client, account_id: str, fan_id: int, action: str, cfg: dict,
     if action == "free":
         gift = await _pull_unseen(client, account_id, fan_id,
                                   _free_folders(cfg, tip_cfg, 0), per_step)
+        if not gift:
+            # Nothing fresh left to give — no tip library, or he has seen it all.
+            # Advance WITHOUT sending: every line in this pool promises a gift
+            # ("and this one too, on me 😘"), and delivering that with nothing
+            # attached is a second empty promise to a fan who is already unhappy.
+            # Silence here just makes the exchange one turn shorter, which is the
+            # honest outcome when there is nothing to hand him. (The apology turn
+            # already works this way — it appends its gift bubble only `if gift`.)
+            return True, []
         lead = rng.choice(_lane("free", _v)).replace("{name}", name)
         ok, _ = await _send_bubbles(client, account_id, fan_id,
                                     [{"text": lead, "media": gift, "price_cents": 0}],
@@ -970,7 +1039,7 @@ async def _open_exchange(client, account_id: str, fan_id: int, incident: dict,
 
 async def _advance_phase(account_id: str, cfg: dict, tip_cfg: dict, client, wpm,
                          indicator, now: datetime, only_fan_ids: set[int] | None,
-                         stats: dict) -> None:
+                         stats: dict, *, apology_only: bool = False) -> None:
     """Continue every IN-PROGRESS exchange whose fan replied since the last step —
     or, if he's gone quiet, nudge once then close to an operator. Reply-driven; the
     webhook enqueues this fan-scoped right after his DM, the periodic sweep catches
@@ -989,6 +1058,12 @@ async def _advance_phase(account_id: str, cfg: dict, tip_cfg: dict, client, wpm,
         if fid in hard_excl:
             continue
         rem = _parse_rem(r)
+        # `apology_only` = the dup-charge SCANNER is switched off, so only the
+        # objection lane's own exchanges may continue. `trigger_message_id` is the
+        # marker: `_run_payload_apology` is the only writer of it. Without this the
+        # operator's scanner off-switch would silently resume scanner exchanges.
+        if apology_only and rem.get("trigger_message_id") is None:
+            continue
         steps = rem.get("steps") or _build_steps(cfg)
         step = int(rem.get("step") or 0)
         last_iso = rem.get("last_step_at")
@@ -1060,14 +1135,26 @@ async def _advance_phase(account_id: str, cfg: dict, tip_cfg: dict, client, wpm,
                 await ax.release_fan_lease(account_id, fid)
 
 
-async def _run_hard_decline(account_id: str, cfg: dict, hd: dict, *,
+async def _run_payload_apology(account_id: str, cfg: dict, hd: dict, *,
                             dry_run: bool, now: datetime) -> dict:
-    """The decline-policy consequence (07-23): a fan the classifier read as
-    chargeback/report/unsubscribe gets ONE de-escalation apology turn (+ the
-    usual free piece), never permanent silence. Payload-triggered by ai_chatter's
+    """The payload-triggered apology lane. Originally (07-23) just the decline
+    consequence: a fan the classifier read as chargeback/report/unsubscribe gets ONE
+    de-escalation apology turn (+ the usual free piece), never permanent silence.
+
+    It now carries every `_objection` verdict, including `content_letdown`, which is
+    NOT a hard decline at all — the payload key stays `hard_decline` because it is a
+    stable wire name between the two modules, but the `reason` inside it is the
+    truth. Whatever the sub-class, the shape here is identical: one turn, one
+    apology, no price. Payload-triggered by ai_chatter's
     hard-decline handler — there is no detector; the classifier verdict IS the
     incident. One turn, closes immediately: no nudges, no PPV pivot (a priced
     tease at a man who just said "scam" would be the mistake, not the fix).
+
+    The payload may name a `reason` (08-04) — the decline SUB-CLASS, so the
+    apology answers the sentence he actually wrote. Today that is
+    `content_dispute`; anything unrecognised degrades to the generic
+    de-escalation rather than guessing, and the reason is what lands in the
+    ledger's `kind` column for the operator reading it back.
 
     Runs INDEPENDENT of `enabled`/`auto_send` (those gate the dup-charge
     scanner); its own gate is `on_hard_decline` (default ON). Idempotent per
@@ -1077,10 +1164,22 @@ async def _run_hard_decline(account_id: str, cfg: dict, hd: dict, *,
     contact guard and the routine pause column must not eat the apology."""
     fan_id = int(hd["fan_id"])
     trigger_mid = hd.get("message_id")
+    # Keyed by the TRIGGER, never by the sub-class: two reads of the same inbound
+    # (a webhook replay, or a sweep re-classifying it after the regexes change)
+    # must collide even if they disagree about which apology it deserves. A
+    # `content_dispute:` prefix would let exactly that pair double-apologise.
     incident_key = (f"hard_decline:{int(trigger_mid)}" if trigger_mid
                     else "hard_decline:{}:{}".format(fan_id, now.strftime("%Y%m%d%H")))
+    # An unknown reason must not silently reach _apology_bubbles' `.get(kind) or
+    # dup_charge` fallback — a fan who disputed a charge would be told "you got
+    # charged twice", which is a different (and false) admission.
+    kind = str(hd.get("reason") or "").strip() or "hard_decline"
+    if kind not in _APOLOGY_FRAMES or kind not in _APOLOGY_FRAMES_HIM:
+        log.warning("make_right unknown hard-decline reason %r account=%s fan=%s "
+                    "— using the generic de-escalation", kind, account_id, fan_id)
+        kind = "hard_decline"
     base = {"status": "ok", "mode": "hard_decline", "fan_id": fan_id,
-            "incident_key": incident_key}
+            "kind": kind, "incident_key": incident_key}
     if not cfg.get("on_hard_decline", True):
         return {**base, "action": "disabled"}
     if await _incident_seen(account_id, incident_key):
@@ -1088,7 +1187,7 @@ async def _run_hard_decline(account_id: str, cfg: dict, hd: dict, *,
 
     # Only what _log_incident / _open_exchange actually read (kind, incident_key,
     # wrongful_cents) — the trigger message rides in rem_extra into the ledger.
-    incident = {"kind": "hard_decline", "fan_id": fan_id,
+    incident = {"kind": kind, "fan_id": fan_id,
                 "incident_key": incident_key, "wrongful_cents": 0}
     cap = max(1, int(cfg.get("per_fan_cap") or 2))
     if await _resolved_count(account_id, fan_id) >= cap:
@@ -1106,12 +1205,30 @@ async def _run_hard_decline(account_id: str, cfg: dict, hd: dict, *,
         return {**base, "action": "excluded"}
 
     tip_cfg = await tip_reward._load_config(account_id)
+    # The recovery runs longer than one turn (`apology_free_steps`), and every turn
+    # past the first is REPLY-DRIVEN: `_advance_phase` only moves when he writes
+    # back, nudges once at `nudge_hours`, and closes to an operator at
+    # `close_hours`. So a fan who says nothing gets exactly the opening turn.
+    #
+    # ⚠️ A HARD DECLINE STAYS ONE TURN, and that is not a config oversight. Those
+    # are the chargeback / report / unsubscribe words — the fan is not merely
+    # disappointed, he is threatening the account. More messages to him is how a
+    # complaint becomes a platform case; the de-escalation is to own it once and
+    # stop talking. Every other verdict (`content_letdown`, `content_dispute`,
+    # `paid_undelivered`) is an unhappy fan who is still engaged, and those are
+    # exactly the ones a longer recovery saves.
+    #
+    # `ppv` is deliberately NOT reachable from here whatever `ppv_folder` holds: a
+    # priced tease inside an apology is the mistake, not the fix.
+    extra = (0 if kind == "hard_decline"
+             else max(0, int(cfg.get("apology_free_steps") or 0)))
     steps = ["apology_gift" if cfg.get("open_with_gift") else "apology"]
+    steps += ["free"] * extra
     if dry_run:
         rng = Random(f"make_right:{account_id}:{incident_key}:0")
         return {**base, "dry_run": True, "action": "would_open", "steps": steps,
                 "apology": _apology_bubbles(
-                    fan, cfg, rng, "hard_decline",
+                    fan, cfg, rng, kind,
                     (await _load_voice_blocks(account_id)).voice)[0]}
 
     client = await asyncio.to_thread(ax._make_client, account_id)
@@ -1121,9 +1238,12 @@ async def _run_hard_decline(account_id: str, cfg: dict, hd: dict, *,
                                    cfg, tip_cfg, fan, wpm, indicator, now,
                                    rem_extra={"trigger_message_id": trigger_mid})
     if outcome == "opened":
-        log.info("make_right hard-decline apology sent account=%s fan=%s key=%s",
-                 account_id, fan_id, incident_key)
-        return {**base, "action": "opened", "resolved": True}
+        log.info("make_right apology opened account=%s fan=%s key=%s steps=%d",
+                 account_id, fan_id, incident_key, len(steps))
+        # `resolved` must mirror the ledger row. It was hardcoded True, which was
+        # accurate while this lane was always a single turn and became a lie the
+        # moment it could open a multi-turn exchange.
+        return {**base, "action": "opened", "resolved": len(steps) <= 1}
     if outcome == "lease_busy":
         return {**base, "action": "lease_busy"}
     return {**base, "status": "error", "action": "send_failed"}
@@ -1138,7 +1258,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     # Payload-triggered hard-decline apology — its own lane, its own gates.
     if payload.get("hard_decline"):
-        return await _run_hard_decline(account_id, cfg, payload["hard_decline"],
+        return await _run_payload_apology(account_id, cfg, payload["hard_decline"],
                                        dry_run=dry_run, now=now)
 
     # SENDING requires BOTH the master switch AND the auto-send opt-in. Detection
@@ -1156,7 +1276,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     only_fan_ids = {int(x) for x in only_raw} if only_raw else None
 
     tip_cfg = await tip_reward._load_config(account_id)
-    client = await asyncio.to_thread(ax._make_client, account_id) if (send_mode or dry_run) else None
+    # The objection lane opens MULTI-TURN exchanges (`apology_free_steps`) and is
+    # independent of the scanner's two switches — so its exchanges must be able to
+    # CONTINUE where the scanner is off, which is most accounts. Without this an
+    # apology could open and never advance: the fan gets turn one and the row sits
+    # in_progress until `close_hours` retires it to an operator, which reads to him
+    # as being dropped mid-recovery.
+    apology_advance = (not dry_run) and bool(cfg.get("on_hard_decline", True))
+    client = (await asyncio.to_thread(ax._make_client, account_id)
+              if (send_mode or dry_run or apology_advance) else None)
     wpm = await load_typing_wpm(account_id)
     indicator = await load_typing_indicator(account_id)
 
@@ -1166,9 +1294,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     preview: list[dict] = []
 
     # ── ADVANCE phase (real runs only) — continue open exchanges on his replies ──
-    if send_mode:
+    if send_mode or apology_advance:
         await _advance_phase(account_id, cfg, tip_cfg, client, wpm, indicator, now,
-                             only_fan_ids, stats)
+                             only_fan_ids, stats,
+                             apology_only=not send_mode)
 
     # ── OPEN phase — detect new double-charges and start an exchange ──
     incidents = await _detect_all(account_id, cfg, now, only_fan_ids)
@@ -1267,7 +1396,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             "kind": r.kind, "action": "in_progress",
                             "step": int(rem.get("step") or 0),
                             "steps": rem.get("steps") or []})
+        # The apology lane ADVANCES on this path too (it is independent of the
+        # scanner's switches), so its counters ride along — a run that really sent
+        # a recovery turn must not report itself as a pure preview.
         return {"dry_run": True, "preview_only_reason": preview_only_reason,
+                "advanced": stats["advanced"], "resolved": stats["resolved"],
+                "nudged": stats["nudged"], "closed_silent": stats["closed_silent"],
                 "candidates": stats["candidates"],
                 "would_open": sum(1 for p in preview if p["action"] == "would_open"),
                 "operator_only": sum(1 for p in preview if p["action"] == "operator_only"),

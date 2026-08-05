@@ -71,8 +71,8 @@ function StyleSection({ accountId }: { accountId: string | null }) {
         default; flip it on per automation. Turning it off restores the current
         behavior exactly. <strong>Realistic typos</strong> is an independent toggle:
         it slips in the occasional human thumb-typo (and sometimes a “*fix” bubble),
-        protecting names, prices and links. <strong>Non-native</strong> makes her
-        text like a non-native speaker — consistent signature misspellings (deterministic,
+        protecting names, prices and links. <strong>Non-native</strong> makes the
+        replies read like a non-native speaker&apos;s — consistent signature misspellings (deterministic,
         always-on when ticked) plus slightly broken grammar; names, prices and links
         are never touched.
       </p>
@@ -97,7 +97,7 @@ function StyleSection({ accountId }: { accountId: string | null }) {
           <span className="block text-sm">Fact-grounding (Auto Convo)</span>
           <span className="block text-[11px] text-fg-dim/70">
             Feeds the info-gather reply his gen_info profile — bio and notes — plus a
-            nudge to work in one specific detail, so a reply lands as “she remembers me”
+            nudge to work in one specific detail, so a reply lands as “they remember me”
             instead of generic. On by default; a fan with no profile yet is unaffected.
             His saved teases are sent separately, one at a time, at most one a day.
           </span>
@@ -110,8 +110,8 @@ function StyleSection({ accountId }: { accountId: string | null }) {
         <span className="space-y-0.5">
           <span className="block text-sm">Painful texting (brevity + emotion)</span>
           <span className="block text-[11px] text-fg-dim/70">
-            Frames every chat reply like a real girl half-glued to her phone: write the
-            fewest words that still land — short lines that punch the feeling, spend more
+            Frames every chat reply the way this account&apos;s own voice does — a real
+            person half-glued to a phone: write the fewest words that still land — short lines that punch the feeling, spend more
             only to stir him up or answer what he actually said, never a dead one-word
             filler. Applies to Auto Convo, AI Chatter, keep-warm and deep convo. On by
             default; untick to A/B it off.
@@ -155,7 +155,7 @@ function StyleSection({ accountId }: { accountId: string | null }) {
             <span className="block text-[11px] text-fg-dim/70">
               AI Chatter and Auto Convo replies can end with a cat reaction gif — and now
               and then the gif IS the reply (he says goodnight → just a sleepy kitten),
-              the way a real girl texts. Hand-picked pack of 89 real-cat gifs across 22
+              the way a real person texts. Hand-picked pack of 89 real-cat gifs across 22
               moods. On by default; untick to turn the pack off for this account.
             </span>
           </span>
@@ -167,7 +167,7 @@ function StyleSection({ accountId }: { accountId: string | null }) {
             value={form.cat_sticker_skip_pct ?? 0}
             onChange={(n) => set({ cat_sticker_skip_pct: n })} />
           <NumField label="Gif-only %" suffix="%"
-            hint="Chance she's nudged to answer with JUST the gif — it replaces the text."
+            hint="Chance the reply is JUST the gif — it replaces the text."
             min={0} max={100} disabled={form.cat_stickers === false}
             value={form.cat_sticker_solo_pct ?? 5}
             onChange={(n) => set({ cat_sticker_solo_pct: n })} />
@@ -187,7 +187,7 @@ function StyleSection({ accountId }: { accountId: string | null }) {
           <span className="w-20 text-center" title="Sometimes detach the '?' from the word before it — “you like it ?”. Part of the non-native register, so it only applies when Non-native is on; its own box because it is the one visible artifact you may want off while keeping the rest.">
             Space ?
           </span>
-          <span className="w-20 text-center" title="Before each reply sends, check it against what she has already told this fan and fix a contradiction. Costs a second AI call on replies that say something about her.">
+          <span className="w-20 text-center" title="Before each reply sends, check it against what this fan has already been told and fix a contradiction. Costs a second AI call on replies that say something about the creator.">
             Consistency
           </span>
         </div>

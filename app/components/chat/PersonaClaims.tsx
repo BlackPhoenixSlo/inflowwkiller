@@ -1,15 +1,15 @@
 "use client";
 
 /**
- * PersonaClaims — "what she told him", in the fan drawer.
+ * PersonaClaims — "what the creator told him", in the fan drawer.
  *
- * The chat engines record every self-claim she makes to a fan and paste the
+ * The chat engines record every self-claim the creator makes to a fan and paste the
  * merged result into the prompt as "you already told him this — never give him a
- * different version". A pre-send check then verifies her draft against it. All of
+ * different version". A pre-send check then verifies the draft against it. All of
  * that ran with no operator surface at all: a wrong claim could not be seen, let
  * alone corrected.
  *
- * WHAT THIS SHOWS is the merged block itself — every topic she has claimed, in
+ * WHAT THIS SHOWS is the merged block itself — every topic claimed so far, in
  * the prompt's own order and wording. The server builds it (`_persona
  * .resolved_claims`, the same function the prompt block renders), so this panel
  * displays what the AI is actually told instead of a second opinion about it.
@@ -19,8 +19,8 @@
  *
  * The first version of this panel led with three input boxes — age, location,
  * job. That was backwards: those three are the only topics with a PATCH-editable
- * mirror column, which is a storage detail, not a limit on what she can claim.
- * She can and does tell fans her nationality, her living situation, her pets —
+ * mirror column, which is a storage detail, not a limit on what can be claimed.
+ * Accounts do tell fans their nationality, living situation, pets —
  * all of which reach the prompt and none of which had a box. So the list leads,
  * and a row is editable when it happens to have a column behind it.
  *
@@ -40,8 +40,8 @@ export interface CanonFact { key: string; label: string; value: string }
 /** The canon half: the account's pinned facts, filled ones only, in the field
  *  contract's own order (which is "how often fans actually ask").
  *
- *  Filled-only because a blank slot is not something she has been told to say —
- *  it is a gap she will improvise into, and improvised answers are exactly what
+ *  Filled-only because a blank slot is not something the creator has been told to
+ *  say — it is a gap the model improvises into, and improvised answers are what
  *  shows up in the per-fan ledger below. Listing 26 empty rows on every fan would
  *  bury the three that matter. */
 export function canonFacts(
@@ -109,7 +109,7 @@ export function PersonaClaims({
         <summary className="flex cursor-pointer items-baseline justify-between gap-2 list-none">
           <span className="text-[11px] font-medium uppercase tracking-wide text-fg-dim
                            group-hover:text-fg">
-            Her facts · in every prompt
+            Creator facts · in every prompt
           </span>
           <span className="text-[10px] text-fg-dim tabular-nums">
             {canon.length || (cfgQ.isLoading ? "…" : "none set")}
@@ -117,9 +117,9 @@ export function PersonaClaims({
         </summary>
         {canon.length === 0 ? (
           <p className="mt-1.5 text-[11px] text-fg-dim">
-            No facts pinned for this model, so every answer about herself is
+            No facts pinned for this model, so every answer about the creator is
             improvised — and each one lands in the list below instead. Fill them
-            once under Automations → her brain (🪄 Enrich proposes them).
+            once under Automations → the brain (🪄 Enrich proposes them).
           </p>
         ) : (
           <ul className="mt-1.5 space-y-1">
@@ -133,11 +133,11 @@ export function PersonaClaims({
         )}
       </details>
 
-      {/* STEP 2 — what she improvised for THIS fan. */}
+      {/* STEP 2 — what was improvised for THIS fan. */}
       <div className="space-y-2">
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-[11px] font-medium uppercase tracking-wide text-fg-dim">
-          What she told him
+          What this fan was told
         </span>
         {rows.length > 0 && (
           <span className="text-[10px] text-fg-dim tabular-nums">{rows.length}</span>
@@ -146,8 +146,8 @@ export function PersonaClaims({
 
       {rows.length === 0 ? (
         <p className="text-[11px] text-fg-dim">
-          She hasn&apos;t told this fan anything about herself yet. Whatever she says
-          gets pinned here, so she can&apos;t give him a different version later.
+          This fan hasn&apos;t been told anything about the creator yet. Whatever gets
+          said is pinned here, so he can&apos;t be given a different version later.
         </p>
       ) : (
         <ul className="space-y-1.5">
@@ -164,13 +164,13 @@ export function PersonaClaims({
       {older.length > 0 && (
         <details className="pt-0.5">
           <summary className="cursor-pointer text-[11px] text-fg-dim hover:text-fg">
-            Earlier versions she gave ({older.length})
+            Earlier versions given ({older.length})
           </summary>
           <ul className="mt-1.5 space-y-1">
             {older.map((c, i) => (
               <li key={`${c.topic ?? "claim"}-${c.at ?? i}`}
                   className="text-[11px] leading-snug text-fg-dim line-through decoration-fg-dim/40">
-                {c.topic ?? "about her"}: {c.claim}
+                {c.topic ?? "about the creator"}: {c.claim}
                 {claimDate(c.at) && <span className="ml-1 tabular-nums">· {claimDate(c.at)}</span>}
               </li>
             ))}
@@ -180,8 +180,8 @@ export function PersonaClaims({
 
       {rows.length > 0 && (
         <p className="hidden md:block text-[10px] text-fg-dim">
-          This is exactly what her prompt is given. Rows with a pencil can be
-          corrected — the rest are recorded as she said them.
+          This is exactly what the prompt is given. Rows with a pencil can be
+          corrected — the rest are recorded as they were said.
         </p>
       )}
       </div>
@@ -240,7 +240,7 @@ function ClaimRow({
         <button
           type="button"
           onClick={() => setEditing(true)}
-          title={`Correct what she told him — this is what her prompt reads`}
+          title={`Correct what this fan was told — this is what the prompt reads`}
           aria-label={`Correct ${row.label}`}
           className="ml-auto shrink-0 text-fg-dim hover:text-accent focus:outline-none focus:text-accent"
         >

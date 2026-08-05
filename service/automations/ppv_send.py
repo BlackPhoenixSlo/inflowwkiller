@@ -849,7 +849,7 @@ def pick_feed_caption(ppv: dict, base_cents: int, lang: str = "en",
     from automations import _language
     feed_caps = [s for s in (ppv.get("feed_captions") or []) if isinstance(s, str) and s.strip()]
     if feed_caps:
-        return _pick_caption({"caption_texts": feed_caps}, base_cents), True
+        return _pick_caption({"caption_texts": feed_caps}, base_cents, voice=voice), True
     key = str(ppv.get("feed_caption_pool_key") or "").strip()
     if not (key and key in PPV_FEED_CAPTION_POOLS):
         key = _MSG_TO_FEED_POOL.get(str(ppv.get("caption_pool_key") or "").strip(), "feed_new_drop")
@@ -858,7 +858,7 @@ def pick_feed_caption(ppv: dict, base_cents: int, lang: str = "en",
     else:
         pool = (_language.localized(PPV_FEED_CAPTION_POOLS_BY_LANG, lang, key)
                 or PPV_FEED_CAPTION_POOLS[key])
-    return _pick_caption({"caption_texts": pool}, base_cents), True
+    return _pick_caption({"caption_texts": pool}, base_cents, voice=voice), True
 
 
 async def post_to_feed(account_id: str, ppv: dict, *, employee_id: int | None = None,

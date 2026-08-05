@@ -991,7 +991,7 @@ export default function VaultManagePanel() {
           <p className="text-[11px] text-emerald-200">
             Described and flagged. <b>{needsReview}</b>{" "}
             {needsReview === 1 ? "item looks" : "items look"} worth your eye — the
-            model disagrees with itself on them, or cannot say what is covering her.
+            model disagrees with itself on them, or cannot say what is covering the body.
           </p>
           <div className="flex gap-2 shrink-0">
             <button
