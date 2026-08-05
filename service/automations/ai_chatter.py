@@ -1553,9 +1553,27 @@ def _manifest_block(offerable: dict[int, CatalogItem],
     # surfaces had been tightened to ban durations too, so "give me an hour" was a
     # compliant reply here — on the one engine that actually closes the sale.
     _no_customs = "" if sell_customs else "never customs, "
+    # ⚠️ THE ">>OFFER SENTENCE IS LOAD-BEARING AND WAS MISSING. This branch hands
+    # the model TWO protocols — a catalogue with an >>OFFER id, and a permission to
+    # sell a custom — and said nothing about how they interact. Live generation on
+    # Ava (2026-08-05): asked for a voice note, the model wrote "$150 and it's all
+    # yours babe" and appended `>>OFFER 236`. Item 236 on that account is a $200
+    # VIDEO labelled "Custom / exclusive". The send path takes price and media from
+    # the catalogue row (`ai_chatter.py` ~6287/6279, "the model never sets them"),
+    # so the fan would have read $150 for a voice note and received a locked $200
+    # video. Wrong price, wrong medium, from one missing sentence.
+    #
+    # It belongs HERE and not only in `_CLOSE_CUSTOM`: that close only renders on
+    # the bought-out branch, where `offerable` is empty and a stray marker resolves
+    # to nothing anyway. This branch is the one where it can actually bill someone.
     _customs_rule = ("\n- CUSTOMS: a custom (a VOICE NOTE recorded to order) is the "
                      "ONE thing you may offer that is not on the list above. "
                      f"{_voice.CUSTOMS_CONDITIONS}"
+                     " A custom is NOT one of the pieces above and has NO id: when "
+                     "you offer him a custom, write NO >>OFFER line at all. The "
+                     ">>OFFER line is only ever for a numbered piece from the list, "
+                     "and never for a custom, even if one of those pieces sounds "
+                     "like a custom."
                      if sell_customs else "")
     # ── The BOUGHT-OUT case: nothing left on the list, but a custom to sell ──
     # This is not an edge case for the male lane, it is the PREMISE — "the vault
@@ -5108,6 +5126,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         sent_ok = False
         try:
             f = fans.get(fan_id) or Fan(account_id=str(account_id), fan_id=fan_id)
+            # The account bundle narrowed to THIS fan. A custom is only offered to
+            # a man who has proven he pays (`_customs.may_offer`, currently $100
+            # lifetime) — operator ruling 2026-08-05, "we don't offer for
+            # everything to anyone". Below the bar this is the same bundle with the
+            # customs permission and its price band stripped out of every block
+            # that carries them, so the prompt simply never mentions customs.
+            #
+            # Measured on the four accounts that sell customs: 84 of 1,358 fans
+            # clear the bar, so 94% of prompts lose the block entirely.
+            #
+            # SHADOWS `voice_blocks` FOR THE REST OF THE ITERATION ON PURPOSE — every
+            # read below this line is per-fan, and a mix of the two names inside one
+            # loop body is exactly how a prompt ends up half-narrowed.
+            v = _voice.for_fan(voice_blocks, f)
 
             # Did he UNLOCK the ask that's sitting in front of him? `is_paid` is stamped
             # at ingest and never re-read, so a PPV he paid for reads as unpaid until the
@@ -5149,7 +5181,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # revenue from one fan, while a timeout resumes asking a man for money
             # when he never received what he already bought. The marker is cleared
             # by the operator, or by `customs_watch` seeing the voice note go out.
-            if _customs.is_owed(f.custom_nickname):
+            if _customs.is_owed(f):
                 seller_off = True
                 customs_owed_skips += 1
             bot_accused_turn = False
@@ -5199,7 +5231,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # final. (COMPANION stays reserved for an explicit "just want to talk.")
                 await _save_ladder(account_id, fan_id,
                                    offers_paused_until=now + timedelta(hours=24))
-                name = _greetable(f, voice_blocks)
+                name = _greetable(f, v)
                 ack = _pack_line("soft_broke_ack", cfg, fan_id, name=name)
                 if ack and not dry_run and await _send_free_bubble(
                         client, account_id, fan_id, ack, typing_wpm=typing_wpm,
@@ -5214,7 +5246,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # window; a companion fan re-enters SELLING only on his OWN future buy.
                 await _save_ladder(account_id, fan_id, status=upsell.STATUS_COMPANION,
                                    companion_until=now + timedelta(hours=24))
-                name = _greetable(f, voice_blocks)
+                name = _greetable(f, v)
                 ack = _pack_line("companion_ack", cfg, fan_id, name=name)
                 if ack and not dry_run and await _send_free_bubble(
                         client, account_id, fan_id, ack, typing_wpm=typing_wpm,
@@ -5236,7 +5268,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # objection: stamp objection_at so an EARNED discount (§5) may
                     # follow a LATER fan turn (the "beat"), never this one.
                     await _save_ladder(account_id, fan_id, objection_at=now)
-                    name = _greetable(f, voice_blocks)
+                    name = _greetable(f, v)
                     ack = _pack_line("soft_broke_ack", cfg, fan_id, name=name)
                     if ack and not dry_run and await _send_free_bubble(
                             client, account_id, fan_id, ack, typing_wpm=typing_wpm,
@@ -5311,7 +5343,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 _h_ask, _h_paid = human_money.get(fan_id, (None, None))
                 away = rhythm.decide_availability(rhythm.RhythmCtx(
                     account_id=str(account_id), fan_id=fan_id,
-                    voice=voice_blocks.voice,
+                    voice=v.voice,
                     pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
                     pace_curve=rhythm_curve,
                     last_inbound_at=c.last_in_at, last_outbound_at=c.last_out_at,
@@ -5552,7 +5584,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                   else upsell.STATUS_IDLE)
                     rctx_gate = rhythm.RhythmCtx(
                         account_id=str(account_id), fan_id=fan_id,
-                        voice=voice_blocks.voice,
+                        voice=v.voice,
                         pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
                         pace_curve=rhythm_curve,
                         sleep_window=sleep_win, tz_offset_minutes=tz_off,
@@ -5689,7 +5721,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # something else to sell. Backwards for the account it was
                 # written for, and silent: no error, just an engine that never
                 # mentions the product.
-                if offerable or voice_blocks.sell_customs:
+                if offerable or v.sell_customs:
                     # `_second_offer_block` describes "one more piece alongside
                     # the pending one" and takes the same catalogue — with an
                     # empty one it has nothing to describe, so the customs-only
@@ -5698,11 +5730,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         sell = _second_offer_block(
                             pending, await _get_item(int(pending.item_id)),
                             offerable, scripts, cfg_offer_mode, quotes or None,
-                            sell_customs=voice_blocks.sell_customs)
+                            sell_customs=v.sell_customs)
                     else:
                         sell = _manifest_block(offerable, scripts, cfg_offer_mode,
                                                quotes=quotes or None,
-                                               sell_customs=voice_blocks.sell_customs)
+                                               sell_customs=v.sell_customs)
 
             # fan_lang resolved above (haggle detection) — drives the reply language
             # AND the bilingual buy-signal detectors below.
@@ -5759,7 +5791,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 opener = _openers.next_for(f, profiles.get(fan_id),
                                            today=opener_day)
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
-                                              custom_owed=_customs.is_owed(f.custom_nickname),
+                                              custom_owed=_customs.is_owed(f),
                                               opener=opener,
                                               sticker_mode=sticker_mode,
                                               style_on=style_on,
@@ -5778,7 +5810,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                                          else 0),
                                               buyer_facts=buyer_facts,
                                               clock=_clock_line(clock_tz),
-                                              v=voice_blocks)
+                                              v=v)
             try:
                 res = await llm_client.chat(
                     model=model,
@@ -5878,7 +5910,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 consistency=ConsistencyCtx(
                     fan=f, persona=persona, model=model,
                     last_inbound=c.last_body or "") if consistency_on else None,
-                strip_emoji=strip_emoji_on, v=voice_blocks)
+                strip_emoji=strip_emoji_on, v=v)
             if _leak:
                 offer_item = None  # a guarded reply must not carry a paid attach
             # Hot-thread teaser — the thread is HOT, nothing priced is going out this
@@ -6172,7 +6204,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 rnow = datetime.utcnow()
                 d = rhythm.decide(rhythm.RhythmCtx(
                     account_id=str(account_id), fan_id=fan_id,
-                    voice=voice_blocks.voice,
+                    voice=v.voice,
                     pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
                     pace_curve=rhythm_curve,
                     text=(parts[0] if parts else ""),
@@ -6424,7 +6456,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     sticker_tag,
                     random.Random(f"gif:{account_id}:{fan_id}:{c.last_body}"),
                     account_id=account_id, fan_id=fan_id,
-                    voice=voice_blocks.voice)
+                    voice=v.voice)
                 if gid is not None:
                     srng = random.Random(f"sdelay:{fan_id}:{gid}")
                     # A gif that IS the reply carries the rhythm delay, exactly as

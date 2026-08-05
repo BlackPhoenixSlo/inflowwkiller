@@ -1,76 +1,99 @@
-"""service/automations/_customs.py — the owed-custom ledger, kept in a nickname.
+"""service/automations/_customs.py — the owed-custom ledger.
 
-THE PRODUCT, for a male creator with a bought-out vault: the fan tips $100-$200
-and gets back a voice note (later, a short video) made for him. Fulfilment is
-MANUAL by operator ruling — a human records it and sends it. So the system has
-exactly four jobs, and none of them is delivery:
+THE PRODUCT, for a creator whose vault is bought out: the fan tips and gets back
+a VOICE NOTE made for him. Fulfilment is MANUAL by operator ruling — a human
+records it and sends it. So the system has exactly four jobs, and none of them is
+delivery:
 
     notice the money → make it unmissable → stop selling → let a human clear it
 
-WHY A NICKNAME AND NOT A TABLE
-------------------------------
-Operator ruling 2026-08-04: *"we record that in ai info and nickname. That
-nickname word custom is deleted manually after voice is send."*
+WHERE "OWED" LIVES: `fans.customs_owed_at`
+------------------------------------------
+One nullable timestamp. Set to the moment the qualifying tip landed; NULL means
+nothing is owed. `is_owed` reads that column and nothing else, and the operator
+sees the queue on /customs.
 
-A new `customs_owed` table would be the obvious build and the wrong one. The
-operator does not work in our admin — they work in the OnlyFans app, where the
-custom nickname renders next to the fan's name in the inbox list. A marker there
-is seen without anyone deciding to go and look, and deleting it is a gesture the
-operator already performs. A table needs a queue, a page, and a habit; the
-nickname needs none of the three, and its deletion IS the completion signal.
+⚠️ IT USED TO BE A " Custom" SUFFIX ON `custom_nickname`, AND THAT SILENTLY DID
+NOT WORK. The reasoning was sound — the operator lives in the OnlyFans app, where
+a nickname renders next to the fan's name, so a marker there is seen without
+anyone deciding to go and look. The problem is that `custom_nickname` has four
+other writers. `of_ai_chat._maybe_push_nickname`, reached from ai_chatter on EVERY
+tick, rebuilds the name from structured facts via `names.build_structured_nickname`
+— which knows nothing about any marker and therefore drops it, then pushes the
+shortened name to OnlyFans AND upserts it back into our own row. ai_chatter runs
+every 60s. customs_watch runs every 900s. So the ledger was erased about a minute
+after it was written, on both surfaces, and prod confirms the outcome exactly:
+204 watcher runs, zero fans ever marked, in a feature that had been live for days.
 
-The cost is that "owed" is a string suffix rather than a row, so this module
-exists to keep that string in exactly one place.
+Worse than a lost row: `_maybe_push_nickname` mutates the in-memory Fan BEFORE
+`_build_messages` reads it, so `prompt_block` below — the "he has already paid,
+stop selling" rule — had never rendered once on the engine that closes the sale.
 
-⚠️ SUFFIX, NEVER SUBSTRING
---------------------------
-Prod has `Johny/Colombia/31/Customer Service` — a job title `gen_info` wrote. A
-`"custom" in nick.lower()` test marks that fan as owing a video forever, and
-`_clear` would then chew the word "Customer" out of his name. Both directions
-are wrong, both are silent, and this was found by grepping prod rather than by
-reasoning. Match the SUFFIX with a word boundary and nothing else.
+A column has no other writers, so none of that is expressible.
 
 WHAT COUNTS AS AN ORDER
 -----------------------
-A DM tip ≥ $100 (`kind='tip'`). Not `tip_post` — a $200 tip on a post is a man
-being generous about a photo, not a man ordering a voice note. Not a quantity
-either: the live transcript that priced this feature (fan 72033414, 2026-07-31)
-shows $200 buying ONE longer video, not two shorter ones — the amount encodes
-LENGTH. Two customs means two separate tips.
+A DM tip ≥ $100 (`kind='tip'`) that actually cleared. Not `tip_post` — a $200 tip
+on a post is a man being generous about a photo, not a man ordering a voice note.
+Not a quantity either: the transcript that priced this feature (fan 72033414,
+2026-07-31 — $200 on account 7789837 at 10:51, delivered "heres your custom Alex"
+at 14:47) shows the amount encoding LENGTH, not count. Two customs means two
+separate tips.
+
+WHO WE OFFER ONE TO
+-------------------
+Only a fan who has proven he pays — see `may_offer`. Operator ruling 2026-08-05:
+*"we don't offer for everything to anyone"*.
 """
 from __future__ import annotations
 
 import logging
-import re
+from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # annotation only — this module stays import-light at runtime
+    from db.models import Fan
 
 log = logging.getLogger("of-relay.automation.customs")
-
-# The marker. A trailing word, space-separated, so a nickname reads
-# "Alex (VIP on Paid Page) Custom" in the OF inbox and the operator deletes the
-# last word to mark it delivered.
-MARKER = "Custom"
-
-# Anchored to the END and preceded by a boundary — see the docstring. A leading
-# `\s*` on the group so `_clear` removes the separator too and does not leave
-# "Alex (VIP on Paid Page) ".
-_MARKER_RE = re.compile(r"\s*\b" + MARKER + r"\s*$", re.I)
 
 # The floor. Both $100 and $200 appear on the live male accounts (7 and 8 times
 # respectively); the transcript shows $100 is the opener the chatter counters,
 # but it does get accepted, so it is an order.
 MIN_CENTS = 10_000
 
-# The CEILING the chatter may quote — operator ruling 2026-08-04: *"price is
-# 100-400 for voice custom"*.
+# The CEILING the chatter may quote. Operator ruling 2026-08-04 said "100-400",
+# and $400 was carried for a day; it is now $200, because the top half of that
+# band is a number no fan has ever paid.
+#
+# THE LARGEST SINGLE DM TIP IN THE ENTIRE PRODUCTION DATABASE IS $200.00 — four
+# occurrences, across two accounts, over the whole history. Quoting $400 as "the
+# longest one" advertises a rung nobody has ever climbed, and it breached the
+# $200 ceiling this codebase already enforces on every other priced surface
+# (`upsell.OF_PRICE_MAX_CENTS`). Raising it again is a pricing decision, not a
+# typo fix: check `max(amount_cents) where kind='tip'` first.
 #
 # ⚠️ THE FLOOR AND THE ASK ARE ONE POLICY, AND THEY USED TO LIVE IN DIFFERENT
 # HALVES OF THE SYSTEM. `MIN_CENTS` is what makes a tip an ORDER on the WATCH
 # side; nothing on the SELL side named a figure at all, so the model picked one.
-# A model that asks for $30 gets paid $30, `qualifies` says no, the nickname is
-# never marked, and the fan waits for a voice note nobody was ever told to
-# record. Silent, and it costs the fan money — so the band ships with the
-# permission for the same reason the fence does.
-MAX_CENTS = 40_000
+# A model that asks for $30 gets paid $30, `qualifies` says no, nothing is
+# marked, and the fan waits for a voice note nobody was ever told to record.
+# Silent, and it costs the fan money — so the band ships with the permission for
+# the same reason the fence does.
+MAX_CENTS = 20_000
+
+# The lifetime spend a fan must have BEFORE the customs block enters his prompt
+# at all — operator ruling 2026-08-05: *"we can do customs only to [fans who]
+# actually pay … we don't offer for everything to anyone"*.
+#
+# It is deliberately the same figure as `MIN_CENTS`: the qualification to be
+# ASKED for $100 is having already spent $100. A man who has never paid that much
+# in total is not a man who is about to tip it in one go, and putting the block in
+# his prompt only makes the prompt longer and the reply vaguer.
+#
+# Measured on the four accounts that sell customs: 84 of 1,358 fans clear this
+# (6%). So 94% of prompts get shorter, and the ones that keep the block are the
+# ones where it can actually close.
+SELL_MIN_SPEND_CENTS = 10_000
 
 # Only a DM tip. `tip_post`/`tip_stream` are generosity, not an order.
 ORDER_KINDS = ("tip",)
@@ -94,25 +117,70 @@ PRICE_RULE = (
 )
 
 
-def is_owed(nickname: str | None) -> bool:
-    """Does this nickname carry the owed marker?"""
-    return bool(nickname) and bool(_MARKER_RE.search(nickname))
+# ── The ledger. Four questions and two writes, all over `Fan` ────────
+#
+# TYPED, AND THAT IS THE WHOLE GUARD. These four took `str | None` when the
+# ledger was a nickname suffix. A call site left un-migrated is the failure this
+# module most needs to prevent — it would read as "nothing owed" and a man who
+# paid would be silently forgotten — so `fan.customs_owed_at` is accessed
+# DIRECTLY rather than through `getattr(..., None)`. A stray nickname raises
+# AttributeError at the first line it reaches, which is what a broken contract
+# should do. There is nothing to remember and no guard to keep in sync.
+#
+# `mark` and `clear` MUTATE the row and do not commit — the caller owns the
+# session, because both callers already have one open for other reasons.
 
 
-def mark(nickname: str | None) -> str:
-    """`nickname` with the marker appended — idempotent, so re-running the
-    scanner over a tip it already marked cannot produce "Alex Custom Custom"."""
-    base = (nickname or "").strip()
-    if is_owed(base):
-        return base
-    return f"{base} {MARKER}".strip()
+def is_owed(fan: "Fan | None") -> bool:
+    """Does this fan have a custom paid for and not yet delivered?
+
+    Reads `fans.customs_owed_at` and nothing else. None → False, so a caller
+    holding a fan that may not exist needs no guard of its own."""
+    return fan is not None and fan.customs_owed_at is not None
 
 
-def clear(nickname: str | None) -> str:
-    """`nickname` with the marker removed. Provided for completeness and for the
-    tests; in production the OPERATOR clears it by hand, which is the whole
-    point — a machine that clears its own marker has no completion signal."""
-    return _MARKER_RE.sub("", (nickname or "").strip()).strip()
+def mark(fan: "Fan | None", tipped_at: datetime | None = None) -> bool:
+    """Record that `fan` is owed a custom, as of `tipped_at`. Returns True when
+    this CHANGED something.
+
+    Idempotent: a fan already owed is left exactly as he was, so re-running the
+    scanner over a tip it already marked neither moves the "waiting since" clock
+    nor reports a second order. The stamp is the TIP's time, not now, because the
+    queue sorts and ages by it — stamping `utcnow()` on every sweep would reset
+    every fan's wait to zero every 15 minutes."""
+    if fan is None or is_owed(fan):
+        return False
+    fan.customs_owed_at = tipped_at or datetime.utcnow()
+    return True
+
+
+def clear(fan: "Fan | None", cleared_at: datetime | None = None) -> bool:
+    """Settle `fan`'s owed custom. Returns True when this CHANGED something.
+
+    Stamps `customs_cleared_at` as well as blanking `customs_owed_at`: the second
+    is what stops the prompt block and the queue, the first is what stops
+    `customs_watch` re-marking the same tip on its next sweep. Both, or the
+    operator's "Sent" click undoes itself in 15 minutes."""
+    if fan is None or not is_owed(fan):
+        return False
+    fan.customs_owed_at = None
+    fan.customs_cleared_at = cleared_at or datetime.utcnow()
+    return True
+
+
+def may_offer(fan: "Fan | None") -> bool:
+    """Is this a fan we OFFER a custom to at all? (`SELL_MIN_SPEND_CENTS`.)
+
+    Separate from `qualifies`, which asks whether money already received was an
+    ORDER. This one gates the prompt: below the bar the customs block never
+    renders, so the model cannot pitch what the fan was never going to buy.
+
+    A fan who is already owed one still returns True — the gate is about whether
+    he is a customs buyer, and `prompt_block` is what stops the second pitch. A
+    None fan is False: no row, no proof he pays."""
+    if fan is None:
+        return False
+    return int(fan.lifetime_spend_cents or 0) >= SELL_MIN_SPEND_CENTS
 
 
 def qualifies(kind: str, amount_cents: int,
@@ -132,37 +200,35 @@ def qualifies(kind: str, amount_cents: int,
 
 
 # ── Delivery ─────────────────────────────────────────────────────────
-# The operator clears the marker by hand, and that stays the authority. But a
-# hand-clear that is FORGOTTEN leaves the account permanently unable to sell to
-# its best fan — the brake below has no timeout, deliberately, because a timeout
-# would resume selling to a man who never got what he paid for. So delivery is
-# also detected, and the two paths agree: whichever happens first wins.
+# The operator clears the debt by hand on /customs, and that stays the authority.
+# But a hand-clear that is FORGOTTEN leaves the account permanently unable to sell
+# to its best fan — the brake below has no timeout, deliberately, because a
+# timeout would resume selling to a man who never got what he paid for. So
+# delivery is also detected, and the two paths agree: whichever happens first wins.
 #
-# WHAT COUNTS, and why it is not "he sent a video":
-#   • AUDIO, any price — a voice note IS the v1 product, and it is rare and
-#     deliberate: 4 outbound audio messages across both live male accounts, ever.
-#   • A FREE VIDEO — for the "later, short video" case. FREE is load-bearing:
-#     the same accounts have 170 PRICED outbound videos against 9 free ones, so
-#     "an outbound video" would clear the marker on every ordinary vault PPV.
-#     A custom is already paid for, so it goes out at price 0; a priced video is
-#     a new sale and cannot be the thing he is waiting for.
+# AUDIO ONLY. The product is a voice note (operator ruling 2026-08-05: *"we should
+# sell only voice messages"*), so a voice note is the only thing that can be it.
+# That is also rare and deliberate enough to be a trustworthy signal: 9 outbound
+# audio messages across the whole platform, ever.
 #
-# A photo never counts. If the product ever includes photo sets this needs a
-# different discriminator than price, because free photos are common.
-DELIVERY_TYPES = ("audio", "video")
-
-
-def is_delivery(media_type: str, price_cents: int, is_tip: bool = False) -> bool:
-    """Does this OUTBOUND media message look like the custom being delivered?
-
-    Caller must already have established direction='out' and that the message is
-    newer than the tip — this is only the media test."""
-    t = str(media_type or "").strip().lower()
-    if t == "audio":
-        return True
-    if t == "video":
-        return int(price_cents or 0) == 0 and not is_tip
-    return False
+# ⚠️ A FREE VIDEO USED TO COUNT TOO, for a "later, short video" product that is not
+# being built. It was a live false-clear: `customs_watch`'s clear loop falls back
+# to the sweep window when the originating tip has aged out, so ANY free outbound
+# video in the last 72 hours settled a debt incurred days earlier — a mass send, a
+# tip_reward freebie, or a chatter being nice. Narrowing the product narrows the
+# discriminator, and both get safer at once.
+#
+# A photo never counts. If the product ever grows past audio this needs a
+# discriminator that is not price: free photos and free videos are both common,
+# so a second type here would have to arrive with a predicate, not alone.
+#
+# There is deliberately NO `is_delivery()` helper beside this tuple. There was
+# one, and once the product narrowed to audio it had decayed into
+# `media_type == "audio"` carrying two parameters it ignored — while its only
+# caller ALREADY filtered `MessageMedia.type.in_(DELIVERY_TYPES)` in SQL. The
+# Python re-test could not answer anything the query had not already decided.
+# One expression of the rule, in the query that reads the rows.
+DELIVERY_TYPES = ("audio",)
 
 
 # ── What the model is told while one is owed ─────────────────────────

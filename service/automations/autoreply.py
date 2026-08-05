@@ -516,9 +516,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     tip_ask_enabled, tip_amount, tip_template = await load_tip_ask_config(account_id)
     # Off (per-account toggle) → empty block; the content-ask just gets keep-warm
     # banter, no tip-ask.
-    tip_ask_block = (build_tip_ask_block(tip_amount, tip_template,
-                                         voice_blocks.sell_customs)
-                     if tip_ask_enabled else "")
+    # ⚠️ NOT HOISTED. The customs half of this block is a PER-FAN decision
+    # (`_customs.may_offer`), so it is built in the loop off the narrowed bundle
+    # — pure string assembly, on a path that is about to call an LLM.
     # Double-pitch guard: when ai_chatter (the closer) owns this account, IT handles
     # selling — Auto Convo stays purely keep-warm even on a content-ask.
     ai_chatter_owns = False
@@ -596,12 +596,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # the account default; unset → account default.
         fan_lang = _language.resolve_language(account_lang, getattr(f, "language", None))
         content_ask = (not ai_chatter_owns) and _language.is_content_ask(last_in, fan_lang)
+        # The bundle narrowed to THIS fan: a custom is only mentioned to a man who
+        # has proven he pays. Below the bar the permission and its price band come
+        # out of every block that carries them, `live_proof` included.
+        v = _voice.for_fan(voice_blocks, f)
+        tip_ask_block = (build_tip_ask_block(tip_amount, tip_template,
+                                            v.sell_customs)
+                         if tip_ask_enabled else "")
         msgs = _build_messages(persona, f, history, style, style_on=style_on,
                                nonnative_on=nonnative_on, lang=fan_lang,
-                               content_ask=content_ask, tip_ask_block=tip_ask_block,
+                               content_ask=content_ask,
+                               tip_ask_block=tip_ask_block,
                                painful_on=painful_on, clock=_clock_line(clock_tz),
-                               v=voice_blocks,
-                               custom_owed=_customs.is_owed(f.custom_nickname))
+                               v=v,
+                               custom_owed=_customs.is_owed(f))
         try:
             res = await llm_client.chat(model=model, messages=msgs, purpose=_PURPOSE,
                                         account_id=account_id, fan_id=fid,
@@ -624,7 +632,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # `consistency_autoreply` flag to switch on (see _common.CONSISTENCY_AUTOMATIONS).
         raw, _leak = await finalize_draft(
             raw, account_id=account_id, fan_id=fid, purpose=_PURPOSE,
-            strip_emoji=strip_emoji_on, v=voice_blocks)
+            strip_emoji=strip_emoji_on, v=v)
         parts = [apply_word_restriction(p)[:_REPLY_MAX_CHARS]
                  for p in split_for_bubbles(raw, max_bubbles,
                                             rng=random.Random(f"split:{f.fan_id}:{raw}"))

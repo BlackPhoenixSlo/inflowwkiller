@@ -916,6 +916,34 @@ def blocks(voice: object, sell_customs: bool = False) -> VoiceBlocks:
     )
 
 
+def for_fan(b: VoiceBlocks, fan) -> VoiceBlocks:
+    """`b` narrowed to ONE fan: the account's bundle, with `sell_customs` forced
+    off when this fan is not someone we offer a custom to (`_customs.may_offer`).
+
+    It takes the FAN, not a precomputed boolean, so the spend policy is decided in
+    one place. Handing each engine `for_fan(b, _customs.may_offer(f))` made three
+    call sites responsible for remembering which predicate to pass, and a fourth
+    engine could quietly pass a different one.
+
+    WHY THIS IS A BUNDLE REBUILD AND NOT A BOOLEAN AT THE CALL SITE. `sell_customs`
+    is not just a flag the engines read — `live_proof` is DERIVED from it, because
+    the customs carve-out is spliced into the live-proof guardrail (that is where
+    "the answer to a live call is still no, but you DO offer a custom" has to live
+    to make sense). An engine that tested a fan-level boolean before rendering the
+    sell surface, and then rendered `v.live_proof` from the account bundle, would
+    tell the model in one paragraph that it has nothing to offer and in another
+    that it may offer a custom. One call here moves both, and every other field is
+    untouched.
+
+    Cheap: pure construction off module constants, no I/O. Returns `b` itself when
+    the account does not sell customs at all, so the common path allocates nothing
+    and never even asks the question.
+    """
+    if not b.sell_customs or _customs.may_offer(fan):
+        return b
+    return blocks(b.voice, False)
+
+
 # The default lane, built once at import. `_common` re-exports the fields off
 # this so every existing importer of PAINFUL_TEXTING / LIVE_PROOF_GUARDRAIL
 # keeps working untouched — the text moved, nothing else did.
