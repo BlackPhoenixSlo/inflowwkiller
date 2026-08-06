@@ -87,6 +87,11 @@ _BACKUP_KEEP = 20
 CONFIG_SCALAR_COLS = ("persona", "welcome_rules", "utc_offset", "timezone", "location",
                       "language", "voice", "daily_cost_cap_cents", "model")
 CONFIG_JSON_COLS = ("persona_facts_json",
+                    # TODAY's generated day. Exported so a RESTORE of the same
+                    # account comes back whole, and dropped on CLONE — see
+                    # `_sanitize_config_clone`. It is the only column here that is
+                    # both per-account AND expires.
+                    "day_log_json",
                     "time_activities_json", "time_images_json", "welcome_pinned_json",
                     "model_by_purpose", "nudge_config_json", "webhook_config_json",
                     "autoreply_config_json", "style_config_json", "tip_reward_config_json",
@@ -450,6 +455,18 @@ def _sanitize_config_clone(cfg: dict, rep: _Report) -> dict:
     "clone lands quiet" enabled-flag force-off). Mutates a deep copy."""
     cfg = json.loads(json.dumps(cfg))
     base = ("sections", "account_ai_config")
+
+    # day_log_json: TODAY's generated day, and it belongs to ONE creator. Cloned,
+    # it would have a different woman telling her fans she took someone else's dogs
+    # up someone else's trail — and it is stale by tomorrow anyway, so there is
+    # nothing to preserve. Dropped outright rather than sanitized: unlike the vault
+    # ids below there is no per-account reference to rewrite, the whole value is
+    # the wrong person's life. The target regenerates its own on the next chat turn.
+    dl_path = base + ("day_log_json",)
+    rep.visited.add(dl_path)
+    if cfg.get("day_log_json"):
+        cfg["day_log_json"] = None
+        rep.identity_stripped.append(_path_str(dl_path))
 
     # time_images_json: the whole map is {slot → vault media id}.
     ti_path = base + ("time_images_json",)

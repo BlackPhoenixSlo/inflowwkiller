@@ -42,6 +42,10 @@ class _PreviewBody(BaseModel):
     # "Regenerate" sets this so a preview bypasses a pinned slot line to sample a
     # fresh candidate the operator can then keep in its place.
     ignore_pin: bool = False
+    # Mirror of the send_welcome rule's `time_only` knob so the preview shows the
+    # SHORT bubble 2 (day / time of day / location, no activity) the moment the
+    # checkbox is ticked — before the rule is saved.
+    time_only: bool = False
 
 
 @router.post("/admin/automation-preview")
@@ -57,6 +61,7 @@ async def automation_preview(body: _PreviewBody = Body(...)) -> dict[str, Any]:
                 body.account_id, fan_id=body.fan_id, test_name=body.test_name,
                 model=body.model, restyle=body.restyle, slot=body.slot,
                 config=body.config, ignore_pin=body.ignore_pin,
+                time_only=body.time_only,
             )
         except LLMCapExceeded:
             # Belt-and-braces: preview_compose already degrades a capped restyle to

@@ -59,8 +59,10 @@ Payload knobs (all optional): `limit` (notifications fetched), `max_welcomes`
 (per-run batch cap), `model` (LLM override), `dry_run` (generate but don't send),
 `with_image` (attach a time-of-day bot-folder vault image, default True — same
 picker as send_followup), `restyle` (AI-restyle the activity bubble, default
-True; False sends the verbatim template line, zero LLM cost), `test_fan`
-(+ `test_name`) to force one hardcoded recipient.
+True; False sends the verbatim template line, zero LLM cost), `time_only`
+(bubble 2 drops the activity and says ONLY the day/time-of-day/location —
+"it's Thursday afternoon in US"; default False), `test_fan` (+ `test_name`) to
+force one hardcoded recipient.
 
 Returns a stats dict → automation_runs.stats_json.
 """
@@ -516,7 +518,8 @@ def _greet_token(sub: dict, voice: str = "her") -> str:
                            else "her"]
 
 
-def _activity_bubble(cfg: dict, hour: int | None = None) -> list[str]:
+def _activity_bubble(cfg: dict, hour: int | None = None, *,
+                     time_only: bool = False) -> list[str]:
     """Bubble 2 — 'just woke up and made myself a coffee... it's Friday morning in
     Vancouver, Canada' — as a 0-or-1 element list, empty when the account has no
     activity for this slot. Verbatim here; run() AI-restyles it into casual texting
@@ -528,18 +531,43 @@ def _activity_bubble(cfg: dict, hour: int | None = None) -> list[str]:
 
     `hour` lets a preview pin an arbitrary slot; None → the creator's current local
     hour. The V1 third line ('Will reply when I am back :)') is retired — it read
-    canned; two paced bubbles land more human."""
+    canned; two paced bubbles land more human.
+
+    `time_only` drops the ACTIVITY half and keeps only the clock: "it's Thursday
+    afternoon in US". Same two-bubble shape, a much shorter second one — an opener
+    that states where she is and what time it is there, with no scene attached. It
+    does NOT depend on `time_activities`, so it still produces a line for a slot the
+    creator never filled in (the activity path returns [] there)."""
     if hour is None:
         hour = _model_hour(cfg.get("utc_offset") or 0)
     tod, activity = _time_activity(hour, cfg.get("time_activities") or {})
-    if not activity:
+    if not activity and not time_only:
         return []
     # `where` carries its own " in " so the line degrades cleanly to "...it's Friday
     # morning" on an account with no location set — a dangling "in" is the kind of
     # thing a fan reads as a broken bot.
     location = (cfg.get("location") or "").strip()
     where = f" in {location}" if location else ""
-    return [f"{activity}... it's {_model_weekday(cfg.get('utc_offset'))} {tod}{where}"]
+    clock = f"it's {_model_weekday(cfg.get('utc_offset'))} {tod}{where}"
+    return [clock] if time_only else [f"{activity}... {clock}"]
+
+
+# The time-only bubble OPENS with "it's" — "it's monday morning in US". The
+# template already does; the restyle is what drops it ("thursday afternoon, in the
+# US", "Thursday night, US."). Asking the prompt for it is not enough — a sampled
+# rewrite obeys most of the time, and "most" is a line a fan reads. So the opener is
+# re-attached in code after every path (fresh restyle, cached restyle, verbatim
+# fallback), and the prompt asks for it only so the model doesn't fight the shape.
+_ITS_PREFIX = re.compile(r"^\s*(it\s*['’´`]?\s*s|it\s+is)\b", re.IGNORECASE)
+
+
+def _lead_with_its(line: str) -> str:
+    """`line` guaranteed to start with an "it's" (already-present forms — it's / its /
+    it´s / it is — are left exactly as the model wrote them)."""
+    s = (line or "").strip()
+    if not s or _ITS_PREFIX.match(s):
+        return s
+    return f"it's {s}"
 
 
 # ── AI restyle of the activity bubble (casual texting tone) ───────────
@@ -554,18 +582,31 @@ def _one_line(text: str | None) -> str:
     return next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
 
 
-def _compose_restyle_system(cfg: dict) -> str:
+def _compose_restyle_system(cfg: dict, *, time_only: bool = False) -> str:
     persona = (cfg.get("persona")
                or "You are a warm, flirty OnlyFans creator texting a brand-new "
                   "subscriber.").strip()
-    return "\n\n".join([
-        persona,
+    # The time-only line has NO activity in it, and the normal instruction ("keep
+    # what you're doing") reads as a licence to supply one — the model would invent
+    # a scene, which is the exact thing this mode exists to drop. So it gets its own
+    # rule: keep the clock, add nothing.
+    rule = (
+        "Rewrite the given line from your welcome DM so it reads like a real, "
+        "casual text you just fired off — relaxed texting tone, natural phrasing, "
+        "a touch playful. It says ONLY the day / time of day and where you are. "
+        "START the line with \"it's\". KEEP BOTH: the day + time of day, AND the "
+        "place name exactly as written (never drop or vague-up the place). Add "
+        "nothing else — do NOT invent what you're doing, plans, or a question: no "
+        "activity at all. ONE short line only. Output only the rewritten line — "
+        "no quotes, no preamble."
+    ) if time_only else (
         "Rewrite the given line from your welcome DM so it reads like a real, "
         "casual text you just fired off — relaxed texting tone, natural phrasing, "
         "a touch playful. KEEP every fact (what you're doing, the weekday / time "
         "of day, where you're from). Do not add new facts or questions. ONE short "
-        "line only. Output only the rewritten line — no quotes, no preamble.",
-    ])
+        "line only. Output only the rewritten line — no quotes, no preamble."
+    )
+    return "\n\n".join([persona, rule])
 
 
 # One restyle per (account, verbatim line), cached in-process: the line is
@@ -599,7 +640,8 @@ async def _fans_with_inbound(account_id: str, fan_ids: list[int]) -> set[int]:
 
 
 async def _restyle_activity(
-    account_id: str, fan_id: int, cfg: dict, model: str, line: str
+    account_id: str, fan_id: int, cfg: dict, model: str, line: str, *,
+    time_only: bool = False,
 ) -> str:
     """One LLM call → the activity bubble in the creator's casual texting voice.
     Raises (incl. LLMCapExceeded) to the caller, which falls back to the verbatim
@@ -607,7 +649,7 @@ async def _restyle_activity(
     res = await llm_client.chat(
         model=model,
         messages=[
-            {"role": "system", "content": _compose_restyle_system(cfg)},
+            {"role": "system", "content": _compose_restyle_system(cfg, time_only=time_only)},
             {"role": "user", "content": line},
         ],
         purpose="welcome",
@@ -674,6 +716,7 @@ async def preview_compose(
     account_id: str, *, fan_id: int | None = None, test_name: str | None = None,
     model: str | None = None, restyle: bool = False, slot: str | None = None,
     config: dict | None = None, ignore_pin: bool = False,
+    time_only: bool = False,
 ) -> dict:
     """Compose the welcome a real run WOULD produce for one fan — the text + the
     chosen time-of-day image id — WITHOUT sending and WITHOUT writing send-state.
@@ -702,6 +745,11 @@ async def preview_compose(
     (weekday refreshed) and `pinned=True`, skipping the restyle — this is what will
     ship. `ignore_pin=True` (the "Regenerate" button) bypasses the pin to sample a
     fresh candidate the operator can keep in its place.
+
+    `time_only=True` mirrors the rule's own knob: bubble 2 is the short clock line
+    (no activity). It bypasses the pin for the same reason the sender does — a pin
+    is a stored ACTIVITY line, so honouring it would show (and ship) the long line
+    the checkbox just turned off.
 
     Returns the send-shape as `bubbles` (image rides on bubble 1) + joined `text`,
     plus `image`, `name`, `slot`, and `restyled`/`cap_hit`/`pinned` flags."""
@@ -734,12 +782,12 @@ async def preview_compose(
     restyled = False
     cap_hit = False
     pinned = False
-    pin = None if ignore_pin else _pinned_line(cfg, hour)
+    pin = None if (ignore_pin or time_only) else _pinned_line(cfg, hour)
     if pin is not None:
         bubbles = [greeting, pin]
         pinned = True
     else:
-        bubbles = [greeting, *_activity_bubble(cfg, hour)]
+        bubbles = [greeting, *_activity_bubble(cfg, hour, time_only=time_only)]
         if restyle and len(bubbles) > 1:
             # AI restyle of the activity bubble — exactly what ships. Cache-bypassed
             # (fresh sample per regenerate; never touches the live run's
@@ -748,7 +796,8 @@ async def preview_compose(
                       or await resolve_model(account_id, "welcome", None))
             try:
                 styled = await _restyle_activity(
-                    account_id, int(fan_id or 0), cfg, rmodel, bubbles[1])
+                    account_id, int(fan_id or 0), cfg, rmodel, bubbles[1],
+                    time_only=time_only)
                 if styled and styled != bubbles[1]:
                     bubbles[1] = styled
                     restyled = True
@@ -757,6 +806,8 @@ async def preview_compose(
             except Exception:
                 log.debug("preview restyle failed account=%s — verbatim line", account_id,
                           exc_info=True)
+        if time_only and len(bubbles) > 1:
+            bubbles[1] = _lead_with_its(bubbles[1])
 
     bubbles = [apply_word_restriction(b) for b in bubbles]
     if strip_emoji_on:
@@ -785,6 +836,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typing_wpm = await load_typing_wpm(account_id)       # per-bubble "typing" pacing
     typing_on = await load_typing_indicator(account_id)  # live "...is typing" frames
     restyle = bool(payload.get("restyle", True))         # AI-restyle the activity bubble
+    # Bubble 2 says only the day / time of day / location — no activity. Off by
+    # default: every account that has ever run keeps the line it sends today.
+    time_only = bool(payload.get("time_only"))
 
     client = await asyncio.to_thread(ax._make_client, account_id)
 
@@ -921,7 +975,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # one, then use THAT" — so it overrides the payload's restyle flag, the
             # texted-fan fresh-call path, and a slot whose raw activity was later
             # blanked.
-            pinned = _pinned_line(cfg, hour)
+            #
+            # `time_only` is the ONE thing that outranks it. Every pin ever minted is
+            # a rerolled ACTIVITY line, so a pinned slot would keep shipping the long
+            # scene after the operator ticked the box that says "drop the scene" — the
+            # checkbox would silently do nothing on exactly the slots someone cared
+            # enough about to pin. Unticking it restores the pin untouched.
+            pinned = None if time_only else _pinned_line(cfg, hour)
             if pinned is not None:
                 bubbles = [greeting, pinned]
                 pinned_used += 1
@@ -934,7 +994,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # included) falls back to the verbatim template line — a restyle
                 # hiccup must never cost a fan their welcome. Once the daily cap trips
                 # we stop attempting restyles for the rest of the run.
-                bubbles = [greeting, *_activity_bubble(cfg, hour)]
+                bubbles = [greeting, *_activity_bubble(cfg, hour,
+                                                       time_only=time_only)]
                 if restyle and len(bubbles) > 1 and not restyle_capped:
                     ck = (str(account_id), bubbles[1])
                     fresh = fan_id in texted_ids
@@ -946,7 +1007,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     else:
                         try:
                             styled = await _restyle_activity(
-                                account_id, fan_id, cfg, model, bubbles[1])
+                                account_id, fan_id, cfg, model, bubbles[1],
+                                time_only=time_only)
                             if not fresh:
                                 # Cache even a verbatim echo — a model that refuses to
                                 # rewrite shouldn't be re-asked for every fan this slot.
@@ -965,6 +1027,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             log.warning("send_welcome restyle failed account=%s fan=%s — "
                                         "sending verbatim line", account_id, fan_id,
                                         exc_info=True)
+                if time_only and len(bubbles) > 1:
+                    bubbles[1] = _lead_with_its(bubbles[1])
 
             # Last-mile per bubble: double the first vowel of any OF-restricted word
             # (V1 ran apply_word_restriction on EVERY welcome). Covers the local
