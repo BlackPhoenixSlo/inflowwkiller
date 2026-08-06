@@ -1346,7 +1346,7 @@ class AccountAiConfig(Base):
     #
     # Why this exists as fields and not more prose: `persona` averaged 202-882
     # chars across live accounts while the style scaffolding around it ran ~5,000,
-    # and the gaps were exactly what fans probe. the graded vault's persona said "Born and
+    # and the gaps were exactly what fans probe. AriaFree's persona said "Born and
     # raised in Argentina" with NO city — so when a fan asked where she grew up the
     # model improvised, and a 966-turn thread walked Argentina → Chile → Córdoba
     # before the fan said "ya no creo nada". A named empty slot is what the enrich
@@ -1372,6 +1372,14 @@ class AccountAiConfig(Base):
     voice: Mapped[str | None] = mapped_column(String)
     # JSON dict {morning_1, morning_2, afternoon_1, afternoon_2, evening, night}
     time_activities_json: Mapped[str | None] = mapped_column(Text)
+    # TODAY's generated day, overwritten each creator-local date (automations/_daylog):
+    # {"date","weekday","beats":[{id,slot,text}],"covers":[{id,kind,text}]}. The six
+    # slots above are its TONE SEED, not its content — read literally they are the
+    # same day forever, which is a schedule rather than a life. NULL == no day log,
+    # and every renderer returns "" for it, so an un-generated account produces a
+    # byte-identical chat prompt. Only today is kept: nothing reads yesterday, and a
+    # growing history in a config column is how grok_calls became 52% of the DB.
+    day_log_json: Mapped[str | None] = mapped_column(Text)
     # Parallel per-slot vault image IDs, same 6 keys → media_id (int). When set,
     # welcome/followup attach the configured image for the current slot directly
     # (no vault-folder lookup). A future templates UI writes this. NULL → fall

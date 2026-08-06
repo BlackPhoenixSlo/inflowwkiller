@@ -24,7 +24,7 @@ Design notes:
     ({"enabled": bool}); absent/NULL → OFF. The global kill-switch is the env
     var W7_WEBHOOK_DISPATCH_DISABLED (set to 1/true to disable everywhere).
   • Memory: the live detector must NEVER run on jaka (its inbound is stranger/
-    promo spam). The default-OFF gate enforces that — enable Ava first.
+    promo spam). The default-OFF gate enforces that — enable Lexi first.
 """
 from __future__ import annotations
 
@@ -511,6 +511,53 @@ async def on_inbound_tip(account_id: str, fan_id: int, message_id: int,
     account, enqueue ONE fan-scoped tip_reward job and wake the executor. Gated
     SEPARATELY from the W7 reply dispatch above: a tip reward should fire even on
     a terminal-stage fan that no chat automation would reply to. Never raises."""
+    # ── customs: mark him owed NOW, not up to 15 minutes from now ──────
+    #
+    # ⚠️ FIRST, AND ABOVE EVERY RETURN BELOW. `customs_watch` sweeps on a 900s rule
+    # while `ai_chatter` ticks every 60s, so a man could tip $200 for a voice note
+    # and be pitched again a dozen times before anything recorded that he had
+    # bought one. The tip's `Transaction` row is ALREADY written live by
+    # `event_transcoder._record_inbound_payment` (the WS frame carries the dollars
+    # in `tipAmount`), so the sweep's own data is there within a second — only the
+    # CADENCE was slow. This closes that window to one job hop.
+    #
+    # IT MUST NOT SIT BELOW THE TIP_REWARD GATES. Two returns follow: the
+    # `has_open_tip_offer` standdown (which returns unless `always_reward`) and
+    # `if not enabled`. Both are decisions about whether to send REWARD MEDIA, and
+    # a customs order is not that — putting this after either would mean a tip on
+    # an account with tip_reward switched off never marks anything, which is
+    # precisely the "gated on an unrelated flag" bug this lane has already shipped
+    # twice (see `_customs`, `04c8950`).
+    #
+    # Independently try/except'd for the same reason: a tip_reward failure must not
+    # cost us the debt, and vice versa.
+    try:
+        from automations.customs_watch import order_floor, watch_flags
+        cw_on, cw_payload = await watch_flags(account_id)
+        # GATED ON THE RULE, and that gate is load-bearing: a $100 DM tip is an
+        # ORDER on the male accounts and was GENEROSITY five times last month on
+        # the female ones. Firing this account-blind would gag the bot on every
+        # generous fan — Amia alone took 47 such tips in 90 days.
+        if cw_on and int(tip_cents or 0) >= order_floor(cw_payload):
+            # ENQUEUE THE SWEEP, DO NOT MARK INLINE. Marking here would be a second
+            # expression of "is this tip an order?" — it would have to restate the
+            # settled-status filter, the `customs_cleared_at` re-mark guard and the
+            # already-delivered check. This codebase's own lesson is that a safety
+            # property restated in two voices is a safety property with no owner
+            # (`_voice.CUSTOMS_CONDITIONS` shipped exactly that drift). So the fast
+            # path runs the SAME `run`, scoped to one fan and carrying the rule's
+            # own payload, so the floor and dry_run cannot diverge.
+            await ax.enqueue_job(
+                account_id, "customs_watch",
+                payload={**cw_payload, "only_fan_ids": [int(fan_id)]},
+            )
+            ax.wake_supervisor()
+            log.info("customs_watch_dispatch account=%s fan=%s msg=%s cents=%s",
+                     account_id, fan_id, message_id, tip_cents)
+    except Exception:
+        log.warning("customs_watch_dispatch_failed account=%s fan=%s",
+                    account_id, fan_id, exc_info=True)
+
     try:
         from automations.tip_reward import reward_flags  # lazy: avoid import cycle
         enabled, always_reward = await reward_flags(account_id)

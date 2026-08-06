@@ -111,16 +111,77 @@ async def _delivered_since(account_id: str, fan_id: int,
     return hit is not None
 
 
+async def watch_flags(account_id: str) -> tuple[bool, dict]:
+    """(enabled, rule_payload) for this account's `customs_watch` rule.
+
+    The payload is the rule's `steps_json` — the same dict the scheduler hands
+    `run`, so it carries the per-account `min_cents` floor and `dry_run`. Mirrors
+    `tip_reward.reward_flags`: one read, for the live dispatcher below.
+
+    (`trigger_json` holds `every_seconds` and is the scheduler's business. The
+    floor rides `steps_json`; the comment in `run` calling it trigger_json is
+    wrong and is corrected there.)"""
+    from sqlalchemy import select as _select
+
+    from db.models import AutomationRule
+    try:
+        async with get_session() as s:
+            row = (await s.execute(
+                _select(AutomationRule.is_enabled, AutomationRule.steps_json)
+                .where(AutomationRule.account_id == str(account_id),
+                       AutomationRule.kind == _PURPOSE)
+                .limit(1)
+            )).first()
+    except Exception:
+        log.warning("customs_watch flags read failed account=%s", account_id,
+                    exc_info=True)
+        return False, {}
+    if row is None:
+        return False, {}
+    import json as _json
+    try:
+        payload = _json.loads(row[1] or "{}") or {}
+    except Exception:
+        payload = {}
+    return bool(row[0]), payload
+
+
+def order_floor(payload: dict | None) -> int:
+    """The cents floor this account treats as an ORDER, off the rule payload.
+
+    One expression of "read the per-account floor", shared by `run` and by the
+    live dispatcher in `webhook_dispatch.on_inbound_tip` — the two paths that must
+    never disagree about what counts."""
+    min_cents = (payload or {}).get("min_cents")
+    return _customs.MIN_CENTS if min_cents is None else max(1, int(min_cents))
+
+
+# ⚠️ THE LIVE TIP DISPATCHER IS NOT HERE, AND THAT IS ON PURPOSE.
+# It would need `automation_executor` (to enqueue and wake), and this module's
+# docstring bans that import — the ban is what keeps the marker out of the reach
+# of the pipeline that erased it for days. Dispatch lives with the other
+# `on_inbound_*` hooks in `webhook_dispatch`, which already owns that seam; this
+# module exports `watch_flags` + `order_floor` and stays a reader and a writer of
+# our own two columns.
+
+
 @register("customs_watch")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     payload = payload or {}
     lookback_h = int(payload.get("lookback_hours") or _DEFAULT_LOOKBACK_H)
     limit = int(payload.get("limit") or _DEFAULT_LIMIT)
     dry_run = bool(payload.get("dry_run"))
-    # Per-account floor, off the rule's trigger_json. See _customs.qualifies.
-    min_cents = payload.get("min_cents")
-    min_cents = None if min_cents is None else max(1, int(min_cents))
-    floor = _customs.MIN_CENTS if min_cents is None else min_cents
+    # Per-account floor, off the rule's steps_json (which the scheduler hands us
+    # AS this payload — an older comment here said trigger_json, which is where
+    # `every_seconds` lives, not the floor). See `_customs.qualifies`.
+    #
+    # ONE derivation, used by BOTH readers below — the SQL prefilter and the
+    # per-row `qualifies`. `run` used to keep its own copy of this two-liner
+    # beside the helper it had just extracted, so the same rule was spelled twice
+    # in one function: the query fetched rows at one floor while `qualifies`
+    # re-judged them at another. They happened to agree, which is the only kind of
+    # duplication that survives — right up until one of them is edited.
+    floor = order_floor(payload)
     only = coerce_ids(payload.get("only_fan_ids"))
     since = datetime.utcnow() - timedelta(hours=lookback_h)
 
@@ -152,7 +213,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     for fan_id, cents, at, kind in tips:
         if only and int(fan_id) not in only:
             continue
-        if not _customs.qualifies(kind, cents, min_cents):
+        if not _customs.qualifies(kind, cents, floor):
             continue
         stats["tips_seen"] += 1
         # Keep the NEWEST qualifying tip per fan: delivery is judged from it, so

@@ -78,7 +78,7 @@ from db.models import (
     Post, ScheduledJob, Transaction,
 )
 from ._common import load_hard_skip_ids, load_voice_blocks
-from . import _voice
+from . import _customs, _voice
 
 log = logging.getLogger("of-relay.automation.ppv_send")
 
@@ -994,6 +994,19 @@ async def _eligible_fans(account_id: str):
     # hand-restricted fan kept receiving priced blasts, and as a past payer he
     # landed in the HIGHEST spend-band cell.
     hard_skip = await load_hard_skip_ids(account_id)
+    # A man with a custom PAID FOR and not yet delivered is not in the blast.
+    #
+    # This does NOT reopen the 07-23 ruling above. That ruling bars shrinking the
+    # blast on AI-INFERRED 1:1 state — offers-pauses, hot-ladder mid-sale reads,
+    # chat signals — because gating on those cost −86% of sends. `customs_owed_at`
+    # is none of that: it is money we have already taken for work we have not yet
+    # done, the same class of fact as the ownership dedup the ruling explicitly
+    # keeps ("never re-sell what he already unlocked"). Selling a $200 PPV to a man
+    # still waiting on the $200 voice note he bought is the single most expensive
+    # thing this lane can do, and until now only the CHAT engines were stopped
+    # from doing it — `_customs.is_owed` needs a Fan row, and this function
+    # never loads one.
+    hard_skip |= await _customs.owed_fan_ids(account_id)
     async with get_session() as s:
         fan_rows = (await s.execute(
             select(Fan.fan_id, Fan.lifetime_spend_cents).where(
@@ -1075,7 +1088,7 @@ async def _last_ppv_send(account_id: str, since: datetime,
     restart) is finalized `error` with NO stats — so keying on stats_json made a
     fire that had already broadcast most of its cells look like it never
     happened, and the requeued job re-blasted the whole audience. Live 2026-07-28
-    on Ava: run 814092 sent 13 of 14 cells, was cancelled, and its retry 4
+    on Lexi: run 814092 sent 13 of 14 cells, was cancelled, and its retry 4
     minutes later re-sent the same PPV to the same 422 fans — under a 2/day cap.
     Those 13 rows sat there `ok` the whole time.
 

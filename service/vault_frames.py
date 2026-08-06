@@ -37,8 +37,7 @@ import automation_executor as ax  # _make_client seam (same one automations use)
 import vault_mirror  # the OF-media → mirror-row mapping (thumb_of)
 import vault_stills
 import vision
-from db.engine import get_session
-from db.models import VaultItem
+from db.models import VaultItem  # the mirror row `collect` is handed (annotation)
 from of_shapes import still_url  # shared OF payload-shape reader
 
 log = logging.getLogger("of-relay.vault_frames")
@@ -219,16 +218,6 @@ class Collected(NamedTuple):
 _WARM_REASON = {"dl_fail": "fetch_failed", "error": "fetch_failed"}
 
 
-async def _still_reason(account_id: str, media_id: int) -> str:
-    """`gone` if the still store just soft-deleted this media, else
-    `fetch_failed`. Re-read rather than inferred: `resolve_fresh` stamps
-    `removed_at` for a 404 and returns None for a timeout, and those are the two
-    cases that must not be confused."""
-    async with get_session() as s:
-        item = await s.get(VaultItem, (account_id, media_id))
-    return "gone" if (item is not None and item.removed_at is not None) else "fetch_failed"
-
-
 async def _poster_stills(account_id: str, media_id: int, media: dict,
                          want: int, warm: str) -> Collected:
     """OF's pre-extracted poster frames, through the permanent store.
@@ -276,9 +265,12 @@ async def _collect_video(account_id: str, media_id: int, raw: dict,
     if frames:
         return Collected(frames, "ok")
 
-    media = await vault_stills.resolve_fresh(account_id, media_id, client)
-    if media is None:
-        return Collected([], await _still_reason(account_id, media_id))
+    fresh = await vault_stills.resolve_fresh(account_id, media_id, client)
+    if fresh.media is None:
+        # `gone` vs `fetch_failed` comes back WITH the miss — the two want
+        # opposite retry policies and the store already knows which it was.
+        return Collected([], fresh.reason)
+    media = fresh.media
 
     warm = ""
     fresh_url = video_url(media)

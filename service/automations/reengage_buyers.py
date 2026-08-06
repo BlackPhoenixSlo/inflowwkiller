@@ -38,7 +38,7 @@ from ._common import (
     resolve_fan_name, typing_delay_seconds,
 )
 
-from . import _voice
+from . import _customs, _voice
 from ._common import load_voice_blocks
 
 log = logging.getLogger("of-relay.automation")
@@ -203,6 +203,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     excl = await contact_guard_excludes(
         account_id, outbound_hours=guard_hours, inbound_hours=guard_hours)
     excl |= await load_hard_skip_ids(account_id)
+    # ...and anyone owed a custom he has already paid for. This lane targets COLD
+    # BUYERS — a man who tipped $200 for a voice note and is waiting on it is
+    # exactly the profile this query selects, so without this he is the MOST
+    # likely fan to get a "miss you, come see what's new" from the account that
+    # owes him work. Same fact, same brake as the mid-sale ContentOffer exclusion
+    # below: don't interrupt, and don't re-sell what is already bought.
+    excl |= await _customs.owed_fan_ids(account_id)
     async with get_session() as s:
         # Blacklist is GLOBAL (fan_id only, no account scope) — mirror ai_chatter.
         excl |= set((await s.execute(select(Blacklist.fan_id))).scalars().all())

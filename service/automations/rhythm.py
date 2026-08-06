@@ -336,6 +336,18 @@ class RhythmCtx:
     # VERBATIM with no model in the loop, so this is the only thing standing
     # between a male creator and "sorry babe was in the shower".
     voice: str = "her"
+    # TODAY's cover lines, drawn from the same generated day the chat prompt is
+    # reading (automations/_daylog.covers_for). () ⇒ the shipped pools below, which
+    # is every existing account and every test, byte-identical.
+    #
+    # ⚠️ This exists because a cover line is sent VERBATIM with no model in the loop
+    # and no consistency check, and COVER_BUSY makes CLAIMS ABOUT HER DAY — "ugh work
+    # was insane today", "sorry i was driving", "sorry babe was in the shower". The
+    # moment the chat prompt also carries a day ("just got back from a little hike"),
+    # those are two independent sources of what she was doing, they cannot be
+    # reconciled after the fact, and the fan sees both. So when she has a real day,
+    # the covers come from it: one row, one story.
+    day_covers: tuple[str, ...] = ()
     # Sample ordinary reply latency from PACE_BUCKETS instead of the archive
     # lognormal. Default False so every existing account keeps its measured
     # curve — see the PACE_BUCKETS note.
@@ -477,6 +489,13 @@ def _pick_cover(rng: Random, kind: str, ctx: RhythmCtx,
     if ctx.last_cover_at is not None:
         if (utc_now - ctx.last_cover_at) < timedelta(days=COVER_REPEAT_DAYS):
             return None
+    # TODAY's day wins over the shipped pool — see RhythmCtx.day_covers. Only for
+    # the gap kinds that make a claim about what she was DOING: "asleep" is left on
+    # its own pool because the day log's beats describe waking hours, and "i fell
+    # asleep on you" cannot contradict a hike. Empty tuple ⇒ shipped pools, so this
+    # is additive and an account with no day log draws exactly what it always did.
+    if ctx.day_covers and kind in ("busy", "long"):
+        return rng.choice(list(ctx.day_covers))
     hers, his = _COVER_POOLS[kind]
     return rng.choice(his if str(ctx.voice or "").strip().lower() == "him" else hers)
 

@@ -23,5 +23,17 @@ path="$1"; blob="$2"
 # update-index run with an empty sha under `set -e`, which is a silent no-op stage.
 sha="$(git hash-object -w "$blob")"
 [ -n "$sha" ] || { echo "hash-object produced nothing for $blob" >&2; exit 1; }
-git update-index --cacheinfo "100644,$sha,$path"
-echo "staged $path from $blob (working tree untouched)"
+# THE MODE IS READ, NEVER ASSUMED. This was hardcoded `100644`, so staging any
+# executable file silently dropped its executable bit — caught on
+# `scripts/realism-tags.py`, a `#!/usr/bin/env python3` script that this tool
+# committed as non-executable. A staging helper whose whole promise is "HEAD plus
+# exactly my edits" must not quietly change a third thing about the file.
+# Index first (it mirrors HEAD for an unstaged path), then HEAD, then the blob's
+# own bit for a file git has never seen.
+mode="$(git ls-files --stage -- "$path" 2>/dev/null | awk 'NR==1{print $1}')"
+[ -n "$mode" ] || mode="$(git ls-tree HEAD -- "$path" 2>/dev/null | awk 'NR==1{print $1}')"
+if [ -z "$mode" ]; then
+  if [ -x "$blob" ]; then mode=100755; else mode=100644; fi
+fi
+git update-index --add --cacheinfo "$mode,$sha,$path"
+echo "staged $path from $blob as $mode (working tree untouched)"

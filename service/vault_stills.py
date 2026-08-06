@@ -273,24 +273,39 @@ class Still(NamedTuple):
     reason: str  # "ok" | "gone" | "no_variant" | "fetch_failed"
 
 
-async def resolve_fresh(account_id: str, media_id: int, client: Any) -> dict | None:
+class Fresh(NamedTuple):
+    """A re-signed media payload, plus WHY when there isn't one.
+
+    `media is None` used to be the whole answer, and it collapsed the two
+    outcomes that matter: OF has DELETED this media (permanent — stop asking)
+    versus OF did not answer (transient — ask again next sweep). Both callers
+    needed the distinction back and both recovered it the same way, by re-reading
+    `VaultItem.removed_at` in a second session — a bit this function had already
+    computed and then discarded, re-derived with a round-trip, twice, in two
+    modules. `reason` carries it instead."""
+
+    media: dict | None
+    reason: str  # "ok" | "gone" | "fetch_failed"
+
+
+async def resolve_fresh(account_id: str, media_id: int, client: Any) -> Fresh:
     """Re-read one media from OF for a freshly signed url set, and write the
     refreshed payload back over the mirror row.
 
-    Returns the fresh media dict, or None when OF has no answer we can use — a
-    deleted media additionally stamps `removed_at`, which is what stops the next
-    caller re-asking. Shared with the video path in `vault_ai_api`: a stale mp4
-    url is the same stale signature as a stale jpeg url, and re-deriving it from
-    the same fresh payload is what keeps the two from disagreeing about which
-    media they are looking at."""
+    Returns the fresh media dict, or the reason there isn't one — a deleted media
+    additionally stamps `removed_at`, which is what stops the next caller
+    re-asking. Shared with the video path in `vault_frames`: a stale mp4 url is
+    the same stale signature as a stale jpeg url, and re-deriving it from the
+    same fresh payload is what keeps the two from disagreeing about which media
+    they are looking at."""
     fresh = await asyncio.to_thread(_resolve_fresh_sync, client, media_id)
     if fresh.gone:
         await _mark_gone(account_id, media_id)
-        return None
+        return Fresh(None, "gone")
     if fresh.media is None:
-        return None
+        return Fresh(None, "fetch_failed")
     await _refresh_mirror(account_id, media_id, fresh.media)
-    return fresh.media
+    return Fresh(fresh.media, "ok")
 
 
 async def bytes_for(account_id: str, media_id: int, path: Path, pick: Pick) -> Still:
@@ -341,14 +356,10 @@ async def bytes_for(account_id: str, media_id: int, path: Path, pick: Pick) -> S
             data = await asyncio.to_thread(fetch_bytes_sync, client, url)
         if data is None:
             # The stored url is dead (or we never had one) — re-sign, retry once.
-            media = await resolve_fresh(account_id, media_id, client)
-            if media is None:
-                async with get_session() as s:
-                    again = await s.get(VaultItem, (account_id, media_id))
-                if again is not None and again.removed_at is not None:
-                    return Still(None, "gone")
-                return Still(None, "fetch_failed")
-            retry = pick(media)
+            fresh = await resolve_fresh(account_id, media_id, client)
+            if fresh.media is None:
+                return Still(None, fresh.reason)
+            retry = pick(fresh.media)
             if not retry:
                 # OF answered, and its answer has nothing this store can render.
                 # Not a transient failure — asking again changes nothing.

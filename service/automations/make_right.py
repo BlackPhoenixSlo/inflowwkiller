@@ -98,19 +98,34 @@ _DEFAULTS: dict = {
     # delivery bubble of the purchase itself usually takes one slot. 0 = gate off.
     "max_msgs_since_charge": 3,
     "per_fan_cap": 2,          # "up to twice" then operator_only (anti-milking)
-    # Gift sizing — value it at ≥ the wrongful charge (default: match it). Pieces
-    # come from the tip_reward tip-library tiers (the same giftable pool).
-    "gift_value_match": True,
-    "gift_piece_value_cents": 600,   # nominal $ per free piece for the match math
-    "gift_min_count": 2,
-    "gift_max_count": 4,
+    # ⚠️ GIFT SIZE IS ONE KNOB — `gift_pieces_per_step`, below. `gift_value_match` +
+    # `gift_piece_value_cents` solved a piece count from the over-charge and
+    # `gift_min_count` + `gift_max_count` clamped it; v2 takes that count directly
+    # and has read none of the four since. They outlived their code on the tab long
+    # enough for both Lucas accounts to be set to min/max = 4 and gift 3, with no
+    # screen saying which number lost. Deleted 2026-08-06 here, on the tab and in the
+    # validator, which strips them from a stored config on its next save. If size
+    # should key off the over-charge again it belongs INSIDE `gift_pieces_per_step`,
+    # not in a second set of knobs racing it.
     "gift_tier": "",           # a specific tip_reward tier name, or "" → auto-pick by basis
     "apology_caption": "",     # operator override for the apology text ('' → built-in)
     "flag_refund": True,       # raise an operator refund-review flag (money is NEVER auto-moved)
     "guard_hours": 12,         # cross-automation contact-guard window (OPEN only)
-    # ── Multi-turn exchange (v2): apology → N free (each on his reply) → PPV → close ──
-    "free_steps": 3,               # free pieces given across his replies before the PPV
-    "gift_pieces_per_step": 1,     # unseen pieces per free step
+    # ── The exchange: apology → N free TURNS (each on his reply) → PPV → close ──
+    #
+    # ⚠️ ONE TURN BY DEFAULT (operator ruling 2026-08-06: "make right down to just
+    # one text and another bubble with gift, not more"), superseding the 3 this
+    # shipped with. `free_steps: 1` + `open_with_gift` makes `_build_steps` return
+    # exactly ["apology_gift"], so `_open_exchange` closes the row `resolved` on the
+    # spot: no silence check, no nudge, no PPV pivot, nothing waiting on a reply. An
+    # apology that keeps talking is asking him to keep forgiving. The multi-turn
+    # machinery is untouched — raising this knob gets the reply-driven exchange back.
+    #
+    # ⚠️ It counts TURNS, not images, and multiplies with `gift_pieces_per_step`:
+    # prod ran 3 × 3, which is 9 free pieces over 3 messages. The old comment here
+    # said "free pieces", and that wording is what the settings tab put on the label.
+    "free_steps": 1,               # free TURNS before the PPV (1 = just the apology turn)
+    "gift_pieces_per_step": 1,     # unseen pieces attached to ONE gift bubble per turn
     "open_with_gift": True,        # the opening turn is apology + free #1 (else apology only)
     "ppv_folder": "",              # tip-library folder for the PPV pivot ('' → no PPV, just close)
     "ppv_price_cents": 1500,       # the PPV ask ($15)
@@ -126,14 +141,22 @@ _DEFAULTS: dict = {
     # never ghosted over a classifier verdict, he gets a de-escalation apology.
     "on_hard_decline": True,
     # How many EXTRA free turns the objection-triggered apology gets after its
-    # opening one (operator ruling 2026-08-05: "i like this more steps each time").
-    # 0 restores the original single turn.
+    # opening one. 0 = the single turn: one text bubble, one gift bubble, done.
     #
-    # More turns is not a drip: `_advance_phase` sends the next piece only after HE
-    # writes back, so the exchange is paced by his own engagement and closes itself
-    # to an operator if he goes quiet. A price is never appended in this lane —
-    # `steps` here cannot contain `ppv`, whatever `ppv_folder` says.
-    "apology_free_steps": 2,
+    # ⚠️ 2026-08-06 SUPERSEDES 2026-08-05. Yesterday's ruling was "i like this more
+    # steps each time" and this was 2; today's is "make right down to just one text
+    # and another bubble with gift, not more", and that reads on the whole module —
+    # a fan who complained about content is in the same place as a fan who was
+    # charged twice, and there is no reason the scanner lane says it once and this
+    # lane says it three times. Raise it back to 2 to restore the longer recovery;
+    # nothing else has to change.
+    #
+    #
+    # More turns was never a drip: `_advance_phase` sends the next piece only after
+    # HE writes back, so the exchange is paced by his own engagement and closes
+    # itself to an operator if he goes quiet. A price is never appended in this lane
+    # — `steps` here cannot contain `ppv`, whatever `ppv_folder` says.
+    "apology_free_steps": 0,
 }
 
 # Warm, human apology openers (bubble 1), keyed to the MISTAKE so the words match
@@ -391,7 +414,7 @@ async def _detect_dup_charges(account_id: str, cfg: dict, now: datetime,
     DISTINCT charges of the same fan whose media OVERLAP.
 
     `only_fan_ids` scopes the scan to specific fans (a targeted/preview run, and the
-    jaka<->Ava live-test guard) — mirrors _resolve_open_offers(only_fan_ids=...).
+    jaka<->Lexi live-test guard) — mirrors _resolve_open_offers(only_fan_ids=...).
     """
     since = now - timedelta(days=max(1, int(cfg.get("lookback_days") or 30)))
     _fan_in = [int(x) for x in only_fan_ids] if only_fan_ids else None

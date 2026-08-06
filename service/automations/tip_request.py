@@ -33,6 +33,7 @@ import automation_executor as ax        # _make_client seam
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes
 from automation_registry import register
+from automations import _customs
 from automations._common import (
     apply_word_restriction, load_hard_skip_ids, should_skip_muted_creator,
 )
@@ -198,6 +199,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             break
         async with get_session() as s:
             fan = await s.get(Fan, (str(account_id), int(fid)))
+
+        # ⚠️ DELIBERATELY OUTSIDE THE `force` BYPASS, AND THE ONLY CHECK HERE THAT IS.
+        #
+        # Everything below is a THROTTLE — a cooldown, a contact guard, an
+        # operator stop — and `force` exists to let a human overrule a throttle.
+        # This is not a throttle. He has paid for a voice note that has not been
+        # recorded yet, and asking him for money again is the failure the customs
+        # lane was built to prevent; a `force` that quietly re-enabled it would put
+        # the one un-overridable rule behind the one flag that overrides
+        # everything. The way to tip-ask this fan is to deliver his custom and
+        # clear him on /customs, which takes one click.
+        #
+        # No query: the loop already holds his `Fan` row, so this is the same
+        # `is_owed` the chat engines read, not the audience-set variant the blast
+        # lanes need.
+        if _customs.is_owed(fan):
+            skipped += 1
+            continue
 
         if not force:
             if fid in hard_skip or should_skip_muted_creator(fan):

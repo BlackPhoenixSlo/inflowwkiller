@@ -77,6 +77,7 @@ from db.models import (
     created_at_text, parse_ts,
 )
 from llm_client import LLMCapExceeded
+from . import _daylog  # what SHE did today — the creator-side twin of recent_events
 from . import _ghost, cat_stickers, rhythm, script_packs, tip_ladder, upsell
 # The reply-volume leash — both gates, the spend rules that lift them, and the
 # verdict ledger. Re-exported under these names because `fans.py` (the status
@@ -528,6 +529,10 @@ _DEFAULTS: dict = {
     # chat 4, dark 2, chat 5, dark 2.5, back to the top. None ⇒ that shipped
     # default (`_ghost.DEFAULT_CYCLE`). Only read when the flag above is on.
     "rhythm_ghost_cycle": None,
+    # NB the day log's switch is NOT here — it lives in `style_config_json` under
+    # `_daylog.DAY_LOG_ENABLED_KEY`, because the day is a property of the CREATOR and
+    # must be one flag across BOTH chat engines. Two engine-scoped flags could be
+    # flipped independently and hand the same fan two different days. Default OFF.
     # No-sleep pacing: keep the hot/cold/busy variable delays + short "stepped away"
     # breaks, but NEVER the long overnight sleep — and it needs no timezone. For a
     # creator who wants "she's a person who gets busy" without an 8-hour night gap.
@@ -1556,7 +1561,7 @@ def _manifest_block(offerable: dict[int, CatalogItem],
     # ⚠️ THE ">>OFFER SENTENCE IS LOAD-BEARING AND WAS MISSING. This branch hands
     # the model TWO protocols — a catalogue with an >>OFFER id, and a permission to
     # sell a custom — and said nothing about how they interact. Live generation on
-    # Ava (2026-08-05): asked for a voice note, the model wrote "$150 and it's all
+    # Lexi (2026-08-05): asked for a voice note, the model wrote "$150 and it's all
     # yours babe" and appended `>>OFFER 236`. Item 236 on that account is a $200
     # VIDEO labelled "Custom / exclusive". The send path takes price and media from
     # the catalogue row (`ai_chatter.py` ~6287/6279, "the model never sets them"),
@@ -4208,6 +4213,11 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     opener: "_openers.Opener | None" = None,
                     v: "_voice.VoiceBlocks" = _voice.HER,
                     custom_owed: bool = False,
+                    # TODAY's generated day + the creator-local hour to read it at.
+                    # Both default to "absent", which renders "" everywhere — an
+                    # account with no day log produces a byte-identical prompt.
+                    day_log: dict | None = None,
+                    day_hour: int | None = None,
                     ) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — of_ai_chat's girly info-gather prompt
     with one structural difference: `sell`. `_NO_SELL` (M2) → the no-offers line
@@ -4510,16 +4520,36 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         "you're doing comes up, stay consistent with this clock — never claim "
         "a different time of day.\n\n" if clock else "")
 
+    # TODAY's day, read at the creator-local hour. "" when the account has no day
+    # log — byte-equal prompt, same discipline as the clock block above. Rendered
+    # NEXT TO the clock deliberately: the clock already tells her what time it is,
+    # and this tells her what she has been doing since morning. Split across the
+    # prompt they read as two unrelated rules; adjacent they read as one situation.
+    day_sys = (_daylog.day_block(day_log or {}, day_hour, v.voice)
+               if day_hour is not None else "")
+
     system = (
         f"{persona}\n"
         "You're texting a fan to get to know him while flirting. You are 100% human "
-        "— never sound like a bot or an assistant. Use only what you've learned "
-        "about him; don't share your own info unless he asks; "
-        f"{offers_line} "
+        "— never sound like a bot or an assistant. "
+        # THE BAN, conditional. "don't share your own info unless he asks" is what
+        # produced a high-value thread in which she answered a direct question about her
+        # day with five bubbles containing nothing about herself.
+        # It stays VERBATIM when there is no day log, so an un-generated account is
+        # byte-identical; it is replaced only when she actually has something true to
+        # give. Deleting it outright was rejected: it is the only clause standing
+        # between the model and free-form self-invention (the 966-turn
+        # Argentina→Chile→Córdoba cascade), and BIO_CONSISTENCY_GUARDRAIL 30 lines
+        # later would then contradict it.
+        + ("Use only what you've learned about him; don't share your own info "
+           "unless he asks; " if not day_sys else
+           "Use what you've learned about him, and give a little back — one short "
+           "beat of your own day when it fits, never a paragraph; ")
+        + f"{offers_line} "
         "He may send several texts in a row — read them all, reply to "
         "the latest.\n\n"
         f"{v.painful_texting + chr(10) + chr(10) if painful_on else ''}"
-        f"{clock_block}"
+        f"{clock_block}{day_sys}"
         f"{need_block}{dodge_note}{call_him}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         # Register (text young and casual), NOT a claim about her age — derived
@@ -4565,12 +4595,26 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # produced the contradictions all live in this engine, not of_ai_chat's
     # (_MAX_TURNS=30 / _MAX_FAN_MESSAGES=10 / $1 spend gate).
     claims_block = fan_claims_block(f)
+    # "He asked about your day — ANSWER it." USER message, because it is keyed to
+    # THIS fan: his question, and his own ledger of beats already heard. The system
+    # block above only PERMITS the disclosure, and permission alone is inert — against
+    # a prompt otherwise dominated by fan-directed rules ("get to know him", "at most
+    # one question", "react to what he said"), "you may mention your day" loses, and
+    # the model can still legally answer "aw better now that ur here / how was yours?"
+    # while satisfying every other rule. "" unless he actually asked AND a beat exists.
+    day_ask = (_daylog.day_ask_block(day_log or {}, day_hour, f, c.last_in_text or "")
+               if day_hour is not None else "")
+    # The part of her day that overlaps THIS fan, when any of it does. Per-fan, so
+    # user-side. The day block above is the account-constant half; this is what makes
+    # the bridge to him reliable instead of hoping the model finds one.
+    day_rel = _daylog.relatable_block(day_log or {}, day_hour, f)
     # His own long-form message, pinned on the thread and read back here (_pins) —
     # same placement and reasoning as of_ai_chat's.
     user = (
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
         f"{claims_block}"
         f"{_pins.pins_block(f)}"
+        f"{day_rel}{day_ask}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Reply to his last message now, in the STYLE FOR THIS MESSAGE above."
     )
@@ -4756,6 +4800,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # prompt clock uses; an account with no timezone yields "" and the ration does
     # not apply, which is the pre-ration behaviour rather than a guessed boundary.
     opener_day = _openers.local_day(clock_tz)
+    # TODAY's day log — ONE lazy generation per (account, creator-local date), shared
+    # by every fan in this sweep. Resolved here rather than per-fan for the same
+    # reason `rhythm_curve` is: it is account-level, and a per-fan call would be one
+    # generation per fan for a value that cannot differ between them. Gated on the
+    # flag so an operator can turn the whole feature off without a deploy; {} when
+    # off / no tz / cap hit, and every renderer maps {} to "" (byte-identical prompt).
+    day_log = ({} if not await _daylog.load_enabled(account_id)
+               else await _daylog.ensure_day_log(
+                   account_id, cfg_row, model=model, purpose=_PURPOSE))
+    day_hour = _daylog.local_now(clock_tz).hour if (day_log and clock_tz is not None) else None
+    # The gap-cover half of the same row (see rhythm.RhythmCtx.day_covers).
+    day_covers = _daylog.covers_for(day_log)
     sleep_win = (await _sleep_window(account_id, tz_off, cfg.get("sleep_window"),
                                      str(cfg.get("rhythm_sleep_source") or "default"))
                  if rhythm_on else rhythm.DEFAULT_SLEEP)
@@ -5199,7 +5255,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # left here is the CONSEQUENCE, which is identical for every verdict.
             objection = await _objection.decide(
                 account_id, fan_id, f, c, cfg=cfg, model=model,
-                last_paid_at=human_money.get(fan_id, (None, None))[1], now=now)
+                last_paid_at=human_money.get(fan_id, (None, None))[1], now=now,
+                dry_run=dry_run)
             if objection:
                 # The brake rides WITH the apology — a billing claim takes the 72h
                 # stop, a man who is merely disappointed takes 24h. Both keep talking.
@@ -5344,6 +5401,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 away = rhythm.decide_availability(rhythm.RhythmCtx(
                     account_id=str(account_id), fan_id=fan_id,
                     voice=v.voice,
+                    # Gap covers drawn from TODAY's day when she has one, so a cover
+                    # cannot claim she was driving while the chat prompt says she was
+                    # on a trail. () ⇒ the shipped pools, unchanged.
+                    day_covers=day_covers,
                     pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
                     pace_curve=rhythm_curve,
                     last_inbound_at=c.last_in_at, last_outbound_at=c.last_out_at,
@@ -5540,22 +5601,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             elif pending is not None and open_count >= max_open_offers:
                 # Max unpaid PPVs already on the table — stop pitching, just chat.
                 sell = _pending_block(pending, await _get_item(int(pending.item_id)))
-            # ⚠️ THERE IS NO CATALOGUE PRECONDITION ON SELLING. There used to be —
-            # `elif catalog_items and ...` — and it is the reason bb4125b's fix did
-            # nothing: that commit corrected the manifest's own gate (`if offerable
-            # or voice_blocks.sell_customs`), which lives INSIDE this branch, so on
-            # an account with an empty catalogue the branch holding it never ran.
+            # ⚠️ THE CATALOGUE IS NOT THE PRECONDITION ON SELLING — HAVING SOMETHING
+            # TO SELL IS. This read `elif catalog_items and ...`, and that is the
+            # reason bb4125b's fix did nothing: that commit corrected the manifest's
+            # own gate (`if offerable or voice_blocks.sell_customs`), which lives
+            # INSIDE this branch, so on an account with an empty catalogue the
+            # branch holding it never ran. A custom is recorded to order and needs
+            # no rows at all, so gating on the one inventory that happens to have a
+            # table switched selling off for every account that sells the other way.
             #
-            # The catalogue was never the only thing for sale. A custom is recorded
-            # to order and needs no rows at all; the teaser ladder and tip_reward
-            # send real vault media that is not in `catalog_items` either. Gating
-            # the sell surface on the one inventory that happens to have a table
-            # silently switched selling off for every account that uses the others.
-            #
-            # Costs nothing when there IS nothing: with no catalogue and customs
-            # off, `_manifest_block` returns "" and the prompt is byte-identical to
-            # never having entered here.
-            elif await _offer_caps_ok(account_id, fan_id, caps_cfg):
+            # But the fence still has a job, and dropping it entirely was the
+            # over-correction: `_offer_caps_ok` is 1-3 per-fan queries, and it was
+            # then being paid on every fan of every account that can sell NEITHER —
+            # exactly the accounts where the whole branch is provably a no-op
+            # (`offerable` is empty, and `if offerable or v.sell_customs` below is
+            # false, so `sell` stays `_NO_SELL`). The condition is the disjunction
+            # the branch body already tests, hoisted to where it costs nothing.
+            elif ((catalog_items or v.sell_customs)
+                    and await _offer_caps_ok(account_id, fan_id, caps_cfg)):
                 offerable = await _offerable_for_fan(account_id, fan_id,
                                                      cfg_offer_mode, scripts,
                                                      catalog_items)
@@ -5790,6 +5853,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     seed=f"opener:{account_id}:{fan_id}:{c.last_body}"):
                 opener = _openers.next_for(f, profiles.get(fan_id),
                                            today=opener_day)
+            # Which beat this reply is being REQUIRED to carry, "" when he did not
+            # ask or she has already told him today's. Computed here so the confirmed
+            # -send stamp below and the prompt block agree by construction rather
+            # than by two independent evaluations of the same predicate.
+            day_required_beat = _daylog.required_beat_id(
+                day_log, day_hour, f, c.last_in_text or "")
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
                                               custom_owed=_customs.is_owed(f),
                                               opener=opener,
@@ -5810,6 +5879,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                                          else 0),
                                               buyer_facts=buyer_facts,
                                               clock=_clock_line(clock_tz),
+                                              day_log=day_log,
+                                              day_hour=day_hour,
                                               v=v)
             try:
                 res = await llm_client.chat(
@@ -6205,6 +6276,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 d = rhythm.decide(rhythm.RhythmCtx(
                     account_id=str(account_id), fan_id=fan_id,
                     voice=v.voice,
+                    # Gap covers drawn from TODAY's day when she has one, so a cover
+                    # cannot claim she was driving while the chat prompt says she was
+                    # on a trail. () ⇒ the shipped pools, unchanged.
+                    day_covers=day_covers,
                     pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
                     pace_curve=rhythm_curve,
                     text=(parts[0] if parts else ""),
@@ -6538,6 +6613,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # decision, so a failed send leaves the dare still owed.
             if image_dare_turn:
                 await _bot_dare_mark(account_id, fan_id)
+            # Burn today's beat once the reply that was REQUIRED to carry it is
+            # confirmed on the wire. Same discipline as the dare above: stamped on
+            # CONFIRMED send, never on the decision, so a failed send leaves the beat
+            # unspent and he still gets an answer next turn. Day-scoped, so the whole
+            # ledger self-prunes at local midnight.
+            if day_required_beat:
+                await set_fan_state(
+                    account_id, fan_id, _daylog.STATE_KEY,
+                    _daylog.mark_beat_used(f, day_log.get("date", ""),
+                                           day_required_beat))
             # Persist the offer the moment its message is confirmed on the wire.
             # A teaser is its own delivery (advance immediately); a paid offer
             # opens and waits on the unlock watcher. VaultSend rows land at
