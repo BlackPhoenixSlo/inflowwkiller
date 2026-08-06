@@ -32,6 +32,7 @@ from automations._common import (
     CAT_STICKER_SKIP_PCT_KEY,
     CAT_STICKER_SOLO_PCT_KEY, CAT_STICKER_GAP_MIN_KEY)
 from automations._pins import PINS_ENABLED_KEY, PINS_WRITE_KEY
+from automations._daylog import DAY_LOG_ENABLED_KEY
 
 # NUMERIC knobs (not checkboxes): key → (default, max). Persisted as numbers —
 # the bool coercion in _persist must never touch these.
@@ -138,6 +139,10 @@ def _resolved_view(stored: dict) -> dict[str, Any]:
     # `pins_write`, which is the one that starts mutating OnlyFans.
     out[PINS_ENABLED_KEY] = bool(stored.get(PINS_ENABLED_KEY, False))
     out[PINS_WRITE_KEY] = bool(stored.get(PINS_WRITE_KEY, False))
+    # The day log. Same reason as the pins pair above: the operator flipping it on
+    # must be able to tell a successful save from a silently-dropped key, and this
+    # one is the switch that starts writing a generated day into the chat prompt.
+    out[DAY_LOG_ENABLED_KEY] = bool(stored.get(DAY_LOG_ENABLED_KEY, False))
     return out
 
 
@@ -162,7 +167,8 @@ def _persist(cfg: dict) -> dict[str, Any]:
         | set(STYLE_CONSISTENCY_KEYS) \
         | {"strip_emojis", FACTGROUND_KEY, PAINFUL_TEXTING_KEY, SELL_CUSTOMS_KEY,
            CAT_STICKERS_KEY,
-           PINS_ENABLED_KEY, PINS_WRITE_KEY}
+           PINS_ENABLED_KEY, PINS_WRITE_KEY,
+           DAY_LOG_ENABLED_KEY}
     out: dict[str, Any] = {k: bool(v) for k, v in cfg.items() if k in known}
     # Numeric knobs keep their number — bool() would turn "skip 30%" into True.
     out.update({k: _clamp_num(k, cfg[k]) for k in _NUMERIC_KNOBS if k in cfg})

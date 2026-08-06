@@ -167,6 +167,10 @@ export default function BrainPanel() {
 
   const [welcomeEnabled, setWelcomeEnabled] = useState(false);
   const [welcomeMinutes, setWelcomeMinutes] = useState(WELCOME_DEFAULT_EVERY_S / 60);
+  // Bubble 2 = the short clock line ("it's Thursday afternoon in US") instead of
+  // the activity line. Lives on the rule's payload.time_only, like the follow-up's
+  // with_image — so it saves with the Welcome section's own button.
+  const [welcomeTimeOnly, setWelcomeTimeOnly] = useState(false);
   const [welcomeMsg, setWelcomeMsg] = useState<string | null>(null);
   const [previewFan, setPreviewFan] = useState("");
   const [preview, setPreview] = useState<AutomationPreviewResult | null>(null);
@@ -211,11 +215,15 @@ export default function BrainPanel() {
       setWelcomeMinutes(
         Math.max(1, Math.round((welcomeRule.every_seconds ?? WELCOME_DEFAULT_EVERY_S) / 60)),
       );
+      setWelcomeTimeOnly(welcomeRule.payload?.time_only === true);
     } else {
       setWelcomeEnabled(false);
       setWelcomeMinutes(WELCOME_DEFAULT_EVERY_S / 60);
+      setWelcomeTimeOnly(false);
     }
-  }, [welcomeRule?.id, welcomeRule?.is_enabled, welcomeRule?.every_seconds]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [welcomeRule?.id, welcomeRule?.is_enabled, welcomeRule?.every_seconds,
+      JSON.stringify(welcomeRule?.payload)]);
   // Seed the step-delay hours + enable/cadence/with_image from the rule (defaults
   // when no rule exists yet). Keyed on rule identity so a poll won't stomp edits.
   useEffect(() => {
@@ -345,8 +353,10 @@ export default function BrainPanel() {
   }
 
   // Find-or-create the account's send_welcome rule with the chosen enable +
-  // cadence. The per-run knobs (limit, image, etc.) keep their defaults — the
-  // Brain only owns the on/off + cadence here; richer knobs stay in the rules UI.
+  // cadence + the short-2nd-bubble knob. The other per-run knobs (limit, image,
+  // etc.) keep their defaults — the Brain owns on/off, cadence and the bubble
+  // shape here; richer knobs stay in the rules UI. The payload is MERGED over the
+  // rule's existing one so saving from here can't drop a knob set over there.
   async function saveWelcome() {
     if (!accountId) return;
     setWelcomeMsg(null);
@@ -357,6 +367,7 @@ export default function BrainPanel() {
           id: welcomeRule.id,
           every_seconds,
           is_enabled: welcomeEnabled,
+          payload: { ...(welcomeRule.payload ?? {}), time_only: welcomeTimeOnly },
         });
       } else {
         await createWelcomeRule.mutateAsync({
@@ -365,6 +376,7 @@ export default function BrainPanel() {
           name: "Welcome new subscribers",
           every_seconds,
           is_enabled: welcomeEnabled,
+          payload: { time_only: welcomeTimeOnly },
         });
       }
       setWelcomeMsg("Saved.");
@@ -429,6 +441,9 @@ export default function BrainPanel() {
         restyle: previewRestyle,
         config: draftCfg,
         ignore_pin: ignorePin, // Regenerate bypasses the pin to sample a fresh one
+        // The checkbox is form state until Save, so the preview must carry it —
+        // otherwise ticking it and hitting Preview still shows the long line.
+        time_only: welcomeTimeOnly,
       });
       setPreview(res);
     } catch (e) {
@@ -873,7 +888,29 @@ export default function BrainPanel() {
                 />
                 <span className="text-[11px] text-fg-dim">min</span>
               </label>
+              <label
+                className="flex items-center gap-2 pb-1.5 text-sm text-fg"
+                title="Second bubble says only the day, time of day and where she is — 'it's Thursday afternoon in US'. No activity line, so it's short. Overrides any pinned line while it's on."
+              >
+                <input
+                  type="checkbox"
+                  checked={welcomeTimeOnly}
+                  onChange={(e) => {
+                    setWelcomeTimeOnly(e.target.checked);
+                    setWelcomeMsg(null);
+                  }}
+                  className="accent-accent"
+                />
+                Short 2nd bubble (time &amp; place only)
+              </label>
             </div>
+            {welcomeTimeOnly && (
+              <p className="text-[10px] text-fg-dim">
+                Bubble 2 drops the activity — “it’s Thursday afternoon in US”, restyled
+                into her texting voice. Works on slots with no activity written, and
+                ignores pinned lines while it’s on.
+              </p>
+            )}
 
             {/* Live preview — composes the welcome text + image WITHOUT sending.
                 With "AI restyle" on it runs the REAL restyle so you see the exact
@@ -930,7 +967,11 @@ export default function BrainPanel() {
               >
                 {previewM.isPending ? "…" : "↻ Regenerate"}
               </Button>
-              {preview && preview.bubbles && preview.bubbles.length > 1 && !preview.pinned && (
+              {/* No pinning while the short bubble is on: a pin is an ACTIVITY line
+                  and time-only ignores pins, so the button would store something
+                  that never ships. */}
+              {preview && preview.bubbles && preview.bubbles.length > 1 && !preview.pinned
+                && !welcomeTimeOnly && (
                 <Button
                   size="sm"
                   variant="primary"

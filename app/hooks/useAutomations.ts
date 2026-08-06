@@ -226,6 +226,8 @@ export function useAutomationPreview() {
       config?: Record<string, unknown> | null;
       /** send_welcome: Regenerate bypasses a pinned slot line to sample a fresh one. */
       ignore_pin?: boolean;
+      /** send_welcome: 2nd bubble = day/time + location only (no activity line). */
+      time_only?: boolean;
     }
   >({
     mutationFn: (vars) => relay.post("/admin/automation-preview", vars),
