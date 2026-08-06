@@ -175,6 +175,24 @@ export interface AiChatterConfig {
   /** null ⇒ `rhythm_sleep_source` decides; ["HH:MM","HH:MM"] ⇒ the operator
    *  overrode it, which outranks both sources. */
   sleep_window?: [string, string] | null;
+  /** Human TYPING pacing — the gaps BETWEEN the bubbles of one reply, which the
+   *  rhythm settings above never touched (they decide when the FIRST bubble lands).
+   *  Measured over 120 days of production, 3.0% of our inter-bubble gaps run longer
+   *  than 20s, against 26.9% for a human chatter and 56.6% for a fan: she never
+   *  stops mid-reply. OFF by default. */
+  pacing_enabled?: boolean;
+  /** How often a bubble draws a real "she put the phone down" pause (percent).
+   *  This is the whole fix — a flat delay added to every bubble measured WORSE than
+   *  changing nothing, because it just relocates the pile. Default 30. */
+  pacing_drift_pct?: number;
+  /** The longest one such pause may run, in seconds. Held inline, so the server
+   *  clamps it under the 120s boundary past which a reply must be rescheduled
+   *  instead. Default 90. */
+  pacing_drift_cap_s?: number;
+  /** Blank the "…is typing" bar for 5–10s mid-bubble, so it doesn't run unbroken
+   *  for exactly the length of the gap. Adds no delay at all — it only changes what
+   *  the fan sees during a wait that was happening anyway. Default ON. */
+  pacing_think_gaps?: boolean;
   /** {slot: [lines]} over the shipped script pack. A slot the operator blanked is
    *  dropped on save, so it falls back to the shipped default — never an empty send. */
   script_pack_overrides?: Record<string, string[]>;

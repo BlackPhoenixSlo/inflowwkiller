@@ -890,7 +890,7 @@ export default function BrainPanel() {
               </label>
               <label
                 className="flex items-center gap-2 pb-1.5 text-sm text-fg"
-                title="Second bubble says only the day, time of day and where she is — 'it's Thursday afternoon in US'. No activity line, so it's short. Overrides any pinned line while it's on."
+                title="Second bubble says only the day, time of day and where the creator is — 'it's Thursday afternoon in US'. No activity line, so it's short. Overrides any pinned line while it's on."
               >
                 <input
                   type="checkbox"
@@ -907,7 +907,7 @@ export default function BrainPanel() {
             {welcomeTimeOnly && (
               <p className="text-[10px] text-fg-dim">
                 Bubble 2 drops the activity — “it’s Thursday afternoon in US”, restyled
-                into her texting voice. Works on slots with no activity written, and
+                into the creator’s texting voice. Works on slots with no activity written, and
                 ignores pinned lines while it’s on.
               </p>
             )}

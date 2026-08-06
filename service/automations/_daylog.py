@@ -55,6 +55,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 import llm_client                   # call .chat at runtime so tests can patch it
@@ -386,7 +387,7 @@ def asks_about_her_day(text: str | None) -> bool:
 
 
 # ── Renderers ────────────────────────────────────────────────────────
-def day_block(day_log: dict, hour: int, voice: object = None) -> str:
+def day_block(day_log: dict, hour: int | None, voice: object = None) -> str:
     """The account-constant YOUR DAY block for the SYSTEM prompt. "" when there is
     no usable beat, so an un-generated account is byte-identical.
 
@@ -399,6 +400,8 @@ def day_block(day_log: dict, hour: int, voice: object = None) -> str:
     know about him" inventory. That inventory is the one the model demonstrably
     ignores (it asked a $691 fan his job with `occupation` populated AND injected);
     the imperative clock line is the one that held."""
+    if hour is None:
+        return ""
     beat = beat_for_hour(day_log, hour)
     if not beat:
         return ""
@@ -580,13 +583,14 @@ def required_beat_id(day_log: dict, hour: int | None, f: Fan | None,
     return beat["id"]
 
 
-def day_ask_block(day_log: dict, hour: int, f: Fan | None, last_inbound: str) -> str:
+def day_ask_block(day_log: dict, hour: int | None, f: Fan | None,
+                  last_inbound: str) -> str:
     """The "he asked — answer it" instruction, or "".
 
     Goes in the USER message: it is keyed to THIS fan (his question, his ledger of
     already-heard beats), and per-fan text in the system prompt fragments the shared
     cached prefix — the same rule `_persona.persona_claims_block` follows."""
-    if not asks_about_her_day(last_inbound):
+    if hour is None or not asks_about_her_day(last_inbound):
         return ""
     beat = beat_for_hour(day_log, hour)
     if not beat:
@@ -751,14 +755,23 @@ async def generate_day_log(account_id: str, persona: str, seed_acts: dict,
 DAY_LOG_ENABLED_KEY = "day_log_enabled"
 
 
-async def load_enabled(account_id: str) -> bool:
-    """Is the day log on for this account? Default OFF."""
-    from db.engine import get_session
-    from db.models import AccountAiConfig
-    async with get_session() as s:
-        cfg = await s.get(AccountAiConfig, str(account_id))
-    stored = load_dict(getattr(cfg, "style_config_json", None) if cfg else None)
+def enabled_for(cfg_row) -> bool:
+    """Is the day log on, given the brain row? Default OFF.
+
+    Takes the ROW, not an account id, because the flag lives on the same row as the
+    persona, the timezone and the day itself — so the one caller that needs all of
+    them reads them together instead of querying twice for one row."""
+    stored = load_dict(getattr(cfg_row, "style_config_json", None) if cfg_row else None)
     return bool(stored.get(DAY_LOG_ENABLED_KEY))
+
+
+async def load_enabled(account_id: str) -> bool:
+    """Is the day log on for this account? Default OFF.
+
+    The by-id form, kept because it is the key's named reader in the style-config
+    contract table (`test_style_config.case_every_loader_key_is_covered`). The chat
+    engines go through `load_day`, which already holds the row."""
+    return enabled_for(await _load_cfg_row(account_id))
 
 
 async def ensure_day_log(account_id: str, cfg_row, model: str, purpose: str,
@@ -814,13 +827,18 @@ async def ensure_day_log(account_id: str, cfg_row, model: str, purpose: str,
         return row
 
 
-async def _load_day_log_row(account_id: str) -> dict:
-    """Re-read just this column, for the inside-the-lock freshness check."""
+async def _load_cfg_row(account_id: str):
+    """The whole brain row. One query: the flag, the persona, the tone seed, the
+    timezone and the day itself all live on it."""
     from db.engine import get_session
     from db.models import AccountAiConfig
     async with get_session() as s:
-        cfg = await s.get(AccountAiConfig, str(account_id))
-        return parse_day_log(getattr(cfg, "day_log_json", None)) if cfg else {}
+        return await s.get(AccountAiConfig, str(account_id))
+
+
+async def _load_day_log_row(account_id: str) -> dict:
+    """Re-read just this column, for the inside-the-lock freshness check."""
+    return parse_day_log(getattr(await _load_cfg_row(account_id), "day_log_json", None))
 
 
 async def _store_day_log(account_id: str, row: dict) -> None:
@@ -840,3 +858,93 @@ async def _store_day_log(account_id: str, row: dict) -> None:
             await s.commit()
     except Exception:
         log.warning("day log store failed account=%s", account_id, exc_info=True)
+
+
+# ── The engine-facing surface ────────────────────────────────────────
+# `None` is a MEANINGFUL cfg_row (the account has no brain row ⇒ no day), so the
+# "caller did not pass one" case needs its own sentinel rather than reusing it.
+_UNSET = object()
+
+
+@dataclass(frozen=True)
+class Day:
+    """Today's log bound to the creator-local hour it is being read at.
+
+    The two chat engines used to thread `(day_log, day_hour)` as a PAIR through six
+    call sites each, and every site re-derived "is there a day" for itself — some as
+    `day_log or {}`, some as `if day_hour is not None`, and which renderer tolerated
+    a missing hour differed per function — so two of the five had to be wrapped at
+    the call site and three did not, for no reason a reader could see locally. That
+    is the same wiring written twice on top of an invariant nobody could check. One
+    object carries the pair and hands each engine four plain calls.
+
+    Empty `Day()` is the OFF path — every method returns nothing, so the prompt of an
+    account without a day is byte-identical. That is the property the whole feature
+    ships on, so it is a property of THIS type rather than of each caller's care."""
+
+    log: dict = field(default_factory=dict)
+    hour: int | None = None
+
+    def __bool__(self) -> bool:
+        return bool(self.log) and self.hour is not None
+
+    @property
+    def date(self) -> str:
+        """The row's own date — the ledger is scoped per day, never per session."""
+        return str(self.log.get("date") or "")
+
+    @property
+    def covers(self) -> tuple[str, ...]:
+        """Gap-covers from TODAY's row, for `rhythm.RhythmCtx.day_covers`."""
+        return covers_for(self.log)
+
+    def system_block(self, voice: object) -> str:
+        """Account-constant, SYSTEM side — one value for every fan of the account.
+
+        `voice` is REQUIRED, unlike on `day_block` beneath it. A lane parameter with a
+        default is how a male account gets rendered as a woman (`scripts_api.simulate`,
+        `deep_convo._send`), and this method exists only to be called from the two
+        engines — both of which have the lane in hand. `test_voice_lane` flagged the
+        defaulted version the moment it appeared."""
+        return day_block(self.log, self.hour, voice)
+
+    def user_block(self, f: Fan | None, last_inbound: str) -> str:
+        """Per-fan, USER side: the bridge to his interests, then the answer-him
+        instruction. Both are keyed to THIS fan, so putting them in the system
+        prompt would fragment the prefix cache shared across his account."""
+        return (relatable_block(self.log, self.hour, f)
+                + day_ask_block(self.log, self.hour, f, last_inbound))
+
+    def required_beat(self, f: Fan | None, last_inbound: str) -> str:
+        """The beat this reply is REQUIRED to carry, for the burn ledger, or ""."""
+        return required_beat_id(self.log, self.hour, f, last_inbound)
+
+
+# The OFF path, named. Frozen and read-only, so one shared instance is safe as a
+# parameter default — and `day is NO_DAY` says what `not day_log` never did.
+NO_DAY = Day()
+
+
+async def load_day(account_id: str, cfg_row=_UNSET, *, model: str, purpose: str,
+                   clock_tz: int | None, now: datetime | None = None) -> Day:
+    """TODAY's day for one account — the single call a chat engine makes per run.
+
+    Reads the brain row ONCE. The flag, the persona the day is written from, the
+    timezone and the stored day are all columns of that one row, so checking the
+    flag through its own by-id loader (as both engines did) queried the same row
+    twice per sweep on every account — including the ones the feature is off for.
+
+    `cfg_row` is passed by the engine that already holds it and loaded here by the
+    one that does not; either way the flag is read off the row that is in hand.
+    Returns an empty `Day` for every reason there might not be one."""
+    row = await _load_cfg_row(account_id) if cfg_row is _UNSET else cfg_row
+    if not enabled_for(row):
+        return NO_DAY
+    log = await ensure_day_log(account_id, row, model=model, purpose=purpose, now=now)
+    # No log ⇒ NO_DAY, never a half-populated one: a `Day` with beats but no hour
+    # would render nothing anyway (the hour is what selects the beat), so producing
+    # one would be a second shape meaning the same thing. All five renderers accept
+    # a None hour so a hand-built half-Day is still safe — this just never makes one.
+    if not log or clock_tz is None:
+        return NO_DAY
+    return Day(log, local_now(clock_tz, now).hour)

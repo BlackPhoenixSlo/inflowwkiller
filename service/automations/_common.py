@@ -637,6 +637,17 @@ def strip_emojis(s: str) -> str:
     return _EMOJI_WS_RE.sub(" ", _EMOJI_STRIP_RE.sub("", s or "")).strip()
 
 
+def has_emoji(s: str) -> bool:
+    """Does this text carry an emoji? The exact complement of `strip_emojis` —
+    same pattern, so the two can never disagree about what an emoji is.
+
+    Lives HERE rather than next to its caller (`pacing.bubble_pace`, which charges
+    emoji-picking time) precisely so there is one definition: a second copy of the
+    class would eventually charge for a character the send path had already
+    removed, or skip one it kept."""
+    return bool(_EMOJI_STRIP_RE.search(s or ""))
+
+
 # Inverted Spanish punctuation ("¿", "¡") — correct ORTHOGRAPHY, wrong REGISTER.
 # Casual native texters drop the openers and just close with ?/! ("y cuando vas
 # a grabar...?"), so a model "¿Y cuándo...?" reads edited/proper — a bot tell in
@@ -1611,16 +1622,10 @@ async def load_typing_indicator(account_id: str) -> bool:
     return _DEFAULT_TYPING_INDICATOR
 
 
-async def hold_with_typing(account_id: str, fan_id: int, seconds: float,
-                           *, typing_indicator: bool = False) -> None:
-    """Wait `seconds` before sending a bubble. When `typing_indicator` is on,
-    emit OF's typing frame to `fan_id` every ~2.5s during the hold so the fan
-    sees the live "...is typing" bubble; otherwise just sleep. Always safe — a
-    missing live socket degrades to a plain sleep."""
+async def _emit_typing_for(account_id: str, fan_id: int, seconds: float) -> None:
+    """Sleep `seconds` with the live "...is typing" frame re-emitted every ~2.5s.
+    Always safe — a missing live socket degrades to a plain sleep."""
     if seconds <= 0:
-        return
-    if not typing_indicator:
-        await asyncio.sleep(seconds)
         return
     from of_ws import emit_typing  # local import: avoid a server↔automation cycle
     remaining = float(seconds)
@@ -1633,6 +1638,61 @@ async def hold_with_typing(account_id: str, fan_id: int, seconds: float,
         step = min(_TYPING_REEMIT_S, remaining)
         await asyncio.sleep(step)
         remaining -= step
+
+
+async def hold_with_typing(account_id: str, fan_id: int, seconds: float,
+                           *, typing_indicator: bool = False,
+                           quiet_s: float = 0.0,
+                           think_at_s: float = 0.0,
+                           think_for_s: float = 0.0) -> None:
+    """Wait `seconds` before sending a bubble, and decide what the fan sees while
+    we do.
+
+    ⚠️ INVARIANT: the total time slept is ALWAYS `seconds`. The three optional
+    arguments only redistribute WHEN the typing frame is emitted inside that same
+    total — they never lengthen or shorten the hold. Every guard in the tree reads
+    one number and must keep reading the same one: `rhythm.INLINE_MAX_S`, the 900s
+    fan lease, `ai_chatter._RUN_INLINE_BUDGET_S`, the deferral boundary, and
+    `sim/run_sim.fake_hold`'s virtual clock.
+
+    Left at their defaults this function is byte-identical to what it always did —
+    one sleep, or one continuously-emitting loop — so all 16 existing call sites
+    are untouched.
+
+    The phases, in order:
+      `quiet_s`     leading slice with the indicator DARK. She has not started
+                    typing: she is reading, thinking, or reaching for the emoji
+                    tray. Today's code had no such phase, so the bar ran for the
+                    entire latency including the part before she picked the phone
+                    up — a perfectly reliable "the whole delay was typing" oracle.
+      the typing phase (`seconds - quiet_s`), optionally broken ONCE by a silent
+                    stall at `think_at_s` lasting `think_for_s`: she stopped
+                    mid-sentence. Real people type, stop, and type again; a solid
+                    unbroken bar on every bubble of every reply does not.
+
+    See `automations/pacing.py` for who computes these numbers and why."""
+    total = float(seconds or 0.0)
+    if total <= 0:
+        return
+    quiet = min(max(0.0, float(quiet_s or 0.0)), total)
+    typing = total - quiet
+    if not typing_indicator:
+        # Nothing to show ⇒ nothing to phase. One sleep, exactly as before.
+        await asyncio.sleep(total)
+        return
+    if quiet > 0:
+        await asyncio.sleep(quiet)
+    gap_at = max(0.0, float(think_at_s or 0.0))
+    gap_for = max(0.0, float(think_for_s or 0.0))
+    if gap_for <= 0 or gap_at >= typing:
+        await _emit_typing_for(account_id, fan_id, typing)
+        return
+    # Clamp the stall to what is left, so the three slices below always sum to
+    # `typing` exactly — the invariant above is arithmetic, not a comment.
+    gap_for = min(gap_for, typing - gap_at)
+    await _emit_typing_for(account_id, fan_id, gap_at)
+    await asyncio.sleep(gap_for)                       # she stopped mid-sentence
+    await _emit_typing_for(account_id, fan_id, typing - gap_at - gap_for)
 
 
 async def resolve_model(account_id: str, purpose: str, override: str | None = None) -> str:

@@ -538,14 +538,6 @@ async def _load_persona(account_id: str) -> str:
         "You are a warm, flirty OnlyFans creator chatting with one of your fans."))
 
 
-async def _load_cfg_row(account_id: str) -> "AccountAiConfig | None":
-    """The whole brain row, for the day-log producer (it needs persona + the six
-    time_activities as its tone seed + the timezone, and re-reading each of those
-    through its own loader would be three queries for one row)."""
-    async with get_session() as s:
-        return await s.get(AccountAiConfig, str(account_id))
-
-
 async def _load_clock_tz(account_id: str) -> int | None:
     """Creator-local offset in MINUTES for the prompt clock. IANA `timezone`
     wins (DST-correct); legacy `utc_offset` hours is the fallback; None when
@@ -882,10 +874,9 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
                     sticker_mode: str = "skip",
                     opener: "_openers.Opener | None" = None,
                     v: "_voice.VoiceBlocks" = _voice.HER,
-                    # TODAY's generated day + the creator-local hour to read it at.
-                    # Both default to "absent" → "" everywhere → byte-identical prompt.
-                    day_log: dict | None = None,
-                    day_hour: int | None = None,
+                    # TODAY's day, bound to the creator-local hour it is read at.
+                    # The empty `Day` → "" everywhere → byte-identical prompt.
+                    day: "_daylog.Day" = _daylog.NO_DAY,
                     ) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — a faithful port of V1
     prompts.create_chat_response: a short, GIRLY, 100%-human reply that flirts
@@ -1087,8 +1078,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "a different time of day.\n\n" if clock else "")
     # TODAY's day, read at the creator-local hour — see ai_chatter's twin. "" when
     # the account has no day log, so the prompt stays byte-equal.
-    day_sys = (_daylog.day_block(day_log or {}, day_hour, v.voice)
-               if day_hour is not None else "")
+    day_sys = day.system_block(v.voice)
     system = (
         f"{persona}\n"
         "You're texting a fan to get to know him while flirting. You are 100% human "
@@ -1145,12 +1135,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # ai_chatter's. `last_body` is direction-agnostic here (unlike ai_chatter's
     # `last_in_text`), so it is gated on `last_dir` — reading her OWN last message as
     # his question would fire the required-answer line on a turn nobody asked about.
-    day_ask = (_daylog.day_ask_block(
-        day_log or {}, day_hour, f,
-        (c.last_body or "") if c.last_dir == "in" else "")
-        if day_hour is not None else "")
-    # The part of her day that overlaps THIS fan — see ai_chatter's twin.
-    day_rel = _daylog.relatable_block(day_log or {}, day_hour, f)
+    day_user = day.user_block(
+        f, (c.last_body or "") if c.last_dir == "in" else "")
     # His own long-form message, pinned on the thread and read back here (_pins).
     # Same USER-message placement and the same reason as the claims block: per-fan
     # text in the system prompt fragments the shared cached prefix. "" for every
@@ -1159,7 +1145,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
         f"{claims_block}"
         f"{_pins.pins_block(f)}"
-        f"{day_rel}{day_ask}"
+        f"{day_user}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Reply to his last message now, in the STYLE FOR THIS MESSAGE above."
     )
@@ -1660,13 +1646,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # TODAY's day log — one lazy generation per (account, creator-local date), shared
     # by every fan in this sweep. `ensure_day_log` re-reads inside its lock, so when
     # ai_chatter already generated today's row this engine ADOPTS it rather than
-    # writing a second, different day for the same creator. Flag default OFF ⇒ {} ⇒
-    # every renderer returns "" ⇒ byte-identical prompt.
-    day_log = ({} if not await _daylog.load_enabled(account_id)
-               else await _daylog.ensure_day_log(
-                   account_id, await _load_cfg_row(account_id),
-                   model=model, purpose=_PURPOSE))
-    day_hour = _daylog.local_now(clock_tz).hour if (day_log and clock_tz is not None) else None
+    # writing a second, different day for the same creator. Flag default OFF ⇒ the
+    # empty `Day` ⇒ every renderer returns "" ⇒ byte-identical prompt. Unlike
+    # ai_chatter this engine holds no brain row of its own, so `load_day` fetches it —
+    # the one query that used to be two (the flag had its own by-id loader).
+    day = await _daylog.load_day(account_id, model=model, purpose=_PURPOSE,
+                                 clock_tz=clock_tz)
     blacklist, skip_list = await _load_stop_lists(account_id)
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)  # W7 cross-tick ownership
     promo_spam = await load_promo_spam_ids(account_id)
@@ -1877,7 +1862,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 profile=profiles.get(fan_id) if factground_on else None,
                 clock=_clock_line(clock_tz),
                 sticker_mode=sticker_mode,
-                day_log=day_log, day_hour=day_hour,
+                day=day,
                 opener=opener, v=v)
             try:
                 res = await llm_client.chat(

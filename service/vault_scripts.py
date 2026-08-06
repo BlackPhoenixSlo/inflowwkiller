@@ -820,6 +820,76 @@ def _is_nude(fields: dict) -> bool:
     return _norm(fields.get("clothing_state")) == "fully_nude"
 
 
+# ── Solo: nobody else in the frame ──────────────────────────────────
+#
+# `people_count` and `partner_visible` are V2 describe fields, so the model is
+# asked this directly — but its answer is only one of the votes, because what
+# is HAPPENING is evidence about who is there too. See `_partner_evidence`.
+
+# Acts from `_V2_ACTS` that cannot happen alone.
+_PARTNER_ACTS = frozenset({
+    "blowjob", "handjob", "sex_missionary", "sex_doggy", "sex_riding", "cumshot",
+})
+# `primary_folder` values from `_V2_FOLDERS` that name a partner outright.
+_PARTNER_FOLDERS = frozenset({"blowjob", "sex_with_partner"})
+
+
+def _people_count(fields: dict) -> int | None:
+    """`people_count` as an int, or None when the row does not carry one.
+    `bool` is an `int` in Python and `people_count: true` is not a count."""
+    count = fields.get("people_count")
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
+
+
+def solo_known(fields: dict) -> bool:
+    """Does this row carry an answer about who else is in it?
+
+    Only the V2 describe prompt asks. A V1 row — or a V2 run where the model
+    dropped the keys — answers neither, and `is_solo` refuses to guess for it.
+    Callers surface the count so an operator who ticks Solo on a V1 vault is
+    told why the folders came out empty, instead of reading it as breakage.
+    """
+    return (isinstance(fields.get("partner_visible"), bool)
+            or _people_count(fields) is not None)
+
+
+def _partner_evidence(fields: dict) -> bool:
+    """Any ONE signal that someone else is in this item.
+
+    A disjunction on purpose, and asked in the positive: one "someone else"
+    outranks every "just her". The count alone is not enough — a model that has
+    just described a partner act still returns `people_count: 1` often enough to
+    matter, because it counts the person the clip is ABOUT.
+    """
+    count = _people_count(fields)
+    if fields.get("partner_visible") is True:
+        return True
+    if count is not None and count > 1:
+        return True
+    if {_norm(a) for a in (fields.get("acts") or [])} & _PARTNER_ACTS:
+        return True
+    if _norm(fields.get("primary_folder")) in _PARTNER_FOLDERS:
+        return True
+    # A penis is only ever inserted BY someone. Fingers and toys are not
+    # evidence either way, and are deliberately not read here.
+    return _norm(fields.get("penetration")) == "penis"
+
+
+def is_solo(fields: dict) -> bool:
+    """Only the creator is in this item — nobody else, no partner act.
+
+    Errs toward NOT solo in both of the ways it can be uncertain: a row nobody
+    ever asked is not solo (`solo_known`), and a row with any partner evidence
+    is not solo (`_partner_evidence`).
+
+    The asymmetry is the point: this exists so an operator can point a fan at a
+    folder and know what is in it. A missing item costs a smaller folder; a
+    partner clip in a solo folder is the wrong thing sold under the wrong
+    promise, which on this account has been an unsubscribe.
+    """
+    return solo_known(fields) and not _partner_evidence(fields)
+
+
 def _has_payoff_act(fields: dict) -> bool:
     """Something is actually HAPPENING, not just being shown.
 
@@ -1030,12 +1100,19 @@ _RESIDUAL_LANE = ("explicit_rest", "explicit 1:1",
 
 async def collect_purpose_folders(
     account_id: str, *, media_ids: Iterable[int] | None = None,
+    solo: bool = False,
 ) -> list[dict[str, Any]]:
     """Re-cut a pool of media into the send lanes, by heat rather than outfit.
 
     `media_ids` restricts the pool — pass the items of the shoots you did NOT
     keep, so strong scripts stay intact as shoots and only the leftovers get
     repurposed. Omit it to consider the whole vault.
+
+    `solo` ADDS a `-solo` cut of every lane that has one: the same lane, keeping
+    only the items nobody else is in (`is_solo`). It adds rather than filters
+    because the two answer different questions — "what may I send here" and
+    "what may I send here to a fan who only wants her" — and an operator who
+    wants both should not have to rebuild the folders to switch.
 
     Read-only; an item may legitimately appear in more than one lane.
     """
@@ -1046,8 +1123,11 @@ async def collect_purpose_folders(
 
     enriched = [{**r, "why": send_order_reason(r.get("fields") or {})} for r in rows]
 
-    def _folder(slug: str, name: str, purpose: str,
-                picked: list[dict[str, Any]]) -> dict[str, Any]:
+    def _folder(slug: str, name: str, purpose: str, picked: list[dict[str, Any]],
+                *, solo_of: int | None = None) -> dict[str, Any]:
+        """One lane. `solo_of` is the size of the lane this was cut FROM, and is
+        what makes it a cut rather than a lane — every folder carries both keys
+        so no consumer has to test for their presence."""
         picked.sort(key=lambda r: send_sort_key(
             r["fields"], script_id=r.get("script_id"),
             script_seq=r.get("script_seq"), media_id=r["media_id"]))
@@ -1060,9 +1140,24 @@ async def collect_purpose_folders(
             "lane": slug, "name": ai_folder_name(name), "purpose": purpose,
             "size": len(picked), "kinds": kinds, "tiers": tier_counts,
             "closes_on_own": sum(1 for r in picked if r["why"]["closes"]),
+            "solo": solo_of is not None, "solo_of": solo_of,
             "items": [{**r, "manual_order": i + 1}
                       for i, r in enumerate(picked)],
         }
+
+    def _solo_cut(lane: dict[str, Any]) -> dict[str, Any] | None:
+        """`lane` keeping only the items nobody else is in, or None when that is
+        nothing. Cut from the FINISHED lane rather than by re-running the
+        predicates over a pre-filtered pool: a solo folder has to be a subset of
+        the lane it is named after, or `AI-tease 10-solo` is a promise about a
+        folder whose contents were never in `AI-tease 10`. An empty cut is
+        dropped — mirrored to OF, it is a real empty list on her account."""
+        picked = [r for r in lane["items"] if is_solo(r.get("fields") or {})]
+        if not picked:
+            return None
+        return _folder(f"{lane['lane']}_solo", f"{lane['name']}-solo",
+                       f"{lane['purpose']} — her alone, nobody else in frame",
+                       picked, solo_of=lane["size"])
 
     out: list[dict[str, Any]] = []
     claimed: set[int] = set()
@@ -1084,6 +1179,12 @@ async def collect_purpose_folders(
             if r["media_id"] not in claimed and r["why"]["tier"] in _PAID_TIERS]
     if rest:
         out.append(_folder(*_RESIDUAL_LANE, rest))
+
+    if solo:
+        # Built whole before extending `out` — never appended to the list being
+        # walked. A lane with nothing solo in it yields no cut.
+        cuts = [c for c in map(_solo_cut, out) if c is not None]
+        out.extend(cuts)
     return out
 
 
@@ -1123,10 +1224,40 @@ async def flags_coverage(account_id: str) -> dict[str, Any]:
     }
 
 
+async def solo_coverage(account_id: str) -> dict[str, Any]:
+    """How many described items can be READ as solo or not, and how many are.
+
+    `is_solo` refuses to call an item solo without the evidence, so on a vault
+    described by the V1 prompt every `-solo` folder comes out empty — correctly,
+    and unreadably. This is what the UI shows instead of nothing: N of M items
+    have never been asked who else is in them, and a re-scan is what fixes it.
+    """
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.ai_fields_json).where(
+                VaultItem.account_id == account_id,
+                VaultItem.removed_at.is_(None),
+                VaultItem.describe_status == "described")
+        )).all()
+    known = solo = 0
+    for (fj,) in rows:
+        fields = vault_ai_brief.load_fields(fj)
+        if not solo_known(fields):
+            continue
+        known += 1
+        if is_solo(fields):
+            solo += 1
+    described = len(rows)
+    return {"described": described, "known": known,
+            "unknown": described - known, "solo": solo,
+            "ready": described > 0 and known == described}
+
+
 async def plan_ai_folders(
     account_id: str, *, keep: int = 2,
     window_hours: int = DEFAULT_OUTFIT_WINDOW_HOURS,
     min_items: int = MIN_SCRIPT_ITEMS,
+    solo: bool = False,
 ) -> dict[str, Any]:
     """Every folder the pipeline proposes, scripts and lanes together.
 
@@ -1135,10 +1266,12 @@ async def plan_ai_folders(
     kept: the explicit material a paid tease needs lives inside the good shoots,
     so restricting them to leftovers empties those lanes. An item belonging to
     both a script and a lane is the design.
+
+    `solo` adds a `-solo` cut of each lane (see `collect_purpose_folders`).
     """
     shoots = await collect_outfit_scripts(
         account_id, window_hours=window_hours, min_items=min_items)
-    lanes = await collect_purpose_folders(account_id)
+    lanes = await collect_purpose_folders(account_id, solo=solo)
 
     def _folder(name: str, source: str, purpose: str,
                 items: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
@@ -1151,6 +1284,9 @@ async def plan_ai_folders(
             "name": name, "source": source, "purpose": purpose,
             "size": len(items), "kinds": kinds, "tiers": tiers,
             "closes_on_own": sum(1 for r in items if r["why"]["closes"]),
+            # Defaults, so EVERY folder answers "are you a solo cut" — a script
+            # is not one. `extra` overrides for the lanes, which know.
+            "solo": False, "solo_of": None,
             "items": [
                 {"media_id": r["media_id"], "kind": r["kind"],
                  "manual_order": r["manual_order"], "score": r.get("score"),
@@ -1166,7 +1302,8 @@ async def plan_ai_folders(
                 outfit=s["outfit"], mixed=s["mixed"])
         for s in shoots[:max(0, keep)]
     ] + [
-        _folder(f["name"], "lane", f["purpose"], f["items"], lane=f["lane"])
+        _folder(f["name"], "lane", f["purpose"], f["items"], lane=f["lane"],
+                solo=f["solo"], solo_of=f["solo_of"])
         for f in lanes
     ]
 
@@ -1178,17 +1315,27 @@ async def plan_ai_folders(
     # come out quietly wrong rather than visibly broken. The caller surfaces
     # this so an operator is never one click from that.
     coverage = await flags_coverage(account_id)
+    # Only when asked: it is a second full read of the vault, and it answers a
+    # question nobody has posed unless the box is ticked.
+    solo_cov = await solo_coverage(account_id) if solo else None
 
     return {
         "account_id": account_id,
         "keep": keep,
+        "solo": solo,
         "shoots_found": len(shoots),
         "flags": coverage,
+        "solo_coverage": solo_cov,
         "folders": folders,
         "summary": {
             "folders": len(folders),
             "scripts": sum(1 for f in folders if f["source"] == "script"),
-            "lanes": sum(1 for f in folders if f["source"] == "lane"),
+            # `solo_cuts`, not `solo`: the plan's own `solo` is the bool that
+            # was ASKED for, and one payload carrying both under one name is a
+            # question waiting to be answered wrong.
+            "lanes": sum(1 for f in folders
+                         if f["source"] == "lane" and not f["solo"]),
+            "solo_cuts": sum(1 for f in folders if f["solo"]),
             "unique_media": len(unique),
             "memberships": sum(f["size"] for f in folders),
         },
