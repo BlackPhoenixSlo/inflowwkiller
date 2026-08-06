@@ -750,9 +750,23 @@ async def generate_day_log(account_id: str, persona: str, seed_acts: dict,
 # CREATOR, not of whichever engine happened to answer. Two engine-scoped flags could
 # be flipped independently and hand the same fan two different days.
 #
-# DEFAULT OFF, and flippable through the merge-PUT that column already has, so
-# turning it on for one account is a config change rather than a deploy.
+# Flippable through the merge-PUT that column already has, so turning it off for one
+# account is a config change rather than a deploy.
 DAY_LOG_ENABLED_KEY = "day_log_enabled"
+
+# DEFAULT ON as of 2026-08-06, after it ran the fleet for the first time. It shipped
+# OFF because nothing had ever generated a day and the failure modes were guesses;
+# the day it went live on all 19 accounts, every one produced a distinct, in-canon
+# day. The specific fear was that the eight accounts sharing the stock
+# `time_activities` seed (yoga / beach / cat) would all say the same boilerplate —
+# they did not, because the generator is handed `compose_persona`, so the seed sets
+# TONE and the canon sets FACTS.
+#
+# The three gates below this still hold and are what make an ON default safe: no
+# timezone, no persona, or a hit daily cap each return an empty `Day`, which every
+# renderer maps to "" — so an account that is not set up produces the same prompt it
+# always did rather than an invented day.
+DAY_LOG_DEFAULT = True
 
 
 def enabled_for(cfg_row) -> bool:
@@ -762,7 +776,7 @@ def enabled_for(cfg_row) -> bool:
     persona, the timezone and the day itself — so the one caller that needs all of
     them reads them together instead of querying twice for one row."""
     stored = load_dict(getattr(cfg_row, "style_config_json", None) if cfg_row else None)
-    return bool(stored.get(DAY_LOG_ENABLED_KEY))
+    return bool(stored.get(DAY_LOG_ENABLED_KEY, DAY_LOG_DEFAULT))
 
 
 async def load_enabled(account_id: str) -> bool:

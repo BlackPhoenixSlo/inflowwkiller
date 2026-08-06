@@ -32,7 +32,7 @@ from automations._common import (
     CAT_STICKER_SKIP_PCT_KEY,
     CAT_STICKER_SOLO_PCT_KEY, CAT_STICKER_GAP_MIN_KEY)
 from automations._pins import PINS_ENABLED_KEY, PINS_WRITE_KEY
-from automations._daylog import DAY_LOG_ENABLED_KEY
+from automations._daylog import DAY_LOG_DEFAULT, DAY_LOG_ENABLED_KEY
 
 # NUMERIC knobs (not checkboxes): key → (default, max). Persisted as numbers —
 # the bool coercion in _persist must never touch these.
@@ -142,7 +142,7 @@ def _resolved_view(stored: dict) -> dict[str, Any]:
     # The day log. Same reason as the pins pair above: the operator flipping it on
     # must be able to tell a successful save from a silently-dropped key, and this
     # one is the switch that starts writing a generated day into the chat prompt.
-    out[DAY_LOG_ENABLED_KEY] = bool(stored.get(DAY_LOG_ENABLED_KEY, False))
+    out[DAY_LOG_ENABLED_KEY] = bool(stored.get(DAY_LOG_ENABLED_KEY, DAY_LOG_DEFAULT))
     return out
 
 
