@@ -52,6 +52,9 @@ from db.models import (
 )
 from automations import _ghost, _voice, rhythm, script_packs, starter_catalog
 from automations._common import load_voice_blocks
+# The bound on the operator's typing-pace knob. Read from the engine rather than
+# retyped, so the API cannot advertise a maximum the send path would clamp away.
+from automations.pacing import MAX_DRIFT_CAP_S as _PACING_MAX_DRIFT_CAP_S
 from automations.ai_chatter import (
     _CONTENT_ASK_RE,
     _DEFAULTS as _AI_CHATTER_DEFAULTS,
@@ -131,6 +134,14 @@ _FLOAT_KNOBS = {
     # Discounts. Capped well under 1.0 — a 100%-off "sale" is a giveaway, not a nudge.
     "haggle_discount_pct": (0.0, 0.9),
     "teaser_discount_pct": (0.0, 0.9),
+    # Human typing pacing (automations/pacing.py). How often a bubble draws a real
+    # "she stopped" pause, and how long one may last.
+    "pacing_drift_pct": (0.0, 100.0),
+    # Upper bound is pacing.MAX_DRIFT_CAP_S, not a round number: an inline hold must
+    # stay under rhythm.INLINE_MAX_S (120s) or it outlives the 900s fan lease and
+    # burns one of the executor's 4 GLOBAL run slots. The engine clamps to the same
+    # constant, so a blob written by any other path cannot exceed it either.
+    "pacing_drift_cap_s": (0.0, _PACING_MAX_DRIFT_CAP_S),
 }
 _MODES = ("backup", "always")
 _OFFER_MODES = ("tip", "ppv", "both")
@@ -337,6 +348,17 @@ def _validate_cfg(cfg: dict) -> dict:
         out["rhythm_pace_buckets"] = bool(cfg["rhythm_pace_buckets"])
     if "rhythm_pace_curve" in cfg:
         out["rhythm_pace_curve"] = _validate_pace_curve(cfg["rhythm_pace_curve"])
+    # Human TYPING pacing (automations/pacing.py) — the gaps BETWEEN the bubbles of
+    # one reply. Independent of rhythm_enabled: rhythm owns bubble 0's latency,
+    # pacing owns bubbles 1+, and an account may want either without the other.
+    # The two numerics ride _FLOAT_KNOBS below (bounds live there); these are the
+    # switches. Named HERE because this validator DROPS any key it does not name —
+    # an operator ticking the box in the UI would otherwise have it silently vanish
+    # on save, which is exactly the bug class this comment block exists to prevent.
+    if "pacing_enabled" in cfg:
+        out["pacing_enabled"] = bool(cfg["pacing_enabled"])
+    if "pacing_think_gaps" in cfg:
+        out["pacing_think_gaps"] = bool(cfg["pacing_think_gaps"])
     # The ghost cycle — whole days dark on a fan, repeating. Inert without
     # rhythm_enabled (guarded at runtime); we still persist the operator's choice.
     if "rhythm_ghost_enabled" in cfg:

@@ -912,12 +912,16 @@ async def apply_scripts(payload: dict = Body(...)) -> dict[str, Any]:
 async def get_folder_plan(
     account_id: str = Query(...),
     keep: int = Query(2, ge=0, le=20),
+    solo: bool = Query(False),
 ) -> dict[str, Any]:
     """PREVIEW the folders the pipeline would create. Read-only, free, instant —
     no LLM, no OF traffic, nothing written. This is what the vault button shows
-    before the operator confirms."""
+    before the operator confirms.
+
+    `solo` adds a `-solo` cut of each lane, keeping only the items nobody else
+    is in."""
     assert_account_owned(account_id)
-    return await vault_scripts.plan_ai_folders(account_id, keep=keep)
+    return await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo)
 
 
 async def _read_of_list_members(client, of_list_id: int) -> set[int]:
@@ -1117,13 +1121,19 @@ async def apply_folder_plan(payload: dict = Body(...)) -> dict[str, Any]:
     ONLY write to her OnlyFans account in this pipeline, so it is opt-in per
     request and never implied by `confirm` alone. Nothing is ever SENT either
     way.
+
+    `solo` must match what the preview was showing. It is part of what the plan
+    IS, and `apply_ai_folders` retires generated folders the current plan no
+    longer makes — so applying without it after previewing with it would create
+    the lanes and retire every `-solo` folder in the same call.
     """
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
     if not payload.get("confirm"):
         raise HTTPException(status_code=400, detail={"error": "confirm_required"})
     keep = int(payload.get("keep") or 2)
-    plan = await vault_scripts.plan_ai_folders(account_id, keep=keep)
+    solo = bool(payload.get("solo"))
+    plan = await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo)
     result = await vault_scripts.apply_ai_folders(account_id, plan)
 
     if payload.get("mirror_to_of"):
@@ -1335,6 +1345,33 @@ async def _stamp_flags_failure(account_id: str, media_id: int, status: str,
         await s.commit()
 
 
+# Every describe/flags call goes to this provider, and the daily cap is held
+# per-(account, provider) — so this one row IS the budget a vision sweep spends.
+_VISION_PROVIDER = "deepinfra"
+
+
+async def _vision_budget(account_id: str) -> dict[str, Any]:
+    """Today's vision budget, plus the ONE sentence that explains a refusal.
+
+    The sentence lives here and only here. It is product copy — it names a
+    screen — so it does not belong in `llm_client`, which counts money; and it
+    must not be re-composed in the browser, because then one sentence has two
+    authors in two languages and they drift. Everything that has to tell an
+    operator why vision work is unavailable — both sweeps, the single-item
+    button, and the plan the buttons are drawn from — reads `blocked_reason`,
+    which is empty exactly when nothing is blocking.
+    """
+    state = await llm_client.cap_state(account_id, _VISION_PROVIDER)
+    reason = ""
+    if state["capped"]:
+        reason = (f"Today's AI budget for this account is spent — "
+                  f"${state['spent_millicents'] / 10000:.2f} of "
+                  f"${state['cap_millicents'] / 10000:.2f}. It resets at "
+                  f"midnight UTC — or raise 'Daily cap' on the account's "
+                  f"Brain (Automations → Brain).")
+    return {**state, "blocked_reason": reason}
+
+
 async def _flags_one(account_id: str, media_id: int,
                      model: str = "qwen3-vl-30b") -> dict[str, Any]:
     """Ask the three booleans for one item and MERGE them into its existing
@@ -1373,7 +1410,12 @@ async def _flags_one(account_id: str, media_id: int,
             )
         except LLMCapExceeded as e:
             if not per_frame:
-                return {"media_id": media_id, "ok": False, "status": "capped", "detail": str(e)}
+                # Same sentence describe's refusals carry — both sweeps spend
+                # the same budget, and an operator reading two different
+                # explanations of one cap has to work out they are one thing.
+                budget = await _vision_budget(account_id)
+                return {"media_id": media_id, "ok": False, "status": "capped",
+                        "detail": budget["blocked_reason"] or str(e)}
             break  # keep what we already read rather than losing the whole clip
         except LLMError as e:
             if not per_frame:
@@ -2431,7 +2473,12 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
         except LLMCapExceeded as e:
             # Deliberately leaves describe_status alone: "capped" means try again
             # later, and stamping a status would make the retry sweep skip it.
-            return {"media_id": media_id, "ok": False, "status": "capped", "detail": str(e)}
+            # `detail` is what an operator reads, both here and in the sweep's
+            # first_error, so it carries the same sentence the pre-flight
+            # refusal does rather than the exception's own developer text.
+            budget = await _vision_budget(account_id)
+            return {"media_id": media_id, "ok": False, "status": "capped",
+                    "detail": budget["blocked_reason"] or str(e)}
         except LLMError as e:
             # RECORD the failure. Leaving the status NULL made a failed item
             # indistinguishable from one never attempted — a missing
@@ -2572,6 +2619,15 @@ async def describe_one(payload: dict = Body(...)) -> dict[str, Any]:
         media_id = int(payload.get("media_id"))
     except Exception:  # noqa: BLE001
         raise HTTPException(status_code=400, detail={"error": "media_id_required"})
+    # Over the cap the LLM call is refused anyway, but only AFTER the frames
+    # have been pulled off OF and (for a clip) cut with ffmpeg. Answering here
+    # keeps a hopeless click cheap, and keeps "Describe selected" from grinding
+    # through fifty items' worth of fetches to write nothing. Same shape the
+    # in-flight refusal returns, so a caller has one case to handle.
+    budget = await _vision_budget(account_id)
+    if budget["capped"]:
+        return {"media_id": media_id, "ok": False, "status": "capped",
+                "detail": budget["blocked_reason"]}
     model = str(payload.get("model") or "qwen3-vl-30b")
     res = await _describe_one(
         account_id, media_id, model=model,
@@ -2772,6 +2828,20 @@ async def describe_all(payload: dict = Body(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     if account_id in _describe_running:
         raise HTTPException(status_code=409, detail={"error": "describe_already_running"})
+    # REFUSE to start over the daily cap.
+    #
+    # Nothing here was ever unsafe: `llm_client._reserve` refuses every call
+    # over the cap and the sweep stops on the first one. It was DISHONEST. The
+    # sweep ended, the button went straight back to "Describe all (1777)", and a
+    # second press started another one — which pulled frames off OF and cut them
+    # with ffmpeg for a batch of items, had every LLM call refused, and reported
+    # the same 1777 still to do. Nothing on screen ever said "you are out of
+    # budget today", so the only reading available was that describe is broken,
+    # and the natural response to that is to press it again.
+    budget = await _vision_budget(account_id)
+    if budget["capped"]:
+        raise HTTPException(status_code=429,
+                            detail={"error": "daily_cap_reached", **budget})
     force = bool(payload.get("force"))
     restage = bool(payload.get("restage"))
     prompt_version = "v1" if str(payload.get("prompt_version")) == "v1" else "v2"
@@ -2812,10 +2882,16 @@ async def describe_all_plan(
                 | (VaultItem.ai_fields_json.is_(None))
                 | (~VaultItem.ai_fields_json.like(f'%"_prompt_version": "{pv}"%'))
             ).subquery()))
+    # Carried so the button can go grey BEFORE it is pressed, with the reason
+    # already on it. The POST refuses over the cap either way, but a disabled
+    # button that says why is the difference between "out of budget until
+    # midnight" and "broken".
+    budget = await _vision_budget(account_id)
     return {"account_id": account_id, "prompt_version": pv,
             "total": int(total or 0),
             "undescribed": int(undescribed or 0),
-            "restage": int(stale or 0)}
+            "restage": int(stale or 0),
+            "cap": budget}
 
 
 @router.get("/admin/vault-ai/describe-all/status")

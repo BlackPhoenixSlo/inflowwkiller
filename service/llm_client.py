@@ -383,6 +383,48 @@ async def _get_cap_cents(account_id: str | None) -> int:
     return int(cap) if cap is not None else _DEFAULT_CAP_CENTS
 
 
+async def cap_state(account_id: str | None, provider: str) -> dict[str, Any]:
+    """Today's spend against the per-(account, provider) daily cap. Read-only.
+
+    The cap is ENFORCED in `_reserve`, per call, which is the only place it can
+    be enforced correctly. This is the same row read for callers that need to
+    answer "would starting this achieve anything" BEFORE they start it: a
+    background sweep whose every LLM call is refused looks, from the outside,
+    exactly like one that is working — it fans out its fetches, counts its way
+    to done, and leaves the work undone.
+
+    `capped` is computed from the money rather than from the row's sticky
+    `is_capped` flag. That flag is set when a reservation is refused and never
+    cleared, so raising `daily_cost_cap_cents` mid-day makes calls succeed again
+    while it stays True — a gate reading it would keep refusing against a budget
+    that is no longer spent. It is still reported, as `flagged`, because "we hit
+    the cap today" is worth showing even after the cap is raised.
+    """
+    day = datetime.utcnow().strftime("%Y-%m-%d")
+    cap_mc = int(await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT)
+    async with get_session() as s:
+        row = (await s.execute(
+            select(GrokDailyCost.cost_cents, GrokDailyCost.is_capped).where(
+                GrokDailyCost.day == day,
+                # `== None` renders as `= NULL` and matches nothing, so the
+                # house-account row has to be addressed with IS NULL.
+                GrokDailyCost.account_id.is_(None) if account_id is None
+                else GrokDailyCost.account_id == account_id,
+                GrokDailyCost.provider == provider,
+            )
+        )).first()
+    spent_mc = int(row[0] or 0) if row else 0
+    return {
+        "day": day,
+        "provider": provider,
+        "cap_millicents": cap_mc,
+        "spent_millicents": spent_mc,
+        "remaining_millicents": max(0, cap_mc - spent_mc),
+        "capped": spent_mc >= cap_mc,
+        "flagged": bool(row[1]) if row else False,
+    }
+
+
 async def _reserve(day: str, account_id: str | None, reserve_cents: int, cap_cents: int,
                    now: datetime, provider: str) -> int:
     """Atomically reserve `reserve_cents` against the per-(day, account,

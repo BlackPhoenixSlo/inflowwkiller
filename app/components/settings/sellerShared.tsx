@@ -628,6 +628,89 @@ function PaceCurveEditor({ cfg, set }: {
   );
 }
 
+/* ── Typing pacing — the gaps BETWEEN the bubbles of one reply ─────────── */
+
+/** How she TYPES, as opposed to when she answers (which is everything above).
+ *
+ *  Lives behind its own Advanced disclosure because none of it is a decision the
+ *  operator has to make to run the account — the defaults are fitted numbers, and
+ *  the copy's job is to make the one knob that matters (`drift_pct`) legible
+ *  without asking anyone to read a histogram. */
+function TypingPaceEditor({ cfg, set }: {
+  cfg: AiChatterConfig;
+  set: (p: Partial<AiChatterConfig>) => void;
+}) {
+  const on = !!cfg.pacing_enabled;
+  const pct = cfg.pacing_drift_pct ?? 30;
+  const cap = cfg.pacing_drift_cap_s ?? 90;
+  const thinkOn = cfg.pacing_think_gaps !== false;
+
+  return (
+    <div className="pl-6 space-y-2">
+      <label className="flex items-start gap-2 cursor-pointer">
+        <input type="checkbox" className="mt-0.5" checked={on}
+          onChange={(e) => set({ pacing_enabled: e.target.checked })} />
+        <span className="text-xs">
+          <span className="font-medium text-fg">Type like a person, not a bot</span>
+          <span className="block text-fg-dim">
+            When a reply comes out as several texts in a row, vary the gaps between
+            them and sometimes stop for a moment. Off, every gap is just how long the
+            text takes to type — which is why almost none of them are longer than 20
+            seconds, where a real person&apos;s often are.
+          </span>
+        </span>
+      </label>
+
+      <details className={cn(!on && "opacity-50 pointer-events-none")}>
+        <summary className="cursor-pointer select-none text-[11px] text-accent hover:underline">
+          Advanced
+        </summary>
+        <div className="mt-2 space-y-2.5 text-xs">
+          <div className="flex items-center gap-2">
+            <input type="number" min={0} max={100} step={5}
+              className={`${INPUT} w-16 text-right`}
+              value={pct}
+              onChange={(e) => set({ pacing_drift_pct: Number(e.target.value) })} />
+            <span className="text-fg-dim">
+              % of texts that get a pause first — the creator got distracted
+            </span>
+          </div>
+          <div className="text-fg-dim/70 pl-1">
+            The setting that actually matters. Pausing a <em>little</em> before every
+            text reads worse than pausing a lot before a few — it just moves the
+            problem. 0 turns the pauses off.
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input type="number" min={0} max={105} step={5}
+              className={`${INPUT} w-16 text-right`}
+              value={cap}
+              onChange={(e) => set({ pacing_drift_cap_s: Number(e.target.value) })} />
+            <span className="text-fg-dim">seconds — the longest such pause</span>
+          </div>
+          <div className="text-fg-dim/70 pl-1">
+            Capped at 105s: past that the reply has to be handed to the scheduler
+            instead of waited out, which is a different thing entirely.
+          </div>
+
+          <label className="flex items-start gap-2 cursor-pointer pt-0.5">
+            <input type="checkbox" className="mt-0.5" checked={thinkOn}
+              onChange={(e) => set({ pacing_think_gaps: e.target.checked })} />
+            <span>
+              <span className="text-fg">Let &ldquo;is typing…&rdquo; flicker</span>
+              <span className="block text-fg-dim">
+                Drop the typing bubble for a few seconds mid-text, like someone who
+                stopped to think. Costs no extra time — today it runs solid for
+                exactly as long as the wait, every single time, which is the giveaway.
+              </span>
+            </span>
+          </label>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 /* ── The ghost cycle — whole days she doesn't answer him ───────────────── */
 
 /** The shipped cycle, shown when the account hasn't authored its own. Mirrors
@@ -900,6 +983,11 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
 
       {/* ── the reply-time curve ── */}
       <PaceCurveEditor cfg={cfg} set={set} />
+
+      {/* ── how she TYPES, once she has started. Deliberately NOT gated on
+           rhythm_enabled: rhythm decides when the first text lands, pacing decides
+           the gaps between the rest, and an account may want either alone. ── */}
+      <TypingPaceEditor cfg={cfg} set={set} />
 
       <GhostCycleEditor cfg={cfg} set={set} />
     </div>

@@ -13,6 +13,11 @@
  *     in several lanes and holds an INDEPENDENT position in each, which is why
  *     order lives on the folder membership rather than on the media.
  *
+ * Ticking SOLO adds a `-solo` cut of each lane — `AI-tease 10-solo` is
+ * `AI-tease 10` with everyone but her taken out. It adds rather than filters:
+ * the two answer different questions, and an operator who wants both should not
+ * have to rebuild the folders to switch between them.
+ *
  * Nothing is written until the operator presses Create. The relay re-derives
  * the plan on apply rather than trusting what this preview posted, so a preview
  * left open while the vault changes underneath cannot write a stale grouping.
@@ -63,7 +68,7 @@ function FolderCard({
       <header className="px-3 py-2 flex items-start justify-between gap-3 border-b border-border">
         <div className="min-w-0">
           <h3 className="text-xs font-semibold flex items-center gap-2">
-            <span>{isScript ? "👗" : "📤"}</span>
+            <span>{folder.solo ? "👤" : isScript ? "👗" : "📤"}</span>
             <span className="truncate">{folder.name}</span>
           </h3>
           <p className="text-[11px] text-fg-dim mt-0.5">
@@ -72,6 +77,9 @@ function FolderCard({
               .map(([k, n]) => `${n} ${k}`)
               .join(", ")}
             {isScript && ` · ${folder.closes_on_own} can close`}
+            {/* "12 of 34" is the honest read: a solo cut that happens to be the
+                whole lane is a real answer, and so is one that is a third of it. */}
+            {folder.solo && ` · ${folder.size} of ${folder.solo_of} in the lane`}
           </p>
         </div>
         <div className="flex items-center gap-1 shrink-0">
@@ -140,11 +148,12 @@ export default function VaultAiFoldersModal({
   const qc = useQueryClient();
   const [keep, setKeep] = useState(2);
   const [mirrorToOf, setMirrorToOf] = useState(true);
+  const [solo, setSolo] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ApplyAiFoldersResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const plan = useAiFolderPlan(accountId, keep, true);
+  const plan = useAiFolderPlan(accountId, { keep, solo }, true);
 
   // Items that land in more than one folder — the case the per-folder ordering
   // exists for. Flagged in the preview so the overlap is visible up front
@@ -159,7 +168,11 @@ export default function VaultAiFoldersModal({
     setBusy(true);
     setError(null);
     try {
-      const res = await applyAiFolders(accountId, keep, mirrorToOf);
+      // The SAME options the preview was built from: the server re-derives the
+      // plan and retires generated folders it no longer makes, so applying
+      // without `solo` would create the lanes and delete every `-solo` folder
+      // in the same call.
+      const res = await applyAiFolders(accountId, { keep, solo, mirrorToOf });
       setResult(res);
       // The folder rail and any per-folder grid are now stale.
       qc.invalidateQueries({ queryKey: ["vault-internal-folders", accountId] });
@@ -176,6 +189,11 @@ export default function VaultAiFoldersModal({
 
   const s = plan.data?.summary;
   const flags = plan.data?.flags;
+  // Only when the box is ticked AND some described item was never asked who
+  // else is in it — the one case where an empty solo cut is correct but reads
+  // as breakage.
+  const cov = solo ? plan.data?.solo_coverage : null;
+  const soloGap = cov?.unknown ? cov : null;
   // Without the flags pass the paid tiers fall back to `clothing_state`, which
   // was measured wrong on ~1 in 3 of the stills the $50 tier is built from. The
   // folders would come out quietly wrong rather than visibly broken, so block
@@ -308,15 +326,46 @@ export default function VaultAiFoldersModal({
               Also create on OnlyFans
             </span>
           </label>
+          <label
+            className="flex items-center gap-1.5"
+            title="Also cut each lane down to the items nobody else is in — AI-tease 10-solo is AI-tease 10 with every partner clip and photo taken out. The lanes themselves are unchanged."
+          >
+            <input
+              type="checkbox"
+              checked={solo}
+              onChange={(e) => {
+                setSolo(e.target.checked);
+                setResult(null);
+              }}
+              disabled={busy}
+            />
+            <span className={solo ? "text-violet-300" : "text-fg-dim"}>
+              👤 Solo cut of each lane
+            </span>
+          </label>
           {plan.isFetching && <span className="text-fg-dim">planning…</span>}
           {s && (
             <span className="text-fg-dim">
-              {s.folders} folders ({s.scripts} scripts, {s.lanes} lanes) ·{" "}
-              {s.unique_media} media · {s.memberships} placements
+              {s.folders} folders ({s.scripts} scripts, {s.lanes} lanes
+              {s.solo_cuts > 0 && `, ${s.solo_cuts} solo`}) · {s.unique_media} media ·{" "}
+              {s.memberships} placements
               {multi.size > 0 && ` · ⧉ ${multi.size} in more than one`}
             </span>
           )}
         </div>
+        {/* An empty solo cut on a V1-described vault is CORRECT — `is_solo`
+            refuses to call an item solo without the evidence — and reads as
+            broken. Say which it is. */}
+        {soloGap && (
+          <div className="mx-4 mt-3 px-3 py-2 rounded-lg border border-violet-500/40 bg-violet-500/10 text-[11px] text-violet-200">
+            <b>{soloGap.unknown} of {soloGap.described} described items were never
+            asked who else is in them.</b>{" "}
+            Only the rich (B) describe prompt records that, so those items stay OUT of the
+            solo folders rather than being guessed into them — a partner clip in a solo
+            folder is the wrong thing sold under the wrong promise. Re-scan them with
+            prompt B to include them.
+          </div>
+        )}
 
         {result && (
           <div className="mx-4 mt-3 px-3 py-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-xs text-emerald-300">

@@ -228,6 +228,15 @@ export default function VaultManagePanel() {
     total: plan.data?.total ?? 0,
   });
 
+  // Out of AI budget for today. The server refuses the start either way (429),
+  // but a refusal you can only discover by pressing is what made this look
+  // broken rather than spent: the sweep ended, the button said "Describe all
+  // (1777)" again, and pressing it fetched another batch of frames to have
+  // every LLM call refused. Grey, with the reason on it, is the whole fix.
+  // The sentence is the server's — see `VisionCapState.blocked_reason`.
+  const capped = !!plan.data?.cap?.capped;
+  const capReason = plan.data?.cap?.blocked_reason ?? "";
+
   // includeEmpty: the manage rail shows ALL custom folders (even empty ones) so
   // you can add media to / rename / delete them — unlike the picker which hides
   // empty folders. Both share the same paginated fetch cache; only the filter differs.
@@ -366,6 +375,13 @@ export default function VaultManagePanel() {
 
   async function onDescribeAll(mode: "new" | "restage" | "force" = "new") {
     if (!accountId || describeSweep.busy) return;
+    if (capped) {
+      // Reachable with a plan up to 30s stale (its staleTime) — the button is
+      // already grey once the refetch lands. Say it rather than no-op.
+      window.alert(capReason);
+      plan.refetch();
+      return;
+    }
     if (mode !== "new") {
       const n = mode === "force" ? (plan.data?.total ?? 0) : (plan.data?.restage ?? 0);
       // Cents per item, MEASURED 2026-08-05 on 18 real stills at DeepInfra's
@@ -429,21 +445,39 @@ export default function VaultManagePanel() {
   async function describeSelected() {
     if (!accountId || selected.size === 0) return;
     const ids = [...selected];
-    setBusy(`describing 0/${ids.length}`);
-    for (let i = 0; i < ids.length; i++) {
-      await describeMedia(accountId, ids[i]).catch(() => {});
-      setBusy(`describing ${i + 1}/${ids.length}`);
+    // STOPS on the cap rather than grinding through the rest: every remaining
+    // call would be refused before it fires, so continuing only keeps the
+    // operator watching a counter that describes nothing. One exit either way.
+    let stopped = "";
+    for (let i = 0; i < ids.length && !stopped; i++) {
+      setBusy(`describing ${i}/${ids.length}`);
+      const r = await describeMedia(accountId, ids[i]).catch(() => null);
+      if (r?.status === "capped") {
+        // `detail` and `capReason` are the same sentence from the same author
+        // (the relay's `_vision_budget`) — this only picks whichever arrived.
+        stopped = `${r.detail ?? capReason}\n\n` +
+          `Described ${i} of ${ids.length} before the cap.`;
+      }
     }
     setBusy("");
     setSelected(new Set());
     qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
+    if (stopped) {
+      plan.refetch();
+      window.alert(stopped);
+    }
   }
 
   async function describeOne(m: Tile) {
     if (!accountId) return;
     setBusy("describing");
     try {
-      const r = (await describeMedia(accountId, m.id)) as Tile;
+      const r = await describeMedia(accountId, m.id);
+      if (r.status === "capped") {
+        plan.refetch();
+        window.alert(r.detail ?? capReason);
+        return;
+      }
       setPreview({ ...m, _ai: { ...(m._ai ?? {}), ...r } });
       qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
     } finally {
@@ -577,17 +611,26 @@ export default function VaultManagePanel() {
             <button
               type="button"
               onClick={() => onDescribeAll("new")}
-              disabled={describeSweep.busy || cachedCount === 0}
-              className="px-3 py-1.5 rounded-lg text-sm border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
+              disabled={describeSweep.busy || cachedCount === 0 || capped}
+              className={cx(
+                "px-3 py-1.5 rounded-lg text-sm border disabled:opacity-50",
+                capped && !describeSweep.busy
+                  ? "border-amber-500/50 bg-amber-500/10 text-amber-400"
+                  : "border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20",
+              )}
               title={
                 describeSweep.busy
                   ? describeText.title
-                  : "Describe every un-described item (background)"
+                  : capped
+                    ? capReason
+                    : "Describe every un-described item (background)"
               }
             >
               {describeSweep.busy
                 ? `Describing ${describeText.label}`
-                : `Describe all${plan.data?.undescribed ? ` (${plan.data.undescribed})` : ""}`}
+                : capped
+                  ? "Daily AI cap reached"
+                  : `Describe all${plan.data?.undescribed ? ` (${plan.data.undescribed})` : ""}`}
             </button>
             {/* Which bake-off prompt the sweep runs. B is the default and the only
                 one that emits the structured taxonomy auto-foldering needs; A is
@@ -602,7 +645,7 @@ export default function VaultManagePanel() {
               <option value="v2">B · rich</option>
               <option value="v1">A · fast</option>
             </select>
-            {!!plan.data?.restage && !describeSweep.busy && (
+            {!!plan.data?.restage && !describeSweep.busy && !capped && (
               <button
                 type="button"
                 onClick={() => onDescribeAll("restage")}
@@ -685,10 +728,11 @@ export default function VaultManagePanel() {
           <button
             type="button"
             onClick={describeSelected}
-            disabled={!!busy}
-            className="px-2.5 py-1 rounded-md text-xs border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20"
+            disabled={!!busy || capped}
+            title={capped ? capReason : undefined}
+            className="px-2.5 py-1 rounded-md text-xs border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
           >
-            Describe selected
+            {capped ? "Daily AI cap reached" : "Describe selected"}
           </button>
           {busy && <span className="text-xs text-fg-dim">{busy}</span>}
           <button
@@ -931,11 +975,14 @@ export default function VaultManagePanel() {
               <button
                 type="button"
                 onClick={() => describeOne(preview)}
-                disabled={!!busy}
+                disabled={!!busy || capped}
+                title={capped ? capReason : undefined}
                 className="px-2.5 py-1 rounded-md text-xs border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
               >
                 {busy === "describing"
                   ? "Describing…"
+                  : capped
+                  ? "Cap reached"
                   : (preview._ai as { describe_status?: string } | undefined)?.describe_status === "described"
                   ? "Re-describe"
                   : "Describe"}

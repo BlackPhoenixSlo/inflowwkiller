@@ -78,7 +78,7 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from . import _daylog  # what SHE did today — the creator-side twin of recent_events
-from . import _ghost, cat_stickers, rhythm, script_packs, tip_ladder, upsell
+from . import _ghost, cat_stickers, pacing, rhythm, script_packs, tip_ladder, upsell
 # The reply-volume leash — both gates, the spend rules that lift them, and the
 # verdict ledger. Re-exported under these names because `fans.py` (the status
 # endpoint) and the tests reach for them as `ai_chatter.X`, and because reading the
@@ -233,7 +233,7 @@ _DEFAULTS: dict = {
     # effective cap is computed per-run from the library bounds; this static value
     # is only the fallback when no library is configured.
     "tip_ladder_cap_cents": 20000,
-    # Proven-spend price floor (workstream 3 / Dirk fix): a fan who already PAID
+    # Proven-spend price floor (workstream 3): a fan who already PAID
     # $X is never re-offered a cheaper item — the ladder climbs to the next tier
     # (a $50 buyer gets the $60 video, not the $24 set re-run at cold-open lows).
     # Ships DARK: default off, zero behavior change until an account opts in.
@@ -518,6 +518,26 @@ _DEFAULTS: dict = {
     # (see rhythm.parse_pace_curve). None ⇒ the shipped 85/10/4/1. Only read when
     # `rhythm_pace_buckets` is on.
     "rhythm_pace_curve": None,
+    # ── Human TYPING pacing (automations/pacing.py) — the gaps BETWEEN the bubbles
+    # of one reply, which `rhythm` never touched. Measured over 120 days: 3.0% of
+    # our inter-bubble gaps exceed 20s, against 26.9% for a human chatter and 56.6%
+    # for a fan. She never once stops mid-reply, and nothing in the old path could
+    # make her. DEFAULT OFF — the accounts already earning do not move.
+    "pacing_enabled": False,
+    # How often a bubble draws a real "she stopped" pause. THE knob: a grid search
+    # against the human/fan target spends its whole budget here, and the fitted
+    # optimum for an always-on pause is ZERO — dispersion, not delay. 0 ⇒ only the
+    # enter-press and emoji-reach garnish remain.
+    "pacing_drift_pct": 30.0,
+    # The ceiling on one such pause, in seconds. Held INLINE, so it must stay under
+    # rhythm.INLINE_MAX_S (120) — past that a reply needs the scheduler, a lease
+    # release and a wake job, which is a different feature. Hard-clamped to
+    # pacing.MAX_DRIFT_CAP_S regardless of what is stored.
+    "pacing_drift_cap_s": 90.0,
+    # Blank the "...is typing" bar for 5-10s mid-bubble (she stopped to think).
+    # Costs ZERO added latency — it only changes when frames are emitted inside a
+    # hold that was happening anyway.
+    "pacing_think_gaps": True,
     # ── The ghost cycle: whole DAYS dark on a fan, on a repeating schedule.
     # Manufactured scarcity — "she has a life, and you are not automatically in
     # it". DEFAULT OFF, and it must stay that way: `rhythm_enabled` is default
@@ -1561,7 +1581,7 @@ def _manifest_block(offerable: dict[int, CatalogItem],
     # ⚠️ THE ">>OFFER SENTENCE IS LOAD-BEARING AND WAS MISSING. This branch hands
     # the model TWO protocols — a catalogue with an >>OFFER id, and a permission to
     # sell a custom — and said nothing about how they interact. Live generation on
-    # Lexi (2026-08-05): asked for a voice note, the model wrote "$150 and it's all
+    # Ava (2026-08-05): asked for a voice note, the model wrote "$150 and it's all
     # yours babe" and appended `>>OFFER 236`. Item 236 on that account is a $200
     # VIDEO labelled "Custom / exclusive". The send path takes price and media from
     # the catalogue row (`ai_chatter.py` ~6287/6279, "the model never sets them"),
@@ -4213,11 +4233,10 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     opener: "_openers.Opener | None" = None,
                     v: "_voice.VoiceBlocks" = _voice.HER,
                     custom_owed: bool = False,
-                    # TODAY's generated day + the creator-local hour to read it at.
-                    # Both default to "absent", which renders "" everywhere — an
+                    # TODAY's day, bound to the creator-local hour it is read at.
+                    # Defaults to the empty `Day`, which renders "" everywhere — an
                     # account with no day log produces a byte-identical prompt.
-                    day_log: dict | None = None,
-                    day_hour: int | None = None,
+                    day: "_daylog.Day" = _daylog.NO_DAY,
                     ) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — of_ai_chat's girly info-gather prompt
     with one structural difference: `sell`. `_NO_SELL` (M2) → the no-offers line
@@ -4525,8 +4544,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # NEXT TO the clock deliberately: the clock already tells her what time it is,
     # and this tells her what she has been doing since morning. Split across the
     # prompt they read as two unrelated rules; adjacent they read as one situation.
-    day_sys = (_daylog.day_block(day_log or {}, day_hour, v.voice)
-               if day_hour is not None else "")
+    day_sys = day.system_block(v.voice)
 
     system = (
         f"{persona}\n"
@@ -4602,19 +4620,18 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # one question", "react to what he said"), "you may mention your day" loses, and
     # the model can still legally answer "aw better now that ur here / how was yours?"
     # while satisfying every other rule. "" unless he actually asked AND a beat exists.
-    day_ask = (_daylog.day_ask_block(day_log or {}, day_hour, f, c.last_in_text or "")
-               if day_hour is not None else "")
-    # The part of her day that overlaps THIS fan, when any of it does. Per-fan, so
-    # user-side. The day block above is the account-constant half; this is what makes
-    # the bridge to him reliable instead of hoping the model finds one.
-    day_rel = _daylog.relatable_block(day_log or {}, day_hour, f)
+    #
+    # Paired in `Day.user_block` with the part of her day that overlaps THIS fan: both
+    # halves are per-fan, so both belong in the user message, and the system block
+    # above is the account-constant half.
+    day_user = day.user_block(f, c.last_in_text or "")
     # His own long-form message, pinned on the thread and read back here (_pins) —
     # same placement and reasoning as of_ai_chat's.
     user = (
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
         f"{claims_block}"
         f"{_pins.pins_block(f)}"
-        f"{day_rel}{day_ask}"
+        f"{day_user}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Reply to his last message now, in the STYLE FOR THIS MESSAGE above."
     )
@@ -4699,6 +4716,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
     typing_wpm = await load_typing_wpm(account_id)
     typing_indicator = await load_typing_indicator(account_id)
+    # Human typing pacing (pacing.py) — the gaps BETWEEN the bubbles of one reply,
+    # and what the "...is typing" bar does during them. Ships OFF: with `enabled`
+    # False every delay below is byte-identically what it was, no rng is drawn, and
+    # hold_with_typing takes its old single-phase path.
+    pace_cfg = pacing.PaceConfig.from_cfg(cfg)
     style_on = (await load_style_flags(account_id))[_PURPOSE]
     typo_on = (await load_typo_flags(account_id))[_PURPOSE]
     # PHASE 2 pre-send consistency check — OFF unless explicitly enabled.
@@ -4804,14 +4826,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # by every fan in this sweep. Resolved here rather than per-fan for the same
     # reason `rhythm_curve` is: it is account-level, and a per-fan call would be one
     # generation per fan for a value that cannot differ between them. Gated on the
-    # flag so an operator can turn the whole feature off without a deploy; {} when
-    # off / no tz / cap hit, and every renderer maps {} to "" (byte-identical prompt).
-    day_log = ({} if not await _daylog.load_enabled(account_id)
-               else await _daylog.ensure_day_log(
-                   account_id, cfg_row, model=model, purpose=_PURPOSE))
-    day_hour = _daylog.local_now(clock_tz).hour if (day_log and clock_tz is not None) else None
-    # The gap-cover half of the same row (see rhythm.RhythmCtx.day_covers).
-    day_covers = _daylog.covers_for(day_log)
+    # flag so an operator can turn the whole feature off without a deploy; the empty
+    # `Day` when off / no tz / cap hit, and it renders "" everywhere (byte-identical
+    # prompt). `cfg_row` is already in hand here, so the flag costs no extra query.
+    day = await _daylog.load_day(account_id, cfg_row, model=model,
+                                 purpose=_PURPOSE, clock_tz=clock_tz)
     sleep_win = (await _sleep_window(account_id, tz_off, cfg.get("sleep_window"),
                                      str(cfg.get("rhythm_sleep_source") or "default"))
                  if rhythm_on else rhythm.DEFAULT_SLEEP)
@@ -5103,6 +5122,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     bot_accusations = 0     # §6.4: "are you a bot" → offer suppressed (2nd strike ⇒ COMPANION)
     spend_capped = 0        # §6.2: 7d paid-spend brake → COMPANION for the window
     ppv_drops = 0           # §3.6: inline setup→attach pacing holds
+    paced_bubbles = 0       # bubbles 1+ that went through pacing.bubble_pace
+    pace_drifts = 0         # …of those, how many drew a real "she stopped" pause
     paid_state_refreshed = 0  # PPVs the fan had unlocked that our is_paid still called unpaid
     errors = 0
     # A reply we chose not to send is NOT an error, and folding the two together
@@ -5404,7 +5425,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # Gap covers drawn from TODAY's day when she has one, so a cover
                     # cannot claim she was driving while the chat prompt says she was
                     # on a trail. () ⇒ the shipped pools, unchanged.
-                    day_covers=day_covers,
+                    day_covers=day.covers,
                     pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
                     pace_curve=rhythm_curve,
                     last_inbound_at=c.last_in_at, last_outbound_at=c.last_out_at,
@@ -5857,8 +5878,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # ask or she has already told him today's. Computed here so the confirmed
             # -send stamp below and the prompt block agree by construction rather
             # than by two independent evaluations of the same predicate.
-            day_required_beat = _daylog.required_beat_id(
-                day_log, day_hour, f, c.last_in_text or "")
+            day_required_beat = day.required_beat(f, c.last_in_text or "")
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
                                               custom_owed=_customs.is_owed(f),
                                               opener=opener,
@@ -5879,8 +5899,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                                          else 0),
                                               buyer_facts=buyer_facts,
                                               clock=_clock_line(clock_tz),
-                                              day_log=day_log,
-                                              day_hour=day_hour,
+                                              day=day,
                                               v=v)
             try:
                 res = await llm_client.chat(
@@ -6279,7 +6298,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # Gap covers drawn from TODAY's day when she has one, so a cover
                     # cannot claim she was driving while the chat prompt says she was
                     # on a trail. () ⇒ the shipped pools, unchanged.
-                    day_covers=day_covers,
+                    day_covers=day.covers,
                     pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
                     pace_curve=rhythm_curve,
                     text=(parts[0] if parts else ""),
@@ -6422,11 +6441,33 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                   "media_files": teaser["media_ids"]}
                     else:
                         kwargs = {"media_files": teaser["media_ids"], "price": 0}
-                # Bubble 0 carries the rhythm delay (which already INCLUDES its wpm
-                # typing time); every later bubble keeps its own typing hold, exactly
-                # as before. rhythm off ⇒ first_delay is None ⇒ nothing changes.
-                delay_s = (first_delay if (idx == 0 and first_delay is not None)
-                           else typing_delay_seconds(part, typing_wpm))
+                # How long to hold before this bubble, and what the fan sees while
+                # we do. Bubble 0's latency belongs to rhythm; the gaps between the
+                # rest belong to pacing; with pacing off both collapse to the wpm
+                # typing hold this line always was. `pacing.hold_for_bubble` owns
+                # that precedence — see its docstring for why "not bubble 0" is not
+                # the same question as "rhythm did not decide this".
+                typing_s = typing_delay_seconds(part, typing_wpm)
+                pace = pacing.hold_for_bubble(
+                    idx=idx, text=part, typing_s=typing_s,
+                    rhythm_delay_s=(first_delay if idx == 0 else None),
+                    cfg=pace_cfg,
+                    # Its OWN Random, seeded per bubble. Sharing rhythm's rng would
+                    # insert draws into that sequence and silently re-roll every
+                    # seeded rhythm test and every sim replay.
+                    rng=random.Random(f"pace:{account_id}:{fan_id}:{idx}:{part[:24]}"),
+                    # The per-run inline budget guards the executor's 4 GLOBAL slots.
+                    # Bubbles 1..N were NEVER charged to it — only bubble 0 and the
+                    # ppv drop were — which was harmless while a bubble held ~10s and
+                    # is not once one can hold 90.
+                    budget_s=max(0.0, _RUN_INLINE_BUDGET_S - run_inline_s))
+                # `added_s` is 0 on every unpaced path (rhythm's bubble, pacing off),
+                # so it doubles as "did pacing run here" — see pacing.Pace.
+                run_inline_s += pace.added_s
+                if pace.added_s:
+                    paced_bubbles += 1
+                if pace.drifted:
+                    pace_drifts += 1
                 # §3.6 PPV pacing floor — a priced attach never lands the same tick as
                 # its tease: a paywall dropped the instant the setup line goes reads as
                 # automated. Hold 45-115s (inline-safe, < INLINE_MAX_S — no parked
@@ -6439,12 +6480,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     drop = rhythm.ppv_drop_delay(
                         random.Random(f"drop:{account_id}:{fan_id}:{part[:24]}"),
                         stalled=filming_stall)
-                    if float(drop) > float(delay_s):
-                        run_inline_s += float(drop) - float(delay_s)   # charge the extra
-                    delay_s = max(float(delay_s), float(drop))
+                    if float(drop) > float(pace.total_s):
+                        # She is WAITING ON THE FILE, not typing — the caption is
+                        # already written. So the longer hold replaces the pace
+                        # outright rather than being bolted onto it; anything else
+                        # leaves the phase split describing a delay that no longer
+                        # exists.
+                        run_inline_s += float(drop) - float(pace.total_s)
+                        pace = pacing.silent_hold(float(drop), typing_s, pace_cfg)
                     ppv_drops += 1
-                await hold_with_typing(account_id, fan_id, delay_s,
-                                       typing_indicator=typing_indicator)
+                await hold_with_typing(account_id, fan_id, pace.total_s,
+                                       typing_indicator=typing_indicator,
+                                       quiet_s=pace.quiet_s,
+                                       think_at_s=pace.think_at_s,
+                                       think_for_s=pace.think_for_s)
                 try:
                     result = await asyncio.to_thread(
                         lambda p=part, kw=kwargs: client.send_message(fan_id, p, **kw))
@@ -6539,8 +6588,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # so it keeps the short 2-6s beat between bubbles.
                     s_hold = (first_delay if (not parts and first_delay is not None)
                               else 2.0 + 4.0 * srng.random())
-                    await hold_with_typing(account_id, fan_id, s_hold,
-                                           typing_indicator=typing_indicator)
+                    # A gif is PICKED, not typed, so there is no typing time in this
+                    # hold at all — see pacing.silent_hold.
+                    s_pace = pacing.silent_hold(s_hold, 0.0, pace_cfg)
+                    await hold_with_typing(account_id, fan_id, s_pace.total_s,
+                                           typing_indicator=typing_indicator,
+                                           quiet_s=s_pace.quiet_s)
                     try:
                         result = await asyncio.to_thread(
                             lambda g=gid: client.send_message(fan_id, "",
@@ -6621,8 +6674,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if day_required_beat:
                 await set_fan_state(
                     account_id, fan_id, _daylog.STATE_KEY,
-                    _daylog.mark_beat_used(f, day_log.get("date", ""),
-                                           day_required_beat))
+                    _daylog.mark_beat_used(f, day.date, day_required_beat))
             # Persist the offer the moment its message is confirmed on the wire.
             # A teaser is its own delivery (advance immediately); a paid offer
             # opens and waits on the unlock watcher. VaultSend rows land at
@@ -6805,6 +6857,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "bot_accusations": bot_accusations,
         "spend_capped": spend_capped,
         "ppv_drops": ppv_drops,
+        "paced_bubbles": paced_bubbles,
+        "pace_drifts": pace_drifts,
         "errors": errors,
         "dropped_empty": dropped_empty,
         "offers_deferred": offers_deferred,

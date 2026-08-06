@@ -124,10 +124,27 @@ export function useOfFoldersMirror(accountId: string | null, enabled = true) {
   });
 }
 
-export async function describeMedia(accountId: string, mediaId: number) {
-  return relay.post(`/admin/vault-ai/describe`, { account_id: accountId, media_id: mediaId }, {
-    accountId,
-  });
+/** One item's describe result. `ok` false carries `status` — the reason, which
+ *  the row is stamped with (`refused`, `blocked_drm`, `fetch_failed`, …) — plus
+ *  `detail`, the sentence to show a human. `capped` is the one an operator can
+ *  act on: it means today's AI budget is spent, nothing was attempted, and the
+ *  item is untouched. The rest of the payload is the AI fields the caller
+ *  merges into the row it already holds. */
+export interface DescribeResult extends Record<string, unknown> {
+  media_id: number;
+  ok: boolean;
+  status: "described" | "capped" | "refused" | "error" | string;
+  detail?: string;
+}
+
+export async function describeMedia(
+  accountId: string, mediaId: number,
+): Promise<DescribeResult> {
+  return relay.post<DescribeResult>(
+    `/admin/vault-ai/describe`,
+    { account_id: accountId, media_id: mediaId },
+    { accountId },
+  );
 }
 
 /** Which bake-off prompt a describe pass uses.
@@ -154,6 +171,29 @@ export function describeAllBody(opts: {
   };
 }
 
+/** Today's spend against this account's daily LLM cap, for the VISION provider
+ *  (describe + flags both bill there). The cap is per-(account, provider), so
+ *  this is the budget a describe sweep actually spends — a busy chat day does
+ *  not close describe down, and vice versa.
+ *
+ *  `capped` is the money, not the rollup row's sticky `is_capped` flag: raising
+ *  the cap mid-day makes calls succeed again while that flag stays set.
+ *
+ *  `blocked_reason` is the server's own sentence, already formatted, and is the
+ *  ONLY thing the UI should show. Composing it here as well would give one
+ *  sentence two authors in two languages. Empty exactly when nothing blocks. */
+export interface VisionCapState {
+  day: string;
+  provider: string;
+  cap_millicents: number;
+  spent_millicents: number;
+  remaining_millicents: number;
+  capped: boolean;
+  /** The cap was hit at some point today, even if it has since been raised. */
+  flagged: boolean;
+  blocked_reason: string;
+}
+
 /** What each sweep mode would actually process — real counts for the UI. */
 export function useDescribePlan(accountId: string | null, promptVersion: PromptVersion) {
   return useQuery<{
@@ -161,6 +201,8 @@ export function useDescribePlan(accountId: string | null, promptVersion: PromptV
     undescribed: number;
     restage: number;
     prompt_version: PromptVersion;
+    /** Absent only against a relay that predates the cap gate. */
+    cap?: VisionCapState;
   }>({
     queryKey: ["vault-describe-plan", accountId, promptVersion],
     enabled: !!accountId,
@@ -203,20 +245,40 @@ export interface AiFolder {
   outfit?: string;
   mixed?: boolean;
   lane?: string;
+  /** A `-solo` cut of the lane it is named after — same lane, minus everyone
+   *  else. Every folder carries this, so nothing has to test for its presence;
+   *  `solo_of` is the size of the lane it was cut from ("12 of 34"), and is
+   *  null exactly when `solo` is false. */
+  solo: boolean;
+  solo_of: number | null;
 }
 
 export interface AiFolderPlan {
   account_id: string;
   keep: number;
+  solo: boolean;
   shoots_found: number;
   folders: AiFolder[];
   summary: {
     folders: number;
     scripts: number;
+    /** Lanes NOT counting their solo cuts. */
     lanes: number;
+    solo_cuts: number;
     unique_media: number;
     memberships: number;
   };
+  /** Only computed when `solo` was asked for. `is_solo` refuses to call an item
+   *  solo without the evidence (`people_count` / `partner_visible`, both V2
+   *  describe fields), so on a V1-described vault the solo folders come out
+   *  empty — correctly, and unreadably. This is what says why. */
+  solo_coverage: {
+    described: number;
+    known: number;
+    unknown: number;
+    solo: number;
+    ready: boolean;
+  } | null;
   /** Coverage of the cheap pussy/breasts flags pass. When `ready` is false the
    *  paid tiers silently fall back to `clothing_state`, which was measured
    *  wrong on ~1 in 3 of the stills the $50 tier is built from — so the folders
@@ -266,14 +328,32 @@ export function useVaultFlagsStatus(accountId: string | null, enabled: boolean) 
   });
 }
 
-/** Preview the folders the pipeline would create. Read-only — creates nothing. */
-export function useAiFolderPlan(accountId: string | null, keep = 2, enabled = false) {
+/** What a folder plan is cut from: how many shoots stay whole, and whether the
+ *  lanes also get their solo cut. Named rather than positional — these are two
+ *  booleans and an int in a row, and at a call site `(id, 2, true, false)` is
+ *  a bug waiting to be written. */
+export interface FolderPlanOptions {
+  keep?: number;
+  /** Add a `-solo` cut of each lane, keeping only the items nobody else is in. */
+  solo?: boolean;
+}
+
+/** Preview the folders the pipeline would create. Read-only — creates nothing.
+ *
+ *  The options are part of the query key because they are part of what the plan
+ *  IS, and the SAME options have to reach `applyAiFolders` (see there). */
+export function useAiFolderPlan(
+  accountId: string | null,
+  { keep = 2, solo = false }: FolderPlanOptions = {},
+  enabled = false,
+) {
   return useQuery<AiFolderPlan>({
-    queryKey: ["vault-ai-folder-plan", accountId, keep],
+    queryKey: ["vault-ai-folder-plan", accountId, keep, solo],
     enabled: !!accountId && enabled,
     queryFn: () =>
       relay.get(
-        `/admin/vault-ai/folder-plan?account_id=${encodeURIComponent(accountId!)}&keep=${keep}`,
+        `/admin/vault-ai/folder-plan?account_id=${encodeURIComponent(accountId!)}&keep=${keep}` +
+          `&solo=${solo ? "true" : "false"}`,
       ),
     staleTime: 30_000,
   });
@@ -303,15 +383,20 @@ export interface ApplyAiFoldersResult {
  *
  *  `mirrorToOf` additionally creates them as REAL OF vault lists — the only
  *  write to her OnlyFans account in this flow, hence a separate flag rather
- *  than something `confirm` implies. Nothing is ever sent either way. */
+ *  than something `confirm` implies. Nothing is ever sent either way.
+ *
+ *  The plan options MUST match what the preview was showing. The server
+ *  re-derives the plan and retires generated folders the current plan no longer
+ *  makes, so applying without `solo` after previewing with it would create the
+ *  lanes and delete every `-solo` folder in the same call. */
 export async function applyAiFolders(
   accountId: string,
-  keep = 2,
-  mirrorToOf = false,
+  { keep = 2, solo = false, mirrorToOf = false }:
+    FolderPlanOptions & { mirrorToOf?: boolean } = {},
 ): Promise<ApplyAiFoldersResult> {
   return relay.post(
     `/admin/vault-ai/folder-plan/apply`,
-    { account_id: accountId, keep, confirm: true, mirror_to_of: mirrorToOf },
+    { account_id: accountId, keep, confirm: true, mirror_to_of: mirrorToOf, solo },
     { accountId },
   );
 }
