@@ -222,6 +222,26 @@ for _group in _SYNONYMS:
         _SYN_INDEX.setdefault(_w, set()).update(_group)
 
 
+def _covers_of(data: dict) -> list:
+    """The cover rows, wherever the model happened to put them.
+
+    Asked for `{"beats": [...], "covers": [...]}`, the model returns the covers as a
+    seventh ELEMENT OF `beats` often enough to matter — and that lands past the
+    `_MAX_BEATS` slice, so the beat loop never even sees it and three good covers
+    vanish without a trace. Prod's first generated day lost all three exactly this
+    way. Look in both places rather than tightening the prompt and hoping: a cover
+    is cheap to find here and, when missing, `rhythm` silently falls back to the
+    generic pool that can contradict her actual day — which is the whole reason
+    covers are generated alongside the beats."""
+    top = data.get("covers")
+    if isinstance(top, list) and top:
+        return top
+    for row in (data.get("beats") or []):
+        if isinstance(row, dict) and isinstance(row.get("covers"), list):
+            return row["covers"]
+    return []
+
+
 def parse_day_log(raw) -> dict:
     """`day_log_json` → the row, narrowed and clipped. {} for anything unusable.
 
@@ -250,7 +270,7 @@ def parse_day_log(raw) -> dict:
                       # say, and his hobbies column is free text too.
                       "topics": _topics(row.get("topics"))})
     covers = []
-    for row in (data.get("covers") or [])[:_MAX_COVERS]:
+    for row in _covers_of(data)[:_MAX_COVERS]:
         if not isinstance(row, dict):
             continue
         cid = str(row.get("id") or "").strip()[:8]
@@ -475,6 +495,27 @@ def _words(*vals) -> set[str]:
     return out
 
 
+def _concepts(words: set[str]) -> int:
+    """How many DISTINCT things the overlap actually covers.
+
+    Counting the words themselves scores the size of the synonym group, not the
+    strength of the match: `cooking` drags in bake/barbecue/bbq/grill/kitchen/recipe,
+    so on the first real day this ran, a lunchtime "leftover chili" scored 20 against
+    a fan while "two-stepping at the legion hall" — a direct hit on the country music
+    in his profile — scored 14 and lost. He would have heard about the leftovers all
+    evening and never about the dancing. Fold each matched word back to its group so
+    one shared interest counts once, however many words that group happens to spell
+    it with, and the recency tiebreak gets to do its job."""
+    groups, loose = set(), 0
+    for w in words:
+        group = _SYN_INDEX.get(w)
+        if group:
+            groups.add(min(group))      # any stable member names the group
+        else:
+            loose += 1                  # its own concept, and its own singular/plural
+    return len(groups) + (loose + 1) // 2
+
+
 def fan_interests(f: Fan | None) -> set[str]:
     """What HE is into, as bare words — hobbies, job, and what he's had going on.
 
@@ -508,7 +549,7 @@ def relatable_beat(day_log: dict, hour: int, f: Fan | None) -> dict:
         idx = SLOT_KEYS.index(beat["slot"]) if beat["slot"] in SLOT_KEYS else -1
         if idx < 0 or idx > cur:
             continue
-        hits = len(his & _words(beat.get("topics"), beat.get("text")))
+        hits = _concepts(his & _words(beat.get("topics"), beat.get("text")))
         # `>=` so a later slot wins an equal score — recency as the tiebreak.
         if hits and hits >= best_score:
             best, best_score = beat, hits
