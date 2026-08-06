@@ -37,6 +37,11 @@ export interface StyleConfig {
   sell_customs?: boolean;
   // cat-sticker reaction pack (AI Chatter ends some replies with a cat gif) — default ON
   cat_stickers?: boolean;
+  /** Does the creator have a DAY the chat engines can answer with — "what are you
+   *  up to?" gets something true and concrete instead of a bounced question.
+   *  Account-wide (not per-automation) because the day belongs to the creator, not
+   *  to whichever engine happened to answer. DEFAULT ON. */
+  day_log_enabled?: boolean;
   // sticker rate knobs (numeric): % of replies that never see the pack (default 0),
   // % nudged to a gif-ONLY reply (default 5), per-fan minutes between gifs (default 0)
   cat_sticker_skip_pct?: number;

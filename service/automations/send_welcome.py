@@ -838,6 +838,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     restyle = bool(payload.get("restyle", True))         # AI-restyle the activity bubble
     # Bubble 2 says only the day / time of day / location — no activity. Off by
     # default: every account that has ever run keeps the line it sends today.
+    # ON BY DEFAULT — but stamped at rule CREATION (`automation_rules_api`
+    # schema default True), not defaulted here. Defaulting at the read turns
+    # every rule ever written without the key, including sixteen tests that
+    # assert the activity path, into a clock-only welcome retroactively. The
+    # schema default gives a new account the new behaviour; existing rules were
+    # migrated by an explicit flip, so an absent key stays absent-means-off and
+    # keeps meaning what it meant when it was written.
     time_only = bool(payload.get("time_only"))
 
     client = await asyncio.to_thread(ax._make_client, account_id)

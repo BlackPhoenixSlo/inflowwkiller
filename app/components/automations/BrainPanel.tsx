@@ -36,6 +36,7 @@ import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
 import { TIMEZONES, zoneLabel } from "@/components/settings/sellerShared";
 import { useEnrichPersona } from "@/hooks/useAccountConfig";
+import { useStyleConfig, useSaveStyleConfig } from "@/hooks/useStyleConfig";
 
 // The welcome automation's default cadence: poll OF's new-subscriber feed every
 // 5 min (matches the send_welcome spec's {every_seconds: 300}).
@@ -164,13 +165,20 @@ export default function BrainPanel() {
   // PROPOSED values rather than the ones they already wrote themselves.
   const [enrichedKeys, setEnrichedKeys] = useState<string[]>([]);
   const welcomePinM = useWelcomePin();
+  // The day log lives in `style_config_json`, not in this brain row — the day is
+  // account-wide and both chat engines read the one key. Surfaced HERE anyway:
+  // it is generated from the time-of-day lines below, so the switch belongs
+  // beside the thing it reads.
+  const styleQ = useStyleConfig(accountId);
+  const saveStyleM = useSaveStyleConfig(accountId);
+  const dayLogOn = styleQ.data?.config?.day_log_enabled !== false;
 
   const [welcomeEnabled, setWelcomeEnabled] = useState(false);
   const [welcomeMinutes, setWelcomeMinutes] = useState(WELCOME_DEFAULT_EVERY_S / 60);
   // Bubble 2 = the short clock line ("it's Thursday afternoon in US") instead of
   // the activity line. Lives on the rule's payload.time_only, like the follow-up's
   // with_image — so it saves with the Welcome section's own button.
-  const [welcomeTimeOnly, setWelcomeTimeOnly] = useState(false);
+  const [welcomeTimeOnly, setWelcomeTimeOnly] = useState(true);
   const [welcomeMsg, setWelcomeMsg] = useState<string | null>(null);
   const [previewFan, setPreviewFan] = useState("");
   const [preview, setPreview] = useState<AutomationPreviewResult | null>(null);
@@ -215,11 +223,11 @@ export default function BrainPanel() {
       setWelcomeMinutes(
         Math.max(1, Math.round((welcomeRule.every_seconds ?? WELCOME_DEFAULT_EVERY_S) / 60)),
       );
-      setWelcomeTimeOnly(welcomeRule.payload?.time_only === true);
+      setWelcomeTimeOnly(welcomeRule.payload?.time_only !== false);
     } else {
       setWelcomeEnabled(false);
       setWelcomeMinutes(WELCOME_DEFAULT_EVERY_S / 60);
-      setWelcomeTimeOnly(false);
+      setWelcomeTimeOnly(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [welcomeRule?.id, welcomeRule?.is_enabled, welcomeRule?.every_seconds,
@@ -817,6 +825,25 @@ export default function BrainPanel() {
               The “it’s {`{weekday} {tod}`} here, I’m {`{activity}`}” line + the image
               welcome/follow-up attach for each slot.
             </p>
+            <label
+              className="flex items-start gap-2 pb-1 text-sm text-fg"
+              title="Uses the lines below as a TONE SEED to write a fresh dated day each morning, so chat can answer “what are you up to?” with something true and concrete instead of bouncing the question back. Account-wide: both chat engines read it."
+            >
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={dayLogOn}
+                disabled={!accountId || styleQ.isLoading || saveStyleM.isPending}
+                onChange={(e) => saveStyleM.mutate({ day_log_enabled: e.target.checked })}
+              />
+              <span>
+                Answer “what are you up to?”
+                <span className="block text-[11px] text-fg-dim">
+                  Writes a new day from these lines each morning, and only mentions it
+                  when a fan actually asks.
+                </span>
+              </span>
+            </label>
             <div className="space-y-2">
               {slots.map((slot) => {
                 const imgId = form.time_images[slot];
