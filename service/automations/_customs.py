@@ -139,6 +139,48 @@ def is_owed(fan: "Fan | None") -> bool:
     return fan is not None and fan.customs_owed_at is not None
 
 
+async def owed_fan_ids(account_id) -> set[int]:
+    """Every fan on this account with an outstanding custom — the SEND-SIDE brake.
+
+    ⚠️ `is_owed` ABOVE ONLY EVER BOUND THE THREE ENGINES THAT HOLD A `Fan` ROW —
+    `ai_chatter`, `of_ai_chat`, `autoreply`. Those are the engines that TALK. The
+    engines that SELL on their own schedule (`ppv_send`, `tip_request`,
+    `mass_nudge`, `reengage_buyers`) never load a Fan before choosing an audience;
+    they build an EXCLUDE SET and subtract it. So the brake that stops the chat
+    from pitching a second custom did not stop a PPV blast, a tip ask, or a
+    re-engagement DM from reaching the same man on the next tick — which is the
+    failure this whole feature exists to prevent, arriving by the one door nobody
+    had shut.
+
+    Returned as a set for exactly that shape: `excl |= await owed_fan_ids(aid)`.
+
+    THE SET IS TINY AND THAT IS THE POINT. It holds only fans with money taken
+    and work outstanding — currently a handful per account, cleared by the
+    operator on /customs or by `customs_watch` seeing the voice note go out. It is
+    NOT an inferred-state gate: `ppv_send`'s 07-23 ruling bars shrinking a blast
+    on CHAT SIGNALS (which cost −86% of sends), and this is not one. It is the
+    same distinction that leaves `is_owed` ungated on the seller flag — "we owe
+    this man something he paid for" is a fact about money already taken, not a
+    selling decision.
+
+    Local imports: this module is deliberately import-light at runtime (see the
+    TYPE_CHECKING guard at the top) and every caller already has the DB loaded.
+    Mirrors `_common._load_skip_ids`."""
+    from sqlalchemy import select
+
+    from db.engine import get_session
+    from db.models import Fan
+
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Fan.fan_id).where(
+                Fan.account_id == str(account_id),
+                Fan.customs_owed_at.is_not(None),
+            )
+        )).all()
+    return {int(r[0]) for r in rows}
+
+
 def mark(fan: "Fan | None", tipped_at: datetime | None = None) -> bool:
     """Record that `fan` is owed a custom, as of `tipped_at`. Returns True when
     this CHANGED something.

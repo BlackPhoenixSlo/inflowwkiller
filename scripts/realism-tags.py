@@ -16,7 +16,7 @@ wrong only if the code is.
     ./venv/bin/python scripts/realism-tags.py --prompt        # the blocks, verbatim
     ./venv/bin/python scripts/realism-tags.py --prompt --voice him --customs
     ./venv/bin/python scripts/realism-tags.py --json          # a full-ON config body
-    ./venv/bin/python scripts/realism-tags.py --curl ACCOUNT_ID  # ready-to-run PUT
+    ./venv/bin/python scripts/realism-tags.py --curl 123456789  # ready-to-run PUT
 
 Read-only. `--curl` PRINTS a command; it never sends one.
 """
@@ -239,12 +239,12 @@ def cmd_json() -> None:
 
 def cmd_curl(account_id: str, base: str) -> None:
     body = {"account_id": account_id, "config": full_on()}
-    print(f"# PUT merges onto what is already stored — absent keys keep resolving")
-    print(f"# to their tri-state default, so this only ever ADDS explicit trues.")
+    print("# PUT merges onto what is already stored — absent keys keep resolving")
+    print("# to their tri-state default, so this only ever ADDS explicit trues.")
     print(f"curl -sS -X PUT {base}/admin/style-config \\")
-    print(f"  -H 'Content-Type: application/json' \\")
+    print("  -H 'Content-Type: application/json' \\")
     print(f"  -d '{json.dumps(body)}'")
-    print(f"\n# read it back (the RESOLVED view, not the sparse stored dict):")
+    print("\n# read it back (the RESOLVED view, not the sparse stored dict):")
     print(f"curl -sS '{base}/admin/style-config?account_id={account_id}'")
 
 

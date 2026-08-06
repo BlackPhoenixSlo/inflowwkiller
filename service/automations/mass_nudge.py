@@ -57,6 +57,7 @@ from audiences import (
 )
 from automation_registry import register
 from ._common import load_hard_skip_ids
+from . import _customs
 from db.engine import get_session
 from db.models import AccountAiConfig, NudgeState
 from . import send_welcome  # _model_hour / _model_weekday / _slot_key
@@ -286,6 +287,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Durably restricted fans (muted peer-creator / hand-restricted) never get a
     # broadcast either — fold them into the exclusion set.
     excl |= await load_hard_skip_ids(account_id)
+    # A fan owed an undelivered custom gets no broadcast either. He has paid and is
+    # waiting; a "hey you up 😏" from the account that owes him work reads as being
+    # ignored, and the nudge lane is a proactive TOUCH he did not ask for. The chat
+    # engines already stand down for him (`_customs.is_owed`) — they hold a Fan
+    # row, and this audience path never does.
+    excl |= await _customs.owed_fan_ids(account_id)
     # MASSDMEXCLUDE members — mass_nudge is a mass DM, so it honors the DM opt-out.
     excl |= await exclude_list_fan_ids(account_id, MASSDMEXCLUDE_LIST)
     recipients = [fid for fid in online if fid not in excl]

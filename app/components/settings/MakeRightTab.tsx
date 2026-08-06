@@ -26,10 +26,14 @@ import { useEmployee } from "@/contexts/EmployeeContext";
 interface Cfg {
   enabled?: boolean; auto_send?: boolean; lookback_days?: number;
   max_msgs_since_charge?: number;
-  per_fan_cap?: number; gift_value_match?: boolean; gift_piece_value_cents?: number;
-  gift_min_count?: number; gift_max_count?: number; gift_tier?: string;
+  per_fan_cap?: number; gift_tier?: string;
   apology_caption?: string; flag_refund?: boolean; guard_hours?: number;
-  // Multi-turn exchange (apology -> N free on his replies -> PPV -> close).
+  // Gift size is ONE number: gift_pieces_per_step, below. gift_value_match /
+  // gift_piece_value_cents / gift_min_count / gift_max_count are gone (2026-08-06)
+  // — the API drops them, so a save from this tab also cleans them out of a config
+  // that still carries them.
+  // The exchange (apology -> N free TURNS on his replies -> PPV -> close). Default
+  // is ONE turn: apology bubble + gift bubble, then it closes itself.
   free_steps?: number; gift_pieces_per_step?: number; open_with_gift?: boolean;
   ppv_folder?: string; ppv_price_cents?: number; ppv_caption?: string;
   nudge_hours?: number; close_hours?: number;
@@ -61,6 +65,48 @@ function NumField({ label, hint, value, onChange, min = 0, max = 100000, step = 
       </div>
       {hint && <div className="text-[11px] text-fg-dim/70">{hint}</div>}
     </label>
+  );
+}
+
+/**
+ * What the two turn/image fields add up to.
+ *
+ * They MULTIPLY, and the old labels hid it: "Free pieces 3" + "Pieces per step 3"
+ * reads as three images and means nine, spread over four messages, three of which
+ * arrive only if the fan keeps replying. That total is what an operator is really
+ * choosing, and nothing on this tab used to say it.
+ *
+ * Arithmetic only, and deliberately no step NAMES: the preview panel below already
+ * prints the real chain straight out of `_build_steps`, so a second, client-side
+ * copy of that logic would be one that can disagree with the engine. These counts
+ * can't disagree, because every shape `_build_steps` produces is `turns + 1`
+ * messages and `turns × images` pieces — `open_with_gift` decides which message the
+ * first gift rides on, never how many there are.
+ */
+function ExchangeShape({ form }: { form: Cfg }) {
+  const turns = Math.max(0, form.free_steps ?? 1);
+  const per = Math.max(1, form.gift_pieces_per_step ?? 1);
+  const ppv = (form.ppv_folder ?? "").trim() && (form.ppv_price_cents ?? 0) > 0 ? 1 : 0;
+  const messages = turns + 1 + ppv;
+  const images = turns * per;
+  // Outbound TURNS, which is what waits on him — one fewer than `messages` when the
+  // apology carries the first gift, since those two bubbles go out together.
+  const outbound = ((form.open_with_gift ?? true) && turns > 0 ? turns : turns + 1) + ppv;
+
+  return (
+    <div className="text-[11px] text-fg-dim bg-bg border border-border rounded-lg px-2.5 py-2 leading-relaxed">
+      <b className="text-fg">
+        {messages} message{messages === 1 ? "" : "s"} · {images} free image{images === 1 ? "" : "s"}
+        {ppv ? " · 1 paid PPV" : ""}
+      </b>
+      <div className="mt-0.5">
+        {outbound <= 1
+          ? "One turn — it lands and closes itself. No reply needed, no nudge, nothing pending."
+          : `Only the first lands right away; the other ${outbound - 1} wait for him to reply (nudge at ${form.nudge_hours ?? 24}h, close at ${form.close_hours ?? 48}h).`}
+        {" "}A gift bubble is skipped when the tip library has nothing he hasn&apos;t
+        already seen — <b>Preview</b> shows the pieces he&apos;d really get.
+      </div>
+    </div>
   );
 }
 
@@ -155,8 +201,8 @@ export default function MakeRightTab({ accountId }: { accountId: string | null }
         <h3 className="text-sm font-medium text-fg">🤝 Make It Right (the safety net)</h3>
         <p className="text-xs text-fg-dim leading-relaxed mt-1">
           Catches when a fan got the wrong outcome — above all, <b>charged twice for the
-          same content</b> — and makes him whole: a warm apology + a few <b>free, unseen</b>
-          pieces from your tip library, valued at least what he was over-charged. It fires
+          same content</b> — and makes him whole: <b>one apology message + one bubble of
+          free, unseen</b> content from your tip library, then it stops. It fires
           <b> up to twice per fan</b>, then hands him to you. <b>Refunds are flagged for you</b>,
           never moved automatically. <b>On by default</b> — untick <b>Enabled</b> or
           <b> Auto-send</b> to opt this account out. <b>Preview</b> shows who&apos;d get what
@@ -187,21 +233,13 @@ export default function MakeRightTab({ accountId }: { accountId: string | null }
               onChange={(n) => set({ max_msgs_since_charge: n })} suffix="msg" />
             <NumField label="Max per fan" hint="then operator" value={form.per_fan_cap ?? 2} min={1} max={10}
               onChange={(n) => set({ per_fan_cap: n })} />
-            <NumField label="Free pieces min" value={form.gift_min_count ?? 2} min={1} max={20}
-              onChange={(n) => set({ gift_min_count: n })} />
-            <NumField label="Free pieces max" value={form.gift_max_count ?? 4} min={1} max={20}
-              onChange={(n) => set({ gift_max_count: n })} />
           </div>
+          {/* "Free pieces min/max", "Match the over-charge" and "Piece value" lived
+              here. Four fields for one number the engine had stopped reading — v1
+              solved a piece count from the over-charge, v2 takes it straight from
+              "Images per turn" below. Gift size is that one field now; the other
+              four are deleted everywhere, tab through validator. */}
           <div className="flex flex-wrap gap-4 items-end">
-            <label className="flex items-center gap-2 cursor-pointer pb-1.5">
-              <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]"
-                checked={form.gift_value_match ?? true}
-                onChange={(e) => set({ gift_value_match: e.target.checked })} />
-              <span className="text-sm">Match the over-charge</span>
-            </label>
-            <NumField label="Piece value" hint="for the match math" value={dollars(form.gift_piece_value_cents ?? 600)}
-              min={0.01} max={1000} step={0.01} suffix="$"
-              onChange={(n) => set({ gift_piece_value_cents: cents(n) })} />
             <NumField label="Skip if messaged within" hint="contact-guard" value={form.guard_hours ?? 12} min={0} max={8760}
               onChange={(n) => set({ guard_hours: n })} suffix="h" />
             <label className="flex items-center gap-2 cursor-pointer pb-1.5">
@@ -223,17 +261,18 @@ export default function MakeRightTab({ accountId }: { accountId: string | null }
           </label>
 
           <div className="border-t border-border/60 pt-3 space-y-3">
-            <div className="text-xs font-medium text-fg">The exchange <span className="text-fg-dim/70 font-normal">— apology → free pieces (on his replies) → a PPV → close</span></div>
+            <div className="text-xs font-medium text-fg">The exchange <span className="text-fg-dim/70 font-normal">— apology → free replies (each waits for HIS reply) → a PPV → close</span></div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <NumField label="Free pieces" hint="before the PPV" value={form.free_steps ?? 3} min={0} max={10}
+              <NumField label="Free turns" hint="1 = apology + gift, then done" value={form.free_steps ?? 1} min={0} max={10}
                 onChange={(n) => set({ free_steps: n })} />
-              <NumField label="Pieces per step" value={form.gift_pieces_per_step ?? 1} min={1} max={10}
+              <NumField label="Images per turn" hint="all on one bubble" value={form.gift_pieces_per_step ?? 1} min={1} max={10}
                 onChange={(n) => set({ gift_pieces_per_step: n })} />
               <NumField label="Nudge after" hint="silent hrs" value={form.nudge_hours ?? 24} min={1} max={8760}
                 onChange={(n) => set({ nudge_hours: n })} suffix="h" />
               <NumField label="Close after" hint="silent hrs" value={form.close_hours ?? 48} min={1} max={8760}
                 onChange={(n) => set({ close_hours: n })} suffix="h" />
             </div>
+            <ExchangeShape form={form} />
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]"
                 checked={form.open_with_gift ?? true}

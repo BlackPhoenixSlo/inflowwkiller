@@ -64,6 +64,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
+from . import _daylog  # what SHE did today — the creator-side twin of recent_events
 from . import _language
 from . import _customs
 from . import _voice  # whose voice this account writes in (NULL → 'her')
@@ -537,6 +538,14 @@ async def _load_persona(account_id: str) -> str:
         "You are a warm, flirty OnlyFans creator chatting with one of your fans."))
 
 
+async def _load_cfg_row(account_id: str) -> "AccountAiConfig | None":
+    """The whole brain row, for the day-log producer (it needs persona + the six
+    time_activities as its tone seed + the timezone, and re-reading each of those
+    through its own loader would be three queries for one row)."""
+    async with get_session() as s:
+        return await s.get(AccountAiConfig, str(account_id))
+
+
 async def _load_clock_tz(account_id: str) -> int | None:
     """Creator-local offset in MINUTES for the prompt clock. IANA `timezone`
     wins (DST-correct); legacy `utc_offset` hours is the fallback; None when
@@ -873,6 +882,10 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
                     sticker_mode: str = "skip",
                     opener: "_openers.Opener | None" = None,
                     v: "_voice.VoiceBlocks" = _voice.HER,
+                    # TODAY's generated day + the creator-local hour to read it at.
+                    # Both default to "absent" → "" everywhere → byte-identical prompt.
+                    day_log: dict | None = None,
+                    day_hour: int | None = None,
                     ) -> tuple[list[dict], list[str]]:
     """Compose the (system, user) pair — a faithful port of V1
     prompts.create_chat_response: a short, GIRLY, 100%-human reply that flirts
@@ -1072,14 +1085,26 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"RIGHT NOW for you it is {clock}. If the time, your day, or what "
         "you're doing comes up, stay consistent with this clock — never claim "
         "a different time of day.\n\n" if clock else "")
+    # TODAY's day, read at the creator-local hour — see ai_chatter's twin. "" when
+    # the account has no day log, so the prompt stays byte-equal.
+    day_sys = (_daylog.day_block(day_log or {}, day_hour, v.voice)
+               if day_hour is not None else "")
     system = (
         f"{persona}\n"
         "You're texting a fan to get to know him while flirting. You are 100% human "
-        "— never sound like a bot or an assistant. Use only what you've learned "
-        f"about him; don't share your own info unless he asks; {offer_clause}he may "
+        "— never sound like a bot or an assistant. "
+        # The ban, conditional — verbatim when she has no day to give, replaced when
+        # she does. Identical rule and identical reasoning to ai_chatter's; these two
+        # preambles have always been near-verbatim twins and must not drift here, or
+        # the same fan gets a different creator depending on which engine answered.
+        + ("Use only what you've learned about him; don't share your own info "
+           "unless he asks; " if not day_sys else
+           "Use what you've learned about him, and give a little back — one short "
+           "beat of your own day when it fits, never a paragraph; ")
+        + f"{offer_clause}he may "
         "send several texts in a row — read them all, reply to the latest.\n\n"
         f"{v.painful_texting + chr(10) + chr(10) if painful_on else ''}"
-        f"{clock_block}"
+        f"{clock_block}{day_sys}"
         f"{need_block}{dodge_note}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         # The age here is the VOICE (text young and casual), not a claim about
@@ -1116,6 +1141,16 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # block's own tokens. "" for a fan with no deviations, which is most of them
     # once canon is filled.
     claims_block = fan_claims_block(f)
+    # "He asked about your day — ANSWER it." Same placement and reasoning as
+    # ai_chatter's. `last_body` is direction-agnostic here (unlike ai_chatter's
+    # `last_in_text`), so it is gated on `last_dir` — reading her OWN last message as
+    # his question would fire the required-answer line on a turn nobody asked about.
+    day_ask = (_daylog.day_ask_block(
+        day_log or {}, day_hour, f,
+        (c.last_body or "") if c.last_dir == "in" else "")
+        if day_hour is not None else "")
+    # The part of her day that overlaps THIS fan — see ai_chatter's twin.
+    day_rel = _daylog.relatable_block(day_log or {}, day_hour, f)
     # His own long-form message, pinned on the thread and read back here (_pins).
     # Same USER-message placement and the same reason as the claims block: per-fan
     # text in the system prompt fragments the shared cached prefix. "" for every
@@ -1124,6 +1159,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
         f"{claims_block}"
         f"{_pins.pins_block(f)}"
+        f"{day_rel}{day_ask}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Reply to his last message now, in the STYLE FOR THIS MESSAGE above."
     )
@@ -1621,6 +1657,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     tip_ask_enabled, tip_ask_amount, tip_ask_template = await load_tip_ask_config(account_id)
     persona = await _load_persona(account_id)
     clock_tz = await _load_clock_tz(account_id)  # None ⇒ no clock line in the prompt
+    # TODAY's day log — one lazy generation per (account, creator-local date), shared
+    # by every fan in this sweep. `ensure_day_log` re-reads inside its lock, so when
+    # ai_chatter already generated today's row this engine ADOPTS it rather than
+    # writing a second, different day for the same creator. Flag default OFF ⇒ {} ⇒
+    # every renderer returns "" ⇒ byte-identical prompt.
+    day_log = ({} if not await _daylog.load_enabled(account_id)
+               else await _daylog.ensure_day_log(
+                   account_id, await _load_cfg_row(account_id),
+                   model=model, purpose=_PURPOSE))
+    day_hour = _daylog.local_now(clock_tz).hour if (day_log and clock_tz is not None) else None
     blacklist, skip_list = await _load_stop_lists(account_id)
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)  # W7 cross-tick ownership
     promo_spam = await load_promo_spam_ids(account_id)
@@ -1831,6 +1877,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 profile=profiles.get(fan_id) if factground_on else None,
                 clock=_clock_line(clock_tz),
                 sticker_mode=sticker_mode,
+                day_log=day_log, day_hour=day_hour,
                 opener=opener, v=v)
             try:
                 res = await llm_client.chat(

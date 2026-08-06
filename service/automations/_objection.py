@@ -160,7 +160,7 @@ def judge_on(cfg: dict) -> bool:
 
 async def decide(account_id: str, fan_id: int, fan: Fan | None, c: ObjectionCand, *,
                  cfg: dict, model: str, last_paid_at: datetime | None,
-                 now: datetime) -> "Objection | None":
+                 now: datetime, dry_run: bool = False) -> "Objection | None":
     """What this turn owes him — apology + brake — or None. THE entry point.
 
     Cheapest first, first hit wins:
@@ -177,7 +177,16 @@ async def decide(account_id: str, fan_id: int, fan: Fan | None, c: ObjectionCand
          source of `content_letdown`, which brakes for 24h rather than 72h: a man
          who is disappointed is not a man who was cheated.
 
-    Never raises. A detector that breaks must cost us a verdict, not the turn."""
+    Never raises. A detector that breaks must cost us a verdict, not the turn.
+
+    `dry_run` reaches the judge for ONE reason: the stamp. A preview may spend the
+    call (the sweep already spends a far larger one generating the reply it is
+    previewing, and an operator reading a dry run wants the real verdict), but it
+    must not CONSUME the at-most-once budget — a preview that leaves `_pp_judge.mid`
+    on the inbound makes the next REAL run skip it, so the complaint is judged in
+    the run that cannot act and skipped by the run that can. Same trade the stamp
+    already makes for a provider blip: re-buying a verdict costs a fraction of a
+    cent, missing a chargeback costs the account."""
     if upsell.is_content_dispute(c.last_body):
         return Objection.of(CONTENT_DISPUTE)
     # Read off cfg rather than taken as a parameter: the sweep derives `gate_on`
@@ -194,7 +203,7 @@ async def decide(account_id: str, fan_id: int, fan: Fan | None, c: ObjectionCand
         verdict = await _judge(account_id, fan_id, fan, c.last_in_text,
                                message_id=(c.msg_ids[-1] if c.msg_ids else None),
                                last_paid_at=last_paid_at, cfg=cfg, model=model,
-                               now=now)
+                               now=now, dry_run=dry_run)
     except llm_client.LLMCapExceeded:
         return None          # out of budget ⇒ the regexes above stand alone
     except Exception:
@@ -222,7 +231,8 @@ async def _inbound_count_since(account_id: str, fan_id: int, since: datetime) ->
 
 async def _judge(account_id: str, fan_id: int, fan: Fan | None, text: str, *,
                  message_id: int | None, last_paid_at: datetime | None,
-                 cfg: dict, model: str, now: datetime) -> str | None:
+                 cfg: dict, model: str, now: datetime,
+                 dry_run: bool = False) -> str | None:
     """One cheap call: "is he complaining about what he just bought?"
 
     `upsell.is_content_dispute` closes the sentence that prod incident produced;
@@ -262,8 +272,11 @@ async def _judge(account_id: str, fan_id: int, fan: Fan | None, text: str, *,
     # Stamped only once the call CAME BACK — never before it. Stamping first meant a
     # provider blip or a cap rejection burned the fan's one chance to be heard, and
     # the complaint could then never be judged on any later tick. Re-buying a verdict
-    # costs a fraction of a cent; missing a chargeback costs the account.
-    await set_fan_state(account_id, fan_id, _STATE_KEY, {"mid": int(message_id)})
+    # costs a fraction of a cent; missing a chargeback costs the account. A preview
+    # is the same trade: it may read the verdict, it may not spend the one turn the
+    # REAL run gets to act on it (see `decide`).
+    if not dry_run:
+        await set_fan_state(account_id, fan_id, _STATE_KEY, {"mid": int(message_id)})
     try:
         verdict = str((json.loads(res.content or "{}") or {}).get("verdict") or "").strip()
     except Exception:

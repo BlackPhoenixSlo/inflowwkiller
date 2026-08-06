@@ -52,13 +52,21 @@ _INT_KNOBS = {
     "lookback_days": (1, 365),
     "max_msgs_since_charge": (0, 1000),   # freshness gate; 0 = off (apologise however late)
     "per_fan_cap": (1, 10),
-    "gift_piece_value_cents": (1, 100_000),
-    "gift_min_count": (1, 20),
-    "gift_max_count": (1, 20),
     "guard_hours": (0, 8760),
     # Multi-turn exchange knobs.
-    "free_steps": (0, 10),             # free pieces before the PPV pivot
-    "gift_pieces_per_step": (1, 10),   # unseen pieces per free step
+    "free_steps": (0, 10),             # free TURNS before the PPV pivot
+    # The objection lane's own turn count. It was the ONE exchange knob missing
+    # from this table, and this validator drops every key it does not name — so a
+    # UI save or a `prod-makeright-on.sh key=value` stamp of it was silently
+    # discarded and only a deploy could move it. Same trap `scripts_api`
+    # documents for its own bools; same one-line close.
+    "apology_free_steps": (0, 10),
+    # The ONLY gift-size knob (2026-08-06). `gift_piece_value_cents` /
+    # `gift_min_count` / `gift_max_count` / `gift_value_match` were removed from
+    # this table with it: they solved-and-clamped a piece count that v2 stopped
+    # reading, so they validated numbers nothing obeyed. Dropping them from the
+    # whitelist also cleans them out of every stored config on its next save.
+    "gift_pieces_per_step": (1, 10),   # unseen pieces on the one gift bubble per turn
     "ppv_price_cents": (0, 1_000_000), # the PPV ask (0 → no PPV pivot)
     "nudge_hours": (1, 8760),          # silence before one nudge
     "close_hours": (1, 8760),          # silence before closing to an operator
@@ -74,7 +82,7 @@ def _validate(cfg: dict) -> dict:
     if not isinstance(cfg, dict):
         raise HTTPException(422, "config must be an object")
     out: dict[str, Any] = {}
-    for k in ("enabled", "auto_send", "gift_value_match", "flag_refund",
+    for k in ("enabled", "auto_send", "flag_refund",
               "open_with_gift", "detect_undelivered"):
         if k in cfg:
             out[k] = bool(cfg[k])
@@ -91,10 +99,8 @@ def _validate(cfg: dict) -> dict:
                 out[k] = max(lo, min(int(cfg[k]), hi))
             except (TypeError, ValueError):
                 raise HTTPException(422, f"{k} must be a number")
-    # gift_max_count must be ≥ gift_min_count (an inverted cap would gift nothing).
-    if (out.get("gift_max_count") is not None and out.get("gift_min_count") is not None
-            and out["gift_max_count"] < out["gift_min_count"]):
-        raise HTTPException(422, "gift_max_count must be ≥ gift_min_count")
+    # (The old gift_max_count ≥ gift_min_count check died with those two keys. One
+    # count knob cannot contradict itself, which is the whole reason for one.)
     # close must be ≥ nudge (nudge fires first, then close).
     if (out.get("close_hours") is not None and out.get("nudge_hours") is not None
             and out["close_hours"] < out["nudge_hours"]):

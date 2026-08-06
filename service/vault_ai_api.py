@@ -21,10 +21,10 @@ import logging
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from sqlalchemy import case, delete, func, or_, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client seam (same one automations use)
@@ -34,11 +34,13 @@ import automation_executor as ax  # _make_client seam (same one automations use)
 import vault_frames
 import vault_mirror
 import vault_stills
-from of_shapes import giphy_dm_id, still_url  # shared OF payload-shape readers
+# NOTE: the OF payload-shape readers (`still_url`, `giphy_dm_id`) are NOT imported
+# here — `vault_frames` owns "which url in a payload is the picture" now, and this
+# module reaches them through it.
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import (
-    Message, VaultCacheRun, VaultFolder, VaultFolderItem, VaultItem, VaultOfQueryLog,
+    VaultCacheRun, VaultFolder, VaultFolderItem, VaultItem, VaultOfQueryLog,
 )
 
 log = logging.getLogger("of-relay.vault_ai_api")
@@ -2032,7 +2034,6 @@ async def sort_of_folders(payload: dict = Body(...)) -> dict[str, Any]:
 
 # ── Describe (Qwen3-VL vision) ──────────────────────────────────────
 
-import base64  # noqa: E402
 import re as _re  # noqa: E402
 
 import llm_client  # noqa: E402
@@ -2997,9 +2998,8 @@ async def harvest_keywords_status(account_id: str = Query(...)) -> dict[str, Any
 # under "stale" instead of "approved". No global approve — approve is scoped
 # per-kind or per-ids (contract §2).
 
-import hashlib  # noqa: E402
 
-from db.models import AccountAiConfig, VaultAiReviewItem  # noqa: E402
+from db.models import VaultAiReviewItem  # noqa: E402
 import vault_ai_baseline as vab  # noqa: E402
 
 _REVIEW_KINDS = ("folder", "ppv", "reminder")
