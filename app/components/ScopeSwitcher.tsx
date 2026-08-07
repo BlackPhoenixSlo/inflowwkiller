@@ -25,7 +25,7 @@ import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
-import { cn } from "@/lib/utils";
+import { cn, describeDeadSession } from "@/lib/utils";
 
 export default function ScopeSwitcher() {
   const { scope, setScope } = useScope();
@@ -249,6 +249,18 @@ export default function ScopeSwitcher() {
                   className="flex-1 pr-3 py-2 flex items-center gap-2 text-left"
                 >
                   <span className="truncate flex-1">{a.nickname || a.id}</span>
+                  {/* A model whose OF session died still has a session FILE, so
+                      it passes the has_session filter above and lists here
+                      looking entirely normal — while every automation for it is
+                      paused. Mark it, or its silence reads as "quiet week". */}
+                  {a.session_dead_at && (
+                    <span
+                      className="text-[10px] text-err shrink-0"
+                      title={describeDeadSession(a.session_dead_reason)}
+                    >
+                      paused
+                    </span>
+                  )}
                   {!included && (
                     <span className="lg:hidden text-[10px] text-fg-dim shrink-0">excluded</span>
                   )}

@@ -1397,16 +1397,21 @@ def _log_session_dead_skip(account_id: str, kind: str) -> None:
     if last is not None and now - last < _SESSION_PROBE_INTERVAL_S:
         return
     _session_skip_log_last[account_id] = now
+    # Don't quote a probe period here: it WIDENS with how long the account has
+    # been dead (account_health._PROBE_BACKOFF), so a fixed number would read as
+    # a promise this line cannot keep for a month-dead account.
     log.info(
         "automation_paused_session_dead account=%s kind=%s — runs skipped "
-        "until the session probe (every %ss) or a re-capture clears it",
-        account_id, kind, _SESSION_PROBE_INTERVAL_S,
+        "until the recovery probe or a re-capture clears it",
+        account_id, kind,
     )
 
 
 async def _probe_dead_sessions() -> None:
-    """Recovery sweep: for each flagged account whose last probe is older than
-    _SESSION_PROBE_INTERVAL_S, try a fresh-from-disk `client.me()` — evict
+    """Recovery sweep: for each flagged account due under the backoff ladder
+    (account_health.probe_interval_s — _SESSION_PROBE_INTERVAL_S while the death
+    is fresh, widening toward 6-hourly once it is a week old), try a
+    fresh-from-disk `client.me()` — evict
     first, because a re-captured session on disk must be picked up. Evicting
     (rather than bypassing the pool) is load-bearing: a probe that proved the
     session healthy while automations kept the stale pooled client would clear

@@ -6700,7 +6700,9 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
         log.exception("dead_session_map failed")
         dead = {}
     for a in all_accounts:
-        a["session_dead_at"] = dead.get(a.get("id"))
+        health = dead.get(a.get("id"), account_health.NO_DEAD_SESSION)
+        a["session_dead_at"] = health.at
+        a["session_dead_reason"] = health.reason
     active = account_registry.get_active_account_id()
     if active not in user.account_ids:
         active = all_accounts[0]["id"] if all_accounts else None

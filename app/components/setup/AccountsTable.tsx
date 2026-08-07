@@ -17,6 +17,7 @@ import { useState } from "react";
 
 import { relay, type AccountMeta } from "@/lib/relay";
 import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { describeDeadSession, fmtRelTime } from "@/lib/utils";
 
 interface AccountsResp {
   accounts: AccountMeta[];
@@ -181,6 +182,23 @@ function Row({
     } else {
       statusBadge = <Badge color="err">{health.error || "down"}</Badge>;
     }
+  }
+  // A flagged session OUTRANKS the live probe: it pauses every automation for
+  // the account (service/account_health.py), and neither of the branches above
+  // can say so — a parked account renders as a plain "no session" or "down",
+  // side by side with accounts that are genuinely working. That silence is the
+  // whole bug: rules keep showing as enabled while nothing runs.
+  if (account.session_dead_at) {
+    statusBadge = (
+      <span className="flex items-center gap-1.5 flex-wrap">
+        <Badge color="err" title={describeDeadSession(account.session_dead_reason)}>
+          automations paused
+        </Badge>
+        <span className="text-[11px] text-fg-dim whitespace-nowrap">
+          unlinked {fmtRelTime(account.session_dead_at)}
+        </span>
+      </span>
+    );
   }
 
   return (

@@ -86,6 +86,11 @@ export function useAccounts() {
       nickname: r.nickname,
       color: r.color,
       has_session: true,
+      // Carry the pause through: has_session=true above is an assumption, so
+      // without these two the chatter picker would render a model whose
+      // automations are parked as indistinguishable from a working one.
+      session_dead_at: r.session_dead_at,
+      session_dead_reason: r.session_dead_reason,
     } as AccountMeta));
   }, [chatterQ.data]);
 

@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
+import account_health
 from db.engine import get_session
 from db.models import (
     Account,
@@ -341,6 +342,11 @@ class FlatAccountDTO(BaseModel):
     color: str | None = None
     owner_id: str
     owner_username: str
+    # Mirrors the owner-side /admin/accounts stamp. A chatter cannot REPAIR a
+    # dead session, but they are the one staring at a model that has gone quiet
+    # — without this the picker shows a paused model as perfectly normal.
+    session_dead_at: str | None = None
+    session_dead_reason: str | None = None
 
 
 class ChatterMeResp(BaseModel):
@@ -660,6 +666,9 @@ async def _flat_accounts_for(c: "ChatterIdentity") -> list[FlatAccountDTO]:
         )).all()
         # Chatter Access (step 3): same per-owner allowlist as the union.
         restrictions = await _account_restrictions_for(s, c.id)
+    # One read for the whole list (the flagged set is bounded by the number of
+    # broken accounts, not by the roster size).
+    dead = await account_health.dead_session_map()
     # De-dupe by account_id. When two linked owners both have the same
     # account in their UserAccount table (cross-grant), the chatter sees
     # it exactly once. The owner_username displayed is the alphabetically
@@ -671,12 +680,15 @@ async def _flat_accounts_for(c: "ChatterIdentity") -> list[FlatAccountDTO]:
             continue
         existing = seen.get(r.account_id)
         if existing is None or (r.username or "").lower() < existing.owner_username.lower():
+            health = dead.get(r.account_id, account_health.NO_DEAD_SESSION)
             seen[r.account_id] = FlatAccountDTO(
                 account_id=r.account_id,
                 nickname=r.nickname,
                 color=r.color,
                 owner_id=r.user_id,
                 owner_username=r.username or r.user_id,
+                session_dead_at=health.at,
+                session_dead_reason=health.reason,
             )
     return sorted(
         seen.values(),
