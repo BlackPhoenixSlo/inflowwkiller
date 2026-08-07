@@ -64,6 +64,11 @@ export interface ChatterFlatAccountDTO {
   color: string | null;
   owner_id: string;
   owner_username: string;
+  /** Set while this model's OF session is dead — every automation for it is
+   *  paused (service/account_health.py). A chatter can't repair it, but the
+   *  picker must not show a parked model as a normal one. */
+  session_dead_at?: string | null;
+  session_dead_reason?: string | null;
 }
 
 interface ChatterContextValue {

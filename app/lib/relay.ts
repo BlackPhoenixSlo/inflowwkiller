@@ -300,6 +300,15 @@ export interface AccountMeta {
   created_at?: string | null;
   last_used_at?: string | null;
   has_session?: boolean;
+  /** Set while the account's OF session is flagged dead — EVERY automation for
+   *  it is PAUSED until the session is re-captured (service/account_health.py).
+   *  ISO instant it was flagged; absent/null means healthy. Load-bearing for the
+   *  UI: without it a parked account is indistinguishable from an idle one. */
+  session_dead_at?: string | null;
+  /** Which repair it needs: "wrong_user" (the creator unlinked or logged in
+   *  elsewhere — re-link) or "no_session" (no captured session on this host —
+   *  run the bootstrap). */
+  session_dead_reason?: string | null;
 }
 
 export interface ProxyMeta {

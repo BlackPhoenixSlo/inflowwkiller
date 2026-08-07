@@ -107,3 +107,85 @@ describe("AccountsTable delete — full per-account cache eviction", () => {
     expect(accountsCalls).toBeGreaterThanOrEqual(2);
   });
 });
+
+/**
+ * A dead OF session pauses EVERY automation for that account
+ * (service/account_health.py), but the relay's `session_dead_at` stamp had no
+ * reader — so twelve accounts sat in the fleet with rules showing as enabled
+ * while nothing ran, indistinguishable from accounts that were merely quiet.
+ * These cases pin the badge that closes that gap.
+ */
+describe("AccountsTable — a paused account says it is paused", () => {
+  it("badges the dead account, spares the healthy one, and names the repair", async () => {
+    relayGet.mockImplementation((path: string) => {
+      if (path === "/admin/accounts") {
+        return Promise.resolve({
+          accounts: [
+            {
+              id: "acct-dead",
+              has_session: true,
+              session_dead_at: "2026-07-10T14:14:37Z",
+              session_dead_reason: "no_session",
+            },
+            { id: "acct-live", has_session: true },
+          ],
+          active_account_id: "acct-live",
+        });
+      }
+      if (path.startsWith("/health")) {
+        // OF answers the health probe for BOTH. The pause is a separate fact
+        // from liveness — an account can pass this probe while its automations
+        // stay parked — so a green probe must NOT hide the badge.
+        return Promise.resolve({
+          ok: true,
+          accounts: [
+            { account_id: "acct-dead", ok: true, name: "Dead" },
+            { account_id: "acct-live", ok: true, name: "Live" },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AccountsTable />, { wrapper });
+
+    await waitFor(() =>
+      expect(screen.getByText("automations paused")).toBeInTheDocument(),
+    );
+    // Exactly one row is badged — the healthy account is untouched.
+    expect(screen.getAllByText("automations paused")).toHaveLength(1);
+    // The operator is told WHICH repair, not shown the raw enum.
+    expect(screen.getByTitle(/captured in Setup/i)).toBeInTheDocument();
+    expect(screen.queryByText("no_session")).not.toBeInTheDocument();
+    // …and how long it has been down, so a month-dead account is obvious.
+    expect(screen.getByText(/^unlinked /)).toBeInTheDocument();
+  });
+
+  it("leaves a fleet with no dead sessions completely unbadged", async () => {
+    relayGet.mockImplementation((path: string) => {
+      if (path === "/admin/accounts") {
+        return Promise.resolve({
+          accounts: [{ id: "acct-live", has_session: true }],
+          active_account_id: "acct-live",
+        });
+      }
+      if (path.startsWith("/health")) {
+        return Promise.resolve({
+          ok: true,
+          accounts: [{ account_id: "acct-live", ok: true, name: "Live" }],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AccountsTable />, { wrapper });
+
+    // The id shows in two cells (name button + user_id column), so wait on the
+    // row's Delete button instead — same reason as the delete case above.
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "Delete" })).toHaveLength(1),
+    );
+    expect(screen.queryByText("automations paused")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^unlinked /)).not.toBeInTheDocument();
+  });
+});

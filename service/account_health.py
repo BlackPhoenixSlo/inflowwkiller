@@ -12,8 +12,9 @@ wholesale instead:
     server._persist_unhandled_errors (a UI-originated OF call hit it).
   • `automation_executor.run_once` SKIPS every run for a flagged account —
     pending jobs stay parked and resume untouched once the flag clears.
-  • The executor probes each flagged account every _SESSION_PROBE_INTERVAL_S
-    with a fresh-from-disk `client.me()`; the first success clears the flag.
+  • The executor re-probes each flagged account with a fresh-from-disk
+    `client.me()` on a WIDENING schedule (see `probe_interval_s`); the first
+    success clears the flag.
   • A session re-capture (`POST /admin/session/bootstrap`) clears the flag
     immediately — no waiting for the next probe.
 
@@ -23,9 +24,10 @@ import it without a circular import (same reasoning as automation_registry.py).
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import select, update
 
 from db.engine import get_session
 from db.models import AccountHealth
@@ -103,32 +105,103 @@ async def clear_session_dead(account_id: str) -> bool:
     return True
 
 
-async def dead_session_map() -> dict[str, str]:
-    """account_id → ISO timestamp it was flagged, for every flagged account.
-    The /admin/accounts listing stamps this onto its rows."""
+@dataclass(frozen=True, slots=True)
+class DeadSession:
+    """Since when an account's automations have been paused, and why.
+
+    A typed row rather than a loose dict because BOTH account-listing endpoints
+    copy these two fields onto their own shape: a mistyped string key there would
+    silently render a paused account as healthy, which is the exact failure this
+    whole surface exists to prevent."""
+
+    at: str | None = None       # ISO-Z instant it was flagged
+    reason: str | None = None   # "wrong_user" | "no_session"
+
+
+# Null object for "this account is fine" (same idiom as _daylog.NO_DAY), so a
+# listing endpoint stamps its two fields unconditionally instead of branching on
+# presence at every call site.
+NO_DEAD_SESSION = DeadSession()
+
+
+async def dead_session_map() -> dict[str, DeadSession]:
+    """account_id → DeadSession, for every FLAGGED account (healthy accounts are
+    absent — callers should fall back to NO_DEAD_SESSION). The account listings
+    stamp this onto their rows so the UI can badge the account "unlinked", and
+    say which repair it needs, instead of it merely LOOKING idle next to accounts
+    that are genuinely working."""
     async with get_session() as s:
         rows = (await s.execute(
-            select(AccountHealth.account_id, AccountHealth.session_dead_at)
+            select(
+                AccountHealth.account_id,
+                AccountHealth.session_dead_at,
+                AccountHealth.session_dead_reason,
+            )
             .where(AccountHealth.session_dead_at.isnot(None))
         )).all()
-    return {aid: dead_at.isoformat() + "Z" for aid, dead_at in rows}
+    return {
+        aid: DeadSession(at=dead_at.isoformat() + "Z", reason=reason)
+        for aid, dead_at, reason in rows
+    }
 
 
-async def due_probe_ids(interval_s: int) -> list[str]:
-    """Flagged accounts whose last recovery probe is older than `interval_s`
-    (or that were never probed) — the executor's probe sweep input."""
-    cutoff = datetime.utcnow() - timedelta(seconds=interval_s)
+# Recovery-probe backoff: (this account has been dead LESS than, probe every N
+# base intervals). Expressed as MULTIPLES of the executor's base interval so
+# there stays exactly one knob, and closed with an unbounded final rung so the
+# lookup is total — every age hits a row.
+#
+# A session that died a minute ago is worth re-checking often: the creator may
+# be re-linking right now. One that died three weeks ago is not — probing it
+# every 10 minutes forever is ~4k pointless authenticated OF calls a month per
+# account, every one of them failing.
+#
+# This IS a real trade: the probe's whole job is catching a session that starts
+# working again on its own, and past a week this finds it up to 6h late instead
+# of 10min. That is affordable only because it is not the path a human uses — a
+# re-capture (`POST /admin/session/bootstrap`) calls clear_session_dead directly
+# and resumes automations on the next tick, whatever this ladder says.
+_PROBE_BACKOFF: tuple[tuple[timedelta, int], ...] = (
+    (timedelta(hours=1), 1),   # first hour   — every base interval (10 min)
+    (timedelta(days=1), 3),    # first day    — every 30 min
+    (timedelta(days=7), 6),    # first week   — hourly
+    (timedelta.max, 36),       # older        — every 6 hours
+)
+
+
+def probe_interval_s(base_interval_s: int, dead_for: timedelta) -> int:
+    """Seconds to wait between recovery probes for an account flagged
+    `dead_for` ago. Widens with age and never drops below `base_interval_s`
+    (a negative `dead_for` from clock skew lands in the first rung)."""
+    return base_interval_s * next(
+        mult for horizon, mult in _PROBE_BACKOFF if dead_for < horizon
+    )
+
+
+async def due_probe_ids(base_interval_s: int) -> list[str]:
+    """Flagged accounts due a recovery probe — never probed, or last probed
+    longer ago than their backoff interval. Filtered in Python rather than SQL
+    because the per-row interval depends on `session_dead_at` (a CASE over
+    julianday() arithmetic would be far less readable), and the flagged set is
+    inherently small — it is bounded by the number of broken accounts."""
+    now = datetime.utcnow()
     async with get_session() as s:
         rows = (await s.execute(
-            select(AccountHealth.account_id).where(
-                AccountHealth.session_dead_at.isnot(None),
-                or_(
-                    AccountHealth.last_probe_at.is_(None),
-                    AccountHealth.last_probe_at <= cutoff,
-                ),
+            select(
+                AccountHealth.account_id,
+                AccountHealth.session_dead_at,
+                AccountHealth.last_probe_at,
             )
-        )).scalars().all()
-    return list(rows)
+            .where(AccountHealth.session_dead_at.isnot(None))
+        )).all()
+    due: list[str] = []
+    for aid, dead_at, last_probe in rows:
+        if last_probe is None:
+            due.append(aid)
+            continue
+        wait_s = probe_interval_s(base_interval_s, now - dead_at)
+        if (now - last_probe).total_seconds() >= wait_s:
+            due.append(aid)
+    return due
 
 
 async def stamp_probe(account_id: str) -> None:
