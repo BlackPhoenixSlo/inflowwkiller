@@ -121,6 +121,15 @@ _MIRROR_BETA = 0.12
 _MIRROR_CLAMP = (0.7, 1.6)
 _FAN_MEDIAN_LATENCY_S = 110.0   # his median: mirror_mult == 1.0 here
 
+# HE CAME BACK. A fan who has been gone half an hour and gets an answer in eight
+# seconds has been told she was sitting on her phone waiting for him — the single
+# moment where an instant reply is least believable, and unlike the refuted pace
+# MIRROR this is not a coefficient read off his latency: it is a bound on one rare,
+# nameable event, so the diurnal confound that killed `mirror_mult` does not apply.
+# (Measured over 14 days: 417 of these turns were answered inside 2 minutes.)
+_RETURN_GAP_S = 28 * 60         # "he's been away a while", not "he paused mid-chat"
+_RETURN_BAND = (120.0, 420.0)   # 2-7 min. A BAND, not a floor — see decide().
+
 # Soft fast-reply nudge (the hard >35%-share floor was REFUTED — non-monotonic, top
 # bucket empty). If she's been replying too fast too often, floor the NEXT draw at 60s.
 _FAST_REPLY_S = 30
@@ -847,6 +856,19 @@ def decide(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decision:
     context = _context_of(ctx, utc_now)
     core = _draw(ctx, utc_now, rng)
     floor, ceiling = _bounds(ctx, utc_now, context)
+    # He was gone a while and came back (see _RETURN_GAP_S). Clamp into the 2-7 min
+    # band: long enough that she plainly was not waiting, short enough that a fan who
+    # just re-engaged is never left to cool off. The TAIL is cut as well as the floor
+    # — he is back, which is exactly when a break would cost the most.
+    #
+    # INTERSECTED with the bounds already chosen, never substituted for them: a
+    # tighter cap elsewhere still wins, and if another rule leaves no room the band is
+    # dropped rather than forced. `decide_availability` ran above, so sleep windows
+    # and breaks are untouched by this.
+    if (ctx.his_last_latency_s or 0.0) > _RETURN_GAP_S:
+        lo, hi = max(floor, _RETURN_BAND[0]), min(ceiling, _RETURN_BAND[1])
+        if lo <= hi:
+            floor, ceiling = lo, hi
     core = _fit(core, floor, ceiling, rng)
 
     # Target TOTAL inbound→reply latency, not a delay stacked on top of however long
