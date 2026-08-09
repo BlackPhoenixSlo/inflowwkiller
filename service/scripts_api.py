@@ -1297,6 +1297,10 @@ async def simulate(body: _SimulateBody = Body(...)) -> dict[str, Any]:
     c.messages = [("in", body.fan_says.strip()[:400])]
     c.last_dir, c.last_body = "in", body.fan_says.strip()[:400]
     content_ask = bool(sell.close) and bool(_CONTENT_ASK_RE.search(c.last_body))
+    # Same source the live turn reads, so the preview cannot drift from it.
+    from automations._common import detect_pic_offer  # local: avoid cycles
+    from automations.tip_reward import image_describe_flags
+    describe_on, _seed, _scope = await image_describe_flags(body.account_id)
     msgs, _presented = _build_messages(
         persona, Fan(account_id=body.account_id, fan_id=0), c, set(), 20,
         sell=sell, v=v,
@@ -1310,9 +1314,21 @@ async def simulate(body: _SimulateBody = Body(...)) -> dict[str, Any]:
         # The other inputs are False by construction here: the simulator has one fan
         # message and no history, so there is no accusation, no inbound picture, no
         # armed dare and no thread heat to read.
+        #
+        # ⚠️ `pic_offer` IS NOT ONE OF THOSE. It reads `c.last_body` and nothing else —
+        # the one line this simulator does have — so it is the one new input that can be
+        # computed exactly, and it must be, because it OUTRANKS content_ask. Typing
+        # "you wanna see my cock?" here scored as a content-ask and previewed her
+        # pitching, while production answered "send it, i'll rate it" with no price.
+        # Mirrors the live expression in ai_chatter.run(); `c.pic_sent` is False by
+        # construction (the simulator carries no inbound media), and describe_on is
+        # loaded because promising a rating the vision layer cannot deliver is the one
+        # thing that turns this beat off in production.
         kind=_turn_kind(bot_accused=False, pic_desc="", content_ask=content_ask,
                         escalation=False, image_dare=False, dare_callback=False,
-                        hot_thread=False, can_sell=bool(sell.close)))
+                        hot_thread=False, can_sell=bool(sell.close),
+                        pic_offer=bool(describe_on and not c.pic_sent
+                                       and detect_pic_offer(c.last_body))))
     model = await _resolve_sim_model(body.account_id)
     res = await llm_client.chat(model=model, messages=msgs,
                                 purpose="ai_chatter_simulate",
