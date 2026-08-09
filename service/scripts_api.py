@@ -59,7 +59,7 @@ from automations.ai_chatter import (
     _CONTENT_ASK_RE,
     _DEFAULTS as _AI_CHATTER_DEFAULTS,
     _build_messages, _load_catalog, _load_persona, _manifest_block,
-    _offerable_for_fan, _parse_offer_marker,
+    _offerable_for_fan, _parse_offer_marker, _turn_kind,
 )
 from automations.of_ai_chat import split_for_bubbles
 
@@ -1296,10 +1296,23 @@ async def simulate(body: _SimulateBody = Body(...)) -> dict[str, Any]:
     c = _Cand(0)
     c.messages = [("in", body.fan_says.strip()[:400])]
     c.last_dir, c.last_body = "in", body.fan_says.strip()[:400]
+    content_ask = bool(sell.close) and bool(_CONTENT_ASK_RE.search(c.last_body))
     msgs, _presented = _build_messages(
         persona, Fan(account_id=body.account_id, fan_id=0), c, set(), 20,
         sell=sell, v=v,
-        content_ask=bool(sell.close) and bool(_CONTENT_ASK_RE.search(c.last_body)))
+        content_ask=content_ask,
+        # ⚠️ ASK THE SELECTOR, never hand-roll the answer. The prompt ladder dispatches
+        # on `kind`, so a caller that omits it renders the plain-chat tail — which is
+        # how this preview silently lost the content-ask directive: the operator typed
+        # "send me that video", hit Test, and got banter with no pitch while the live
+        # engine pitched. The preview's job is to render what production would.
+        #
+        # The other inputs are False by construction here: the simulator has one fan
+        # message and no history, so there is no accusation, no inbound picture, no
+        # armed dare and no thread heat to read.
+        kind=_turn_kind(bot_accused=False, pic_desc="", content_ask=content_ask,
+                        escalation=False, image_dare=False, dare_callback=False,
+                        hot_thread=False, can_sell=bool(sell.close)))
     model = await _resolve_sim_model(body.account_id)
     res = await llm_client.chat(model=model, messages=msgs,
                                 purpose="ai_chatter_simulate",

@@ -26,6 +26,8 @@ import { useMediaCache } from "@/hooks/useMediaCache";
 import { mirrorThumbSrc } from "@/hooks/useVaultCache";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
 import { cn } from "@/lib/utils";
+// Display only — this tab READS the account's clock and never writes it.
+import { utcLabel, zoneLabel } from "@/lib/creatorClock";
 import { useSaveStyleConfig, useStyleConfig } from "@/hooks/useStyleConfig";
 import {
   useAiChatterConfig, useDeleteScript, useImportFolder, usePasteImport,
@@ -53,48 +55,6 @@ export function fmtClock(hhmm: string): string {
   const h12 = hour % 12 === 0 ? 12 : hour % 12;
   return min ? `${h12}:${String(min).padStart(2, "0")}${suffix}` : `${h12}${suffix}`;
 }
-
-/** The creator timezones this agency actually books. Any zone already stored on the
- *  account is appended, so a hand-set value can never be silently dropped by the UI. */
-/** "-8/-7" — the zone's winter/summer UTC offsets ("-3" alone when it doesn't
- *  observe DST). Computed via Intl at Jan 1 / Jul 1 so labels never go stale. */
-export function zoneOffsets(tz: string): string {
-  const at = (d: Date) => {
-    const v = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" })
-      .formatToParts(d)
-      .find((p) => p.type === "timeZoneName")?.value ?? "GMT";
-    return v.replace("GMT", "") || "+0";
-  };
-  try {
-    const y = new Date().getFullYear();
-    const jan = at(new Date(Date.UTC(y, 0, 1)));
-    const jul = at(new Date(Date.UTC(y, 6, 1)));
-    return jan === jul ? jan : `${jan}/${jul}`;
-  } catch {
-    return "";
-  }
-}
-
-/** Dropdown label: "America/Vancouver" → "America Vancouver (-8/-7)". */
-export function zoneLabel(z: string): string {
-  const off = zoneOffsets(z);
-  const name = z.replace(/_/g, " ");
-  return off ? `${name} (${off})` : name;
-}
-
-export const TIMEZONES: string[] = [
-  "America/Los_Angeles", "America/Denver", "America/Phoenix", "America/Chicago",
-  "America/New_York", "America/Toronto", "America/Vancouver", "America/Mexico_City",
-  "America/Bogota", "America/Lima", "America/Santiago", "America/Sao_Paulo",
-  "America/Argentina/Buenos_Aires", "Europe/London", "Europe/Dublin", "Europe/Lisbon",
-  "Europe/Madrid", "Europe/Paris", "Europe/Amsterdam", "Europe/Berlin", "Europe/Rome",
-  "Europe/Prague", "Europe/Warsaw", "Europe/Ljubljana", "Europe/Budapest",
-  "Europe/Bucharest", "Europe/Athens", "Europe/Kyiv", "Europe/Moscow", "Europe/Istanbul",
-  "Africa/Lagos", "Africa/Johannesburg", "Asia/Dubai", "Asia/Karachi", "Asia/Kolkata",
-  "Asia/Bangkok", "Asia/Jakarta", "Asia/Singapore", "Asia/Manila", "Asia/Hong_Kong",
-  "Asia/Tokyo", "Asia/Seoul", "Australia/Perth", "Australia/Brisbane",
-  "Australia/Sydney", "Pacific/Auckland",
-];
 
 /** Text-area text → the stored line list (blank rows dropped). */
 export const linesOf = (text: string): string[] =>
@@ -759,8 +719,11 @@ function GhostCycleEditor({ cfg, set }: {
           <span className="block text-fg-dim">
             After a stretch of chatting, the account stops answering him for a day or
             two, then comes back. <b>Per fan</b>, on his own schedule — a good spender
-            goes a day with no reply and wants one more. Everything else keeps running:
-            this only silences the 1:1 AI chat.
+            goes a day with no reply and wants one more. It silences the 1:1 AI chat
+            <b> and holds his PPV drops</b> until he's back: a man being ignored who
+            still gets three paid blasts reads "she only writes when she wants money",
+            which is the opposite of the point. He rejoins the next drop automatically,
+            and a live sale or a purchase during the run cancels his quiet stretch.
           </span>
         </span>
       </label>
@@ -825,12 +788,13 @@ function GhostCycleEditor({ cfg, set }: {
   );
 }
 
-export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effective,
+export function RhythmSection({ cfg, set, tz, utcOffset, derived, effective,
                                 houseDefault = ["02:00", "06:00"] }: {
   cfg: AiChatterConfig;
   set: (p: Partial<AiChatterConfig>) => void;
+  /** The account's legacy IANA zone, READ-ONLY here — shown only when it is still
+   *  what the account runs on. The Brain owns the clock; this tab must not write it. */
   tz: string;
-  setTz: (v: string) => void;
   utcOffset: number;
   derived: [string, string];
   effective: [string, string];
@@ -845,7 +809,6 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
   const canEnable = tzKnown || noSleep;
   const override = cfg.sleep_window ?? null;
   const sleepSource = cfg.rhythm_sleep_source ?? "default";
-  const zones = tz && !TIMEZONES.includes(tz) ? [tz, ...TIMEZONES] : TIMEZONES;
 
   const setWindow = (i: 0 | 1, v: string) => {
     const base: [string, string] = override ?? [houseDefault[0], houseDefault[1]];
@@ -897,22 +860,29 @@ export function RhythmSection({ cfg, set, tz, setTz, utcOffset, derived, effecti
         </div>
       )}
 
+      {/* The clock is READ here, never written. This used to be a second timezone
+          dropdown, and saving this tab posted a zone onto the same row the Brain
+          writes — two controls, two columns, one silent winner. That is how an
+          Eastern creator ended up on a Los Angeles clock telling new subscribers
+          "it's Friday night" at 07:38 her time. One dropdown owns it, in the Brain. */}
       {!noSleep && (
-        <label className="flex items-center gap-2 text-xs text-fg-dim pl-6 flex-wrap">
-          <span>Creator&apos;s timezone</span>
-          <select className={`${INPUT} w-56`} value={tz}
-            onChange={(e) => setTz(e.target.value)}>
-            <option value="">— not set —</option>
-            {zones.map((z) => (
-              <option key={z} value={z}>{zoneLabel(z)}</option>
-            ))}
-          </select>
-          {!tz && utcOffset !== 0 && (
-            <span className="text-fg-dim/70">
-              using the saved UTC{utcOffset > 0 ? "+" : ""}{utcOffset} offset
+        <div className="flex items-center gap-2 text-xs text-fg-dim pl-6 flex-wrap">
+          <span>Creator clock</span>
+          {utcOffset !== 0 ? (
+            <span className="text-fg">
+              {utcLabel(utcOffset)}
             </span>
+          ) : tz ? (
+            <span className="text-amber-400" title="This account still runs on a legacy IANA timezone. Open the Brain and pick the creator's place to make it one fixed clock.">
+              legacy zone {zoneLabel(tz)}
+            </span>
+          ) : (
+            <span className="text-amber-400">not set</span>
           )}
-        </label>
+          <span className="text-fg-dim/70">
+            — set in the Brain (Automations → Brain → Creator clock)
+          </span>
+        </div>
       )}
 
       {!!cfg.rhythm_enabled && !noSleep && (
@@ -1211,8 +1181,10 @@ export function useSellerConfig(accountId: string | null) {
   const [cfg, setCfg] = useState<AiChatterConfig>({});
   useEffect(() => { setCfg(eff); }, [eff]);
 
-  const [tz, setTz] = useState("");
-  useEffect(() => { setTz(cfgQ.data?.timezone ?? ""); }, [cfgQ.data?.timezone]);
+  // Derived, not mirrored into state: nothing here writes the clock any more, so a
+  // useState + useEffect pair would be two moving pieces holding a copy of a value
+  // that can only ever come from the server.
+  const tz = cfgQ.data?.timezone ?? "";
 
   const shippedPack = useMemo(() => cfgQ.data?.script_pack ?? {}, [cfgQ.data?.script_pack]);
   const [packText, setPackText] = useState<Record<string, string>>({});
@@ -1279,7 +1251,10 @@ export function useSellerConfig(accountId: string | null) {
     if (!configLoaded) return;
     const base = patch ? { ...cfg, ...patch } : cfg;
     if (patch) setCfg(base);
-    saveCfgM.mutate({ config: buildSparse(base), timezone: tz.trim() || null });
+    // No `timezone` — this tab READS the clock and must never write it. The endpoint
+    // treats an absent key as "leave unchanged", so the Brain's one dropdown stays
+    // the only writer (see RhythmSection).
+    saveCfgM.mutate({ config: buildSparse(base) });
   };
 
   /** The starter templates, resolved for the account's lane by the server. `[]`
@@ -1292,7 +1267,7 @@ export function useSellerConfig(accountId: string | null) {
     () => cfgQ.data?.slot_help ?? {}, [cfgQ.data?.slot_help]);
 
   return {
-    cfgQ, saveCfgM, configLoaded, eff, cfg, setCfg, set, tz, setTz, starterSingles, slotHelp,
+    cfgQ, saveCfgM, configLoaded, eff, cfg, setCfg, set, tz, starterSingles, slotHelp,
     shippedPack, packText, setPackText, packOverrides, sparseCfg, saveCfg,
   };
 }

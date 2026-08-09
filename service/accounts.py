@@ -277,6 +277,65 @@ def is_account(account_id: str) -> bool:
     return p is not None and p.is_dir()
 
 
+# (identity of ACCOUNTS_DIR, the ids it held then). One assignment publishes
+# both, so no lock is needed: the worst race is two threads scanning the same
+# directory and storing the same set.
+_IDS_CACHE: tuple[tuple[int, int, int, int], frozenset[str]] | None = None
+
+
+def account_ids() -> frozenset[str]:
+    """Every account id — the SET, without opening a single file.
+
+    `list_accounts()` answers this question the expensive way: it scandirs, then
+    reads `meta.json` and stats `latest.json` for every account, to build dicts
+    the caller then throws away except for `["id"]`. `auth.py` was doing that on
+    EVERY request an admin made (there and again on the impersonation path), so
+    the master's session cost a directory walk per request and the descriptors
+    it spent showed up as the process-wide shortage that takes the relay down
+    (2026-07-28, 2026-08-08) — see `is_account` above for the same lesson learnt
+    on the isolation gate.
+
+    Cached against the identity of ACCOUNTS_DIR itself, which is the exact
+    clock for this question: creating or removing an account creates or removes
+    a child entry, and that bumps the parent's mtime AND ctime. Anything that
+    happens *inside* an account (a new session, an edited nickname) does not
+    change the id set and correctly does not invalidate. So a freshly captured
+    account is visible on the very next request, with no TTL to wait out — the
+    property auth.py's caller depends on. A TTL would have been the wrong
+    device twice over: it delays the new account the comment promises, and it
+    keeps a DELETED account authorised until it expires.
+
+    `(dev, inode)` rides along so that replacing the directory itself — a
+    restored backup, a re-pointed bind mount — reads as a change rather than
+    as "same mtime, same answer".
+
+    A directory here IS an account, even one whose meta is missing or
+    unreadable. That makes this a superset of `list_accounts()`, which skips a
+    directory it cannot materialise. For the caller that matters — the master's
+    account set — a superset is the safe direction: the comment at that call
+    site exists precisely so a registry-only account can never 403 the master.
+
+    Errors are NOT swallowed. An empty set is the answer "there are no
+    accounts", never "I could not look"; conflating those is how a guard here
+    turned account isolation OFF for the length of an fd outage. The cache makes
+    the raise nearly unreachable in the case that matters: `stat(2)` needs no
+    descriptor, so a warm cache keeps answering while the process is out of
+    them, and only a cold one has to scandir.
+    """
+    global _IDS_CACHE
+    try:
+        st = ACCOUNTS_DIR.stat()
+    except FileNotFoundError:
+        return frozenset()
+    stamp = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns)
+    cached = _IDS_CACHE
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    ids = frozenset(d.name for d in ACCOUNTS_DIR.iterdir() if d.is_dir())
+    _IDS_CACHE = (stamp, ids)
+    return ids
+
+
 def get_account(account_id: str) -> dict[str, Any] | None:
     return load_meta(account_id)
 

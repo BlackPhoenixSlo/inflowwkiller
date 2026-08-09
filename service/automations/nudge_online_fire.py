@@ -31,6 +31,7 @@ from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
 from db.models import Fan, Message, NudgeState
+from ._common import send_dropping_bad_media
 from .nudge_online import (
     _compose_messages, _gate_skip_reason, _load_nudge_config, _record_question,
 )
@@ -151,8 +152,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         client = await asyncio.to_thread(ax._make_client, account_id)
         for m in msgs:
             text, media = m["text"], m["media"]
-            result = await asyncio.to_thread(
-                lambda t=text, md=media: client.send_message(fan_id, t, media_files=md))
+            # A refused ATTACHMENT still delivers the text. This sender clears
+            # its latch and never retries, so losing the send to one dead vault
+            # id loses the nudge outright.
+            outcome = await send_dropping_bad_media(client, fan_id, text, media, log=log)
+            result = outcome.result
             msg_id = result.get("id") if isinstance(result, dict) else None
             if msg_id:
                 await write_outbound_attribution(
@@ -170,7 +174,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if m.get("qa_key"):
                 await _record_question(account_id, fan_id, m["qa_key"])
             sent += 1
-            if media:
+            if outcome.media_landed:
                 images += 1
             idx = m.get("idx", idx)
         await _bump_after_send(account_id, fan_id, idx, slot, now)

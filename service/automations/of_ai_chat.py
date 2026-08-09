@@ -539,9 +539,10 @@ async def _load_persona(account_id: str) -> str:
 
 
 async def _load_clock_tz(account_id: str) -> int | None:
-    """Creator-local offset in MINUTES for the prompt clock. IANA `timezone`
-    wins (DST-correct); legacy `utc_offset` hours is the fallback; None when
-    neither is set — and None means NO clock line, never the server's clock."""
+    """Creator-local offset in MINUTES for the prompt clock. The fixed
+    `utc_offset` decides (it is what the Brain's one clock dropdown writes); a
+    legacy IANA `timezone` is the fallback; None when neither is set — and None
+    means NO clock line, never the server's clock."""
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, account_id)
     if cfg is None:

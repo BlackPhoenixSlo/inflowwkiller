@@ -54,7 +54,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
-from . import rhythm  # tz_offset_for — IANA timezone beats the legacy utc_offset
+from . import rhythm  # tz_hours_for — THE clock (fixed offset first, zone as fallback)
 from . import _voice  # whose voice this account writes in (NULL → 'her')
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
@@ -62,7 +62,7 @@ from automation_registry import register
 from ._common import (
     _sell_customs_from_row, apply_word_restriction, load_strip_emojis,
     quarantine_if_undeliverable, resolve_fan_name,
-    resolve_model, skip_unreachable_fan, strip_emojis,
+    resolve_model, send_dropping_bad_media, skip_unreachable_fan, strip_emojis,
 )
 from db.engine import get_session
 from db.models import (
@@ -368,15 +368,20 @@ async def _load_ai_config(account_id: str) -> dict:
                 imgs = json.loads(cfg.time_images_json) or {}
             except Exception:
                 imgs = {}
-        # Effective creator-local offset in HOURS — IANA `timezone` wins
-        # (DST-correct), stored utc_offset is the legacy fallback (mirrors
-        # send_welcome._load_ai_config).
-        off_min = rhythm.tz_offset_for(getattr(cfg, "timezone", None),
-                                       cfg.utc_offset)
+        # Her local offset in HOURS through the ONE clock helper — the fixed
+        # `utc_offset` column decides, a legacy IANA zone is the fallback, no clock
+        # is 0.0 (UTC). This used to spell the minutes→hours conversion and the
+        # no-clock default out by hand, in four files, which is how the two columns
+        # ended up being weighed differently in different places.
+        #
+        # `tz_hours`, NOT `utc_offset`: this is the RESOLVED answer, and naming it
+        # after the column made one key mean two things — the column in the Brain
+        # panel's draft, the resolution here. send_welcome's preview merged the two
+        # and previewed an account 3h from what it sent.
         return {
             "persona": cfg.persona,
-            "utc_offset": (off_min / 60.0 if off_min is not None
-                           else (cfg.utc_offset or 0)),
+            "tz_hours": rhythm.tz_hours_for(getattr(cfg, "timezone", None),
+                                            cfg.utc_offset),
             "location": cfg.location,
             "time_activities": acts,
             "time_images": imgs,
@@ -584,9 +589,9 @@ async def preview_compose(
     is given (overridable with `test_name`), else a generic 'babe' stand-in."""
     cfg = await _load_ai_config(account_id)
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
-    hour = _model_hour(cfg.get("utc_offset"))
+    hour = _model_hour(cfg.get("tz_hours"))
     tod, activity = _time_activity(hour, cfg.get("time_activities") or {})
-    clock = _model_clock(cfg.get("utc_offset"))
+    clock = _model_clock(cfg.get("tz_hours"))
 
     try:
         step = int(step) if step is not None else 1
@@ -647,9 +652,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
     thresholds = _resolve_step_thresholds(payload)
-    hour = _model_hour(cfg.get("utc_offset"))
+    hour = _model_hour(cfg.get("tz_hours"))
     tod, activity = _time_activity(hour, cfg.get("time_activities") or {})
-    clock = _model_clock(cfg.get("utc_offset"))
+    clock = _model_clock(cfg.get("tz_hours"))
 
     now = datetime.utcnow()
     state = await _load_state(account_id)
@@ -705,6 +710,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     errors = 0
     cap_hit = False
     image_attached = 0
+    first_error: str | None = None
+
+    def _note_error(what: str) -> None:
+        """Count an error AND keep the FIRST one's text for the run stats.
+
+        A bare count is not a diagnosis: this automation reported "errors: 6"
+        every hour for days while 39 fans went un-nudged, and the actual cause (a
+        vault id OF refused) could only be recovered by grepping container logs
+        on the box. The run row should name its own failure."""
+        nonlocal errors, first_error
+        errors += 1
+        if first_error is None:
+            first_error = " ".join(str(what).split())[:240]
 
     for fan in eligible:
         fid = fan["fan_id"]
@@ -803,8 +821,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 log.warning("send_followup daily LLM cap reached account=%s — stopping",
                             account_id)
                 break
-            except Exception:
-                errors += 1
+            except Exception as gen_exc:
+                _note_error(f"generate: {gen_exc}")
                 log.warning("send_followup generate failed account=%s fan=%s",
                             account_id, fid, exc_info=True)
                 continue
@@ -813,7 +831,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if strip_emoji_on:
                 text = strip_emojis(text)
             if not text:
-                errors += 1
+                # Was a SILENT counter bump. An empty draft is a real failure —
+                # the model returned nothing, or the emoji/word filters ate the
+                # whole line — and it looked identical to a send error in stats.
+                _note_error("empty draft after filters")
+                log.warning("send_followup empty draft account=%s fan=%s "
+                            "(model returned nothing, or filters stripped it all)",
+                            account_id, fid)
                 continue
 
             if dry_run:
@@ -833,11 +857,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
             client = await asyncio.to_thread(ax._make_client, account_id)
             try:
-                result = await asyncio.to_thread(
-                    lambda: client.send_message(fid, text, media_files=media_files)
-                )
+                # A refused ATTACHMENT falls back to text-only in here. One dead
+                # vault id used to strand the whole automation: state advances
+                # only on a returned send, so the same fans stayed eligible and
+                # were regenerated every tick forever.
+                outcome = await send_dropping_bad_media(
+                    client, fid, text, media_files, log=log)
+                result = outcome.result
             except Exception as e:
-                errors += 1
+                _note_error(f"send: {e}")
                 # A known permanent marker → skip_list and done. Otherwise the send
                 # raised something we don't recognise — but a lapsed-sub fan raises
                 # on EVERY send, and followup only advances state on a returned
@@ -850,7 +878,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             account_id, fid, exc_info=True)
                 continue
 
-            if media_files:
+            if outcome.media_landed:
                 image_attached += 1
 
             # Optimistic send path: persist the outbound row, then advance state.
@@ -898,6 +926,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_guard": skipped_guard,
         "image_attached": image_attached,
         "errors": errors,
+        # Names the FIRST failure of the run. Without it "errors: N" is a number
+        # with no cause attached, and the only way to read it is docker logs.
+        "first_error": first_error,
         "cap_hit": cap_hit,
         "dry_run": dry_run,
         "model": model,

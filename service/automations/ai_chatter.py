@@ -129,6 +129,7 @@ from ._common import (
     load_painful_texting_flag, load_strip_emojis, load_style_flags,
     load_typing_indicator, load_typing_wpm, load_typo_flags,
     load_promo_spam_ids,
+    detect_pic_offer,
     quarantine_if_undeliverable, recent_payer_fans, resolve_fan_name, resolve_model,
     should_skip_muted_creator, skip_unreachable_fan, thread_heat, typing_delay_seconds,
 )
@@ -735,7 +736,7 @@ class _Cand:
     __slots__ = ("fan_id", "fan_msg_n", "last_dir", "last_body", "messages",
                  "last_in_at", "last_out_at", "last_human_out_at", "session_out_n",
                  "day_out_n", "day_out_n_at_stop", "total_out_n", "first_at",
-                 "her_last_at", "pic_sent",
+                 "her_last_at", "pic_sent", "last_in_desc", "last_in_desc_at",
                  "last_out_was_gif", "last_in_text", "first_in_at",
                  "msg_ids", "reply_ctx")
 
@@ -747,6 +748,17 @@ class _Cand:
         # endpoint reads the same fact the engine does instead of reconstructing
         # it from dispatch state it cannot see (see _leash.TIER_PIC_SENT).
         self.pic_sent = False
+        # The VISION DESCRIPTION of that most recent inbound media, or "" when there
+        # is none (describe off, still pending, a giphy he forwarded). `pic_sent`
+        # alone only says a file arrived; the rating beat needs the prose, because
+        # "rate what he sent" with nothing to read produces a generic compliment —
+        # which is the exact non-reaction this beat exists to replace.
+        self.last_in_desc = ""
+        # …and WHEN it landed. The slot clears on her outbound, so every path where she
+        # produces none — ghost cycle, automation_paused_until, quarantine, a dropped
+        # empty reply, cap_hit — would otherwise let a picture from Tuesday still open
+        # the turn with "HE JUST SENT YOU A PICTURE". Read against _PIC_DESC_TTL below.
+        self.last_in_desc_at: "datetime | None" = None
         # Her most recent outbound was a gif with no text — the one turn a pause is
         # free on, because a gif neither answers nor asks anything (rhythm's
         # `after_gif_solo`).
@@ -1008,10 +1020,40 @@ async def _gather(account_id: str,
             # photo three days and forty messages ago must not still read as a
             # live buying signal. Each inbound overwrites the last.
             c.pic_sent = int(media_count or 0) > 0
+            # STICKY WITHIN THE BURST, cleared when SHE answers (in the outbound branch
+            # below) — deliberately NOT the same rule as pic_sent.
+            #
+            # A man does not send a picture and then shut up: he sends the photo, then
+            # "well?" on the next row. The prod thread this beat was built from is
+            # exactly that shape. Under pic_sent's assigned-not-OR-ed rule the text row
+            # wiped the description a second later and the rating never fired — the beat
+            # would have been dead on its own founding incident, and only ever worked in
+            # the replay because the harness runs one message per turn.
+            #
+            # The staleness pic_sent guards against is "a photo from Tuesday". Her own
+            # reply is the honest boundary for that: once she has answered, the picture
+            # has been dealt with. So it survives consecutive inbounds and dies on her
+            # outbound, and rate_pic keys off THIS rather than pic_sent.
+            if c.pic_sent:
+                c.last_in_desc = str(image_desc or "")
+                c.last_in_desc_at = created_at
             mid_reply[fan_id] = False        # he spoke → her next row is a new reply
         else:
             c.last_out_at = created_at
             hers = not broadcast and automation_kind in _OUR_KINDS
+            # The picture is "dealt with" only once SHE HAS ANSWERED IT IN WORDS.
+            #
+            # ⚠️ Clearing on ANY outbound reads right and is wrong. `image_reply` fires
+            # on his picture within seconds — 11.9s and 36.2s on the incident thread —
+            # and sends a MEDIA reaction, not an answer. An any-outbound rule therefore
+            # wipes the description before ai_chatter ever runs, and the rating never
+            # fires on the exact shape the beat exists for. Every unit test still
+            # passed, because none of them seed an image_reply row; only the sequential
+            # replay against real prod history caught it. Her chat and offer turns
+            # (`_OUR_KINDS`) are the only sends that close a picture.
+            if hers:
+                c.last_in_desc = ""
+                c.last_in_desc_at = None
             # Was her latest outbound a GIF ON ITS OWN? Empty text + no media is the
             # solo-sticker wire shape (a text reply has a body, a media/PPV send has
             # media_count>0), so the fact is readable from the columns this scan
@@ -4213,16 +4255,168 @@ def _pack_line(slot: str, cfg: dict, fan_id: int, *, name: str | None = None,
 
 # ── Prompt (forked from of_ai_chat._build_messages — adds the sell seam) ─────
 
+# ── WHICH BEAT OWNS THIS TURN ────────────────────────────────────────
+#
+# ONE ordering, in ONE place, read by BOTH sides: `_build_messages` renders the beat,
+# and run() has to know which beat actually fired — to stamp the dare's cooldown, to
+# withhold the sticker protocol, to skip the §6.4 one-bubble cap, to decide whether a
+# scoreless reply is worth a second call.
+#
+# ⚠️ IT USED TO BE RESTATED IN SIX PLACES, and that is not a style complaint. run()
+# armed the dare ~340 lines above where it disarmed it; the cap said
+# `bot_accused_turn and not rate_pic_turn`; the stamp said `image_dare_turn or
+# rate_pic_scored`. Every one of those was a fragment of this ladder, re-derived from
+# raw booleans. The bug that shipped from it: `bot_accused and not rate_pic` treated ANY
+# picture as outranking the brush-off, so a fan who challenged her while sending a photo
+# of his DOG fell past §6.4 into the react-only branch and got no answer to the
+# accusation at all — the original failure, through a different door. Ask this function;
+# never re-derive it.
+#
+# The tail of the ladder (openers, the info-question goal, plain banter) is NOT a beat —
+# it depends on locals only the prompt builder has — so "" means "nothing owns this
+# turn, fall through to the ordinary chat tiers".
+_TURN_BRUSH_OFF = "brush_off"      # §6.4 — he thinks she's a bot
+_TURN_RATE_PIC = "rate_pic"        # he sent something she can rate
+_TURN_REACT_PIC = "react_pic"      # he sent something that is NOT him
+_TURN_PIC_OFFER = "pic_offer"      # he OFFERED to send one — say yes
+_TURN_CONTENT_ASK = "content_ask"  # he asked to buy
+_TURN_ESCALATION = "escalation"    # he's leaning in, with something to sell
+_TURN_DARE = "dare"                # ask him for a picture — always a callback
+_TURN_HOT = "hot"                  # the sexting ladder
+
+# The beats where a gif instead of words is the exact non-reaction they exist to
+# replace. On these the sticker protocol is withheld from the prompt entirely, rather
+# than generated and thrown away — a filter turns a bad reply into NO reply.
+_TURNS_NEEDING_WORDS = frozenset({_TURN_BRUSH_OFF, _TURN_RATE_PIC, _TURN_REACT_PIC,
+                                  _TURN_PIC_OFFER})
+# The beats that spend the picture play's cooldown. A RATING spends it too: he sent
+# one, so daring him for one is asking for what he has already given — and an OFFER
+# spends it for the mirror reason: she has just told him to send one, so daring him
+# for a picture on the next turn is asking twice for the same thing.
+_TURNS_SPENDING_THE_DARE = frozenset({_TURN_DARE, _TURN_RATE_PIC, _TURN_PIC_OFFER})
+# ⚠️ THE BEATS THAT MUST NOT CARRY A PRICE — and the reason the selector has to reach
+# the ATTACH side, not just the prompt. One statement per member; this block exists to
+# be the single place the rule lives, so it must not accumulate the same argument twice.
+#
+# IN — `_TURN_DARE`. Its own copy ends "It is a dare, not a sale: no price, no offer
+#   line", and it sits ABOVE `_TURN_HOT`, so `kind == dare` and `hot_thread == True`
+#   coexist where they could not before. The forced-ask trigger, the teaser ladders and
+#   the offer-marker acceptance all read `hot_thread` RAW, so without this the same
+#   message that asks him for a picture carries a PPV. `seller_off` does not cover it.
+#
+# OUT — `_TURN_RATE_PIC`: its step 5 IS the close, and it is the warmest turn a thread
+#   gets. Selling there is the design, not a leak.
+# OUT — `_TURN_BRUSH_OFF`: `seller_off` already carries §6.4. Adding it here broke
+#   case_convo_teaser_ignore_brakes_lifts_companion_seller_off, because that operator
+#   switch deliberately lifts `seller_off` and a second statement of the rule had no
+#   such escape hatch. Stating an invariant twice is not free when the two statements
+#   can be overridden differently.
+# OUT — `_TURN_REACT_PIC`: "do not make it sexual" is a REGISTER rule, not a no-sale
+#   one. Any unrateable picture (his dog, a screenshot of the paywall) is far more
+#   common than a dare, and membership here blanked every selling surface on those
+#   turns — measured: a hot thread with force_ask went from 1 priced send to 0 the
+#   moment he attached a photo of a dog.
+#
+# IN — `_TURN_PIC_OFFER`, for the DARE's reason and not the react-pic one. This turn is
+#   the same move as the dare (get the picture), just reactive instead of initiated, and
+#   its copy likewise ends "no price, no offer line". Stapling a PPV to "yes send it"
+#   answers a man reaching for his phone with a till — which is precisely the failure
+#   that made this beat necessary, so shipping it while still selling on the turn would
+#   fix nothing. The sale is not lost, only DEFERRED by one turn: once the picture
+#   lands, `_TURN_RATE_PIC` owns the reply and carries the close as its own step 5, at
+#   the warmest moment the thread ever reaches.
+_TURNS_NOT_SELLING = frozenset({_TURN_DARE, _TURN_PIC_OFFER})
+
+
+def _turn_kind(*, bot_accused: bool, pic_desc: str, content_ask: bool,
+               escalation: bool, image_dare: bool, dare_callback: bool,
+               hot_thread: bool, can_sell: bool, pic_offer: bool = False) -> str:
+    """The beat that owns this turn, or "" for the ordinary chat tiers.
+
+    Pure and total, so both callers get the same answer from the same inputs. Order is
+    the product decision; everything else in this module reads it rather than repeating
+    it.
+    """
+    if pic_desc and _is_rateable(pic_desc):
+        # ABOVE the brush-off on purpose: when he asks "are you a bot" AND puts himself
+        # on the table, a specific read of what he just sent is the one answer a canned
+        # reply could not have written. The rating IS the proof.
+        return _TURN_RATE_PIC
+    if bot_accused:
+        # …but only a RATEABLE picture outranks it. A warm word about his dog is not
+        # proof of anything, so the accusation still wins there.
+        return _TURN_BRUSH_OFF
+    if pic_offer:
+        # ⚠️ ABOVE THE WALLET, AND THAT IS THE ENTIRE POINT OF THE BEAT.
+        #
+        # `CONTENT_ASK_RE` matches the bare substring "wanna see", with no reading of
+        # who is offering what, so "You wanna see my cock?" already scored as
+        # content_ask — a BUYING signal — and this branch would be dead code below it.
+        # Prod receipt (Isabelle 326419277, 2026-08-08 01:45:50): he offered, and the
+        # engine answered "u keep askn / dont u / tell me more about that highway life
+        # first" with an $8 PPV stapled on. It thought HE was the one asking.
+        #
+        # Ranked BELOW the rating and the brush-off, both deliberately. A picture in
+        # HAND always beats a promise of one, and a promise is not proof of anything a
+        # bot-checker asked for — only the rating is, which is why `_TURN_RATE_PIC`
+        # outranks the accusation and this does not.
+        #
+        # No cooldown, unlike the dare. The dare rests three days because asking twice
+        # unprompted is the tell it exists to avoid; this beat is REACTIVE — he asked,
+        # and not answering him is the bug. He is entitled to a yes every time.
+        return _TURN_PIC_OFFER
+    if content_ask and can_sell:
+        return _TURN_CONTENT_ASK
+    if escalation and can_sell:
+        return _TURN_ESCALATION
+    if pic_desc:
+        # BELOW the wallet, unlike _TURN_RATE_PIC. The rating carries the close as its
+        # own step 5 and is the warmest turn in the thread, so it can outrank an ask.
+        # This branch has no close in it AT ALL — it is "say something warm about his
+        # dog" — so ranking it above a man saying "send me that video" would answer the
+        # strongest buying signal in the engine with small talk.
+        return _TURN_REACT_PIC
+    if image_dare and dare_callback:
+        # ⚠️ THE PRECONDITION IS AN ACCUSATION HE ACTUALLY MADE — nothing else.
+        #
+        # This beat was briefly armed on a bare hot thread too, and that could not be
+        # made safe. `can_sell` only knows about the CATALOGUE; the hot-teaser and
+        # convo-teaser ladders are separate selling surfaces chosen by async picks long
+        # after this prompt is built, so the selector cannot see them. A dare armed on
+        # heat therefore steals turns from a sale it has no way to detect — four
+        # existing teaser cases went red proving exactly that, on threads where
+        # `can_sell` was False and a teaser was nonetheless about to go out.
+        #
+        # It was also armed on nothing at all for a while — the eligibility-only rewrite
+        # dropped the disjunction and a stranger's first "hi there" got answered with a
+        # demand for a nude.
+        #
+        # So: she dares the man who questioned whether she is real, on a 3-day cooldown,
+        # on any account. That is still a large widening of the original beat, which was
+        # once-per-fan-forever and unreachable on the three gate-off accounts.
+        return _TURN_DARE
+    if hot_thread:
+        return _TURN_HOT
+    return ""
+
+
 def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     history_tail: int = _HISTORY_TAIL,
                     style_on: bool = False,
                     nonnative_on: bool = False,
                     sell: _SellSurface = _NO_SELL,
                     content_ask: bool = False,
-                    escalation: bool = False,
                     hot_thread: bool = False,
                     bot_accused: bool = False,
-                    image_dare: bool = False,
+                    # WHICH BEAT OWNS THIS TURN — see _turn_kind, which is the single
+                    # place that ordering lives. `escalation`, `image_dare`,
+                    # `dare_callback` and `rate_pic` used to be four separate booleans
+                    # here whose ONLY job was to carry ladder position; they are its
+                    # inputs now, not this function's. `bot_accused`, `content_ask` and
+                    # `hot_thread` stay, because each is also read as a FACT about the
+                    # turn (the accusation line inside the rating, the promoted close,
+                    # the hard mid-scene ask-ban).
+                    kind: str = "",
                     painful_on: bool = True,
                     lang: str = "en",
                     profile: "FanProfile | None" = None,
@@ -4360,10 +4554,16 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     if not ask:
         presented = []
 
-    if bot_accused:
+    if kind == _TURN_BRUSH_OFF:
         # §6.4 brush-off — he thinks she might be a bot. Defensiveness ("I'm a
         # real person, I promise!") is exactly what a bot does; the humane, effective
         # move is to brush it off and pivot to something HE said. Sell nothing.
+        #
+        # A RATEABLE picture outranks this (see _turn_kind) — rating it is a strictly
+        # better answer than any brush-off, and that branch is told about the accusation
+        # so it can answer without naming it. An UNRATEABLE one does not: a warm word
+        # about his dog proves nothing, so the accusation still wins here. `seller_off`
+        # is set independently in run(), so this opens no path to selling into one.
         need_block = (
             "He thinks you might be a bot. DON'T get defensive and DON'T list "
             "evidence that you're real — that is exactly what a bot does. Brush it "
@@ -4372,7 +4572,99 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         )
         presented = []
         ask = False
-    elif content_ask and sell.close:
+    elif kind == _TURN_REACT_PIC:
+        # HE SENT SOMETHING, AND IT IS NOT HIM. His dog, his worksite, a mountain from
+        # the balcony — most inbound media is not a dick pic, and the EXPLICIT rubric is
+        # catastrophically wrong for all of it.
+        #
+        # She still rates it. He sent it to get a reaction and a number is a real one —
+        # what changes on this branch is the REGISTER, not the scoring: warm, specific,
+        # never sexual. (This comment used to read "no score, no rubric"; that was the
+        # design until the operator reversed it on 2026-08-09. The rule is now stated
+        # once, in the step-2 string below, and nowhere else.)
+        need_block = (
+            "HE JUST SENT YOU A PICTURE and it is NOT of his body — his dog, his bike, "
+            "where he is, something he made. The description is in the history as "
+            "'[he sent: …]'. React to what is ACTUALLY in it:\n"
+            "1. NAME TWO THINGS ONLY SOMEONE WHO LOOKED WOULD NOTICE, straight from the "
+            "description. Specific beats flattering.\n"
+            "2. RATE IT OUT OF 10 as a number, the same way you would rate anything — "
+            "it is a real reaction and he sent it to get one. Take a point off for one "
+            "named thing and say what would earn it back.\n"
+            "3. ONE line back that keeps the conversation going.\n"
+            "Keep it WARM, not sexual — nothing filthy about a photo of his dog — and "
+            "never pretend he sent something he didn't. SHORT bubbles."
+        )
+        presented = []
+        ask = False
+    elif kind == _TURN_RATE_PIC:
+        # HE JUST SENT A PICTURE. Rating it is the whole point of the vision layer and
+        # it was the one thing never wired: the description reached the prompt, nothing
+        # ever told her to USE it. Prod thread 581112404 is the receipt — he sent one,
+        # asked "Is it what you thought?", and got "mmm it's deffinetly something" while
+        # a paragraph describing exactly what he sent sat in the same row of the DB.
+        #
+        # Ranked second, under the bot brush-off and above content_ask/escalation/hot:
+        # when a man has just put himself on the table, reacting to THAT is the turn.
+        # It does not lose the sale — the close rides on the end of the rating (step 4),
+        # which is also the moment he is warmest.
+        #
+        # The score is a NUMBER on purpose. "that's hot" is what anyone types without
+        # looking; "8.5, losing half a point because you're not fully hard" can only be
+        # written by something that actually looked — which is why this doubles as the
+        # answer to "are you a bot".
+        need_block = (
+            "HE JUST SENT YOU A PICTURE OF HIMSELF — the description of it is in the "
+            "history as '[he sent: …]'. React to THAT, not to a generic picture. This "
+            "is the warmest turn this thread gets; do not change the subject, do not "
+            "ask a get-to-know question, do not repeat a topic from earlier.\n"
+            "RATE IT, properly:\n"
+            "1. OPEN like you're actually looking — one short beat.\n"
+            "2. NAME TWO OR THREE THINGS YOU CAN ONLY KNOW BY LOOKING, straight from "
+            "the description: grooming, shape, girth, length, how hard he is, the "
+            "angle, what's around him. Specific beats flattering — this is the part a "
+            "bot could never fake.\n"
+            "3. GIVE A SCORE OUT OF 10 and say it as a number. Never a flat 10/10 — "
+            "nobody has ever got one from you. Take a believable half-point or point "
+            "off for ONE named thing, and say what would earn it back.\n"
+            "4. FINISH ON WHAT YOU'D DO WITH IT — one filthy, present-tense line."
+        )
+        if sell.close and content_ask:
+            # He sent a picture AND asked for something in the same breath. Here the
+            # close must NOT be step 5 of 5: pitch compliance on this model collapses
+            # when the close is the tail of a long ladder (hot threads, which use the
+            # 4-beat version, pitch at ~3%), and an explicit ask is the one signal
+            # never worth burying. Rate him fast, then answer what he asked for.
+            need_block += (
+                "\n5. HE IS ALSO ASKING FOR CONTENT RIGHT NOW — keep 1-4 to two short "
+                f"bubbles and get to this, it is the point of the message: {sell.close}"
+            )
+        elif sell.close:
+            need_block += (
+                f"\n5. THEN, and only after the rating has landed: {sell.close} Make it "
+                "the next line of the same scene — what you want to send him BECAUSE of "
+                "what he just showed you — never a product pitch."
+            )
+        need_block += (
+            "\nSHORT bubbles, the way you'd actually type it. GOOD: "
+            '"ok hold on let me look properly" / "grooming\'s good, glad ur not fully '
+            'shaved" / "and that girth is doing something to me ngl" / "8.5 — losing '
+            'half a point cause ur not all the way hard yet, i wanna see that"\n'
+            "Never invent something he didn't send: everything you name has to be in "
+            "the description."
+        )
+        if bot_accused:
+            # This turn is BOTH: he asked if she's a bot and put a picture on the table.
+            # The rating is the proof, so it replaces the brush-off rather than joining
+            # it — naming the accusation out loud is the defensiveness §6.4 bans.
+            need_block += (
+                "\nHe ALSO just questioned whether you're real. Do not defend yourself "
+                "and do not bring it up — the rating IS the answer, because nothing that "
+                "wasn't looking could have written it."
+            )
+        presented = []
+        ask = False
+    elif kind == _TURN_CONTENT_ASK:
         # He's asking for content and there's something to sell: the gather goal
         # yields — this message is the pitch, not another interview question.
         need_block = (
@@ -4382,7 +4674,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         )
         presented = []
         ask = False
-    elif escalation and sell.close:
+    elif kind == _TURN_ESCALATION:
         # He's leaning in / getting physical with something to sell: stop teasing and
         # convert. Softer than a content-ask (he didn't literally say "show me"), so
         # one flirty line THEN the offer — never a cold price-drop.
@@ -4394,7 +4686,42 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         )
         presented = []
         ask = False
-    elif image_dare:
+    elif kind == _TURN_PIC_OFFER:
+        # HE OFFERED. The only correct answer is yes, and it has to be unmistakable —
+        # this beat exists because the engine kept answering the offer with everything
+        # EXCEPT a yes: a pitch, an interview question, a coy deflection. Three times
+        # over three days on the founding thread, and he never once learned that
+        # sending it was welcome.
+        #
+        # "Say yes" is not enough on its own: a coy "maybe i do" IS a yes to a reader
+        # and is NOT an instruction to a man holding a phone. He has to be TOLD to
+        # send it, in the imperative, in this message. That is the difference between
+        # a picture arriving and a thread stalling — and a picture arriving is what
+        # every downstream beat here is built to monetise.
+        #
+        # The rating PROMISE is the hook and it is also a commitment we can keep: the
+        # vision layer reads what he sends and `_TURN_RATE_PIC` scores it out of ten on
+        # the very next turn. It is gated on `describe_on` at the call site for exactly
+        # that reason — promising a rating she cannot deliver is worse than never
+        # asking, the same rule the dare follows.
+        need_block = (
+            "HE JUST OFFERED TO SEND YOU A PICTURE OF HIMSELF, or asked you to rate "
+            "him. SAY YES — clearly, warmly, and right now.\n"
+            "1. YES, and mean it — one short beat that sounds like you want it.\n"
+            "2. TELL HIM TO SEND IT. Imperative, this message, no conditions: 'send "
+            "it', 'go on then', 'lemme see'. A coy 'maybe i do' is NOT an instruction "
+            "and he will not send anything.\n"
+            "3. PROMISE HIM THE RATING — that you'll tell him exactly what you see and "
+            "give it a score out of ten. Be specific about what you want it OF.\n"
+            "Match the register you two are already in: filthy if the thread is "
+            "explicit, cheeky if it's still tame. ONE short message, the way you'd "
+            "actually type it.\n"
+            "It is an invitation, not a sale: no price, no offer line, no get-to-know "
+            "question, and do NOT change the subject."
+        )
+        presented = []
+        ask = False
+    elif kind == _TURN_DARE:
         # BEAT 2 of the bot-accusation move. Beat 1 (above) was the breezy joke on the
         # accusation itself; he answered, and NOW she dares him — because she can
         # actually read what he sends (the vision layer splices his picture into her
@@ -4406,6 +4733,12 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         # makes it a callback — she was still thinking about it — and a photo back is
         # the warmest turn a thread gets. Ranked BELOW a content-ask/escalation: if
         # he's reaching for his wallet, sell; the dare can wait.
+        #
+        # ⚠️ THE COPY CLAIMS HE QUESTIONED HER, SO THE BEAT MUST REQUIRE THAT. For a
+        # while this branch also armed on a merely hot thread, where he had said no such
+        # thing, and a woman who invents a conversation he does not remember having is a
+        # worse bot tell than the one this beat exists to disprove. `_turn_kind` now
+        # gates it on `dare_callback` alone, which is what makes this sentence true.
         need_block = (
             "He questioned whether you're real last message and you laughed it off. "
             "Now call back to it and DARE him: tell him to send you a picture right "
@@ -4418,7 +4751,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         )
         presented = []
         ask = False
-    elif hot_thread:
+    elif kind == _TURN_HOT:
         # ── THE SEXTING LADDER. Reverse-engineered from the threads that actually
         # converted (Kingsley/Santan, 2026-07): a bought PPV lands after ~3.6 fan
         # messages and 0.82 sexual lines from her; an unbought one after 1.0 and 0.14.
@@ -4646,24 +4979,225 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
 # to PPV-first with tip-asks off, which is what its first two rungs were.
 
 
+# IS THERE ANYTHING TO RATE? Both patterns are written against the vision describer's
+# OWN vocabulary (`inbound_describe._INBOUND_DESCRIBE_PROMPT`), which is told to name
+# WHAT it is from a fixed list — "a dick pic, his body/torso, a face selfie, an outfit,
+# a screenshot or meme, a place, a pet, an object" — to state "HOW explicit — sfw,
+# suggestive, or explicit", and to flag anything that would make a flirty reply awkward.
+# So these are not guesses about English; they read the describer's own labels back.
+#
+# ⚠️ WHY THIS EXISTS: the beat fires on every described inbound, and most inbound media
+# is NOT a dick pic. Without this the rubric below scores a fan's dog, a worksite, a
+# mountain range or a paywall screenshot out of ten and finishes on "one filthy,
+# present-tense line" about it. The old prompt tried to handle that in prose ("if what
+# he sent is NOT explicit, rate THAT instead") — which is precisely an instruction to
+# rate the dog. It is a code decision, not a phrasing decision.
+_DESC_RATEABLE_RE = re.compile(
+    r"\b(?:dick\s*pic|penis|cock|erect\w*|circumcis\w*|"
+    r"his\s+(?:body|torso|chest|abs)|torso|abs|shirtless|topless|nude|naked|"
+    r"bulge|underwear|boxers|outfit|selfie|mirror\s+(?:shot|selfie)|"
+    r"suggestive|explicit)\b", re.I)
+
+# …and the ONE thing that makes a flirty reaction wrong whatever else is in frame:
+# somebody else is in the picture. That is it.
+#
+# ⚠️ CHILD / MINOR TERMS ARE DELIBERATELY ABSENT. OnlyFans does not allow those images
+# in the first place, so screening for them here is a second lock on a door the platform
+# already bolts — and it cost more than it bought: the describer WRITES those words to
+# report their absence ("No other people, rings, or children visible"), so the clause
+# spent its life mis-firing on the exact dick pics the beat exists for.
+#
+# Pets, screenshots and memes are gone too, for a different reason: they were never
+# about safety, only about "this is not him" — which is `_DESC_RATEABLE_RE`'s job. A
+# shirtless man holding his dog is still a shirtless man, and used to fall through to
+# the no-score branch because of the dog.
+_DESC_OFF_LIMITS_RE = re.compile(
+    r"\b(?:another\s+person|someone\s+else|two\s+people|a\s+woman|"
+    r"wedding\s+ring|married|clearly\s+not\s+him|not\s+of\s+him)\b", re.I)
+
+
+# ⚠️ THE DESCRIBER REPORTS ON ITS FLAGS, writing those words to state their ABSENCE —
+# "No wedding ring visible", "not explicit". A bare keyword read takes each of those as
+# the thing it denies, so both patterns are matched against the description with negated
+# spans scrubbed out.
+#
+# A negator scopes FORWARD to the end of its clause, and not one word further. Two
+# earlier attempts each got one shape right and another wrong: dropping the whole clause
+# deleted the flag it existed to find, and a fixed word-window could not reach past a
+# list. Measured on the 145 real inbound descriptions in prod, this rule stops 7 SFW rows
+# ("SFW and not explicit" → a Rottweiler, two worksites, a substation) from reading as
+# bodies, and keeps 8 real dick pics that say "No wedding ring visible" from being
+# blocked. Worked examples, on flags that still exist:
+#   "erect, on a bed. No wedding ring visible."   → the denial is its own clause, so the
+#       whole thing is scrubbed and the picture still rates.
+#   "a motorcycle in a driveway, not explicit"    → "explicit" sits inside the negated
+#       span, so it stops reading as explicit.
+#
+# ⚠️ Known gap, deliberately left: two OFF-LIMITS alternatives contain their own negator
+# ("clearly not him", "not of him"), so the scrub eats them before the pattern sees them
+# and they cannot fire. Reported round 6; not fixed here because this pass is comments
+# only. Fix by matching those two on the RAW description, not the scrubbed one.
+_DESC_NEGATOR = r"(?:no|not|none|nothing|nobody|without|isn'?t|aren'?t|non)"
+_DESC_NEGATED_SPAN = re.compile(rf"\b{_DESC_NEGATOR}\b[^.;]*", re.I)
+
+
+def _desc_says(pattern: "re.Pattern[str]", d: str) -> bool:
+    """Does the description AFFIRM this, rather than deny it?"""
+    return bool(pattern.search(_DESC_NEGATED_SPAN.sub(" ", d)))
+
+
+def _is_rateable(desc: str) -> bool:
+    """Is this description of HIM, and safe to flirt with?"""
+    d = str(desc or "")
+    return (_desc_says(_DESC_RATEABLE_RE, d)
+            and not _desc_says(_DESC_OFF_LIMITS_RE, d))
+
+
+# A rating has to carry a NUMBER. Four shapes, because there is no one place a texter
+# puts a score: the unambiguous "8.5/10" form; a decimal used as the verdict; a verdict
+# FRAME carrying the number ("id give that an 8 honestly", "im calling it a 7"); and a
+# bare number opening a bubble ahead of its justification ("9, losing a point cause…").
+#
+# BOTH error directions cost, which is why this is fussier than it looks:
+#   • a FALSE POSITIVE skips a needed re-ask and ships a scoreless reply. Prices live in
+#     0-10 ("$3, worth it" — the house floor), the rubric asks for LENGTH so "a solid 8
+#     inches" reads as a score, and a model echoing the prompt's own numbered steps
+#     opens a line with "1.". Hence the currency lookbehind, the terminator on every
+#     bare-number branch, and the `(?!\.\s)` that rejects a numbered-list item.
+#   • a FALSE NEGATIVE is not free either: it buys a second call AND replaces a perfectly
+#     good rating with the re-ask's. Hence the verdict frames and the dash/ellipsis family
+#     in the terminator — the prompt's own taught example uses an em-dash and the
+#     humanizer will happily emit an en-dash instead.
+_RATING_N = r"(?:10|\d)"
+_RATING_DEC = r"(?:10|\d)[.,]\d"
+_RATING_NOT_DEC = r"(?![.,]?\d)"          # "2" of "2.5 hours" is not a score
+# What follows a verdict: punctuation, the end of the bubble, the next bubble, the
+# deduction clause — or one of the little tails she actually types after a score.
+_RATING_END = (r"(?=\s*[,.;:!?\u2013\u2014\u2026-]|\s*$|\s*/"
+               r"|\s+(?:losing|loses|lose|minus|off|cause|cuz|bc|but|and|for\s+me|tbh"
+               r"|ngl|honestly|outta|out\s+of|deducted|docked"
+               r"|this\s+time|for\s+sure|no\s+question|from\s+me|babe|imo|fr)\b)")
+_RATING_FRAME = (r"(?:giv(?:e|es|ing)|gave|gets?|say|sayin|id\s+say|call(?:ing|in)?\s*it"
+                 r"|rate|rating|scor(?:e|ing)|thats|that's|its|it's|youre|you're|ur"
+                 r"|solid|strong|honestly|is|was)")
+# Spelled out. She types like a person, and "solid nine babe" / "nine out of ten" are
+# ratings by any reading — a MISS costs a call AND swaps a good reply for the re-ask's.
+_RATING_WORD = (r"(?:zero|one|two|three|four|five|six|seven|eight|nine|ten"
+                r"|eight\s+and\s+a\s+half|nine\s+and\s+a\s+half)")
+_RATING_SCORE_RE = re.compile(
+    rf"\b{_RATING_N}(?:[.,]\d)?\s*(?:/\s*10|out\s+of\s+10|outta\s+10)\b"
+    rf"|(?<![$\u00a3\u20ac\d]){_RATING_DEC}\b{_RATING_END}"
+    rf"|\b{_RATING_FRAME}\b[^\n/]{{0,18}}?\b(?:an?\s+)?(?<![$\u00a3\u20ac])"
+    rf"{_RATING_N}(?:[.,]\d)?{_RATING_NOT_DEC}\b{_RATING_END}"
+    rf"|(?:^|/\s*)\s*(?<![$\u00a3\u20ac]){_RATING_N}(?:[.,]\d)?{_RATING_NOT_DEC}"
+    rf"(?!\.\s)\b{_RATING_END}"
+    rf"|\b{_RATING_N}\s+(?:this\s+time|for\s+sure|no\s+question|from\s+me)\b"
+    rf"|\b{_RATING_WORD}\s+(?:out\s+of|outta)\s+ten\b"
+    rf"|\b(?:solid|strong|a|an)\s+{_RATING_WORD}\b{_RATING_END}",
+    re.I | re.M)
+
+
+async def _scored_or_re_asked(raw: str, msgs: list[dict], *, model: str,
+                              account_id: str, fan_id: int) -> tuple[str, bool, bool]:
+    """(the reply to send, a re-ask was PAID FOR, the re-ask RESCUED it).
+
+    Two booleans and not one: a counter that ticks only when the second call worked
+    reads as "the retry never fires and costs nothing" during the week it is firing on
+    every turn and failing. The operator needs the spend and the hit-rate separately.
+
+    A RATING WITHOUT A NUMBER IS NOT A RATING, and that is enforced here rather than
+    asked for in a paragraph. The prompt already says "give a score out of 10" and the
+    model still answers "ok that's actually impressive" when the preceding turns were
+    coy: replayed against prod history it complied 10/10, but inside a full thread she
+    had spent deflecting it dropped the score once in two runs. Conversational momentum
+    beats an instruction, and this is the one beat where the number IS the product —
+    it is the part a bot cannot fake.
+
+    ONE re-ask, so the cost is a second call on a rare turn rather than on every reply.
+    If the re-ask also comes back bare, the original ships: a weak reaction still beats
+    silence, which is what the whole incident was about.
+
+    `raw` arrives with the protocol markers ALREADY parsed off, and the re-ask is
+    stripped the same way, because it may only rewrite WORDS. The offer decision was
+    made by the first pass with the whole prompt in front of it, so a re-ask that
+    happens to omit an `OFFER:` line must not silently drop a priced attachment, and
+    one that invents a line must not silently create a sale nobody chose.
+
+    Raises LLMCapExceeded — stopping the sweep is the caller's decision, not ours."""
+    # `not raw` short-circuits the one path guaranteed to send nothing anyway: an empty
+    # draft trivially has no number, and re-asking it bills a second full-prompt call
+    # with an empty assistant turn just to produce a second empty reply.
+    if not raw or _RATING_SCORE_RE.search(raw):
+        return raw, False, False
+    log.info("ai_chatter rating had no score account=%s fan=%s — re-asking",
+             account_id, fan_id)
+    res = await llm_client.chat(
+        model=model,
+        messages=msgs + [
+            {"role": "assistant", "content": raw},
+            {"role": "user", "content":
+             "That's not a rating — you didn't give him a number. Say it again "
+             "properly: name two or three things you can actually see in what he "
+             "sent, then score it out of 10 and say what cost him the missing "
+             "points. Short bubbles, same voice, and the SAME LANGUAGE you were "
+             "already writing in."},
+        ],
+        purpose=_PURPOSE,
+        account_id=account_id,
+        fan_id=fan_id,
+        temperature=_REPLY_TEMPERATURE,
+    )
+    retry, _ = _parse_offer_marker((res.content or "").strip())
+    retry, _ = cat_stickers.parse_marker(retry)
+    if _RATING_SCORE_RE.search(retry):
+        return retry, True, True
+    return raw, True, False
+
+
 # The bot-accusation dare is a TWO-BEAT move (see _build_messages): beat 1 is the
 # breezy joke on the accusation itself, beat 2 is "send me one and I'll rate it" on
 # his NEXT reply. This stamp marks beat 2 as spent so it never repeats — daring the
 # same man twice is the tell he was fishing for.
+
+# How long an UNANSWERED picture still owns the turn. The description clears on her
+# outbound, which is the honest boundary — but there are several ways she never sends
+# one (ghost cycle, paused, quarantined, an empty reply dropped, the daily cap), and
+# "HE JUST SENT YOU A PICTURE" about a photo from Tuesday is its own kind of bot tell.
+_PIC_DESC_TTL = timedelta(hours=12)
+
 _BOT_DARE_KEY = "_bot_dare"
+# How long a dare rests before she may dare the same man again. Long enough that it
+# can't read as a script inside one conversation, short enough that a thread which
+# goes cold and comes back can use the play again.
+_BOT_DARE_COOLDOWN = timedelta(days=3)
 
 
-def _bot_dare_done(f: Fan | None) -> bool:
-    """Has this fan already had the picture dare?
+def _bot_dare_recent(f: Fan | None, now: datetime) -> bool:
+    """Has this fan been dared for a picture RECENTLY?
+
+    Was once-per-lifetime. That made the play fire at most once per man and then
+    never again, so a thread that went cold and came back hot months later could
+    not use the warmest opening move it has. A cooldown keeps the original point
+    of the stamp — daring the same man twice in one sitting is the tell he was
+    fishing for — without retiring the beat permanently.
+
+    An unparseable or missing stamp reads as "not recent", which fails toward
+    daring him; the cooldown is a politeness window, not a safety gate.
 
     Pure, and takes the row the sweep already loaded — this is asked on every turn
-    of every previously-accused fan, so a DB round trip here would be one query per
-    fan per tick for a boolean we're already holding."""
-    return bool(fan_state(f, _BOT_DARE_KEY))
+    of every fan, so a DB round trip here would be one query per fan per tick for a
+    boolean we're already holding."""
+    at = fan_state(f, _BOT_DARE_KEY).get("at")
+    if not at:
+        return False
+    try:
+        return (now - datetime.fromisoformat(str(at))) < _BOT_DARE_COOLDOWN
+    except (TypeError, ValueError):
+        return False
 
 
 async def _bot_dare_mark(account_id: str, fan_id: int) -> None:
-    """Stamp the dare as spent for this fan (permanent — one dare per man)."""
+    """Stamp the dare as spent for this fan until the cooldown lapses."""
     await set_fan_state(account_id, fan_id, _BOT_DARE_KEY,
                         {"at": datetime.utcnow().isoformat()})
 
@@ -5120,6 +5654,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     spend_regret_stops = 0  # §6.1: "im out of money" → 24h soft stop + COOLDOWN
     companion_routed = 0    # §6.3: "i just wanna talk" → seller OFF, conversation ON
     bot_accusations = 0     # §6.4: "are you a bot" → offer suppressed (2nd strike ⇒ COMPANION)
+    rate_pic_turns = 0      # turns that carried a rating directive — the DENOMINATOR
+    # Turns where he OFFERED and she said yes. Its value is as a LEADING indicator:
+    # every one of these should show up as a rate_pic turn shortly after, and a run
+    # where pic_offer climbs while rate_pic stays flat means she is telling men to send
+    # pictures that never arrive — the copy has gone coy again.
+    pic_offer_turns = 0
+    ratings_re_asked = 0    # rate_pic replies that came back scoreless — SECOND CALL PAID
+    ratings_rescued = 0     # …of those, the ones that second call actually scored
     spend_capped = 0        # §6.2: 7d paid-spend brake → COMPANION for the window
     ppv_drops = 0           # §3.6: inline setup→attach pacing holds
     paced_bubbles = 0       # bubbles 1+ that went through pacing.bubble_pace
@@ -5262,7 +5804,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 seller_off = True
                 customs_owed_skips += 1
             bot_accused_turn = False
-            image_dare_turn = False
+            # Both re-armed further down (next to hot_thread, which the dare reads).
+            # Initialised HERE, per fan, because every one of these is a plain local in
+            # a loop: a path that reached the prompt without re-assigning would silently
+            # inherit the PREVIOUS fan's turn — the same class of bug as reading
+            # `fan_ladder` before it is bound.
+            image_dare_ok = False
+            dare_is_callback = False
+            rate_pic_turn = False
+            pic_offer_turn = False
+            kind = ""
             # A HARD decline WINS over the poverty/companion brakes — always. Otherwise a
             # message that carries both a distress token and a chargeback ("im tapped out,
             # im disputing this charge and reporting you") hits detect_spend_regret first
@@ -5370,34 +5921,35 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # counted (the roster header reads bot_accused_count). An ACTIVE companion/
             # cooldown window from a DIFFERENT brake (just-talk §6.3, broke §6.1, spend-cap
             # §6.2) is honoured below — a bot accusation just no longer creates one.
-            if gate_on:
-                _lad_now = ladders.get(fan_id)
-                if _lad_now is not None:
-                    if _lad_now.companion_until and _lad_now.companion_until > now:
-                        seller_off = True     # §6.3/§6.1 window still live
-                    if _lad_now.cooldown_until and _lad_now.cooldown_until > now:
-                        seller_off = True     # §6.2 post-multibuy ease-off (talk only)
-                if _detect_bot_accusation(c.last_body):
-                    bot_accusations += 1
-                    prev = int(_lad_now.bot_accused_count or 0) if _lad_now is not None else 0
-                    await _save_ladder(account_id, fan_id, bot_accused_count=prev + 1)
-                    seller_off = True         # suppress the offer THIS turn only
-                    bot_accused_turn = True   # + brush it off, single breezy bubble
-                elif (describe_on
-                      and _lad_now is not None
-                      and int(_lad_now.bot_accused_count or 0) > 0
-                      and not _bot_dare_done(f)):
-                    # BEAT 2: he called her a bot, she laughed it off, and he answered.
-                    # NOW dare him for a picture she can actually rate. Split across two
-                    # exchanges because joke-and-dare in one breath is a man defending
-                    # himself; landing it on his reply makes it a callback. Once per fan
-                    # (stamped below), and only where describe is on — promising a
-                    # rating she can't deliver is worse than never daring.
-                    # Deliberately does NOT set seller_off: the 07-25 policy is that a
-                    # bot accusation brushes off and NEVER gags selling. The dare is a
-                    # prompt preference for a quiet turn, not a seller gate — and it
-                    # yields to a real buying signal in the branch order below.
-                    image_dare_turn = True
+            _lad_now = ladders.get(fan_id)
+            if gate_on and _lad_now is not None:
+                # These two ARE selling decisions — a qualification-gate account's
+                # companion / post-multibuy windows — so they stay behind the gate.
+                if _lad_now.companion_until and _lad_now.companion_until > now:
+                    seller_off = True         # §6.3/§6.1 window still live
+                if _lad_now.cooldown_until and _lad_now.cooldown_until > now:
+                    seller_off = True         # §6.2 post-multibuy ease-off (talk only)
+            # ⚠️ OUTSIDE `if gate_on:`, for the same reason the picture dare was moved
+            # out of it. "He thinks she is a bot" is a REALISM signal, not a selling
+            # decision — and while the detection sat behind the gate it was dead on the
+            # three live accounts that run with qualification off. On those accounts
+            # "wait are you human?" read as ordinary chat: no brush-off, no one-line
+            # cap, `bot_accusations` stuck at 0, and — because `sticker_mode` is only
+            # forced to "skip" on a bot-accused turn — the model was still offered the
+            # sticker protocol, answered with a cat gif, had it dropped by the guard,
+            # and said NOTHING. That is the exact production failure this change set out
+            # to fix, left standing on a quarter of the fleet.
+            if _detect_bot_accusation(c.last_body):
+                bot_accusations += 1
+                prev = int(_lad_now.bot_accused_count or 0) if _lad_now is not None else 0
+                await _save_ladder(account_id, fan_id, bot_accused_count=prev + 1)
+                seller_off = True             # suppress the offer THIS turn only
+                bot_accused_turn = True       # + brush it off, single breezy bubble
+            # NOTE: the picture DARE used to arm here, as an `elif` on the accusation
+            # branch — which made it reachable only on a gate-on account, only for a man
+            # who had already accused her, and only once in his life. It now arms below,
+            # next to `hot_thread` (which is computed there and which it needs), outside
+            # the seller gate, for the same reason the detection above is.
 
             # §5 — a bare haggle / stated cap ("can you do $30") is a VOICED price
             # objection but NOT a decline: stamp objection_at so an EARNED discount may
@@ -5514,6 +6066,73 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # unbought), against 1.19x for "was his last line dirty". It is the moment
             # the top closers sell into, and the only moment force_ask fires.
             hot_thread = thread_heat(c.messages)
+
+            # ── The picture play, both halves. ────────────────────────────────
+            # RATE: he sent something and we can read it → she rates it. No cooldown,
+            # no once-per-fan, no gate: every picture gets a reaction, which is the
+            # whole point of paying for the vision layer. It outranks the dare (never
+            # dare a man for a picture in the same breath as rating the one he sent).
+            #
+            # DARE: ask him for one. Repeatable on a cooldown rather than once per
+            # lifetime — one dare per man meant the play fired at most once and then
+            # the thread never came back to it. Armed when the thread is HOT (a natural
+            # moment to ask) or when he has questioned whether she's real (the original
+            # beat-2 callback), and only where describe is on, because promising a
+            # rating she cannot deliver is worse than never daring.
+            # `ladders.get(fan_id)` and not `fan_ladder` — that local is bound a few
+            # lines below, so reading it here would silently pick up the PREVIOUS
+            # fan's ladder for every fan after the first.
+            _lad_for_dare = ladders.get(fan_id)
+            # `c.last_in_desc` alone, NOT `and c.pic_sent`: the description belongs to a
+            # picture inside the burst she has not answered yet, and his follow-up text
+            # row clears pic_sent while leaving the picture very much unanswered.
+            rate_pic_turn = bool(
+                describe_on and c.last_in_desc
+                and c.last_in_desc_at is not None
+                and (now - c.last_in_desc_at) < _PIC_DESC_TTL)
+            # ELIGIBILITY ONLY — whether the dare is AVAILABLE, never whether it wins.
+            # `not c.pic_sent`: never dare a man for a picture on a turn he sent one,
+            # even one we could not read. The rungs that outrank it (a rating, the
+            # brush-off, the wallet) are _turn_kind's job, not this expression's — that
+            # split is what stopped the arming and the answer from drifting apart.
+            image_dare_ok = bool(
+                describe_on and not c.pic_sent
+                and not _bot_dare_recent(f, now))
+            # HE OFFERED — read off the same `c.last_body` the bot accusation is, so the
+            # two identity-shaped reads of his last message cannot drift apart.
+            #
+            # `describe_on` for the DARE's reason: step 3 of the copy promises him a
+            # score out of ten, and only the vision layer can pay that off. With describe
+            # off she would be talking him into sending a picture she is about to ignore.
+            #
+            # `not c.pic_sent` because the offer is spent the moment he acts on it. He
+            # sends the picture with "wanna see my cock?" as its caption all the time,
+            # and without this she answers the caption — "yes! send it!" — with the thing
+            # already sitting in front of her. `_TURN_RATE_PIC` outranks this beat and
+            # covers the readable ones, but an UNREADABLE picture falls to react_pic,
+            # which ranks BELOW this — so the guard has to live here, not in the ladder.
+            pic_offer_turn = bool(
+                describe_on and not c.pic_sent
+                and detect_pic_offer(c.last_body))
+            # He has, at some point, questioned whether she is real — the one thing the
+            # dare's copy is allowed to CALL BACK to. On a merely-hot thread it must not,
+            # because he never said it, and inventing a conversation he doesn't remember
+            # having is a worse bot tell than the one the dare exists to disprove.
+            # ⚠️ RECENT, and that means an explicit WINDOW. The copy this arms says "He
+            # questioned whether you're real LAST MESSAGE and you laughed it off", so the
+            # signal has to be recent or she is inventing history — the exact bot tell the
+            # beat exists to disprove.
+            #
+            # Two wrong answers came first. `bot_accused_count` never decays, so a man who
+            # asked once months ago was told he had just said it. Then `c.messages` — with
+            # a comment calling it "the loaded tail", which it is NOT: it is the whole
+            # loaded thread, so the bug survived the fix and the comment asserted a bound
+            # that did not exist. Slice it explicitly and the tense is finally honest.
+            _DARE_CALLBACK_TAIL = 8
+            dare_is_callback = any(
+                _detect_bot_accusation(b)
+                for d, b in c.messages[-_DARE_CALLBACK_TAIL:] if d == "in")
+
             stale_ask = False   # the FLOOR — computed below, once fan_ladder is loaded
             fan_ladder: LadderState | None = ladders.get(fan_id)
             rung_index = 0
@@ -5838,6 +6457,30 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                           and not content_ask
                           and c.fan_msg_n >= esc_min_msgs
                           and _language.is_escalation(c.last_body, fan_lang))
+            # ── WHICH BEAT OWNS THIS TURN. Asked ONCE, here, because this is where the
+            # last of its inputs (content_ask, escalation, sell.close) finally bind.
+            # Everything below reads `kind`; nothing re-derives the ordering.
+            kind = _turn_kind(
+                bot_accused=bot_accused_turn,
+                pic_desc=c.last_in_desc if rate_pic_turn else "",
+                content_ask=content_ask,
+                escalation=escalation,
+                image_dare=image_dare_ok,
+                dare_callback=dare_is_callback,
+                pic_offer=pic_offer_turn,
+                hot_thread=hot_thread,
+                can_sell=bool(sell.close))
+            # ── A NO-SALE BEAT SELLS NOTHING, and that is said ONCE, here.
+            #
+            # Gating the four attach sites individually is how the last one gets
+            # forgotten — the convo-teaser ladder was, and it would have stapled a $10
+            # rung onto a message whose own copy reads "no price, no offer line".
+            # Clearing the surface also stops the prompt from advertising the `>>OFFER`
+            # carve-out on a turn that bans it, which is the third way a price got onto
+            # a dare. `kind` was already decided using the OLD sell.close, so the
+            # content_ask/escalation rungs it could have won are unaffected.
+            if kind in _TURNS_NOT_SELLING:
+                sell = _NO_SELL
             buyer_facts = await _buyer_facts(account_id, fan_id)
             # Which bubble is he answering? Three tiny reads, and only for a fan who
             # has cleared every gate and is getting a reply this tick.
@@ -5860,6 +6503,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 sticker_mode = cat_stickers.open_with_gif(
                     sticker_mode, turn_index=int(c.fan_msg_n),
                     his_words=c.last_in_text)
+            # Two turns REQUIRE words, so don't even offer the protocol: with mode
+            # 'skip' `prompt_block` renders nothing and the model cannot pick a tag.
+            #
+            # There is already a guard on the drop side that refuses a sticker as the
+            # answer to a bot accusation — but refusing it AFTER generation turns a
+            # sticker-only reply into SILENCE, which answers "You a real person?" with
+            # nothing at all. That is a worse answer than the gif was. Seen on a replay
+            # of thread 581112404: the model returned "STICKER: eyeroll", the guard
+            # dropped it, `dropped_empty: 1`, and she never spoke.
+            #
+            # Same reasoning for the picture he just sent: a gif is precisely the
+            # non-reaction the rating beat exists to replace.
+            if kind in _TURNS_NEEDING_WORDS:
+                sticker_mode = "skip"
             # The deepen phase: once there is nothing left to ask, work in a gen_info
             # opener instead of generic banter. ai_chatter has no graduation cutoff,
             # so None just means banter — never silence, and never a handoff.
@@ -5887,10 +6544,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                               nonnative_on=nonnative_on,
                                               sell=sell,
                                               content_ask=content_ask,
-                                              escalation=escalation,
                                               hot_thread=hot_thread,
                                               bot_accused=bot_accused_turn,
-                                              image_dare=image_dare_turn,
+                                              kind=kind,
                                               painful_on=painful_on,
                                               lang=fan_lang,
                                               profile=profiles.get(fan_id),
@@ -5929,6 +6585,42 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Sticker marker: ALWAYS strip protocol lines (a fan must never see
             # them); honor the tag only when this reply's roll offered the pack.
             raw, sticker_tag = cat_stickers.parse_marker(raw)
+
+            # A rating with no number in it is not a rating — re-ask once. Placed AFTER
+            # the marker parse on purpose; see _scored_or_re_asked for why.
+            #
+            # SCOPED TO `_TURN_RATE_PIC` ON PURPOSE, and the reason is worth stating
+            # because it is a judgement, not an oversight: `_TURN_REACT_PIC` now asks for
+            # a score too, but a missing number on a dick pic loses the whole product of
+            # the beat, while a missing number on his dog is a shrug. So the rating is
+            # worth a second paid call and the reaction is not.
+            #
+            # `rate_pic_turns` counts the same set for the same reason — it is the
+            # denominator for the re-ask spend, so it has to cover exactly the turns the
+            # re-ask can fire on.
+            #
+            # (This read `_is_rateable` and quoted the prompt as saying "Do NOT score it";
+            # neither survived — the branch reads `kind`, and that directive was reversed
+            # with the operator's 08-09 change. A comment justifying a guard by quoting a
+            # string that no longer exists is worse than none.)
+            rate_pic_turns += kind == _TURN_RATE_PIC
+            pic_offer_turns += kind == _TURN_PIC_OFFER
+            if kind == _TURN_RATE_PIC:
+                try:
+                    raw, re_asked, rescued = await _scored_or_re_asked(
+                        raw, msgs, model=model, account_id=account_id, fan_id=fan_id)
+                    ratings_re_asked += re_asked
+                    ratings_rescued += rescued
+                except LLMCapExceeded:
+                    # Keep the first draft and let it send — it is already paid for and
+                    # silence is the worse answer. The sweep stops on the NEXT fan, whose
+                    # generation raises the same cap above and breaks the loop there.
+                    cap_hit = True
+                    log.warning("ai_chatter cap reached on rating re-ask account=%s",
+                                account_id)
+                except Exception:
+                    log.warning("ai_chatter rating re-ask failed account=%s fan=%s",
+                                account_id, fan_id, exc_info=True)
             if sticker_mode == "skip":
                 sticker_tag = None
             # Never the same reaction twice running — see cat_stickers.keep_tag.
@@ -5939,6 +6631,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     log.info("ai_chatter sticker tag repeat dropped account=%s "
                              "fan=%s", account_id, fan_id)
             offer_item = offerable.get(offer_id) if offer_id is not None else None
+            if offer_item is not None and kind in _TURNS_NOT_SELLING:
+                # The model wrote an offer marker on a turn the prompt told it not to.
+                # Honour the beat, not the slip.
+                log.info("ai_chatter offer marker dropped on a no-sale beat "
+                         "account=%s fan=%s kind=%s", account_id, fan_id, kind)
+                offer_item = None
+                offer_id = None
             if offer_id is not None and offer_item is None:
                 log.info("ai_chatter offer marker rejected account=%s fan=%s id=%s",
                          account_id, fan_id, offer_id)
@@ -5965,7 +6664,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             #                  the broke-declined pause. Real content beats silence.
             #   • stale_ask  — he has talked this long and nobody has ever asked him for
             #                  anything. The floor.
-            _trigger = ("hot" if (force_ask and hot_thread) else
+            # A turn whose whole instruction is "no price, no offer line" must not have
+            # one forced onto it — see _TURNS_NOT_SELLING.
+            _trigger = (None if kind in _TURNS_NOT_SELLING else
+                        "hot" if (force_ask and hot_thread) else
                         "ask" if (force_ask and content_ask
                                   and (gate_ok or ask_override)) else
                         "stale" if stale_ask else None)
@@ -6119,11 +6821,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # adaptive mode, only when the last teaser was priced. This and his
                 # payment history are the only two facts NOT already in `_tstate`,
                 # which is why they are the only two still passed separately.
+                # WHICH message to ask about is `teaser_sale_check_msg`, not `last_msg`:
+                # after a free BAIT leg the last teaser is a $0 message that can never
+                # be sold, and reading it would hide a LATE unlock of the priced ask
+                # underneath — leaving a man who just paid on a streak toward the
+                # circuit breaker.
                 _t_sold = False
-                if (_tcfg.get("adaptive") and int(_tstate.get("last_price") or 0) > 0
-                        and _tstate.get("last_msg")):
-                    _t_sold = await _teaser_sold(account_id, fan_id,
-                                                 int(_tstate["last_msg"]))
+                _t_chk = (_tip_reward.teaser_sale_check_msg(_tstate)
+                          if _tcfg.get("adaptive") else None)
+                if _t_chk:
+                    _t_sold = await _teaser_sold(account_id, fan_id, _t_chk)
                 # Has he EVER paid? The soften floor is the $3 wire minimum until he
                 # has and the rung's SET price after (tip_reward.convo_teaser_floors).
                 # Only queried when the ladder can actually soften.
@@ -6153,6 +6860,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                and not _teaser_ignore_brakes)
                     if _paused or hot_teaser_paid_tick >= _MAX_FORCED_ASKS_PER_TICK:
                         teaser = None      # brake + the per-tick paid cap
+            # ── A NO-SALE BEAT MAY SEND SOMETHING FREE, BUT NEVER A PRICE TAG.
+            #
+            # The dare's copy bans a PRICE ("no price, no offer line"), not a gift, and a
+            # $0 rung on a dare is a fine turn — gating the ladders at their pick sites
+            # instead broke case_convo_teaser_ignore_brakes_lifts_companion_seller_off,
+            # where a free rung is the whole point of the operator's override.
+            #
+            # ⚠️ AND IT SITS HERE, AFTER EVERY PRODUCER. `teaser` is assigned by THREE
+            # of them — the hot teaser, the haggle resend, and the convo ladder — and the
+            # first version of this check lived INSIDE the convo ladder's `if`, whose own
+            # guard is `teaser is None`. So the two earlier producers skipped it entirely
+            # and a $15 hot teaser and an $8 haggle resend both went out on a dare. One
+            # rule, one site, after all three, is what "said ONCE" has to mean.
+            if teaser is not None and teaser["price_cents"] > 0 \
+                    and kind in _TURNS_NOT_SELLING:
+                log.info("ai_chatter priced teaser dropped on a no-sale beat "
+                         "account=%s fan=%s kind=%s", account_id, fan_id, kind)
+                teaser = None
             if not dry_run:
                 await _bump_attempt(account_id, fan_id, now)
             parts = [_language.apply_word_restriction(p, fan_lang)[:_REPLY_MAX_CHARS]
@@ -6168,7 +6893,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 parts, (resolve_fan_name(f) or "").split("/")[0] if f else "")
             # §6.4 brush-off — ONE line. A multi-bubble "no really i'm real" reads as
             # protesting-too-much; a single breezy line does not.
-            if bot_accused_turn and parts:
+            #
+            # …UNLESS the same turn is a rating. When he accuses AND sends a picture the
+            # prompt ladder deliberately hands the turn to `_TURN_RATE_PIC` (see
+            # `_turn_kind`) because a specific read of what he just sent is the one
+            # answer a canned bot could not have written — and a rating is four beats by
+            # construction. Capping it here shipped the opening bubble and dropped the
+            # score, which is the whole product of the beat. Worse, the score check runs
+            # on `raw` BEFORE this split, so the re-ask sees a number that is then
+            # truncated away and never fires. The incident thread is exactly this shape.
+            if kind == _TURN_BRUSH_OFF and parts:
                 parts = parts[:1]
             if not parts:
                 # A sticker-only reply (empty text + a tag) is a legit pure
@@ -6190,9 +6924,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # gif ends it on the FIRST tick, and it arms the per-fan sticker
                 # gap, so the next turn comes back as text and carries the offer.
                 #
-                # A bot accusation still needs words. A cat gif answering "are you a
-                # bot" reads as exactly the dodge he just accused her of.
-                if sticker_tag is not None and not bot_accused_turn:
+                # The word-needing beats still need words. A cat gif answering "are you
+                # a bot" reads as exactly the dodge he just accused her of, and one
+                # answering the picture he just sent is the non-reaction the rating
+                # exists to replace. `sticker_mode` is already "skip" on those turns, so
+                # this is the belt to that pair of braces — reading `kind` rather than
+                # restating the set, so the two can never disagree.
+                if sticker_tag is not None and kind not in _TURNS_NEEDING_WORDS:
                     if offer_item is not None or teaser is not None:
                         offers_deferred += 1
                     offer_item = None
@@ -6200,8 +6938,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 else:
                     dropped_empty += 1
                     log.info("ai_chatter dropped empty reply account=%s fan=%s "
-                             "sticker=%s bot_accused=%s",
-                             account_id, fan_id, sticker_tag, bot_accused_turn)
+                             "sticker=%s kind=%s",
+                             account_id, fan_id, sticker_tag, kind or "chat")
                     continue
             # Anti-hallucination floor: price talk with NO validated offer
             # behind it never reaches a fan on a selling account. Strip those
@@ -6661,10 +7399,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             await _pins.consider(account_id, f, c.last_body, client, lang=fan_lang,
                                  enabled=pins_on, write=pins_write)
             sent += 1
-            # Beat 2 of the bot-accusation dare actually reached him — burn it, so a
-            # long thread never re-dares. Stamped on CONFIRMED send, not on the
-            # decision, so a failed send leaves the dare still owed.
-            if image_dare_turn:
+            # The picture play is spent for the cooldown — burn it, so a long thread
+            # never re-dares. Stamped on CONFIRMED send, not on the decision, so a
+            # failed send leaves the dare still owed.
+            #
+            # A RATING burns it too, and that is the important half: he sent a picture,
+            # she rated it, and without this the very next text-only turn on a still-hot
+            # thread re-arms the dare and she says "send me a picture right now and I'll
+            # tell you exactly what I see" to the man who just did. Asking for what he
+            # has already given is the script tell the cooldown exists to prevent.
+            if kind in _TURNS_SPENDING_THE_DARE:
                 await _bot_dare_mark(account_id, fan_id)
             # Burn today's beat once the reply that was REQUIRED to carry it is
             # confirmed on the wire. Same discipline as the dare above: stamped on
@@ -6681,7 +7425,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # ATTACH time for media that actually went out (teaser/PPV) so the
             # unseen filter can never re-attach the same piece.
             if offer_item is not None and sent_ok:
-                if escalation:
+                # `kind`, not the raw detector: the counter's name says "offers
+                # triggered by the LEAN-IN PIVOT", and on a rate_pic turn that also
+                # escalates the sale comes from step 5 of the rating, not from a pivot
+                # the ladder never ran. The last read of a ladder INPUT as if it were a
+                # ladder POSITION.
+                if kind == _TURN_ESCALATION:
                     offers_made_on_escalation += 1
                 await _ensure_progress(account_id, fan_id, offer_item)
                 if offer_item.is_free_teaser:
@@ -6855,6 +7604,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "spend_regret_stops": spend_regret_stops,
         "companion_routed": companion_routed,
         "bot_accusations": bot_accusations,
+        "rate_pic_turns": rate_pic_turns,
+        "pic_offer_turns": pic_offer_turns,
+        "ratings_re_asked": ratings_re_asked,
+        "ratings_rescued": ratings_rescued,
         "spend_capped": spend_capped,
         "ppv_drops": ppv_drops,
         "paced_bubbles": paced_bubbles,

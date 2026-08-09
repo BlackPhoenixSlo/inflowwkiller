@@ -19,6 +19,7 @@ import logging
 import os
 import sys
 import threading
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ sys.path.insert(0, str(HERE))
 import accounts as account_registry  # noqa: E402
 import account_health  # noqa: E402  # dead-session pause (see service/account_health.py)
 import account_page  # noqa: E402  # free-vs-paid page (see service/account_page.py)
+import ownership  # noqa: E402  # owned-media semantics (see service/ownership.py)
 import proxies as proxy_registry  # noqa: E402
 import live_rev  # noqa: E402
 import secrets_store  # noqa: E402  # UI-writable key store (Setup → Keys)
@@ -4144,6 +4146,65 @@ async def of_send_mass(
         result.setdefault("_mass_run_id", mass_run_id)
     return result
 
+
+# ── re-sale guard ─────────────────────────────────────────────────────
+# ppv_send and ai_chatter both check ownership before they sell; the extension/UI
+# chat send did not, and it is where the real damage happened: 8 separately-paid
+# messages across 4 fans re-charged $456 for content already owned, one whale
+# paying 4× for the same two clips at a climbing price. Charging twice for one
+# file is a refund + chargeback, and chargebacks are what kill an OF account.
+#
+# The rules live in `ownership.resale_verdict` (the one home for owned-media
+# semantics); only the operator-facing wording lives here. Keyed by reason so a
+# third rule is a new entry, not a new branch.
+_RESALE_MESSAGES = {
+    ownership.RESALE_OWNED_VIDEO: (
+        "This fan already paid for video in this message. "
+        "Remove it, or send at price 0."
+    ),
+    ownership.RESALE_MOSTLY_OWNED_PHOTOS: (
+        "{owned} of {total} photos here are ones this fan already paid for. "
+        "A priced set needs at least half new photos — swap some in, or send "
+        "at price 0."
+    ),
+}
+
+
+async def _reject_if_resale(account_id: str, fan_id: int, body: SendMessageBody) -> None:
+    """Raise 409 if this PRICED send re-charges the fan for content he holds.
+
+    Runs BEFORE the OF call — the sibling `/admin/vault/sends` recorder fires
+    only AFTER a send lands, so a guard there would log the mistake, not prevent
+    it. Priced sends only: a FREE re-send (make_right redelivery, a fan who lost
+    the file) is not a re-sale and is never touched."""
+    if body.price <= 0:
+        return
+    vault_ids = [m for m in body.media_files if isinstance(m, int) and m > 0]
+    if not vault_ids:
+        return
+    try:
+        verdict = await ownership.resale_verdict(
+            account_id, fan_id, vault_ids, body.previews)
+    except Exception:
+        # A broken guard read must not take the chat offline. Logged, allowed.
+        log.exception("re-sale guard lookup failed (fan=%s) — allowing send", fan_id)
+        return
+    if not verdict.blocked:
+        return
+    log.warning("re-sale blocked account=%s fan=%s price=%s reason=%s videos=%s "
+                "photos=%d/%d", account_id, fan_id, body.price, verdict.reason,
+                verdict.owned_videos, len(verdict.owned_photos), verdict.photos_total)
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error": verdict.reason,
+            "message": _RESALE_MESSAGES[verdict.reason].format(
+                owned=len(verdict.owned_photos), total=verdict.photos_total),
+            "owned_media": verdict.owned_media,
+        },
+    )
+
+
 @app.post("/api/of/v2/chats/{chat_id}/messages")
 async def send_message(
     request: Request,
@@ -4171,6 +4232,8 @@ async def send_message(
     # reads the chatter's display name instead of "Automation."
     from employees import resolve_outbound_employee_id
     employee_id = await resolve_outbound_employee_id(request, account_id)
+
+    await _reject_if_resale(account_id, int(chat_id), body)
 
     # Bridge sync _proxy from this async handler — copied from the
     # /users/list pattern at server.py around line 2388.
@@ -4587,6 +4650,43 @@ async def of_vault_media(
     return result
 
 
+# ── The by-id vault read's admission gate ─────────────────────────────
+#
+# `_proxy` already caps UPSTREAM calls at `_ACCOUNT_LANE_TOTAL` per account, so
+# OF never sees a storm. The problem is WHERE the waiting happens: that is a
+# `threading.BoundedSemaphore` acquired inside `asyncio.to_thread`, so every
+# queued call first takes one of the 64 asyncio executor threads and then
+# blocks on it. The upstream is protected; the executor is not.
+#
+# That matters because this route is the one the UI asks for a WHOLE LIBRARY at
+# a time — `useVaultMediaByIds` fans out one request per stored media id, and
+# PPVLibraryTab hands it every id in the library. 200 ids meant 200 threads
+# wanted for 5 usable slots, which starves the automation lane sharing that
+# executor (the 2026-07-04 "socket hang up" incident) and holds 200 inbound
+# sockets plus their DB connections open while they wait — and descriptors are
+# a PROCESS resource, so that shortage surfaces as "unable to open database
+# file" and an EMFILE in the isolation gate, never as a slow tile.
+#
+# So gate on the ASYNC side, before dispatching to a thread: a queued request
+# costs a parked coroutine instead of a thread. Same device and same default as
+# `vault_stills._MAX_INFLIGHT_FETCHES`, separate budget — a vault pane storm
+# must not spend the stills allowance or vice versa.
+_MAX_INFLIGHT_VAULT_READS = max(1, int(os.environ.get("VAULT_MEDIA_CONCURRENCY", "6")))
+
+# Per-loop, because the test harness runs each case in its own `asyncio.run()`
+# and a semaphore that has parked a waiter belongs to the loop it parked it on.
+_VAULT_READ_SLOTS: "weakref.WeakKeyDictionary[Any, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+
+
+def _vault_read_slot() -> asyncio.Semaphore:
+    """The gate every OF-bound by-id vault read passes through."""
+    loop = asyncio.get_running_loop()
+    sem = _VAULT_READ_SLOTS.get(loop)
+    if sem is None:
+        sem = _VAULT_READ_SLOTS[loop] = asyncio.Semaphore(_MAX_INFLIGHT_VAULT_READS)
+    return sem
+
+
 @app.get("/api/of/v2/vault/media/{media_id}")
 async def of_vault_media_by_id(media_id: int) -> dict[str, Any]:
     """One vault item by id — resolves a bare media id back to a media object
@@ -4606,11 +4706,25 @@ async def of_vault_media_by_id(media_id: int) -> dict[str, Any]:
     cached = await vault_cache.get(aid, key)
     if cached is not None:
         return cached
-    result = await asyncio.to_thread(
-        _proxy, lambda: _get_client().vault_media_by_id(media_id),
+
+    async def _fetch() -> dict[str, Any]:
+        # The slot is INSIDE the coalescer on purpose (see relay_coalesce's
+        # module docstring): waiters that joined an in-flight fetch hold no
+        # slot, so only the one caller actually going to OF occupies one.
+        async with _vault_read_slot():
+            fetched = await asyncio.to_thread(
+                _proxy, lambda: _get_client().vault_media_by_id(media_id),
+            )
+        await vault_cache.put(aid, key, fetched)
+        return fetched
+
+    # A remount, a second tab, or two panes resolving the same slot image all
+    # ask for the SAME id at once; without this each paid its own OF round-trip
+    # for bytes the others were already fetching. Keyed on the account too — a
+    # bare media id would let two accounts share a response.
+    return await relay_coalesce.coalesce(
+        ("vault_media_by_id", aid, media_id), _fetch,
     )
-    await vault_cache.put(aid, key, result)
-    return result
 
 
 # ── Fan lists ──────────────────────────────────────────────────

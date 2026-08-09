@@ -103,7 +103,11 @@ describe("useSellerConfig save gating", () => {
     expect(cfg.sla_minutes).toBe(30);
     expect(cfg.enabled).toBe(true);
     expect(cfg.max_lifetime_spend_cents).toBe(250000);
-    expect(body.timezone).toBe("Europe/Ljubljana");
+    // The clock is NOT written from this tab. It used to post one, which made this a
+    // second writer of the same column the Brain owns — two controls, two clock
+    // columns, and the silent one won (an Eastern creator ran on a Los Angeles zone).
+    // The endpoint leaves an absent key unchanged, so omitting it is the fix.
+    expect(body).not.toHaveProperty("timezone");
   });
 
   it("carries the server-resolved starter pack through, and never invents one", async () => {

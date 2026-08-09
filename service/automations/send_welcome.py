@@ -79,15 +79,15 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
-from . import rhythm  # tz_offset_for — IANA timezone beats the legacy utc_offset
+from . import rhythm  # tz_hours_for — THE clock (fixed offset first, zone as fallback)
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
 from ._common import (apply_word_restriction, hold_with_typing, load_voice_blocks,
                       load_hard_skip_ids, load_strip_emojis,
                       load_typing_indicator, load_typing_wpm, name_token,
-                      resolve_fan_name, resolve_model, skip_unreachable_fan,
-                      strip_emojis, typing_delay_seconds)
+                      resolve_fan_name, resolve_model, send_dropping_bad_media,
+                      skip_unreachable_fan, strip_emojis, typing_delay_seconds)
 from db.engine import get_session
 from db.models import AccountAiConfig, Fan, FanProfile, Message, WelcomeSent
 from llm_client import LLMCapExceeded
@@ -198,10 +198,22 @@ def _extract_new_subscribers(resp: object) -> list[dict]:
     return out
 
 
+def _clock_hours(cfg: dict) -> float:
+    """Her local offset in HOURS from a cfg dict carrying the RAW clock columns.
+
+    The ONE place in this module that reads either clock column. Everything below
+    takes hours and no longer cares which column answered — `rhythm.tz_hours_for`
+    decides (the fixed offset, with a legacy IANA zone as the fallback), and a
+    clockless account resolves to 0.0 == UTC, which is what a welcome has always
+    used. A draft config from the Brain panel goes through here too, so a preview
+    and a real send cannot disagree about the hour."""
+    return rhythm.tz_hours_for(cfg.get("timezone"), cfg.get("utc_offset"))
+
+
 def _model_hour(utc_offset: float | int | None) -> int:
     """Current hour in the model's timezone (utcnow + offset hours). Accepts
-    fractional hours — _load_ai_config resolves IANA zones and e.g. Kolkata
-    is +5:30."""
+    fractional hours — a legacy IANA zone can still resolve to e.g. Kolkata's
+    +5:30 (see `_clock_hours`)."""
     try:
         off = float(utc_offset)
     except (TypeError, ValueError):
@@ -281,7 +293,7 @@ def _pinned_line(cfg: dict, hour: int) -> str | None:
     if not line:
         return None
     old_wd = str(pin.get("weekday") or "").strip()
-    cur_wd = _model_weekday(cfg.get("utc_offset"))
+    cur_wd = _model_weekday(_clock_hours(cfg))
     if old_wd and old_wd.lower() != cur_wd.lower():
         # Preserve the casing the operator wrote — a lowercase "thursday" in a
         # casual line stays lowercase, ALL-CAPS stays ALL-CAPS — instead of forcing
@@ -336,16 +348,16 @@ async def _load_ai_config(account_id: str) -> dict:
                 pins = json.loads(cfg.welcome_pinned_json) or {}
             except Exception:
                 pins = {}
-        # Effective creator-local offset in HOURS: the IANA `timezone` column
-        # wins (DST-correct); the stored utc_offset is only the legacy
-        # fallback. Resolving here keeps every _model_hour/_model_weekday
-        # call site untouched — they never see the raw column again.
-        off_min = rhythm.tz_offset_for(getattr(cfg, "timezone", None),
-                                       cfg.utc_offset)
+        # The two clock columns RAW, exactly as stored. This dict used to carry a
+        # `utc_offset` that was already RESOLVED, which gave the key two meanings —
+        # resolved here, raw in the draft the Brain panel posts — and a shallow
+        # merge of the draft then silently replaced one with the other. Raw in,
+        # `_clock_hours` out: the merge compares like with like, and exactly one
+        # function knows how a row becomes an hour.
         return {
             "persona": cfg.persona,
-            "utc_offset": (off_min / 60.0 if off_min is not None
-                           else (cfg.utc_offset or 0)),
+            "utc_offset": cfg.utc_offset,
+            "timezone": getattr(cfg, "timezone", None),
             "location": cfg.location,
             "time_activities": acts,
             "time_images": imgs,
@@ -538,8 +550,9 @@ def _activity_bubble(cfg: dict, hour: int | None = None, *,
     that states where she is and what time it is there, with no scene attached. It
     does NOT depend on `time_activities`, so it still produces a line for a slot the
     creator never filled in (the activity path returns [] there)."""
+    off = _clock_hours(cfg)
     if hour is None:
-        hour = _model_hour(cfg.get("utc_offset") or 0)
+        hour = _model_hour(off)
     tod, activity = _time_activity(hour, cfg.get("time_activities") or {})
     if not activity and not time_only:
         return []
@@ -548,7 +561,7 @@ def _activity_bubble(cfg: dict, hour: int | None = None, *,
     # thing a fan reads as a broken bot.
     location = (cfg.get("location") or "").strip()
     where = f" in {location}" if location else ""
-    clock = f"it's {_model_weekday(cfg.get('utc_offset'))} {tod}{where}"
+    clock = f"it's {_model_weekday(off)} {tod}{where}"
     return [clock] if time_only else [f"{activity}... {clock}"]
 
 
@@ -756,7 +769,10 @@ async def preview_compose(
     _wv = (await load_voice_blocks(account_id)).voice
     cfg = await _load_ai_config(account_id)
     # Draft override wins over the saved brain (None never clobbers); the UI sends the
-    # full time_activities/time_images dicts, so a shallow merge is correct.
+    # full time_activities/time_images dicts, so a shallow merge is correct. Both
+    # sides hold the RAW clock columns and `_clock_hours` resolves whatever wins, so
+    # the draft's clock cannot land in a different unit than the brain's — that
+    # mismatch is what previewed Isabelle 3h away from what her welcome sent.
     if config:
         cfg = {**cfg, **{k: v for k, v in config.items() if v is not None}}
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
@@ -764,7 +780,7 @@ async def preview_compose(
     # Pin the requested slot's representative hour; unknown/empty slot → current hour.
     hour = _slot_hour(slot)
     if hour is None:
-        hour = _model_hour(cfg.get("utc_offset"))
+        hour = _model_hour(_clock_hours(cfg))
 
     if fan_id is not None:
         sub = {"id": int(fan_id), "name": test_name, "username": None}
@@ -853,7 +869,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # tick, so resolve ONCE — not per fan. Skipped on dry runs. Prefer the account's
     # configured per-slot image id (time_images); fall back to the legacy folder
     # picker when no slot id is set.
-    hour = _model_hour(cfg.get("utc_offset"))
+    hour = _model_hour(_clock_hours(cfg))
     bot_media_id: int | None = None
     if with_image and not dry_run:
         bot_media_id = _slot_image_id(cfg, hour)
@@ -1064,10 +1080,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                        typing_indicator=typing_on)
                 media = media_ids if idx == 0 else []
                 try:
-                    result = await asyncio.to_thread(
-                        lambda p=part, m=media: client.send_message(
-                            fan_id, p, media_files=m)
-                    )
+                    # A refused ATTACHMENT degrades to text-only rather than
+                    # losing the greeting. Otherwise one dead vault id blocks
+                    # EVERY welcome on the account: a failed bubble-0 leaves the
+                    # welcome_sent claim unwritten, so the next sweep regenerates
+                    # and re-fails, forever.
+                    outcome = await send_dropping_bad_media(
+                        client, fan_id, part, media, log=log)
+                    result = outcome.result
                 except Exception as e:
                     if idx == 0:
                         errors += 1
@@ -1087,7 +1107,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                     idx + 1, account_id, fan_id, exc_info=True)
                     break
                 landed += 1
-                if idx == 0 and media:
+                if idx == 0 and outcome.media_landed:
                     image_attached += 1
                 # Existing optimistic send path: persist each landed bubble
                 # (Automation employee). The WS pump skips outbound, so this is the

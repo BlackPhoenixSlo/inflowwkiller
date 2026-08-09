@@ -34,7 +34,7 @@ import type { AiChatterConfig } from "@/hooks/useCatalog";
 
 export default function ScriptsTab({ accountId }: { accountId: string | null }) {
   const cfgQ = useAiChatterConfig(accountId);
-  const { cfg, set, tz, setTz, saveCfg, saveCfgM, configLoaded } = useSellerConfig(accountId);
+  const { cfg, set, tz, saveCfg, saveCfgM, configLoaded } = useSellerConfig(accountId);
   const style = useSellerStyle(accountId);
 
   // Content library — the base chatter sells from this catalog (Upseller just tunes how).
@@ -519,7 +519,6 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           cfg={cfg}
           set={set}
           tz={tz}
-          setTz={setTz}
           utcOffset={cfgQ.data?.utc_offset ?? 0}
           derived={cfgQ.data?.derived_sleep_window ?? ["02:00", "06:00"]}
           effective={cfgQ.data?.effective_sleep_window ?? ["02:00", "06:00"]}

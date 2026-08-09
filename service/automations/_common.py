@@ -22,6 +22,7 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 import llm_client
 from db.engine import get_session
@@ -67,6 +68,88 @@ async def skip_unreachable_fan(account_id, fan_id, exc, *, log=log) -> bool:
     log.info("skip_listed unreachable fan account=%s fan=%s (%s)",
              account_id, fan_id, str(exc).splitlines()[0][:80])
     return True
+
+
+# ── rejected ATTACHMENT (the message is fine, the picture is not) ───────────
+# A vault id can go bad permanently — re-encoded, removed, DRM'd — and OF then
+# refuses the whole send with a field-keyed validation error naming `mediaFiles`.
+# Only these statuses may be treated that way: a validation reject means OF
+# created NOTHING, which is the precondition that makes a retry safe instead of
+# a double-message.
+_MEDIA_REJECT_STATUSES = (400, 422)
+
+
+def is_media_rejected_error(exc: BaseException) -> bool:
+    """True when OF refused the ATTACHED MEDIA rather than the message or the fan.
+
+    Read off the RESPONSE rather than sniffed out of the exception text. Matching
+    a substring like "mediafiles" against `str(exc)` would also fire on an error
+    that merely mentions the field, and the cost of a false positive here is not
+    a wasted call — it is sending a real fan the SAME MESSAGE TWICE, because the
+    caller retries on a True. So this asks the two questions that actually license
+    a retry: did OF reject the request as invalid (so nothing was created), and
+    did it name `mediaFiles` as the offending field?
+
+    Fails CLOSED — no response, non-JSON body, or any doubt returns False and the
+    caller's normal error handling runs. Nothing about the recipient is wrong
+    here, so skip-list and undeliverable-quarantine must NOT claim this one."""
+    resp = getattr(exc, "response", None)
+    if getattr(resp, "status_code", None) not in _MEDIA_REJECT_STATUSES:
+        return False
+    try:
+        body = resp.json()
+    except Exception:
+        return False
+    errors = body.get("errors") if isinstance(body, dict) else None
+    return isinstance(errors, dict) and "mediaFiles" in errors
+
+
+class SendOutcome(NamedTuple):
+    """What `send_dropping_bad_media` actually managed to deliver."""
+
+    result: dict | None
+    # True only when an attachment was asked for AND OF accepted it, so callers
+    # can drive their image counter off this directly instead of second-guessing
+    # the media list they passed in.
+    media_landed: bool
+
+
+async def send_dropping_bad_media(
+    client, fan_id, text: str, media_files: list, *, log=log,
+) -> SendOutcome:
+    """`client.send_message`, except a refused ATTACHMENT degrades to text-only
+    instead of losing the message entirely.
+
+    Why this is not merely nice-to-have: a sender only advances its durable state
+    on a RETURNED send, so a single permanently-bad vault id re-fires the same
+    undeliverable message every tick, forever, burning an LLM call each time.
+    Account ACCOUNT_ID sat at 39-eligible / 0-sent for days on one bad night-slot
+    image, and the run stats showed only "errors: 6" — nothing named the cause.
+    The text is the point of these messages; the picture is a garnish, so ship
+    the text.
+
+    Re-raises unchanged when the failure is NOT about media — those belong to the
+    caller's own skip/quarantine handling."""
+    async def _post(media: list):
+        return await asyncio.to_thread(
+            lambda: client.send_message(fan_id, text, media_files=media)
+        )
+
+    try:
+        result = await _post(media_files)
+    except Exception as exc:
+        if not (media_files and is_media_rejected_error(exc)):
+            raise
+        rejected = exc
+    else:
+        return SendOutcome(result, media_landed=bool(media_files))
+    # Deliberately outside the handler: a failure of the RETRY should surface on
+    # its own, not chained under "during handling of the above exception".
+    log.warning(
+        "of_media_rejected fan=%s media=%s — resending text-only (%s)",
+        fan_id, list(media_files), str(rejected).splitlines()[0][:120],
+    )
+    return SendOutcome(await _post([]), media_landed=False)
 
 
 # How long to rest a fan whose subscription has lapsed before re-checking. They
@@ -734,7 +817,46 @@ _BOT_IDENTITY_RE = re.compile(
     r"|\bis\s+(?:this|it)\s+really\s+you\b"            # is this really you
     r"|\bwho\s+is\s+this\s+really\b"                   # who is this really
     r"|\b(?:are|r)\s+(?:you|u)\s+a\.?\s?i\.?\b"        # are you ai
-    r"|\bis\s+(?:this|it)\s+(?:a\s+)?a\.?\s?i\.?\b",   # is this ai / is this a ai
+    r"|\bis\s+(?:this|it)\s+(?:a\s+)?a\.?\s?i\.?\b"    # is this ai / is this a ai
+    # "human" — the whole other half of how fans ask this, and the regex was deaf to
+    # every one of them. A prod thread ran "wait are you human?" past the detector as
+    # ordinary chat: no brush-off, no one-line cap, `bot_accusations: 0`, and a $3
+    # paywall went out on the answer. `\bhuman\b` (not `humans?`) keeps "you humans" out.
+    #
+    # ⚠️ ADJACENCY IS NOT ENOUGH, and an earlier version of this comment claimed it was.
+    # The sympathy sense puts the pronoun RIGHT NEXT to the word just as often as the
+    # accusation does — "that just makes you human", "and ya should be, means ur human"
+    # — so a bare `(?:you|u|ur)\s+human` alternative fires on reassurance and hands the
+    # fan a brush-off plus a `seller_off` turn for being kind. The accusation always
+    # carries a FRAME: a question word, or a negation. Match the frame, not the pair.
+    # One optional intensifier is allowed between, because "are you EVEN human" and
+    # "so ur NOT human then" are the sharpest forms of the ask, not edge cases.
+    r"|\b(?:are|r|is)\s+(?:you|u|this|it)\s+"
+    r"(?:even\s+|actually\s+|really\s+|genuinely\s+|not\s+)?"
+    r"(?:an?\s+)?(?:real\s+)?human\b"                  # are you (even) (a real) human
+    r"|\b(?:you|u|ur|youre|you're)\s+not\s+(?:an?\s+)?(?:real\s+)?human\b"  # ur not human
+    # Bare "u human?" — the pronoun pair WITHOUT a question word, which is the shape
+    # the sympathy sense also takes. What separates them is position: the accusation
+    # OPENS the message ("u human?", "wait ur human right?"), the reassurance is buried
+    # inside one ("that just makes you human"). Anchored to the start, past a filler.
+    # …and it has to END there too. "youre human babe it happens" and "ur a human
+    # being like the rest of us" both OPEN with the pair and are both reassurance, so
+    # position alone is not enough either — the accusation is the whole message.
+    r"|^\W*(?:wait\s+|so\s+|ok\s+|but\s+|hey\s+)*"
+    r"(?:you|u|ur|youre|you're)\s+(?:an?\s+)?(?:real\s+)?human"
+    r"(?!\s+being)\b(?:\s+right)?\s*\??\s*$"
+    r"|^\s*human\??\s*$"                              # "human?" as the whole message
+    # The conversation itself, in the first person. Without the "am i / are we / is
+    # this" anchor this matched a fan narrating his day — "i was talking to a human at
+    # the bank all day" is small talk, not an accusation.
+    r"|\b(?:am\s+i|are\s+we|is\s+this)\s+(?:even\s+|actually\s+|really\s+)?"
+    r"(?:\w+\s+){0,2}?(?:talking|chatting|texting|speaking|typing)\s+(?:to|with)\s+"
+    r"(?:an?\s+)?(?:real\s+)?human\b"
+    # …and the elliptical form, where he drops the "am i". Anchored for the same
+    # reason: at the start it is the question, buried in a sentence it is his day.
+    r"|^\W*(?:talking|chatting|texting|speaking|typing)\s+(?:to|with)\s+"
+    r"(?:an?\s+)?(?:real\s+)?human\b"
+    r"|\bhuman\s+(?:typing|behind|answering|writing|replying)\b",  # a human typing this
     re.I,
 )
 # When ONLY the softer identity tell fires, a pic/photo/image word means he's talking
@@ -759,6 +881,103 @@ def detect_bot_accusation(text: str | None) -> bool:
     if _BOT_PHOTO_CTX_RE.search(text):
         return False                      # 'this pic looks ai' / 'is that photo real'
     return bool(_BOT_IDENTITY_RE.search(text))
+
+
+# ── "wanna see my cock?" — HE offers, and we have to say YES ──────────────────
+# Built from prod, 2026-08-09: 367 candidate inbounds swept across the fleet, of which
+# 91 distinct messages are this move. It had NO handler at all, and the failure was not
+# silence — it was worse. `CONTENT_ASK_RE` matches the bare substring "wanna see", with
+# no reading of WHO offers WHAT, so "You wanna see my cock?" scored as a BUYING signal
+# and the engine answered a man reaching for his phone with a sales pitch. Receipt,
+# Isabelle fan 326419277 on 2026-08-08 01:45:50:
+#     him  "You wanna see my cock?"
+#     her  "u keep askn" / "dont u" / "tell me more about that highway life first"  + $8 PPV
+# She thinks HE is the one asking. He offered three times over three days and was
+# pitched, interviewed and deflected — never once told "yes, send it".
+#
+# The object list is what keeps this off the rest of the corpus: without it, `send you
+# a…` swallowed "I'll send you a tip", "can I send money on here", "send by FedEx" and
+# "I'll send you a pic before I leave for basketball" — 185 hits, most of them noise.
+_PIC_OFFER_OBJ = (
+    r"(?:pic(?:ture|s)?|photos?|selfies?|vids?|videos?|clips?|snaps?|nudes?"
+    r"|dick|cock|penis|bulge|boner|morning\s*wood|body|abs|chest|load|cum(?:shot)?"
+    r"|junk|package|it|one|something|some)")
+_PIC_OFFER_YOU = r"(?:you|u|ya)"
+_PIC_OFFER_WANT = r"(?:wanna|wana|want\s+to|wanted\s+to)"
+# ⚠️ `\brate\b`, never a bare "rate" substring. The corpus is full of it: "celebrate my
+# birthday", "obliterate my existence", "penetrate my wet hole", "generate it", and a
+# Mexican restaurant called Mirate. Nine traps in one 70-row sample; the word boundary
+# is the whole defence.
+# ⚠️ The second-person subject on the "see" branch is NOT optional. Dropping it made
+# "I wanna see it" fire — that is HIM asking for HER content, the exact inversion this
+# beat exists to stop misreading, and it was ~20 rows of the corpus.
+PIC_OFFER_RE = re.compile(
+    rf"\brate\b(?:\s+\w+){{0,3}}\s+(?:my|mine)\b"
+    rf"|\b(?:do|dont|don'?t|so|and)?\s*{_PIC_OFFER_YOU}\s+{_PIC_OFFER_WANT}"
+    rf"\s+see\s+(?:my\b|it\b|them\b|these\b)"
+    rf"|\b{_PIC_OFFER_WANT}\s+see\s+my\s+{_PIC_OFFER_OBJ}\b"
+    rf"|\b(?:can|could|should|shall|may)\s+i\s+(?:send|show)\b"
+    rf"[^.?!\n]{{0,24}}?\b{_PIC_OFFER_OBJ}\b"
+    rf"|\b(?:want|wanted)\s+me\s+to\s+(?:send|show)\b"
+    rf"|\b(?:let\s+me|lemme)\s+(?:send|show)\s+{_PIC_OFFER_YOU}\b"
+    rf"|\b(?:i\s+)?(?:really\s+)?(?:wanna|wana|want\s+to|will|can|could)"
+    rf"\s+show\s+{_PIC_OFFER_YOU}\s+my\s+{_PIC_OFFER_OBJ}\b",
+    re.I)
+
+# The mirror image: SHE is the one being asked, or a peer creator is offering to rate
+# HIM. "Show me your dick and let me rate it" and "SHOW ME YOUR COCK 😈 I'LL RATE IT
+# NOW!!!" both sit in the corpus, both from creators blasting our models.
+_PIC_OFFER_NOT_HIS_RE = re.compile(
+    rf"\b(?:show|send)\s+(?:me|us)\s+(?:your|ur|yours)\b"
+    rf"|\b(?:let\s+me|i'?ll|ill|i\s+wanna|i\s+want\s+to|lemme)\s+rate\b"
+    rf"|\bshow\s+me\s+yours\b"
+    # money and logistics are not media: "send You money", "You want me to send you 87?"
+    rf"|\bsend\s+{_PIC_OFFER_YOU}?\s*money\b|\bphone\s*#"
+    # …but a COUNT is not an amount. The lookahead is what keeps "i'll send you 2 pics"
+    # out of the money branch while "send you 87?" stays in it.
+    rf"|\bsend\s+{_PIC_OFFER_YOU}?\s*\d+"
+    rf"(?!\s*(?:\w+\s+){{0,2}}(?:pics?|photos?|vids?|videos?|clips?|nudes?|selfies?))",
+    re.I)
+
+# A PROMO always has a call to BUY, and a blast addresses a crowd rather than him —
+# that, not anatomy, is what separates a peer creator pitching her page from a fan
+# reaching for his phone. Anatomy cannot do this job: the male-creator accounts
+# (Lucas1/Lucas2/buznizjohn) have female fans whose offers of themselves are just as
+# real, so a female-anatomy blocklist would silence exactly the fans it should serve.
+# `load_promo_spam_ids` is the durable guard and it runs first, but it is deliberately
+# conservative — "a chatty creator-bot that types plain text is not caught" — so this
+# beat carries its own.
+_PIC_OFFER_PROMO_RE = re.compile(
+    # ⚠️ THREE WORDS ARE DELIBERATELY NOT HERE, each a false positive found by reading
+    # this list back against the corpus rather than by running it:
+    #   • `off`  — meant for "50% off" and it silenced "can I send you a video of me
+    #     jerking off?", a textbook offer. `%` and `discount` cover the promo sense.
+    #   • `sub`  — meant for "subscribe" and it would silence a submissive fan calling
+    #     himself one, on the male-dom lanes where that is ordinary vocabulary.
+    #   • bare `mins` — a duration only reads as a pitch with a number in front of it.
+    r"\$|\bunlock\b|\btap\b|\bsubscribe\b|\bsub\s+to\b|\bvip\b|\bppv\b|\btip\s+me\b"
+    r"|\bmy\s+page\b|\bmy\s+friend\b|\bgo\s+say\s+hi\b|\blink\b|\bbundle\b"
+    r"|\bdiscount\b|%|\bcontent\s+tester|\b\d+\+?\s*mins?\b|\bslots?\b"
+    r"|<span|<strong|class=|\bcash\s*app|\bfedex|\bpaypal|\bvenmo|\bas\s+a\s+tip\b"
+    r"|\bwho\s+else\b|\btype\s*[\"'“]|\bpls\s+respond\b|\bstop\s+looking\b"
+    r"|\bfor\s+cheap\b|\bend\s+of\s+the\s+month\b"
+    # Mathematical-alphanumeric unicode ("𝓐𝓘𝓢𝓗𝓐𝓗'𝓢 𝓔𝓝𝓓 𝓞𝓕 𝓣𝓗𝓔 𝓜𝓞𝓝𝓣𝓗") is a promo
+    # tell no real fan types on a phone keyboard.
+    r"|[\U0001D400-\U0001D7FF]",
+    re.I)
+
+
+def detect_pic_offer(text: str | None) -> bool:
+    """True when an inbound OFFERS a picture of himself, or asks to be rated.
+
+    Answering this is the whole point: the rating beat downstream only fires once a
+    picture has arrived, and nothing in the engine invites one from a man asking
+    permission to send it. Pure, no DB — same shape as detect_bot_accusation."""
+    if not text:
+        return False
+    if _PIC_OFFER_NOT_HIS_RE.search(text) or _PIC_OFFER_PROMO_RE.search(text):
+        return False
+    return bool(PIC_OFFER_RE.search(text))
 
 
 # ── "Filming it now" refusal guard (§3.7) ─────────────────────────────

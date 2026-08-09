@@ -163,17 +163,13 @@ async def welcome_pin(body: _PinBody = Body(...)) -> dict[str, Any]:
                 pins = {}
         line = (body.line or "").strip()
         if line:
-            # Same zone-first resolution as the senders: IANA timezone wins,
-            # legacy utc_offset is the fallback (minutes → hours for the helper).
+            # Her clock through the ONE helper, exactly as the sender stamps it.
             from automations import rhythm
-            off_min = (rhythm.tz_offset_for(getattr(cfg, "timezone", None),
-                                            cfg.utc_offset)
-                       if cfg is not None else None)
             pins[body.slot] = {
                 "line": line,
-                "weekday": _model_weekday(
-                    off_min / 60.0 if off_min is not None
-                    else (cfg.utc_offset if cfg is not None else 0)),
+                "weekday": _model_weekday(rhythm.tz_hours_for(
+                    getattr(cfg, "timezone", None),
+                    getattr(cfg, "utc_offset", None))),
             }
         else:
             pins.pop(body.slot, None)  # unpin

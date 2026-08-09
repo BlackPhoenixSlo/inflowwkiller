@@ -66,6 +66,10 @@ from db.models import (
 from of_client import OFAPIError, OFClient
 import client_pool  # the relay's one OFClient pool (fd discipline lives there)
 from automation_registry import register, get_automation, load_automation_plugins
+# The ONE creator-clock resolver (quiet hours). `automations/__init__` is a
+# docstring and rhythm imports nothing of ours, so this cannot cycle back through
+# the plugins that import THIS module.
+from automations import rhythm
 import account_health
 import account_page  # free-vs-paid page (prime the cache off the recovery probe)
 from jsonsafe import dump_capped
@@ -640,7 +644,15 @@ def _due_clock_slot(
     return None if best is None else best[1]
 
 
-def _in_quiet_hours(quiet_hours_json: str | None, utc_offset: int, now: datetime) -> bool:
+# Accounts already warned about "quiet hours set, but no clock to evaluate them in".
+# The materializer runs every 30s, so this is the difference between one honest
+# warning and a log nobody can read. Process-local by design: a restart re-warns,
+# which is when someone is looking anyway.
+_QUIET_HOURS_NO_CLOCK_WARNED: set[str] = set()
+
+
+def _in_quiet_hours(quiet_hours_json: str | None, tz_off_min: int | None,
+                    now: datetime) -> bool:
     """Rule-level quiet hours. OPT-IN: a NULL/empty/malformed `quiet_hours_json`
     (every rule's default) returns False → the rule fires 24/7, unchanged. When set
     to `[start, end]` (creator-LOCAL hours, same convention as nudge_online), return
@@ -648,8 +660,17 @@ def _in_quiet_hours(quiet_hours_json: str | None, utc_offset: int, now: datetime
     the job until the band ends. `start == end` disables it. The band [start, end)
     wraps midnight when start > end (e.g. [22, 6] = 10pm–6am).
 
-    Local hour mirrors send_welcome._model_hour: (utcnow().hour + utc_offset) % 24.
-    A `{"start": s, "end": e}` object form is accepted too, for the rules UI."""
+    `tz_off_min` is the creator-local offset in MINUTES, resolved by the ONE clock
+    (`rhythm.tz_offset_for`) like every other engine. It used to be the raw
+    `utc_offset` COLUMN, read straight out of the row — a second clock, and for any
+    account that also had an IANA zone it was a different one: quiet hours held (or
+    released) jobs on the legacy number while every message the fan read used the
+    zone. Minutes, not hours, so a half-hour zone (Kolkata +5:30) lands on the right
+    hour instead of being truncated. None means the account has NO clock, and a
+    creator-local band cannot be evaluated without one — so it does not apply, and
+    the rule fires 24/7 (the caller warns once). Inventing UTC there is what the
+    raw-column read did, and a server clock sold as hers is the bug, not the
+    fallback. A `{"start": s, "end": e}` object form is accepted too, for the UI."""
     if not quiet_hours_json:
         return False
     try:
@@ -666,7 +687,9 @@ def _in_quiet_hours(quiet_hours_json: str | None, utc_offset: int, now: datetime
         return False
     if start == end:                      # disabled (incl. [0, 0])
         return False
-    hour = (now.hour + int(utc_offset or 0)) % 24
+    if tz_off_min is None:                # no clock → no local band to be inside
+        return False
+    hour = ((now.hour * 60 + now.minute + int(tz_off_min)) // 60) % 24
     if start < end:
         return start <= hour < end
     return hour >= start or hour < end     # wraps past midnight
@@ -680,7 +703,7 @@ async def _materialize_due_rules() -> int:
     A malformed rule is logged + skipped, never fatal. Returns jobs enqueued."""
     now = datetime.utcnow()
     enqueued = 0
-    offsets: dict[str, int] = {}   # account_id → utc_offset (creator-local quiet hours)
+    offsets: dict[str, int | None] = {}   # account_id → creator-local MINUTES (quiet hours)
     async with get_session() as s:
         rules = (
             await s.execute(
@@ -778,10 +801,26 @@ async def _materialize_due_rules() -> int:
             if rule.quiet_hours_json:
                 acct = rule.account_id
                 if acct not in offsets:
-                    offsets[acct] = (await s.execute(
-                        select(AccountAiConfig.utc_offset).where(
-                            AccountAiConfig.account_id == acct)
-                    )).scalar_one_or_none() or 0
+                    # Through the ONE resolver, not the raw column — see
+                    # _in_quiet_hours. Both clock columns are read so a zone-only
+                    # account still has a band. Named, because the SELECT order and
+                    # the resolver's argument order are deliberately crossed.
+                    row = (await s.execute(
+                        select(AccountAiConfig.utc_offset, AccountAiConfig.timezone)
+                        .where(AccountAiConfig.account_id == acct)
+                    )).first()
+                    acct_off, acct_tz = (row[0], row[1]) if row else (None, None)
+                    offsets[acct] = rhythm.tz_offset_for(acct_tz, acct_off, now)
+                # Quiet hours are creator-LOCAL, so an account with no clock has no
+                # band — `_in_quiet_hours` owns that call; this only narrates it,
+                # ONCE per account per process. The loop runs every 30s forever, and
+                # a warning repeated 2,880 times a day is one nobody reads.
+                if offsets[acct] is None and acct not in _QUIET_HOURS_NO_CLOCK_WARNED:
+                    _QUIET_HOURS_NO_CLOCK_WARNED.add(acct)
+                    log.warning("automation_rule_quiet_hours_no_clock rule_id=%s "
+                                "account=%s kind=%s — no clock on the account, so the "
+                                "band cannot apply and this rule fires 24/7. Set it in "
+                                "the Brain (Creator clock).", rule.id, acct, rule.kind)
                 if _in_quiet_hours(rule.quiet_hours_json, offsets[acct], now):
                     log.info("automation_rule_quiet_hours rule_id=%s account=%s kind=%s",
                              rule.id, acct, rule.kind)

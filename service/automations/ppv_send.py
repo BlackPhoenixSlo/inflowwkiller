@@ -74,11 +74,12 @@ import vault_ai_to_chatter
 from automation_registry import register
 from db.engine import get_session
 from db.models import (
-    AccountAiConfig, Blacklist, Fan, MassRun,
-    Post, ScheduledJob, Transaction,
+    AccountAiConfig, Blacklist, Fan, MassRun, Message,
+    Post, RhythmState, ScheduledJob, Transaction,
 )
 from ._common import load_hard_skip_ids, load_voice_blocks
-from . import _customs, _voice
+from ._leash import _last_money_at
+from . import _customs, _ghost, _voice
 
 log = logging.getLogger("of-relay.automation.ppv_send")
 
@@ -1028,6 +1029,99 @@ async def _eligible_fans(account_id: str):
     return fan_rows, last_purchase
 
 
+# Her own 1:1 rows — `ai_chatter._OUR_KINDS`, restated rather than imported because
+# ai_chatter imports THIS module (`price_bounds`) and the cycle would be real.
+_HER_KINDS = ("ai_chatter", "ai_upseller")
+
+
+async def _ghost_dark_ids(account_id: str, fan_ids, now: datetime) -> set[int]:
+    """The fans she is deliberately DARK on right now (`_ghost.py`) — they come out
+    of the blast audience. READ-ONLY: this lane never writes `ghost_anchor`.
+
+    Operator ruling 2026-08-08, and it is a deliberate exception to the 07-23 ruling
+    in `_eligible_fans` above ("AI-inferred 1:1 state must never shrink a blast").
+    The measured reason: on Ava a ghosted fan wrote twice into his dark day, got
+    exactly the silence the cycle promises — and then took three priced PPV blasts
+    and a wall promo inside the same 24 hours. That does not read as "she's busy",
+    it reads as "she only writes when she wants money", which is the inverse of the
+    scarcity the feature exists to manufacture. The −86% behind the 07-23 ruling came
+    from gating the blast on chat SIGNALS (hot ladders, offer pauses) across the whole
+    roster; this is a per-fan schedule an operator turned on by hand, and it can only
+    ever reach fans ai_chatter has already anchored.
+
+    NO ANCHOR ⇒ NEVER DARK. `ghost_anchor` is written by ai_chatter's gate and nothing
+    else, so a fan it has never evaluated has no phase — and deriving one here, off
+    this lane's own idea of a first inbound, would ghost fans the chat engine is not
+    ghosting and disagree with it about which day.
+
+    Both exemptions mirror `ai_chatter._ghost_gate`, and the dormancy one is
+    load-bearing HERE in a way it is not there: the chat gate RESTARTS an exempt fan's
+    cycle, so it meets each one once, while this lane sees a blast audience that is
+    mostly cold fans whose anchors ai_chatter has not touched in weeks. Without it a
+    stale anchor silently withholds the money lane from fans nobody is ghosting."""
+    ids = {int(x) for x in fan_ids}
+    if not ids:
+        return set()
+    async with get_session() as s:
+        cfg_row = await s.get(AccountAiConfig, str(account_id))
+        raw = getattr(cfg_row, "ai_chatter_config_json", None) if cfg_row else None
+    try:
+        cfg = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        cfg = {}
+    # The two ai_chatter defaults this reads (`rhythm_enabled` True, ghost False),
+    # restated for the same import-cycle reason as _HER_KINDS. Off ⇒ not one query.
+    if not isinstance(cfg, dict) or not cfg.get("rhythm_enabled", True) \
+            or not cfg.get("rhythm_ghost_enabled", False):
+        return set()
+    cycle = _ghost.parse_cycle(cfg.get("rhythm_ghost_cycle"))
+
+    async with get_session() as s:
+        # Every anchor for the account, intersected in Python: anchors are a handful
+        # and the audience is hundreds, so this is the cheaper direction AND it keeps
+        # a 400-fan blast off SQLite's bound-parameter limit.
+        anchors = (await s.execute(
+            select(RhythmState.fan_id, RhythmState.ghost_anchor).where(
+                RhythmState.account_id == str(account_id),
+                RhythmState.ghost_anchor.is_not(None),
+            )
+        )).all()
+    windows = {}
+    for fid, anchor in anchors:
+        if int(fid) not in ids:
+            continue
+        win = _ghost.window(anchor, now, cycle)
+        if win is not None:
+            windows[int(fid)] = win
+    if not windows:
+        return set()
+
+    async with get_session() as s:
+        # `her_last_at`, NOT any outbound: a mass row is not her talking to him, and
+        # counting one would let last week's blast pass as "she's been present".
+        her = dict((await s.execute(
+            select(Message.fan_id, func.max(Message.created_at)).where(
+                Message.account_id == str(account_id),
+                Message.fan_id.in_(list(windows)),
+                Message.direction == "out",
+                Message.mass_run_id.is_(None),
+                Message.automation_kind.in_(_HER_KINDS),
+            ).group_by(Message.fan_id)
+        )).all())
+    money = await _last_money_at(account_id, list(windows))
+
+    dark = set()
+    for fid, win in windows.items():
+        her_at = her.get(fid)
+        if her_at is None or her_at < win.chat_started_at:
+            continue                 # she was never there this run — nothing withdrawn
+        paid_at = money.get(fid)
+        if paid_at is not None and paid_at >= win.chat_started_at:
+            continue                 # he paid during this run — he is never dark
+        dark.add(fid)
+    return dark
+
+
 async def _all_fan_ids(account_id: str) -> list[int]:
     """EVERY fan id we know for the account (NO bot/blacklist/buyer filter). Used as
     the broadcast exclude: a 'message all subscribers' send skips everyone we've
@@ -1088,7 +1182,7 @@ async def _last_ppv_send(account_id: str, since: datetime,
     restart) is finalized `error` with NO stats — so keying on stats_json made a
     fire that had already broadcast most of its cells look like it never
     happened, and the requeued job re-blasted the whole audience. Live 2026-07-28
-    on Lexi: run 814092 sent 13 of 14 cells, was cancelled, and its retry 4
+    on Ava: run 814092 sent 13 of 14 cells, was cancelled, and its retry 4
     minutes later re-sent the same PPV to the same 422 fans — under a 2/day cap.
     Those 13 rows sat there `ok` the whole time.
 
@@ -1357,13 +1451,35 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             log.info("ppv_send owner-skip account=%s ppv=%s skipped=%d (already unlocked)",
                      account_id, ppv_id, before - len(fan_rows))
 
+    # ── ghost cycle: she is dark on him today, so this lane is too ──────
+    # Unlike the ownership guard above, this one DOES yield to `force_ids`: the
+    # ghost is a gate (a schedule about when she talks), not a fact about the fan,
+    # and an operator firing at named fans has overridden every other gate here.
+    # `only_fan_ids` is a machine scope and does not — see the header.
+    #
+    # The broadcast leg below needs no filter: it excludes `_all_fan_ids`, and a
+    # fan with an anchor is by definition one we know.
+    ghost_skipped = 0
+    if not force_ids:
+        dark = await _ghost_dark_ids(account_id, [int(r[0]) for r in fan_rows], now)
+        if dark:
+            before = len(fan_rows)
+            fan_rows = [r for r in fan_rows if int(r[0]) not in dark]
+            ghost_skipped = before - len(fan_rows)
+            log.info("ppv_send ghost-skip account=%s ppv=%s skipped=%d (dark today)",
+                     account_id, ppv_id, ghost_skipped)
+
     # No known fans is only a hard stop when we're NOT also broadcasting to all
     # subscribers (reach_all): the broadcast can still reach the uncached list.
     # A fan-scoped run (force_ids/only_fan_ids) never broadcasts — the whole point of
     # a scope is that the audience is those fans and nobody else.
     broadcasting = reach_all and not force_ids and not only_fan_ids
     if not fan_rows and not broadcasting:
-        return {"status": "skipped", "reason": "no_fans"}
+        # Carry the counter even here: "no_fans" because everyone is mid-ghost is a
+        # very different run from "no_fans" because the roster is empty, and the
+        # stats row is the only place anyone can tell them apart.
+        return {"status": "skipped", "reason": "no_fans",
+                "ghost_skipped": ghost_skipped}
 
     cells = _segments(fan_rows, last_purchase, now)
 
@@ -1380,6 +1496,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             })
         return {"dry_run": True, "ppv_id": ppv_id, "is_resend": is_resend,
                 "cells": len(plan), "fans": len(fan_rows), "plan": plan, "sent": 0,
+                "ghost_skipped": ghost_skipped,
                 "broadcast_all": broadcasting,
                 "broadcast_price": (bcast_cents / 100) if broadcasting else None,
                 "pause_hours": pause_hours}
@@ -1426,7 +1543,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             "error": repr(e)[:200]})
             continue
         results.append({"cell": key, "price": price / 100,
-                        "recipients": len(fan_ids), "status": res.get("status")})
+                        "recipients": len(fan_ids), "status": res.get("status"),
+                        # `reason` is why a skip/error happened. Recording only
+                        # `status` is what kept the broadcast outage invisible
+                        # for 45 days — the run still reads 'ok' at the top.
+                        "reason": res.get("reason")})
         if res.get("status") not in ("skipped", "error"):
             sent_cells += 1
             total_recipients += len(fan_ids)
@@ -1465,6 +1586,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             broadcast = res.get("status")
             results.append({"cell": "broadcast:all", "price": bcast_cents / 100,
                             "recipients": res.get("recipients", 0), "status": broadcast,
+                            # See the cell append above — a bare "error" with no
+                            # reason is unreadable in automation_runs.stats_json.
+                            "reason": res.get("reason"),
                             "excluded_known": len(known_ids)})
             if broadcast not in ("skipped", "error"):
                 sent_cells += 1   # counts as a send for the cap + 'ok' status
@@ -1504,6 +1628,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                   ("all_sends_failed" if send_errors else "all_cells_empty"),
         "ppv_id": ppv_id, "is_resend": is_resend,
         "cells_sent": sent_cells, "recipients": total_recipients,
+        # How many fans the ghost cycle took out of this blast. Without it the run
+        # just quietly reaches fewer people and nothing says why.
+        "ghost_skipped": ghost_skipped,
         "send_errors": send_errors,
         "broadcast": broadcast, "pause_hours": pause_hours,
         "resend_job_id": resend_job_id, "feed_post": feed_post, "results": results,

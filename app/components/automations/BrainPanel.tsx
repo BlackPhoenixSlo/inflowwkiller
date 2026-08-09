@@ -12,7 +12,7 @@
  * slots from the Nudge tab.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
@@ -34,7 +34,8 @@ import {
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
-import { TIMEZONES, zoneLabel } from "@/components/settings/sellerShared";
+import { clockOptions, localTimeAtOffset, localTimeIn, utcLabel, zoneOffsetNow }
+  from "@/lib/creatorClock";
 import { useEnrichPersona } from "@/hooks/useAccountConfig";
 import { useStyleConfig, useSaveStyleConfig } from "@/hooks/useStyleConfig";
 
@@ -100,31 +101,6 @@ function defaultsWithImages(defaults: BrainConfig, current: BrainConfig): BrainC
            persona_facts: current.persona_facts ?? {} };
 }
 
-// "UTC-7" / "her clock: 1:20 AM" for the picked IANA zone — the operator's
-// glance-check that the creator's clock is right (the Witcher incident was a
-// bot claiming 10am at 12:30am creator-time). Computed by Intl, never stored:
-// the saved utc_offset is only a legacy fallback for zone-less accounts.
-function zoneOffsetLabel(tz: string): string | null {
-  try {
-    const part = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" })
-      .formatToParts(new Date())
-      .find((p) => p.type === "timeZoneName")?.value;
-    return part ? part.replace("GMT", "UTC") : null;
-  } catch {
-    return null;
-  }
-}
-
-function localTimeIn(tz: string): string | null {
-  try {
-    return new Date().toLocaleTimeString("en-US", {
-      timeZone: tz, hour: "numeric", minute: "2-digit",
-    });
-  } catch {
-    return null;
-  }
-}
-
 const textareaCls =
   "w-full rounded-lg bg-bg-elev-1 border border-border text-sm px-2 py-1.5 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40";
 const selectCls =
@@ -145,6 +121,10 @@ export default function BrainPanel() {
   const [mediaCache, setMediaCache] = useState<Record<number, VaultMedia>>({});
   const [pickerSlot, setPickerSlot] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  // Built once, not per render: this panel re-renders on every keystroke in the
+  // persona box and the list costs one Intl formatter per zone to derive. The
+  // offsets only move at a DST boundary, which no editing session outlives.
+  const clockChoices = useMemo(clockOptions, []);
 
   // ── Welcome AUTOMATION (the send_welcome rule), surfaced here in the Brain
   // now that its settings live here too. Find-or-create one rule per account. ──
@@ -393,12 +373,18 @@ export default function BrainPanel() {
     }
   }
 
-  // 🪄 Enrich — propose values for the EMPTY canon slots, and resolve her
-  // timezone from the resulting city. Nothing is saved here: the proposal lands
-  // in the form for the operator to read and edit, then the normal Save writes
-  // it. The timezone comes back resolved in CODE (never model-guessed) — six
-  // live accounts were 1-4h wrong and the prompt clock then instructs the model
-  // to defend the wrong hour, so this is the one field a model may not author.
+  // 🪄 Enrich — propose values for the EMPTY canon slots, and derive HER CLOCK from
+  // the resulting city. Nothing is saved here: the proposal lands in the form for the
+  // operator to read and edit, then the normal Save writes it. The clock comes back
+  // resolved in CODE (never model-guessed) — six live accounts were 1-4h wrong and
+  // the prompt clock then instructs the model to defend the wrong hour, so this is
+  // the one field a model may not author.
+  //
+  // This is where PLACE and TIME correlate: the offset it proposes is the offset of
+  // the place her canon says she lives in, so the two cannot drift apart by being
+  // answered separately. It writes the offset (the one stored clock) and retires any
+  // legacy zone — proposing a zone here is what put a Los Angeles clock on an
+  // Eastern creator.
   async function runEnrich() {
     if (!accountId || !form) return;
     setEnrichMsg(null);
@@ -407,13 +393,16 @@ export default function BrainPanel() {
       const filled = Object.keys(res.proposed ?? {});
       setForm((f) => (f ? { ...f, persona_facts: res.facts ?? {} } : f));
       setEnrichedKeys(filled);
-      if (res.timezone && res.timezone !== form.timezone) {
-        set("timezone", res.timezone);
+      if (typeof res.utc_offset === "number" && res.utc_offset !== form.utc_offset) {
+        set("utc_offset", res.utc_offset);
+        if (form.timezone) set("timezone", null);
       }
       const bits: string[] = [];
       bits.push(filled.length ? `filled ${filled.length} field${filled.length === 1 ? "" : "s"}` : "nothing left to fill");
-      if (res.timezone && res.timezone_changed) bits.push(`timezone → ${res.timezone}`);
-      else if (!res.timezone) bits.push("timezone unresolved — pick it below");
+      if (typeof res.utc_offset === "number" && res.utc_offset_changed) {
+        bits.push(`clock → ${utcLabel(res.utc_offset)}` +
+                  (res.timezone ? ` (${res.timezone})` : ""));
+      } else if (res.utc_offset == null) bits.push("clock unresolved — pick the creator's place below");
       setEnrichMsg(`${bits.join(" · ")}. Review, then Save.`);
       setMsg(null);
     } catch (e) {
@@ -432,6 +421,11 @@ export default function BrainPanel() {
           persona: form.persona,
           persona_facts: form.persona_facts,
           location: form.location,
+          // BOTH clock columns, raw — the backend resolves them with the same
+          // helper the send uses, so a preview cannot land on a different hour
+          // than the welcome ships. Posting the offset alone made a zone-only
+          // account preview against a field it does not run on.
+          timezone: form.timezone,
           utc_offset: form.utc_offset,
           time_activities: form.time_activities,
           time_images: form.time_images,
@@ -659,34 +653,58 @@ export default function BrainPanel() {
                 ))}
               </select>
             </label>
+            {/* HER CLOCK — one control, one stored number, and it is the one every
+                engine reads (rhythm.tz_offset_for). There used to be two: an IANA
+                zone here and a legacy offset behind it, the zone silently won, and
+                Isabelle ran three hours off — her welcome told new subscribers
+                "it's Friday night in US" at 07:38 her time. The value of this
+                dropdown IS the stored offset, so what you pick is what a fan gets. */}
             <label className="block space-y-1">
-              <span className="text-[11px] uppercase tracking-wide text-fg-dim">Timezone</span>
+              <span className="text-[11px] uppercase tracking-wide text-fg-dim">
+                Creator clock (place &amp; time)
+              </span>
               <select
-                value={form.timezone ?? ""}
-                onChange={(e) => set("timezone", e.target.value || null)}
+                value={String(form.utc_offset ?? 0)}
+                onChange={(e) => {
+                  const off = Number(e.target.value);
+                  set("utc_offset", off);
+                  // One clock: picking here retires any legacy zone on the row, so
+                  // the two can never disagree again on this account.
+                  if (form.timezone) set("timezone", null);
+                }}
                 className={selectCls}
-                title="The creator's IANA timezone — powers the clock in chat prompts and the sleep window. The offset is computed from it (DST-aware), so there's nothing else to set."
+                title="Where this creator is — and therefore what time it is there. This ONE value drives every clock: the time-of-day line in the welcome, the RIGHT-NOW line in every chat prompt, the sleep window and quiet hours. A fixed offset does not follow DST: move it an hour at the changeover (US Nov 1, EU Oct 25)."
               >
-                <option value="">— not set —</option>
-                {(form.timezone && !TIMEZONES.includes(form.timezone)
-                  ? [form.timezone, ...TIMEZONES]
-                  : TIMEZONES
-                ).map((z) => (
-                  <option key={z} value={z}>{zoneLabel(z)}</option>
+                <option value="0">— not set (no clock in chat) —</option>
+                {clockChoices.map((o) => (
+                  <option key={o.offset} value={String(o.offset)}>{o.label}</option>
                 ))}
               </select>
-              {form.timezone ? (
-                <span className="block text-[11px] text-fg-dim">
-                  {zoneOffsetLabel(form.timezone)} · local time: {localTimeIn(form.timezone)}
-                </span>
-              ) : form.utc_offset !== 0 ? (
-                <span className="block text-[11px] text-amber-400"
-                  title="A fixed offset drifts an hour every DST change — pick the real timezone above.">
-                  legacy UTC{form.utc_offset > 0 ? "+" : ""}{form.utc_offset} offset in use
+              {form.utc_offset ? (
+                <>
+                  <span className="block text-[11px] text-fg-dim">
+                    local time there now: {localTimeAtOffset(form.utc_offset)}
+                  </span>
+                  {form.timezone && (
+                    <span
+                      className="block text-[11px] text-amber-400"
+                      title="A legacy IANA timezone is still stored on this row. It is IGNORED while the clock above is set, and pressing Save clears it. Until then it is the value a settings-transfer would copy."
+                    >
+                      ⚠ legacy timezone {form.timezone} still stored — Save clears it
+                    </span>
+                  )}
+                </>
+              ) : form.timezone ? (
+                <span
+                  className="block text-[11px] text-amber-400"
+                  title="No fixed clock is set, so this account still runs on its legacy IANA zone. Pick the creator's place above to make it one visible number."
+                >
+                  running on the legacy zone {form.timezone} ({zoneOffsetNow(form.timezone)?.label}
+                  {" · "}{localTimeIn(form.timezone)}) — pick the place above
                 </span>
               ) : (
                 <span className="block text-[11px] text-fg-dim">
-                  unset — no clock in chat
+                  unset — no clock in chat, no sleep window, no quiet hours
                 </span>
               )}
             </label>

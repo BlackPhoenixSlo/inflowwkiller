@@ -410,14 +410,26 @@ def local_now(utc_now: datetime, tz_offset_minutes: int | None) -> datetime:
 
 def tz_offset_for(timezone: str | None, utc_offset: int | None,
                   utc_now: datetime | None = None) -> int | None:
-    """Resolve an account's creator-local offset IN MINUTES.
+    """Resolve an account's creator-local offset IN MINUTES. THE one clock — every
+    engine that tells a fan the time resolves it here.
 
-    IANA `timezone` wins (DST-correct). Falls back to the legacy `utc_offset` HOURS
-    column when it is explicitly set, so an account that already answered this
-    question doesn't have to answer it twice. Returns None when neither is set —
-    and None means the feature stays OFF for that account. We do NOT default to
-    UTC: a UTC default silently puts a US creator to sleep through her peak earning
-    window, and nothing in the product would explain the revenue drop."""
+    `utc_offset` (whole HOURS, 0 == unset) WINS. It is what the Brain's one
+    place-and-time dropdown writes, so it is the answer somebody chose and can see
+    on screen. The IANA `timezone` is only the fallback for an account that has a
+    zone and no offset. Returns None when neither is set — and None means the
+    clock stays OFF for that account (no clock line, no sleep window). We do NOT
+    default to UTC: a UTC default silently puts a US creator to sleep through her
+    peak earning window, and nothing in the product would explain the revenue drop.
+
+    ⚠️ The precedence was the OTHER WAY around until 2026-08-08, and that is what
+    this reversal is for. Two clocks were stored per account and the silent one won:
+    Isabelle sat on `America/Los_Angeles` next to a stored -4, so her welcome told
+    new subscribers "it's Friday night in US" at 07:38 Eastern and named yesterday's
+    weekday after Eastern midnight. Nothing on any screen said which of the two was
+    live. A fixed offset does NOT track DST — that is the accepted cost of having
+    exactly one clock, and it is somebody's job twice a year (US: Nov 1; EU: Oct 25)."""
+    if utc_offset:
+        return int(utc_offset) * 60
     if timezone:
         try:
             from datetime import timezone as _tz
@@ -430,10 +442,26 @@ def tz_offset_for(timezone: str | None, utc_offset: int | None,
             if off is not None:
                 return int(off.total_seconds() // 60)
         except Exception:
-            log.warning("bad timezone %r — falling back to utc_offset", timezone)
-    if utc_offset:
-        return int(utc_offset) * 60
+            log.warning("bad timezone %r — and no utc_offset to fall back to", timezone)
     return None
+
+
+def tz_hours_for(timezone: str | None, utc_offset: int | None,
+                 utc_now: datetime | None = None) -> float:
+    """`tz_offset_for` in HOURS, with no-clock resolving to 0.0 (UTC).
+
+    Four callers used to spell this out themselves — `off_min / 60.0 if off_min is
+    not None else (cfg.utc_offset or 0)` — and that expression is precisely where
+    "which of the two clocks is this?" got decided four separate times. The senders
+    want hours because `_model_hour` / `_model_weekday` take hours; they should not
+    each re-derive the units AND the no-clock default.
+
+    0.0 for a clockless account is what the welcome has always used (it reads as
+    UTC). Engines that must NOT invent a clock — the chat prompt line, the sleep
+    window — need to tell "no clock" from "UTC", so they call `tz_offset_for` and
+    keep the None."""
+    off_min = tz_offset_for(timezone, utc_offset, utc_now)
+    return off_min / 60.0 if off_min is not None else 0.0
 
 
 def _parse_hhmm(s: str) -> time:

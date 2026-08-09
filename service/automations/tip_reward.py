@@ -205,6 +205,32 @@ _DEFAULTS: dict = {
     # wire minimum — so his buy moved the visible price not at all. Measured
     # 2026-08-01 on Isabelle: three fans stored last_price 1, 1 and 114 cents.
     "teaser_convo_floor_pct_of_max_paid": 0.38,   # DEPRECATED — no longer read.
+    # ── The free BAIT leg for a PROVEN buyer (operator ask, 2026-08-08) ──────────
+    # "Has paid → floor is the set price" above makes that price a FIXED POINT: at the
+    # floor the only move left is `bait_floor`, and for a proven buyer that IS the
+    # floor, so the identical ask repeats until the circuit breaker stops it. Measured
+    # on prod: fan 453746631 ($1,129 lifetime) took SIX consecutive $144.00 locks, and
+    # would have taken three more every 48h forever.
+    #
+    # ON: a proven buyer's bait_floor drops to $0 too, so once his ask reaches the
+    # floor the ladder alternates set price ↔ free (2 photos from the free folder,
+    # `hot_teaser_free_folder`, which `_compose_bundle_ids` may repeat) instead of
+    # repeating one number. He still never DECAYS below the set price — the only
+    # thing under it is free.
+    #
+    # ⚠️ A free leg is not a failed ask, so it does NOT advance `unbought` (see
+    # pick_convo_teaser). The breaker therefore still stops him after the same number
+    # of PRICED asks; the free legs are additional sends between them, not instead of
+    # them. This raises his media volume — it does not lower the number of times he is
+    # asked for money.
+    # ⚠️ Nor does a $0 teaser pass ai_chatter's PRICED-send guards (§6567): neither the
+    # broke/declined pause nor the per-run `_MAX_FORCED_ASKS_PER_TICK` cap applies to
+    # it. Both sit inside `if price_cents > 0`, so with this on, the half of the
+    # alternation that is free reaches a fan a priced rung would not, and is bounded
+    # only by `max_fans_per_tick` (8).
+    # Default ON 2026-08-08 (operator call). An account opts out via an explicit stored
+    # False — the Tip Reward tab writes one.
+    "teaser_convo_bait_for_buyers": True,
     # When he BUYS a softened/floor ask (one he haggled below the rung's list price),
     # the next ask escalates off WHAT HE PAID × this step (capped at the ladder max) —
     # NOT a jump up to the rung list he already refused. A $15.20 floor buy → ~$30 →
@@ -873,12 +899,42 @@ async def record_hot_teaser(account_id: str, fan_id: int, *, media_ids: list[int
             st["last_price"] = int(price_cents or 0)
             st["last_msg"] = int(message_id) if message_id else None
             st["last_free"] = bool(is_free)
+            # The last teaser that carried a PRICE, kept across free sends. A $0 bait
+            # overwrites last_msg with a message that can never be "sold", which would
+            # otherwise blind the ladder to a LATE unlock of the priced ask underneath
+            # it — see `teaser_sale_check_msg`.
+            if int(price_cents or 0) > 0 and message_id:
+                st["last_paid_msg"] = int(message_id)
             # Consecutive PRICED teasers he has not unlocked — the circuit breaker's
             # numerator. Supplied by the caller (pick_convo_teaser resolved it against
             # the sale signal); None leaves it untouched for the hot-teaser lane.
             if unbought is not None:
                 st["unbought"] = int(unbought)
             put_fan_state(fan, _HOT_TEASER_STATE_KEY, st)
+
+
+def teaser_sale_check_msg(state: dict) -> int | None:
+    """WHICH of her teaser messages the ladder should ask `is_paid` about next turn —
+    or None when there is no sale worth querying. Pure; the caller runs the query.
+
+    Normally that is simply her last teaser. But the free BAIT leg sends a $0 message,
+    and a $0 message can never be unlocked, so on the turn after a bait the obvious
+    read (`last_msg`) asks a question whose answer is always False — and the PRICED ask
+    underneath it silently stops being watched. That ask is still open and still
+    unlockable: he can pay for it hours later, and with `teaser_convo_bait_for_buyers`
+    on it is a proven buyer's SET price, not a $3 acquisition tease. Missing it would
+    keep his unbought streak climbing toward the circuit breaker after he had paid.
+
+    So: last_price > 0 → her last teaser; otherwise `last_paid_msg`, the last one that
+    carried a price, which `record_hot_teaser` keeps across free sends.
+
+    (A ladder whose rungs put a $0 rung ABOVE rung 0 could climb twice off one such
+    late sale, because the climb it triggers would itself be a free send that leaves
+    `last_paid_msg` in place. It terminates — the next climb is priced — and no
+    authored ladder has that shape: free is the opening rung.)"""
+    if int(state.get("last_price") or 0) > 0:
+        return int(state.get("last_msg") or 0) or None
+    return int(state.get("last_paid_msg") or 0) or None
 
 
 def teaser_state(fan: Fan | None) -> dict:
@@ -930,6 +986,9 @@ async def convo_teaser_config(account_id: str) -> dict | None:
         "cut_lo": float(cfg.get("teaser_convo_cut_lo") or 0.65),
         "cut_hi": float(cfg.get("teaser_convo_cut_hi") or 0.73),
         "floor_cents": max(0, int(cfg.get("teaser_convo_floor_cents") or 0)),
+        # Does a PROVEN buyer get the free bait leg too (set price ↔ free) instead of
+        # holding on one repeated number? See _DEFAULTS for the volume caveat.
+        "bait_for_buyers": bool(cfg.get("teaser_convo_bait_for_buyers")),
         # Proven-spend soften floor: floor = floor_pct × his highest single PPV paid
         # (computed per-run from max_single_paid by the caller). See _DEFAULTS.
         "floor_pct": max(0.0, float(cfg.get("teaser_convo_floor_pct_of_max_paid") or 0.0)),
@@ -959,10 +1018,17 @@ def convo_teaser_floors(tcfg: dict, *, max_paid_cents: int,
       never paid → floor is the $3 wire minimum (or a higher static `floor_cents`) and
                    bait_floor is $0, so the ladder alternates floor ↔ free. Getting the
                    first yes is the whole job and $3 is the cheapest yes on offer.
-      has paid   → both are the price the operator SET on this rung. He has proven he
-                   pays, so the set price is the price and there is no walk back down
+      has paid   → the floor is the price the operator SET on this rung. He has proven
+                   he pays, so the set price is the price and there is no walk back down
                    toward free; only the ≤20% haggle cut goes under it. His stalling is
                    answered by the unbought circuit breaker, not by cutting the price.
+
+    His BAIT floor is the one thing `teaser_convo_bait_for_buyers` moves. On (the
+    shipped default) it is $0 like everyone else's, so his ask alternates set price ↔
+    free. Off, it equals his floor, so the ladder has nowhere left to go and repeats
+    the set price until the breaker trips. Note what did NOT change either way: the
+    floor. He never decays to a cheaper ASK — the only thing below the set price is
+    free.
 
     Returning both from one call is the point: they are two views of one fact, and when
     the sender and the forecast each derived them separately they could disagree.
@@ -975,7 +1041,7 @@ def convo_teaser_floors(tcfg: dict, *, max_paid_cents: int,
     floor↔free oscillation. A floor the wire can't honour is not a floor."""
     if int(max_paid_cents or 0) > 0:
         proven = max(OF_PRICE_FLOOR_CENTS, int(rung_price_cents or 0))
-        return proven, proven
+        return proven, (0 if tcfg.get("bait_for_buyers") else proven)
     return max(OF_PRICE_FLOOR_CENTS, int(tcfg.get("floor_cents") or 0)), 0
 
 
@@ -996,10 +1062,11 @@ def _next_convo_teaser_price(*, idx: int, prices: list[int], last_px: int,
       • full-price sale / the
         opening free tease     → climb the configured ladder one rung
       • no buy                → soften ×frac down to the floor, then to `bait_floor`.
-                                For a fan who has never bought that is $0, so the
-                                ladder alternates floor ↔ free bait — the acquisition
-                                mechanic. For a proven buyer it EQUALS the floor, so
-                                he simply holds at the set price.
+                                $0 ⇒ the ladder alternates floor ↔ free bait; a
+                                `bait_floor` equal to the floor ⇒ he holds on one
+                                number instead. Which one a PROVEN buyer gets is
+                                `teaser_convo_bait_for_buyers`; a fan who has never
+                                bought always alternates (the acquisition mechanic).
     """
     if last_px <= 0 and idx == 0 and not last_sold and not last_was_free:
         return 0, prices[0], False               # first ever

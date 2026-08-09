@@ -66,6 +66,10 @@ export interface TipRewardConfig {
   // actually sold; on a no-buy the ask softens to 65–73% and the rung holds.
   // false → legacy climb-one-rung-every-send regardless of buying.
   teaser_convo_adaptive?: boolean;
+  // Free BAIT leg for a PROVEN buyer (backend default ON). Off, his ask sinks to the
+  // rung's set price and repeats it — that price is the bottom AND the bait, so the
+  // ladder has no next move. On, it alternates set price ↔ free instead.
+  teaser_convo_bait_for_buyers?: boolean;
   // Item 42 — "tip request" follow-up: a fan buys a MASS PPV and goes quiet →
   // send one free teaser image + a "send me a tip?" caption. Its own automation
   // (`tip_request`), nested here because it shares this config column.

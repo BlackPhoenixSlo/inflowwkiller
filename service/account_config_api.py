@@ -30,6 +30,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import llm_client
 from auth import assert_account_owned
+from automations import rhythm  # tz_offset_for — the ONE clock resolver
 from automations._persona import PERSONA_FACT_FIELDS, PERSONA_FACTS_OPERATOR_ONLY
 from brain_defaults import brain_defaults
 from db.engine import get_session
@@ -290,9 +291,10 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     if language == "en":
         language = None                      # NULL == en; keeps the column sparse
 
-    # timezone — an IANA zone (e.g. America/Vancouver). Wins over utc_offset in
-    # rhythm.tz_offset_for (DST-correct); blank clears the column so the legacy
-    # offset (or "no clock") applies again.
+    # timezone — a LEGACY IANA zone (e.g. America/Vancouver). No longer settable
+    # from the Brain, and only consulted when the account has no fixed
+    # `utc_offset` (rhythm.tz_offset_for); blank clears it. Kept accepted so a
+    # settings-transfer of an older export still round-trips.
     tz = _clean_text(cfg.get("timezone"), "timezone")
     if tz is not None:
         try:
@@ -557,9 +559,18 @@ async def enrich_account_config(body: EnrichBody = Body(...)) -> dict[str, Any]:
         free_text=location or merged.get("born_city") or merged.get("born_country"),
     )
     tz_changed = bool(tz) and tz != (row.timezone or "")
+    # The account stores ONE clock — a fixed `utc_offset` (see rhythm.tz_offset_for).
+    # So the resolved zone is only a means to an end here: it names her place, and
+    # what we hand back is that place's offset RIGHT NOW, which is what the Brain's
+    # clock dropdown holds. This is the seam where place and time correlate: both
+    # come from the same answer to "where is she". Whole hours only — the column is
+    # an integer, so a half-hour zone (Kolkata) yields no proposal rather than a
+    # silently rounded one.
+    off_min = rhythm.tz_offset_for(tz, None) if tz else None
+    utc_offset = int(off_min // 60) if off_min is not None and off_min % 60 == 0 else None
 
-    log.info("persona_enrich account=%s proposed=%d tz=%s (was %s)",
-             body.account_id, len(proposed), tz, row.timezone)
+    log.info("persona_enrich account=%s proposed=%d tz=%s utc_offset=%s (was tz=%s off=%s)",
+             body.account_id, len(proposed), tz, utc_offset, row.timezone, row.utc_offset)
     return {
         "account_id": body.account_id,
         "known": known,          # already locked in — shown greyed
@@ -568,4 +579,8 @@ async def enrich_account_config(body: EnrichBody = Body(...)) -> dict[str, Any]:
         "timezone": tz,          # None ⇒ ambiguous, the UI asks
         "timezone_changed": tz_changed,
         "current_timezone": row.timezone,
+        # THE clock to write (None ⇒ her place is ambiguous / not a whole-hour zone,
+        # and the operator picks it from the dropdown instead).
+        "utc_offset": utc_offset,
+        "utc_offset_changed": utc_offset is not None and utc_offset != (row.utc_offset or 0),
     }

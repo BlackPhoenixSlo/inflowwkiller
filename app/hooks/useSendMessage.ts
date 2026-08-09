@@ -76,10 +76,20 @@ interface SendOpts {
   giphyId?: string;
 }
 
-/** Pull OF's `{error:{message:"..."}}` out of the relay's wrapped 502/4xx body.
- *  Returns undefined if the shape doesn't match, so the caller can fall back. */
-function extractOfErrorMessage(err: RelayError): string | undefined {
-  const body = err.body as { detail?: { upstream_body?: string } } | undefined;
+/** Best human-readable reason for a failed send, from either shape the relay
+ *  answers with: its OWN pre-flight refusal (`detail.message` — no OF call
+ *  happened) or OF's `{error:{message}}` wrapped in `detail.upstream_body`.
+ *  Returns undefined if neither matches, so the caller can fall back. */
+function extractSendErrorMessage(err: RelayError): string | undefined {
+  const body = err.body as
+    | { detail?: { upstream_body?: string; message?: string } }
+    | undefined;
+  // The relay's OWN pre-flight guards answer before any OF round-trip — the
+  // already-owned re-sale block (409) is the current one — so there is no
+  // `upstream_body` to dig through, just a plain { error, message }. Prefer
+  // that verbatim; without it the operator only sees "HTTP 409".
+  const own = body?.detail?.message;
+  if (typeof own === "string" && own) return own;
   const raw = body?.detail?.upstream_body;
   if (typeof raw !== "string") return undefined;
   try {
@@ -160,7 +170,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
           // The relay wraps OF's payload as
           //   { detail: { upstream_status, upstream_body: "<json string>" } }
           // Dig the inner OF message out so the UI can show what OF complained about.
-          reason = extractOfErrorMessage(err) ?? `HTTP ${err.status}`;
+          reason = extractSendErrorMessage(err) ?? `HTTP ${err.status}`;
         } else {
           console.warn("[send] failed", err);
           reason = (err as Error)?.message;

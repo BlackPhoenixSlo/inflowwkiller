@@ -47,7 +47,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import select, update
 
@@ -178,6 +178,125 @@ async def owned_or_seen_media(account_id: str, fan_id: int) -> set[int]:
     for it in owned_items:
         out |= set(item_media(it))
     return out
+
+
+# A priced send must be at least half NEW photography (operator ruling
+# 2026-08-08). Held as an exact FRACTION of the non-preview photo set — it
+# scales with bundle size instead of hard-coding a count, and integer
+# cross-multiplication keeps a money decision away from float rounding (a
+# 0.5 literal makes 1-of-2 a coin toss on the boundary). Move the bar by
+# changing these two, e.g. 2/3.
+FRESH_PHOTO_MIN_NUM = 1
+FRESH_PHOTO_MIN_DEN = 2
+
+# The two grounds for blocking. Named constants, not bare literals, because the
+# HTTP layer switches on them to pick the operator's message — a renamed string
+# would otherwise degrade one block into the other's wording with every module
+# still internally consistent and every test still green.
+RESALE_OWNED_VIDEO = "owned_video"
+RESALE_MOSTLY_OWNED_PHOTOS = "mostly_owned_photos"
+
+
+class ResaleVerdict(NamedTuple):
+    """Why a priced send is — or is not — a re-sale of content the fan holds.
+
+    A NamedTuple rather than a bare set because there are two distinct grounds
+    for blocking and the caller has to tell the operator WHICH one it hit; a
+    set of ids can't carry that, and the counts are what make the photo message
+    actionable ("3 of 4 already bought")."""
+
+    reason: str                 # "" = allow, else a RESALE_* constant
+    owned_videos: list[int]     # already-paid videos anywhere in the send
+    owned_photos: list[int]     # already-paid NON-PREVIEW photos
+    photos_total: int           # non-preview photos the vault mirror could classify
+
+    @property
+    def blocked(self) -> bool:
+        return bool(self.reason)
+
+    @property
+    def owned_media(self) -> list[int]:
+        """The ids this verdict is ABOUT — scoped to the reason, so the payload
+        never lists photos under a message that only mentions video."""
+        return (self.owned_videos if self.reason == RESALE_OWNED_VIDEO
+                else self.owned_photos)
+
+
+async def resale_verdict(
+    account_id: str,
+    fan_id: int,
+    media_ids: list[int],
+    previews: list[int] | None = None,
+) -> ResaleVerdict:
+    """Judge a PRICED send against what this fan has already paid for.
+
+    The re-sale guard for the human/extension send path
+    (`POST /api/of/v2/chats/{id}/messages`) which — unlike ppv_send and
+    ai_chatter, both of which check ownership — had no check at all, and
+    re-sold one whale the same two clips four times at a climbing price
+    ($40 → $80 → $100 → $120, ledger-confirmed).
+
+    Two operator rulings, deliberately different in shape:
+
+    • VIDEO is absolute — one already-bought video blocks the send. Checked
+      across the WHOLE media list including previews, matching
+      `hero_media_map`'s belt: a video is never mere filler, even if someone
+      misconfigured it into the preview pool.
+    • PHOTOS are proportional — the non-preview photo set must be at least
+      `FRESH_PHOTO_MIN_NUM/DEN` new. Re-using some stills to frame a fresh set
+      is normal selling; charging again for a set that is mostly his already is
+      the abuse. Previews are excluded because they are the free-visible tease
+      slice, not the thing being sold.
+
+    ⚠️ A paid video listed in `previews` STILL blocks. An OF preview rides
+    unlocked, so strictly he is not being re-charged for it — this is deliberate
+    extra strictness inherited from `hero_media_map`'s belt, and the one place
+    this guard is stricter than "is he paying twice". If that ever proves wrong,
+    read the video line off `payload` instead of `target`; nothing else moves.
+
+    Media the vault mirror can't classify counts toward NEITHER rule and is
+    logged: it can't be called a video, and it can't sit in the photo
+    denominator without silently moving the ratio. Blocking a live send on a
+    guess is worse than the miss."""
+    target = {int(x) for x in media_ids if x}
+    if not target or not fan_id:
+        return ResaleVerdict("", [], [], 0)
+    owned_all = await owned_or_seen_media(account_id, int(fan_id))
+    prev = {int(x) for x in (previews or []) if x} & target
+    payload = target - prev            # what the price is actually FOR
+
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.kind).where(
+                VaultItem.account_id == str(account_id),
+                VaultItem.media_id.in_(sorted(target)))
+        )).all()
+    kinds = {int(m): (k or "") for m, k in rows}
+    unknown = sorted(target - set(kinds))
+    if unknown:
+        log.warning("resale_verdict: %d media unknown to the vault mirror "
+                    "account=%s fan=%s ids=%s — counted toward no rule",
+                    len(unknown), account_id, fan_id, unknown[:10])
+
+    # Videos: the whole list, previews included (a video is never filler).
+    owned_videos = sorted(m for m in target
+                          if kinds.get(m) == "video" and m in owned_all)
+    # Photos: the payload only — previews are the free tease slice.
+    photos = {m for m in payload if kinds.get(m) == "photo"}
+    owned_photos = sorted(photos & owned_all)
+    fresh = len(photos) - len(owned_photos)
+
+    # Only the REASON varies — decide it, then build the verdict once, so the
+    # precedence (a paid video outranks the photo ratio) is stated rather than
+    # implied by return order.
+    # The photo test is cross-multiplied `fresh / total < NUM / DEN`; exactly
+    # half is ALLOWED ("at LEAST 50% unbought"), so the comparison is strict.
+    stale_photos = (bool(photos) and fresh * FRESH_PHOTO_MIN_DEN
+                    < len(photos) * FRESH_PHOTO_MIN_NUM)
+    reason = (RESALE_OWNED_VIDEO if owned_videos
+              else RESALE_MOSTLY_OWNED_PHOTOS if stale_photos
+              else "")
+    return ResaleVerdict(reason, owned_videos, owned_photos, len(photos))
 
 
 async def owners_of_media(account_id: str, media_ids: list[int]) -> set[int]:
