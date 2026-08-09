@@ -117,6 +117,19 @@ _INT_KNOBS = {
     # that buys an LLM call, and it is bounded by purchases × max_msgs.
     "post_purchase_window_hours": (0, 168),
     "post_purchase_max_msgs": (0, 20),
+    # She steps out (automations/_stepout.py): how many of HER replies between one
+    # step-out and the next, how long she is gone, and how many messages from him
+    # end it early. Whole numbers on purpose — an exchange count and a message count
+    # are not fractional, and _INT_KNOBS is what keeps them from being stored as
+    # 7.0 by a float coercion.
+    "rhythm_stepout_min_exchanges": (1, 500),
+    "rhythm_stepout_max_exchanges": (1, 500),
+    # Minutes, matching the field the operator types into. The seconds every consumer
+    # wants are derived once, in _stepout._minutes_to_s.
+    "rhythm_stepout_min_minutes": (1, 24 * 60),
+    "rhythm_stepout_max_minutes": (1, 24 * 60),
+    # 0 = no early exit; she stays gone for the full draw. A real configuration.
+    "rhythm_stepout_break_msgs": (0, 20),
 }
 
 # Float-valued knobs (ladder aggressiveness). Clamped to sane ranges: the ceiling
@@ -142,6 +155,19 @@ _FLOAT_KNOBS = {
     # burns one of the executor's 4 GLOBAL run slots. The engine clamps to the same
     # constant, so a blob written by any other path cannot exceed it either.
     "pacing_drift_cap_s": (0.0, _PACING_MAX_DRIFT_CAP_S),
+    # The flat reply bonus — added to EVERY reply (rhythm.RhythmCtx.reply_bonus_s).
+    # Bounded by rhythm.INLINE_MAX_S rather than a round number, and that bound is
+    # load-bearing: past it EVERY reply crosses the inline threshold, releases its
+    # lease and enqueues a scheduled wake, so a pacing knob becomes a job-queue flood
+    # against the executor's 4 GLOBAL run slots. Same reasoning as pacing_drift_cap_s
+    # above. (The shipped value is 10s — see ai_chatter._DEFAULTS.)
+    "rhythm_reply_bonus_s": (0.0, float(rhythm.INLINE_MAX_S)),
+    # After a silence this long her reply returns as ONE bubble. Up to a day: the
+    # ceiling only has to be past any gap she can actually take.
+    "rhythm_return_single_bubble_s": (0.0, 24 * 3600.0),
+    # How far apart two of his messages must be to read as a second ATTEMPT rather
+    # than one thought arriving in bubbles.
+    "rhythm_stepout_break_gap_s": (0.0, 3600.0),
 }
 _MODES = ("backup", "always")
 _OFFER_MODES = ("tip", "ppv", "both")
@@ -365,6 +391,13 @@ def _validate_cfg(cfg: dict) -> dict:
         out["rhythm_ghost_enabled"] = bool(cfg["rhythm_ghost_enabled"])
     if "rhythm_ghost_cycle" in cfg:
         out["rhythm_ghost_cycle"] = _validate_ghost_cycle(cfg["rhythm_ghost_cycle"])
+    # The step-out's switch. Its numerics ride _INT_KNOBS / _FLOAT_KNOBS above
+    # (bounds live there, with the reasoning beside each). Named HERE for the reason
+    # the pacing block spells out: this validator DROPS any key it does not name, so
+    # a knob that exists in _DEFAULTS and not here is one the operator can turn and
+    # never actually change.
+    if "rhythm_stepout_enabled" in cfg:
+        out["rhythm_stepout_enabled"] = bool(cfg["rhythm_stepout_enabled"])
     if "rhythm_sleep_source" in cfg and cfg["rhythm_sleep_source"] is not None:
         if cfg["rhythm_sleep_source"] not in _SLEEP_SOURCES:
             raise HTTPException(
@@ -434,6 +467,16 @@ def _validate_cfg(cfg: dict) -> dict:
                 out[k] = max(lo, min(float(cfg[k]), hi))
             except (TypeError, ValueError):
                 raise HTTPException(422, f"{k} must be a number")
+    # Cross-field: min <= max. Read off `out` (post-clamp) so the two sides are the
+    # same kind of value. This is a better ERROR MESSAGE, not the safety guarantee —
+    # a PUT carrying only one half drops the other back to its default and can leave
+    # an inverted stored pair this check never sees. `_stepout.Config.from_cfg` does
+    # `hi = max(lo, hi)` at read time, and THAT is what keeps `randrange` from being
+    # handed a negative width inside the candidate loop.
+    for _lo_k, _hi_k in (("rhythm_stepout_min_exchanges", "rhythm_stepout_max_exchanges"),
+                         ("rhythm_stepout_min_minutes", "rhythm_stepout_max_minutes")):
+        if _lo_k in out and _hi_k in out and out[_lo_k] > out[_hi_k]:
+            raise HTTPException(422, f"{_lo_k} must be <= {_hi_k}")
     ml = cfg.get("msg_limits_by_signal")
     if ml is not None:
         if not isinstance(ml, dict):

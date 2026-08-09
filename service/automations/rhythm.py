@@ -130,6 +130,35 @@ _FAN_MEDIAN_LATENCY_S = 110.0   # his median: mirror_mult == 1.0 here
 _RETURN_GAP_S = 28 * 60         # "he's been away a while", not "he paused mid-chat"
 _RETURN_BAND = (120.0, 420.0)   # 2-7 min. A BAND, not a floor — see decide().
 
+# ── SHE STEPS OUT. Every N exchanges of a cold chat she is simply gone for an hour
+# or two, and comes back when she comes back — or sooner, if he writes again.
+#
+# This is deliberately NOT the break roll below. The break roll is a per-turn 12%
+# coin flip that refuses while an answer is owed; this is a COUNTER, it fires on a
+# schedule the fan cannot predict from any single turn, and it fires whether or not
+# he is owed a reply. That last part is the risky half and it is on purpose: a
+# silence that only ever lands on turns she was not going to take is an elaborate
+# no-op (the same reasoning as the ghost cycle's owed-answer exemption). The
+# persistence exit below is what protects the fan who actually needed an answer.
+#
+# 1-2h is chosen against the measured human curve, not picked round: the bot's
+# structural deficit versus a human chatter is the >=1h region (human ~7% of replies
+# against 0.28-1.75% for us, and it is the one gap that holds on 5 of 6 accounts).
+# The 6-24min region is a hole too, but it is bounded above by the cross-lane leak
+# (autoreply intercepts ~33% at 30min) and below by _RETURN_BAND. An hour clears both.
+#
+# Only the PAUSE lives here. The schedule (how many exchanges between step-outs) and
+# the exit predicate (has he written again) are in `_stepout.py`, which shares
+# nothing with this module — no ctx, no rng, no clock.
+# Authored in MINUTES because that is the unit the config stores and the operator
+# types; the seconds every caller here actually wants are DERIVED, so the conversion
+# happens once, at the definition, instead of at each of the three places that used
+# to do their own `* 60` / `// 60`.
+STEPOUT_MIN_MINUTES = 60
+STEPOUT_MAX_MINUTES = 120
+STEPOUT_MIN_S = STEPOUT_MIN_MINUTES * 60
+STEPOUT_MAX_S = STEPOUT_MAX_MINUTES * 60
+
 # Soft fast-reply nudge (the hard >35%-share floor was REFUTED — non-monotonic, top
 # bucket empty). If she's been replying too fast too often, floor the NEXT draw at 60s.
 _FAST_REPLY_S = 30
@@ -237,6 +266,11 @@ DEFAULT_SLEEP = ("02:00", "06:00")
 CONTEXT_ASK_OPEN = "ask_open"      # an unpaid rung is live, or he paid < 60min ago
 CONTEXT_FREE_CHAT = "free_chat"    # banter / sext, no open ask
 CONTEXT_UNAVAILABLE = "unavailable"
+# She stepped out (see STEPOUT_MIN_S). A SEPARATE context from `unavailable` on
+# purpose: `unavailable` is written for both the sleep window and the break roll and
+# cannot tell them apart, so the candidate gate has no way to ask "is this the silence
+# the fan is allowed to interrupt?". Only this one may be ended early by persistence.
+CONTEXT_STEPOUT = "stepout"
 # Back-compat aliases (older callers / tests referenced these names).
 CONTEXT_SCENE = CONTEXT_ASK_OPEN
 CONTEXT_ENGAGED = CONTEXT_FREE_CHAT
@@ -380,6 +414,23 @@ class RhythmCtx:
     # means the caller did not wire it, and an unknown start is NOT a warm-up, so a
     # caller that never supplies it keeps today's behaviour exactly.
     thread_started_at: datetime | None = None
+    # Add this many seconds to EVERY reply — a flat translation of the whole curve,
+    # floor and ceiling together, applied after every other rule has chosen a window.
+    # It exists because the fleet's fast bands are the loudest tell we have: measured
+    # against the same accounts' human chatters, we sit at 15.1%/17.5% in <15s and
+    # 15-30s where a human sits at 7.2%/7.9%, and we UNDERSHOOT 30-60s and 1-2m
+    # (7.8/9.0 against 16.5/14.4). Translating the curve drains the two fast bands
+    # into the two the human actually lives in without touching the shape.
+    # 0.0 keeps every existing caller and test byte-identical.
+    reply_bonus_s: float = 0.0
+    # `_stepout.is_due` says she is due to step out. The COUNTING lives over there —
+    # this module owns the pause, not the schedule.
+    stepout_due: bool = False
+    # …and how long, in seconds. None ⇒ the shipped 1-2h. None and not 0, because 0
+    # is a value an operator can type and it must not silently mean "ignore me"
+    # (same convention as `pace_curve` above).
+    stepout_min_s: float | None = None
+    stepout_max_s: float | None = None
     enabled: bool = True
 
 
@@ -537,6 +588,18 @@ def _pick_cover(rng: Random, kind: str, ctx: RhythmCtx,
     return rng.choice(his if str(ctx.voice or "").strip().lower() == "him" else hers)
 
 
+def is_night(ctx: RhythmCtx, at_utc: datetime) -> bool:
+    """Is `at_utc` inside her night? THE one spelling of that question.
+
+    Asked twice, about two different instants: of `now`, to decide whether she is
+    asleep right now, and of a prospective `wake_at`, to refuse a pause that would
+    deliver a message at 3am. An account with no clock (`tz_offset_minutes is None`)
+    and one in no-sleep mode both have no night, so nothing can be inside it."""
+    if ctx.tz_offset_minutes is None or ctx.no_sleep:
+        return False
+    return in_sleep_window(local_now(at_utc, ctx.tz_offset_minutes), ctx.sleep_window)
+
+
 def decide_availability(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decision | None:
     """Is she AROUND to answer at all? None = yes, go generate a reply.
 
@@ -550,15 +613,39 @@ def decide_availability(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decis
 
     # ── 1. Is she asleep? Account-level, decided by the calendar, not per fan.
     # Skipped entirely in no-sleep mode — she never goes down for the night.
-    if ctx.tz_offset_minutes is not None and not ctx.no_sleep:
+    if is_night(ctx, utc_now):
         lnow = local_now(utc_now, ctx.tz_offset_minutes)
-        if in_sleep_window(lnow, ctx.sleep_window):
-            wake_local = next_wake(lnow, ctx.sleep_window)
-            wake_utc = wake_local - timedelta(minutes=ctx.tz_offset_minutes)
-            # Wake with a human stagger — she does not answer 40 fans at 10:00:00.
-            wake_utc += timedelta(seconds=rng.randint(0, 45 * 60))
-            return Decision(delay_s=0.0, context=CONTEXT_UNAVAILABLE, wake_at=wake_utc,
-                            cover_line=_pick_cover(rng, "asleep", ctx, utc_now))
+        wake_local = next_wake(lnow, ctx.sleep_window)
+        wake_utc = wake_local - timedelta(minutes=ctx.tz_offset_minutes)
+        # Wake with a human stagger — she does not answer 40 fans at 10:00:00.
+        wake_utc += timedelta(seconds=rng.randint(0, 45 * 60))
+        return Decision(delay_s=0.0, context=CONTEXT_UNAVAILABLE, wake_at=wake_utc,
+                        cover_line=_pick_cover(rng, "asleep", ctx, utc_now))
+
+    # ── 1b. She STEPS OUT — the counter fired (see STEPOUT_MIN_S). Below the sleep
+    # check because a woman who is asleep does not also go to the shops, and above the
+    # break roll because when both are due this is the one the operator asked for.
+    #
+    # No cover line at any duration. A returning human says NOTHING about the gap:
+    # measured over 8 weeks and 19 accounts, every human acknowledgement bucket out to
+    # 12h sits at or BELOW its own no-gap false-positive floor, and the complete
+    # inventory past 20 minutes is 21 messages, most of them about content rather than
+    # time. Explaining a two-hour absence is a bigger tell than the absence.
+    if ctx.stepout_due and not ctx.fan_hot \
+            and _context_of(ctx, utc_now) == CONTEXT_FREE_CHAT \
+            and not protected_start(ctx, utc_now):
+        lo_s = STEPOUT_MIN_S if ctx.stepout_min_s is None else float(ctx.stepout_min_s)
+        hi_s = STEPOUT_MAX_S if ctx.stepout_max_s is None else float(ctx.stepout_max_s)
+        out_s = min(rng.uniform(lo_s, max(lo_s, hi_s)), MAX_DELAY_S)
+        wake_utc = utc_now + timedelta(seconds=out_s)
+        # …unless she would come back mid-night. The resume run sends IMMEDIATELY —
+        # it skips this function entirely — so a step-out begun at 01:00 delivers a
+        # message at 03:00, which is the loudest anti-human event the system can
+        # produce and it would be manufactured by the feature meant to prevent them.
+        # Skipping (rather than shortening) keeps the duration honest; the counter
+        # stays armed and she steps out on the next eligible turn instead.
+        if not is_night(ctx, wake_utc):
+            return Decision(delay_s=0.0, context=CONTEXT_STEPOUT, wake_at=wake_utc)
 
     # ── 2. She's a person: roll a break — but ONLY when the scene is COLD. A hot chat
     # never breaks (heat→0 break prob); a boring, sale-less one does, more the colder it
@@ -893,6 +980,26 @@ def decide(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decision:
     # tighter cap elsewhere still wins, and if another rule leaves no room the band is
     # dropped rather than forced. `decide_availability` ran above, so sleep windows
     # and breaks are untouched by this.
+    # ── The flat bonus (see RhythmCtx.reply_bonus_s). A TRANSLATION of the window —
+    # floor, ceiling and the drawn core all move together — so the shape of the curve
+    # is untouched and no mass piles on a bound.
+    #
+    # ⚠️ APPLIED BEFORE THE RETURN BAND, and that order is load-bearing. `_RETURN_BAND`
+    # opens at 120.0 and `INLINE_MAX_S` is 120 — THE SAME NUMBER — while the defer test
+    # is strict (`delay > INLINE_MAX_S`). Translating the band itself lifts its floor to
+    # 130 and every single returning-fan reply is then structurally over the line: not
+    # more likely to defer, but CERTAIN to, at any bonus above zero (measured: 6.5% →
+    # 100.0% at bonus=0.5s). That defer is decided POST-LLM, so the generated reply is
+    # thrown away and regenerated on the wake — the exact double-billing
+    # `decide_availability` was split out to avoid — plus a released lease, a scheduled
+    # job and up to a tick of poll lag, on the one turn the band exists to keep tight.
+    # Applied first, the band clamps the already-translated window and its floor stays
+    # at 120, which is what "a tighter cap still wins" was always supposed to mean.
+    bonus = max(0.0, float(ctx.reply_bonus_s or 0.0))
+    if bonus:
+        floor += bonus
+        ceiling += bonus
+        core += bonus
     if (ctx.his_last_latency_s or 0.0) > _RETURN_GAP_S:
         lo, hi = max(floor, _RETURN_BAND[0]), min(ceiling, _RETURN_BAND[1])
         if lo <= hi:
