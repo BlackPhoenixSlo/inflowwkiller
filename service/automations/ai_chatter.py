@@ -190,6 +190,31 @@ _GRADUATION_SKIPS = frozenset({"spent", "too_long", "info"})
 # engages them in gentle mode (see old_fan_question_every in _DEFAULTS).
 _OLD_FAN_SKIP = "old_fan_pre_ai"
 
+
+def skip_reason_blocks(reason: str | None, *, engage_old_fans: bool) -> bool:
+    """Does this skip_list row actually close the thread to ai_chatter?
+
+    THE one copy of that question. `run()`'s loop asks it, and so does the fan-status
+    badge in `fans.py` — which is the point.
+
+    ⚠️ IT EXISTS BECAUSE THE BADGE HAND-ROLLED A SECOND COPY AND DROPPED A CLAUSE.
+    `fans.py` filtered `_GRADUATION_SKIPS` but not the engage_old_fans lift, so every
+    fan carrying `old_fan_pre_ai` rendered "🚫 Skipped (old_fan_pre_ai)" while the
+    engine was happily engaging him — 96 fans on Lucas2 alone. Worse than the false
+    label: the badge returns on its FIRST hit, so that phantom skip also made the true
+    state (Human Rhythm's "On a break") unreachable for exactly those fans. An operator
+    debugging a silent thread was shown a wrong reason AND denied the right one.
+
+    Two exemptions, and they are not the same kind of thing:
+      • `_GRADUATION_SKIPS` — of_ai_chat's "left MY gather loop" markers. ai_chatter
+        exists precisely for these fans, so they never blocked it.
+      • `_OLD_FAN_SKIP` — a real skip that the operator can lift per account.
+    Everything else (unreachable, manual_restrict, muted_creator, of_restricted) blocks.
+    """
+    if reason is None or reason in _GRADUATION_SKIPS:
+        return False
+    return not (reason == _OLD_FAN_SKIP and engage_old_fans)
+
 # Built-in defaults — any key the account config omits. DISABLED until a creator
 # enables it. The offer_* knobs are read by the M3 offer engine.
 _DEFAULTS: dict = {
@@ -4330,7 +4355,19 @@ _TURNS_NOT_SELLING = frozenset({_TURN_DARE, _TURN_PIC_OFFER})
 
 def _turn_kind(*, bot_accused: bool, pic_desc: str, content_ask: bool,
                escalation: bool, image_dare: bool, dare_callback: bool,
-               hot_thread: bool, can_sell: bool, pic_offer: bool = False) -> str:
+               hot_thread: bool, can_sell: bool, pic_offer: bool) -> str:
+    # ⚠️ NO DEFAULTS ON ANY INPUT, and `pic_offer` is why the rule is written down.
+    # It shipped as `pic_offer: bool = False`, and the default did exactly what a
+    # default does: it let a caller that had never heard of the beat keep compiling.
+    # `scripts_api.simulate` — the operator's "Test it" — was that caller, so the
+    # preview scored "you wanna see my cock?" as a content-ask and rendered her
+    # PITCHING while production said "send it, i'll rate it" with no price. An
+    # operator tuning copy against that is tuning against a lie.
+    #
+    # Required keyword-only means the same omission is a TypeError at the call, on
+    # the first run of that path, instead of a silent wrong answer. The preview had
+    # ALREADY been burned this exact way once (it omitted `kind` entirely and lost
+    # the content-ask directive); a default is what let it happen a second time.
     """The beat that owns this turn, or "" for the ordinary chat tiers.
 
     Pure and total, so both callers get the same answer from the same inputs. Order is
@@ -4491,6 +4528,33 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
             "Work in ONE specific, natural detail from what you know about him above "
             "(his job, a hobby, something going on in his life) — like you actually "
             "remember him. Don't recite a list; drop one nugget the way a girlfriend would.")
+    # HIS KINK IS THE SUBJECT OF THE TURN, NOT A FACT TO WEAVE IN.
+    #
+    # `fetishes` was already extracted every tick (_extract_and_fill) and already
+    # reached the model — as ONE line in the facts block, sitting between his age
+    # and his city. Nothing anywhere told the model to DO anything with it, and the
+    # nudge above steers at "his job, a hobby, something going on in his life" —
+    # the three fields a kink-forward fan is least likely to have filled.
+    #
+    # Prod receipt (Lucas2 7789837 / fan 106046461, 2026-08-09 04:29→04:52). He
+    # wrote four sentences naming exactly what he wanted; his `hobbies` and
+    # `occupation` were both "" and his `fetishes` was fully populated. With every
+    # target of the nudge empty, the model reached for the only other thing in its
+    # window — its own "use ur words" line from 40 minutes earlier — and answered
+    # him with "but i need words not emojis" + "tell me what u really want". He had
+    # already said "You are not interested in that. So later" one message before.
+    # Asking a man to restate the thing he just spelled out is how the thread dies.
+    #
+    # Clipped at 160 rather than the facts block's 80: that loop is shared by six
+    # fields and its width is load-bearing elsewhere, and a kink list is the one
+    # value here that routinely runs long enough for 80 to cut mid-item.
+    if nonempty(f.fetishes):
+        personal_lines.append(
+            "HE HAS ALREADY TOLD YOU WHAT HE'S INTO: "
+            f"{str(f.fetishes).strip()[:160]}. Talk to him INSIDE that — his words, "
+            "his framing, like it does something for you too. NEVER ask him what "
+            "he's into or what he wants: he said it already, and asking again is how "
+            "he finds out you weren't listening.")
     personal_block = ("\n" + "\n".join(personal_lines)) if personal_lines else ""
 
     history = c.messages[-history_tail:]
@@ -5520,8 +5584,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             skipped_listed += 1
             continue
         reason = skip_reasons.get(fan_id)
-        if (reason is not None and reason not in _GRADUATION_SKIPS and not forced
-                and fan_id not in old_fan_ids):
+        # `skip_reason_blocks` and not the clauses inline: the badge in fans.py asks the
+        # same question, and the last time each kept its own copy they disagreed.
+        if skip_reason_blocks(reason, engage_old_fans=engage_old) and not forced:
             # A skip_list row (of_restricted / manual_restrict / unreachable /
             # ladder_stop) CLOSES the ladder. A rung left 'open' on a fan nobody
             # may message again would keep a stale rung_index alive and escalate

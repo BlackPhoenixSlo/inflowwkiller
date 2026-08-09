@@ -509,8 +509,14 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
     badge = copy.standing_badge(
         engine_on=engine_on,
         blacklisted=int(fan_id) in blacklist,
-        skip_reason=(reason if reason is not None
-                     and reason not in ac._GRADUATION_SKIPS else None),
+        # ⚠️ ASK THE ENGINE, never re-list the exemptions here. This line used to spell
+        # out `reason not in _GRADUATION_SKIPS` and stopped there, missing the
+        # engage_old_fans lift — so 96 fans on one account showed "Skipped
+        # (old_fan_pre_ai)" while ai_chatter was engaging them, and because the badge
+        # returns on its first hit, their REAL state (a rhythm break) became
+        # unreachable. Exactly the drift this function's docstring forbids.
+        skip_reason=(reason if ac.skip_reason_blocks(
+            reason, engage_old_fans=bool(cfg.get("engage_old_fans"))) else None),
         rhythm_wake_at=_future(rst.wake_at if rst is not None else None),
         paused_until=_future(fan.automation_paused_until if fan is not None else None),
         companion_until=_future(lad.companion_until if lad is not None else None),
