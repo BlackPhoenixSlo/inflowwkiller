@@ -78,7 +78,8 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from . import _daylog  # what SHE did today — the creator-side twin of recent_events
-from . import _ghost, cat_stickers, pacing, rhythm, script_packs, tip_ladder, upsell
+from . import (_ghost, _stepout, cat_stickers, pacing, rhythm, script_packs,
+               tip_ladder, upsell)
 # The reply-volume leash — both gates, the spend rules that lift them, and the
 # verdict ledger. Re-exported under these names because `fans.py` (the status
 # endpoint) and the tests reach for them as `ai_chatter.X`, and because reading the
@@ -544,6 +545,38 @@ _DEFAULTS: dict = {
     # (see rhythm.parse_pace_curve). None ⇒ the shipped 85/10/4/1. Only read when
     # `rhythm_pace_buckets` is on.
     "rhythm_pace_curve": None,
+    # Add this many seconds to EVERY reply (rhythm.RhythmCtx.reply_bonus_s). A flat
+    # translation of the whole curve — floor, ceiling and draw together — so the shape
+    # is untouched and the two fast bands drain into the two a human actually lives in.
+    # Measured against these accounts' own human chatters: we sit at 15.1% under 15s
+    # and 17.5% at 15-30s where a human sits at 7.2% and 7.9%, and we undershoot
+    # 30-60s (7.8 vs 16.5) and 1-2m (9.0 vs 14.4). Set 0 to disable.
+    "rhythm_reply_bonus_s": 10.0,
+    # After a silence this long, her reply comes back as ONE bubble however much it
+    # weighs (of_ai_chat.split_for_bubbles(force_single=True)). A human returns
+    # single-bubble ~64% of the time at EVERY gap length; ours falls from 31.9% at
+    # <2min to 14.7% at 30min-2h, so the longer we were quiet the more we said on
+    # arrival. 0 disables. Content is never dropped — the bubbles are merged, not cut.
+    "rhythm_return_single_bubble_s": 600.0,
+    # ── SHE STEPS OUT. Every 7-15 of her replies in a chat that is neither hot nor
+    # just-sold-to, she is gone for 1-2 hours — and comes back early if he writes
+    # again on his own (2 messages at least a minute apart).
+    #
+    # ⚠️ DEFAULT ON, which is not this file's habit. It is deliberate and it was asked
+    # for: the point is to run it across the roster and read the data. It is also the
+    # only silence here that may fire while an answer is OWED — see rhythm.STEPOUT_MIN_S
+    # for why, and note the persistence exit is what bounds the cost of that choice.
+    # Every default below reads from the module that owns the concept, so there is
+    # exactly one place to change any of them.
+    "rhythm_stepout_enabled": True,
+    "rhythm_stepout_min_exchanges": _stepout.MIN_EXCHANGES,
+    "rhythm_stepout_max_exchanges": _stepout.MAX_EXCHANGES,
+    "rhythm_stepout_min_minutes": rhythm.STEPOUT_MIN_MINUTES,
+    "rhythm_stepout_max_minutes": rhythm.STEPOUT_MAX_MINUTES,
+    # How many messages, how far apart, end the step-out early. 0 messages ⇒ no exit
+    # (she stays gone for the full draw), which is a real configuration and not a bug.
+    "rhythm_stepout_break_msgs": _stepout.PERSIST_MSGS,
+    "rhythm_stepout_break_gap_s": _stepout.PERSIST_GAP_MIN_S,
     # ── Human TYPING pacing (automations/pacing.py) — the gaps BETWEEN the bubbles
     # of one reply, which `rhythm` never touched. Measured over 120 days: 3.0% of
     # our inter-bubble gaps exceed 20s, against 26.9% for a human chatter and 56.6%
@@ -763,7 +796,7 @@ class _Cand:
                  "day_out_n", "day_out_n_at_stop", "total_out_n", "first_at",
                  "her_last_at", "pic_sent", "last_in_desc", "last_in_desc_at",
                  "last_out_was_gif", "last_in_text", "first_in_at",
-                 "msg_ids", "reply_ctx")
+                 "msg_ids", "reply_ctx", "in_run")
 
     def __init__(self, fan_id: int):
         self.fan_id = fan_id
@@ -821,6 +854,17 @@ class _Cand:
         # The quote-reply he made, if any — filled per reply by `_reply_ctx`, read only
         # by `_build_messages`. None = no quote, the overwhelming case.
         self.reply_ctx: "QuoteRef | None" = None
+        # HIS TRAILING UNANSWERED RUN — the timestamps of every inbound since her own
+        # last real outbound, oldest→newest. `messages` carries direction and body and
+        # nothing else, so until this existed the engine could see THAT he wrote twice
+        # but never WHEN, and "he double-texted five minutes apart" was not a fact the
+        # code could express. `_gather` already parses `created_at` per row for her own
+        # bubble window, so this costs one append and no I/O.
+        #
+        # Cleared on her outbound — but NOT on a broadcast, exactly like `last_dir`
+        # below: a blast fired over his messages did not answer him, and letting it
+        # clear the run would silently disqualify every fan an account mass-messages.
+        self.in_run: list[datetime] = []
         self.last_in_at: datetime | None = None
         # ANY outbound (human or bot) — the rhythm sampler's "how long has she been
         # gone" clock, which is what a cover line ("sorry babe was in the shower")
@@ -1038,6 +1082,8 @@ async def _gather(account_id: str,
         if direction == "in":
             c.fan_msg_n += 1
             c.last_in_at = created_at
+            if created_at is not None:
+                c.in_run.append(created_at)
             c.last_in_text = _strip_html(body)
             if c.first_in_at is None and created_at is not None:
                 c.first_in_at = created_at
@@ -1065,6 +1111,12 @@ async def _gather(account_id: str,
             mid_reply[fan_id] = False        # he spoke → her next row is a new reply
         else:
             c.last_out_at = created_at
+            # Anything that was not a broadcast ANSWERED him, so his run of unanswered
+            # messages ends here. Deliberately wider than `hers` below: a human chatter
+            # typing by hand closes the run too — she answered him, and a persistence
+            # exit that fired anyway would be reacting to a silence that never happened.
+            if not broadcast:
+                c.in_run.clear()
             hers = not broadcast and automation_kind in _OUR_KINDS
             # The picture is "dealt with" only once SHE HAS ANSWERED IT IN WORDS.
             #
@@ -3410,6 +3462,39 @@ async def _save_rhythm(account_id: str, fan_id: int, **vals) -> None:
         )
 
 
+async def _stepout_gate(account_id: str, c: _Cand, rst: RhythmState,
+                        cfg: "_stepout.Config") -> bool:
+    """HE KEPT WRITING while she was out. True ⇒ end the pause now and answer him.
+
+    A gate function for the same reason `_ghost_gate` below is one: the candidate
+    loop is a column of one-line verdicts, and a multi-line decision inlined into it
+    is how that loop stops being scannable.
+
+    Only a STEP-OUT may be ended this way — never a sleep window (she is not awake to
+    be persuaded) and never an ordinary break. That is the whole reason the step-out
+    carries its own context instead of sharing `CONTEXT_UNAVAILABLE` with both.
+
+    `rst.updated_at` is the honest "since she went out" mark HERE, even though every
+    write to the row stamps it: while a fan is stepped out the caller `continue`s
+    above every other writer, so nothing else touches his row until the pause ends.
+
+    Clears `wake_at` and NOT `deferrals` — left at 1 it makes `decide()` hit the
+    one-hop cap and reply inline, which is exactly what "she came back because he
+    wrote again" should feel like."""
+    if not cfg.on or cfg.break_msgs <= 0 or rst.context != rhythm.CONTEXT_STEPOUT:
+        return False
+    if not _stepout.persisted(c.in_run, rst.updated_at,
+                              msgs=cfg.break_msgs, gap_s=cfg.break_gap_s):
+        return False
+    await _save_rhythm(account_id, c.fan_id, wake_at=None,
+                       context=rhythm.CONTEXT_FREE_CHAT)
+    rst.wake_at = None
+    rst.context = rhythm.CONTEXT_FREE_CHAT
+    log.info("ai_chatter stepout broken by persistence account=%s fan=%s msgs=%d",
+             account_id, c.fan_id, len(c.in_run))
+    return True
+
+
 async def _ghost_gate(account_id: str, c: _Cand, rst: RhythmState | None,
                       cycle: tuple[tuple[float, float], ...] | None,
                       now: datetime, *, in_active_sale: bool,
@@ -3533,11 +3618,20 @@ async def _record_turn(account_id: str, fan_id: int, rst: RhythmState | None,
     """spec §3.4 — record the REALIZED latency (send_time − last_inbound_at) + bubble
     count + informal flag into recent_turns_json at the SEND site, rolling last 20. NOT
     the drawn delay at decide() time: a deferred reply must log its true multi-minute
-    gap, and an already-waited-floored reply must log the full inbound→send latency."""
+    gap, and an already-waited-floored reply must log the full inbound→send latency.
+
+    ALSO discharges the one-hop `deferrals` cap, because a sent reply is exactly what
+    "the pending reply is over" means. The candidate gate's own comment has always
+    said the hop "resets on the send" — but until 2026-08-09 nothing did that except
+    the `rhythm_resume` branch, and `deferrals=1` with a NULL `wake_at` was an
+    ABSORBING STATE: the only other writer that clears it is guarded by
+    `wake_at is not None`, so one lost resume job disabled sleep windows, breaks and
+    step-outs for that fan permanently. Measured on prod before the fix: 51 of 86
+    rhythm rows on one account sat at 1 with nothing pending."""
     prior = list(_recent_realized_raw(rst))
     prior.append({"d": round(max(0.0, float(realized_s)), 1),
                   "b": int(bubbles), "i": int(bool(informal))})
-    await _save_rhythm(account_id, fan_id,
+    await _save_rhythm(account_id, fan_id, deferrals=0,
                        recent_turns_json=json.dumps(prior[-20:]))
 
 
@@ -5393,6 +5487,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # the cycle is never even parsed and not one fan is touched.
     ghost_on = rhythm_on and bool(cfg.get("rhythm_ghost_enabled"))
     ghost_cycle = _ghost.parse_cycle(cfg.get("rhythm_ghost_cycle")) if ghost_on else None
+    # ── The flat reply bonus and the step-out ride ON rhythm: with rhythm off the
+    # sampler is never called, so neither can move a single reply.
+    reply_bonus_s = max(0.0, float(cfg.get("rhythm_reply_bonus_s") or 0.0))
+    # …the one-bubble return DOES NOT, deliberately. It is a bubble-SHAPE knob, and
+    # this codebase keeps shape independent of rhythm's latency switch — the same
+    # ruling `pacing_enabled` carries ("rhythm owns bubble 0's latency, pacing owns
+    # bubbles 1+, and an account may want either without the other"). Set it to 0 to
+    # turn it off; `rhythm_enabled=False` will not.
+    return_single_s = max(0.0, float(cfg.get("rhythm_return_single_bubble_s") or 0.0))
+    stepout = _stepout.Config.from_cfg(cfg, enabled=rhythm_on)
     # §3.7 — the "im filming it rn" active fiction. Default OFF; when on it only
     # biases the §3.6 PPV drop toward the top of its band (stalled=). Logged nowhere
     # else here — the stall LINE emission is a separate opt-in surface (not wired).
@@ -5577,6 +5681,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_sla_fresh = 0   # backup mode: inbound younger than the SLA
     skipped_manual = 0      # a human chatted too recently (cautious resume)
     skipped_ghost = 0       # ghost cycle: she is dark on this fan for whole days
+    stepouts = 0            # she went out for an hour or two (the exchange counter)
+    stepout_broken = 0      # …and came back early because he wrote again
+    stepout_blocked = 0     # …and the ones the one-hop deferral cap swallowed
 
     for fan_id, c in by_fan.items():
         forced = fan_id in force_ids
@@ -5609,27 +5716,37 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             _rs = rstates.get(fan_id)
             if _rs is not None and _rs.wake_at is not None:
                 if _rs.wake_at > now:
-                    rhythm_waiting += 1
-                    continue
-                # The pause ELAPSED but the resume job never reached the send path
-                # (its lease was taken, a cooldown hit, a gate skipped him). Drop the
-                # stale wake_at so he is a candidate again.
-                #
-                # `deferrals` is deliberately NOT cleared here: the one-hop cap is per
-                # PENDING REPLY, not per lifetime. Keeping it means decide() hits the
-                # cap on this tick and answers him INLINE — which is the whole point of
-                # the cap (he is owed a reply and must get one). Clearing it here would
-                # let him be deferred a second time for the same unanswered message.
-                # It resets on the send, and below on a NEW inbound — a new message is
-                # a new obligation, and rhythm must be free to pause on it, or the
-                # feature would silently degrade to one-shot for that fan forever.
-                fresh_inbound = (_rs.updated_at is not None and c.last_in_at is not None
-                                 and c.last_in_at > _rs.updated_at)
-                await _save_rhythm(account_id, fan_id, wake_at=None,
-                                   deferrals=0 if fresh_inbound else int(_rs.deferrals or 0))
-                _rs.wake_at = None
-                if fresh_inbound:
-                    _rs.deferrals = 0
+                    # STILL PAUSED — unless he wrote again and this is a step-out, the
+                    # one silence a fan is allowed to interrupt. `_stepout_gate` clears
+                    # the row itself, so a broken pause skips the elapsed branch below
+                    # rather than writing the same state twice.
+                    if not await _stepout_gate(account_id, c, _rs, stepout):
+                        rhythm_waiting += 1
+                        continue
+                    stepout_broken += 1
+                else:
+                    # The pause ELAPSED but the resume job never reached the send path
+                    # (its lease was taken, a cooldown hit, a gate skipped him). Drop
+                    # the stale wake_at so he is a candidate again.
+                    #
+                    # `deferrals` is deliberately NOT cleared here: the one-hop cap is
+                    # per PENDING REPLY, not per lifetime. Keeping it means decide()
+                    # hits the cap on this tick and answers him INLINE — which is the
+                    # whole point of the cap (he is owed a reply and must get one).
+                    # Clearing it here would let him be deferred a second time for the
+                    # same unanswered message. It resets on the SEND (`_record_turn`)
+                    # and here on a NEW inbound — a new message is a new obligation,
+                    # and rhythm must be free to pause on it, or the feature would
+                    # silently degrade to one-shot for that fan forever.
+                    fresh_inbound = (_rs.updated_at is not None
+                                     and c.last_in_at is not None
+                                     and c.last_in_at > _rs.updated_at)
+                    await _save_rhythm(
+                        account_id, fan_id, wake_at=None,
+                        deferrals=0 if fresh_inbound else int(_rs.deferrals or 0))
+                    _rs.wake_at = None
+                    if fresh_inbound:
+                        _rs.deferrals = 0
         if c.last_dir != "in":
             skipped_not_turn += 1
             continue
@@ -6036,6 +6153,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 lad0 = ladders.get(fan_id)
                 rnow0 = datetime.utcnow()
                 _h_ask, _h_paid = human_money.get(fan_id, (None, None))
+                _step_due = stepout.on and _stepout.is_due(
+                    mark=(rst0.stepout_mark if rst0 is not None else None),
+                    target=(rst0.stepout_target if rst0 is not None else None),
+                    total_out_n=c.total_out_n, account_id=account_id,
+                    fan_id=fan_id, lo=stepout.lo, hi=stepout.hi)
                 away = rhythm.decide_availability(rhythm.RhythmCtx(
                     account_id=str(account_id), fan_id=fan_id,
                     voice=v.voice,
@@ -6069,11 +6191,39 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     sleep_window=sleep_win, tz_offset_minutes=tz_off,
                     no_sleep=rhythm_no_sleep,
                     last_cover_at=(rst0.last_cover_at if rst0 is not None else None),
+                    reply_bonus_s=reply_bonus_s,
+                    stepout_due=_step_due,
+                    stepout_min_s=stepout.min_s, stepout_max_s=stepout.max_s,
                     enabled=True,
                 ), rnow0, random.Random(f"rhythm:{account_id}:{fan_id}:{rnow0.timestamp()}"))
-                if away is not None and int(getattr(rst0, "deferrals", 0) or 0) < 1:
+                if away is not None and int(getattr(rst0, "deferrals", 0) or 0) >= 1:
+                    # THE ONE-HOP CAP ATE THE VERDICT. She is owed a reply from an
+                    # earlier deferral, so this pause is dropped and she answers below.
+                    # Counted rather than silent: `deferrals` only discharges on a
+                    # successful send (`_record_turn`), so a fan whose replies keep
+                    # being dropped for other reasons stops being pausable — and a
+                    # silently partial rollout looks exactly like a feature nobody
+                    # triggers. If this runs high while `stepouts` stays near zero,
+                    # the feature is jammed, not quiet.
+                    if away.context == rhythm.CONTEXT_STEPOUT:
+                        stepout_blocked += 1
+                elif away is not None:
+                    _extra: dict = {}
+                    if away.context == rhythm.CONTEXT_STEPOUT:
+                        # Move the mark to where her counter stands NOW and draw the
+                        # NEXT interval, salted with that mark so it is stable across
+                        # ticks but different every time — a step-out that arrived on
+                        # a countable schedule would be a worse tell than the instant
+                        # replies it exists to break up.
+                        _extra = {
+                            "stepout_mark": int(c.total_out_n),
+                            "stepout_target": _stepout.draw_target(
+                                account_id, fan_id, stepout.lo, stepout.hi,
+                                salt=str(c.total_out_n)),
+                        }
+                        stepouts += 1
                     await _save_rhythm(account_id, fan_id, context=away.context,
-                                       wake_at=away.wake_at, deferrals=1)
+                                       wake_at=away.wake_at, deferrals=1, **_extra)
                     # Release the lease BEFORE the wait — an inline hold would expire
                     # its 900s TTL and burn one of the executor's 4 GLOBAL run slots.
                     await ax.release_fan_lease(account_id, fan_id)
@@ -6945,9 +7095,25 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 teaser = None
             if not dry_run:
                 await _bump_attempt(account_id, fan_id, now)
+            # SHE WAS GONE A WHILE ⇒ ONE BUBBLE. Measured against these accounts' own
+            # human chatters, a human returns single-bubble ~64% of the time at every
+            # gap length; ours falls from 31.9% at <2min to 14.7% at 30min-2h, so the
+            # longer we had been quiet the more we said on arrival.
+            #
+            # Anchored on the START of his unanswered run, not his last message. Those
+            # differ exactly when he double-texted — which is the step-out's own
+            # success case, and reading `last_in_at` there would reset the clock to his
+            # newest bubble and hand the longest silences the burstiest returns. Falls
+            # back to `last_in_at` for the ordinary single-message turn, which is the
+            # same clock the measurement above was taken on.
+            _ret_anchor = c.in_run[0] if c.in_run else c.last_in_at
+            _ret_gap_s = ((datetime.utcnow() - _ret_anchor).total_seconds()
+                          if _ret_anchor is not None else 0.0)
+            _one_bubble = bool(return_single_s > 0 and _ret_gap_s >= return_single_s)
             parts = [_language.apply_word_restriction(p, fan_lang)[:_REPLY_MAX_CHARS]
                      for p in split_for_bubbles(raw, max_bubbles,
-                                                rng=random.Random(f"split:{fan_id}:{raw}"))
+                                                rng=random.Random(f"split:{fan_id}:{raw}"),
+                                                force_single=_one_bubble)
                      if p.strip()][:max_bubbles]
             parts = [p for p in parts if not _looks_like_echo(p, c.last_body)]
             if style_on and parts:
@@ -7134,6 +7300,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     sleep_window=sleep_win, tz_offset_minutes=tz_off,
                     no_sleep=rhythm_no_sleep,
                     last_cover_at=(rst.last_cover_at if rst is not None else None),
+                    reply_bonus_s=reply_bonus_s,
+                    # `stepout_due` is deliberately NOT passed here. The step-out is
+                    # decided on the PRE-LLM path only: deciding it after generation
+                    # pays for a reply we then sit on for two hours and regenerate on
+                    # the wake — the same double-billing that split decide_availability
+                    # out of decide() in the first place.
                     enabled=True,
                 ), rnow, random.Random(f"rhythm:{account_id}:{fan_id}:{rnow.timestamp()}"))
                 deferrals = int(rst.deferrals or 0) if rst is not None else 0
@@ -7639,6 +7811,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_sla_fresh": skipped_sla_fresh,
         "skipped_manual": skipped_manual,
         "skipped_ghost": skipped_ghost,
+        # The step-out and its escape hatch. Read as a RATIO: `stepout_broken` over
+        # `stepouts` is the share of silences a fan ended by writing again, which is
+        # the one number that says whether the fans notice at all.
+        "stepouts": stepouts,
+        "stepout_broken": stepout_broken,
+        # If this runs high while `stepouts` stays low, the feature is not quiet —
+        # it is jammed behind a stranded `deferrals` counter, which is a different
+        # problem with a different fix.
+        "stepout_blocked": stepout_blocked,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
         "skipped_no_intent": skipped_no_intent,

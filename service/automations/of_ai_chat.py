@@ -327,6 +327,23 @@ def _group_to_target(units: list[str], target: int) -> list[str]:
     return out
 
 
+def _break_units(text: str) -> list[str]:
+    """Every candidate break in `text`, finest-grained: the model's own line breaks,
+    then commas / sentence boundaries / dash and (for a long chunk) emoji / WH-word,
+    with extra '?' de-marked.
+
+    ONE definition, because both callers need the identical decomposition and only
+    disagree about how far to re-merge it — style mode groups to a rolled target,
+    the one-bubble return joins all the way down to a single line. Written twice, a
+    later step added to one path would silently not exist in the other, and the path
+    that diverged would be the return-from-silence one: the hardest to spot in
+    production and the one this whole change exists to get right."""
+    units: list[str] = []
+    for line in text.split("\n"):
+        units.extend(_split_units(line))
+    return _cap_one_question(_merge_orphans(units))
+
+
 # Per-reply split STRATEGY — a randomiser so replies don't all chop the same way:
 #   length : bubble count tracks word count (the sweet spot; see _target_bubbles).
 #   clause : split at (nearly) every comma / clause — a rapid multi-text burst.
@@ -405,7 +422,8 @@ def _dedupe_lead_reaction(parts: list[str], recent_out: list[str]) -> list[str]:
     return [rest] if rest else parts
 
 
-def split_for_bubbles(text: str, max_bubbles: int = 2, rng=None) -> list[str]:
+def split_for_bubbles(text: str, max_bubbles: int = 2, rng=None,
+                      force_single: bool = False) -> list[str]:
     """Make one generated reply read like real texting, and NO em-dash ever survives
     (every return path runs _strip_dash). Content is NEVER dropped:
 
@@ -423,14 +441,23 @@ def split_for_bubbles(text: str, max_bubbles: int = 2, rng=None) -> list[str]:
     """
     _rng = rng if rng is not None else random
     text = text.strip()
+    # ── ONE BUBBLE, whatever the reply weighs. The caller sets this when she is
+    # answering after a real silence: measured against the same accounts' human
+    # chatters, a human returns single-bubble ~64% of the time at EVERY gap length
+    # from two minutes to two days — flat — while ours goes the other way, 31.9%
+    # single at <2min falling to 14.7% at 30min-2h. The longer we had been quiet the
+    # more we said on arrival, which is a compounding tell: the gap reads as a person
+    # and the wall of text that ends it reads as a queue being drained.
+    #
+    # Deliberately NOT `max_bubbles=1`: that would fall out of style mode into the
+    # non-style path, whose `[:max_bubbles]` TRUNCATES and would drop content. This
+    # merges instead — `_group_to_target(..., 1)` casually joins every unit, so a
+    # one-bubble reply says everything the multi-bubble one would have.
+    if force_single and text:
+        units = _break_units(text)
+        return [_strip_dash(_casual_join(units) if units else text)]
     if max_bubbles >= 3:                         # STYLE MODE
-        # Gather every candidate break (line breaks → commas/sentences/dash → long
-        # chunk at emoji/WH), de-mark extra '?', then group to the randomiser's
-        # target bubble count (nothing dropped — overflow merges into the last).
-        parts: list[str] = []
-        for line in text.split("\n"):
-            parts.extend(_split_units(line))
-        parts = _cap_one_question(_merge_orphans(parts))
+        parts = _break_units(text)
         parts = _group_to_target(parts, _strategy_target(parts, max_bubbles, _rng))
         if parts:
             return [_strip_dash(p) for p in parts]

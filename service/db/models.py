@@ -1346,7 +1346,7 @@ class AccountAiConfig(Base):
     #
     # Why this exists as fields and not more prose: `persona` averaged 202-882
     # chars across live accounts while the style scaffolding around it ran ~5,000,
-    # and the gaps were exactly what fans probe. AriaFree's persona said "Born and
+    # and the gaps were exactly what fans probe. the graded vault's persona said "Born and
     # raised in Argentina" with NO city — so when a fan asked where she grew up the
     # model improvised, and a 966-turn thread walked Argentina → Chile → Córdoba
     # before the fan said "ya no creo nada". A named empty slot is what the enrich
@@ -2581,6 +2581,15 @@ class RhythmState(Base):
     # history instead of going dark on one calendar day), and pushed to `now` when
     # the cycle restarts: a live sale, or a thread she was not present in anyway.
     ghost_anchor: Mapped[datetime | None] = mapped_column(DateTime)
+    # Step-out (rhythm.STEPOUT_MIN_S): she goes out for an hour or two every 7-15
+    # exchanges. `stepout_mark` is her whole-thread reply count at the LAST step-out
+    # and `stepout_target` is the interval drawn for the NEXT one, so "is she due" is
+    # `total_out_n - stepout_mark >= stepout_target` — a comparison against a count
+    # the thread itself carries, not a counter some tick has to remember to increment.
+    # Same reasoning as `ghost_anchor` above: a tick that does not run can leave a
+    # pointer stale, and it cannot leave a MARK stale.
+    stepout_mark: Mapped[int | None] = mapped_column(Integer)
+    stepout_target: Mapped[int | None] = mapped_column(Integer)
     updated_at: Mapped[datetime] = _ts_now()
 
     __table_args__ = (Index("ix_rhythm_state_wake_at", "wake_at"),)
