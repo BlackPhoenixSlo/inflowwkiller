@@ -587,10 +587,13 @@ async def session_middleware(request: Request, call_next):
                             # captured account appears without re-login.
                             # Deferred import mirrors the `chatters` pattern to
                             # keep auth.py free of a hard registry dependency.
+                            # `account_ids()` and not `list_accounts()`: we want
+                            # the id SET, and the listing builds it by reading a
+                            # meta.json per account — a directory walk on every
+                            # request the master makes, which is descriptors
+                            # spent in the middleware on data we discard.
                             import accounts as _registry
-                            account_ids = frozenset(
-                                a["id"] for a in _registry.list_accounts()
-                            )
+                            account_ids = _registry.account_ids()
                         # Only bump last_seen_at once per ~5 min to avoid
                         # write amplification — a chat session fires
                         # hundreds of requests/min.
@@ -637,9 +640,7 @@ async def session_middleware(request: Request, call_next):
                                             # is blocked below for any
                                             # impersonation).
                                             import accounts as _registry
-                                            imp_account_ids = frozenset(
-                                                a["id"] for a in _registry.list_accounts()
-                                            )
+                                            imp_account_ids = _registry.account_ids()
                                         _request_user.set(AuthedUser(
                                             imp_row.id, imp_row.username,
                                             imp_account_ids, imp_is_admin,

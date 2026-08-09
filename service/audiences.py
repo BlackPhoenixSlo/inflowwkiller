@@ -538,8 +538,26 @@ def _sync_exclude_list_blocking(client, ids: set[int]) -> int:
         except Exception as e:  # noqa: BLE001 — per-user tolerance, see above
             add_fail += 1
             last_err = e
-    if to_add and add_fail == len(to_add):
-        raise last_err  # nothing landed → the guard is empty, fail loudly
+    # Judge the guard by its COVERAGE, never by this tick's add success rate.
+    # The old test was `add_fail == len(to_add)` and it sank live broadcasts:
+    # an un-addable id never becomes a member, so it returns in `to_add` on
+    # EVERY later tick. Once the list reaches steady state (all the real fans
+    # already on it) those permanent stragglers are the ONLY entries left to
+    # add — so "every add failed" is the ROUTINE case, not the systemic one it
+    # was meant to catch, and it fail-closed ~40% of ppv_send's broadcasts
+    # (47 of 116 attempts over 45 days, measured from the broadcast:all cell in
+    # automation_runs.stats_json — the run itself still reads 'ok' at the top,
+    # which is why it hid; see the `reason` propagation in ppv_send). Note a
+    # failed sync mints NO mass_runs row at all, so that table cannot be used
+    # to count these. What actually makes the guard unusable is an EMPTY list, so
+    # that is what we test: if not one id we need excluded is on the list, the
+    # next broadcast would blast everyone — fail loudly. If 447 are on it and
+    # one straggler won't add, the guard is intact; honour the docstring above
+    # ("ONE such id must not abort the whole exclude build") and carry on.
+    covered = len(ids & members) + (len(to_add) - add_fail)
+    if ids and covered == 0:
+        raise last_err or RuntimeError(
+            "auto_exclude: no ids could be listed — exclude guard is empty")
     if add_fail:
         log.warning("auto_exclude partial account-list=%s added=%d skipped=%d (last=%r)",
                     list_id, len(to_add) - add_fail, add_fail, last_err)

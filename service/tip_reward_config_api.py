@@ -157,6 +157,11 @@ def _validate(cfg: dict) -> dict:
     # Conversational teaser ladder — enable flag + the rungs list ({folder, price_cents}).
     if "teaser_convo_enabled" in cfg:
         out["teaser_convo_enabled"] = bool(cfg["teaser_convo_enabled"])
+    # Does a PROVEN buyer get the free bait leg (set price ↔ free) instead of holding
+    # on one repeated number? Per-account BECAUSE it changes what every past buyer on
+    # the account receives next — a code default would flip them all on one deploy.
+    if "teaser_convo_bait_for_buyers" in cfg:
+        out["teaser_convo_bait_for_buyers"] = bool(cfg["teaser_convo_bait_for_buyers"])
     if "teaser_convo_rungs" in cfg:
         rungs = cfg["teaser_convo_rungs"]
         if not isinstance(rungs, (list, tuple)):

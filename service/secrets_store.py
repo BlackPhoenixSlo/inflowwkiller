@@ -76,16 +76,82 @@ KNOWN: dict[str, dict] = {
 }
 
 
+# (mtime_ns, size, inode) of the file the cached dict was parsed from, or None
+# for "nothing cached yet". No lock: a torn read is impossible because the tuple
+# and the dict are published in ONE assignment, and the worst race is two
+# threads parsing the same bytes and storing equal values.
+_CACHE: tuple[tuple[int, int, int, int], dict] | None = None
+
+
+def _stamp() -> tuple[int, int, int, int] | None:
+    """The identity of the file on disk, or None if it isn't there.
+
+    `stat(2)` takes a PATH, not a descriptor, so this keeps answering while the
+    process is out of descriptors — the property the whole cache rests on.
+
+    Identity, not just a timestamp: `_atomic_write` publishes via `os.replace`,
+    so a rewrite that lands inside a single mtime tick still arrives on a NEW
+    inode and the stamp changes even when the clock doesn't. `st_dev` pairs
+    with the inode because inode numbers are only unique within a filesystem,
+    and this path is a bind-mount target.
+    """
+    try:
+        st = _PATH.stat()
+    except FileNotFoundError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
 def _load() -> dict:
+    """The parsed store, re-read only when the file on disk has changed.
+
+    This runs in the OUTERMOST middleware on every single request
+    (`_effective_share_token` → `stored("SHARE_TOKEN")` in server.py's
+    `_share_token_gate`), so the `open()` it used to do unconditionally was one
+    descriptor per request in the hottest path in the process — and descriptors
+    are what the relay runs out of (2026-07-28, 2026-08-08). Under that
+    shortage the open failed, this returned `{}`, and the share token silently
+    reverted to the env default for the duration: the gate CHANGED because the
+    process was busy. Serving the last-known-good parse instead is both cheaper
+    and more correct.
+
+    Callers get a copy — `set_many` mutates what it gets back before writing,
+    and it must not edit the cache in place ahead of the write landing.
+    """
+    global _CACHE
+    stamp = _stamp()
+    if stamp is None:
+        _CACHE = None
+        return {}
+    cached = _CACHE
+    if cached is not None and cached[0] == stamp:
+        return dict(cached[1])
     try:
         with open(_PATH, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else {}
     except FileNotFoundError:
+        _CACHE = None
         return {}
+    except OSError:
+        # Out of descriptors, or the file went unreadable mid-flight. The last
+        # good parse is a far better answer than "no secrets are set" — that
+        # answer silently swaps the access gate's token.
+        log.warning("secrets.json could not be opened — serving last known good",
+                    exc_info=True)
+        return dict(cached[1]) if cached is not None else {}
     except Exception:  # pragma: no cover — a corrupt file must not crash callers
         log.warning("secrets.json unreadable — ignoring", exc_info=True)
+        # Cache the verdict, not just the parse. A file that is there but
+        # unparseable answers "no secrets" every time it is asked, and without
+        # this it would answer that by re-opening the file on every request —
+        # exactly the per-request descriptor this cache exists to remove.
+        _CACHE = (stamp, {})
         return {}
+    if not isinstance(data, dict):
+        _CACHE = (stamp, {})
+        return {}
+    _CACHE = (stamp, data)
+    return dict(data)
 
 
 def stored(name: str) -> str:
@@ -126,6 +192,14 @@ def _atomic_write(data: dict) -> None:
             os.chmod(_PATH, 0o600)
         except OSError:  # pragma: no cover — best-effort on odd filesystems
             pass
+        # Publish what we just wrote instead of waiting to re-read it. We know
+        # the content, so the next `_load()` costs a stat and nothing else —
+        # and a Setup → Keys edit takes effect on the very next request without
+        # depending on the stamp having moved. A failed stat here just leaves
+        # the cache cold, which re-reads: correct, only slower.
+        global _CACHE
+        stamp = _stamp()
+        _CACHE = (stamp, dict(data)) if stamp is not None else None
     finally:
         try:
             os.unlink(tmp)

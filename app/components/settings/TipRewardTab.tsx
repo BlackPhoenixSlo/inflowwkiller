@@ -102,6 +102,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   const [cvAfter, setCvAfter] = useState(20);
   const [cvCount, setCvCount] = useState(1);
   const [cvAdaptive, setCvAdaptive] = useState(true); // backend default ON
+  const [cvBaitBuyers, setCvBaitBuyers] = useState(true); // backend default ON
 
   const [cvRungs, setCvRungs] = useState<{ folder: string; price: number }[]>([]);
   const [cvPicker, setCvPicker] = useState<number | null>(null); // which rung's folder
@@ -148,6 +149,10 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setCvAfter(eff.teaser_convo_after_fan_msgs ?? 20);
     setCvCount(eff.teaser_convo_count ?? 1);
     setCvAdaptive(eff.teaser_convo_adaptive !== false); // unset → backend default ON
+    // `!== false`, not `!!` — this flag defaults ON server-side (same idiom as
+    // cvAdaptive above); `!!` would render an unset account as opted OUT and then
+    // SAVE that lie on the next click.
+    setCvBaitBuyers(eff.teaser_convo_bait_for_buyers !== false);
     setCvRungs(
       (eff.teaser_convo_rungs ?? []).map((r) => ({
         folder: r.folder ?? "",
@@ -242,6 +247,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       teaser_convo_after_fan_msgs: cvAfter,
       teaser_convo_count: cvCount,
       teaser_convo_adaptive: cvAdaptive,
+      teaser_convo_bait_for_buyers: cvBaitBuyers,
       teaser_convo_rungs: cvRungs.map((r) => ({
         folder: r.folder.trim(),
         price_cents: Math.max(0, Math.round(r.price * 100)),
@@ -802,6 +808,36 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
                 </span>
               </span>
             </label>
+
+            {/* The free BAIT leg for a man who has already paid. Without it his ask
+                reaches the set price and STAYS there — one number, over and over,
+                until the unbought brake stops him. */}
+            {cvAdaptive && (
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 mt-0.5 accent-[var(--accent)]"
+                  checked={cvBaitBuyers}
+                  onChange={(e) => {
+                    markDirty();
+                    setCvBaitBuyers(e.target.checked);
+                  }}
+                />
+                <span className="space-y-0.5">
+                  <span className="block text-sm">Free tease between asks for past buyers</span>
+                  <span className="block text-[11px] text-fg-dim/80 leading-relaxed">
+                    Once a fan who <b>has bought before</b> stops unlocking, his ask sinks
+                    to the rung&apos;s set price and then has nowhere left to go — so he
+                    sees that same price every time. On, the ladder alternates{" "}
+                    <b>set price → free → set price</b>, sending {minImages} pics from the
+                    free folder in between. The price itself never drops; only the free
+                    leg goes under it. ⚠️ A free tease isn&apos;t a refused ask, so it
+                    doesn&apos;t count toward the unbought brake — he still gets asked for
+                    money the same number of times, with extra sends in between.
+                  </span>
+                </span>
+              </label>
+            )}
 
             <div className="space-y-2">
               <div className="text-xs font-medium text-fg">Rungs (climb in order)</div>

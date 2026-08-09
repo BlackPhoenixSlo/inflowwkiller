@@ -33,7 +33,9 @@ export interface BrainConfig {
    * creator back in the female lane mid-conversation.
    */
   voice: string;
-  /** IANA zone (e.g. America/Vancouver). Wins over utc_offset; DST-correct. */
+  /** LEGACY IANA zone (e.g. America/Vancouver). No longer settable from the Brain —
+   *  `utc_offset` is the account's one clock, and this is only consulted when that
+   *  is unset. Saving the Brain clears it. */
   timezone: string | null;
   utc_offset: number;
   daily_cost_cap_cents: number;
@@ -126,10 +128,16 @@ export interface EnrichResult {
   proposed: Record<string, string>;
   /** known + proposed — what Save would store. */
   facts: Record<string, string>;
-  /** Resolved IN CODE from the city/country, never model-guessed. null = ambiguous. */
+  /** Resolved IN CODE from the city/country, never model-guessed. null = ambiguous.
+   *  Names her PLACE; the clock the account stores is the offset below. */
   timezone: string | null;
   timezone_changed: boolean;
   current_timezone: string | null;
+  /** THE clock to write — that place's whole-hour offset right now. null = her place
+   *  is ambiguous (or a half-hour zone the integer column can't hold), so the
+   *  operator picks it from the dropdown instead. */
+  utc_offset: number | null;
+  utc_offset_changed: boolean;
 }
 
 /**
