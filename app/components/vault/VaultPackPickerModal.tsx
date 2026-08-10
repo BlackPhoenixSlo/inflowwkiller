@@ -309,6 +309,9 @@ export default function VaultPackPickerModal({
   }, [data, effective]);
 
   const dirty = Object.keys(draft).length;
+  /** Rungs that exist and have something in them — the only ones publishable. */
+  const stocked = shelf.filter((f) => f.folder_id && f.count);
+  const allPublished = stocked.length > 0 && stocked.every((f) => f.of_list_id);
 
   function rule(mediaId: number, rung: string | null) {
     setDraft((d) => ({ ...d, [mediaId]: rung }));
@@ -333,22 +336,56 @@ export default function VaultPackPickerModal({
     }
   }
 
+  function describe(res: Awaited<ReturnType<typeof publishFolderToOf>>): string {
+    return (
+      `${res.name} → OF list ${res.of_list_id}: pushed ${res.pushed}` +
+      (res.stale_on_of.length
+        ? ` · ⚠ ${res.stale_on_of.length} still on OF that this rung no longer holds`
+        : " · exact copy")
+    );
+  }
+
   async function publish(folderId: number, name: string) {
     setBusy(`publishing ${name} to OF…`);
     setNote("");
     try {
-      const res = await publishFolderToOf(accountId, folderId);
-      setNote(
-        `${res.name} → OF list ${res.of_list_id}: pushed ${res.pushed}` +
-          (res.stale_on_of.length
-            ? ` · ⚠ ${res.stale_on_of.length} item(s) still on OF that this folder no longer holds (clearing them needs a delete+recreate)`
-            : " · exact copy"),
-      );
+      setNote(describe(await publishFolderToOf(accountId, folderId)));
       await qc.invalidateQueries({ queryKey: ["vault-pack-candidates", accountId, category] });
     } catch (e) {
       setNote(`publish failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy("");
+    }
+  }
+
+  /** Every stocked rung, one after another.
+   *
+   * Sequential on purpose: each rung is 1 create + 1 add + a read-back against
+   * her real OnlyFans account, and firing three at once is how you get rate
+   * limited mid-way and have to reason about which rungs landed. A rung that
+   * fails stops the run and says which one — the ones before it are already
+   * real on OF and a re-run tops them up rather than duplicating.
+   */
+  async function publishAll() {
+    const stocked = shelf.filter((f) => f.folder_id && f.count);
+    if (!stocked.length) return;
+    const done: string[] = [];
+    setNote("");
+    try {
+      for (const f of stocked) {
+        setBusy(`publishing ${f.name} to OF… (${done.length + 1}/${stocked.length})`);
+        done.push(describe(await publishFolderToOf(accountId, f.folder_id!)));
+      }
+      setNote(done.join(" · "));
+    } catch (e) {
+      setNote(
+        `${done.length} of ${stocked.length} published, then FAILED: ` +
+          `${e instanceof Error ? e.message : String(e)}` +
+          (done.length ? ` — landed: ${done.join(" · ")}` : ""),
+      );
+    } finally {
+      setBusy("");
+      await qc.invalidateQueries({ queryKey: ["vault-pack-candidates", accountId, category] });
     }
   }
 
@@ -389,6 +426,39 @@ export default function VaultPackPickerModal({
             >
               {dirty ? `Save ${dirty}` : "Saved"}
             </button>
+
+            {/* The only control here that leaves the app. Amber, not green:
+                Save writes a row, THIS writes to her real OnlyFans vault.
+                Disabled while there are unsaved verdicts — publish reads the
+                SAVED shelf, so publishing dirty would silently ship the old
+                membership and look like it had shipped the new. */}
+            <button
+              type="button"
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Create ${stocked.length} REAL folder(s) in her OnlyFans vault?\n\n` +
+                      stocked.map((f) => `  ${f.name} — ${f.count} items`).join("\n") +
+                      `\n\nThis is visible in her OF app. Reversible, but a rebuild ` +
+                      `gets a new list id.`,
+                  )
+                ) {
+                  publishAll();
+                }
+              }}
+              disabled={!stocked.length || !!dirty || !!busy}
+              title={
+                dirty
+                  ? "Save your verdicts first — publish ships the saved shelf"
+                  : !stocked.length
+                    ? "Nothing filed yet"
+                    : `Create ${stocked.length} real folder(s) in her OnlyFans vault`
+              }
+              className="rounded bg-amber-600 px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
+            >
+              {allPublished ? "Re-publish to OF" : `Publish to OF${stocked.length ? ` (${stocked.length})` : ""}`}
+            </button>
+
             <button type="button" onClick={onClose} className="px-2 text-fg-dim hover:text-fg">
               ✕
             </button>
