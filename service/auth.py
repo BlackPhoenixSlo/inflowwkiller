@@ -259,13 +259,36 @@ async def assert_employee_filter_owned(employee_id: int | None) -> None:
         raise HTTPException(status_code=403, detail="not your employee")
 
 
-def assert_account_owned(account_id: str | None) -> None:
-    """Raise 403 if the current principal doesn't own this account_id.
+def allow_anonymous_account_access() -> bool:
+    """The escape hatch for the fail-closed gate below. Default OFF.
 
-    No-op for unauthed requests (system/cron paths, internal curl flows)
-    so back-compat for non-browser callers is preserved. No-op when
-    account_id is None / empty (some endpoints accept it optionally — use
-    `clamp_account_filter` for those).
+    Set ALLOW_ANONYMOUS_ADMIN=1 in docker-compose.override.yml to restore the
+    old abstain-on-anonymous behaviour without a code change — there purely so
+    a lockout is a one-line revert plus a restart, never a redeploy.
+    Read per call, not captured at import, so a test can flip it.
+    """
+    return os.environ.get("ALLOW_ANONYMOUS_ADMIN", "0").strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
+def assert_account_owned(account_id: str | None) -> None:
+    """Raise 403 if the current principal doesn't own this account_id, and 401
+    if there is no principal at all.
+
+    ⚠️ THIS USED TO NO-OP FOR ANONYMOUS CALLERS, and that was the bug, not a
+    missing check. The rationale on the old code was "system/cron paths,
+    internal curl flows" — an audit on 2026-08-10 found NO runtime caller that
+    needed it. The one internal caller that touches /admin (`scripts/diag.sh`)
+    carries the share token, which is the PERIMETER, not this gate. What the
+    abstention actually did was constrain only the people who had identified
+    themselves: @alice was stopped from reading @bob's account, while an
+    anonymous request sailed through all ~176 call sites of this function.
+    Verified live the same day: GET /admin/accounts returned 200 with no
+    cookie, and /admin/vault-ai/image served real creator media.
+
+    A gate that abstains when it cannot identify the caller is not a gate.
+    `clamp_account_filter` is still the right tool for endpoints where
+    account_id is genuinely optional.
 
     Both User and Chatter principals participate: a chatter linked to
     owners @alice and @bob sees the SET UNION of both account_ids sets
@@ -275,7 +298,9 @@ def assert_account_owned(account_id: str | None) -> None:
         return
     ids = _actor_account_ids()
     if ids is None:
-        return
+        if allow_anonymous_account_access():
+            return
+        raise HTTPException(status_code=401, detail="sign in required")
     if account_id not in ids:
         raise HTTPException(status_code=403, detail="not your account")
 

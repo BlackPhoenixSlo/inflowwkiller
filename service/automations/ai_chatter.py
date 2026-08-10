@@ -2851,11 +2851,30 @@ _HUMAN_ASK_TTL = timedelta(hours=6)
 _ASK_BREAKPROOF_WINDOW = timedelta(minutes=30)
 
 
+class _Money(NamedTuple):
+    """What the THREAD says about money on one fan, as three instants.
+
+    Named fields rather than a positional tuple because this is read at eight
+    sites and was widened once already: `[1]` and `[2]` next to each other are
+    indistinguishable on sight, and the previous shape needed a hand-written
+    warning not to unpack it short. `.paid` and `.tip` need no warning.
+    """
+
+    ask: datetime | None = None    # newest unpaid priced outbound, still live
+    paid: datetime | None = None   # newest priced outbound he UNLOCKED
+    tip: datetime | None = None    # newest INBOUND tip
+
+
+#: "This fan has no money history." All three fields default to None, so the
+#: empty case is the constructor, not a literal anyone can get wrong.
+_NO_MONEY = _Money()
+
+
 async def _human_money_signals(
     account_id: str, fan_ids, now: datetime,
-) -> dict[int, tuple[datetime | None, datetime | None]]:
-    """{fan_id: (live_ask_at, last_paid_at)} read from the THREAD, not from our own
-    bookkeeping — so it sees what the human chatters did.
+) -> dict[int, _Money]:
+    """{fan_id: (live_ask_at, last_paid_at, last_tip_at)} read from the THREAD, not from
+    our own bookkeeping — so it sees what the human chatters did.
 
     The offer engine only ever knew about asks IT made (`content_offers`) and ladders IT
     opened. Every PPV a teammate sends by hand is invisible to it. The consequences all
@@ -2875,11 +2894,19 @@ async def _human_money_signals(
                      progress; suppress breaks, and pace the next ask off it).
     `last_paid_at` — newest priced outbound he ACTUALLY unlocked (is_paid), whoever
                      sent it. The 60-min hot window is applied downstream, not here.
+    `last_tip_at`  — newest INBOUND tip. Money that arrives as a tip is invisible to
+                     every filter above: a tip is `direction="in"` with `is_tip=1` and
+                     `price_cents=0` (the amount rides in OF's `tipAmount`, not in our
+                     price column), so `price_cents > 0` excludes it and `direction=
+                     "out"` excludes it twice over. It is kept SEPARATE from
+                     `last_paid_at` on purpose — `_objection` keys its post-purchase
+                     LLM window off that field, and a tip is not a content purchase
+                     anyone can dispute. Only the rhythm context merges the two.
     """
     ids = [int(x) for x in fan_ids]
     if not ids:
         return {}
-    out: dict[int, tuple[datetime | None, datetime | None]] = {}
+    out: dict[int, _Money] = {}
     async with get_session() as s:
         base = [Message.account_id == str(account_id), Message.fan_id.in_(ids),
                 Message.direction == "out", Message.is_unsent.is_(False),
@@ -2893,15 +2920,23 @@ async def _human_money_signals(
                    Message.created_at > now - _HUMAN_ASK_TTL)
             .group_by(Message.fan_id)
         )).all():
-            out[int(fid)] = (ts, None)
+            out[int(fid)] = _Money(ask=ts)
         for fid, ts in (await s.execute(
             select(Message.fan_id,
                    func.max(func.coalesce(Message.purchased_at, Message.created_at)))
             .where(*base, Message.is_paid.is_(True))
             .group_by(Message.fan_id)
         )).all():
-            ask, _ = out.get(int(fid), (None, None))
-            out[int(fid)] = (ask, ts)
+            out[int(fid)] = out.get(int(fid), _NO_MONEY)._replace(paid=ts)
+        # Tips share NONE of `base`: they are inbound and unpriced. Their own where.
+        for fid, ts in (await s.execute(
+            select(Message.fan_id, func.max(Message.created_at))
+            .where(Message.account_id == str(account_id), Message.fan_id.in_(ids),
+                   Message.direction == "in", Message.is_tip.is_(True),
+                   Message.is_unsent.is_(False))
+            .group_by(Message.fan_id)
+        )).all():
+            out[int(fid)] = out.get(int(fid), _NO_MONEY)._replace(tip=ts)
     return out
 
 
@@ -5946,8 +5981,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # at ingest and never re-read, so a PPV he paid for reads as unpaid until the
             # ledger lands (up to 10h). One OF read settles it — and only when there IS a
             # live unpaid ask AND he has spoken since, so a quiet thread costs nothing.
-            if (gate_on or rhythm_on) and human_money.get(fan_id, (None, None))[0]:
-                _ask_at = human_money[fan_id][0]
+            if (gate_on or rhythm_on) and human_money.get(fan_id, _NO_MONEY).ask:
+                _ask_at = human_money[fan_id].ask
                 if c.last_in_at is not None and _ask_at is not None \
                         and c.last_in_at > _ask_at:
                     if await _refresh_paid_state(client, account_id, fan_id):
@@ -6009,7 +6044,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # left here is the CONSEQUENCE, which is identical for every verdict.
             objection = await _objection.decide(
                 account_id, fan_id, f, c, cfg=cfg, model=model,
-                last_paid_at=human_money.get(fan_id, (None, None))[1], now=now,
+                last_paid_at=human_money.get(fan_id, _NO_MONEY).paid, now=now,
                 dry_run=dry_run)
             if objection:
                 # The brake rides WITH the apology — a billing claim takes the 72h
@@ -6152,7 +6187,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 rst0 = rstates.get(fan_id)
                 lad0 = ladders.get(fan_id)
                 rnow0 = datetime.utcnow()
-                _h_ask, _h_paid = human_money.get(fan_id, (None, None))
+                _money = human_money.get(fan_id, _NO_MONEY)
                 _step_due = stepout.on and _stepout.is_due(
                     mark=(rst0.stepout_mark if rst0 is not None else None),
                     target=(rst0.stepout_target if rst0 is not None else None),
@@ -6176,9 +6211,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # are the sale, then free to be a person again (with a cover line).
                     ladder_open=bool(lad0 is not None and lad0.status
                                      in (upsell.STATUS_OPEN, upsell.STATUS_HOT))
-                    or _breakproof(_h_ask, rnow0),
+                    or _breakproof(_money.ask, rnow0),
+                    # A TIP is money, and this is the ONLY place it reaches rhythm (the
+                    # decide() twin below merges it too). `_context_of` must read a man
+                    # who just tipped as a live sell — otherwise she walks out seconds
+                    # after he pays. Measured on 2026-08-09 on account 2024813: $5 tip
+                    # at 21:37:27, ingested 21:37:31, step-out at 21:37:43. Deliberately
+                    # NOT merged into `.paid` itself — see `_human_money_signals`.
                     last_paid_at=_newest(
-                        lad0.last_paid_at if lad0 is not None else None, _h_paid),
+                        lad0.last_paid_at if lad0 is not None else None,
+                        _money.paid, _money.tip),
                     his_last_latency_s=_his_last_latency_s(c),  # heat: his pace
                     fan_hot=_fan_hot(c),                        # heat: he's escalating
                     # Break-proof gates. This is the PRE-LLM availability check, so
@@ -6406,7 +6448,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if ask_after_n > 0:
                 _last_ask = _newest(
                     fan_ladder.last_ask_at if fan_ladder is not None else None,
-                    human_money.get(fan_id, (None, None))[0])
+                    human_money.get(fan_id, _NO_MONEY).ask)
                 stale_ask = await _fan_msgs_since(
                     account_id, fan_id, _last_ask) >= ask_after_n
 
@@ -6521,7 +6563,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         # chatter's unpaid $45 seconds after he was quoted it.
                         last_ask_at=_newest(
                             fan_ladder.last_ask_at if fan_ladder is not None else None,
-                            human_money.get(fan_id, (None, None))[0]),
+                            human_money.get(fan_id, _NO_MONEY).ask),
                         asks_today=int(asks_by_fan.get(fan_id, 0)),
                         # ...but ONLY today's. daily_ask_cents is a running total
                         # stamped with the creator-local day it belongs to; read
@@ -7261,6 +7303,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # schedule. Nothing to type on a gif, so the wpm hold is 0.
             if rhythm_on and not rhythm_resume:
                 rnow = datetime.utcnow()
+                # Read the thread's money ONCE. Its twin above does the same, and
+                # the two RhythmCtx builds must agree — three separate lookups
+                # spelled differently from the twin is how they drift apart.
+                _money = human_money.get(fan_id, _NO_MONEY)
                 d = rhythm.decide(rhythm.RhythmCtx(
                     account_id=str(account_id), fan_id=fan_id,
                     voice=v.voice,
@@ -7279,10 +7325,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # …and so does a HUMAN's unpaid PPV, for _ASK_BREAKPROOF_WINDOW.
                     ladder_open=bool(fan_ladder is not None and fan_ladder.status
                                      in (upsell.STATUS_OPEN, upsell.STATUS_HOT))
-                    or _breakproof(human_money.get(fan_id, (None, None))[0], rnow),
+                    or _breakproof(_money.ask, rnow),
+                    # ...and the same merge on the post-LLM twin: the two RhythmCtx
+                    # builds must agree, or she takes a pace here that the availability
+                    # check would never have allowed.
                     last_paid_at=_newest(
                         fan_ladder.last_paid_at if fan_ladder is not None else None,
-                        human_money.get(fan_id, (None, None))[1]),
+                        _money.paid, _money.tip),
                     # HEAT (v3): his reply speed + whether he's escalating drive how fast
                     # she replies — a hot sext gets ~every-minute replies, a cold thread
                     # drifts. §3.4: the rolling last-20 realized latencies feed the fast-nudge.

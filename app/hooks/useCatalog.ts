@@ -168,6 +168,23 @@ export interface AiChatterConfig {
   rhythm_ghost_enabled?: boolean;
   /** The stages, repeating. null ⇒ the shipped 3 days on / 1 off, 4 / 2, 5 / 2.5. */
   rhythm_ghost_cycle?: GhostStage[] | null;
+  /** The step-out: every 7-15 of HER replies on a chat that is neither hot nor just
+   *  sold to, she is gone for an hour or two — and comes back EARLY if he writes
+   *  again while she's out. Shorter and far more frequent than the ghost cycle above.
+   *  ⚠️ Server-default ON (shipped that way for a roster-wide data run on 2026-08-09,
+   *  which is also why it had no switch here until 08-10). */
+  rhythm_stepout_enabled?: boolean;
+  /** How many of HER replies between step-outs — a range, drawn per fan. 7-15. */
+  rhythm_stepout_min_exchanges?: number;
+  rhythm_stepout_max_exchanges?: number;
+  /** How long she stays away, in minutes. 60-120. */
+  rhythm_stepout_min_minutes?: number;
+  rhythm_stepout_max_minutes?: number;
+  /** The way back early: how many messages he must send while she's out (2), and how
+   *  far apart they must be in seconds (60) for it to count as him double-texting
+   *  rather than one thought arriving in pieces. */
+  rhythm_stepout_break_msgs?: number;
+  rhythm_stepout_break_gap_s?: number;
   /** Where the sleep window comes from when nothing is overridden: the house night
    *  ("default", 02:00–06:00 local) or this account's own outbound histogram
    *  ("derived"). */
