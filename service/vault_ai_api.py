@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client seam (same one automations use)
@@ -33,6 +33,7 @@ import automation_executor as ax  # _make_client seam (same one automations use)
 # This module keeps the SWEEP that fills them.
 import vault_frames
 import vault_mirror
+import vault_pack_picker
 import vault_stills
 # NOTE: the OF payload-shape readers (`still_url`, `giphy_dm_id`) are NOT imported
 # here — `vault_frames` owns "which url in a payload is the picture" now, and this
@@ -788,6 +789,64 @@ async def reorder(payload: dict = Body(...)) -> dict[str, Any]:
     return {"account_id": account_id, "folder_id": folder_id, "updated": n}
 
 
+# ── The pack picker (logic: vault_pack_picker) ──────────────────────
+
+@router.get("/admin/vault-ai/pack-candidates")
+async def pack_candidates(
+    account_id: str = Query(...),
+    category: str = Query("feet"),
+    limit: int = Query(600),
+) -> dict[str, Any]:
+    """Every candidate for a category, each carrying the rung it is filed on now.
+
+    The client renders these with `mirrorFullSrc` (/image), never /thumb: the
+    thumb is a 300x300 centre-crop of a 3:4 portrait, and feet sit at exactly the
+    edge it discards. Judging from the square means judging from less of the
+    picture than the vision model saw.
+    """
+    assert_account_owned(account_id)
+    try:
+        cat = vault_pack_picker.category(category)
+    except vault_pack_picker.UnknownCategory:
+        raise HTTPException(status_code=400, detail={
+            "error": "unknown_category",
+            "known": sorted(vault_pack_picker.CATEGORIES)}) from None
+    return {"account_id": account_id,
+            **await vault_pack_picker.candidates(account_id, cat, limit=limit)}
+
+
+@router.post("/admin/vault-ai/pack-triage")
+async def pack_triage(payload: dict = Body(...)) -> dict[str, Any]:
+    """Save the operator's verdicts. Creates the rung folders on first save.
+
+    Folders are `created_by="operator"` and `of_list_id` stays NULL — publishing
+    to her real OnlyFans vault is a separate, explicit call.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+    try:
+        cat = vault_pack_picker.category(payload.get("category") or "feet")
+        verdicts = vault_pack_picker.normalise_verdicts(cat, payload.get("verdicts") or [])
+    except vault_pack_picker.UnknownCategory:
+        raise HTTPException(status_code=400, detail={
+            "error": "unknown_category",
+            "known": sorted(vault_pack_picker.CATEGORIES)}) from None
+    except vault_pack_picker.UnknownRung as e:
+        raise HTTPException(status_code=400, detail={
+            "error": "unknown_rung", "rung": str(e)}) from None
+    if not verdicts:
+        raise HTTPException(status_code=400, detail={"error": "verdicts_required"})
+
+    folders = await vault_pack_picker.triage(account_id, cat, verdicts)
+    return {
+        "account_id": account_id,
+        "category": cat.name,
+        "saved": len(verdicts),
+        "rejected": sum(1 for r in verdicts.values() if r is None),
+        "folders": folders,
+    }
+
+
 # ── OF folders (REAL writes to OnlyFans — confirmed wire shapes) ────
 import vault_cache  # noqa: E402
 
@@ -1002,6 +1061,50 @@ async def _apply_list_membership(
     return touched
 
 
+async def _push_folder_to_of(
+    client, folder_id: int, name: str, media_ids: list[int],
+) -> dict[str, Any]:
+    """Create-or-reuse ONE internal folder's OF vault list and add its media.
+
+    The single place that turns a `VaultFolder` into a real OnlyFans list —
+    shared by the generated-folder pipeline (`_mirror_ai_folders_to_of`, which
+    loops it) and by the operator's per-folder publish button, because they are
+    the same three calls and drifting them apart is how one of them quietly
+    stops binding `of_list_id`.
+
+    Ordering is load-bearing: the id is bound BEFORE the media add, so a failed
+    add leaves a re-run topping up the SAME list rather than minting a second one
+    with the same name (the 2026-07-28 symptom of two `AI-` folders sitting with
+    a NULL `of_list_id`).
+
+    Raises on failure — the caller decides whether that costs one folder or the
+    whole request. Never rolls back the internal folder: a folder that exists
+    locally but not on OF is recoverable, losing the grouping is not.
+    """
+    async with get_session() as s:
+        folder = await s.get(VaultFolder, folder_id)
+        of_list_id = folder.of_list_id if folder else None
+
+    created = False
+    if not of_list_id:
+        res = await asyncio.to_thread(client.create_vault_list, name[:120])
+        of_list_id = (res or {}).get("id")
+        if not of_list_id:
+            raise RuntimeError(f"OF returned no list id: {str(res)[:120]}")
+        created = True
+        async with get_session() as s:
+            await s.execute(
+                update(VaultFolder)
+                .where(VaultFolder.id == folder_id)
+                .values(of_list_id=int(of_list_id))
+            )
+            await s.commit()
+
+    if media_ids:
+        await asyncio.to_thread(client.add_media_to_vault_list, int(of_list_id), media_ids)
+    return {"of_list_id": int(of_list_id), "created": created}
+
+
 async def _mirror_ai_folders_to_of(
     account_id: str, created: list[dict[str, Any]], plan: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -1042,26 +1145,10 @@ async def _mirror_ai_folders_to_of(
     for made in created:
         spec = by_name.get(made["name"])
         media_ids = [int(i["media_id"]) for i in (spec or {}).get("items") or []]
-        async with get_session() as s:
-            folder = await s.get(VaultFolder, made["folder_id"])
-            of_list_id = folder.of_list_id if folder else None
-
         try:
-            if not of_list_id:
-                res = await asyncio.to_thread(client.create_vault_list, made["name"][:120])
-                of_list_id = res.get("id")
-                if not of_list_id:
-                    raise RuntimeError(f"OF returned no list id: {str(res)[:120]}")
-                async with get_session() as s:
-                    await s.execute(
-                        update(VaultFolder)
-                        .where(VaultFolder.id == made["folder_id"])
-                        .values(of_list_id=int(of_list_id))
-                    )
-                    await s.commit()
-            if media_ids:
-                await asyncio.to_thread(client.add_media_to_vault_list, int(of_list_id), media_ids)
-            out.append({**made, "of_list_id": int(of_list_id),
+            pushed = await _push_folder_to_of(
+                client, made["folder_id"], made["name"], media_ids)
+            out.append({**made, "of_list_id": pushed["of_list_id"],
                         "of_added": len(media_ids)})
         except Exception as e:  # noqa: BLE001
             log.warning("OF mirror failed folder=%s name=%s",
@@ -1102,6 +1189,94 @@ async def _readback_membership(client, account_id: str, list_ids: list[int]) -> 
         log.warning("mirror membership write failed account=%s", account_id,
                     exc_info=True)
         return 0
+
+
+@router.post("/admin/vault-ai/folders/{folder_id}/publish")
+async def publish_folder_to_of(folder_id: int, payload: dict = Body(...)) -> dict[str, Any]:
+    """Push ONE hand-made internal folder out as a REAL OF vault list.
+
+    `_mirror_ai_folders_to_of` does this for folders the `vault_scripts` pipeline
+    just generated, and only those: `/folder-plan/apply` RE-DERIVES the plan and,
+    by its own docstring, "a folder the operator made by hand is never touched".
+    So a hand-curated rung had no way out to OF at all. This is that way out —
+    the same `_push_folder_to_of` primitive, called once instead of in a loop.
+
+    ⚠️ **Publish is ADDITIVE, never subtractive.** `add_media_to_vault_list` only
+    adds and OF has no remove-one-media call; a rebuild is
+    delete(`clear_media=False`) → create → add, which mints a NEW `of_list_id`.
+    So an item removed from the internal folder stays on OF until a rebuild.
+    Rather than diverge silently, the read-back diffs both sides and reports
+    `stale_on_of` — an empty list means the copy is exact.
+
+    Send order: members are pushed in `manual_order` (the operator's rank, NULLs
+    last), but OF holds its own in-list order and we do not claim it honours
+    ours. Rank is read from `vault_folder_items` at send time, not from OF.
+    """
+    account_id = str(payload.get("account_id") or "")
+    assert_account_owned(account_id)
+
+    async with get_session() as s:
+        folder = await s.get(VaultFolder, folder_id)
+        if folder is None or folder.account_id != account_id or folder.deleted_at is not None:
+            raise HTTPException(status_code=404, detail={"error": "folder_not_found"})
+        name = folder.name
+        members = [int(m) for m in (await s.execute(
+            select(VaultFolderItem.media_id)
+            .where(
+                VaultFolderItem.account_id == account_id,
+                VaultFolderItem.folder_id == folder_id,
+            )
+            .order_by(
+                VaultFolderItem.manual_order.is_(None),
+                VaultFolderItem.manual_order,
+                VaultFolderItem.media_id,
+            )
+        )).scalars().all()]
+
+    if not members:
+        # An empty OF list is noise in her vault and tells the operator nothing.
+        raise HTTPException(status_code=400, detail={"error": "folder_empty"})
+
+    client = await asyncio.to_thread(ax._make_client, account_id)
+    try:
+        pushed = await _push_folder_to_of(client, folder_id, name, members)
+    except Exception as e:  # noqa: BLE001
+        log.warning("publish failed account=%s folder=%s", account_id, folder_id,
+                    exc_info=True)
+        raise HTTPException(status_code=502, detail={
+            "error": "of_publish_failed", "detail": str(e)[:300]}) from None
+
+    of_list_id = pushed["of_list_id"]
+
+    # Read back INLINE, unlike the 12-folder pipeline whose read-back timed out
+    # the proxy: one list is a single OF page, and the operator needs the
+    # `stale_on_of` diff in the response to know whether the publish was exact.
+    # Cosmetic either way — her account is already correct when this starts.
+    synced = 0
+    stale_on_of: list[int] = []
+    try:
+        live = await _read_of_list_members(client, of_list_id)
+        stale_on_of = sorted(live - set(members))
+        synced = await _apply_list_membership(account_id, {of_list_id: live})
+    except Exception:  # noqa: BLE001
+        log.warning("publish read-back failed account=%s folder=%s list=%s",
+                    account_id, folder_id, of_list_id, exc_info=True)
+
+    try:
+        await vault_cache.invalidate(account_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {
+        "account_id": account_id,
+        "folder_id": folder_id,
+        "name": name,
+        "of_list_id": of_list_id,
+        "created": pushed["created"],
+        "pushed": len(members),
+        "synced": synced,
+        "stale_on_of": stale_on_of,
+    }
 
 
 @router.post("/admin/vault-ai/folder-plan/apply")
