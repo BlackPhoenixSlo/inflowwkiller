@@ -1,0 +1,614 @@
+"""service/automations/pack_sender.py — sell him the thing he asked for.
+
+A **pack** is one rung of a curated category (`feet-nude`), sold as a priced PPV
+to a fan who asked for it. This module owns the product row, the audit that
+stops it lying, the price/count, and the send.
+
+## The one sentence
+
+The caption states exactly what is attached — *"11 bare feet pics"* — and the
+send is REFUSED rather than softened when the attached media does not match that
+claim.
+
+## Why the audit exists
+
+On 2026-07-31 two fans made their first-ever purchase and deleted their entire
+OnlyFans accounts within hours. One asked three times *"only feet right?"*, paid
+$3.25, received a bra/face selfie with no feet, and wrote *"Goodbye, you stupid
+liar."* Every rule here is that message, turned into a predicate.
+
+## What resolves when
+
+🚨 **`media_ids` is NOT a frozen snapshot of the rung** (operator ruling
+2026-08-10, amending SPEC §3.2: *"the AI upseller finds content directly from the
+VAULT — no seed images anywhere"*). The `CatalogItem` carries the product
+IDENTITY only — rung, band, `description_for_ai` — and exists because
+`ContentOffer.item_id` is a non-nullable FK, so attribution needs a row. The
+media is resolved from the bound folder **at send time**, so adding a photo to
+`feet-nude` puts it in the next send with nothing to re-cut.
+
+## Count follows price, at the house rate
+
+    px    = next_price(...)                 # floats $10-200
+    n     = clamp(3, px // 500, 12)         # $5 an item, min 3, max 12
+    avail = rung − what he has BOUGHT       # per fan, un-BOUGHT not un-sent
+    if avail < n:  px = avail * 500         # the shelf VETOES the price
+    if avail < 3:  REFUSE
+
+$5/item is not a new convention — `tip_reward.dollars_per_image` is 5 on all ten
+prod accounts, `min_images` 2, `max_images` 12. A $59 pack of 3 would be $19.67
+an item, 3.9x the house rate: the same shape as the sale that preceded a deleted
+account, with the lie removed.
+
+⚠️ `avail` is un-BOUGHT, not un-sent (ticket 14). Keying on SENT would let one
+declined $59 offer permanently strip 11 items from the rung — the fan's own
+refusal exhausting his own shelf. And `ownership.owned_or_seen_media` is the
+WRONG reader here: its signal 2 marks a delivered offer's whole `media_ids` as
+owned, which under a whole-shelf item would silently delete the next sale.
+
+## Flags
+
+Everything is OFF by default and per-account. Nothing in this module can fire
+without an operator turning `pack_send_enabled` on for that account.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import random
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+from sqlalchemy import func, select
+
+import ownership
+import vault_pack_picker
+from db.engine import get_session
+from db.models import (
+    CatalogItem, VaultCacheRun, VaultFolder, VaultFolderItem, VaultItem, VaultSend,
+)
+
+from . import content_resolver, upsell
+
+log = logging.getLogger("of-relay.automation.pack_sender")
+
+# ── House constants ─────────────────────────────────────────────────
+CENTS_PER_ITEM = 500          # tip_reward.dollars_per_image = 5, on all 10 accounts
+MIN_ITEMS = 3                 # tip_reward.min_images scaled to a priced ask
+MAX_ITEMS = 12                # tip_reward.max_images exactly
+PREVIEW_MIN, PREVIEW_MAX = 2, 3
+_REPLY_MAX_CHARS = 600        # OF truncates the chat-list preview past this
+
+# A pack may only be sold where an authored rung phrase exists. `script_packs`
+# ships en/es/sl; prod is 16 en accounts and 1 es, and neither pilot is Spanish.
+PACK_LANGUAGES = frozenset({"en", "es", "sl"})
+
+# The mirror is the source of rung membership now that shelves are OF-backed.
+# An audit that passes against a stale mirror proves nothing — both pilots were
+# last collected 2026-07-23, 18 days before this shipped.
+MIRROR_MAX_AGE = timedelta(days=2)
+
+# ── Refusals ────────────────────────────────────────────────────────
+REFUSE_DISABLED = "pack_disabled"
+REFUSE_NO_SHELF = "no_shelf"
+REFUSE_TOO_THIN = "shelf_too_thin"          # fewer than MIN_ITEMS un-bought
+REFUSE_AUDIT = "audit_failed"
+REFUSE_STALE_MIRROR = "stale_mirror"
+REFUSE_LANGUAGE = "unsupported_language"
+REFUSE_NO_PRICE = "no_price"
+REFUSE_RESOLVER = "resolver_refused"
+
+# 🚨 Fan-facing rung phrases. Internal folder names are TRIAGE vocabulary and are
+# wrong for a fan: `nude` reads as HER BODY, which is rung 3. The negative half
+# is load-bearing — "bare feet" alone leaves him free to expect rung 3 at $59.
+RUNG_PHRASES: dict[tuple[str, str], str] = {
+    ("feet", "tease"): "feet, covered",
+    ("feet", "nude"): "bare feet, no nudity",
+    ("feet", "nude-body"): "bare feet, and me nude with them",
+}
+
+# The corpus word, per (category, rung-agnostic). Real asks are short and
+# literal — median 35 characters — so the noun is his, not ours.
+ASK_NOUN: dict[str, str] = {"feet": "feet pics"}
+
+# A voice line may not carry a number, a price, or a content claim: the clause
+# above it is the contract, and a second claim underneath can contradict it.
+_VOICE_BAN = re.compile(r"[0-9$€£]|\bpics?\b|\bphotos?\b|\bvideos?\b|\bset\b", re.I)
+
+
+@dataclass(frozen=True)
+class PackPlan:
+    """What a send WOULD be. Returned by `plan_pack` so the operator (and the
+    dry-run) can see the whole decision before anything is sent."""
+    account_id: str
+    fan_id: int
+    category: str
+    rung: str
+    item_id: int | None
+    media: list[int]            # the [:n] slice, in operator rank order
+    previews: list[int]
+    price_cents: int
+    clause: str
+    refusal: str | None = None
+    detail: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.refusal is None and bool(self.media)
+
+
+def _clamp_count(px_cents: int) -> int:
+    return max(MIN_ITEMS, min(int(px_cents) // CENTS_PER_ITEM, MAX_ITEMS))
+
+
+def render_clause(category: str, rung: str, n: int) -> str:
+    """The claim clause — rendered, never typed, never omitted.
+
+    Grammar is `"{n} {rung-qualified ask noun}"`, the rung folded INTO the noun
+    rather than trailing in a dash-clause, because OF truncates a long caption in
+    the chat-list preview: a voice-first caption shows him the flirt and hides
+    the subject at exactly the moment he decides whether to open it.
+    """
+    phrase = RUNG_PHRASES.get((category, rung))
+    noun = ASK_NOUN.get(category, f"{category} pics")
+    if rung == "nude":
+        return f"{n} bare {noun}"
+    if phrase:
+        return f"{n} {noun} — {phrase}"
+    return f"{n} {noun}"
+
+
+# ── The shelf ───────────────────────────────────────────────────────
+
+async def _shelf_media(account_id: str, category: str, rung: str) -> list[int]:
+    """The rung's media in OPERATOR RANK order (manual_order, NULLs last).
+
+    Read live: the folder is the product, so an item added today is sold today.
+    """
+    cat = vault_pack_picker.CATEGORIES.get(category)
+    if cat is None:
+        return []
+    async with get_session() as s:
+        folder = (await s.execute(
+            select(VaultFolder).where(
+                VaultFolder.account_id == str(account_id),
+                VaultFolder.name == cat.folder_name(rung),
+                VaultFolder.deleted_at.is_(None))
+        )).scalar_one_or_none()
+        if folder is None:
+            return []
+        return [int(m) for m in (await s.execute(
+            select(VaultFolderItem.media_id).where(
+                VaultFolderItem.account_id == str(account_id),
+                VaultFolderItem.folder_id == folder.id,
+            ).order_by(
+                VaultFolderItem.manual_order.is_(None),
+                VaultFolderItem.manual_order,
+                VaultFolderItem.media_id,
+            )
+        )).scalars().all()]
+
+
+async def _filter_kind(account_id: str, media: list[int], kind: str | None) -> list[int]:
+    """Keep only media of the promised KIND. "send me a video" is a promise too,
+    and a photo does not satisfy it."""
+    if kind not in ("photo", "video") or not media:
+        return media
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.kind).where(
+                VaultItem.account_id == str(account_id),
+                VaultItem.media_id.in_(media))
+        )).all()
+    by_id = {int(m): str(k or "") for m, k in rows}
+    return [m for m in media if by_id.get(m, kind) == kind]
+
+
+async def _bought_media(account_id: str, fan_id: int) -> set[int]:
+    """What this fan has actually BOUGHT — signal 1 of ownership only.
+
+    🚨 Deliberately NOT `ownership.owned_or_seen_media`. Its signal 2 marks a
+    delivered non-free offer's WHOLE `media_ids` as owned; under a rung-wide item
+    one delivered send would mark the entire shelf owned and silently delete the
+    next sale. Do not "fix" ownership.py for this — the divergence is inert here
+    (a pack is out of band) and conservative everywhere else.
+    """
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultSend.media_id).where(
+                VaultSend.account_id == str(account_id),
+                VaultSend.fan_id == int(fan_id),
+                VaultSend.was_purchased.is_(True))
+        )).scalars().all()
+    return {int(m) for m in rows}
+
+
+async def _mirror_age(account_id: str) -> timedelta | None:
+    """How stale the vault mirror is. None when it has never been collected."""
+    async with get_session() as s:
+        last = (await s.execute(
+            select(func.max(VaultCacheRun.finished_at)).where(
+                VaultCacheRun.account_id == str(account_id),
+                VaultCacheRun.status == "done")
+        )).scalar_one_or_none()
+    return None if last is None else (datetime.utcnow() - last)
+
+
+# ── The audit ───────────────────────────────────────────────────────
+
+async def audit_pack(account_id: str, category: str, rung: str,
+                     media: list[int], previews: list[int]) -> list[str]:
+    """Four set rules plus freshness. Returns the violations; empty is a pass.
+
+    Runs at pack save AND again immediately before send — folder membership is
+    mutable, and this map's own re-triage moved 19 items after the fact. A pack
+    that passed on Monday can be a lie on Friday.
+
+    ⚠️ Honest ceiling: this proves *"the attached media is what a human filed
+    under this rung"*, never *"the attached media depicts this rung"*. That is
+    still the whole distance between here and a caption that cannot lie about its
+    own composition.
+    """
+    bad: list[str] = []
+    M, P = list(media), list(previews)
+    setM, setP = set(M), set(P)
+
+    if not setP <= setM:
+        bad.append(f"rule1 P⊄M: {sorted(setP - setM)}")
+
+    R = set(await _shelf_media(account_id, category, rung))
+    paid = setM - setP
+    if not paid <= R:
+        bad.append(f"rule2 paid items outside {category}-{rung}: {sorted(paid - R)}")
+
+    T = set(await _shelf_media(account_id, category, "tease"))
+    if T and not setP <= T:
+        bad.append(f"rule3 previews outside the tease rung: {sorted(setP - T)}")
+
+    if len(paid) < MIN_ITEMS:
+        bad.append(f"rule4 |M−P| = {len(paid)} < {MIN_ITEMS}")
+
+    age = await _mirror_age(account_id)
+    if age is None:
+        bad.append("mirror never collected — rung membership unverifiable")
+    elif age > MIRROR_MAX_AGE:
+        bad.append(f"mirror {age.days}d stale (> {MIRROR_MAX_AGE.days}d)")
+    return bad
+
+
+# ── The product row ─────────────────────────────────────────────────
+
+async def ensure_pack_item(account_id: str, category: str, rung: str) -> CatalogItem:
+    """The standalone `CatalogItem` for one rung — created once, then reused.
+
+    `ContentOffer.item_id` is a NON-NULLABLE FK to `catalog_items`, so without
+    this row a pack cannot be offered, cannot be attributed, and cannot answer
+    "did the feet pack sell". That is the row's whole job.
+
+    `enabled=False` on purpose: a pack must be EXCLUDED from the ordinary
+    manifest (SPEC §4.1). `_offerable_for_fan` puts every enabled standalone into
+    every fan's manifest, so an enabled pack would be pitched to people who never
+    asked — and the lane has made 4 offers above $60 in a month and sold none.
+
+    🚨 `description_for_ai` is COUNT-FREE. It is stored once and serves fans
+    receiving 3 to 12 items, so a stored "11 bare feet pics" is a lie to the fan
+    who got 7 — and it is the text `_pending_block` answers "its feet right?"
+    from. The number lives only in the rendered caption.
+    """
+    cat = vault_pack_picker.CATEGORIES[category]
+    tag = f"rung:{cat.folder_name(rung)}"
+    phrase = RUNG_PHRASES.get((category, rung), f"{category}, {rung}")
+    async with get_session() as s:
+        row = (await s.execute(
+            select(CatalogItem).where(
+                CatalogItem.account_id == str(account_id),
+                CatalogItem.script_id.is_(None),
+                CatalogItem.tags.like(f"%{tag}%"))
+        )).scalars().first()
+        if row is None:
+            row = CatalogItem(
+                account_id=str(account_id), script_id=None, kind="image_set",
+                label=f"{category} · {rung}",
+                tags=json.dumps([tag]),
+                media_ids="[]",           # resolved LIVE at send time
+                preview_media_ids="[]",
+                price_cents=0,            # the real ask is quoted per fan
+                enabled=False,            # never in the ordinary manifest
+            )
+            s.add(row)
+        row.description_for_ai = (
+            f"{phrase}. Sold as a set of photos from her {category} collection; "
+            f"the number of photos depends on the price."
+        )
+        await s.commit()
+        await s.refresh(row)
+        return row
+
+
+# ── Price and count ─────────────────────────────────────────────────
+
+async def quote_pack(account_id: str, fan_id: int, item: CatalogItem,
+                     avail: int) -> tuple[int, int] | None:
+    """`(price_cents, n)` — or None meaning DO NOT OFFER.
+
+    The price is quoted first, the count derives from it, and then the SHELF MAY
+    VETO the price down to what it can honestly fill. A pack the shelf cannot
+    fill is not discounted into existence; it is refused.
+    """
+    from .ai_chatter import _paid_ppv_facts        # local: avoid an import cycle
+
+    max_paid, last_paid = await _paid_ppv_facts(str(account_id), int(fan_id))
+    fan = upsell.FanState(
+        fan_id=int(fan_id), max_single_paid_cents=int(max_paid or 0),
+        last_paid_cents=None,                     # a pack is a cold open, not a rung
+        has_ever_paid=bool(max_paid))
+    band, _src = upsell.derive_band(
+        human_asks_cents=[], account_median_cents=None,
+        item_price_cents=int(item.price_cents or 0))
+    rng = random.Random(f"pack:{account_id}:{fan_id}:{item.id}")
+    quote = upsell.next_price(
+        fan=fan, band=band, last_paid_cents=None, rung_index=0,
+        key=f"pack:{item.id}", account_id=str(account_id), rng=rng,
+        library_bounds=(upsell.OF_PRICE_FLOOR_CENTS, upsell.OF_PRICE_MAX_CENTS),
+        escalation_mult=None, max_ask_vs_history_mult=None)
+    if quote is None:
+        return None
+    px = int(quote.price_cents)
+    n = _clamp_count(px)
+    if avail < n:                    # the shelf vetoes the price
+        px = max(upsell.OF_PRICE_FLOOR_CENTS, avail * CENTS_PER_ITEM)
+        n = _clamp_count(px)
+    n = min(n, avail)
+    if n < MIN_ITEMS:
+        return None
+    return px, n
+
+
+# ── Planning a send ─────────────────────────────────────────────────
+
+async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
+                    cfg: dict | None = None,
+                    media_kind: str | None = None) -> PackPlan:
+    """Everything a send needs, or a typed refusal. Sends nothing.
+
+    Deliberately separable from `send_pack` so the operator can dry-run the whole
+    decision — price, count, exact media, the rendered caption clause — before a
+    single message goes out.
+    """
+    cfg = cfg or {}
+    empty = PackPlan(str(account_id), int(fan_id), category, rung, None, [], [], 0, "")
+
+    if not cfg.get("pack_send_enabled"):
+        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_DISABLED})
+
+    lang = str(cfg.get("language") or "en").strip().lower()
+    if lang not in PACK_LANGUAGES:
+        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_LANGUAGE, "detail": lang})
+
+    shelf = await _shelf_media(account_id, category, rung)
+    if not shelf:
+        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_NO_SHELF})
+
+    bought = await _bought_media(account_id, fan_id)
+    avail_ids = [m for m in shelf if m not in bought]
+    # A promised media KIND narrows the shelf before the price is quoted, so a
+    # "send me a video" ask can never be filled with photos.
+    avail_ids = await _filter_kind(account_id, avail_ids, media_kind)
+    if len(avail_ids) < MIN_ITEMS:
+        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_TOO_THIN,
+                           "detail": f"{len(avail_ids)} un-bought"})
+
+    item = await ensure_pack_item(account_id, category, rung)
+    quoted = await quote_pack(account_id, fan_id, item, len(avail_ids))
+    if quoted is None:
+        return PackPlan(**{**empty.__dict__, "item_id": item.id,
+                           "refusal": REFUSE_NO_PRICE})
+    px, n = quoted
+
+    media = avail_ids[:n]                       # rank order — the best go first
+    tease = await _shelf_media(account_id, category, "tease")
+    previews = [m for m in tease if m not in media][:PREVIEW_MAX]
+    # Previews ride FREE inside the send and are never stamped owned, so they may
+    # repeat across sends. `previews ⊆ media` is what the audit's rule 1 wants, so
+    # they join the attached set while staying out of the paid count.
+    attached = media + previews
+
+    clause = render_clause(category, rung, len(media))
+    bad = await audit_pack(account_id, category, rung, attached, previews)
+    if bad:
+        log.warning("pack audit REFUSED account=%s fan=%s %s-%s: %s",
+                    account_id, fan_id, category, rung, "; ".join(bad))
+        return PackPlan(**{**empty.__dict__, "item_id": item.id, "price_cents": px,
+                           "clause": clause, "refusal": REFUSE_AUDIT,
+                           "detail": "; ".join(bad)})
+
+    return PackPlan(str(account_id), int(fan_id), category, rung, item.id,
+                    media, previews, px, clause)
+
+
+def compose_caption(clause: str, voice_line: str | None) -> str:
+    """Claim clause first, then her reply to the thread.
+
+    ⚠️ The clause LEADS because OF truncates a long caption in the chat-list
+    preview: a voice-first caption shows him the flirt and hides the subject at
+    exactly the moment he decides whether to open it.
+
+    The voice line is rejected — not trimmed — when it carries a digit, a
+    currency symbol or a content-claim word. The clause above it is the contract
+    and a second claim underneath can only contradict it.
+    """
+    line = " ".join(str(voice_line or "").split())
+    if not line or _VOICE_BAN.search(line):
+        return clause
+    budget = _REPLY_MAX_CHARS - len(clause) - 2
+    if budget <= 0:
+        return clause
+    return f"{clause}\n\n{line[:budget]}"
+
+# ── The send ────────────────────────────────────────────────────────
+
+async def send_pack(client, account_id: str, fan_id: int, category: str,
+                    rung: str, *, cfg: dict | None = None,
+                    voice_line: str | None = None,
+                    dry_run: bool = False) -> dict:
+    """Send ONE pack, priced, to ONE fan. Per-chat, attributed, out of band.
+
+    Replays the shipped 1:1 PPV block (`ai_chatter.py:3258-3300`) with an
+    EXPLICIT item instead of letting the model choose one. Five shipped helpers
+    do the work; the only new thing here is that the item is decided before the
+    message is written.
+
+    ⚠️ **NOT `ppv_send` with `only_fan_ids`.** That looks free and is a trap:
+    `send_mass_message.run` mints a `MassRun` row unconditionally, so a one-fan
+    ppv_send is a MASS row — auto-unsent at 48h on both pilots, writing no
+    `ContentOffer` at all, and priced by segment multipliers so the quote above
+    would simply not run.
+
+    🚨 `locked_text=False` and `paid_ppv` is never set. Either one paywalls the
+    claim clause, and the clause is the one thing that must be readable BEFORE
+    he pays — it is the contract.
+
+    🚨 `_record_vault_sends` gets the `[:n]` SLICE, never the whole shelf.
+    Recording the shelf would stamp every item sent and, on purchase, owned —
+    silently deleting every future sale from this rung.
+    """
+    from attribution import write_outbound_attribution      # local: import cycle
+    from .ai_chatter import _record_offer, _record_vault_sends
+
+    cfg = cfg or {}
+    plan = await plan_pack(account_id, fan_id, category, rung, cfg=cfg)
+    if not plan.ok:
+        log.info("pack refused account=%s fan=%s %s-%s: %s %s",
+                 account_id, fan_id, category, rung, plan.refusal, plan.detail)
+        return {"status": "refused", "reason": plan.refusal, "detail": plan.detail,
+                "price_cents": plan.price_cents, "n": len(plan.media)}
+
+    caption = compose_caption(plan.clause, voice_line)
+    if dry_run:
+        return {"status": "dry_run", "price_cents": plan.price_cents,
+                "n": len(plan.media), "media": plan.media,
+                "previews": plan.previews, "caption": caption,
+                "item_id": plan.item_id}
+
+    # The audit runs AGAIN here, immediately before the wire. Folder membership
+    # is mutable and this map's own re-triage moved 19 items after the fact: a
+    # pack that passed at plan time can be a lie by send time.
+    bad = await audit_pack(account_id, category, rung,
+                           plan.media + plan.previews, plan.previews)
+    if bad:
+        log.warning("pack audit REFUSED AT SEND account=%s fan=%s: %s",
+                    account_id, fan_id, "; ".join(bad))
+        return {"status": "refused", "reason": REFUSE_AUDIT, "detail": "; ".join(bad)}
+
+    kwargs: dict = {"price": plan.price_cents / 100, "locked_text": False,
+                    "media_files": list(plan.media)}
+    if plan.previews:
+        kwargs["previews"] = list(plan.previews)
+    try:
+        result = await asyncio.to_thread(
+            lambda: client.send_message(int(fan_id), caption, **kwargs))
+    except Exception as e:  # noqa: BLE001
+        log.warning("pack send failed account=%s fan=%s", account_id, fan_id,
+                    exc_info=True)
+        return {"status": "error", "reason": "send_failed", "detail": str(e)[:200]}
+
+    msg_id = result.get("id") if isinstance(result, dict) else None
+    if not msg_id:
+        return {"status": "error", "reason": "no_message_id"}
+
+    await write_outbound_attribution(
+        account_id=str(account_id), fan_id=int(fan_id), message_id=int(msg_id),
+        sent_by_employee_id=None, automation_kind="pack_send",
+        body=str(result.get("text") or caption), price_cents=plan.price_cents,
+        created_at=datetime.utcnow(), emit_live=True)
+    # The SLICE, never the shelf.
+    await _record_vault_sends(str(account_id), int(fan_id), list(plan.media),
+                              int(msg_id), plan.price_cents)
+    async with get_session() as s:
+        item = await s.get(CatalogItem, int(plan.item_id))
+    await _record_offer(str(account_id), int(fan_id), item, "ppv", int(msg_id),
+                        quoted_cents=plan.price_cents)
+
+    log.info("pack SENT account=%s fan=%s %s-%s n=%s px=%s msg=%s",
+             account_id, fan_id, category, rung, len(plan.media),
+             plan.price_cents, msg_id)
+    return {"status": "ok", "message_id": int(msg_id), "item_id": plan.item_id,
+            "price_cents": plan.price_cents, "n": len(plan.media),
+            "media": plan.media, "previews": plan.previews, "caption": caption}
+
+
+
+# ── The ask trigger ─────────────────────────────────────────────────
+
+# 🚨 `tease` is PREVIEWS ONLY — operator ruling 2026-08-10. It rides free inside
+# a paid send and is never sold on its own, so an ask never resolves to it.
+DEFAULT_RUNG = "nude"
+# Rung 3 is quotable for 23 of 119 fans COLD and 104 of 119 after he buys rung 2
+# (MAX_ASK_VS_HISTORY_MULT = 3.0 on his largest paid PPV). Cold it is refused for
+# 96 of 119 — silently — which is the `gonna shower` failure shape. So it is
+# never the first ask.
+LADDER_RUNG = "nude-body"
+
+
+async def _has_bought_from(account_id: str, fan_id: int, category: str) -> bool:
+    """Has he bought anything from this category before? Gates the ladder rung."""
+    bought = await _bought_media(account_id, fan_id)
+    if not bought:
+        return False
+    cat = vault_pack_picker.CATEGORIES.get(category)
+    if cat is None:
+        return False
+    for rung in cat.rungs:
+        if bought & set(await _shelf_media(account_id, category, rung)):
+            return True
+    return False
+
+
+async def send_pack_on_ask(client, account_id: str, fan_id: int, *,
+                           cfg: dict | None = None,
+                           voice_line: str | None = None,
+                           dry_run: bool = False) -> dict:
+    """He asked for content → sell him that rung. The whole loop, one call.
+
+    The ask is read from the THREAD (`content_resolver.read_contract`), not from
+    a stored profile: a profile fact is advisory and a thing he just said is
+    binding. `fetishes` is deliberately not consulted.
+
+    Rung choice is the shipped ladder, not a preference:
+      * `tease` is previews only and is never sold;
+      * `nude` is the product and the first ask;
+      * `nude-body` only once he has bought from this category — cold it is
+        refused for 96 of 119 fans, silently, which is the failure shape this
+        map has warned about three times.
+
+    Refuses — loudly, in the return value — rather than substituting. For a
+    strict promise a generic send is worse than no send: it turns a recoverable
+    delay into a second deception.
+    """
+    cfg = cfg or {}
+    if not cfg.get("pack_send_enabled"):
+        return {"status": "refused", "reason": REFUSE_DISABLED}
+
+    contract = await content_resolver.read_contract(str(account_id), int(fan_id))
+    if not contract.category:
+        return {"status": "refused", "reason": content_resolver.NO_ASK,
+                "detail": contract.subject or ""}
+
+    category = contract.category
+    rung = contract.rung if contract.rung in (DEFAULT_RUNG, LADDER_RUNG) else DEFAULT_RUNG
+    if rung == LADDER_RUNG and not await _has_bought_from(account_id, fan_id, category):
+        rung = DEFAULT_RUNG
+
+    res = await send_pack(client, account_id, fan_id, category, rung, cfg=cfg,
+                          voice_line=voice_line, dry_run=dry_run)
+    # He asked for the product rung and it is spent — try the ladder rung, but
+    # only if he has already bought from this category.
+    if (res.get("reason") == REFUSE_TOO_THIN and rung == DEFAULT_RUNG
+            and await _has_bought_from(account_id, fan_id, category)):
+        res = await send_pack(client, account_id, fan_id, category, LADDER_RUNG,
+                              cfg=cfg, voice_line=voice_line, dry_run=dry_run)
+    res.setdefault("category", category)
+    res.setdefault("asked", contract.quote)
+    return res

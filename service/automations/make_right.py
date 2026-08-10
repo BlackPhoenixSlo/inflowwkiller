@@ -63,7 +63,7 @@ from db.models import (
     AccountAiConfig, Blacklist, CatalogItem, ContentOffer, Fan, LadderQuote,
     Message, MessageMedia, ResolutionLog, Transaction, VaultSend,
 )
-from automations import tip_reward
+from automations import content_resolver, tip_reward
 from . import _voice
 from ._common import load_voice_blocks as _load_voice_blocks
 from ._common import (
@@ -108,6 +108,15 @@ _DEFAULTS: dict = {
     # should key off the over-charge again it belongs INSIDE `gift_pieces_per_step`,
     # not in a second set of knobs racing it.
     "gift_tier": "",           # a specific tip_reward tier name, or "" → auto-pick by basis
+    # 🚨 Make the apology gift be THE THING HE ASKED FOR. Without this the
+    # remedy for "you sent me the wrong content" is a random unseen item from a
+    # folder — which is the same mistake again, for free. When ON, the gift is
+    # resolved from the thread's own promise via `content_resolver` (contract →
+    # match → adversarial verify) and only falls back to the folder pull when
+    # the resolver refuses. It fails OPEN because the gift is free and a generic
+    # gift was never promised to be personal; a PRICED send must not.
+    # Default OFF: this is a live automation on 17 accounts.
+    "gift_on_subject": False,
     "apology_caption": "",     # operator override for the apology text ('' → built-in)
     "flag_refund": True,       # raise an operator refund-review flag (money is NEVER auto-moved)
     "guard_hours": 12,         # cross-automation contact-guard window (OPEN only)
@@ -414,7 +423,7 @@ async def _detect_dup_charges(account_id: str, cfg: dict, now: datetime,
     DISTINCT charges of the same fan whose media OVERLAP.
 
     `only_fan_ids` scopes the scan to specific fans (a targeted/preview run, and the
-    jaka<->Lexi live-test guard) — mirrors _resolve_open_offers(only_fan_ids=...).
+    jaka<->Ava live-test guard) — mirrors _resolve_open_offers(only_fan_ids=...).
     """
     since = now - timedelta(days=max(1, int(cfg.get("lookback_days") or 30)))
     _fan_in = [int(x) for x in only_fan_ids] if only_fan_ids else None
@@ -752,6 +761,41 @@ async def _pull_unseen(client, account_id: str, fan_id: int, folders: list[str],
                                    by_name, exclude, count)
 
 
+async def _pull_gift(client, account_id: str, fan_id: int, folders: list[str],
+                     count: int, cfg: dict) -> tuple[list[int], str]:
+    """The apology gift, preferring THE THING HE ASKED FOR.
+
+    Returns `(media_ids, source)` where source is "subject" | "folder" | "none",
+    so the caller can put it in the run stats — whether the remedy was actually
+    on-subject is the only interesting thing about it.
+
+    ⚠️ Fails OPEN to the folder pull on any refusal. That is correct HERE and
+    nowhere else: the gift is free and nobody promised it would be personal, so
+    a generic piece is a smaller failure than an empty apology. A priced send
+    faces the opposite trade and must refuse.
+    """
+    if cfg.get("gift_on_subject") and count > 0:
+        try:
+            res = await content_resolver.resolve(
+                account_id, fan_id, count=count,
+                seen=await _exclude_media(account_id, fan_id),
+                # A free gift may draw from the described vault, not only the
+                # curated shelves — but VERIFY still has to clear it, because
+                # this fan is already unhappy about being sent the wrong thing.
+                require_curated=False, verify=True)
+            if res.ok:
+                log.info("make_right gift ON-SUBJECT account=%s fan=%s %s",
+                         account_id, fan_id, content_resolver.explain(res))
+                return res.media_ids[:count], "subject"
+            log.info("make_right gift subject-resolve refused account=%s fan=%s %s",
+                     account_id, fan_id, content_resolver.explain(res))
+        except Exception:  # noqa: BLE001
+            log.warning("make_right gift subject-resolve failed account=%s fan=%s",
+                        account_id, fan_id, exc_info=True)
+    gift = await _pull_unseen(client, account_id, fan_id, folders, count)
+    return gift, ("folder" if gift else "none")
+
+
 def _fan_first_name(fan: Fan | None, voice: str = "her") -> str:
     """A real given name if we have one, else the LANE's address — never a raw
     location/tag. The fallback is not rare (of_display_name is empty for ~80% of
@@ -1015,8 +1059,8 @@ async def _do_step(client, account_id: str, fan_id: int, action: str, cfg: dict,
                    for b in _apology_bubbles(fan, cfg, rng, kind, _v)]
         media_sent: list[int] = []
         if action == "apology_gift":
-            gift = await _pull_unseen(client, account_id, fan_id,
-                                      _free_folders(cfg, tip_cfg, 0), per_step)
+            gift, _src = await _pull_gift(client, account_id, fan_id,
+                                          _free_folders(cfg, tip_cfg, 0), per_step, cfg)
             if gift:
                 bubbles.append({"text": rng.choice(_lane("gift", _v)).replace("{name}", name),
                                 "media": gift, "price_cents": 0})
@@ -1025,8 +1069,8 @@ async def _do_step(client, account_id: str, fan_id: int, action: str, cfg: dict,
         return ok, media_sent
 
     if action == "free":
-        gift = await _pull_unseen(client, account_id, fan_id,
-                                  _free_folders(cfg, tip_cfg, 0), per_step)
+        gift, _src = await _pull_gift(client, account_id, fan_id,
+                                      _free_folders(cfg, tip_cfg, 0), per_step, cfg)
         if not gift:
             # Nothing fresh left to give — no tip library, or he has seen it all.
             # Advance WITHOUT sending: every line in this pool promises a gift
