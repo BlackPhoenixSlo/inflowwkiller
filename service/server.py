@@ -92,6 +92,7 @@ from auth import (  # noqa: E402
     session_middleware as _auth_session_middleware,
     get_request_user as _get_request_user,
     assert_account_owned,
+    allow_anonymous_account_access as _allow_anonymous_account_access,
     clamp_account_filter,
     COOKIE_NAME as _AUTH_COOKIE_NAME,
 )
@@ -202,38 +203,29 @@ app.include_router(_auth_impersonate_router)
 app.include_router(_chatters_router)
 app.include_router(_chatters_admin_router)
 
-# Audit middleware. Registered AFTER the share-token gate (below) on purpose
-# — middlewares run in *reverse* registration order in starlette, so the
-# share-token gate fires first, blocks unauthed requests, and only authed
-# ones reach the audit writer. The decorator-registered middlewares below
-# are added before this line, so we add this one via the imperative API to
-# control ordering explicitly.
-app.middleware("http")(_audit_middleware)
-
-# Chatter session middleware — registered BEFORE the User session
-# middleware so on the inbound path it runs AFTER auth (Starlette runs
-# user-added middlewares in reverse registration order). That ordering
-# lets the chatter middleware's admin-gate read `get_request_user()` and
-# only fire when no User cookie is present, while still landing both
-# contextvars before the audit middleware's post-block resolves them.
-app.middleware("http")(_chatter_session_middleware)
-
-# Friend-auth session middleware. Same ordering trick: registered here so
-# it runs *inside* the share-token gate (gate fires first, rejects unauthed
-# requests; only then does this middleware read the session cookie and
-# populate _request_user for _resolve_account_id).
-app.middleware("http")(_auth_session_middleware)
-
-
-# Defense-in-depth: scan every request URL for any OF account_id the
-# signed-in friend doesn't own (whether passed as ?account_id=… or as a
-# numeric path segment). Catches per-account endpoints that haven't been
-# individually wrapped with assert_account_owned(). False-positive
-# domain: fan_ids and other numeric segments — only ids that actually
-# match a real OF account row trigger the gate, so fan_ids that happen
-# to share numeric shape do not.
-@app.middleware("http")
+# Tenant isolation. Every per-account request passes here: no principal at all is
+# 401, and a principal naming an account it doesn't own is 403.
+#
+# ⚠️ ITS REGISTRATION SLOT IS LOAD-BEARING — see below. Until 2026-08-10 this was
+# registered AFTER the two session middlewares, which in Starlette makes it the
+# OUTERMOST, so it ran BEFORE either cookie had been resolved and `allowed_ids`
+# was None on every real request. It abstained on None, so it had never once
+# fired in production, and its suite stayed green only because the tests set
+# `auth._request_user` by hand. Moving the registration is what makes the 403
+# below real; do not move it back.
+#
+# It scans the URL for any OF account_id the principal doesn't own (as
+# `?account_id=…` or as a numeric path segment), which catches per-account
+# endpoints nobody wrapped with assert_account_owned(). False-positive domain:
+# fan_ids and other numeric segments — only ids matching a real OF account row
+# trigger the gate, so fan_ids that merely share the shape do not.
 async def _account_isolation_middleware(request: Request, call_next):
+    # Cheap pre-filter — only /admin/* and /api/of/* paths can possibly
+    # reference per-account data. /auth/*, /events, /img, /ws/* never do.
+    path = request.url.path
+    if not (path.startswith("/admin/") or path.startswith("/api/of/")):
+        return await call_next(request)
+
     # Pick the active principal's account_ids set. User wins precedence;
     # falls back to chatter's set-union if no user is signed in. Both
     # paths must be checked because the same account_id can be reached
@@ -245,12 +237,15 @@ async def _account_isolation_middleware(request: Request, call_next):
         chatter = _get_request_chatter()
         allowed_ids = chatter.account_ids if chatter is not None else None
     if allowed_ids is None:
-        return await call_next(request)
-    # Cheap pre-filter — only /admin/* and /api/of/* paths can possibly
-    # reference per-account data. /auth/*, /events, /img, /ws/* never do.
-    path = request.url.path
-    if not (path.startswith("/admin/") or path.startswith("/api/of/")):
-        return await call_next(request)
+        # Nobody is signed in. This used to `return await call_next(request)` —
+        # the same abstain-on-anonymous bug as `assert_account_owned`, and the
+        # reason `GET /admin/accounts` answered 200 with no cookie in prod on
+        # 2026-08-10. `assert_account_owned` alone is not enough: it guards only
+        # routes someone remembered to wrap, and /admin/accounts is one of the
+        # ~50 nobody did.
+        if _allow_anonymous_account_access():
+            return await call_next(request)
+        return Response("sign in required", status_code=401)
 
     candidates: set[str] = set()
     qaid = request.query_params.get("account_id")
@@ -269,6 +264,36 @@ async def _account_isolation_middleware(request: Request, call_next):
     if any(account_registry.is_account(c) for c in candidates - allowed_ids):
         return Response("not your account", status_code=403)
     return await call_next(request)
+
+
+# Audit middleware. Registered AFTER the share-token gate (below) on purpose
+# — middlewares run in *reverse* registration order in starlette, so the
+# share-token gate fires first, blocks unauthed requests, and only authed
+# ones reach the audit writer. The decorator-registered middlewares below
+# are added before this line, so we add this one via the imperative API to
+# control ordering explicitly.
+app.middleware("http")(_audit_middleware)
+
+# Tenant isolation. Registered here — BEFORE both session middlewares — so that
+# it RUNS AFTER them (Starlette: last registered = outermost) and can see the
+# principal they set. Registered below them, as it was until 2026-08-10, it runs
+# before either cookie is read, sees no principal, and silently does nothing.
+app.middleware("http")(_account_isolation_middleware)
+
+# Chatter session middleware — registered BEFORE the User session
+# middleware so on the inbound path it runs AFTER auth (Starlette runs
+# user-added middlewares in reverse registration order). That ordering
+# lets the chatter middleware's admin-gate read `get_request_user()` and
+# only fire when no User cookie is present, while still landing both
+# contextvars before the audit middleware's post-block resolves them.
+app.middleware("http")(_chatter_session_middleware)
+
+# Friend-auth session middleware. Same ordering trick: registered here so
+# it runs *inside* the share-token gate (gate fires first, rejects unauthed
+# requests; only then does this middleware read the session cookie and
+# populate _request_user for _resolve_account_id).
+app.middleware("http")(_auth_session_middleware)
+
 
 # ── Share-link gate ────────────────────────────────────────────
 # Only requests carrying the token via ?t=... or the share_token cookie get

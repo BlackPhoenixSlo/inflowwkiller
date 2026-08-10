@@ -457,7 +457,8 @@ export function ScriptCard({ accountId, sc }: { accountId: string; sc: CatalogSc
  *  and there are three of these now — the rule belongs in one place rather than
  *  re-derived (and re-commented) at every checkbox. Unticking is deliberately
  *  NOT the inverse: dropping a sub-mode must not switch the whole lane off. */
-type RhythmSubMode = "rhythm_no_sleep" | "rhythm_pace_buckets" | "rhythm_ghost_enabled";
+type RhythmSubMode = "rhythm_no_sleep" | "rhythm_pace_buckets" | "rhythm_ghost_enabled"
+  | "rhythm_stepout_enabled";
 
 const rhythmSubMode = (key: RhythmSubMode, on: boolean): Partial<AiChatterConfig> =>
   ({ [key]: on, ...(on ? { rhythm_enabled: true } : {}) });
@@ -788,6 +789,135 @@ function GhostCycleEditor({ cfg, set }: {
   );
 }
 
+/** The shipped step-out numbers. Mirrors `_stepout.MIN_EXCHANGES` / `MAX_EXCHANGES`
+ *  / `PERSIST_MSGS` / `PERSIST_GAP_MIN_S` and `rhythm.STEPOUT_MIN_MINUTES` /
+ *  `STEPOUT_MAX_MINUTES` — if any of those move, these are what start lying. */
+const SHIPPED_STEPOUT = {
+  min_exchanges: 7, max_exchanges: 15,
+  min_minutes: 60, max_minutes: 120,
+  break_msgs: 2, break_gap_s: 60,
+};
+
+/** She goes out for an hour or two, and comes back early if he double-texts.
+ *
+ *  ⚠️ This shipped SERVER-DEFAULT ON with no switch at all (2026-08-09, for a
+ *  roster-wide data run). An operator could neither see it nor stop it. Unticking
+ *  writes `false`, which is a real stored value — not the missing key that means
+ *  "use the shipped default". */
+function StepOutEditor({ cfg, set }: {
+  cfg: AiChatterConfig;
+  set: (p: Partial<AiChatterConfig>) => void;
+}) {
+  // Server default is ON, so `undefined` here means ON — not off. Getting this
+  // backwards would show every account a unticked box for a feature that is running.
+  const on = cfg.rhythm_stepout_enabled !== false;
+  // A STORED 0 must survive as 0 — `??` is required here and `||` would be a bug,
+  // because the server reads a stored 0 as a real zero and only a MISSING key as
+  // "use the shipped default" (`_stepout._num`).
+  const loEx = cfg.rhythm_stepout_min_exchanges ?? SHIPPED_STEPOUT.min_exchanges;
+  const hiEx = cfg.rhythm_stepout_max_exchanges ?? SHIPPED_STEPOUT.max_exchanges;
+  const loMin = cfg.rhythm_stepout_min_minutes ?? SHIPPED_STEPOUT.min_minutes;
+  const hiMin = cfg.rhythm_stepout_max_minutes ?? SHIPPED_STEPOUT.max_minutes;
+  const breakMsgs = cfg.rhythm_stepout_break_msgs ?? SHIPPED_STEPOUT.break_msgs;
+  const breakGap = cfg.rhythm_stepout_break_gap_s ?? SHIPPED_STEPOUT.break_gap_s;
+  const inverted = loEx > hiEx || loMin > hiMin;
+
+  return (
+    <div className="pl-6 space-y-2">
+      <label className="flex items-start gap-2 cursor-pointer">
+        <input type="checkbox" className="mt-0.5" checked={on}
+          onChange={(e) => set(rhythmSubMode("rhythm_stepout_enabled", e.target.checked))} />
+        <span className="text-xs">
+          <span className="font-medium text-fg">
+            Step out for an hour or two — she isn&apos;t always at her phone
+          </span>
+          <span className="block text-fg-dim">
+            Every few replies on a chat that is <b>neither hot nor just sold to</b>, she
+            simply stops answering for an hour or two, then picks the thread back up
+            saying nothing about it — because a real person doesn&apos;t explain a gap.
+            Much shorter and far more often than the whole-day quiet above, and the two
+            run independently. If he writes again while she&apos;s out, she comes back
+            early: that is the point of it, not a leak.
+          </span>
+        </span>
+      </label>
+
+      <div className={cn("space-y-1.5", !on && "opacity-50 pointer-events-none")}>
+        <div className="flex items-center gap-2 text-xs flex-wrap">
+          <span className="text-fg-dim">every</span>
+          <input type="number" min={1} step={1} className={`${INPUT} w-14 text-right`}
+            value={loEx}
+            onChange={(e) => set({ rhythm_stepout_min_exchanges: Number(e.target.value) })} />
+          <span className="text-fg-dim">to</span>
+          <input type="number" min={1} step={1} className={`${INPUT} w-14 text-right`}
+            value={hiEx}
+            onChange={(e) => set({ rhythm_stepout_max_exchanges: Number(e.target.value) })} />
+          <span className="text-fg-dim">of <b>her</b> replies, she&apos;s gone</span>
+          {/* min=1, not 0: the server bound is (1, 1440) and a 0 is DROPPED by the
+              validator, so an input that offers 0 offers a value that won't save. */}
+          <input type="number" min={1} max={1440} step={1}
+            className={`${INPUT} w-14 text-right`} value={loMin}
+            onChange={(e) => set({ rhythm_stepout_min_minutes: Number(e.target.value) })} />
+          <span className="text-fg-dim">to</span>
+          <input type="number" min={1} max={1440} step={1}
+            className={`${INPUT} w-14 text-right`} value={hiMin}
+            onChange={(e) => set({ rhythm_stepout_max_minutes: Number(e.target.value) })} />
+          <span className="text-fg-dim">min</span>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs flex-wrap">
+          <span className="text-fg-dim">back early if he writes</span>
+          <input type="number" min={0} step={1} className={`${INPUT} w-14 text-right`}
+            value={breakMsgs}
+            onChange={(e) => set({ rhythm_stepout_break_msgs: Number(e.target.value) })} />
+          <span className="text-fg-dim">times, at least</span>
+          <input type="number" min={0} step={1} className={`${INPUT} w-16 text-right`}
+            value={breakGap}
+            onChange={(e) => set({ rhythm_stepout_break_gap_s: Number(e.target.value) })} />
+          <span className="text-fg-dim">seconds apart</span>
+        </div>
+
+        {inverted && (
+          <div className="text-[11px] text-red-400">
+            The low number is above the high one — the server will clamp it rather
+            than save what you typed.
+          </div>
+        )}
+
+        <div className="flex items-center gap-3 pt-0.5">
+          <button type="button" className="text-[11px] text-fg-dim hover:underline"
+            // Writes the shipped numbers EXPLICITLY rather than clearing the keys:
+            // `set({k: undefined})` is dropped by JSON.stringify, so the PUT would
+            // carry nothing and the button would silently do nothing at all.
+            onClick={() => set({
+              rhythm_stepout_min_exchanges: SHIPPED_STEPOUT.min_exchanges,
+              rhythm_stepout_max_exchanges: SHIPPED_STEPOUT.max_exchanges,
+              rhythm_stepout_min_minutes: SHIPPED_STEPOUT.min_minutes,
+              rhythm_stepout_max_minutes: SHIPPED_STEPOUT.max_minutes,
+              rhythm_stepout_break_msgs: SHIPPED_STEPOUT.break_msgs,
+              rhythm_stepout_break_gap_s: SHIPPED_STEPOUT.break_gap_s,
+            })}>
+            reset to 7-15 replies · 1-2 h · 2 msgs 60s apart
+          </button>
+          <span className="text-[11px] text-fg-dim ml-auto">
+            {loEx > 0
+              ? `roughly one step-out per ${Math.round((loEx + hiEx) / 2)} replies, `
+                + `averaging ${fmtMin((loMin + hiMin) / 2)} away`
+              : "0 replies between step-outs — this won't save"}
+          </span>
+        </div>
+
+        <div className="text-[11px] text-fg-dim/70">
+          Two messages <b>60 seconds apart</b>, not two bubbles: a burst is one thought
+          arriving in pieces and must not end the silence. Setting the gap to 0 makes
+          any second message end it. She never steps out mid-sale, mid-sext, or on a
+          thread that has only just started.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function RhythmSection({ cfg, set, tz, utcOffset, derived, effective,
                                 houseDefault = ["02:00", "06:00"] }: {
   cfg: AiChatterConfig;
@@ -960,6 +1090,7 @@ export function RhythmSection({ cfg, set, tz, utcOffset, derived, effective,
       <TypingPaceEditor cfg={cfg} set={set} />
 
       <GhostCycleEditor cfg={cfg} set={set} />
+      <StepOutEditor cfg={cfg} set={set} />
     </div>
   );
 }
