@@ -50,6 +50,20 @@ pct() { awk -v a="$1" -v b="$2" 'BEGIN{ printf "%.0f", (b>0 ? 100*a/b : 0) }'; }
 BROKE_PCT=$(pct "$BROKE" "$STEPOUTS")
 BLOCK_PCT=$(pct "$BLOCKED" "$((STEPOUTS + BLOCKED))")
 
+# ⚠️ MINIMUM SAMPLE. Without this the script confidently mis-reads its own noise:
+# on 2026-08-10 it called 0-broken-of-3 "the gap filter is too strict" when the same
+# measure had read a healthy 14% on 7 the day before. A ratio over a handful of
+# events is not a signal, and a tool that shouts a verdict at n=3 is worse than one
+# that says nothing — you act on it.
+MIN_N=10
+if [[ "$STEPOUTS" -lt "$MIN_N" ]]; then
+  printf '  \033[1;33monly %s step-outs — too few to read a ratio.\033[0m\n' "$STEPOUTS"
+  printf '  (broken %s, blocked %s. Need ~%s before the percentages mean anything —\n' \
+    "$BROKE" "$BLOCKED" "$MIN_N"
+  printf '   re-run over a wider window, e.g. %s 72.)\n\n' "$0"
+  exit 0
+fi
+
 printf '  broken/stepouts  %3s%%  ' "$BROKE_PCT"
 if   [[ "$BROKE_PCT" -gt 60 ]]; then
   printf '\033[1;31mTOO HIGH\033[0m — the exit is firing on messages he sent\n'

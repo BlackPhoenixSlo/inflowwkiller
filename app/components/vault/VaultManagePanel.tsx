@@ -23,6 +23,7 @@ import VaultAiFoldersModal from "@/components/vault/VaultAiFoldersModal";
 import VaultDisputesModal from "@/components/vault/VaultDisputesModal";
 import VaultFlagsReviewModal from "@/components/vault/VaultFlagsReviewModal";
 import VaultDuplicatesModal from "@/components/vault/VaultDuplicatesModal";
+import VaultPackPickerModal from "@/components/vault/VaultPackPickerModal";
 import VaultTile from "@/components/vault/VaultTile";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
@@ -124,6 +125,7 @@ export default function VaultManagePanel() {
   const [playMedia, setPlayMedia] = useState<VaultMedia | null>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [showDupes, setShowDupes] = useState(false);
+  const [showPackPicker, setShowPackPicker] = useState(false);
   const [showAiFolders, setShowAiFolders] = useState(false);
   const [showDisputes, setShowDisputes] = useState(false);
   const [showFlagsReview, setShowFlagsReview] = useState(false);
@@ -678,6 +680,15 @@ export default function VaultManagePanel() {
             </button>
             <button
               type="button"
+              onClick={() => setShowPackPicker(true)}
+              disabled={cachedCount === 0}
+              className="px-3 py-1.5 rounded-lg text-sm border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
+              title="Triage every feet candidate into rungs, then publish the rungs to her OF vault"
+            >
+              Feet pack
+            </button>
+            <button
+              type="button"
               onClick={() => setShowAiFolders(true)}
               disabled={cachedCount === 0}
               className="px-3 py-1.5 rounded-lg text-sm border border-violet-500/50 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 disabled:opacity-50"
@@ -1038,6 +1049,13 @@ export default function VaultManagePanel() {
       )}
       {showDupes && accountId && (
         <VaultDuplicatesModal accountId={accountId} onClose={() => setShowDupes(false)} />
+      )}
+      {showPackPicker && accountId && (
+        <VaultPackPickerModal
+          accountId={accountId}
+          category="feet"
+          onClose={() => setShowPackPicker(false)}
+        />
       )}
       {needsReview > 0 && !showFlagsReview && (
         <div className="mx-4 mb-2 rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 flex items-center justify-between gap-3">

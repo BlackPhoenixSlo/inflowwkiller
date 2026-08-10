@@ -52,6 +52,89 @@ export async function addToFolder(accountId: string, folderId: number, mediaIds:
   );
 }
 
+/** Push ONE hand-made internal folder out as a real OF vault list.
+ *  Additive: `stale_on_of` lists ids OF still holds that the folder no longer
+ *  does — clearing those needs a delete+recreate, which mints a new list id. */
+export async function publishFolderToOf(accountId: string, folderId: number) {
+  return relay.post<PublishFolderResult>(
+    `/admin/vault-ai/folders/${folderId}/publish`,
+    { account_id: accountId },
+    { accountId },
+  );
+}
+
+export interface PublishFolderResult {
+  folder_id: number;
+  name: string;
+  of_list_id: number;
+  created: boolean;
+  pushed: number;
+  synced: number;
+  stale_on_of: number[];
+}
+
+// ── The pack picker ────────────────────────────────────────────────
+
+export interface PackCandidate {
+  media_id: number;
+  kind: string;
+  /** The rung it is filed on now, or null if unruled. */
+  rung: string | null;
+  /** Enough to reject on text alone, before any pixel is fetched. */
+  description: string;
+}
+
+/** One rung of the ladder. `folder_id` is null until the first Save creates it,
+ *  so the ladder's shape never depends on how far triage has got. */
+export interface PackRung {
+  rung: string;
+  name: string;
+  folder_id: number | null;
+  count: number;
+  of_list_id: number | null;
+}
+
+export interface PackCandidates {
+  category: string;
+  rungs: string[];
+  folders: PackRung[];
+  candidates: PackCandidate[];
+  filed: number;
+}
+
+export function usePackCandidates(accountId: string | null, category: string, enabled = true) {
+  return useQuery<PackCandidates>({
+    queryKey: ["vault-pack-candidates", accountId, category],
+    enabled: !!accountId && enabled,
+    queryFn: () =>
+      relay.get(
+        `/admin/vault-ai/pack-candidates?account_id=${encodeURIComponent(accountId!)}` +
+          `&category=${encodeURIComponent(category)}`,
+      ),
+    // The operator's own Save is the only thing that changes this.
+    staleTime: 60_000,
+  });
+}
+
+export interface PackTriageResult {
+  category: string;
+  saved: number;
+  rejected: number;
+  folders: PackRung[];
+}
+
+export async function savePackTriage(
+  accountId: string,
+  category: string,
+  verdicts: { media_id: number; rung: string | null }[],
+) {
+  return relay.post<PackTriageResult>(
+    `/admin/vault-ai/pack-triage`,
+    { account_id: accountId, category, verdicts },
+    { accountId },
+  );
+}
+
 /** Create a REAL OF vault folder (+ optionally add media). */
 export async function createOfFolder(accountId: string, name: string, mediaIds: number[] = []) {
   return relay.post(
