@@ -48,6 +48,7 @@ import {
 import {
   describeSweepText,
   harvestSweepLabel,
+  sweepAbortedNote,
   useVaultSweep,
 } from "@/hooks/useVaultSweep";
 import { proxyImage, relay, type VaultList, type VaultMedia } from "@/lib/relay";
@@ -229,6 +230,7 @@ export default function VaultManagePanel() {
     done: Math.max(0, (plan.data?.total ?? 0) - (plan.data?.undescribed ?? 0)),
     total: plan.data?.total ?? 0,
   });
+  const describeStopped = sweepAbortedNote(describeSweep.progress);
 
   // Out of AI budget for today. The server refuses the start either way (429),
   // but a refusal you can only discover by pressing is what made this look
@@ -708,6 +710,16 @@ export default function VaultManagePanel() {
           </div>
         </div>
       </div>
+
+      {/* A describe pass that DIED rather than finished. Only meaningful once it
+          stops — while it runs the button carries the count — and it survives a
+          reload, because the snapshot lives on the server. */}
+      {!describeSweep.busy && describeStopped && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+          {describeStopped.text}
+          <span className="block text-amber-300/70 mt-0.5">{describeStopped.detail}</span>
+        </div>
+      )}
 
       {/* selection action bar */}
       {selectMode && selected.size > 0 && (

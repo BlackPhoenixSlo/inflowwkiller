@@ -56,6 +56,12 @@ export interface SweepProgress {
   capped?: boolean;
   failed?: number;
   error?: string;
+  /** The sweep DIED — it did not finish. Server-side this is the outer handler
+   *  stamping the exception that ended the run. Without it a dead sweep and a
+   *  finished one are the same two facts (`running: false`, `done < total`) and
+   *  the button reads "Describe all (N)" for both, which is how an operator ends
+   *  up pressing it every few minutes without ever learning why. */
+  aborted?: boolean;
   /** describe-all: how many freshly-described items want a human look. */
   needs_review?: number;
   /** harvest-keywords: how many items a keyword actually matched. */
@@ -256,6 +262,31 @@ export function describeSweepText(
     .filter(Boolean)
     .join("\n");
   return { label, title };
+}
+
+/** What to say about a sweep that STOPPED SHORT, or null if there is nothing to
+ *  say. Read only when `busy` is false — while it runs, the button's own label
+ *  carries the progress.
+ *
+ *  ONLY `aborted` qualifies, and the reason is the snapshot's lifetime. The
+ *  server keeps `progress` forever after a sweep exits, deliberately, so a UI
+ *  arriving late still learns how the last pass ended — but `aborted` is the one
+ *  key it clears at every start. Anything else surfaced here would still be on
+ *  screen three days later with no timestamp, describing a run nobody remembers:
+ *  a permanent amber banner is not information. Failures during a run belong to
+ *  the button's tooltip, where `describeSweepText` already puts them.
+ *
+ *  `left` is honest for every sweep because `done` counts items VISITED — see
+ *  `service/vault_sweep.py`, which owns that definition for all of them. */
+export function sweepAbortedNote(
+  progress: SweepProgress | null,
+): { text: string; detail: string } | null {
+  if (!progress?.aborted) return null;
+  const left = Math.max(0, (progress.total || 0) - (progress.done || 0));
+  return {
+    text: `Stopped early — ${left} left. Press again to resume.`,
+    detail: progress.error || "The sweep ended before it finished.",
+  };
 }
 
 export function harvestSweepLabel(progress: SweepProgress | null): string {

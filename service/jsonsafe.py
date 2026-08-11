@@ -25,6 +25,23 @@ from typing import Any
 PAYLOAD_CAP = 64 * 1024
 
 
+def truthy(v: Any) -> bool:
+    """A bool that does not read the STRING "false" as True.
+
+    `bool("false")` is True, which turns a money-sending flag ON when a raw-JSON
+    edit, a migration or a `prod-*.sh key=value` stamp writes a quoted boolean.
+    The UI posts real JSON bools and never hits this; every other writer can.
+
+    Here rather than in one validator because it was written twice within a day —
+    `scripts_api` for the pack flags, `make_right_config_api` for the gift flags —
+    and the two halves of one feature disagreeing about "is it on" is the whole
+    failure mode. Same reason as `load_json` below: one tolerance, not three.
+    """
+    if isinstance(v, str):
+        return v.strip().lower() not in ("", "false", "0", "no", "off", "null")
+    return bool(v)
+
+
 def dump_capped(payload: Any, *, limit: int = PAYLOAD_CAP) -> str:
     """Serialize for a capped TEXT column, ALWAYS returning parseable JSON.
 
