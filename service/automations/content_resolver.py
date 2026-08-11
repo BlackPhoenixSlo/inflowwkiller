@@ -64,7 +64,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, literal, or_, select
 
 import llm_client                       # module import so tests can patch .chat
 import vault_pack_picker
@@ -293,9 +293,27 @@ async def _described_pool(account_id: str, seen: set[int],
                 + " " + func.coalesce(VaultItem.video_description, "")
                 + " " + func.coalesce(VaultItem.ai_fields_json, ""))
             q = q.where(or_(*[blob.like(f"%{t}%") for t in terms]))
-        # Recency is the TIE-BREAK now, not the filter.
+        # 🚨 RANK IN SQL, so the LIMIT keeps the most RELEVANT rows.
+        #
+        # This used to order by `created_at` and limit to 600, then rank by hit
+        # count in Python — which ranks only what the recency window happened to
+        # let through. That is the same bug the docstring above warns about, one
+        # level down: with a broad term set, 600-newest is a recency window
+        # wearing a relevance costume.
+        #
+        # It also cost a whole mechanism. A `drop_useless_terms()` guard was
+        # added to stop broad terms dragging the vault into that window, and it
+        # deleted `breasts` (61% of this vault) — the exact word the lexicon
+        # exists to produce. Ordering by score removes the need for the guard
+        # entirely: a broad term contributes 1 to many rows and simply sorts
+        # below `feet+soles+toes`, which is what a score is for.
+        score = (
+            sum((case((blob.like(f"%{t}%"), 1), else_=0) for t in terms),
+                literal(0))
+            if terms else literal(0))
         rows = (await s.execute(
-            q.order_by(VaultItem.created_at.desc()).limit(_CANDIDATES_MAX * 4)
+            q.order_by(score.desc(), VaultItem.created_at.desc())
+             .limit(_CANDIDATES_MAX * 4)
         )).all()
         if not rows and terms:
             # The scan found nothing. That is a vocabulary miss, NOT "he has seen
@@ -351,17 +369,6 @@ async def _described_pool(account_id: str, seen: set[int],
 # cache, while the same words appended per-message would not be.
 _LEXICON_TTL_S = 6 * 3600
 _LEXICON_MAX = 200
-# Photographic scaffolding: frequent, and never what a fan asks for. Kept short
-# on purpose — the model is better at spotting a non-content word than a list is,
-# and an over-eager stoplist would delete the anatomy this is for. ("none" is a
-# JSON null that leaked into the description text.)
-_LEXICON_JUNK = frozenset({
-    "none", "null", "stills", "handheld", "selfie", "image", "images", "photo",
-    "photos", "picture", "pictures", "video", "videos", "clip", "clips", "frame",
-    "frames", "camera", "shot", "shots", "view", "angle", "background",
-    "foreground", "lighting", "visible", "appears", "shown", "showing",
-    "unknown", "unclear", "description", "left", "right", "toward", "towards",
-})
 _lexicon_cache: dict[str, tuple[float, Counter, int]] = {}
 
 
@@ -374,8 +381,7 @@ async def vault_lexicon(account_id: str) -> list[str]:
     "too common to be useful" rule would delete the payload.
     """
     freq, _total = await _term_frequencies(account_id)
-    return [w for w, _n in freq.most_common(_LEXICON_MAX)
-            if w not in _LEXICON_JUNK]
+    return [w for w, _n in freq.most_common(_LEXICON_MAX)]
 
 
 async def _term_frequencies(account_id: str) -> tuple[Counter, int]:
@@ -409,43 +415,6 @@ async def _term_frequencies(account_id: str) -> tuple[Counter, int]:
         })
     _lexicon_cache[str(account_id)] = (now, freq, len(rows))
     return freq, len(rows)
-
-
-# A term matching this much of the vault carries no information: OR-ed with the
-# others it drags the whole library into the pool and the ranking stops meaning
-# anything. Measured 2026-08-11 — with the lexicon in the prompt but no guard,
-# every ask retrieved ~1,520 of 1,601 items, feet included.
-_TERM_MAX_DF = 0.35
-_TERM_KEEP_MIN = 2        # never strip a query down to nothing
-
-
-async def drop_useless_terms(account_id: str, terms: list[str]) -> list[str]:
-    """Remove terms so common they select the whole vault.
-
-    A prompt asking the model not to add generic words is necessary and not
-    sufficient — it was already told, and still emitted "nude" for a feet ask.
-    This is the deterministic half: measure each term against the real corpus
-    and drop the ones that discriminate nothing.
-
-    Keeps the RAREST when everything is common, because a fan who asks about a
-    vault that is 90% nudes still deserves the narrowest cut available rather
-    than a refusal.
-    """
-    terms = [t for t in (terms or []) if t]
-    if len(terms) <= _TERM_KEEP_MIN:
-        return terms
-    freq, total = await _term_frequencies(account_id)
-    if not total:
-        return terms
-    df = {t: freq.get(t, 0) for t in terms}
-    keep = [t for t in terms if df[t] / total <= _TERM_MAX_DF]
-    if len(keep) >= _TERM_KEEP_MIN:
-        dropped = [t for t in terms if t not in keep]
-        if dropped:
-            log.info("terms too broad, dropped account=%s %s", account_id, dropped)
-        return keep
-    # Everything is common. Take the narrowest few rather than refusing.
-    return sorted(terms, key=lambda t: df[t])[:_TERM_KEEP_MIN + 1]
 
 
 async def solo_only(account_id: str, media_ids: list[int]) -> list[int]:
@@ -689,7 +658,7 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
         for word in re.split(r"[^a-z0-9]+", str(chunk).strip().lower()):
             if 3 <= len(word) <= 24 and word not in _STOPWORDS and word not in terms:
                 terms.append(word)
-    terms = await drop_useless_terms(account_id, terms[:15])
+    terms = terms[:15]
     return Contract(
         is_ask=is_ask, custom_request=bool(p.get("custom_request")) and is_ask,
         subject=subject, category=category, rung=None, media_kind=kind,
