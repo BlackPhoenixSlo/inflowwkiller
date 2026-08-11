@@ -345,9 +345,16 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
         'but", else false,\n'
         ' "quote": "<his exact words, <=120 chars>",\n'
         ' "exclusions": ["<things he said he does NOT want>"]}\n'
-        "If he has not asked for any specific content, return subject null. "
-        "Do NOT infer a subject from what he seems to enjoy — only from what he "
-        "asked for or was promised."
+        "RESOLVE REFERRING EXPRESSIONS from the chat. \"send me that set\", "
+        "\"i want it\", \"show me them\", \"unlock it for me\" are ASKS — look "
+        "back through the chat for what SHE offered or described and use THAT as "
+        "the subject. A bare \"show me\" straight after she mentioned content is "
+        "an ask for that content. He will not repeat the noun; people do not "
+        "talk that way.\n"
+        "Return subject null ONLY when he is not asking for content at all — "
+        "small talk, logistics, an address, plans, or talking about his day.\n"
+        "Do NOT invent a subject from what he merely seems to enjoy: it must be "
+        "something he asked for, or was offered, IN THIS CHAT."
     )
     try:
         res = await llm_client.chat(
