@@ -3,6 +3,11 @@
 These return plain `list[int]` fan-id lists meant to be handed to
 `OFClient.send_mass_message(included_users=...)` (the `userIds` body field).
 DB-first: no OF call needed — we already have every message in `messages`.
+
+It is also the one home for the house broadcast POLICY constants below (the
+default contact-guard windows, and the OF-side list names a "reach everyone"
+send targets) — those are audience decisions too, they just resolve OF-side
+rather than from our tables.
 """
 from __future__ import annotations
 
@@ -28,6 +33,15 @@ log = logging.getLogger("of-relay.audiences")
 # convention as online_blast's 8h and mass_nudge's 12h defaults.
 BROADCAST_DEFAULT_OUTBOUND_H = 6.0  # skip fans WE touched in the last 6h
 BROADCAST_DEFAULT_INBOUND_H = 2.0   # skip fans who messaged US in the last 2h
+
+# The house "everyone" audience — OF's two built-in buckets, resolved server-side
+# at send time. BOTH, always: "fans" alone is only the ACTIVE paid subs, and on a
+# free page that is a fraction of the reachable list — the same day's fans+following
+# blasts reached ~3,000 recipients (live 2026-08-11). Nothing else is targeted: a
+# userLists send reaches exactly the named lists, so every other audience is
+# excluded by omission.
+# A tuple so a caller can't mutate the house default; copy it into payloads.
+BROADCAST_LISTS: tuple[str, ...] = ("fans", "following")
 
 # One lock per account around the Auto_Exclude sync + OF send: two concurrent
 # broadcasts rewriting the same OF list would attach each other's exclude sets.

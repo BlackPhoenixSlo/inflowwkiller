@@ -69,6 +69,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 
+import audiences
 import ownership
 import vault_ai_to_chatter
 from automation_registry import register
@@ -1124,9 +1125,9 @@ async def _ghost_dark_ids(account_id: str, fan_ids, now: datetime) -> set[int]:
 
 async def _all_fan_ids(account_id: str) -> list[int]:
     """EVERY fan id we know for the account (NO bot/blacklist/buyer filter). Used as
-    the broadcast exclude: a 'message all subscribers' send skips everyone we've
+    the broadcast exclude: a 'message fans + following' send skips everyone we've
     already handled per-fan above (tier-sent, or deliberately dropped as
-    bot/blacklist/buyer), so ONLY the uncached followers get the default-price
+    bot/blacklist/buyer), so ONLY the uncached rest get the default-price
     broadcast — no fan is messaged twice, the blacklist is honoured."""
     async with get_session() as s:
         rows = (await s.execute(
@@ -1343,9 +1344,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         return {"status": "skipped", "reason": "disabled"}
 
     # "Send to everyone": after the per-tier sends to KNOWN fans, fire ONE
-    # default-price broadcast to ALL subscribers (OF-resolved, reaches uncached
-    # followers too), excluding every known fan so nobody is double-sent. Off
-    # until enabled per account (a deploy alone never mass-blasts a sub list).
+    # default-price broadcast to the house audience (fans + following, OF-resolved,
+    # reaches uncached subs too), excluding every known fan so nobody is
+    # double-sent. Off until enabled per account (a deploy alone never mass-blasts
+    # a sub list).
     reach_all = bool(cfg.get("reach_all", False))
     # Pause = don't re-touch a fan messaged in the last N hours (the contact
     # guard). Default 0 = NO pause (send to everyone). Applies to both phases.
@@ -1469,8 +1471,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             log.info("ppv_send ghost-skip account=%s ppv=%s skipped=%d (dark today)",
                      account_id, ppv_id, ghost_skipped)
 
-    # No known fans is only a hard stop when we're NOT also broadcasting to all
-    # subscribers (reach_all): the broadcast can still reach the uncached list.
+    # No known fans is only a hard stop when we're NOT also broadcasting to the
+    # house audience (reach_all): the broadcast can still reach the uncached list.
     # A fan-scoped run (force_ids/only_fan_ids) never broadcasts — the whole point of
     # a scope is that the audience is those fans and nobody else.
     broadcasting = reach_all and not force_ids and not only_fan_ids
@@ -1552,10 +1554,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             sent_cells += 1
             total_recipients += len(fan_ids)
 
-    # ── broadcast: ONE default-price send to ALL subscribers (OF-resolved), with
-    #    EVERY known fan excluded (the per-tier sends above + buyers/bots/blacklist)
-    #    → only the uncached followers get it, at the base "default" price. This is
-    #    how a PPV reaches her whole free-page list without scraping it. ──────────
+    # ── broadcast: ONE default-price send to the house audience (OF-resolved:
+    #    fans + following), with EVERY known fan excluded (the per-tier sends above
+    #    + buyers/bots/blacklist) → only the uncached rest get it, at the base
+    #    "default" price. This is how a PPV reaches her whole free-page list
+    #    without scraping it. ─────────────────────────────────────────────────────
     broadcast = None
     if broadcasting:
         known_ids = await _all_fan_ids(account_id)
@@ -1564,7 +1567,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "media_files": media_ids,
             "previews": _rotate_preview(preview_pool, day_idx),
             "price": bcast_cents / 100,               # the DEFAULT price, clamped
-            "user_lists": ["fans"],                   # ALL active subscribers
+            "user_lists": list(audiences.BROADCAST_LISTS),   # fans + following, nobody else
             "excluded_users": known_ids,              # → Auto_Exclude (no double-send)
             "automation_kind": "ppv_send",
             "automation_ref": str(ppv_id),

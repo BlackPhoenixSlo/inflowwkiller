@@ -41,6 +41,7 @@ import random
 from datetime import datetime, timedelta
 from typing import Any
 
+import audiences
 from automations import rhythm
 
 log = logging.getLogger("chatterly.vault_arc")
@@ -63,14 +64,15 @@ _BAND_CLOSE = (18 * 60, 23 * 60)    # the priced ask
 # moved.
 _DEFAULT_SLEEP = rhythm.DEFAULT_SLEEP
 
-# The tease audience: OF's built-in fans+following lists (server-side fan-out,
-# the same audience the daily premade blasts name) with the default 6h/2h
-# re-touch guards explicitly disarmed — a wall tease goes to EVERYONE. Without
-# an audience `send_mass_message` refuses the payload (empty_audience skip)
-# while the one-shot job is stamped done: a silent no-send. A free mass never
-# counts toward ppv_caps (those count only ppv_send fires).
+# The tease audience: the house fans+following lists (server-side fan-out, the
+# same audience the daily premade blasts and the ppv_send broadcast name) with
+# the default 6h/2h re-touch guards explicitly disarmed — a wall tease goes to
+# EVERYONE. Without an audience `send_mass_message` refuses the payload
+# (empty_audience skip) while the one-shot job is stamped done: a silent
+# no-send. A free mass never counts toward ppv_caps (those count only ppv_send
+# fires).
 TEASE_AUDIENCE: dict[str, Any] = {
-    "user_lists": ["fans", "following"],
+    "user_lists": list(audiences.BROADCAST_LISTS),
     "exclude_replied_hours": 0,
     "exclude_inbound_hours": 0,
 }
