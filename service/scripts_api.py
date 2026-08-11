@@ -366,6 +366,27 @@ def _validate_cfg(cfg: dict) -> dict:
         out["ask_after_fan_msgs"] = max(0, min(100, int(cfg["ask_after_fan_msgs"] or 0)))
     if "smart_pricing_enabled" in cfg:
         out["smart_pricing_enabled"] = bool(cfg["smart_pricing_enabled"])
+    # ── Answer a content-ask with the content (both ship OFF) ──────
+    #
+    # 🚨 These MUST be named here. This validator drops every key it does not
+    # list, and that has silently eaten UI keys twice on this map already — an
+    # operator ticks the box, the save returns 200, and the flag never lands.
+    #
+    # `pack_send_enabled` is the master switch for selling a pack at all;
+    # `pack_on_ask_enabled` is the trigger that answers "send me feet pics" with
+    # a priced pack instead of a sentence. The trigger is inert without the
+    # master (guarded in `plan_pack`/`plan_ask`), so ticking it alone does
+    # nothing — which is why the tab ties them together rather than showing two
+    # independent boxes.
+    if "pack_send_enabled" in cfg:
+        out["pack_send_enabled"] = bool(cfg["pack_send_enabled"])
+    if "pack_on_ask_enabled" in cfg:
+        out["pack_on_ask_enabled"] = bool(cfg["pack_on_ask_enabled"])
+    # The rate card is a BASELINE, not a ceiling (operator ruling 2026-08-11).
+    # This restores the old hard veto for an account that wants it: never charge
+    # more than the attached content is worth.
+    if "value_caps_price" in cfg:
+        out["value_caps_price"] = bool(cfg["value_caps_price"])
     if "rhythm_enabled" in cfg:
         out["rhythm_enabled"] = bool(cfg["rhythm_enabled"])
     if "rhythm_no_sleep" in cfg:

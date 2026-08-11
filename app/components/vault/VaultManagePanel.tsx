@@ -683,7 +683,7 @@ export default function VaultManagePanel() {
               onClick={() => setShowPackPicker(true)}
               disabled={cachedCount === 0}
               className="px-3 py-1.5 rounded-lg text-sm border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
-              title="Triage every feet candidate into rungs, then publish the rungs to her OF vault"
+              title="Triage every feet candidate into rungs, then publish the rungs to the OF vault"
             >
               Feet pack
             </button>

@@ -700,6 +700,202 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
                     media, previews, px, clause, value_cents=value)
 
 
+# ── The vault-wide ask ──────────────────────────────────────────────
+#
+# 🚨 THE GAP THIS CLOSES. Until 2026-08-11 `send_pack_on_ask` refused unless the
+# subject mapped to a CURATED category, and exactly one exists (`feet`). So a
+# man asking for leather, for booty, for "vids for purchase", or saying a bare
+# "show me" could never be sold anything — the resolver found him good media and
+# the sender threw it away. That is the operator's ruling from the same day
+# ("the pool is the curated shelf UNION the whole vault") applied to the SEND
+# path, which had only ever been applied to the POOL.
+ASK_CATEGORY = "ask"          # the attribution bucket — NOT a curated category
+
+
+def ask_clause(media_kinds: list[str], subject: str | None) -> str:
+    """The claim that leads the caption: a count, the media word, and his noun.
+
+    It has to name the MEDIA. "6 booty" is not English and, worse, is not a
+    promise he can hold her to — and OF truncates a long caption in the
+    chat-list preview, so this is often the only thing he reads before deciding
+    whether to unlock.
+
+    No subject is a legitimate answer here ("show me" names nothing), and the
+    clause simply drops the noun rather than inventing one.
+    """
+    vids = sum(1 for k in media_kinds if str(k or "").lower() in ("video", "gif"))
+    pics = len(media_kinds) - vids
+    if vids and pics:
+        body = f"{pics} pic{'s' * (pics > 1)} + {vids} vid{'s' * (vids > 1)}"
+    elif vids:
+        body = f"{vids} vid{'s' * (vids > 1)}"
+    else:
+        body = f"{pics} pic{'s' * (pics > 1)}"
+    noun = " ".join(str(subject or "").split())[:40]
+    return f"{body} of {noun}" if noun else body
+
+
+async def ensure_ask_item(account_id: str) -> CatalogItem:
+    """ONE reusable `CatalogItem` for vault-wide ask sends, per account.
+
+    `ContentOffer.item_id` is a non-nullable FK, so a send with no row cannot be
+    attributed and cannot answer "did answering his ask make money". One row per
+    account rather than one per subject: subjects are the fan's own words and
+    unbounded, and a table growing a row per phrase a man types is a leak.
+
+    `enabled=False` for the same reason `ensure_pack_item` sets it —
+    `_offerable_for_fan` puts every enabled standalone into every fan's
+    manifest, and this must only ever reach someone who asked.
+    """
+    tag = "rung:vault-ask"
+    async with get_session() as s:
+        row = (await s.execute(
+            select(CatalogItem).where(
+                CatalogItem.account_id == str(account_id),
+                CatalogItem.script_id.is_(None),
+                CatalogItem.tags.like(f"%{tag}%"))
+        )).scalars().first()
+        if row is None:
+            row = CatalogItem(
+                account_id=str(account_id), script_id=None, kind="image_set",
+                label="vault · asked for", enabled=False,
+                # COUNT-FREE and SUBJECT-FREE: one row serves every ask, so any
+                # number or noun stored here is a lie to most of the fans who
+                # receive it. Both live only in the rendered clause.
+                description_for_ai="content from her vault, picked to match what "
+                                   "he asked for",
+                price_cents=RUNG_STICKER_CENTS.get("nude", 5900),
+                tags=json.dumps([tag]))
+            s.add(row)
+            await s.flush()
+        return row
+
+
+async def audit_ask(account_id: str, media: list[int], clause: str,
+                    company: bool) -> list[str]:
+    """What can honestly be checked when there is no rung to check against.
+
+    `audit_pack`'s rules 2 and 3 are rung-membership rules and have no meaning
+    here — there is no shelf, and inventing one would be theatre. Three things
+    still hold and all three have drawn blood before:
+
+      1. the count in the clause is the count he receives (the claim IS the
+         contract, and a caption that over-counts is the 2026-07-31 shape);
+      2. every id is still a live `VaultItem` — a soft-deleted id is charged for
+         and never arrives;
+      3. nobody else is in it unless he asked (2026-08-11, "very important").
+    """
+    bad: list[str] = []
+    if not media:
+        return ["nothing attached"]
+    n = len(media)
+    lead = clause.strip().split(" ", 1)[0]
+    counted = 0
+    for tok in re.findall(r"\d+", clause):
+        counted += int(tok)
+    if counted != n:
+        bad.append(f"clause claims {counted or lead!r}, attaching {n}")
+
+    async with get_session() as s:
+        live = {int(m) for m in (await s.execute(
+            select(VaultItem.media_id).where(
+                VaultItem.account_id == str(account_id),
+                VaultItem.media_id.in_(media),
+                VaultItem.removed_at.is_(None))
+        )).scalars().all()}
+    dead = [m for m in media if m not in live]
+    if dead:
+        bad.append(f"{len(dead)} dead media: {dead[:4]}")
+
+    if not company:
+        solo = set(await content_resolver.solo_only(account_id, media))
+        others = [m for m in media if m not in solo]
+        if others:
+            bad.append(f"{len(others)} with someone else in them: {others[:4]}")
+    return bad
+
+
+async def plan_ask(account_id: str, fan_id: int,
+                   contract: content_resolver.Contract, *,
+                   cfg: dict | None = None) -> PackPlan:
+    """A priced pack drawn from the WHOLE VAULT, for an ask with no curated rung.
+
+    Mirrors `plan_pack` step for step — same price ladder, same value
+    composition, same spend ceiling — and differs in exactly two places: the
+    available set comes from the resolver instead of a shelf, and the claim
+    clause is built from his own noun instead of an authored rung phrase.
+    """
+    cfg = cfg or {}
+    empty = PackPlan(str(account_id), int(fan_id), ASK_CATEGORY, "", None,
+                     [], [], 0, "")
+    if not cfg.get("pack_send_enabled"):
+        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_DISABLED})
+    lang = str(cfg.get("language") or "en").strip().lower()
+    if lang not in PACK_LANGUAGES:
+        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_LANGUAGE,
+                           "detail": lang})
+
+    bought = await _bought_media(account_id, fan_id)
+    # MAX_ITEMS wide: the resolver ranks, and composition decides how much of
+    # that ranking the price actually buys.
+    res = await content_resolver.resolve(
+        str(account_id), int(fan_id), count=MAX_ITEMS, seen=bought,
+        contract=contract, require_curated=False)
+    if not res.ok:
+        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_RESOLVER,
+                           "detail": res.refusal or ""})
+
+    _cap, max_tier = await spend_bounds(account_id, fan_id)
+    avail_ids = await _rank_by_tier(account_id, res.media_ids, max_tier)
+    if len(avail_ids) < MIN_ITEMS:
+        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_TOO_THIN,
+                           "detail": f"{len(avail_ids)} un-bought"})
+
+    item = await ensure_ask_item(account_id)
+    quoted = await quote_pack(account_id, fan_id, item, len(avail_ids))
+    if quoted is None:
+        return PackPlan(**{**empty.__dict__, "item_id": item.id,
+                           "refusal": REFUSE_NO_PRICE})
+    px, _flat_n = quoted
+
+    media, value = await compose_by_value(account_id, avail_ids, px)
+    if len(media) < MIN_ITEMS:
+        return PackPlan(**{**empty.__dict__, "item_id": item.id,
+                           "refusal": REFUSE_TOO_THIN,
+                           "detail": f"{len(media)} composable"})
+    if value < px and bool(cfg.get("value_caps_price")):
+        px = max(upsell.OF_PRICE_FLOOR_CENTS, value)
+
+    kinds = await _kinds_of(account_id, media)
+    clause = ask_clause([kinds.get(m, "photo") for m in media], contract.subject)
+    # ⚠️ No previews. `plan_pack` draws them from the `tease` rung, and a
+    # vault-wide ask has no rung to draw from. Attaching an arbitrary vault item
+    # as a free preview would give away payoff — audit rule 3, in spirit. The
+    # cost is that he sees OF's own blur instead of a chosen frame, which is
+    # worth revisiting once there is a tease shelf per subject.
+    bad = await audit_ask(account_id, media, clause, contract.company)
+    if bad:
+        log.warning("ask audit REFUSED account=%s fan=%s: %s",
+                    account_id, fan_id, "; ".join(bad))
+        return PackPlan(**{**empty.__dict__, "item_id": item.id, "price_cents": px,
+                           "clause": clause, "refusal": REFUSE_AUDIT,
+                           "detail": "; ".join(bad)})
+    return PackPlan(str(account_id), int(fan_id), ASK_CATEGORY, "", item.id,
+                    media, [], px, clause, value_cents=value)
+
+
+async def _kinds_of(account_id: str, media: list[int]) -> dict[int, str]:
+    if not media:
+        return {}
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.kind).where(
+                VaultItem.account_id == str(account_id),
+                VaultItem.media_id.in_(media))
+        )).all()
+    return {int(m): str(k or "photo") for m, k in rows}
+
+
 def compose_caption(clause: str, voice_line: str | None) -> str:
     """Claim clause first, then her reply to the thread.
 
@@ -747,9 +943,6 @@ async def send_pack(client, account_id: str, fan_id: int, category: str,
     Recording the shelf would stamp every item sent and, on purchase, owned —
     silently deleting every future sale from this rung.
     """
-    from attribution import write_outbound_attribution      # local: import cycle
-    from .ai_chatter import _record_offer, _record_vault_sends
-
     cfg = cfg or {}
     plan = await plan_pack(account_id, fan_id, category, rung, cfg=cfg,
                            company=company)
@@ -759,6 +952,27 @@ async def send_pack(client, account_id: str, fan_id: int, category: str,
         return {"status": "refused", "reason": plan.refusal, "detail": plan.detail,
                 "price_cents": plan.price_cents, "n": len(plan.media)}
 
+    return await _deliver(
+        client, plan, voice_line=voice_line, dry_run=dry_run,
+        # The audit runs AGAIN immediately before the wire. Folder membership is
+        # mutable and this map's own re-triage moved 19 items after the fact: a
+        # pack that passed at plan time can be a lie by send time.
+        reaudit=lambda: audit_pack(account_id, category, rung,
+                                   plan.media + plan.previews, plan.previews))
+
+
+async def _deliver(client, plan: PackPlan, *, voice_line: str | None,
+                   dry_run: bool, reaudit) -> dict:
+    """The wire, shared by every pack path.
+
+    Extracted when the vault-wide ask arrived: two senders that both mint a PPV,
+    write attribution, stamp vault sends and record an offer WILL drift, and the
+    half that drifts is the half that stops being attributed.
+    """
+    from attribution import write_outbound_attribution      # local: import cycle
+    from .ai_chatter import _record_offer, _record_vault_sends
+
+    account_id, fan_id = plan.account_id, plan.fan_id
     caption = compose_caption(plan.clause, voice_line)
     if dry_run:
         return {"status": "dry_run", "price_cents": plan.price_cents,
@@ -766,11 +980,7 @@ async def send_pack(client, account_id: str, fan_id: int, category: str,
                 "previews": plan.previews, "caption": caption,
                 "item_id": plan.item_id}
 
-    # The audit runs AGAIN here, immediately before the wire. Folder membership
-    # is mutable and this map's own re-triage moved 19 items after the fact: a
-    # pack that passed at plan time can be a lie by send time.
-    bad = await audit_pack(account_id, category, rung,
-                           plan.media + plan.previews, plan.previews)
+    bad = await reaudit()
     if bad:
         log.warning("pack audit REFUSED AT SEND account=%s fan=%s: %s",
                     account_id, fan_id, "; ".join(bad))
@@ -806,8 +1016,8 @@ async def send_pack(client, account_id: str, fan_id: int, category: str,
                         quoted_cents=plan.price_cents)
 
     log.info("pack SENT account=%s fan=%s %s-%s n=%s px=%s msg=%s",
-             account_id, fan_id, category, rung, len(plan.media),
-             plan.price_cents, msg_id)
+             account_id, fan_id, plan.category, plan.rung or "-",
+             len(plan.media), plan.price_cents, msg_id)
     return {"status": "ok", "message_id": int(msg_id), "item_id": plan.item_id,
             "price_cents": plan.price_cents, "n": len(plan.media),
             "media": plan.media, "previews": plan.previews, "caption": caption}
@@ -840,6 +1050,27 @@ async def _has_bought_from(account_id: str, fan_id: int, category: str) -> bool:
     return False
 
 
+async def send_ask(client, account_id: str, fan_id: int,
+                   contract: content_resolver.Contract, *,
+                   cfg: dict | None = None,
+                   voice_line: str | None = None,
+                   dry_run: bool = False) -> dict:
+    """Sell him what he asked for, drawn from the whole vault. One call."""
+    cfg = cfg or {}
+    if not cfg.get("pack_send_enabled"):
+        return {"status": "refused", "reason": REFUSE_DISABLED}
+    plan = await plan_ask(account_id, fan_id, contract, cfg=cfg)
+    if not plan.ok:
+        log.info("ask refused account=%s fan=%s subject=%r: %s %s",
+                 account_id, fan_id, contract.subject, plan.refusal, plan.detail)
+        return {"status": "refused", "reason": plan.refusal, "detail": plan.detail,
+                "price_cents": plan.price_cents, "n": len(plan.media)}
+    return await _deliver(
+        client, plan, voice_line=voice_line, dry_run=dry_run,
+        reaudit=lambda: audit_ask(account_id, plan.media, plan.clause,
+                                  contract.company))
+
+
 async def send_pack_on_ask(client, account_id: str, fan_id: int, *,
                            cfg: dict | None = None,
                            voice_line: str | None = None,
@@ -866,9 +1097,26 @@ async def send_pack_on_ask(client, account_id: str, fan_id: int, *,
         return {"status": "refused", "reason": REFUSE_DISABLED}
 
     contract = await content_resolver.read_contract(str(account_id), int(fan_id))
-    if not contract.category:
+    if not contract.asked:
         return {"status": "refused", "reason": content_resolver.NO_ASK,
                 "detail": contract.subject or ""}
+    if contract.custom_request:
+        # He described a shoot. The resolver hands back the nearest real things
+        # so she can say "i don't have that, but check this" — that is a REPLY,
+        # not a sale, and it belongs to the caller, not to this sender.
+        return {"status": "refused", "reason": content_resolver.CUSTOM_REQUEST,
+                "detail": contract.subject or ""}
+
+    # 🚨 No curated category is the COMMON case, not the error case. Exactly one
+    # category exists (`feet`), so before 2026-08-11 a man asking for leather,
+    # for booty, for "vids for purchase", or saying a bare "show me" was refused
+    # here while the resolver was finding him good media two calls away.
+    if not contract.category:
+        res = await send_ask(client, account_id, fan_id, contract, cfg=cfg,
+                             voice_line=voice_line, dry_run=dry_run)
+        res.setdefault("category", ASK_CATEGORY)
+        res.setdefault("asked", contract.quote)
+        return res
 
     category = contract.category
     rung = contract.rung if contract.rung in (DEFAULT_RUNG, LADDER_RUNG) else DEFAULT_RUNG

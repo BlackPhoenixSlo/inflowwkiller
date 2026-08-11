@@ -129,6 +129,21 @@ export interface AiChatterConfig {
   /** Content-derived price bands + the post-purchase ladder. Requires the gate
    *  above; the server forces it back off without it. OFF by default. */
   smart_pricing_enabled?: boolean;
+
+  /** ── Answer a content-ask with the CONTENT (both ship OFF) ─────────
+   *  `pack_send_enabled` is the master switch for selling a pack at all.
+   *  `pack_on_ask_enabled` is the trigger: when he asks to see something, reply
+   *  with a priced pack drawn from the vault instead of a sentence. The trigger
+   *  is inert without the master (guarded server-side in plan_pack/plan_ask), so
+   *  the tab writes both together rather than offering two boxes that can
+   *  disagree. */
+  pack_send_enabled?: boolean;
+  pack_on_ask_enabled?: boolean;
+  /** The rate card is a BASELINE, not a ceiling (operator ruling 2026-08-11) —
+   *  the upseller may quote above it for a fan whose history supports it. This
+   *  restores the hard veto: never charge more than the attached content is
+   *  worth by the card. OFF by default. */
+  value_caps_price?: boolean;
   /** Hard takeover: once a fan is in an active sale, the seller drives his thread
    *  regardless of the base chatter mode (bypasses backup-SLA + closer-skip), then
    *  hands back via the cooldown. Inert unless the gate is on. */
