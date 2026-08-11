@@ -254,7 +254,9 @@ async def _values_for(account_id: str, media: list[int]) -> dict[int, int]:
 
 
 async def compose_by_value(account_id: str, avail_ids: list[int],
-                           target_cents: int) -> tuple[list[int], int]:
+                           target_cents: int,
+                           kinds_by_id: dict[int, str] | None = None
+                           ) -> tuple[list[int], int]:
     """Fill `target_cents` with real content, then pad toward the soft target.
 
     Returns `(media, value_cents)`. `value_cents` may be LESS than the target —
@@ -269,6 +271,8 @@ async def compose_by_value(account_id: str, avail_ids: list[int],
          Filler never raises the price; it raises the count toward 7.
     """
     values = await _values_for(account_id, avail_ids)
+    kinds_by_id = (kinds_by_id if kinds_by_id is not None
+                   else await _kinds_of(account_id, avail_ids))
     payoff = [m for m in avail_ids if values.get(m, 0) > FILLER_MAX_CENTS]
     filler = [m for m in avail_ids if values.get(m, 0) <= FILLER_MAX_CENTS]
 
@@ -287,6 +291,29 @@ async def compose_by_value(account_id: str, avail_ids: list[int],
         chosen.append(mid)
         total += values.get(mid, 0)
 
+    # ── One moving thing, if the shelf has one ─────────────────────
+    #
+    # Operator, 2026-08-11, on a 7-item $52 pack of stills: "4 picks for 44 is a
+    # bit much, maybe one short vid if we have." A stack of photos at that price
+    # reads thin however the rate card scores it — a clip is what makes it feel
+    # like a set rather than a contact sheet.
+    #
+    # Cheapest qualifying clip, and only when the pack is otherwise ALL stills:
+    # this is about the shape of the pack, not about spending more. The pilot
+    # vault has 252 clips of 10s or under, so the swap is nearly always available.
+    if chosen and not any(kinds_by_id.get(m) in ("video", "gif") for m in chosen):
+        clip = next((m for m in avail_ids
+                     if m not in chosen
+                     and kinds_by_id.get(m) in ("video", "gif")), None)
+        if clip is not None:
+            # Swap out the WEAKEST still rather than appending: appending would
+            # quietly raise what he gets for the same price every single time,
+            # which is the inventory burn the filler-only rule just closed.
+            weakest = min(chosen, key=lambda m: values.get(m, 0))
+            if values.get(clip, 0) >= values.get(weakest, 0):
+                chosen[chosen.index(weakest)] = clip
+                total += values.get(clip, 0) - values.get(weakest, 0)
+
     # Pad toward the soft target at NO extra charge — from FILLER ONLY.
     #
     # 🚨 This used to pad from `avail_ids`, which meant the free padding could be
@@ -303,16 +330,41 @@ async def compose_by_value(account_id: str, avail_ids: list[int],
     return chosen, total
 
 
-def render_clause(category: str, rung: str, n: int) -> str:
+def render_clause(category: str, rung: str, n: int,
+                  kinds: list[str] | None = None) -> str:
     """The claim clause — rendered, never typed, never omitted.
 
     Grammar is `"{n} {rung-qualified ask noun}"`, the rung folded INTO the noun
     rather than trailing in a dash-clause, because OF truncates a long caption in
     the chat-list preview: a voice-first caption shows him the flirt and hides
     the subject at exactly the moment he decides whether to open it.
+
+    🚨 `kinds` exists because this said "pics" about packs containing VIDEO.
+    Caught 2026-08-11 in a live dry-run: a 7-item feet pack held 5 photos and a
+    4-second clip and was captioned "7 bare feet pics". `ASK_NOUN` is written
+    per-category and hardcodes the word — the shelves were stills when it was
+    written, and the whole-vault work put clips on them. That is a caption
+    claiming something other than what is attached, which is the precise class
+    of lie that preceded two account deletions, and no audit rule caught it
+    because rules 1-5 check MEMBERSHIP, never the noun.
+
+    Passing nothing keeps the old wording, for the callers that genuinely know
+    the pack is stills.
     """
     phrase = RUNG_PHRASES.get((category, rung))
     noun = ASK_NOUN.get(category, f"{category} pics")
+    vids = sum(1 for k in (kinds or []) if str(k or "").lower() in ("video", "gif"))
+    if vids:
+        # Name both media, with the authored noun's own media word stripped:
+        # "feet pics" + a clip becomes "5 pics + 2 vids of bare feet".
+        pics = len(kinds or []) - vids
+        subject = re.sub(r"\s*\b(pics?|photos?|videos?|vids?)\b\s*$", "",
+                         noun).strip()
+        head = (f"{pics} pic{'s' * (pics > 1)} + {vids} vid{'s' * (vids > 1)}"
+                if pics else f"{vids} vid{'s' * (vids > 1)}")
+        if not subject:
+            return head
+        return f"{head} of {'bare ' if rung == 'nude' else ''}{subject}"
     if rung == "nude":
         return f"{n} bare {noun}"
     if phrase:
@@ -684,7 +736,9 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
     # they join the attached set while staying out of the paid count.
     attached = media + previews
 
-    clause = render_clause(category, rung, len(media))
+    kinds = await _kinds_of(account_id, media)
+    clause = render_clause(category, rung, len(media),
+                           [kinds.get(m, "photo") for m in media])
     warn = await mirror_warning(account_id)
     if warn:
         log.info("pack plan account=%s fan=%s: %s", account_id, fan_id, warn)

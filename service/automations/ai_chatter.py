@@ -471,6 +471,24 @@ _DEFAULTS: dict = {
     # gating it deletes it. On a live thread the same signal is an 18x per-send
     # lift (12.41% vs 0.67%). Hence: 1:1 only.
     "qualification_gate_enabled": False,
+    # ── Answer a content-ask with the CONTENT (house default ON 2026-08-11) ──
+    #
+    # Operator call after reviewing 33 real picks and 22 real silences: "make all
+    # this enabled by default, all on."
+    #
+    # ⚠️ This is the ONE default in this file that spends money on a turn nobody
+    # asked an operator about, so the reasoning matters. It differs from
+    # `force_ask` — which ships OFF because it converts a chat account into a
+    # selling account — in that it never initiates. It fires only when the fan
+    # has ASKED for content in his own words, and every refusal falls through to
+    # the ordinary reply. So the worst case is the behaviour that already ships,
+    # and the best case is that he gets the thing he asked for.
+    #
+    # It is also self-limiting in a way the other offer paths are not: the
+    # resolver refuses when nothing fits, the audit refuses when the caption
+    # would lie, and `_pack_this_fan` bounds it to one per fan per tick.
+    "pack_send_enabled": True,
+    "pack_on_ask_enabled": True,
     # force_ask: the OFFER is emitted by the MODEL (an offer marker it may or may not
     # write). So a fan the gate has already cleared, with a priced manifest in front
     # of the model, still gets pure chat whenever the model declines to sell — which
