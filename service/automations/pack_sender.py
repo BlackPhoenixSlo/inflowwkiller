@@ -58,7 +58,7 @@ import json
 import logging
 import random
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
@@ -283,7 +283,7 @@ async def compose_by_value(account_id: str, avail_ids: list[int],
     """
     values = await _values_for(account_id, avail_ids)
     kinds_by_id = (kinds_by_id if kinds_by_id is not None
-                   else await _kinds_of(account_id, avail_ids))
+                   else await content_resolver.kind_of(account_id, avail_ids))
     payoff = [m for m in avail_ids if values.get(m, 0) > FILLER_MAX_CENTS]
     filler = [m for m in avail_ids if values.get(m, 0) <= FILLER_MAX_CENTS]
 
@@ -666,6 +666,89 @@ async def quote_pack(account_id: str, fan_id: int, item: CatalogItem,
 
 # ── Planning a send ─────────────────────────────────────────────────
 
+# ── The shared spine ────────────────────────────────────────────────
+
+def _guard(cfg: dict, empty: PackPlan) -> PackPlan | None:
+    """The two refusals every planner owes before it touches the vault."""
+    if not cfg.get("pack_send_enabled"):
+        return replace(empty, refusal=REFUSE_DISABLED)
+    lang = str(cfg.get("language") or "en").strip().lower()
+    if lang not in PACK_LANGUAGES:
+        return replace(empty, refusal=REFUSE_LANGUAGE, detail=lang)
+    return None
+
+
+@dataclass(frozen=True)
+class _Priced:
+    """A priced, composed pack — or the refusal that stopped it."""
+    media: list[int]
+    price_cents: int
+    value_cents: int
+    item_id: int | None
+    refusal: PackPlan | None = None
+
+
+async def _price_and_compose(account_id: str, fan_id: int, avail_ids: list[int],
+                             item: CatalogItem, cfg: dict,
+                             empty: PackPlan) -> _Priced:
+    """Quote the fan, then fill the quote with content. Identical for every source.
+
+    🚨 This is the half `plan_ask` used to COPY from `plan_pack`. Ten of the two
+    functions' fourteen steps were byte-identical, and the duplication had
+    already drifted inside one session: the `media_kind` fix landed on the pack
+    path only, and the "priced above the rate card" log existed in one copy.
+    Two sources of media, ONE pricing rule.
+    """
+    quoted = await quote_pack(account_id, fan_id, item, len(avail_ids))
+    if quoted is None:
+        return _Priced([], 0, 0, item.id,
+                       replace(empty, item_id=item.id, refusal=REFUSE_NO_PRICE))
+    px, _flat_n = quoted
+
+    # Compose by VALUE, not by a flat count: a 40-second explicit clip is worth
+    # more than eight tease stills, and the fan should get either — but only if
+    # what he is charged is actually covered by what is attached.
+    media, value = await compose_by_value(account_id, avail_ids, px)
+    if len(media) < MIN_ITEMS:
+        return _Priced([], px, value, item.id,
+                       replace(empty, item_id=item.id, refusal=REFUSE_TOO_THIN,
+                               detail=f"{len(media)} composable"))
+    # Operator ruling 2026-08-11: "we can price more for that content if the AI
+    # upseller chooses." So the rate card is a BASELINE, not a ceiling — the
+    # upseller knows this fan's history and willingness and may quote above it.
+    #
+    # ⚠️ What ticket 06 actually protected against was charging a lot for FEW
+    # items ($19.67 an item, 3 items, an account deleted). That protection now
+    # lives in the COUNT, not the price: MIN_ITEMS is a hard floor, composition
+    # pads toward SOFT_TARGET_ITEMS, and the caption states the real number.
+    #
+    # `value_caps_price` restores the old hard veto for anyone who wants it.
+    if value < px and bool(cfg.get("value_caps_price")):
+        px = max(upsell.OF_PRICE_FLOOR_CENTS, value)
+    if value < px:
+        log.info("pack priced ABOVE rate card account=%s fan=%s px=%s value=%s "
+                 "ratio=%.2f n=%s", account_id, fan_id, px, value,
+                 px / max(1, value), len(media))
+    return _Priced(media, px, value, item.id)
+
+
+async def _available(account_id: str, fan_id: int, media_ids: list[int], *,
+                     company: bool, media_kind: str | None = None) -> list[int]:
+    """The house rules every source obeys, in the order they must run.
+
+    KIND is a promise, so it narrows before anything is priced. SOLO is applied
+    even to a curated shelf, because an operator who filed a photo under `feet`
+    said nothing about who else was in it. TIER is last because it ORDERS rather
+    than excludes — see `_rank_by_tier`.
+    """
+    if media_kind:
+        media_ids = await _filter_kind(account_id, media_ids, media_kind)
+    if not company:
+        media_ids = await content_resolver.solo_only(account_id, media_ids)
+    _cap, max_tier = await spend_bounds(account_id, fan_id)
+    return await _rank_by_tier(account_id, media_ids, max_tier)
+
+
 async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
                     cfg: dict | None = None,
                     media_kind: str | None = None,
@@ -675,94 +758,54 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
     Deliberately separable from `send_pack` so the operator can dry-run the whole
     decision — price, count, exact media, the rendered caption clause — before a
     single message goes out.
+
+    A CURATED source: the media is one rung of one operator-built shelf, and the
+    claim is an authored rung phrase. Everything between "here are the ids" and
+    "here is the price" is `_price_and_compose`, shared with `plan_ask`.
     """
     cfg = cfg or {}
     empty = PackPlan(str(account_id), int(fan_id), category, rung, None, [], [], 0, "")
-
-    if not cfg.get("pack_send_enabled"):
-        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_DISABLED})
-
-    lang = str(cfg.get("language") or "en").strip().lower()
-    if lang not in PACK_LANGUAGES:
-        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_LANGUAGE, "detail": lang})
+    stop = _guard(cfg, empty)
+    if stop is not None:
+        return stop
 
     shelf = await _shelf_media(account_id, category, rung)
     if not shelf:
-        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_NO_SHELF})
-
+        return replace(empty, refusal=REFUSE_NO_SHELF)
     bought = await _bought_media(account_id, fan_id)
-    avail_ids = [m for m in shelf if m not in bought]
-    # A promised media KIND narrows the shelf before the price is quoted, so a
-    # "send me a video" ask can never be filled with photos.
-    avail_ids = await _filter_kind(account_id, avail_ids, media_kind)
-    # SOLO unless he named someone else. A curated shelf is filed by SUBJECT,
-    # so an operator putting a photo on the feet shelf said nothing about who
-    # else is in it — the rule has to be applied here too, not assumed away.
-    if not company:
-        avail_ids = await content_resolver.solo_only(account_id, avail_ids)
-    # ...and a fan who has bought nothing is served the tame end of the shelf
-    # first. Ordering, not exclusion — see `_rank_by_tier`.
-    _cap, max_tier = await spend_bounds(account_id, fan_id)
-    avail_ids = await _rank_by_tier(account_id, avail_ids, max_tier)
+    avail_ids = await _available(account_id, fan_id,
+                                 [m for m in shelf if m not in bought],
+                                 company=company, media_kind=media_kind)
     if len(avail_ids) < MIN_ITEMS:
-        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_TOO_THIN,
-                           "detail": f"{len(avail_ids)} un-bought"})
+        return replace(empty, refusal=REFUSE_TOO_THIN,
+                       detail=f"{len(avail_ids)} un-bought")
 
     item = await ensure_pack_item(account_id, category, rung)
-    quoted = await quote_pack(account_id, fan_id, item, len(avail_ids))
-    if quoted is None:
-        return PackPlan(**{**empty.__dict__, "item_id": item.id,
-                           "refusal": REFUSE_NO_PRICE})
-    px, _flat_n = quoted
+    priced = await _price_and_compose(account_id, fan_id, avail_ids, item, cfg, empty)
+    if priced.refusal is not None:
+        return priced.refusal
 
-    # Compose by VALUE, not by a flat count: a 40-second explicit clip is worth
-    # more than eight tease stills, and the fan should get either — but only if
-    # what he is charged is actually covered by what is attached.
-    media, value = await compose_by_value(account_id, avail_ids, px)
-    if len(media) < MIN_ITEMS:
-        return PackPlan(**{**empty.__dict__, "item_id": item.id,
-                           "refusal": REFUSE_TOO_THIN,
-                           "detail": f"{len(media)} composable"})
-    # Operator ruling 2026-08-11: "we can price more for that content if the AI
-    # upseller chooses." So the rate card is a BASELINE, not a ceiling — the
-    # upseller knows this fan's history and willingness and may quote above it.
-    #
-    # ⚠️ What ticket 06 actually protected against was charging a lot for FEW
-    # items ($19.67 an item, 3 items, an account deleted). That protection now
-    # lives in the COUNT, not the price: MIN_ITEMS is a hard floor, composition
-    # pads toward SOFT_TARGET_ITEMS, and the caption states the real number. So
-    # a high price arrives with a full pack rather than a thin one.
-    #
-    # `value_caps_price` restores the old hard veto for anyone who wants it.
-    if value < px and bool(cfg.get("value_caps_price")):
-        px = max(upsell.OF_PRICE_FLOOR_CENTS, value)
-    if value < px:
-        log.info("pack priced ABOVE rate card account=%s fan=%s px=%s value=%s "
-                 "ratio=%.2f n=%s", account_id, fan_id, px, value,
-                 px / max(1, value), len(media))
     tease = await _shelf_media(account_id, category, "tease")
-    previews = [m for m in tease if m not in media][:PREVIEW_MAX]
+    previews = [m for m in tease if m not in priced.media][:PREVIEW_MAX]
     # Previews ride FREE inside the send and are never stamped owned, so they may
     # repeat across sends. `previews ⊆ media` is what the audit's rule 1 wants, so
     # they join the attached set while staying out of the paid count.
-    attached = media + previews
-
-    kinds = await _kinds_of(account_id, media)
-    clause = render_clause(category, rung, len(media),
-                           [kinds.get(m, "photo") for m in media])
+    kinds = await content_resolver.kind_of(account_id, priced.media)
+    clause = render_clause(category, rung, len(priced.media),
+                           [kinds.get(m, "photo") for m in priced.media])
     warn = await mirror_warning(account_id)
     if warn:
         log.info("pack plan account=%s fan=%s: %s", account_id, fan_id, warn)
-    bad = await audit_pack(account_id, category, rung, attached, previews)
+    bad = await audit_pack(account_id, category, rung,
+                           priced.media + previews, previews)
     if bad:
         log.warning("pack audit REFUSED account=%s fan=%s %s-%s: %s",
                     account_id, fan_id, category, rung, "; ".join(bad))
-        return PackPlan(**{**empty.__dict__, "item_id": item.id, "price_cents": px,
-                           "clause": clause, "refusal": REFUSE_AUDIT,
-                           "detail": "; ".join(bad)})
-
+        return replace(empty, item_id=item.id, price_cents=priced.price_cents,
+                       clause=clause, refusal=REFUSE_AUDIT, detail="; ".join(bad))
     return PackPlan(str(account_id), int(fan_id), category, rung, item.id,
-                    media, previews, px, clause, value_cents=value)
+                    priced.media, previews, priced.price_cents, clause,
+                    value_cents=priced.value_cents)
 
 
 # ── The vault-wide ask ──────────────────────────────────────────────
@@ -898,20 +941,18 @@ async def plan_ask(account_id: str, fan_id: int,
                    cfg: dict | None = None) -> PackPlan:
     """A priced pack drawn from the WHOLE VAULT, for an ask with no curated rung.
 
-    Mirrors `plan_pack` step for step — same price ladder, same value
-    composition, same spend ceiling — and differs in exactly two places: the
-    available set comes from the resolver instead of a shelf, and the claim
-    clause is built from his own noun instead of an authored rung phrase.
+    The same spine as `plan_pack` — same price ladder, same value composition,
+    same house rules — differing only in where the ids come from (the resolver,
+    not a shelf), which catalog row carries attribution, and how the claim is
+    made. `media_kind` is not passed to `_available` here because the resolver
+    has already enforced it as part of the contract.
     """
     cfg = cfg or {}
     empty = PackPlan(str(account_id), int(fan_id), ASK_CATEGORY, "", None,
                      [], [], 0, "")
-    if not cfg.get("pack_send_enabled"):
-        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_DISABLED})
-    lang = str(cfg.get("language") or "en").strip().lower()
-    if lang not in PACK_LANGUAGES:
-        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_LANGUAGE,
-                           "detail": lang})
+    stop = _guard(cfg, empty)
+    if stop is not None:
+        return stop
 
     bought = await _bought_media(account_id, fan_id)
     # MAX_ITEMS wide: the resolver ranks, and composition decides how much of
@@ -920,58 +961,36 @@ async def plan_ask(account_id: str, fan_id: int,
         str(account_id), int(fan_id), count=MAX_ITEMS, seen=bought,
         contract=contract, require_curated=False)
     if not res.ok:
-        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_RESOLVER,
-                           "detail": res.refusal or ""})
+        return replace(empty, refusal=REFUSE_RESOLVER, detail=res.refusal or "")
 
-    _cap, max_tier = await spend_bounds(account_id, fan_id)
-    avail_ids = await _rank_by_tier(account_id, res.media_ids, max_tier)
+    avail_ids = await _available(account_id, fan_id, res.media_ids,
+                                 company=contract.company)
     if len(avail_ids) < MIN_ITEMS:
-        return PackPlan(**{**empty.__dict__, "refusal": REFUSE_TOO_THIN,
-                           "detail": f"{len(avail_ids)} un-bought"})
+        return replace(empty, refusal=REFUSE_TOO_THIN,
+                       detail=f"{len(avail_ids)} un-bought")
 
     item = await ensure_ask_item(account_id)
-    quoted = await quote_pack(account_id, fan_id, item, len(avail_ids))
-    if quoted is None:
-        return PackPlan(**{**empty.__dict__, "item_id": item.id,
-                           "refusal": REFUSE_NO_PRICE})
-    px, _flat_n = quoted
+    priced = await _price_and_compose(account_id, fan_id, avail_ids, item, cfg, empty)
+    if priced.refusal is not None:
+        return priced.refusal
 
-    media, value = await compose_by_value(account_id, avail_ids, px)
-    if len(media) < MIN_ITEMS:
-        return PackPlan(**{**empty.__dict__, "item_id": item.id,
-                           "refusal": REFUSE_TOO_THIN,
-                           "detail": f"{len(media)} composable"})
-    if value < px and bool(cfg.get("value_caps_price")):
-        px = max(upsell.OF_PRICE_FLOOR_CENTS, value)
-
-    kinds = await _kinds_of(account_id, media)
-    clause = ask_clause([kinds.get(m, "photo") for m in media], contract.subject)
+    kinds = await content_resolver.kind_of(account_id, priced.media)
+    clause = ask_clause([kinds.get(m, "photo") for m in priced.media],
+                        contract.subject)
     # ⚠️ No previews. `plan_pack` draws them from the `tease` rung, and a
     # vault-wide ask has no rung to draw from. Attaching an arbitrary vault item
     # as a free preview would give away payoff — audit rule 3, in spirit. The
     # cost is that he sees OF's own blur instead of a chosen frame, which is
     # worth revisiting once there is a tease shelf per subject.
-    bad = await audit_ask(account_id, media, clause, contract.company)
+    bad = await audit_ask(account_id, priced.media, clause, contract.company)
     if bad:
         log.warning("ask audit REFUSED account=%s fan=%s: %s",
                     account_id, fan_id, "; ".join(bad))
-        return PackPlan(**{**empty.__dict__, "item_id": item.id, "price_cents": px,
-                           "clause": clause, "refusal": REFUSE_AUDIT,
-                           "detail": "; ".join(bad)})
+        return replace(empty, item_id=item.id, price_cents=priced.price_cents,
+                       clause=clause, refusal=REFUSE_AUDIT, detail="; ".join(bad))
     return PackPlan(str(account_id), int(fan_id), ASK_CATEGORY, "", item.id,
-                    media, [], px, clause, value_cents=value)
-
-
-async def _kinds_of(account_id: str, media: list[int]) -> dict[int, str]:
-    if not media:
-        return {}
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(VaultItem.media_id, VaultItem.kind).where(
-                VaultItem.account_id == str(account_id),
-                VaultItem.media_id.in_(media))
-        )).all()
-    return {int(m): str(k or "photo") for m, k in rows}
+                    priced.media, [], priced.price_cents, clause,
+                    value_cents=priced.value_cents)
 
 
 def compose_caption(clause: str, voice_line: str | None) -> str:

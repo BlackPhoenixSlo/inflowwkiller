@@ -519,7 +519,7 @@ async def _alternatives(account_id: str, fan_id: int, pool: list[tuple[int, str]
     return [mid for mid, _ in pool[:count]]
 
 
-async def _kind_of(account_id: str, media_ids: list[int]) -> dict[int, str]:
+async def kind_of(account_id: str, media_ids: list[int]) -> dict[int, str]:
     if not media_ids:
         return {}
     async with get_session() as s:
@@ -528,7 +528,7 @@ async def _kind_of(account_id: str, media_ids: list[int]) -> dict[int, str]:
                 VaultItem.account_id == str(account_id),
                 VaultItem.media_id.in_(media_ids))
         )).all()
-    return {int(m): str(k or "") for m, k in rows}
+    return {int(m): str(k or "photo") for m, k in rows}
 
 
 # ── The three calls ─────────────────────────────────────────────────
@@ -829,7 +829,7 @@ async def resolve(account_id: str, fan_id: int, *, count: int,
     # and this is why the whole vault is in the pool — the curated feet shelves
     # are stills, so a video can only ever come from the retrieved side.
     if contract.media_kind in MEDIA_KINDS:
-        kinds = await _kind_of(account_id, [mid for mid, _ in pool])
+        kinds = await kind_of(account_id, [mid for mid, _ in pool])
         pool = [(mid, t) for mid, t in pool
                 if kinds.get(mid, contract.media_kind) == contract.media_kind]
         trusted_ids &= {mid for mid, _ in pool}
