@@ -87,6 +87,7 @@ EMPTY_SHELF = "empty_shelf"              # the curated shelf exists but is empty
 EXHAUSTED_FOR_FAN = "exhausted_for_fan"  # he already owns/has seen all of it
 INSUFFICIENT_QUANTITY = "insufficient_quantity"  # fewer than asked for
 NO_MATCH = "no_match"                    # the matcher found nothing that fits
+CUSTOM_REQUEST = "custom_request"        # he wants something that would be FILMED
 VERIFY_REJECTED = "verify_rejected"      # every pick failed the adversarial check
 LLM_UNAVAILABLE = "llm_unavailable"      # cap hit / provider error
 
@@ -110,6 +111,17 @@ class Contract:
     A strict contract may never be satisfied by a substitute — the caller must
     refuse rather than send something adjacent.
     """
+    # 🚨 ASK and SUBJECT are two different facts, and conflating them was a bug.
+    # "come show me" and "Show me" ARE asks for content (operator, 2026-08-11)
+    # with no subject in them at all; "I wanna see them go home to their
+    # families" carries the words "wanna see" and is not an ask for anything.
+    # So the trigger is `is_ask`, and the subject may legitimately be null.
+    is_ask: bool = False
+    # He is describing a shoot that would have to be MADE — a scene, a prop, a
+    # setup. Operator ruling 2026-08-11: the answer is "i don't have anything
+    # like that, but check this kind of video", never a wrong send and never
+    # silence. So it is an ask that refuses WITH an alternative.
+    custom_request: bool = False
     subject: str | None = None          # the noun as he said it ("feet")
     category: str | None = None         # a curated category, when the subject maps
     rung: str | None = None             # a rung inside it, when he was specific
@@ -125,7 +137,7 @@ class Contract:
 
     @property
     def asked(self) -> bool:
-        return bool(self.subject or self.category)
+        return bool(self.is_ask or self.subject or self.category)
 
 
 @dataclass(frozen=True)
@@ -135,6 +147,9 @@ class Resolution:
     refusal: str | None = None
     considered: int = 0                 # candidates the matcher saw
     rejected_by_verify: int = 0
+    # What she CAN send when the answer to his ask is no. A refusal that offers
+    # nothing is silence, and silence is the failure shape this map keeps hitting.
+    alternatives: list[int] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -336,25 +351,49 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
         return Contract()
     known = ", ".join(sorted(vault_pack_picker.CATEGORIES)) or "(none)"
     system = (
-        "You read an OnlyFans chat and state what the FAN has asked to see, or "
-        "what he was explicitly promised. Reply as JSON:\n"
-        '{"subject": "<short noun as he said it, or null>",\n'
+        "You read an OnlyFans chat and decide TWO separate things.\n\n"
+        "FIRST — is_ask: is he asking to SEE or RECEIVE content from her?\n"
+        "  YES: \"send me that set\", \"can i see\", \"show me\", \"come show me\", "
+        "\"i wanna see your feet\", \"got any videos\", \"unlock it for me\", or him "
+        "naming content he wants to watch.\n"
+        "  NO: small talk, his job, logistics, plans, an address, or wanting to "
+        "SEE something that is not her content — \"i wanna see them go home to "
+        "their families\" is NOT an ask, even though it says \"wanna see\".\n"
+        "  A bare \"show me\" IS an ask.\n"
+        "  NOT an ask, and important: he is TESTING whether she is a bot or "
+        "demanding proof she is real (\"until u show me proof of life\", \"are "
+        "you a bot\", \"send a pic with today's date\"). Set is_ask false and "
+        "bot_test true — another part of the system owns that moment.\n\n"
+        "CUSTOM REQUEST — he is describing a scene, a prop or a camera setup that "
+        "would have to be FILMED for him (\"put the camera on a stand and throw "
+        "the ball to you\"). Set is_ask true AND custom_request true: he wants "
+        "content, but not content that exists.\n\n"
+        "SECOND — subject: WHAT he asked for. This may be null even when is_ask "
+        "is true (a bare \"show me\" names nothing).\n"
+        "  Take the subject from HIS OWN LATEST MESSAGE FIRST. If he names a "
+        "thing — leather, feet, ass, a video — that is the subject, and it "
+        "OUTRANKS anything said earlier in the chat.\n"
+        "  Only if his message names nothing, resolve a referring expression "
+        "(\"that set\", \"it\", \"them\") against what SHE offered earlier.\n"
+        "  Never carry a subject over from an old message when his latest one is "
+        "small talk. If is_ask is false, subject MUST be null.\n\n"
+        "Reply as JSON:\n"
+        '{"is_ask": true|false,\n'
+        ' "subject": "<short noun, or null>",\n'
         f' "category": "<one of: {known}, or null if none fit>",\n'
         ' "media_kind": "photo" | "video" | null,\n'
         ' "strict": true if he used exclusive words like "only"/"just"/"nothing '
         'but", else false,\n'
         ' "quote": "<his exact words, <=120 chars>",\n'
-        ' "exclusions": ["<things he said he does NOT want>"]}\n'
-        "RESOLVE REFERRING EXPRESSIONS from the chat. \"send me that set\", "
-        "\"i want it\", \"show me them\", \"unlock it for me\" are ASKS — look "
-        "back through the chat for what SHE offered or described and use THAT as "
-        "the subject. A bare \"show me\" straight after she mentioned content is "
-        "an ask for that content. He will not repeat the noun; people do not "
-        "talk that way.\n"
-        "Return subject null ONLY when he is not asking for content at all — "
-        "small talk, logistics, an address, plans, or talking about his day.\n"
-        "Do NOT invent a subject from what he merely seems to enjoy: it must be "
-        "something he asked for, or was offered, IN THIS CHAT."
+        ' "exclusions": ["<things he said he does NOT want>"],\n'
+        ' "terms": ["REQUIRED when subject is set: 8-15 SINGLE lowercase words '
+        'that would appear in a written description of the media he wants. '
+        'Decompose his phrasing and add synonyms; NEVER return his sentence. '
+        'Be careful with words that also name FURNITURE or a SETTING — for '
+        '\'leather\' he means what she is WEARING, so use: leather, boots, '
+        'latex, jacket, corset, harness, gloves, thigh-high — not couch or sofa. '
+        'Examples — \'feet\': feet, foot, soles, toes, barefoot, arches, ankles. '
+        '\'back shots\': ass, behind, doggy, bent, arched, rear."]}'
     )
     try:
         res = await llm_client.chat(
@@ -371,7 +410,10 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
                     exc_info=True)
         return Contract()
 
+    is_ask = bool(p.get("is_ask")) and not bool(p.get("bot_test"))
     subject = (str(p.get("subject") or "").strip() or None)
+    if not is_ask:
+        subject = None            # an ask and a subject stand or fall together
     category = (str(p.get("category") or "").strip().lower() or None)
     if category not in vault_pack_picker.CATEGORIES:
         category = None
@@ -393,6 +435,7 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
                 terms.append(word)
     terms = terms[:15]
     return Contract(
+        is_ask=is_ask, custom_request=bool(p.get("custom_request")) and is_ask,
         subject=subject, category=category, rung=None, media_kind=kind,
         strict=bool(p.get("strict")), quote=str(p.get("quote") or "")[:120],
         exclusions=excl[:6], terms=terms,
@@ -512,6 +555,10 @@ async def resolve(account_id: str, fan_id: int, *, count: int,
         contract = await read_contract(account_id, fan_id, n_msgs=n_msgs)
     if not contract.asked:
         return _empty(contract, NO_ASK)
+    # He asked but named nothing — "come show me", "Show me". Operator ruling
+    # 2026-08-11: that IS a PPV ask. There is no subject to search on, so the
+    # pool is the vault at large and the matcher picks something worth sending.
+    generic = contract.is_ask and not (contract.subject or contract.category)
 
     # ── The pool is the CURATED SHELF ∪ THE WHOLE VAULT ────────────
     #
@@ -559,13 +606,21 @@ async def resolve(account_id: str, fan_id: int, *, count: int,
 
     considered = len(pool)
     model = await resolve_model(account_id, "content_resolver")
+
+    if contract.custom_request:
+        # He described a shoot. Refuse the ASK but hand the caller the nearest
+        # real things, so she says "i don't have anything like that, but check
+        # this" instead of guessing or going quiet.
+        return _empty(contract, CUSTOM_REQUEST, considered=considered,
+                      alternatives=[mid for mid, _ in pool[:count]])
     try:
         picked = await _match(account_id, fan_id, contract, pool, count, model)
     except Exception:
         log.warning("match failed account=%s fan=%s", account_id, fan_id, exc_info=True)
         return _empty(contract, LLM_UNAVAILABLE, considered=considered)
     if not picked:
-        return _empty(contract, NO_MATCH, considered=considered)
+        return _empty(contract, NO_MATCH, considered=considered,
+                      alternatives=[mid for mid, _ in pool[:count]])
 
     if not verify:
         return Resolution(picked, contract, considered=considered)
