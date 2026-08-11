@@ -362,7 +362,7 @@ _LEXICON_JUNK = frozenset({
     "foreground", "lighting", "visible", "appears", "shown", "showing",
     "unknown", "unclear", "description", "left", "right", "toward", "towards",
 })
-_lexicon_cache: dict[str, tuple[float, list[str]]] = {}
+_lexicon_cache: dict[str, tuple[float, Counter, int]] = {}
 
 
 async def vault_lexicon(account_id: str) -> list[str]:
@@ -373,10 +373,26 @@ async def vault_lexicon(account_id: str) -> list[str]:
     is in 61% of this vault and is exactly the word the expander needs, so any
     "too common to be useful" rule would delete the payload.
     """
+    freq, _total = await _term_frequencies(account_id)
+    return [w for w, _n in freq.most_common(_LEXICON_MAX)
+            if w not in _LEXICON_JUNK]
+
+
+async def _term_frequencies(account_id: str) -> tuple[Counter, int]:
+    """`(word -> items containing it, total items)`. One scan, cached.
+
+    DOCUMENT frequency: a word in 900 items beats one repeated nine times in
+    the same item. The FULL counter is kept, not just the head — the broadness
+    guard has to score terms the lexicon never showed the model ("soles").
+
+    ⚠️ Approximate by construction: retrieval matches `%term%` as a substring
+    while this counts whole words, so "ass" scores lower here than it selects.
+    It is a guard, not an index — a term has to be wildly common to trip it.
+    """
     now = time.monotonic()
     hit = _lexicon_cache.get(str(account_id))
     if hit and now - hit[0] < _LEXICON_TTL_S:
-        return hit[1]
+        return hit[1], hit[2]
     async with get_session() as s:
         rows = (await s.execute(
             select(VaultItem.search_text, VaultItem.description,
@@ -384,17 +400,52 @@ async def vault_lexicon(account_id: str) -> list[str]:
                 VaultItem.account_id == str(account_id),
                 VaultItem.removed_at.is_(None))
         )).all()
-    freq: Counter[str] = Counter()
+    freq: Counter = Counter()
     for row in rows:
-        seen_here = {
+        freq.update({
             w for w in re.split(r"[^a-z]+",
                                 " ".join(str(x or "") for x in row).lower())
-            if 3 <= len(w) <= 20 and w not in _STOPWORDS and w not in _LEXICON_JUNK
-        }
-        freq.update(seen_here)
-    words = [w for w, _n in freq.most_common(_LEXICON_MAX)]
-    _lexicon_cache[str(account_id)] = (now, words)
-    return words
+            if 3 <= len(w) <= 20 and w not in _STOPWORDS
+        })
+    _lexicon_cache[str(account_id)] = (now, freq, len(rows))
+    return freq, len(rows)
+
+
+# A term matching this much of the vault carries no information: OR-ed with the
+# others it drags the whole library into the pool and the ranking stops meaning
+# anything. Measured 2026-08-11 — with the lexicon in the prompt but no guard,
+# every ask retrieved ~1,520 of 1,601 items, feet included.
+_TERM_MAX_DF = 0.35
+_TERM_KEEP_MIN = 2        # never strip a query down to nothing
+
+
+async def drop_useless_terms(account_id: str, terms: list[str]) -> list[str]:
+    """Remove terms so common they select the whole vault.
+
+    A prompt asking the model not to add generic words is necessary and not
+    sufficient — it was already told, and still emitted "nude" for a feet ask.
+    This is the deterministic half: measure each term against the real corpus
+    and drop the ones that discriminate nothing.
+
+    Keeps the RAREST when everything is common, because a fan who asks about a
+    vault that is 90% nudes still deserves the narrowest cut available rather
+    than a refusal.
+    """
+    terms = [t for t in (terms or []) if t]
+    if len(terms) <= _TERM_KEEP_MIN:
+        return terms
+    freq, total = await _term_frequencies(account_id)
+    if not total:
+        return terms
+    df = {t: freq.get(t, 0) for t in terms}
+    keep = [t for t in terms if df[t] / total <= _TERM_MAX_DF]
+    if len(keep) >= _TERM_KEEP_MIN:
+        dropped = [t for t in terms if t not in keep]
+        if dropped:
+            log.info("terms too broad, dropped account=%s %s", account_id, dropped)
+        return keep
+    # Everything is common. Take the narrowest few rather than refusing.
+    return sorted(terms, key=lambda t: df[t])[:_TERM_KEEP_MIN + 1]
 
 
 async def solo_only(account_id: str, media_ids: list[int]) -> list[int]:
@@ -593,11 +644,12 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
         system += (
             "\n\nTHE VAULT'S OWN WORDS — the vocabulary these descriptions "
             "actually use, most common first:\n" + ", ".join(lexicon) + "\n"
-            "ADD any of these that fit, on top of your own synonyms. The search "
-            "is a literal text match over those descriptions, so a word from "
-            "this list is known to hit. NEVER DROP one of your own terms "
-            "because it is missing from the list — the list is the 200 most "
-            "common words and is not the whole vocabulary. Widen, never narrow."
+            "Add a word from this list ONLY when it is what THIS VAULT calls "
+            "the thing he asked for — \"tits\" -> \"breasts\". Do NOT add a "
+            "word just because it is common: \"nude\", \"posing\" and "
+            "\"bedroom\" describe most of the vault and would match everything. "
+            "And NEVER DROP one of your own terms because it is missing here — "
+            "this is the 200 most common words, not the whole vocabulary."
         )
     try:
         res = await llm_client.chat(
@@ -637,7 +689,7 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
         for word in re.split(r"[^a-z0-9]+", str(chunk).strip().lower()):
             if 3 <= len(word) <= 24 and word not in _STOPWORDS and word not in terms:
                 terms.append(word)
-    terms = terms[:15]
+    terms = await drop_useless_terms(account_id, terms[:15])
     return Contract(
         is_ask=is_ask, custom_request=bool(p.get("custom_request")) and is_ask,
         subject=subject, category=category, rung=None, media_kind=kind,
