@@ -711,6 +711,14 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
 # path, which had only ever been applied to the POOL.
 ASK_CATEGORY = "ask"          # the attribution bucket — NOT a curated category
 
+# Subjects that are the MEDIA, not a thing depicted in it. The clause already
+# names the format, so repeating it produces "3 vids of videos".
+_MEDIA_NOUNS = frozenset({
+    "video", "videos", "vid", "vids", "clip", "clips",
+    "pic", "pics", "picture", "pictures", "photo", "photos", "image", "images",
+    "content", "stuff", "set", "sets", "media",
+})
+
 
 def ask_clause(media_kinds: list[str], subject: str | None) -> str:
     """The claim that leads the caption: a count, the media word, and his noun.
@@ -732,6 +740,11 @@ def ask_clause(media_kinds: list[str], subject: str | None) -> str:
     else:
         body = f"{pics} pic{'s' * (pics > 1)}"
     noun = " ".join(str(subject or "").split())[:40]
+    # "3 vids of videos" — his subject IS the media word. Live dry-run against
+    # fan 162257571 ("do you have vids for purchase"), whose whole ask is the
+    # format. Naming it twice reads as broken, and the count already says it.
+    if noun.lower().strip() in _MEDIA_NOUNS:
+        noun = ""
     return f"{body} of {noun}" if noun else body
 
 
