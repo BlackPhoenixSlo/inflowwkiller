@@ -61,7 +61,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 import llm_client                       # module import so tests can patch .chat
 import vault_pack_picker
@@ -107,6 +107,11 @@ class Contract:
     strict: bool = False
     quote: str = ""                     # his own words, for the audit trail
     exclusions: list[str] = field(default_factory=list)
+    # Query terms for RETRIEVAL — his own words plus the LLM's expansion of them.
+    # A fan says "feet"; the vault descriptions say "soles", "toes", "barefoot",
+    # "arches". A lexical scan on his word alone finds a fraction of the shelf,
+    # and the model is far better at producing the vocabulary than a regex is.
+    terms: list[str] = field(default_factory=list)
 
     @property
     def asked(self) -> bool:
@@ -219,12 +224,26 @@ async def _curated_pool(account_id: str, category: str, rung: str | None,
 
 
 async def _described_pool(account_id: str, seen: set[int],
-                          media_kind: str | None) -> list[tuple[int, str]]:
-    """Unseen DESCRIBED vault items, newest first — the fallback pool.
+                          media_kind: str | None,
+                          terms: list[str] | None = None) -> list[tuple[int, str]]:
+    """Unseen DESCRIBED vault items matching the contract's TERMS.
 
-    ⚠️ This is the 22%-precision pool. Nothing may be sent from it without
-    passing VERIFY, and a priced send should prefer the curated pool.
+    🚨 This used to take the newest 150 items and let the matcher hunt. Measured
+    on a real account 2026-08-11: of **280** items whose text mentions feet, only
+    **26** are in the newest 150 — the window hid **91%** of the shelf. Recency
+    is not relevance, and no amount of LLM cleverness recovers a candidate it was
+    never shown.
+
+    So retrieval is lexical and runs over the WHOLE described vault. The terms
+    come from the model (it produced "soles", "toes", "barefoot", "arches" from
+    the fan's word "feet"), which is strictly wider than a regex a human would
+    maintain — and the scan itself costs no LLM call, only SQL.
+
+    ⚠️ Still the 22%-precision pool: a description mentioning feet is usually a
+    photo that merely HAS feet in it. Retrieval buys RECALL; VERIFY is what buys
+    precision. Nothing may ship from here without passing it.
     """
+    terms = [t for t in (terms or []) if t]
     async with get_session() as s:
         q = select(VaultItem.media_id, VaultItem.kind, VaultItem.search_text,
                    VaultItem.description, VaultItem.video_description).where(
@@ -233,20 +252,33 @@ async def _described_pool(account_id: str, seen: set[int],
         )
         if media_kind in MEDIA_KINDS:
             q = q.where(VaultItem.kind == media_kind)
+        if terms:
+            blob = func.lower(
+                func.coalesce(VaultItem.search_text, "")
+                + " " + func.coalesce(VaultItem.description, "")
+                + " " + func.coalesce(VaultItem.video_description, "")
+                + " " + func.coalesce(VaultItem.ai_fields_json, ""))
+            q = q.where(or_(*[blob.like(f"%{t}%") for t in terms]))
+        # Recency is the TIE-BREAK now, not the filter.
         rows = (await s.execute(
-            q.order_by(VaultItem.created_at.desc()).limit(_CANDIDATES_MAX * 3)
+            q.order_by(VaultItem.created_at.desc()).limit(_CANDIDATES_MAX * 4)
         )).all()
-    out: list[tuple[int, str]] = []
+
+    scored: list[tuple[int, int, str]] = []
     for mid, _kind, search_text, desc, vdesc in rows:
         if int(mid) in seen:
             continue
         text = " ".join(str(search_text or desc or vdesc or "").split())
         if not text:
             continue
-        out.append((int(mid), text[:_DESC_LEN]))
-        if len(out) >= _CANDIDATES_MAX:
-            break
-    return out
+        # More matching terms = a stronger candidate. A cheap ordering that puts
+        # "bare feet, soles up" above "…and her feet are in frame" before the
+        # matcher ever sees them, without pretending to be a relevance model.
+        low = text.lower()
+        hits = sum(1 for t in terms if t in low) if terms else 0
+        scored.append((hits, int(mid), text[:_DESC_LEN]))
+    scored.sort(key=lambda r: -r[0])
+    return [(mid, text) for _h, mid, text in scored[:_CANDIDATES_MAX]]
 
 
 async def _kind_of(account_id: str, media_ids: list[int]) -> dict[int, str]:
@@ -315,10 +347,15 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
     if kind not in MEDIA_KINDS:
         kind = None
     excl = [str(x).strip() for x in (p.get("exclusions") or []) if str(x).strip()]
+    terms = [t for t in (
+        str(x).strip().lower() for x in (p.get("terms") or [])
+    ) if 2 <= len(t) <= 30][:15]
+    if subject and subject.lower() not in terms:
+        terms.insert(0, subject.lower())     # his own word always leads
     return Contract(
         subject=subject, category=category, rung=None, media_kind=kind,
         strict=bool(p.get("strict")), quote=str(p.get("quote") or "")[:120],
-        exclusions=excl[:6],
+        exclusions=excl[:6], terms=terms,
     )
 
 
@@ -446,7 +483,8 @@ async def resolve(account_id: str, fan_id: int, *, count: int,
     if not pool:
         if require_curated:
             return _empty(contract, UNSUPPORTED_SUBJECT)
-        pool = await _described_pool(account_id, seen, contract.media_kind)
+        pool = await _described_pool(account_id, seen, contract.media_kind,
+                                     contract.terms)
     if not pool:
         return _empty(contract, EXHAUSTED_FOR_FAN)
 

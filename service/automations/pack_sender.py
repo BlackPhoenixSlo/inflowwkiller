@@ -77,7 +77,38 @@ log = logging.getLogger("of-relay.automation.pack_sender")
 # ── House constants ─────────────────────────────────────────────────
 CENTS_PER_ITEM = 500          # tip_reward.dollars_per_image = 5, on all 10 accounts
 MIN_ITEMS = 3                 # tip_reward.min_images scaled to a priced ask
-MAX_ITEMS = 12                # tip_reward.max_images exactly
+# Operator ruling 2026-08-11: "it's nice to always have at least 7 but not
+# needed (fill with some crap)." A SOFT target — the pack pads toward it with
+# low-value items from the SAME rung once the price is already covered, and
+# simply stops early when the shelf cannot reach it.
+SOFT_TARGET_ITEMS = 7
+
+# ── Per-item VALUE (operator ruling 2026-08-11) ─────────────────────
+#
+# "Videos 5-10$ per 10 sec … images, the explicit for more like 10$ … teases are
+# less valuable and can be added as filler."
+#
+# ⚠️ This REPLACES the flat $5-an-item rate for composition, and it is a
+# deliberate revision of SPEC ticket 06. Read that ruling before touching this:
+# the flat rate existed because a $59 pack of 3 is $19.67 an item, and that shape
+# preceded two account deletions. The protection is preserved a different way —
+# value now decides the COUNT, so a high price must be MET with real content
+# rather than justified by a small number of expensive-looking items.
+VIDEO_CENTS_PER_10S = {"hardcore": 1000, "explicit": 1000,
+                       "suggestive": 700, "sfw": 500}
+IMAGE_CENTS = {"hardcore": 1000, "explicit": 1000, "suggestive": 300, "sfw": 100}
+_DEFAULT_TIER = "suggestive"
+FILLER_MAX_CENTS = 300        # at or below this, an item counts as filler
+# Operator ruling 2026-08-11: "we can pick from 3-35 pieces depending on ask and
+# price." Raised from tip_reward's max_images of 12, which exists so "a whale tip
+# can't drain a folder in one shot" — a FREE-reward concern that does not apply
+# to a priced pack.
+#
+# ⚠️ Price still governs, so 35 is rare and earned, not common: at $5 an item a
+# 35-piece pack is a $175 ask, and `MAX_ASK_VS_HISTORY_MULT = 3.0` means that is
+# only quotable to a fan whose largest single paid PPV was ~$58. A cold fan
+# capped at COLD_OPEN_CEILING_CENTS ($59) still resolves to 11.
+MAX_ITEMS = 35
 PREVIEW_MIN, PREVIEW_MAX = 2, 3
 _REPLY_MAX_CHARS = 600        # OF truncates the chat-list preview past this
 
@@ -85,10 +116,19 @@ _REPLY_MAX_CHARS = 600        # OF truncates the chat-list preview past this
 # ships en/es/sl; prod is 16 en accounts and 1 es, and neither pilot is Spanish.
 PACK_LANGUAGES = frozenset({"en", "es", "sl"})
 
-# The mirror is the source of rung membership now that shelves are OF-backed.
-# An audit that passes against a stale mirror proves nothing — both pilots were
-# last collected 2026-07-23, 18 days before this shipped.
-MIRROR_MAX_AGE = timedelta(days=2)
+# ⚠️ Mirror age is a WARNING, not a refusal — corrected 2026-08-11.
+#
+# The first cut refused any send when the vault mirror was stale, on the theory
+# that rung membership had become OF-backed. That was wrong: `_shelf_media`
+# reads `VaultFolderItem`, the INTERNAL membership the picker wrote. It is
+# operator-authored, exact, and does not decay. The mirror is only our cache of
+# OF's own listing, and media ids are stable — OF resolves them at send time
+# whatever our cache says.
+#
+# What DOES matter is narrower and is checked directly: every id about to be
+# charged for must still be a live `VaultItem` (not soft-deleted). A genuinely
+# dead id fails loudly at the wire, which is the right place for it.
+MIRROR_WARN_AGE = timedelta(days=7)
 
 # ── Refusals ────────────────────────────────────────────────────────
 REFUSE_DISABLED = "pack_disabled"
@@ -140,7 +180,84 @@ class PackPlan:
 
 
 def _clamp_count(px_cents: int) -> int:
+    """The legacy flat-rate count. Still the FLOOR/CEILING guard on composition."""
     return max(MIN_ITEMS, min(int(px_cents) // CENTS_PER_ITEM, MAX_ITEMS))
+
+
+def item_value_cents(kind: str | None, duration_seconds: int | None,
+                     explicitness_tier: str | None) -> int:
+    """What one piece is worth, per the operator's 2026-08-11 rate card.
+
+    A video is priced by LENGTH — $5–10 per 10 seconds depending on how explicit
+    it is — because 10 seconds of hardcore and 10 seconds of a sfw pan are not
+    the same product. A still is priced by explicitness alone: explicit ~$10,
+    a tease is filler.
+
+    Rounded to whole 10-second blocks so a 43-second clip is priced as 4 blocks,
+    not 4.3 — the fan is buying content, not a stopwatch reading.
+    """
+    tier = str(explicitness_tier or _DEFAULT_TIER).strip().lower()
+    if str(kind or "").lower() in ("video", "gif"):
+        blocks = max(1, round(int(duration_seconds or 0) / 10))
+        return blocks * VIDEO_CENTS_PER_10S.get(tier, VIDEO_CENTS_PER_10S[_DEFAULT_TIER])
+    return IMAGE_CENTS.get(tier, IMAGE_CENTS[_DEFAULT_TIER])
+
+
+async def _values_for(account_id: str, media: list[int]) -> dict[int, int]:
+    if not media:
+        return {}
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.kind, VaultItem.duration_seconds,
+                   VaultItem.explicitness_tier).where(
+                VaultItem.account_id == str(account_id),
+                VaultItem.media_id.in_(media))
+        )).all()
+    return {int(m): item_value_cents(k, d, t) for m, k, d, t in rows}
+
+
+async def compose_by_value(account_id: str, avail_ids: list[int],
+                           target_cents: int) -> tuple[list[int], int]:
+    """Fill `target_cents` with real content, then pad toward the soft target.
+
+    Returns `(media, value_cents)`. `value_cents` may be LESS than the target —
+    that is the shelf vetoing the price, and the caller must drop the ask to it
+    rather than charge for content that is not there.
+
+    Two passes, and the order is the point:
+      1. **Payoff first**, in operator rank order, until the price is covered.
+         The fan's money buys the good stuff, not the padding.
+      2. **Filler after**, only once the price is already met, and only from the
+         SAME rung — so the caption's claim stays true of every attached item.
+         Filler never raises the price; it raises the count toward 7.
+    """
+    values = await _values_for(account_id, avail_ids)
+    payoff = [m for m in avail_ids if values.get(m, 0) > FILLER_MAX_CENTS]
+    filler = [m for m in avail_ids if values.get(m, 0) <= FILLER_MAX_CENTS]
+
+    chosen: list[int] = []
+    total = 0
+    for mid in payoff:                       # rank order — best first
+        if total >= target_cents or len(chosen) >= MAX_ITEMS:
+            break
+        chosen.append(mid)
+        total += values.get(mid, 0)
+    # The price is not yet met and there is no more payoff: take filler too, so
+    # the shelf's honest ceiling is computed from everything it actually has.
+    for mid in filler:
+        if total >= target_cents or len(chosen) >= MAX_ITEMS:
+            break
+        chosen.append(mid)
+        total += values.get(mid, 0)
+
+    # Pad toward the soft target with whatever is left, at NO extra charge.
+    if len(chosen) < SOFT_TARGET_ITEMS:
+        for mid in avail_ids:
+            if len(chosen) >= SOFT_TARGET_ITEMS or len(chosen) >= MAX_ITEMS:
+                break
+            if mid not in chosen:
+                chosen.append(mid)
+    return chosen, total
 
 
 def render_clause(category: str, rung: str, n: int) -> str:
@@ -270,12 +387,31 @@ async def audit_pack(account_id: str, category: str, rung: str,
     if len(paid) < MIN_ITEMS:
         bad.append(f"rule4 |M−P| = {len(paid)} < {MIN_ITEMS}")
 
+    # Rule 5 — every paid id must still EXIST. Membership is exact, but an item
+    # soft-deleted after two clean collect sweeps is gone from her vault, and
+    # charging for it would deliver nothing.
+    if paid:
+        async with get_session() as s:
+            live = {int(m) for m in (await s.execute(
+                select(VaultItem.media_id).where(
+                    VaultItem.account_id == str(account_id),
+                    VaultItem.media_id.in_(sorted(paid)),
+                    VaultItem.removed_at.is_(None))
+            )).scalars().all()}
+        missing = sorted(paid - live)
+        if missing:
+            bad.append(f"rule5 media no longer in the vault: {missing}")
+    return bad
+
+
+async def mirror_warning(account_id: str) -> str:
+    """A note for the log/operator when the cache is old — never a refusal."""
     age = await _mirror_age(account_id)
     if age is None:
-        bad.append("mirror never collected — rung membership unverifiable")
-    elif age > MIRROR_MAX_AGE:
-        bad.append(f"mirror {age.days}d stale (> {MIRROR_MAX_AGE.days}d)")
-    return bad
+        return "vault never collected"
+    if age > MIRROR_WARN_AGE:
+        return f"vault mirror {age.days}d old — Collect to refresh thumbnails"
+    return ""
 
 
 # ── The product row ─────────────────────────────────────────────────
@@ -405,9 +541,22 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
     if quoted is None:
         return PackPlan(**{**empty.__dict__, "item_id": item.id,
                            "refusal": REFUSE_NO_PRICE})
-    px, n = quoted
+    px, _flat_n = quoted
 
-    media = avail_ids[:n]                       # rank order — the best go first
+    # Compose by VALUE, not by a flat count: a 40-second explicit clip is worth
+    # more than eight tease stills, and the fan should get either — but only if
+    # what he is charged is actually covered by what is attached.
+    media, value = await compose_by_value(account_id, avail_ids, px)
+    if len(media) < MIN_ITEMS:
+        return PackPlan(**{**empty.__dict__, "item_id": item.id,
+                           "refusal": REFUSE_TOO_THIN,
+                           "detail": f"{len(media)} composable"})
+    # 🚨 THE SHELF VETOES THE PRICE. If everything available is worth less than
+    # the quote, the ask drops to what is really there. The alternative — charge
+    # the quote anyway — is the $19.67-an-item shape that preceded two account
+    # deletions, which is exactly what ticket 06 exists to prevent.
+    if value < px:
+        px = max(upsell.OF_PRICE_FLOOR_CENTS, value)
     tease = await _shelf_media(account_id, category, "tease")
     previews = [m for m in tease if m not in media][:PREVIEW_MAX]
     # Previews ride FREE inside the send and are never stamped owned, so they may
@@ -416,6 +565,9 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
     attached = media + previews
 
     clause = render_clause(category, rung, len(media))
+    warn = await mirror_warning(account_id)
+    if warn:
+        log.info("pack plan account=%s fan=%s: %s", account_id, fan_id, warn)
     bad = await audit_pack(account_id, category, rung, attached, previews)
     if bad:
         log.warning("pack audit REFUSED account=%s fan=%s %s-%s: %s",
