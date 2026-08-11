@@ -43,6 +43,13 @@ import { useStyleConfig, useSaveStyleConfig } from "@/hooks/useStyleConfig";
 // 5 min (matches the send_welcome spec's {every_seconds: 300}).
 const WELCOME_DEFAULT_EVERY_S = 300;
 
+// Default 3rd-bubble question. Reads as "what's YOUR time/place?" after the
+// clock line ("it's Thursday afternoon in Vancouver… what's yours?"). Stamped
+// at rule creation/save like time_only's default — the sender still treats an
+// absent key as off, so rules saved before the knob existed don't change; an
+// operator clearing the field saves "" (explicitly off).
+const WELCOME_QUESTION_DEFAULT = "what's yours?";
+
 // send_followup's default per-step silence thresholds (hours) — mirrors
 // send_followup._STEP_THRESHOLDS_H {1:26, 2:64, 3:256}. Shown when the rule has
 // no payload.step_hours override yet.
@@ -161,7 +168,7 @@ export default function BrainPanel() {
   const [welcomeTimeOnly, setWelcomeTimeOnly] = useState(true);
   // Bubble 3 = the operator's own question, sent WORD-FOR-WORD (no AI touch-up).
   // Lives on the rule's payload.question; "" = off (no third bubble).
-  const [welcomeQuestion, setWelcomeQuestion] = useState("");
+  const [welcomeQuestion, setWelcomeQuestion] = useState(WELCOME_QUESTION_DEFAULT);
   const [welcomeMsg, setWelcomeMsg] = useState<string | null>(null);
   const [previewFan, setPreviewFan] = useState("");
   const [preview, setPreview] = useState<AutomationPreviewResult | null>(null);
@@ -207,13 +214,16 @@ export default function BrainPanel() {
         Math.max(1, Math.round((welcomeRule.every_seconds ?? WELCOME_DEFAULT_EVERY_S) / 60)),
       );
       setWelcomeTimeOnly(welcomeRule.payload?.time_only !== false);
+      // Absent key (rule saved before the knob existed) → show the default, so
+      // the next save stamps it — same migration path as time_only's `!== false`.
+      // An explicit "" is the operator's own clear and stays cleared.
       const q = welcomeRule.payload?.question;
-      setWelcomeQuestion(typeof q === "string" ? q : "");
+      setWelcomeQuestion(typeof q === "string" ? q : WELCOME_QUESTION_DEFAULT);
     } else {
       setWelcomeEnabled(false);
       setWelcomeMinutes(WELCOME_DEFAULT_EVERY_S / 60);
       setWelcomeTimeOnly(true);
-      setWelcomeQuestion("");
+      setWelcomeQuestion(WELCOME_QUESTION_DEFAULT);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [welcomeRule?.id, welcomeRule?.is_enabled, welcomeRule?.every_seconds,
