@@ -5840,6 +5840,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     offers_made_on_escalation = 0   # offers triggered by the lean-in pivot
     offers_forced = 0        # force_ask: gate said yes, model wrote no marker, we sold
     offers_forced_stale = 0  # …of those, fired by the FLOOR (he'd talked N msgs, no ask)
+    packs_sent = 0           # he asked for a SUBJECT and got that subject, priced
+    packs_refused = 0        # …and the refusals, by reason, in the log
     forced_this_tick = 0     # account budget on forced asks this run (_MAX_FORCED_ASKS…)
     teasers_sent = 0
     hot_teasers_sent = 0     # hot-thread vault teasers attached to a reply (free + paid)
@@ -6935,9 +6937,42 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # That is a burst of priced sends in one minute, exactly the OF-session shape
             # the per-hour cap exists to prevent, and the per-run snapshot of that cap
             # can't see it. This bounds the blast: the floor drips instead of flooding.
+            # ── He asked for a SUBJECT: sell him that, not the cheapest thing ──
+            #
+            # `_force_pick` below takes the CHEAPEST offerable item, which is the
+            # right answer to "he seems warm" and the wrong one to "send me feet
+            # pics". When the pack lane is on, an explicit content-ask is answered
+            # from the curated shelf for that subject instead, priced by value.
+            #
+            # It sends its OWN priced message and leaves `offer_item` None, so the
+            # reply this turn stays unpriced and he gets exactly one ask. Any
+            # refusal (no curated shelf, shelf too thin, verifier rejected) falls
+            # straight through to the normal path — this can only ever REPLACE a
+            # cheapest-item offer, never suppress one.
+            _pack_this_fan = False
+            if (_trigger == "ask" and not seller_off and offer_item is None
+                    and bool(cfg.get("pack_on_ask_enabled"))
+                    and forced_this_tick < _MAX_FORCED_ASKS_PER_TICK):
+                from automations import pack_sender as _packs
+                _pk = await _packs.send_pack_on_ask(
+                    client, account_id, fan_id, cfg=cfg, dry_run=dry_run)
+                if _pk.get("status") in ("ok", "dry_run"):
+                    packs_sent += 1
+                    forced_this_tick += 1
+                    _pack_this_fan = True
+                    log.info("ai_chatter PACK on ask account=%s fan=%s %s n=%s px=%s",
+                             account_id, fan_id, _pk.get("category"),
+                             _pk.get("n"), _pk.get("price_cents"))
+                else:
+                    packs_refused += 1
+                    log.info("ai_chatter pack on ask REFUSED account=%s fan=%s: %s %s",
+                             account_id, fan_id, _pk.get("reason"),
+                             str(_pk.get("detail") or "")[:120])
+
             if (_trigger and (gate_ok or (_trigger == "ask" and ask_override))
                     and not seller_off
                     and offer_item is None and offerable
+                    and not _pack_this_fan
                     and forced_this_tick < _MAX_FORCED_ASKS_PER_TICK):
                 offer_item = _force_pick(offerable, quotes)
                 if offer_item is not None:
@@ -7844,6 +7879,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "offers_made": offers_made,
         "offers_made_on_escalation": offers_made_on_escalation,
         "offers_forced": offers_forced,
+        "packs_sent": packs_sent,
+        "packs_refused": packs_refused,
         "offers_forced_stale": offers_forced_stale,
         "paid_state_refreshed": paid_state_refreshed,
         "teasers_sent": teasers_sent,
