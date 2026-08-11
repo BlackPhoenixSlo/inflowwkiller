@@ -66,7 +66,9 @@ from sqlalchemy import func, or_, select
 
 import llm_client                       # module import so tests can patch .chat
 import vault_pack_picker
+import vault_scripts                    # is_solo — one definition of "she is alone"
 from db.engine import get_session
+from jsonsafe import load_json
 from db.models import Fan, Message, VaultFolder, VaultFolderItem, VaultItem
 
 from ._common import load_voice_blocks, resolve_model
@@ -126,6 +128,11 @@ class Contract:
     category: str | None = None         # a curated category, when the subject maps
     rung: str | None = None             # a rung inside it, when he was specific
     media_kind: str | None = None       # "photo" | "video" | None (no preference)
+    # 🚨 He NAMED someone else — "you and your friend", "a threesome", "with a
+    # guy". Default False, and False means SOLO ONLY: operator ruling
+    # 2026-08-11, "if not asked fill only with images where only she is on if
+    # not specified, that is important very." Company is opt-in, never a bonus.
+    company: bool = False
     strict: bool = False
     quote: str = ""                     # his own words, for the audit trail
     exclusions: list[str] = field(default_factory=list)
@@ -321,6 +328,53 @@ async def _described_pool(account_id: str, seen: set[int],
     return [(mid, text) for _h, mid, text in scored[:_CANDIDATES_MAX]]
 
 
+async def solo_only(account_id: str, media_ids: list[int]) -> list[int]:
+    """Drop anything with someone else in it.
+
+    🚨 Operator ruling 2026-08-11, marked "very important": unless he asked for
+    company, she is ALONE in what he gets. A fan who asked for her and was sent
+    a threesome did not get a bonus, he got the wrong thing — and on this
+    account that has cost an unsubscribe before.
+
+    Reuses `vault_scripts.is_solo` rather than reading `people_count` here. That
+    function already knows the way this goes wrong: the model returns
+    `people_count: 1` for a clip it has just described as a blowjob, because it
+    counts the person the clip is ABOUT. So the test is a disjunction over
+    `partner_visible`, the count, the acts and the penetration field.
+
+    🚨 THREE-WAY, not a veto. `is_solo` is deliberately false for a row nobody
+    ever asked — correct for building an operator-facing folder, fatal here: on
+    a vault without the V2 describe pass EVERY row is unknown, and a binary
+    filter turns the whole lane silent. That is the same mistake `_rank_by_tier`
+    documents, and it cost this file 8 red tests an hour apart.
+
+      * confirmed company  → DROPPED. This is the rule, and it is absolute.
+      * confirmed solo     → first.
+      * never asked        → kept, behind the confirmed. Composition consumes
+        this order, so an unknown is only reached once the certain ones are out.
+
+    On the pilot vault that is 1,590 of 1,623 answered and 60 with company, so
+    the uncertain tail is 2% — small, and behind everything that is sure.
+    """
+    if not media_ids:
+        return []
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.ai_fields_json).where(
+                VaultItem.account_id == str(account_id),
+                VaultItem.media_id.in_(media_ids))
+        )).all()
+    fields = {int(m): (load_json(blob, {}) or {}) for m, blob in rows}
+    solo, unknown = [], []
+    for mid in media_ids:
+        f = fields.get(mid, {})
+        if vault_scripts.is_solo(f):
+            solo.append(mid)
+        elif not vault_scripts.solo_known(f):
+            unknown.append(mid)        # nobody asked — not evidence of company
+    return solo + unknown
+
+
 async def profile_terms(account_id: str, fan_id: int) -> list[str]:
     """What HE likes, from his profile — not from this conversation.
 
@@ -363,8 +417,10 @@ async def _alternatives(account_id: str, fan_id: int, pool: list[tuple[int, str]
     terms = await profile_terms(account_id, fan_id)
     if terms:
         liked = await _described_pool(account_id, seen, None, terms)
-        if liked:
-            return [mid for mid, _ in liked[:count]]
+        # A consolation offer is still a send, so the solo rule holds here too.
+        solo = await solo_only(account_id, [mid for mid, _ in liked])
+        if solo:
+            return solo[:count]
     return [mid for mid, _ in pool[:count]]
 
 
@@ -428,8 +484,13 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
         "(\"that set\", \"it\", \"them\") against what SHE offered earlier.\n"
         "  Never carry a subject over from an old message when his latest one is "
         "small talk. If is_ask is false, subject MUST be null.\n\n"
+        "COMPANY — did he ask for SOMEONE ELSE to be in it? Only true when he "
+        "names another person: \"you and your friend\", \"a threesome\", \"with "
+        "a guy\", \"two girls\". Him being in his own fantasy (\"me fucking "
+        "you\") is NOT company — he is not in her vault. Default false.\n\n"
         "Reply as JSON:\n"
         '{"is_ask": true|false,\n'
+        ' "company": true|false,\n'
         ' "subject": "<short noun, or null>",\n'
         f' "category": "<one of: {known}, or null if none fit>",\n'
         ' "media_kind": "photo" | "video" | null,\n'
@@ -488,6 +549,7 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
     return Contract(
         is_ask=is_ask, custom_request=bool(p.get("custom_request")) and is_ask,
         subject=subject, category=category, rung=None, media_kind=kind,
+        company=bool(p.get("company")) and is_ask,
         strict=bool(p.get("strict")), quote=str(p.get("quote") or "")[:120],
         exclusions=excl[:6], terms=terms,
     )
@@ -652,6 +714,16 @@ async def resolve(account_id: str, fan_id: int, *, count: int,
         pool = [(mid, t) for mid, t in pool
                 if kinds.get(mid, contract.media_kind) == contract.media_kind]
         trusted_ids &= {mid for mid, _ in pool}
+        if not pool:
+            return _empty(contract, EXHAUSTED_FOR_FAN)
+
+    # SOLO unless he asked otherwise. Applied to the whole pool — including the
+    # curated shelves, which a human filed by SUBJECT and never by who else was
+    # in the frame, so "a human picked it" is not evidence about company.
+    if not contract.company:
+        keep = set(await solo_only(account_id, [mid for mid, _ in pool]))
+        pool = [(mid, t) for mid, t in pool if mid in keep]
+        trusted_ids &= keep
         if not pool:
             return _empty(contract, EXHAUSTED_FOR_FAN)
 
