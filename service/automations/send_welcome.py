@@ -877,6 +877,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     time_only = bool(payload.get("time_only"))
     # Bubble 3 (optional): an operator-written question appended VERBATIM — no
     # restyle, no LLM, the same exact text for every fan. Blank/absent = off.
+    # The default ("what's yours?") is stamped at rule creation/save by the Brain
+    # panel, NOT here — same pattern (and same reason) as time_only above: a read
+    # default would retroactively append it to every rule saved before the knob
+    # existed.
     question = str(payload.get("question") or "").strip()
 
     client = await asyncio.to_thread(ax._make_client, account_id)

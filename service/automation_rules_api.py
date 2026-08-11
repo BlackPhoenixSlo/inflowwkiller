@@ -117,7 +117,7 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "max_welcomes", "type": "int", "min": 1, "default": 25, "hint": "cap sends per tick"},
             {"key": "with_image", "type": "bool", "default": True, "hint": "attach the time-of-day welcome image"},
             {"key": "time_only", "type": "bool", "default": True, "hint": "2nd bubble says only the day/time + location (no activity)"},
-            {"key": "question", "type": "str", "hint": "3rd bubble: this exact question, sent word-for-word (blank = off)"},
+            {"key": "question", "type": "str", "default": "what's yours?", "hint": "3rd bubble: this exact question, sent word-for-word (blank = off)"},
             {"key": "model", "type": "str", "hint": "LLM override"},
             {"key": "dry_run", "type": "bool", "hint": "generate but don't send"},
         ],
