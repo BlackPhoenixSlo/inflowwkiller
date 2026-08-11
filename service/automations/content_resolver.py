@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 
 from sqlalchemy import func, or_, select
@@ -90,6 +91,15 @@ VERIFY_REJECTED = "verify_rejected"      # every pick failed the adversarial che
 LLM_UNAVAILABLE = "llm_unavailable"      # cap hit / provider error
 
 MEDIA_KINDS = ("photo", "video")
+
+# Words that would match half the vault and tell the matcher nothing.
+_STOPWORDS = frozenset({
+    "the", "and", "for", "you", "your", "with", "some", "that", "this", "have",
+    "want", "wanna", "send", "show", "see", "pic", "pics", "photo", "photos",
+    "video", "videos", "vid", "vids", "please", "more", "one", "get", "got",
+    "can", "could", "would", "like", "love", "really", "just", "them", "they",
+    "her", "his", "him", "she", "from", "out", "off", "any", "all", "new",
+})
 
 
 @dataclass(frozen=True)
@@ -263,6 +273,21 @@ async def _described_pool(account_id: str, seen: set[int],
         rows = (await s.execute(
             q.order_by(VaultItem.created_at.desc()).limit(_CANDIDATES_MAX * 4)
         )).all()
+        if not rows and terms:
+            # The scan found nothing. That is a vocabulary miss, NOT "he has seen
+            # everything" — degrade to a broad pool and let the matcher judge,
+            # rather than refusing a fan who genuinely asked for something.
+            log.info("retrieval miss account=%s terms=%s — broad fallback",
+                     account_id, terms[:6])
+            broad = select(VaultItem.media_id, VaultItem.kind, VaultItem.search_text,
+                           VaultItem.description, VaultItem.video_description).where(
+                VaultItem.account_id == str(account_id),
+                VaultItem.removed_at.is_(None))
+            if media_kind in MEDIA_KINDS:
+                broad = broad.where(VaultItem.kind == media_kind)
+            rows = (await s.execute(
+                broad.order_by(VaultItem.created_at.desc()).limit(_CANDIDATES_MAX * 2)
+            )).all()
 
     scored: list[tuple[int, int, str]] = []
     for mid, _kind, search_text, desc, vdesc in rows:
@@ -347,11 +372,19 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
     if kind not in MEDIA_KINDS:
         kind = None
     excl = [str(x).strip() for x in (p.get("exclusions") or []) if str(x).strip()]
-    terms = [t for t in (
-        str(x).strip().lower() for x in (p.get("terms") or [])
-    ) if 2 <= len(t) <= 30][:15]
-    if subject and subject.lower() not in terms:
-        terms.insert(0, subject.lower())     # his own word always leads
+    # Split anything multi-word and drop stop-words: a term is a LIKE needle, and
+    # "booty shake on my face" matches nothing while "booty" matches plenty. The
+    # first live review set came back with terms == [the whole sentence] and an
+    # empty pool on every thread, so this is a safety net under the prompt.
+    raw = list(p.get("terms") or [])
+    if subject:
+        raw.append(subject)
+    terms: list[str] = []
+    for chunk in raw:
+        for word in re.split(r"[^a-z0-9]+", str(chunk).strip().lower()):
+            if 3 <= len(word) <= 24 and word not in _STOPWORDS and word not in terms:
+                terms.append(word)
+    terms = terms[:15]
     return Contract(
         subject=subject, category=category, rung=None, media_kind=kind,
         strict=bool(p.get("strict")), quote=str(p.get("quote") or "")[:120],
