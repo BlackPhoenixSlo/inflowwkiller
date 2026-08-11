@@ -99,6 +99,28 @@ VIDEO_CENTS_PER_10S = {"hardcore": 1000, "explicit": 1000,
 IMAGE_CENTS = {"hardcore": 1000, "explicit": 1000, "suggestive": 300, "sfw": 100}
 _DEFAULT_TIER = "suggestive"
 FILLER_MAX_CENTS = 300        # at or below this, an item counts as filler
+
+# ── What he may be asked, and how explicit it may be ────────────────
+#
+# Operator, 2026-08-11: "max is 100 or 200 depending on ppv and what he sold and
+# bought etc. if he hasnt bought much we send less explicit at start."
+#
+# Two of the three halves were already enforced upstream by `upsell`, and are
+# NOT re-implemented here: COLD_OPEN_CEILING_CENTS ($59) is the "first send is
+# ~$60" rule, and OF_PRICE_MAX_CENTS ($200) is a hard wire invariant. What was
+# missing is the MIDDLE — a fan who once paid $40 is quotable at 3x that under
+# MAX_ASK_VS_HISTORY_MULT, i.e. $120, with nothing between $59 and the $200 wire
+# max to say otherwise.
+PACK_CAP_CENTS = 10_000            # the normal ceiling for a content-ask pack
+PACK_CAP_PROVEN_CENTS = 20_000     # lifted only by a genuinely big single PPV
+PROVEN_SINGLE_PPV_CENTS = 5_000    # one PPV at $50+ is what "proven" means
+
+# The explicitness ladder is climbed by SPENDING, not by asking. A man who has
+# never paid gets the tease, and the payoff is what he is buying — leading with
+# hardcore to a cold fan spends the only thing there is left to sell him.
+TIER_RANK: dict[str, int] = {"sfw": 0, "suggestive": 1, "explicit": 2, "hardcore": 3}
+COLD_MAX_TIER = "suggestive"       # never paid → nothing above this
+WARM_MAX_TIER = "explicit"         # has paid, but not big → explicit, not hardcore
 # Operator ruling 2026-08-11: "we can pick from 3-35 pieces depending on ask and
 # price." Raised from tip_reward's max_images of 12, which exists so "a whale tip
 # can't drain a folder in one shot" — a FREE-reward concern that does not apply
@@ -265,9 +287,15 @@ async def compose_by_value(account_id: str, avail_ids: list[int],
         chosen.append(mid)
         total += values.get(mid, 0)
 
-    # Pad toward the soft target with whatever is left, at NO extra charge.
+    # Pad toward the soft target at NO extra charge — from FILLER ONLY.
+    #
+    # 🚨 This used to pad from `avail_ids`, which meant the free padding could be
+    # $40 clips: a $60 ask walked out with $270 of content attached and the next
+    # ask had nothing left to sell. The operator's rule is "nice to always have
+    # at least 7 but not needed (fill with some crap)" — crap is the whole point
+    # of the pass. If there is no filler left, a 4-item pack is the right answer.
     if len(chosen) < SOFT_TARGET_ITEMS:
-        for mid in avail_ids:
+        for mid in filler:
             if len(chosen) >= SOFT_TARGET_ITEMS or len(chosen) >= MAX_ITEMS:
                 break
             if mid not in chosen:
@@ -336,6 +364,55 @@ async def _filter_kind(account_id: str, media: list[int], kind: str | None) -> l
         )).all()
     by_id = {int(m): str(k or "") for m, k in rows}
     return [m for m in media if by_id.get(m, kind) == kind]
+
+
+async def spend_bounds(account_id: str, fan_id: int) -> tuple[int, str | None]:
+    """`(cap_cents, max_tier)` for THIS fan, from what he has actually paid.
+
+    `max_tier` is None for a proven buyer — no ceiling, he has earned the vault.
+    Everyone else is bounded, and a fan who has never paid a cent is bounded
+    twice: at $100 and at `suggestive`.
+    """
+    from .ai_chatter import _paid_ppv_facts        # local: avoid an import cycle
+
+    max_paid, _last = await _paid_ppv_facts(str(account_id), int(fan_id))
+    max_paid = int(max_paid or 0)
+    if max_paid >= PROVEN_SINGLE_PPV_CENTS:
+        return PACK_CAP_PROVEN_CENTS, None
+    if max_paid > 0:
+        return PACK_CAP_CENTS, WARM_MAX_TIER
+    return PACK_CAP_CENTS, COLD_MAX_TIER
+
+
+async def _rank_by_tier(account_id: str, media: list[int],
+                        max_tier: str | None) -> list[int]:
+    """Put what he has earned FIRST, keeping everything else behind it.
+
+    🚨 A preference, deliberately not a filter. Dropping over-tier items outright
+    is one line shorter and empties the shelf for a cold fan whenever the shelf
+    happens to be explicit — the silent-refusal shape this map has warned about
+    three times, and what the first cut of this did to 8 of 10 test cases.
+    Composition consumes this list in order, so the tame end is spent first and
+    the explicit end is only reached when there is nothing else to send.
+
+    An item with no tier on file sorts as `_DEFAULT_TIER`: the describe pass has
+    not reached every item, and a NULL is missing data, not evidence of hardcore.
+    """
+    if not max_tier or not media:
+        return media
+    ceiling = TIER_RANK.get(max_tier, TIER_RANK[_DEFAULT_TIER])
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.explicitness_tier).where(
+                VaultItem.account_id == str(account_id),
+                VaultItem.media_id.in_(media))
+        )).all()
+    by_id = {int(m): str(t or _DEFAULT_TIER).strip().lower() for m, t in rows}
+    rank = {m: TIER_RANK.get(by_id.get(m, _DEFAULT_TIER),
+                             TIER_RANK[_DEFAULT_TIER]) for m in media}
+    # Stable: within "earned" and within "over-tier", operator rank order holds.
+    return ([m for m in media if rank[m] <= ceiling]
+            + [m for m in media if rank[m] > ceiling])
 
 
 async def _bought_media(account_id: str, fan_id: int) -> set[int]:
@@ -508,7 +585,12 @@ async def quote_pack(account_id: str, fan_id: int, item: CatalogItem,
         escalation_mult=None, max_ask_vs_history_mult=None)
     if quote is None:
         return None
-    px = int(quote.price_cents)
+    # The per-fan ceiling, applied AFTER the ladder has spoken. `next_price`
+    # already refuses to ask a cold fan more than $59 and can never exceed the
+    # $200 wire max; this is the operator's middle rule, which nothing else
+    # enforces — $100 unless a real PPV proves he goes higher.
+    cap, _tier = await spend_bounds(account_id, fan_id)
+    px = min(int(quote.price_cents), cap)
     n = _clamp_count(px)
     if avail < n:                    # the shelf vetoes the price
         px = max(upsell.OF_PRICE_FLOOR_CENTS, avail * CENTS_PER_ITEM)
@@ -549,6 +631,10 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
     # A promised media KIND narrows the shelf before the price is quoted, so a
     # "send me a video" ask can never be filled with photos.
     avail_ids = await _filter_kind(account_id, avail_ids, media_kind)
+    # ...and a fan who has bought nothing is served the tame end of the shelf
+    # first. Ordering, not exclusion — see `_rank_by_tier`.
+    _cap, max_tier = await spend_bounds(account_id, fan_id)
+    avail_ids = await _rank_by_tier(account_id, avail_ids, max_tier)
     if len(avail_ids) < MIN_ITEMS:
         return PackPlan(**{**empty.__dict__, "refusal": REFUSE_TOO_THIN,
                            "detail": f"{len(avail_ids)} un-bought"})
