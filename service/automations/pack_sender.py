@@ -134,9 +134,20 @@ MAX_ITEMS = 35
 PREVIEW_MIN, PREVIEW_MAX = 2, 3
 _REPLY_MAX_CHARS = 600        # OF truncates the chat-list preview past this
 
-# A pack may only be sold where an authored rung phrase exists. `script_packs`
-# ships en/es/sl; prod is 16 en accounts and 1 es, and neither pilot is Spanish.
-PACK_LANGUAGES = frozenset({"en", "es", "sl"})
+# 🚨 ENGLISH ONLY, narrowed from {en, es, sl} on 2026-08-11.
+#
+# The gate admitted the three languages `script_packs` ships, but the CLAUSE — the
+# one line the fan reads before he pays, and the thing this module exists to keep
+# honest — is built in English by `render_clause`/`ask_clause` and by the authored
+# `RUNG_PHRASES`, which only carry ("feet", …) in English. An `es` account
+# therefore passed the gate and paywalled "3 pics of cuero": a mixed-language
+# claim, on the exact field a dispute turns on.
+#
+# That was survivable while the flags shipped OFF and neither pilot was Spanish.
+# It stopped being survivable the moment the default flipped ON across the
+# roster, which includes one `es` account. Widen this again when the clause is
+# authored per language, not before.
+PACK_LANGUAGES = frozenset({"en"})
 
 # ⚠️ Mirror age is a WARNING, not a refusal — corrected 2026-08-11.
 #
@@ -988,6 +999,7 @@ async def send_pack(client, account_id: str, fan_id: int, category: str,
                     rung: str, *, cfg: dict | None = None,
                     voice_line: str | None = None,
                     company: bool = False,
+                    media_kind: str | None = None,
                     dry_run: bool = False) -> dict:
     """Send ONE pack, priced, to ONE fan. Per-chat, attributed, out of band.
 
@@ -1012,7 +1024,7 @@ async def send_pack(client, account_id: str, fan_id: int, category: str,
     """
     cfg = cfg or {}
     plan = await plan_pack(account_id, fan_id, category, rung, cfg=cfg,
-                           company=company)
+                           company=company, media_kind=media_kind)
     if not plan.ok:
         log.info("pack refused account=%s fan=%s %s-%s: %s %s",
                  account_id, fan_id, category, rung, plan.refusal, plan.detail)
@@ -1069,18 +1081,39 @@ async def _deliver(client, plan: PackPlan, *, voice_line: str | None,
     if not msg_id:
         return {"status": "error", "reason": "no_message_id"}
 
-    await write_outbound_attribution(
-        account_id=str(account_id), fan_id=int(fan_id), message_id=int(msg_id),
-        sent_by_employee_id=None, automation_kind="pack_send",
-        body=str(result.get("text") or caption), price_cents=plan.price_cents,
-        created_at=datetime.utcnow(), emit_live=True)
-    # The SLICE, never the shelf.
-    await _record_vault_sends(str(account_id), int(fan_id), list(plan.media),
-                              int(msg_id), plan.price_cents)
-    async with get_session() as s:
-        item = await s.get(CatalogItem, int(plan.item_id))
-    await _record_offer(str(account_id), int(fan_id), item, "ppv", int(msg_id),
-                        quoted_cents=plan.price_cents)
+    # 🚨 EVERYTHING BELOW IS POST-WIRE. The fan has been charged; there is no
+    # undo. A raise here used to propagate, so the caller saw a failure for a PPV
+    # that HAD been sent — and the next tick, finding no ownership row and no
+    # offer, would send it again. A double charge caused by a bookkeeping error
+    # is still a double charge.
+    #
+    # So the send is reported as OK and each record is attempted independently.
+    # A lost record is a reporting bug, loud in the log and recoverable from the
+    # message id; a lost SEND is money.
+    for what, coro in (
+        ("attribution", write_outbound_attribution(
+            account_id=str(account_id), fan_id=int(fan_id), message_id=int(msg_id),
+            sent_by_employee_id=None, automation_kind="pack_send",
+            body=str(result.get("text") or caption), price_cents=plan.price_cents,
+            created_at=datetime.utcnow(), emit_live=True)),
+        # The SLICE, never the shelf.
+        ("vault_sends", _record_vault_sends(
+            str(account_id), int(fan_id), list(plan.media), int(msg_id),
+            plan.price_cents)),
+    ):
+        try:
+            await coro
+        except Exception:  # noqa: BLE001
+            log.exception("pack POST-SEND %s failed account=%s fan=%s msg=%s "
+                          "— the fan WAS charged", what, account_id, fan_id, msg_id)
+    try:
+        async with get_session() as s:
+            item = await s.get(CatalogItem, int(plan.item_id))
+        await _record_offer(str(account_id), int(fan_id), item, "ppv", int(msg_id),
+                            quoted_cents=plan.price_cents)
+    except Exception:  # noqa: BLE001
+        log.exception("pack POST-SEND offer record failed account=%s fan=%s msg=%s "
+                      "— the fan WAS charged", account_id, fan_id, msg_id)
 
     log.info("pack SENT account=%s fan=%s %s-%s n=%s px=%s msg=%s",
              account_id, fan_id, plan.category, plan.rung or "-",
@@ -1192,14 +1225,15 @@ async def send_pack_on_ask(client, account_id: str, fan_id: int, *,
 
     res = await send_pack(client, account_id, fan_id, category, rung, cfg=cfg,
                           voice_line=voice_line, company=contract.company,
-                          dry_run=dry_run)
+                          media_kind=contract.media_kind, dry_run=dry_run)
     # He asked for the product rung and it is spent — try the ladder rung, but
     # only if he has already bought from this category.
     if (res.get("reason") == REFUSE_TOO_THIN and rung == DEFAULT_RUNG
             and await _has_bought_from(account_id, fan_id, category)):
         res = await send_pack(client, account_id, fan_id, category, LADDER_RUNG,
                               cfg=cfg, voice_line=voice_line,
-                              company=contract.company, dry_run=dry_run)
+                              company=contract.company,
+                              media_kind=contract.media_kind, dry_run=dry_run)
     res.setdefault("category", category)
     res.setdefault("asked", contract.quote)
     return res
