@@ -20,6 +20,7 @@ vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(), post: vi.fn() } }));
 
 import {
   describeSweepText,
+  sweepAbortedNote,
   harvestSweepLabel,
   sweepCounts,
   sweepStatusKey,
@@ -158,6 +159,29 @@ describe("label maths", () => {
   it("marks a cap hit on the button, where it changes what you do next", () => {
     expect(describeSweepText({ total: 500, done: 232, capped: true }).label)
       .toBe("232/500 (cap hit)");
+  });
+
+  it("says a sweep DIED, because otherwise it looks like one that finished", () => {
+    // The whole point: `running: false` + `done < total` is the same two facts
+    // for both, so the button read "Describe all (N)" either way and the only
+    // feedback an operator had was to press it again — which is exactly what
+    // happened on prod for an hour on 2026-08-11.
+    const note = sweepAbortedNote({
+      total: 832, done: 214, aborted: true,
+      error: "RuntimeError: OF read blew up mid-collect",
+    });
+    expect(note?.text).toContain("618 left");
+    expect(note?.text).toContain("Press again");
+    expect(note?.detail).toContain("OF read blew up");
+  });
+
+  it("stays quiet about a pass that FINISHED, however many items failed", () => {
+    // The server keeps its progress snapshot forever and only clears `aborted`
+    // at the next start. Surfacing anything else would put a permanent amber
+    // banner on the page describing a run from three days ago.
+    expect(sweepAbortedNote({ total: 500, done: 500, failed: 7, error: "boom" })).toBeNull();
+    expect(sweepAbortedNote({ total: 500, done: 500 })).toBeNull();
+    expect(sweepAbortedNote(null)).toBeNull();
   });
 
   it("counts harvest matches", () => {

@@ -375,36 +375,29 @@ async def _described_pool(account_id: str, seen: set[int],
 # cache, while the same words appended per-message would not be.
 _LEXICON_TTL_S = 6 * 3600
 _LEXICON_MAX = 200
-_lexicon_cache: dict[str, tuple[float, Counter, int]] = {}
+_lexicon_cache: dict[str, tuple[float, list[str]]] = {}
 
 
 async def vault_lexicon(account_id: str) -> list[str]:
     """The words THIS account's descriptions actually use, most common first.
 
-    Document frequency, not raw count: a word in 900 items beats one repeated
+    DOCUMENT frequency, not raw count: a word in 900 items beats one repeated
     nine times in the same item. Deliberately NOT frequency-capped — `breasts`
     is in 61% of this vault and is exactly the word the expander needs, so any
-    "too common to be useful" rule would delete the payload.
-    """
-    freq, _total = await _term_frequencies(account_id)
-    return [w for w, _n in freq.most_common(_LEXICON_MAX)]
+    "too common to be useful" rule would delete the payload. One such rule
+    existed for about an hour on 2026-08-11 and did exactly that.
 
-
-async def _term_frequencies(account_id: str) -> tuple[Counter, int]:
-    """`(word -> items containing it, total items)`. One scan, cached.
-
-    DOCUMENT frequency: a word in 900 items beats one repeated nine times in
-    the same item. The FULL counter is kept, not just the head — the broadness
-    guard has to score terms the lexicon never showed the model ("soles").
-
-    ⚠️ Approximate by construction: retrieval matches `%term%` as a substring
-    while this counts whole words, so "ass" scores lower here than it selects.
-    It is a guard, not an index — a term has to be wildly common to trip it.
+    This was two functions returning `(Counter, total)` so a `drop_useless_terms`
+    guard could score words the lexicon never showed the model. That guard is
+    gone — ranking moved into SQL, where a broad term simply sorts below a
+    precise one — so the head of the list is the whole product. Caching the
+    finished 200 words instead of the full counter also stops this holding a
+    vault-sized vocabulary per account for six hours.
     """
     now = time.monotonic()
     hit = _lexicon_cache.get(str(account_id))
     if hit and now - hit[0] < _LEXICON_TTL_S:
-        return hit[1], hit[2]
+        return hit[1]
     async with get_session() as s:
         rows = (await s.execute(
             select(VaultItem.search_text, VaultItem.description,
@@ -419,8 +412,9 @@ async def _term_frequencies(account_id: str) -> tuple[Counter, int]:
                                 " ".join(str(x or "") for x in row).lower())
             if 3 <= len(w) <= 20 and w not in _STOPWORDS
         })
-    _lexicon_cache[str(account_id)] = (now, freq, len(rows))
-    return freq, len(rows)
+    words = [w for w, _n in freq.most_common(_LEXICON_MAX)]
+    _lexicon_cache[str(account_id)] = (now, words)
+    return words
 
 
 async def solo_only(account_id: str, media_ids: list[int]) -> list[int]:
@@ -533,22 +527,19 @@ async def kind_of(account_id: str, media_ids: list[int]) -> dict[int, str]:
 
 # ── The three calls ─────────────────────────────────────────────────
 
-async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
-                        model: str | None = None) -> Contract:
-    """CALL 1 — what did he ask for, in his own words?
+def _contract_system() -> str:
+    """CALL 1's system prompt, hoisted out of `read_contract`.
 
-    Deliberately conservative: no ask is a perfectly good answer, and inventing
-    one is how a fan gets sent something he never wanted. `strict` is set only
-    for exclusive language ("only", "just", "nothing but") — the exact shape of
-    the message that preceded a real account deletion.
+    House idiom — `_daylog`, `_objection`, `_persona`, `_pins`, `gen_info`,
+    `describe_media` and `of_ai_chat` all keep their prompt at module level.
+    `read_contract` was 139 lines with 62 of them this string, which buried the
+    three things it actually does: read the thread, call, parse.
+
+    Built once at import — `known` reads `vault_pack_picker.CATEGORIES`, a
+    literal dict, so it cannot differ between calls.
     """
-    lines = await _thread_lines(
-        account_id, fan_id, n_msgs,
-        (await load_voice_blocks(account_id)).voice)
-    if not lines:
-        return Contract()
     known = ", ".join(sorted(vault_pack_picker.CATEGORIES)) or "(none)"
-    system = (
+    return (
         "You read an OnlyFans chat and decide TWO separate things.\n\n"
         "FIRST — is_ask: is he asking to SEE or RECEIVE content from her?\n"
         "  YES: \"send me that set\", \"can i see\", \"show me\", \"come show me\", "
@@ -602,6 +593,27 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
         'Examples — \'feet\': feet, foot, soles, toes, barefoot, arches, ankles. '
         '\'back shots\': ass, behind, doggy, bent, arched, rear."]}'
     )
+
+
+_CONTRACT_SYSTEM = _contract_system()
+
+
+
+async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
+                        model: str | None = None) -> Contract:
+    """CALL 1 — what did he ask for, in his own words?
+
+    Deliberately conservative: no ask is a perfectly good answer, and inventing
+    one is how a fan gets sent something he never wanted. `strict` is set only
+    for exclusive language ("only", "just", "nothing but") — the exact shape of
+    the message that preceded a real account deletion.
+    """
+    lines = await _thread_lines(
+        account_id, fan_id, n_msgs,
+        (await load_voice_blocks(account_id)).voice)
+    if not lines:
+        return Contract()
+    system = _CONTRACT_SYSTEM
     # 🚨 The vault's OWN words, appended to the system prompt.
     #
     # Without this the expansion is a guess about a vault the model has never

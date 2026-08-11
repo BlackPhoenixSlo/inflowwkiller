@@ -27,18 +27,14 @@ IDENTITY only — rung, band, `description_for_ai` — and exists because
 media is resolved from the bound folder **at send time**, so adding a photo to
 `feet-nude` puts it in the next send with nothing to re-cut.
 
-## Count follows price, at the house rate
+## Where the rest of it lives
 
-    px    = next_price(...)                 # floats $10-200
-    n     = clamp(3, px // 500, 12)         # $5 an item, min 3, max 12
-    avail = rung − what he has BOUGHT       # per fan, un-BOUGHT not un-sent
-    if avail < n:  px = avail * 500         # the shelf VETOES the price
-    if avail < 3:  REFUSE
-
-$5/item is not a new convention — `tip_reward.dollars_per_image` is 5 on all ten
-prod accounts, `min_images` 2, `max_images` 12. A $59 pack of 3 would be $19.67
-an item, 3.9x the house rate: the same shape as the sale that preceded a deleted
-account, with the lie removed.
+Split on 2026-08-11, when this file crossed 1,200 lines:
+  * `pack_pricing` — the rate card, the per-fan ceiling, the tier ordering, and
+    which pieces cover a quote. *What is it worth and what may he be charged.*
+  * `pack_claim` — every word the fan reads, and the count it promises.
+    *The contract.*
+This module keeps the shelf, the audits, the product row, and the wire.
 
 ⚠️ `avail` is un-BOUGHT, not un-sent (ticket 14). Keying on SENT would let one
 declined $59 offer permanently strip 11 items from the rung — the fan's own
@@ -56,8 +52,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import random
-import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
@@ -71,68 +65,17 @@ from db.models import (
 )
 
 from . import content_resolver, upsell
+from .pack_claim import (
+    Claim, ask_clause, compose_caption, product_description, render_clause,
+)
+from .pack_pricing import (
+    MAX_ITEMS, MIN_ITEMS, RUNG_STICKER_CENTS, DEFAULT_STICKER_CENTS,
+    compose_by_value, quote_pack, rank_by_tier, spend_bounds,
+)
 
 log = logging.getLogger("of-relay.automation.pack_sender")
 
-# ── House constants ─────────────────────────────────────────────────
-CENTS_PER_ITEM = 500          # tip_reward.dollars_per_image = 5, on all 10 accounts
-MIN_ITEMS = 3                 # tip_reward.min_images scaled to a priced ask
-# Operator ruling 2026-08-11: "it's nice to always have at least 7 but not
-# needed (fill with some crap)." A SOFT target — the pack pads toward it with
-# low-value items from the SAME rung once the price is already covered, and
-# simply stops early when the shelf cannot reach it.
-SOFT_TARGET_ITEMS = 7
-
-# ── Per-item VALUE (operator ruling 2026-08-11) ─────────────────────
-#
-# "Videos 5-10$ per 10 sec … images, the explicit for more like 10$ … teases are
-# less valuable and can be added as filler."
-#
-# ⚠️ This REPLACES the flat $5-an-item rate for composition, and it is a
-# deliberate revision of SPEC ticket 06. Read that ruling before touching this:
-# the flat rate existed because a $59 pack of 3 is $19.67 an item, and that shape
-# preceded two account deletions. The protection is preserved a different way —
-# value now decides the COUNT, so a high price must be MET with real content
-# rather than justified by a small number of expensive-looking items.
-VIDEO_CENTS_PER_10S = {"hardcore": 1000, "explicit": 1000,
-                       "suggestive": 700, "sfw": 500}
-IMAGE_CENTS = {"hardcore": 1000, "explicit": 1000, "suggestive": 300, "sfw": 100}
-_DEFAULT_TIER = "suggestive"
-FILLER_MAX_CENTS = 300        # at or below this, an item counts as filler
-
-# ── What he may be asked, and how explicit it may be ────────────────
-#
-# Operator, 2026-08-11: "max is 100 or 200 depending on ppv and what he sold and
-# bought etc. if he hasnt bought much we send less explicit at start."
-#
-# Two of the three halves were already enforced upstream by `upsell`, and are
-# NOT re-implemented here: COLD_OPEN_CEILING_CENTS ($59) is the "first send is
-# ~$60" rule, and OF_PRICE_MAX_CENTS ($200) is a hard wire invariant. What was
-# missing is the MIDDLE — a fan who once paid $40 is quotable at 3x that under
-# MAX_ASK_VS_HISTORY_MULT, i.e. $120, with nothing between $59 and the $200 wire
-# max to say otherwise.
-PACK_CAP_CENTS = 10_000            # the normal ceiling for a content-ask pack
-PACK_CAP_PROVEN_CENTS = 20_000     # lifted only by a genuinely big single PPV
-PROVEN_SINGLE_PPV_CENTS = 5_000    # one PPV at $50+ is what "proven" means
-
-# The explicitness ladder is climbed by SPENDING, not by asking. A man who has
-# never paid gets the tease, and the payoff is what he is buying — leading with
-# hardcore to a cold fan spends the only thing there is left to sell him.
-TIER_RANK: dict[str, int] = {"sfw": 0, "suggestive": 1, "explicit": 2, "hardcore": 3}
-COLD_MAX_TIER = "suggestive"       # never paid → nothing above this
-WARM_MAX_TIER = "explicit"         # has paid, but not big → explicit, not hardcore
-# Operator ruling 2026-08-11: "we can pick from 3-35 pieces depending on ask and
-# price." Raised from tip_reward's max_images of 12, which exists so "a whale tip
-# can't drain a folder in one shot" — a FREE-reward concern that does not apply
-# to a priced pack.
-#
-# ⚠️ Price still governs, so 35 is rare and earned, not common: at $5 an item a
-# 35-piece pack is a $175 ask, and `MAX_ASK_VS_HISTORY_MULT = 3.0` means that is
-# only quotable to a fan whose largest single paid PPV was ~$58. A cold fan
-# capped at COLD_OPEN_CEILING_CENTS ($59) still resolves to 11.
-MAX_ITEMS = 35
-PREVIEW_MIN, PREVIEW_MAX = 2, 3
-_REPLY_MAX_CHARS = 600        # OF truncates the chat-list preview past this
+PREVIEW_MAX = 3
 
 # 🚨 ENGLISH ONLY, narrowed from {en, es, sl} on 2026-08-11.
 #
@@ -168,41 +111,9 @@ REFUSE_DISABLED = "pack_disabled"
 REFUSE_NO_SHELF = "no_shelf"
 REFUSE_TOO_THIN = "shelf_too_thin"          # fewer than MIN_ITEMS un-bought
 REFUSE_AUDIT = "audit_failed"
-REFUSE_STALE_MIRROR = "stale_mirror"
 REFUSE_LANGUAGE = "unsupported_language"
 REFUSE_NO_PRICE = "no_price"
 REFUSE_RESOLVER = "resolver_refused"
-
-# 🚨 Fan-facing rung phrases. Internal folder names are TRIAGE vocabulary and are
-# wrong for a fan: `nude` reads as HER BODY, which is rung 3. The negative half
-# is load-bearing — "bare feet" alone leaves him free to expect rung 3 at $59.
-# 🚨 The STICKER, per rung. Not what any fan is charged — `next_price` quotes
-# that per fan — but the anchor `derive_band` needs to place the item in a price
-# band at all. SPEC §6.1 warned that `band_lo`/`band_hi` are NULL on all 165
-# catalog items, so a row created with price_cents=0 collapses the band to the
-# floor: the first dry-run against the live shelf quoted $8.21 for $42 of
-# content. These are SPEC §6's own figures — the $59 median for the product
-# rung, and 3x that for rung 3, which is where MAX_ASK_VS_HISTORY_MULT lands a
-# fan who bought rung 2.
-RUNG_STICKER_CENTS: dict[str, int] = {
-    "tease": 0,            # never sold — previews only
-    "nude": 5900,
-    "nude-body": 17700,
-}
-
-RUNG_PHRASES: dict[tuple[str, str], str] = {
-    ("feet", "tease"): "feet, covered",
-    ("feet", "nude"): "bare feet, no nudity",
-    ("feet", "nude-body"): "bare feet, and me nude with them",
-}
-
-# The corpus word, per (category, rung-agnostic). Real asks are short and
-# literal — median 35 characters — so the noun is his, not ours.
-ASK_NOUN: dict[str, str] = {"feet": "feet pics"}
-
-# A voice line may not carry a number, a price, or a content claim: the clause
-# above it is the contract, and a second claim underneath can contradict it.
-_VOICE_BAN = re.compile(r"[0-9$€£]|\bpics?\b|\bphotos?\b|\bvideos?\b|\bset\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -217,7 +128,7 @@ class PackPlan:
     media: list[int]            # the [:n] slice, in operator rank order
     previews: list[int]
     price_cents: int
-    clause: str
+    claim: Claim                # the caption's promise, and the count it makes
     refusal: str | None = None
     detail: str = ""
     value_cents: int = 0        # rate-card worth of the attached payoff
@@ -226,164 +137,6 @@ class PackPlan:
     def ok(self) -> bool:
         return self.refusal is None and bool(self.media)
 
-
-def _clamp_count(px_cents: int) -> int:
-    """The legacy flat-rate count. Still the FLOOR/CEILING guard on composition."""
-    return max(MIN_ITEMS, min(int(px_cents) // CENTS_PER_ITEM, MAX_ITEMS))
-
-
-def item_value_cents(kind: str | None, duration_seconds: int | None,
-                     explicitness_tier: str | None) -> int:
-    """What one piece is worth, per the operator's 2026-08-11 rate card.
-
-    A video is priced by LENGTH — $5–10 per 10 seconds depending on how explicit
-    it is — because 10 seconds of hardcore and 10 seconds of a sfw pan are not
-    the same product. A still is priced by explicitness alone: explicit ~$10,
-    a tease is filler.
-
-    Rounded to whole 10-second blocks so a 43-second clip is priced as 4 blocks,
-    not 4.3 — the fan is buying content, not a stopwatch reading.
-    """
-    tier = str(explicitness_tier or _DEFAULT_TIER).strip().lower()
-    if str(kind or "").lower() in ("video", "gif"):
-        blocks = max(1, round(int(duration_seconds or 0) / 10))
-        return blocks * VIDEO_CENTS_PER_10S.get(tier, VIDEO_CENTS_PER_10S[_DEFAULT_TIER])
-    return IMAGE_CENTS.get(tier, IMAGE_CENTS[_DEFAULT_TIER])
-
-
-async def _values_for(account_id: str, media: list[int]) -> dict[int, int]:
-    if not media:
-        return {}
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(VaultItem.media_id, VaultItem.kind, VaultItem.duration_seconds,
-                   VaultItem.explicitness_tier).where(
-                VaultItem.account_id == str(account_id),
-                VaultItem.media_id.in_(media))
-        )).all()
-    return {int(m): item_value_cents(k, d, t) for m, k, d, t in rows}
-
-
-async def compose_by_value(account_id: str, avail_ids: list[int],
-                           target_cents: int,
-                           kinds_by_id: dict[int, str] | None = None
-                           ) -> tuple[list[int], int]:
-    """Fill `target_cents` with real content, then pad toward the soft target.
-
-    Returns `(media, value_cents)`. `value_cents` may be LESS than the target —
-    that is the shelf vetoing the price, and the caller must drop the ask to it
-    rather than charge for content that is not there.
-
-    Two passes, and the order is the point:
-      1. **Payoff first**, in operator rank order, until the price is covered.
-         The fan's money buys the good stuff, not the padding.
-      2. **Filler after**, only once the price is already met, and only from the
-         SAME rung — so the caption's claim stays true of every attached item.
-         Filler never raises the price; it raises the count toward 7.
-    """
-    values = await _values_for(account_id, avail_ids)
-    kinds_by_id = (kinds_by_id if kinds_by_id is not None
-                   else await content_resolver.kind_of(account_id, avail_ids))
-    payoff = [m for m in avail_ids if values.get(m, 0) > FILLER_MAX_CENTS]
-    filler = [m for m in avail_ids if values.get(m, 0) <= FILLER_MAX_CENTS]
-
-    chosen: list[int] = []
-    total = 0
-    for mid in payoff:                       # rank order — best first
-        if total >= target_cents or len(chosen) >= MAX_ITEMS:
-            break
-        chosen.append(mid)
-        total += values.get(mid, 0)
-    # The price is not yet met and there is no more payoff: take filler too, so
-    # the shelf's honest ceiling is computed from everything it actually has.
-    for mid in filler:
-        if total >= target_cents or len(chosen) >= MAX_ITEMS:
-            break
-        chosen.append(mid)
-        total += values.get(mid, 0)
-
-    # ── One moving thing, if the shelf has one ─────────────────────
-    #
-    # Operator, 2026-08-11, on a 7-item $52 pack of stills: "4 picks for 44 is a
-    # bit much, maybe one short vid if we have." A stack of photos at that price
-    # reads thin however the rate card scores it — a clip is what makes it feel
-    # like a set rather than a contact sheet.
-    #
-    # Cheapest qualifying clip, and only when the pack is otherwise ALL stills:
-    # this is about the shape of the pack, not about spending more. The pilot
-    # vault has 252 clips of 10s or under, so the swap is nearly always available.
-    if chosen and not any(kinds_by_id.get(m) in ("video", "gif") for m in chosen):
-        clip = next((m for m in avail_ids
-                     if m not in chosen
-                     and kinds_by_id.get(m) in ("video", "gif")), None)
-        if clip is not None:
-            # Swap out the WEAKEST still rather than appending: appending would
-            # quietly raise what he gets for the same price every single time,
-            # which is the inventory burn the filler-only rule just closed.
-            weakest = min(chosen, key=lambda m: values.get(m, 0))
-            if values.get(clip, 0) >= values.get(weakest, 0):
-                chosen[chosen.index(weakest)] = clip
-                total += values.get(clip, 0) - values.get(weakest, 0)
-
-    # Pad toward the soft target at NO extra charge — from FILLER ONLY.
-    #
-    # 🚨 This used to pad from `avail_ids`, which meant the free padding could be
-    # $40 clips: a $60 ask walked out with $270 of content attached and the next
-    # ask had nothing left to sell. The operator's rule is "nice to always have
-    # at least 7 but not needed (fill with some crap)" — crap is the whole point
-    # of the pass. If there is no filler left, a 4-item pack is the right answer.
-    if len(chosen) < SOFT_TARGET_ITEMS:
-        for mid in filler:
-            if len(chosen) >= SOFT_TARGET_ITEMS or len(chosen) >= MAX_ITEMS:
-                break
-            if mid not in chosen:
-                chosen.append(mid)
-    return chosen, total
-
-
-def render_clause(category: str, rung: str, n: int,
-                  kinds: list[str] | None = None) -> str:
-    """The claim clause — rendered, never typed, never omitted.
-
-    Grammar is `"{n} {rung-qualified ask noun}"`, the rung folded INTO the noun
-    rather than trailing in a dash-clause, because OF truncates a long caption in
-    the chat-list preview: a voice-first caption shows him the flirt and hides
-    the subject at exactly the moment he decides whether to open it.
-
-    🚨 `kinds` exists because this said "pics" about packs containing VIDEO.
-    Caught 2026-08-11 in a live dry-run: a 7-item feet pack held 5 photos and a
-    4-second clip and was captioned "7 bare feet pics". `ASK_NOUN` is written
-    per-category and hardcodes the word — the shelves were stills when it was
-    written, and the whole-vault work put clips on them. That is a caption
-    claiming something other than what is attached, which is the precise class
-    of lie that preceded two account deletions, and no audit rule caught it
-    because rules 1-5 check MEMBERSHIP, never the noun.
-
-    Passing nothing keeps the old wording, for the callers that genuinely know
-    the pack is stills.
-    """
-    phrase = RUNG_PHRASES.get((category, rung))
-    noun = ASK_NOUN.get(category, f"{category} pics")
-    vids = sum(1 for k in (kinds or []) if str(k or "").lower() in ("video", "gif"))
-    if vids:
-        # Name both media, with the authored noun's own media word stripped:
-        # "feet pics" + a clip becomes "5 pics + 2 vids of bare feet".
-        pics = len(kinds or []) - vids
-        subject = re.sub(r"\s*\b(pics?|photos?|videos?|vids?)\b\s*$", "",
-                         noun).strip()
-        head = (f"{pics} pic{'s' * (pics > 1)} + {vids} vid{'s' * (vids > 1)}"
-                if pics else f"{vids} vid{'s' * (vids > 1)}")
-        if not subject:
-            return head
-        return f"{head} of {'bare ' if rung == 'nude' else ''}{subject}"
-    if rung == "nude":
-        return f"{n} bare {noun}"
-    if phrase:
-        return f"{n} {noun} — {phrase}"
-    return f"{n} {noun}"
-
-
-# ── The shelf ───────────────────────────────────────────────────────
 
 async def _shelf_media(account_id: str, category: str, rung: str) -> list[int]:
     """The rung's media in OPERATOR RANK order (manual_order, NULLs last).
@@ -427,55 +180,6 @@ async def _filter_kind(account_id: str, media: list[int], kind: str | None) -> l
         )).all()
     by_id = {int(m): str(k or "") for m, k in rows}
     return [m for m in media if by_id.get(m, kind) == kind]
-
-
-async def spend_bounds(account_id: str, fan_id: int) -> tuple[int, str | None]:
-    """`(cap_cents, max_tier)` for THIS fan, from what he has actually paid.
-
-    `max_tier` is None for a proven buyer — no ceiling, he has earned the vault.
-    Everyone else is bounded, and a fan who has never paid a cent is bounded
-    twice: at $100 and at `suggestive`.
-    """
-    from .ai_chatter import _paid_ppv_facts        # local: avoid an import cycle
-
-    max_paid, _last = await _paid_ppv_facts(str(account_id), int(fan_id))
-    max_paid = int(max_paid or 0)
-    if max_paid >= PROVEN_SINGLE_PPV_CENTS:
-        return PACK_CAP_PROVEN_CENTS, None
-    if max_paid > 0:
-        return PACK_CAP_CENTS, WARM_MAX_TIER
-    return PACK_CAP_CENTS, COLD_MAX_TIER
-
-
-async def _rank_by_tier(account_id: str, media: list[int],
-                        max_tier: str | None) -> list[int]:
-    """Put what he has earned FIRST, keeping everything else behind it.
-
-    🚨 A preference, deliberately not a filter. Dropping over-tier items outright
-    is one line shorter and empties the shelf for a cold fan whenever the shelf
-    happens to be explicit — the silent-refusal shape this map has warned about
-    three times, and what the first cut of this did to 8 of 10 test cases.
-    Composition consumes this list in order, so the tame end is spent first and
-    the explicit end is only reached when there is nothing else to send.
-
-    An item with no tier on file sorts as `_DEFAULT_TIER`: the describe pass has
-    not reached every item, and a NULL is missing data, not evidence of hardcore.
-    """
-    if not max_tier or not media:
-        return media
-    ceiling = TIER_RANK.get(max_tier, TIER_RANK[_DEFAULT_TIER])
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(VaultItem.media_id, VaultItem.explicitness_tier).where(
-                VaultItem.account_id == str(account_id),
-                VaultItem.media_id.in_(media))
-        )).all()
-    by_id = {int(m): str(t or _DEFAULT_TIER).strip().lower() for m, t in rows}
-    rank = {m: TIER_RANK.get(by_id.get(m, _DEFAULT_TIER),
-                             TIER_RANK[_DEFAULT_TIER]) for m in media}
-    # Stable: within "earned" and within "over-tier", operator rank order holds.
-    return ([m for m in media if rank[m] <= ceiling]
-            + [m for m in media if rank[m] > ceiling])
 
 
 async def _bought_media(account_id: str, fan_id: int) -> set[int]:
@@ -590,7 +294,6 @@ async def ensure_pack_item(account_id: str, category: str, rung: str) -> Catalog
     """
     cat = vault_pack_picker.CATEGORIES[category]
     tag = f"rung:{cat.folder_name(rung)}"
-    phrase = RUNG_PHRASES.get((category, rung), f"{category}, {rung}")
     async with get_session() as s:
         row = (await s.execute(
             select(CatalogItem).where(
@@ -605,64 +308,19 @@ async def ensure_pack_item(account_id: str, category: str, rung: str) -> Catalog
                 tags=json.dumps([tag]),
                 media_ids="[]",           # resolved LIVE at send time
                 preview_media_ids="[]",
-                price_cents=RUNG_STICKER_CENTS.get(rung, 5900),
+                price_cents=RUNG_STICKER_CENTS.get(rung, DEFAULT_STICKER_CENTS),
                 enabled=False,            # never in the ordinary manifest
             )
             s.add(row)
         # Keep the sticker current even on a row created before this existed.
-        row.price_cents = RUNG_STICKER_CENTS.get(rung, 5900)
-        row.description_for_ai = (
-            f"{phrase}. Sold as a set of photos from her {category} collection; "
-            f"the number of photos depends on the price."
-        )
+        row.price_cents = RUNG_STICKER_CENTS.get(rung, DEFAULT_STICKER_CENTS)
+        row.description_for_ai = product_description(category, rung)
         await s.commit()
         await s.refresh(row)
         return row
 
 
 # ── Price and count ─────────────────────────────────────────────────
-
-async def quote_pack(account_id: str, fan_id: int, item: CatalogItem,
-                     avail: int) -> tuple[int, int] | None:
-    """`(price_cents, n)` — or None meaning DO NOT OFFER.
-
-    The price is quoted first, the count derives from it, and then the SHELF MAY
-    VETO the price down to what it can honestly fill. A pack the shelf cannot
-    fill is not discounted into existence; it is refused.
-    """
-    from .ai_chatter import _paid_ppv_facts        # local: avoid an import cycle
-
-    max_paid, last_paid = await _paid_ppv_facts(str(account_id), int(fan_id))
-    fan = upsell.FanState(
-        fan_id=int(fan_id), max_single_paid_cents=int(max_paid or 0),
-        last_paid_cents=None,                     # a pack is a cold open, not a rung
-        has_ever_paid=bool(max_paid))
-    band, _src = upsell.derive_band(
-        human_asks_cents=[], account_median_cents=None,
-        item_price_cents=int(item.price_cents or 0))
-    rng = random.Random(f"pack:{account_id}:{fan_id}:{item.id}")
-    quote = upsell.next_price(
-        fan=fan, band=band, last_paid_cents=None, rung_index=0,
-        key=f"pack:{item.id}", account_id=str(account_id), rng=rng,
-        library_bounds=(upsell.OF_PRICE_FLOOR_CENTS, upsell.OF_PRICE_MAX_CENTS),
-        escalation_mult=None, max_ask_vs_history_mult=None)
-    if quote is None:
-        return None
-    # The per-fan ceiling, applied AFTER the ladder has spoken. `next_price`
-    # already refuses to ask a cold fan more than $59 and can never exceed the
-    # $200 wire max; this is the operator's middle rule, which nothing else
-    # enforces — $100 unless a real PPV proves he goes higher.
-    cap, _tier = await spend_bounds(account_id, fan_id)
-    px = min(int(quote.price_cents), cap)
-    n = _clamp_count(px)
-    if avail < n:                    # the shelf vetoes the price
-        px = max(upsell.OF_PRICE_FLOOR_CENTS, avail * CENTS_PER_ITEM)
-        n = _clamp_count(px)
-    n = min(n, avail)
-    if n < MIN_ITEMS:
-        return None
-    return px, n
-
 
 # ── Planning a send ─────────────────────────────────────────────────
 
@@ -699,11 +357,10 @@ async def _price_and_compose(account_id: str, fan_id: int, avail_ids: list[int],
     path only, and the "priced above the rate card" log existed in one copy.
     Two sources of media, ONE pricing rule.
     """
-    quoted = await quote_pack(account_id, fan_id, item, len(avail_ids))
-    if quoted is None:
+    px = await quote_pack(account_id, fan_id, item, len(avail_ids))
+    if px is None:
         return _Priced([], 0, 0, item.id,
                        replace(empty, item_id=item.id, refusal=REFUSE_NO_PRICE))
-    px, _flat_n = quoted
 
     # Compose by VALUE, not by a flat count: a 40-second explicit clip is worth
     # more than eight tease stills, and the fan should get either — but only if
@@ -739,14 +396,14 @@ async def _available(account_id: str, fan_id: int, media_ids: list[int], *,
     KIND is a promise, so it narrows before anything is priced. SOLO is applied
     even to a curated shelf, because an operator who filed a photo under `feet`
     said nothing about who else was in it. TIER is last because it ORDERS rather
-    than excludes — see `_rank_by_tier`.
+    than excludes — see `rank_by_tier`.
     """
     if media_kind:
         media_ids = await _filter_kind(account_id, media_ids, media_kind)
     if not company:
         media_ids = await content_resolver.solo_only(account_id, media_ids)
     _cap, max_tier = await spend_bounds(account_id, fan_id)
-    return await _rank_by_tier(account_id, media_ids, max_tier)
+    return await rank_by_tier(account_id, media_ids, max_tier)
 
 
 async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
@@ -764,7 +421,8 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
     "here is the price" is `_price_and_compose`, shared with `plan_ask`.
     """
     cfg = cfg or {}
-    empty = PackPlan(str(account_id), int(fan_id), category, rung, None, [], [], 0, "")
+    empty = PackPlan(str(account_id), int(fan_id), category, rung, None, [], [],
+                     0, Claim("", 0))
     stop = _guard(cfg, empty)
     if stop is not None:
         return stop
@@ -791,8 +449,8 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
     # repeat across sends. `previews ⊆ media` is what the audit's rule 1 wants, so
     # they join the attached set while staying out of the paid count.
     kinds = await content_resolver.kind_of(account_id, priced.media)
-    clause = render_clause(category, rung, len(priced.media),
-                           [kinds.get(m, "photo") for m in priced.media])
+    claim = render_clause(category, rung,
+                          [kinds.get(m, "photo") for m in priced.media])
     warn = await mirror_warning(account_id)
     if warn:
         log.info("pack plan account=%s fan=%s: %s", account_id, fan_id, warn)
@@ -802,9 +460,9 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
         log.warning("pack audit REFUSED account=%s fan=%s %s-%s: %s",
                     account_id, fan_id, category, rung, "; ".join(bad))
         return replace(empty, item_id=item.id, price_cents=priced.price_cents,
-                       clause=clause, refusal=REFUSE_AUDIT, detail="; ".join(bad))
+                       claim=claim, refusal=REFUSE_AUDIT, detail="; ".join(bad))
     return PackPlan(str(account_id), int(fan_id), category, rung, item.id,
-                    priced.media, previews, priced.price_cents, clause,
+                    priced.media, previews, priced.price_cents, claim,
                     value_cents=priced.value_cents)
 
 
@@ -818,43 +476,6 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
 # ("the pool is the curated shelf UNION the whole vault") applied to the SEND
 # path, which had only ever been applied to the POOL.
 ASK_CATEGORY = "ask"          # the attribution bucket — NOT a curated category
-
-# Subjects that are the MEDIA, not a thing depicted in it. The clause already
-# names the format, so repeating it produces "3 vids of videos".
-_MEDIA_NOUNS = frozenset({
-    "video", "videos", "vid", "vids", "clip", "clips",
-    "pic", "pics", "picture", "pictures", "photo", "photos", "image", "images",
-    "content", "stuff", "set", "sets", "media",
-})
-
-
-def ask_clause(media_kinds: list[str], subject: str | None) -> str:
-    """The claim that leads the caption: a count, the media word, and his noun.
-
-    It has to name the MEDIA. "6 booty" is not English and, worse, is not a
-    promise he can hold her to — and OF truncates a long caption in the
-    chat-list preview, so this is often the only thing he reads before deciding
-    whether to unlock.
-
-    No subject is a legitimate answer here ("show me" names nothing), and the
-    clause simply drops the noun rather than inventing one.
-    """
-    vids = sum(1 for k in media_kinds if str(k or "").lower() in ("video", "gif"))
-    pics = len(media_kinds) - vids
-    if vids and pics:
-        body = f"{pics} pic{'s' * (pics > 1)} + {vids} vid{'s' * (vids > 1)}"
-    elif vids:
-        body = f"{vids} vid{'s' * (vids > 1)}"
-    else:
-        body = f"{pics} pic{'s' * (pics > 1)}"
-    noun = " ".join(str(subject or "").split())[:40]
-    # "3 vids of videos" — his subject IS the media word. Live dry-run against
-    # fan 162257571 ("do you have vids for purchase"), whose whole ask is the
-    # format. Naming it twice reads as broken, and the count already says it.
-    if noun.lower().strip() in _MEDIA_NOUNS:
-        noun = ""
-    return f"{body} of {noun}" if noun else body
-
 
 async def ensure_ask_item(account_id: str) -> CatalogItem:
     """ONE reusable `CatalogItem` for vault-wide ask sends, per account.
@@ -885,14 +506,14 @@ async def ensure_ask_item(account_id: str) -> CatalogItem:
                 # receive it. Both live only in the rendered clause.
                 description_for_ai="content from her vault, picked to match what "
                                    "he asked for",
-                price_cents=RUNG_STICKER_CENTS.get("nude", 5900),
+                price_cents=RUNG_STICKER_CENTS.get("nude", DEFAULT_STICKER_CENTS),
                 tags=json.dumps([tag]))
             s.add(row)
             await s.flush()
         return row
 
 
-async def audit_ask(account_id: str, media: list[int], clause: str,
+async def audit_ask(account_id: str, media: list[int], claim: Claim,
                     company: bool) -> list[str]:
     """What can honestly be checked when there is no rung to check against.
 
@@ -900,22 +521,24 @@ async def audit_ask(account_id: str, media: list[int], clause: str,
     here — there is no shelf, and inventing one would be theatre. Three things
     still hold and all three have drawn blood before:
 
-      1. the count in the clause is the count he receives (the claim IS the
+      1. the count in the claim is the count he receives (the claim IS the
          contract, and a caption that over-counts is the 2026-07-31 shape);
       2. every id is still a live `VaultItem` — a soft-deleted id is charged for
          and never arrives;
       3. nobody else is in it unless he asked (2026-08-11, "very important").
+
+    🚨 Rule 1 compares two integers. It used to recover the count by summing every
+    digit in the RENDERED clause, and the clause ends in the fan's own words — so
+    "34DD tits" summed to 41 against 7 attached items, "2 girls" to 9, "your top 3
+    sets" to 10, and each of those men got a silent `audit_failed` instead of the
+    thing he asked for. `Claim` carries the number the caption actually made.
     """
     bad: list[str] = []
     if not media:
         return ["nothing attached"]
     n = len(media)
-    lead = clause.strip().split(" ", 1)[0]
-    counted = 0
-    for tok in re.findall(r"\d+", clause):
-        counted += int(tok)
-    if counted != n:
-        bad.append(f"clause claims {counted or lead!r}, attaching {n}")
+    if claim.n != n:
+        bad.append(f"claim states {claim.n}, attaching {n}: {claim.text!r}")
 
     async with get_session() as s:
         live = {int(m) for m in (await s.execute(
@@ -949,7 +572,7 @@ async def plan_ask(account_id: str, fan_id: int,
     """
     cfg = cfg or {}
     empty = PackPlan(str(account_id), int(fan_id), ASK_CATEGORY, "", None,
-                     [], [], 0, "")
+                     [], [], 0, Claim("", 0))
     stop = _guard(cfg, empty)
     if stop is not None:
         return stop
@@ -975,42 +598,23 @@ async def plan_ask(account_id: str, fan_id: int,
         return priced.refusal
 
     kinds = await content_resolver.kind_of(account_id, priced.media)
-    clause = ask_clause([kinds.get(m, "photo") for m in priced.media],
-                        contract.subject)
+    claim = ask_clause([kinds.get(m, "photo") for m in priced.media],
+                       contract.subject)
     # ⚠️ No previews. `plan_pack` draws them from the `tease` rung, and a
     # vault-wide ask has no rung to draw from. Attaching an arbitrary vault item
     # as a free preview would give away payoff — audit rule 3, in spirit. The
     # cost is that he sees OF's own blur instead of a chosen frame, which is
     # worth revisiting once there is a tease shelf per subject.
-    bad = await audit_ask(account_id, priced.media, clause, contract.company)
+    bad = await audit_ask(account_id, priced.media, claim, contract.company)
     if bad:
         log.warning("ask audit REFUSED account=%s fan=%s: %s",
                     account_id, fan_id, "; ".join(bad))
         return replace(empty, item_id=item.id, price_cents=priced.price_cents,
-                       clause=clause, refusal=REFUSE_AUDIT, detail="; ".join(bad))
+                       claim=claim, refusal=REFUSE_AUDIT, detail="; ".join(bad))
     return PackPlan(str(account_id), int(fan_id), ASK_CATEGORY, "", item.id,
-                    priced.media, [], priced.price_cents, clause,
+                    priced.media, [], priced.price_cents, claim,
                     value_cents=priced.value_cents)
 
-
-def compose_caption(clause: str, voice_line: str | None) -> str:
-    """Claim clause first, then her reply to the thread.
-
-    ⚠️ The clause LEADS because OF truncates a long caption in the chat-list
-    preview: a voice-first caption shows him the flirt and hides the subject at
-    exactly the moment he decides whether to open it.
-
-    The voice line is rejected — not trimmed — when it carries a digit, a
-    currency symbol or a content-claim word. The clause above it is the contract
-    and a second claim underneath can only contradict it.
-    """
-    line = " ".join(str(voice_line or "").split())
-    if not line or _VOICE_BAN.search(line):
-        return clause
-    budget = _REPLY_MAX_CHARS - len(clause) - 2
-    if budget <= 0:
-        return clause
-    return f"{clause}\n\n{line[:budget]}"
 
 # ── The send ────────────────────────────────────────────────────────
 
@@ -1071,7 +675,7 @@ async def _deliver(client, plan: PackPlan, *, voice_line: str | None,
     from .ai_chatter import _record_offer, _record_vault_sends
 
     account_id, fan_id = plan.account_id, plan.fan_id
-    caption = compose_caption(plan.clause, voice_line)
+    caption = compose_caption(plan.claim, voice_line)
     if dry_run:
         return {"status": "dry_run", "price_cents": plan.price_cents,
                 "n": len(plan.media), "media": plan.media,
@@ -1186,7 +790,7 @@ async def send_ask(client, account_id: str, fan_id: int,
                 "price_cents": plan.price_cents, "n": len(plan.media)}
     return await _deliver(
         client, plan, voice_line=voice_line, dry_run=dry_run,
-        reaudit=lambda: audit_ask(account_id, plan.media, plan.clause,
+        reaudit=lambda: audit_ask(account_id, plan.media, plan.claim,
                                   contract.company))
 
 

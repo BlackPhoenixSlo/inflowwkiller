@@ -35,6 +35,7 @@ import vault_frames
 import vault_mirror
 import vault_pack_picker
 import vault_stills
+import vault_sweep
 # NOTE: the OF payload-shape readers (`still_url`, `giphy_dm_id`) are NOT imported
 # here — `vault_frames` owns "which url in a payload is the picture" now, and this
 # module reaches them through it.
@@ -1570,7 +1571,8 @@ async def _flags_one(account_id: str, media_id: int,
     if not got.images:
         status = _NO_IMAGE_STATUS.get(got.reason, "fetch_failed")
         await _stamp_flags_failure(account_id, media_id, status)
-        return {"media_id": media_id, "ok": False, "status": status}
+        return {"media_id": media_id, "ok": False, "status": status,
+                "detail": got.detail or f"no frames ({status})"}
 
     per_frame: list[dict[str, Any]] = []
     cost = 0
@@ -1716,46 +1718,17 @@ async def _run_flags_all(account_id: str, todo: list[int]) -> None:
     rows that are missing or stale, so a relay restart mid-sweep costs the items
     in flight and nothing else — pressing the button again picks up the rest."""
     try:
-        total = len(todo)
-        done = failed = cost = 0
-        capped = False
-        first_error = ""
-        _flags_progress[account_id] = {"total": total, "done": 0, "failed": 0,
-                                       "capped": False, "cost_millicents": 0}
-        sem = asyncio.Semaphore(_FLAGS_CONCURRENCY)
-
-        async def _one(mid: int) -> None:
-            nonlocal done, failed, cost, capped, first_error
-            async with sem, _vision_gate():  # per-sweep bound + process-wide gate
-                if capped:
-                    return
-                res = await _flags_one(account_id, mid)
-                if res.get("ok"):
-                    done += 1
-                    cost += int(res.get("cost_millicents") or 0)
-                else:
-                    failed += 1
-                    if res.get("status") == "capped":
-                        capped = True
-                    if not first_error and res.get("detail"):
-                        first_error = str(res["detail"])[:200]
-                _flags_progress[account_id] = {
-                    "total": total, "done": done, "failed": failed,
-                    "capped": capped, "cost_millicents": cost,
-                    "error": first_error,
-                }
-
-        for i in range(0, len(todo), 50):
-            if capped:
-                break
-            await asyncio.gather(*(_one(m) for m in todo[i:i + 50]))
-
-        if failed:
-            log.warning("flags_all account=%s flagged=%s/%s FAILED=%s capped=%s first_error=%s",
-                        account_id, done, total, failed, capped, first_error)
+        c = await vault_sweep.run(
+            todo, lambda mid: _flags_one(account_id, mid),
+            concurrency=_FLAGS_CONCURRENCY, gate=_vision_gate,
+            into=_flags_progress, key=account_id,
+            label=f"flags_all account={account_id}")
+        if c.failed:
+            log.warning("flags_all account=%s visited=%s/%s FAILED=%s capped=%s first_error=%s",
+                        account_id, c.done, c.total, c.failed, c.capped, c.error)
         else:
-            log.info("flags_all done account=%s flagged=%s/%s cost_mc=%s",
-                     account_id, done, total, cost)
+            log.info("flags_all done account=%s visited=%s/%s cost_mc=%s",
+                     account_id, c.done, c.total, c.cost_millicents)
     except Exception:  # noqa: BLE001
         log.exception("flags_all failed account=%s", account_id)
     finally:
@@ -2625,7 +2598,13 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
                 .values(describe_status=status, describe_generated_at=datetime.utcnow())
             )
             await s.commit()
-        return {"media_id": media_id, "ok": False, "status": status}
+        # `detail` is what the sweep shows the operator as `first_error`. Without
+        # it a whole vault failing on a frame bug reads as "1,777 could not be
+        # described" and nothing else — a failure count with no cause is the same
+        # shape as the missing-provider-key incident this row's status was added
+        # for. `got.detail` carries the exception when `collect` swallowed one.
+        return {"media_id": media_id, "ok": False, "status": status,
+                "detail": got.detail or f"no frames ({status})"}
 
     prompt = _DESCRIBE_PROMPT if str(prompt_version) == "v1" else _DESCRIBE_PROMPT_V2
     content = [{"type": "text", "text": prompt}]
@@ -2823,7 +2802,23 @@ async def describe_one(payload: dict = Body(...)) -> dict[str, Any]:
 # ── Describe ALL (background sweep, gen_info-style) ─────────────────
 _describe_running: set[str] = set()
 _describe_progress: dict[str, dict[str, Any]] = {}
-_DESCRIBE_CONCURRENCY = 4
+# Items in flight for ONE sweep. Raised 4 → 8 on 2026-08-11, against measured
+# prod numbers rather than a guess: describe latency is a straight line in OUTPUT
+# tokens (~24 tok/s — 54 tokens ⇒ 3.0s, 324 ⇒ 13.4s, 512 ⇒ 21.8s), and input size
+# barely moves it, so the v2 prompt's 24-field schema costs ~14s per item no
+# matter how many frames it reads. That is provider wall-clock nobody can shorten
+# from here; the only lever on THROUGHPUT is how many run at once. At 4 the best
+# observed minutes hit exactly the ceiling that implies (~14 items/min, 3.75 of 4
+# slots busy), i.e. the bound was binding.
+#
+# 8 does NOT raise the load the relay was measured safe at — _VISION_GLOBAL
+# _CONCURRENCY below still caps total vision work at 8 across every sweep, and
+# the still-fetch path has its own `vault_stills._MAX_INFLIGHT_FETCHES`. What
+# changes is that ONE account's sweep can now use the whole global budget instead
+# of a quarter of it. Two accounts sweeping at once still share 8 and each get
+# what they got before — the global gate is the knob for that, and it was set by
+# a cost-audit finding about ReadTimeouts, so raise it with numbers, not hope.
+_DESCRIBE_CONCURRENCY = 8
 
 # Process-wide ceiling on concurrent vision work across ALL accounts and BOTH
 # sweeps (describe + flags). The per-sweep _DESCRIBE_CONCURRENCY/_FLAGS_CONCURRENCY
@@ -2918,56 +2913,30 @@ async def _run_describe_all(account_id: str, force: bool,
                 # A wasted fetch is cheaper than a control nobody can trust.
                 stmt = stmt.where(VaultItem.describe_status.isnot("described"))
             ids = [r[0] for r in (await s.execute(stmt)).all()]
-        total = len(ids)
-        done = 0
-        capped = False
-        _describe_progress[account_id] = {"total": total, "done": 0, "capped": False}
-        sem = asyncio.Semaphore(_DESCRIBE_CONCURRENCY)
 
-        failed = 0
-        first_error = ""
+        async def _describe_and_flag(mid: int) -> dict[str, Any]:
+            res = await _describe_one(account_id, mid, model=model,
+                                      prompt_version=prompt_version)
+            # Flag it in the same breath. "Described" used to mean prose plus
+            # `clothing_state` and nothing about what is actually on show, so a
+            # freshly-described vault had no flags at all and every gated lane
+            # was empty until someone remembered a second button. The flags pass
+            # is ~3s and ~$0.00002 against describe's ~16s and ~$0.0086 — a fifth
+            # of a percent — so making it conditional bought nothing but a way to
+            # forget it.
+            if res.get("ok"):
+                try:
+                    await _flags_one(account_id, mid)
+                except Exception:  # noqa: BLE001
+                    # Never let the cheap pass take down the expensive one: the
+                    # description is already written and worth keeping.
+                    log.exception("flags after describe failed media=%s", mid)
+            return res
 
-        async def _one(mid: int) -> None:
-            nonlocal done, capped, failed, first_error
-            async with sem, _vision_gate():  # per-sweep bound + process-wide gate
-                if capped:
-                    return
-                res = await _describe_one(account_id, mid, model=model,
-                                          prompt_version=prompt_version)
-                if res.get("status") == "capped":
-                    capped = True
-                # Flag it in the same breath. "Described" used to mean prose
-                # plus `clothing_state` and nothing about what is actually on
-                # show, so a freshly-described vault had no flags at all and
-                # every gated lane was empty until someone remembered a second
-                # button. The flags pass is ~3s and ~$0.00002 against describe's
-                # ~16s and ~$0.0086 — a fifth of a percent — so making it
-                # conditional bought nothing but a way to forget it.
-                if res.get("ok"):
-                    try:
-                        await _flags_one(account_id, mid)
-                    except Exception:  # noqa: BLE001
-                        # Never let the cheap pass take down the expensive one:
-                        # the description is already written and worth keeping.
-                        log.exception("flags after describe failed media=%s", mid)
-                # `done` means "visited", not "described". Track failures
-                # separately: a whole vault can fail (bad/missing provider key)
-                # and still report done=N/N, which reads as success.
-                if not res.get("ok"):
-                    failed += 1
-                    if not first_error and res.get("detail"):
-                        first_error = str(res["detail"])[:200]
-                done += 1
-                _describe_progress[account_id] = {
-                    "total": total, "done": done, "capped": capped,
-                    "failed": failed, "error": first_error,
-                }
-
-        # Run in bounded chunks so a giant vault doesn't spawn thousands of tasks.
-        for i in range(0, len(ids), 50):
-            if capped:
-                break
-            await asyncio.gather(*(_one(m) for m in ids[i:i + 50]))
+        c = await vault_sweep.run(
+            ids, _describe_and_flag, concurrency=_DESCRIBE_CONCURRENCY,
+            gate=_vision_gate, into=_describe_progress, key=account_id,
+            label=f"describe_all account={account_id}")
         try:
             q = await vault_ai_fix.review_queue(account_id, limit=1,
                                                 version=_FLAGS_VERSION,
@@ -2976,11 +2945,12 @@ async def _run_describe_all(account_id: str, force: bool,
                 **_describe_progress.get(account_id, {}), "needs_review": q["iffy"]}
         except Exception:  # noqa: BLE001
             log.exception("review count after describe failed account=%s", account_id)
-        if failed:
+        if c.failed:
             log.warning("describe_all account=%s done=%s/%s FAILED=%s capped=%s first_error=%s",
-                        account_id, done, total, failed, capped, first_error)
+                        account_id, c.done, c.total, c.failed, c.capped, c.error)
         else:
-            log.info("describe_all done account=%s done=%s/%s capped=%s", account_id, done, total, capped)
+            log.info("describe_all done account=%s done=%s/%s capped=%s",
+                     account_id, c.done, c.total, c.capped)
     except Exception as e:  # noqa: BLE001
         # Into the progress snapshot, not just the log. `running` goes False in
         # `finally` either way, so a sweep that DIED and a sweep that finished

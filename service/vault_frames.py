@@ -211,6 +211,15 @@ class Collected(NamedTuple):
 
     images: list[str]
     reason: str  # "ok" | "gone" | "no_variant" | "fetch_failed"
+    # What to tell a PERSON, when there is more to say than the status.
+    #
+    # `reason` is the row's retry policy and nothing else, so the two failures
+    # that matter most to an operator are indistinguishable in it: an expired OF
+    # signature and a crash in this module are both `fetch_failed`. One means OF
+    # is being OF; the other means we shipped a bug. Since `collect` stopped
+    # raising, this is the ONLY channel that difference has — the sweep hands it
+    # straight to `first_error`, which is what the button reports.
+    detail: str = ""
 
 
 # `warm_one_sync`'s outcome in the vocabulary above. Anything not listed either
@@ -285,6 +294,16 @@ async def _collect_video(account_id: str, media_id: int, raw: dict,
     return await _poster_stills(account_id, media_id, media, want, warm)
 
 
+# A single item's whole frame budget: re-sign, mp4 download, ffmpeg extract, the
+# poster-set fallback, all of it. Generous — a 17-minute clip pulled at 240p and
+# sliced into 12 stills is minutes of honest work, and killing that costs a
+# description. What it bounds is the OTHER case: a fetch that never returns holds
+# a sweep slot AND a process-wide vision slot forever, and the 50-item chunk
+# barrier above it can never close. Timing out reads as `fetch_failed`, which is
+# the retry-at-once side of the vocabulary — the next sweep tries again.
+COLLECT_TIMEOUT_S = 180
+
+
 async def collect(account_id: str, item: VaultItem, raw: dict,
                   want: int = DESCRIBE_FRAMES) -> Collected:
     """Frames for one vault item, as base64 data-URLs.
@@ -292,7 +311,28 @@ async def collect(account_id: str, item: VaultItem, raw: dict,
     Photos read IMAGE_DIR, never THUMB_DIR. The thumb is a 300px centre-crop of a
     3:4 portrait — its top and bottom are simply gone — and reading a flag off
     that crop is what made the vision model over-report `fully_nude`. `pick_image`
-    is `describe_image_of`, so this is the same variant describe has always sent."""
+    is `describe_image_of`, so this is the same variant describe has always sent.
+
+    NEVER raises. Every caller is a bulk sweep walking a vault, and a media that
+    explodes has to cost that one media — the callers each stamp `reason` onto the
+    row and move on, which is strictly more useful than an exception, because a
+    raise leaves no row at all and the item looks untouched forever."""
+    try:
+        return await asyncio.wait_for(
+            _collect(account_id, item, raw, want), timeout=COLLECT_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        log.warning("collect timed out after %ss account=%s media=%s kind=%s",
+                    COLLECT_TIMEOUT_S, account_id, item.media_id, item.kind)
+        return Collected([], "fetch_failed",
+                         f"gave up reading the media after {COLLECT_TIMEOUT_S}s")
+    except Exception as e:  # noqa: BLE001
+        log.exception("collect failed account=%s media=%s kind=%s",
+                      account_id, item.media_id, item.kind)
+        return Collected([], "fetch_failed", f"{type(e).__name__}: {e}"[:200])
+
+
+async def _collect(account_id: str, item: VaultItem, raw: dict,
+                   want: int) -> Collected:
     client = await asyncio.to_thread(ax._make_client, account_id)
     if item.kind == "video":
         return await _collect_video(account_id, item.media_id, raw, client, want)

@@ -33,6 +33,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from auth import assert_account_owned
 from db.engine import get_session
+from jsonsafe import truthy
 from db.models import AccountAiConfig, AutomationRule
 from automations.make_right import _DEFAULTS
 
@@ -86,10 +87,16 @@ def _validate(cfg: dict) -> dict:
     # instead of the next unseen thing off the tip shelf. Registered here for the
     # reason the docstring gives: unnamed keys are dropped, so without this line
     # the tab's checkbox saves 200 and changes nothing.
+    #
+    # ⚠️ `truthy`, not `bool` — `bool("false")` is True, so a quoted boolean
+    # from the raw-config modal or a `prod-makeright-on.sh key=value` stamp
+    # turns a content-SENDING flag on. `scripts_api` grew this exact guard on
+    # 2026-08-11 and these bools were left on the old one, which is how the two
+    # halves of one feature end up with two different answers to "is it on".
     for k in ("enabled", "auto_send", "flag_refund",
               "open_with_gift", "detect_undelivered", "gift_on_subject"):
         if k in cfg:
-            out[k] = bool(cfg[k])
+            out[k] = truthy(cfg[k])
     if "gift_tier" in cfg:
         out["gift_tier"] = str(cfg["gift_tier"] or "").strip()[:40]
     if "ppv_folder" in cfg:
