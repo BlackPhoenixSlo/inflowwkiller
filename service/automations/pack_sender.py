@@ -187,6 +187,7 @@ class PackPlan:
     clause: str
     refusal: str | None = None
     detail: str = ""
+    value_cents: int = 0        # rate-card worth of the attached payoff
 
     @property
     def ok(self) -> bool:
@@ -567,12 +568,23 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
         return PackPlan(**{**empty.__dict__, "item_id": item.id,
                            "refusal": REFUSE_TOO_THIN,
                            "detail": f"{len(media)} composable"})
-    # 🚨 THE SHELF VETOES THE PRICE. If everything available is worth less than
-    # the quote, the ask drops to what is really there. The alternative — charge
-    # the quote anyway — is the $19.67-an-item shape that preceded two account
-    # deletions, which is exactly what ticket 06 exists to prevent.
-    if value < px:
+    # Operator ruling 2026-08-11: "we can price more for that content if the AI
+    # upseller chooses." So the rate card is a BASELINE, not a ceiling — the
+    # upseller knows this fan's history and willingness and may quote above it.
+    #
+    # ⚠️ What ticket 06 actually protected against was charging a lot for FEW
+    # items ($19.67 an item, 3 items, an account deleted). That protection now
+    # lives in the COUNT, not the price: MIN_ITEMS is a hard floor, composition
+    # pads toward SOFT_TARGET_ITEMS, and the caption states the real number. So
+    # a high price arrives with a full pack rather than a thin one.
+    #
+    # `value_caps_price` restores the old hard veto for anyone who wants it.
+    if value < px and bool(cfg.get("value_caps_price")):
         px = max(upsell.OF_PRICE_FLOOR_CENTS, value)
+    if value < px:
+        log.info("pack priced ABOVE rate card account=%s fan=%s px=%s value=%s "
+                 "ratio=%.2f n=%s", account_id, fan_id, px, value,
+                 px / max(1, value), len(media))
     tease = await _shelf_media(account_id, category, "tease")
     previews = [m for m in tease if m not in media][:PREVIEW_MAX]
     # Previews ride FREE inside the send and are never stamped owned, so they may
@@ -593,7 +605,7 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
                            "detail": "; ".join(bad)})
 
     return PackPlan(str(account_id), int(fan_id), category, rung, item.id,
-                    media, previews, px, clause)
+                    media, previews, px, clause, value_cents=value)
 
 
 def compose_caption(clause: str, voice_line: str | None) -> str:
