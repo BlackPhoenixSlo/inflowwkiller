@@ -60,6 +60,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
+from collections import Counter
 from dataclasses import dataclass, field
 
 from sqlalchemy import func, or_, select
@@ -328,6 +330,73 @@ async def _described_pool(account_id: str, seen: set[int],
     return [(mid, text) for _h, mid, text in scored[:_CANDIDATES_MAX]]
 
 
+# ── The vault's own vocabulary ──────────────────────────────────────
+#
+# 🚨 Measured on the pilot 2026-08-11, and it is the whole reason this exists:
+#
+#     the descriptions say  breasts (979 items),  vulva (627)
+#     fans ask for          tits    (10 fans),    pussy
+#
+# `read_contract` is asked to expand a fan's word into search terms and it does
+# it BLIND — the model has never seen this vault. So it produces the words a
+# reasonable person would use, the lexical scan finds nothing, and a man asking
+# for the most-photographed part of the vault gets `no_match`. No amount of
+# cleverness in the matcher recovers a candidate retrieval never returned.
+#
+# Feeding the account's real description vocabulary into the prompt closes it:
+# the model sees `breasts` in the list and emits `breasts` for "tits".
+#
+# It goes in the SYSTEM prompt and is static per account, which is deliberate —
+# static text inside the window is nearly free against the provider's prefix
+# cache, while the same words appended per-message would not be.
+_LEXICON_TTL_S = 6 * 3600
+_LEXICON_MAX = 200
+# Photographic scaffolding: frequent, and never what a fan asks for. Kept short
+# on purpose — the model is better at spotting a non-content word than a list is,
+# and an over-eager stoplist would delete the anatomy this is for. ("none" is a
+# JSON null that leaked into the description text.)
+_LEXICON_JUNK = frozenset({
+    "none", "null", "stills", "handheld", "selfie", "image", "images", "photo",
+    "photos", "picture", "pictures", "video", "videos", "clip", "clips", "frame",
+    "frames", "camera", "shot", "shots", "view", "angle", "background",
+    "foreground", "lighting", "visible", "appears", "shown", "showing",
+    "unknown", "unclear", "description", "left", "right", "toward", "towards",
+})
+_lexicon_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+async def vault_lexicon(account_id: str) -> list[str]:
+    """The words THIS account's descriptions actually use, most common first.
+
+    Document frequency, not raw count: a word in 900 items beats one repeated
+    nine times in the same item. Deliberately NOT frequency-capped — `breasts`
+    is in 61% of this vault and is exactly the word the expander needs, so any
+    "too common to be useful" rule would delete the payload.
+    """
+    now = time.monotonic()
+    hit = _lexicon_cache.get(str(account_id))
+    if hit and now - hit[0] < _LEXICON_TTL_S:
+        return hit[1]
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.search_text, VaultItem.description,
+                   VaultItem.video_description).where(
+                VaultItem.account_id == str(account_id),
+                VaultItem.removed_at.is_(None))
+        )).all()
+    freq: Counter[str] = Counter()
+    for row in rows:
+        seen_here = {
+            w for w in re.split(r"[^a-z]+",
+                                " ".join(str(x or "") for x in row).lower())
+            if 3 <= len(w) <= 20 and w not in _STOPWORDS and w not in _LEXICON_JUNK
+        }
+        freq.update(seen_here)
+    words = [w for w, _n in freq.most_common(_LEXICON_MAX)]
+    _lexicon_cache[str(account_id)] = (now, words)
+    return words
+
+
 async def solo_only(account_id: str, media_ids: list[int]) -> list[int]:
     """Drop anything with someone else in it.
 
@@ -507,6 +576,30 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
         'Examples — \'feet\': feet, foot, soles, toes, barefoot, arches, ankles. '
         '\'back shots\': ass, behind, doggy, bent, arched, rear."]}'
     )
+    # 🚨 The vault's OWN words, appended to the system prompt.
+    #
+    # Without this the expansion is a guess about a vault the model has never
+    # seen. Measured on the pilot: the descriptions say `breasts` in 979 items
+    # and `vulva` in 627; fans ask for "tits". Retrieval is a LIKE over that
+    # description text, so an expansion into words the descriptions do not use
+    # returns NOTHING — and a man asking for the most-photographed thing in the
+    # vault gets `no_match`.
+    #
+    # Static per account and appended to the SYSTEM block on purpose: it is the
+    # same bytes on every call for this account, which is what a provider prefix
+    # cache rewards. Carried per-message it would be paid for on every turn.
+    lexicon = await vault_lexicon(account_id)
+    if lexicon:
+        system += (
+            "\n\nTHE VAULT'S OWN WORDS — the vocabulary these descriptions "
+            "actually use, most common first:\n" + ", ".join(lexicon) + "\n"
+            "🚨 Draw `terms` FROM THIS LIST wherever one fits. The search is a "
+            "literal text match over those descriptions, so a term that is not "
+            "in this list finds NOTHING. If he says \"tits\" and the list says "
+            "\"breasts\", emit \"breasts\". Translating his words into the "
+            "vault's vocabulary IS the job. Invent a word only when the list "
+            "has no equivalent at all."
+        )
     try:
         res = await llm_client.chat(
             model=model or await resolve_model(account_id, "content_resolver"),
