@@ -605,7 +605,8 @@ async def quote_pack(account_id: str, fan_id: int, item: CatalogItem,
 
 async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
                     cfg: dict | None = None,
-                    media_kind: str | None = None) -> PackPlan:
+                    media_kind: str | None = None,
+                    company: bool = False) -> PackPlan:
     """Everything a send needs, or a typed refusal. Sends nothing.
 
     Deliberately separable from `send_pack` so the operator can dry-run the whole
@@ -631,6 +632,11 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
     # A promised media KIND narrows the shelf before the price is quoted, so a
     # "send me a video" ask can never be filled with photos.
     avail_ids = await _filter_kind(account_id, avail_ids, media_kind)
+    # SOLO unless he named someone else. A curated shelf is filed by SUBJECT,
+    # so an operator putting a photo on the feet shelf said nothing about who
+    # else is in it — the rule has to be applied here too, not assumed away.
+    if not company:
+        avail_ids = await content_resolver.solo_only(account_id, avail_ids)
     # ...and a fan who has bought nothing is served the tame end of the shelf
     # first. Ordering, not exclusion — see `_rank_by_tier`.
     _cap, max_tier = await spend_bounds(account_id, fan_id)
@@ -718,6 +724,7 @@ def compose_caption(clause: str, voice_line: str | None) -> str:
 async def send_pack(client, account_id: str, fan_id: int, category: str,
                     rung: str, *, cfg: dict | None = None,
                     voice_line: str | None = None,
+                    company: bool = False,
                     dry_run: bool = False) -> dict:
     """Send ONE pack, priced, to ONE fan. Per-chat, attributed, out of band.
 
@@ -744,7 +751,8 @@ async def send_pack(client, account_id: str, fan_id: int, category: str,
     from .ai_chatter import _record_offer, _record_vault_sends
 
     cfg = cfg or {}
-    plan = await plan_pack(account_id, fan_id, category, rung, cfg=cfg)
+    plan = await plan_pack(account_id, fan_id, category, rung, cfg=cfg,
+                           company=company)
     if not plan.ok:
         log.info("pack refused account=%s fan=%s %s-%s: %s %s",
                  account_id, fan_id, category, rung, plan.refusal, plan.detail)
@@ -868,13 +876,15 @@ async def send_pack_on_ask(client, account_id: str, fan_id: int, *,
         rung = DEFAULT_RUNG
 
     res = await send_pack(client, account_id, fan_id, category, rung, cfg=cfg,
-                          voice_line=voice_line, dry_run=dry_run)
+                          voice_line=voice_line, company=contract.company,
+                          dry_run=dry_run)
     # He asked for the product rung and it is spent — try the ladder rung, but
     # only if he has already bought from this category.
     if (res.get("reason") == REFUSE_TOO_THIN and rung == DEFAULT_RUNG
             and await _has_bought_from(account_id, fan_id, category)):
         res = await send_pack(client, account_id, fan_id, category, LADDER_RUNG,
-                              cfg=cfg, voice_line=voice_line, dry_run=dry_run)
+                              cfg=cfg, voice_line=voice_line,
+                              company=contract.company, dry_run=dry_run)
     res.setdefault("category", category)
     res.setdefault("asked", contract.quote)
     return res
