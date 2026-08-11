@@ -331,21 +331,27 @@ async def _described_pool(account_id: str, seen: set[int],
                 broad.order_by(VaultItem.created_at.desc()).limit(_CANDIDATES_MAX * 2)
             )).all()
 
-    scored: list[tuple[int, int, str]] = []
+    # 🚨 SQL order is the ONLY order. There used to be a second scoring here — a
+    # Python re-sort by term hits — and the two disagreed about what they were
+    # reading: SQL scores the blob INCLUDING `ai_fields_json` (where the describe
+    # pass writes `body_focus: feet`), Python scored the prose alone. The Python
+    # sort ran last, so it silently overrode the SQL ranking with a weaker signal
+    # and dropped every item whose metadata knew about feet but whose prose did
+    # not. A feet query came back with one precise item in its top twenty.
+    #
+    # One scoring, over the widest text, in the place that also applies the
+    # LIMIT. `seen` is still filtered here because it is a per-fan set, not a
+    # property of the corpus.
+    out: list[tuple[int, str]] = []
     for mid, _kind, search_text, desc, vdesc in rows:
         if int(mid) in seen:
             continue
         text = " ".join(str(search_text or desc or vdesc or "").split())
-        if not text:
-            continue
-        # More matching terms = a stronger candidate. A cheap ordering that puts
-        # "bare feet, soles up" above "…and her feet are in frame" before the
-        # matcher ever sees them, without pretending to be a relevance model.
-        low = text.lower()
-        hits = sum(1 for t in terms if t in low) if terms else 0
-        scored.append((hits, int(mid), text[:_DESC_LEN]))
-    scored.sort(key=lambda r: -r[0])
-    return [(mid, text) for _h, mid, text in scored[:_CANDIDATES_MAX]]
+        if text:
+            out.append((int(mid), text[:_DESC_LEN]))
+        if len(out) >= _CANDIDATES_MAX:
+            break
+    return out
 
 
 # ── The vault's own vocabulary ──────────────────────────────────────
