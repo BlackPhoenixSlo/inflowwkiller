@@ -67,7 +67,7 @@ from sqlalchemy import func, or_, select
 import llm_client                       # module import so tests can patch .chat
 import vault_pack_picker
 from db.engine import get_session
-from db.models import Message, VaultFolder, VaultFolderItem, VaultItem
+from db.models import Fan, Message, VaultFolder, VaultFolderItem, VaultItem
 
 from ._common import load_voice_blocks, resolve_model
 
@@ -321,6 +321,53 @@ async def _described_pool(account_id: str, seen: set[int],
     return [(mid, text) for _h, mid, text in scored[:_CANDIDATES_MAX]]
 
 
+async def profile_terms(account_id: str, fan_id: int) -> list[str]:
+    """What HE likes, from his profile — not from this conversation.
+
+    ⚠️ Deliberately never used to fill an ask. A thing he just said is binding
+    and a profile fact is advisory, and letting `fetishes` answer "send me feet"
+    is how a fan gets charged for a guess. This exists for the opposite moment:
+    the answer to his ask is NO, and the alternative she offers instead should
+    be something he has actually shown interest in rather than whatever happened
+    to sort first.
+    """
+    async with get_session() as s:
+        fan = await s.get(Fan, (str(account_id), int(fan_id)))
+    if fan is None:
+        return []
+    raw = [str(fan.fetishes or ""), str(fan.self_description or "")]
+    if fan.likes_ass:
+        raw.append("ass booty butt")
+    if fan.likes_boobs:
+        raw.append("tits boobs cleavage")
+    terms: list[str] = []
+    for chunk in raw:
+        for word in re.split(r"[^a-z0-9]+", chunk.lower()):
+            if 3 <= len(word) <= 24 and word not in _STOPWORDS and word not in terms:
+                terms.append(word)
+    return terms[:12]
+
+
+async def _alternatives(account_id: str, fan_id: int, pool: list[tuple[int, str]],
+                        seen: set[int], count: int) -> list[int]:
+    """What she CAN show when the answer to his ask is no.
+
+    Operator ruling 2026-08-11: on "show me" with nothing that fits, say *"i
+    don't have that, but check this — you might like it"* and take the
+    alternative from what is known about HIM. A refusal that offers nothing is
+    silence, and silence is the failure shape this map keeps hitting.
+
+    Falls back to the head of the pool, which is still ranked by his own words —
+    a fan with an empty profile gets a worse alternative, not no alternative.
+    """
+    terms = await profile_terms(account_id, fan_id)
+    if terms:
+        liked = await _described_pool(account_id, seen, None, terms)
+        if liked:
+            return [mid for mid, _ in liked[:count]]
+    return [mid for mid, _ in pool[:count]]
+
+
 async def _kind_of(account_id: str, media_ids: list[int]) -> dict[int, str]:
     if not media_ids:
         return {}
@@ -360,6 +407,10 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
         "SEE something that is not her content — \"i wanna see them go home to "
         "their families\" is NOT an ask, even though it says \"wanna see\".\n"
         "  A bare \"show me\" IS an ask.\n"
+        "  NOT an ask: he is REPORTING a purchase, not requesting one — "
+        "\"unlocking now babe\", \"just bought it\", \"said unlock for $10 but it "
+        "was already unlocked\". He is paying. Pitching him here bills a man mid-"
+        "payment for what he is already paying for.\n"
         "  NOT an ask, and important: he is TESTING whether she is a bot or "
         "demanding proof she is real (\"until u show me proof of life\", \"are "
         "you a bot\", \"send a pic with today's date\"). Set is_ask false and "
@@ -612,7 +663,8 @@ async def resolve(account_id: str, fan_id: int, *, count: int,
         # real things, so she says "i don't have anything like that, but check
         # this" instead of guessing or going quiet.
         return _empty(contract, CUSTOM_REQUEST, considered=considered,
-                      alternatives=[mid for mid, _ in pool[:count]])
+                      alternatives=await _alternatives(account_id, fan_id, pool,
+                                                       seen, count))
     try:
         picked = await _match(account_id, fan_id, contract, pool, count, model)
     except Exception:
@@ -620,7 +672,8 @@ async def resolve(account_id: str, fan_id: int, *, count: int,
         return _empty(contract, LLM_UNAVAILABLE, considered=considered)
     if not picked:
         return _empty(contract, NO_MATCH, considered=considered,
-                      alternatives=[mid for mid, _ in pool[:count]])
+                      alternatives=await _alternatives(account_id, fan_id, pool,
+                                                       seen, count))
 
     if not verify:
         return Resolution(picked, contract, considered=considered)
