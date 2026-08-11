@@ -722,7 +722,7 @@ function GhostCycleEditor({ cfg, set }: {
             two, then comes back. <b>Per fan</b>, on his own schedule — a good spender
             goes a day with no reply and wants one more. It silences the 1:1 AI chat
             <b> and holds his PPV drops</b> until he's back: a man being ignored who
-            still gets three paid blasts reads "she only writes when she wants money",
+            still gets three paid blasts reads "the only messages are paid ones",
             which is the opposite of the point. He rejoins the next drop automatically,
             and a live sale or a purchase during the run cancels his quiet stretch.
           </span>
@@ -829,14 +829,14 @@ function StepOutEditor({ cfg, set }: {
           onChange={(e) => set(rhythmSubMode("rhythm_stepout_enabled", e.target.checked))} />
         <span className="text-xs">
           <span className="font-medium text-fg">
-            Step out for an hour or two — she isn&apos;t always at her phone
+            Step out for an hour or two — nobody is always at their phone
           </span>
           <span className="block text-fg-dim">
-            Every few replies on a chat that is <b>neither hot nor just sold to</b>, she
+            Every few replies on a chat that is <b>neither hot nor just sold to</b>, the chat
             simply stops answering for an hour or two, then picks the thread back up
             saying nothing about it — because a real person doesn&apos;t explain a gap.
             Much shorter and far more often than the whole-day quiet above, and the two
-            run independently. If he writes again while she&apos;s out, she comes back
+            run independently. If he writes again during the break, the reply comes back
             early: that is the point of it, not a leak.
           </span>
         </span>
@@ -852,7 +852,7 @@ function StepOutEditor({ cfg, set }: {
           <input type="number" min={1} step={1} className={`${INPUT} w-14 text-right`}
             value={hiEx}
             onChange={(e) => set({ rhythm_stepout_max_exchanges: Number(e.target.value) })} />
-          <span className="text-fg-dim">of <b>her</b> replies, she&apos;s gone</span>
+          <span className="text-fg-dim">outbound replies, the chat goes quiet</span>
           {/* min=1, not 0: the server bound is (1, 1440) and a 0 is DROPPED by the
               validator, so an input that offers 0 offers a value that won't save. */}
           <input type="number" min={1} max={1440} step={1}
@@ -910,7 +910,7 @@ function StepOutEditor({ cfg, set }: {
         <div className="text-[11px] text-fg-dim/70">
           Two messages <b>60 seconds apart</b>, not two bubbles: a burst is one thought
           arriving in pieces and must not end the silence. Setting the gap to 0 makes
-          any second message end it. She never steps out mid-sale, mid-sext, or on a
+          any second message end it. It never steps out mid-sale, mid-sext, or on a
           thread that has only just started.
         </div>
       </div>

@@ -256,6 +256,81 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         </div>
       </Card>
 
+      {/* ── answer a content-ask with the content ──────────────────────────
+          The trigger is INERT without the master switch (guarded server-side in
+          plan_pack/plan_ask), so the checkbox writes both. Two independent boxes
+          would let an operator tick the visible one, see it save, and get
+          nothing — the exact shape the config validator's own comments warn
+          about twice. */}
+      <Card className="p-4 space-y-3">
+        <h3 className="text-sm font-medium">When he asks to see something</h3>
+        <label className="flex items-start gap-2 cursor-pointer">
+          <input type="checkbox" className="mt-0.5" checked={!!cfg.pack_on_ask_enabled}
+            onChange={(e) => set({
+              pack_on_ask_enabled: e.target.checked,
+              ...(e.target.checked ? { pack_send_enabled: true } : {}),
+            })} />
+          <span className="text-sm">
+            <span className="font-medium">Answer with the content, not a sentence</span>
+            <span className="block max-md:hidden text-fg-dim text-xs">
+              When he asks for something — <i>&quot;send me feet pics&quot;</i>,
+              <i> &quot;show me u in leather&quot;</i>, or just <i>&quot;show me&quot;</i> —
+              the reply is a <b>priced set from the vault that matches what he
+              asked for</b>, instead of talking about it. It reads the ask from the
+              thread, searches the whole vault plus your curated folders, and refuses
+              rather than sending something that doesn&apos;t fit. Any refusal falls
+              through to the normal reply, so this can only ever <b>replace</b> a
+              generic offer, never silence one.
+            </span>
+          </span>
+        </label>
+
+        {/* The rules that are NOT knobs. An operator turning this on is entitled
+            to know what it will do without reading the source. */}
+        <div className={cn("rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-1.5",
+          cfg.pack_on_ask_enabled ? "" : "opacity-50")}>
+          <div className="text-fg-dim text-xs">What it does on its own</div>
+          <ul className="text-xs text-fg-dim leading-relaxed space-y-1 list-disc pl-4">
+            <li>
+              <b className="text-fg">The creator is alone in it</b> unless he asked for
+              company. Anything with someone else in frame is dropped before it can be
+              picked.
+            </li>
+            <li>
+              <b className="text-fg">The price follows what he has paid.</b> A fan who has
+              never bought is capped at <b>$100</b>; one who has paid <b>$50+</b> for a
+              single PPV unlocks <b>$200</b>. His first ask is never more than ~$60.
+            </li>
+            <li>
+              <b className="text-fg">A cold fan gets the tamer end first.</b> Explicit
+              content is spent on fans who have bought, not on the opening ask.
+            </li>
+            <li>
+              The caption states exactly what is attached, and the send is{" "}
+              <b className="text-fg">refused rather than softened</b> if the media
+              stops matching that claim.
+            </li>
+          </ul>
+        </div>
+
+        <label className={cn("flex items-start gap-2",
+          cfg.pack_on_ask_enabled ? "cursor-pointer" : "cursor-not-allowed opacity-50")}>
+          <input type="checkbox" className="mt-0.5" checked={!!cfg.value_caps_price}
+            disabled={!cfg.pack_on_ask_enabled}
+            onChange={(e) => set({ value_caps_price: e.target.checked })} />
+          <span className="text-sm">
+            <span className="font-medium">Never charge above the content&apos;s worth</span>
+            <span className="block max-md:hidden text-fg-dim text-xs">
+              Prices are built from a rate card — a video is worth $5–10 per 10 seconds
+              depending on how explicit it is, an explicit photo about $10, teases are
+              filler. Normally that is a <b>baseline</b> and the upseller may quote above
+              it for a fan whose history supports it. Tick this to make it a hard
+              ceiling instead.
+            </span>
+          </span>
+        </label>
+      </Card>
+
       {/* ── offer pacing ── */}
       <Card className="p-4 space-y-3">
         <h3 className="text-sm font-medium">Offer pacing</h3>

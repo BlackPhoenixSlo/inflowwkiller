@@ -54,7 +54,7 @@ const MAX_INFLIGHT_IMAGES = 4;
 const RUNG_HELP: Record<string, string> = {
   tease: "covered — socks, stockings, heels, boots. Rides free as the preview.",
   nude: "bare feet, body NOT nude. This is the product.",
-  "nude-body": "bare feet AND her body nude. Never the first ask.",
+  "nude-body": "bare feet AND the body nude. Never the first ask.",
 };
 
 const RUNG_STYLE: Record<string, string> = {
@@ -437,9 +437,9 @@ export default function VaultPackPickerModal({
               onClick={() => {
                 if (
                   window.confirm(
-                    `Create ${stocked.length} REAL folder(s) in her OnlyFans vault?\n\n` +
+                    `Create ${stocked.length} REAL folder(s) in the OnlyFans vault?\n\n` +
                       stocked.map((f) => `  ${f.name} — ${f.count} items`).join("\n") +
-                      `\n\nThis is visible in her OF app. Reversible, but a rebuild ` +
+                      `\n\nThis is visible in the OF app. Reversible, but a rebuild ` +
                       `gets a new list id.`,
                   )
                 ) {
@@ -452,7 +452,7 @@ export default function VaultPackPickerModal({
                   ? "Save your verdicts first — publish ships the saved shelf"
                   : !stocked.length
                     ? "Nothing filed yet"
-                    : `Create ${stocked.length} real folder(s) in her OnlyFans vault`
+                    : `Create ${stocked.length} real folder(s) in the OnlyFans vault`
               }
               className="rounded bg-amber-600 px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
             >
@@ -476,7 +476,7 @@ export default function VaultPackPickerModal({
                 type="button"
                 onClick={() => f.folder_id && publish(f.folder_id, f.name)}
                 disabled={!f.folder_id || !f.count || !!busy}
-                title="Create this as a REAL folder in her OnlyFans vault"
+                title="Create this as a REAL folder in the OnlyFans vault"
                 className="rounded bg-bg px-1.5 py-0.5 hover:bg-bg-hover disabled:opacity-40"
               >
                 {f.of_list_id ? "re-publish" : "publish to OF"}

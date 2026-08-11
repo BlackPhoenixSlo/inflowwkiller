@@ -82,8 +82,12 @@ def _validate(cfg: dict) -> dict:
     if not isinstance(cfg, dict):
         raise HTTPException(422, "config must be an object")
     out: dict[str, Any] = {}
+    # `gift_on_subject` — make the free apology gift CONTAIN what he asked for,
+    # instead of the next unseen thing off the tip shelf. Registered here for the
+    # reason the docstring gives: unnamed keys are dropped, so without this line
+    # the tab's checkbox saves 200 and changes nothing.
     for k in ("enabled", "auto_send", "flag_refund",
-              "open_with_gift", "detect_undelivered"):
+              "open_with_gift", "detect_undelivered", "gift_on_subject"):
         if k in cfg:
             out[k] = bool(cfg[k])
     if "gift_tier" in cfg:

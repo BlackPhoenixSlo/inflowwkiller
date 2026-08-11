@@ -35,6 +35,9 @@ interface Cfg {
   // The exchange (apology -> N free TURNS on his replies -> PPV -> close). Default
   // is ONE turn: apology bubble + gift bubble, then it closes itself.
   free_steps?: number; gift_pieces_per_step?: number; open_with_gift?: boolean;
+  /** Make the free apology piece CONTAIN what he asked for, rather than the next
+   *  unseen thing off the tip shelf. Falls back to the shelf when nothing fits. */
+  gift_on_subject?: boolean;
   ppv_folder?: string; ppv_price_cents?: number; ppv_caption?: string;
   nudge_hours?: number; close_hours?: number;
 }
@@ -278,6 +281,24 @@ export default function MakeRightTab({ accountId }: { accountId: string | null }
                 checked={form.open_with_gift ?? true}
                 onChange={(e) => set({ open_with_gift: e.target.checked })} />
               <span className="text-sm">Send the first free piece with the apology</span>
+            </label>
+            {/* The apology gift's CONTENT, not its size. Off by default: reading
+                the thread for what he asked costs an LLM call per make-right,
+                and the tip shelf is the safe fallback when nothing matches. */}
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="checkbox" className="mt-0.5 h-4 w-4 accent-[var(--accent)]"
+                checked={form.gift_on_subject ?? false}
+                onChange={(e) => set({ gift_on_subject: e.target.checked })} />
+              <span className="text-sm">
+                Make the free piece the thing he asked for
+                <span className="block text-fg-dim text-xs">
+                  Reads what he was actually after and picks the gift to match, instead
+                  of the next unseen piece off the tip shelf. If nothing in the vault
+                  fits, it falls back to the shelf rather than sending something wrong —
+                  an apology that hands him the wrong thing again is a second mistake,
+                  not a fix.
+                </span>
+              </span>
             </label>
             <div className="flex flex-wrap gap-4 items-end">
               <div className="space-y-1">

@@ -743,11 +743,22 @@ async def resolve(account_id: str, fan_id: int, *, count: int,
         log.warning("match failed account=%s fan=%s", account_id, fan_id, exc_info=True)
         return _empty(contract, LLM_UNAVAILABLE, considered=considered)
     if not picked:
+        alts = await _alternatives(account_id, fan_id, pool, seen, count)
+        # 🚨 A GENERIC ask can never fail to match. Operator ruling 2026-08-11:
+        # "show me — always find something." He named nothing, so there is no
+        # promise for a pick to break; refusing here is the bug, not the safety.
+        # Three of the operator's 22 silences in round 3 were exactly this
+        # ("come show me", "Show me", "Show me tell me once and I learn it") and
+        # every one of them was a live buyer mid-conversation.
+        if generic and alts:
+            return Resolution(alts[:count], contract, considered=considered)
         return _empty(contract, NO_MATCH, considered=considered,
-                      alternatives=await _alternatives(account_id, fan_id, pool,
-                                                       seen, count))
+                      alternatives=alts)
 
-    if not verify:
+    # Nothing was promised, so there is no promise to check. Running the
+    # verifier against "what he asked for" when he asked for nothing in
+    # particular is how a bare "show me" ends in VERIFY_REJECTED.
+    if not verify or generic:
         return Resolution(picked, contract, considered=considered)
 
     by_id = dict(pool)
