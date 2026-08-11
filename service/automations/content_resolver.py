@@ -473,26 +473,47 @@ async def resolve(account_id: str, fan_id: int, *, count: int,
     if not contract.asked:
         return _empty(contract, NO_ASK)
 
-    # Pool: curated first — it is the only human-verified answer to "is this
-    # item about the thing he asked for".
-    pool: list[tuple[int, str]] = []
+    # ── The pool is the CURATED SHELF ∪ THE WHOLE VAULT ────────────
+    #
+    # Operator ruling 2026-08-11: "we are searching the whole vault for videos a
+    # fan might want + these folders, as they are absolutely correct as I picked
+    # them." So the two are a union, not a fallback chain:
+    #
+    #   • curated items are TRUSTED — a human looked at the pixels and filed
+    #     them. They rank first and they skip VERIFY, because re-judging a
+    #     human's eyes against a description written by a different model is how
+    #     the verifier came to reject 14 of the operator's own 14 keeps.
+    #   • retrieved items are UNTRUSTED — found by lexical scan over everything,
+    #     which is the only way a VIDEO ever gets picked (the feet shelves are
+    #     stills). These are what VERIFY exists to gate.
+    trusted: list[tuple[int, str]] = []
     if contract.category:
-        pool = await _curated_pool(account_id, contract.category, contract.rung, seen)
-        if not pool and require_curated:
+        trusted = await _curated_pool(account_id, contract.category, contract.rung, seen)
+        if not trusted and require_curated:
             return _empty(contract, EMPTY_SHELF)
-    if not pool:
-        if require_curated:
+    if require_curated:
+        pool = trusted
+        if not pool:
             return _empty(contract, UNSUPPORTED_SUBJECT)
-        pool = await _described_pool(account_id, seen, contract.media_kind,
-                                     contract.terms)
+    else:
+        have = {mid for mid, _ in trusted}
+        found = [(m, t) for m, t in
+                 await _described_pool(account_id, seen, contract.media_kind,
+                                       contract.terms)
+                 if m not in have]
+        pool = trusted + found
+    trusted_ids = {mid for mid, _ in trusted}
     if not pool:
         return _empty(contract, EXHAUSTED_FOR_FAN)
 
-    # Media kind is a promise too: "send me a video" is not satisfied by a photo.
+    # Media kind is a promise too: "send me a video" is not satisfied by a photo,
+    # and this is why the whole vault is in the pool — the curated feet shelves
+    # are stills, so a video can only ever come from the retrieved side.
     if contract.media_kind in MEDIA_KINDS:
         kinds = await _kind_of(account_id, [mid for mid, _ in pool])
         pool = [(mid, t) for mid, t in pool
                 if kinds.get(mid, contract.media_kind) == contract.media_kind]
+        trusted_ids &= {mid for mid, _ in pool}
         if not pool:
             return _empty(contract, EXHAUSTED_FOR_FAN)
 
@@ -510,10 +531,17 @@ async def resolve(account_id: str, fan_id: int, *, count: int,
         return Resolution(picked, contract, considered=considered)
 
     by_id = dict(pool)
+    # A curated pick is already verified — by a human, against the pixels. Only
+    # what the machine found needs the gate.
+    machine = [mid for mid in picked if mid not in trusted_ids][:_VERIFY_MAX]
+    human = [mid for mid in picked if mid in trusted_ids]
+    if not machine:
+        return Resolution(picked, contract, considered=considered)
     try:
-        kept = await _verify(
+        kept = human + await _verify(
             account_id, fan_id, contract,
-            [(mid, by_id.get(mid, "")) for mid in picked[:_VERIFY_MAX]], model)
+            [(mid, by_id.get(mid, "")) for mid in machine], model)
+        kept = [mid for mid in picked if mid in set(kept)]   # keep rank order
     except Exception:
         # 🚨 A verifier that cannot run is not a pass. The whole point of this
         # call is that nothing ships unchecked.
