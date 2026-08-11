@@ -115,8 +115,14 @@ _DEFAULTS: dict = {
     # match → adversarial verify) and only falls back to the folder pull when
     # the resolver refuses. It fails OPEN because the gift is free and a generic
     # gift was never promised to be personal; a PRICED send must not.
-    # Default OFF: this is a live automation on 17 accounts.
-    "gift_on_subject": False,
+    # Default ON since 2026-08-11 (operator: "make all this enabled by default,
+    # all on"). It was OFF because this is a live automation on 17 accounts —
+    # the reason it is safe to flip is that it changes WHICH free piece is
+    # attached, never whether the apology is sent, and it fails open to the
+    # folder pull. The cost is one resolver call per make-right; the win is that
+    # a man apologised to for the wrong content stops being handed the wrong
+    # content a second time.
+    "gift_on_subject": True,
     "apology_caption": "",     # operator override for the apology text ('' → built-in)
     "flag_refund": True,       # raise an operator refund-review flag (money is NEVER auto-moved)
     "guard_hours": 12,         # cross-automation contact-guard window (OPEN only)
