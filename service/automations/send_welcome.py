@@ -51,7 +51,9 @@ bubble 1 is the stutter greeting with the time-of-day image attached, bubble 2 i
 the activity line AI-restyled into the creator's casual texting voice (verbatim
 template on any LLM failure; V1's canned third line is retired). The restyle is
 ONE cached LLM call per slot line shared across fans; a fan who already texted us
-gets a fresh per-fan call (see _restyle_cache). Each bubble is held for its human
+gets a fresh per-fan call (see _restyle_cache). An operator-written `question`
+(payload) rides as an optional THIRD bubble, sent word-for-word — never restyled,
+never near an LLM. Each bubble is held for its human
 typing time with the live "...is typing" indicator
 (webhook_config_json.typing_wpm / typing_indicator — same knobs as of_ai_chat).
 
@@ -61,8 +63,9 @@ Payload knobs (all optional): `limit` (notifications fetched), `max_welcomes`
 picker as send_followup), `restyle` (AI-restyle the activity bubble, default
 True; False sends the verbatim template line, zero LLM cost), `time_only`
 (bubble 2 drops the activity and says ONLY the day/time-of-day/location —
-"it's Thursday afternoon in US"; default False), `test_fan` (+ `test_name`) to
-force one hardcoded recipient.
+"it's Thursday afternoon in US"; default False), `question` (an operator-written
+question appended VERBATIM as a third bubble — no restyle, no LLM; blank/absent
+= off), `test_fan` (+ `test_name`) to force one hardcoded recipient.
 
 Returns a stats dict → automation_runs.stats_json.
 """
@@ -729,7 +732,7 @@ async def preview_compose(
     account_id: str, *, fan_id: int | None = None, test_name: str | None = None,
     model: str | None = None, restyle: bool = False, slot: str | None = None,
     config: dict | None = None, ignore_pin: bool = False,
-    time_only: bool = False,
+    time_only: bool = False, question: str | None = None,
 ) -> dict:
     """Compose the welcome a real run WOULD produce for one fan — the text + the
     chosen time-of-day image id — WITHOUT sending and WITHOUT writing send-state.
@@ -763,6 +766,10 @@ async def preview_compose(
     (no activity). It bypasses the pin for the same reason the sender does — a pin
     is a stored ACTIVITY line, so honouring it would show (and ship) the long line
     the checkbox just turned off.
+
+    `question` mirrors the rule's `question` knob: the operator's own question,
+    appended word-for-word as the last bubble (never restyled) — carried from the
+    form so the preview shows the full burst before the rule is saved.
 
     Returns the send-shape as `bubbles` (image rides on bubble 1) + joined `text`,
     plus `image`, `name`, `slot`, and `restyled`/`cap_hit`/`pinned` flags."""
@@ -825,6 +832,12 @@ async def preview_compose(
         if time_only and len(bubbles) > 1:
             bubbles[1] = _lead_with_its(bubbles[1])
 
+    # Bubble 3: the operator's question, word-for-word — rides both the pinned
+    # and the composed paths, exactly like the send does.
+    question = (question or "").strip()
+    if question:
+        bubbles.append(question)
+
     bubbles = [apply_word_restriction(b) for b in bubbles]
     if strip_emoji_on:
         bubbles = [strip_emojis(b) for b in bubbles]
@@ -862,6 +875,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # migrated by an explicit flip, so an absent key stays absent-means-off and
     # keeps meaning what it meant when it was written.
     time_only = bool(payload.get("time_only"))
+    # Bubble 3 (optional): an operator-written question appended VERBATIM — no
+    # restyle, no LLM, the same exact text for every fan. Blank/absent = off.
+    question = str(payload.get("question") or "").strip()
 
     client = await asyncio.to_thread(ax._make_client, account_id)
 
@@ -1052,6 +1068,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                         exc_info=True)
                 if time_only and len(bubbles) > 1:
                     bubbles[1] = _lead_with_its(bubbles[1])
+
+            # Bubble 3: the operator's question, word-for-word, after BOTH the
+            # pinned and the composed paths — a pin replaces the activity line,
+            # never the question.
+            if question:
+                bubbles.append(question)
 
             # Last-mile per bubble: double the first vowel of any OF-restricted word
             # (V1 ran apply_word_restriction on EVERY welcome). Covers the local

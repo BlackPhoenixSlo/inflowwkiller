@@ -324,6 +324,18 @@ def _validate_pack_overrides(raw: Any) -> dict[str, list[str]]:
 
 # ── ai_chatter config (mirrors tip_reward_config_api) ────────────────────────
 
+def _truthy(v: object) -> bool:
+    """A bool that does not read the STRING "false" as True.
+
+    `bool("false")` is True, which turns a money-sending flag ON when a raw-JSON
+    edit or a migration writes a quoted boolean. The UI posts real JSON bools and
+    never hits this; the raw-config modal and `prod-config.sh` can.
+    """
+    if isinstance(v, str):
+        return v.strip().lower() not in ("", "false", "0", "no", "off", "null")
+    return bool(v)
+
+
 def _validate_cfg(cfg: dict) -> dict:
     if not isinstance(cfg, dict):
         raise HTTPException(422, "config must be an object")
@@ -378,15 +390,21 @@ def _validate_cfg(cfg: dict) -> dict:
     # master (guarded in `plan_pack`/`plan_ask`), so ticking it alone does
     # nothing — which is why the tab ties them together rather than showing two
     # independent boxes.
+    #
+    # ⚠️ `_truthy`, not `bool()`. Every other flag in this validator uses `bool()`,
+    # and `bool("false")` is True — a raw-JSON edit or a migration that writes the
+    # STRING "false" turns the feature ON. For a display toggle that is a wart;
+    # for the two switches that send priced messages it is money, so these three
+    # do not inherit it.
     if "pack_send_enabled" in cfg:
-        out["pack_send_enabled"] = bool(cfg["pack_send_enabled"])
+        out["pack_send_enabled"] = _truthy(cfg["pack_send_enabled"])
     if "pack_on_ask_enabled" in cfg:
-        out["pack_on_ask_enabled"] = bool(cfg["pack_on_ask_enabled"])
+        out["pack_on_ask_enabled"] = _truthy(cfg["pack_on_ask_enabled"])
     # The rate card is a BASELINE, not a ceiling (operator ruling 2026-08-11).
     # This restores the old hard veto for an account that wants it: never charge
     # more than the attached content is worth.
     if "value_caps_price" in cfg:
-        out["value_caps_price"] = bool(cfg["value_caps_price"])
+        out["value_caps_price"] = _truthy(cfg["value_caps_price"])
     if "rhythm_enabled" in cfg:
         out["rhythm_enabled"] = bool(cfg["rhythm_enabled"])
     if "rhythm_no_sleep" in cfg:

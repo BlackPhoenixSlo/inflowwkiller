@@ -228,6 +228,8 @@ export function useAutomationPreview() {
       ignore_pin?: boolean;
       /** send_welcome: 2nd bubble = day/time + location only (no activity line). */
       time_only?: boolean;
+      /** send_welcome: operator question appended word-for-word as the 3rd bubble. */
+      question?: string | null;
     }
   >({
     mutationFn: (vars) => relay.post("/admin/automation-preview", vars),

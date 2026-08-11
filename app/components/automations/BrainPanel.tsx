@@ -159,6 +159,9 @@ export default function BrainPanel() {
   // the activity line. Lives on the rule's payload.time_only, like the follow-up's
   // with_image — so it saves with the Welcome section's own button.
   const [welcomeTimeOnly, setWelcomeTimeOnly] = useState(true);
+  // Bubble 3 = the operator's own question, sent WORD-FOR-WORD (no AI touch-up).
+  // Lives on the rule's payload.question; "" = off (no third bubble).
+  const [welcomeQuestion, setWelcomeQuestion] = useState("");
   const [welcomeMsg, setWelcomeMsg] = useState<string | null>(null);
   const [previewFan, setPreviewFan] = useState("");
   const [preview, setPreview] = useState<AutomationPreviewResult | null>(null);
@@ -204,10 +207,13 @@ export default function BrainPanel() {
         Math.max(1, Math.round((welcomeRule.every_seconds ?? WELCOME_DEFAULT_EVERY_S) / 60)),
       );
       setWelcomeTimeOnly(welcomeRule.payload?.time_only !== false);
+      const q = welcomeRule.payload?.question;
+      setWelcomeQuestion(typeof q === "string" ? q : "");
     } else {
       setWelcomeEnabled(false);
       setWelcomeMinutes(WELCOME_DEFAULT_EVERY_S / 60);
       setWelcomeTimeOnly(true);
+      setWelcomeQuestion("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [welcomeRule?.id, welcomeRule?.is_enabled, welcomeRule?.every_seconds,
@@ -355,7 +361,13 @@ export default function BrainPanel() {
           id: welcomeRule.id,
           every_seconds,
           is_enabled: welcomeEnabled,
-          payload: { ...(welcomeRule.payload ?? {}), time_only: welcomeTimeOnly },
+          // `question` is always written (even "") — the merge over the existing
+          // payload means omitting it could never CLEAR a question once saved.
+          payload: {
+            ...(welcomeRule.payload ?? {}),
+            time_only: welcomeTimeOnly,
+            question: welcomeQuestion.trim(),
+          },
         });
       } else {
         await createWelcomeRule.mutateAsync({
@@ -364,7 +376,7 @@ export default function BrainPanel() {
           name: "Welcome new subscribers",
           every_seconds,
           is_enabled: welcomeEnabled,
-          payload: { time_only: welcomeTimeOnly },
+          payload: { time_only: welcomeTimeOnly, question: welcomeQuestion.trim() },
         });
       }
       setWelcomeMsg("Saved.");
@@ -446,6 +458,8 @@ export default function BrainPanel() {
         // The checkbox is form state until Save, so the preview must carry it —
         // otherwise ticking it and hitting Preview still shows the long line.
         time_only: welcomeTimeOnly,
+        // Same story for the 3rd-bubble question: form state until Save.
+        question: welcomeQuestion.trim() || null,
       });
       setPreview(res);
     } catch (e) {
@@ -956,6 +970,23 @@ export default function BrainPanel() {
                 ignores pinned lines while it’s on.
               </p>
             )}
+            <label className="flex flex-col gap-0.5">
+              <span
+                className="text-[11px] text-fg-dim"
+                title="Appended after the greeting and the time line as its own bubble — sent word-for-word, no AI touch-up ever. Leave blank for the classic 2-bubble welcome."
+              >
+                Question (3rd bubble — sent word-for-word)
+              </span>
+              <Input
+                value={welcomeQuestion}
+                onChange={(e) => {
+                  setWelcomeQuestion(e.target.value);
+                  setWelcomeMsg(null);
+                }}
+                placeholder="e.g. so tell me, where are you from?"
+                className="w-full max-w-md"
+              />
+            </label>
 
             {/* Live preview — composes the welcome text + image WITHOUT sending.
                 With "AI restyle" on it runs the REAL restyle so you see the exact
@@ -1014,9 +1045,13 @@ export default function BrainPanel() {
               </Button>
               {/* No pinning while the short bubble is on: a pin is an ACTIVITY line
                   and time-only ignores pins, so the button would store something
-                  that never ships. */}
+                  that never ships. Ditto when the question is the ONLY line after
+                  the greeting (a slot with no activity written): bubble 2 is then
+                  the verbatim question, and pinning it would store the question as
+                  the slot's activity line — the fan would get it twice. */}
               {preview && preview.bubbles && preview.bubbles.length > 1 && !preview.pinned
-                && !welcomeTimeOnly && (
+                && !welcomeTimeOnly
+                && !(welcomeQuestion.trim() && preview.bubbles.length === 2) && (
                 <Button
                   size="sm"
                   variant="primary"
@@ -1089,11 +1124,15 @@ export default function BrainPanel() {
                       ))}
                       {preview.bubbles.length > 1 && (
                         <div className="text-[10px] text-fg-dim">
-                          {preview.pinned
-                            ? "2 bubbles · typing pauses between · 2nd line is your pinned line (sends as-is)"
-                            : preview.restyled
-                            ? "2 bubbles · typing pauses between · 2nd line is the AI-restyled line that ships (↻ Regenerate for another, or Keep this line to lock it in)"
-                            : "2 bubbles · typing pauses between · 2nd line is the plain template (turn on AI restyle to preview the shipped line)"}
+                          {`${preview.bubbles.length} bubbles · typing pauses between · ` +
+                            (preview.pinned
+                              ? "2nd line is your pinned line (sends as-is)"
+                              : preview.restyled
+                              ? "2nd line is the AI-restyled line that ships (↻ Regenerate for another, or Keep this line to lock it in)"
+                              : "2nd line is the plain template (turn on AI restyle to preview the shipped line)") +
+                            (preview.bubbles.length > 2
+                              ? " · last is your question, word-for-word"
+                              : "")}
                         </div>
                       )}
                     </div>

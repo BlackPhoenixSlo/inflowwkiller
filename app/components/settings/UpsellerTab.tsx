@@ -293,8 +293,10 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
           <ul className="text-xs text-fg-dim leading-relaxed space-y-1 list-disc pl-4">
             <li>
               <b className="text-fg">The creator is alone in it</b> unless he asked for
-              company. Anything with someone else in frame is dropped before it can be
-              picked.
+              company. Anything the vault <i>knows</i> has someone else in frame is
+              dropped before it can be picked — that comes from the AI description
+              pass, so an item never described is not known either way and can still
+              be sent. Run <b>Describe</b> in 🖼️ Vault AI first for this to be airtight.
             </li>
             <li>
               <b className="text-fg">The price follows what he has paid.</b> A fan who has
@@ -302,8 +304,10 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
               single PPV unlocks <b>$200</b>. His first ask is never more than ~$60.
             </li>
             <li>
-              <b className="text-fg">A cold fan gets the tamer end first.</b> Explicit
-              content is spent on fans who have bought, not on the opening ask.
+              <b className="text-fg">A cold fan gets the tamer end first</b> — an
+              ordering, not a wall. If the tame end runs out before the price is
+              covered it keeps going, because a fan who asked and got silence is the
+              worse outcome.
             </li>
             <li>
               The caption states exactly what is attached, and the send is{" "}
@@ -323,9 +327,9 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
             <span className="block max-md:hidden text-fg-dim text-xs">
               Prices are built from a rate card — a video is worth $5–10 per 10 seconds
               depending on how explicit it is, an explicit photo about $10, teases are
-              filler. Normally that is a <b>baseline</b> and the upseller may quote above
-              it for a fan whose history supports it. Tick this to make it a hard
-              ceiling instead.
+              filler. By default that is a <b>baseline</b>, so a fan whose history
+              supports it can be quoted <i>above</i> what the card says the set is
+              worth. Tick this to make the card a hard ceiling instead.
             </span>
           </span>
         </label>

@@ -46,6 +46,10 @@ class _PreviewBody(BaseModel):
     # SHORT bubble 2 (day / time of day / location, no activity) the moment the
     # checkbox is ticked — before the rule is saved.
     time_only: bool = False
+    # Mirror of the rule's `question` knob: the operator's own question, appended
+    # word-for-word as the 3rd bubble — carried from the form so the preview shows
+    # the full burst before the rule is saved.
+    question: str | None = None
 
 
 @router.post("/admin/automation-preview")
@@ -61,7 +65,7 @@ async def automation_preview(body: _PreviewBody = Body(...)) -> dict[str, Any]:
                 body.account_id, fan_id=body.fan_id, test_name=body.test_name,
                 model=body.model, restyle=body.restyle, slot=body.slot,
                 config=body.config, ignore_pin=body.ignore_pin,
-                time_only=body.time_only,
+                time_only=body.time_only, question=body.question,
             )
         except LLMCapExceeded:
             # Belt-and-braces: preview_compose already degrades a capped restyle to
