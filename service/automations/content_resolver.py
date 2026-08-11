@@ -593,12 +593,11 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
         system += (
             "\n\nTHE VAULT'S OWN WORDS — the vocabulary these descriptions "
             "actually use, most common first:\n" + ", ".join(lexicon) + "\n"
-            "🚨 Draw `terms` FROM THIS LIST wherever one fits. The search is a "
-            "literal text match over those descriptions, so a term that is not "
-            "in this list finds NOTHING. If he says \"tits\" and the list says "
-            "\"breasts\", emit \"breasts\". Translating his words into the "
-            "vault's vocabulary IS the job. Invent a word only when the list "
-            "has no equivalent at all."
+            "ADD any of these that fit, on top of your own synonyms. The search "
+            "is a literal text match over those descriptions, so a word from "
+            "this list is known to hit. NEVER DROP one of your own terms "
+            "because it is missing from the list — the list is the 200 most "
+            "common words and is not the whole vocabulary. Widen, never narrow."
         )
     try:
         res = await llm_client.chat(
