@@ -143,6 +143,20 @@ REFUSE_RESOLVER = "resolver_refused"
 # 🚨 Fan-facing rung phrases. Internal folder names are TRIAGE vocabulary and are
 # wrong for a fan: `nude` reads as HER BODY, which is rung 3. The negative half
 # is load-bearing — "bare feet" alone leaves him free to expect rung 3 at $59.
+# 🚨 The STICKER, per rung. Not what any fan is charged — `next_price` quotes
+# that per fan — but the anchor `derive_band` needs to place the item in a price
+# band at all. SPEC §6.1 warned that `band_lo`/`band_hi` are NULL on all 165
+# catalog items, so a row created with price_cents=0 collapses the band to the
+# floor: the first dry-run against the live shelf quoted $8.21 for $42 of
+# content. These are SPEC §6's own figures — the $59 median for the product
+# rung, and 3x that for rung 3, which is where MAX_ASK_VS_HISTORY_MULT lands a
+# fan who bought rung 2.
+RUNG_STICKER_CENTS: dict[str, int] = {
+    "tease": 0,            # never sold — previews only
+    "nude": 5900,
+    "nude-body": 17700,
+}
+
 RUNG_PHRASES: dict[tuple[str, str], str] = {
     ("feet", "tease"): "feet, covered",
     ("feet", "nude"): "bare feet, no nudity",
@@ -450,10 +464,12 @@ async def ensure_pack_item(account_id: str, category: str, rung: str) -> Catalog
                 tags=json.dumps([tag]),
                 media_ids="[]",           # resolved LIVE at send time
                 preview_media_ids="[]",
-                price_cents=0,            # the real ask is quoted per fan
+                price_cents=RUNG_STICKER_CENTS.get(rung, 5900),
                 enabled=False,            # never in the ordinary manifest
             )
             s.add(row)
+        # Keep the sticker current even on a row created before this existed.
+        row.price_cents = RUNG_STICKER_CENTS.get(rung, 5900)
         row.description_for_ai = (
             f"{phrase}. Sold as a set of photos from her {category} collection; "
             f"the number of photos depends on the price."
