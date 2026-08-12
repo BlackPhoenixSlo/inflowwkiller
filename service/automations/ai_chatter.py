@@ -300,22 +300,27 @@ _DEFAULTS: dict = {
     # about the locked item, which is the strongest buying signal we had been dropping.
     "reply_context_enabled": True,
 
-    # ── Prompt SHAPE (arm G). Three independent transforms over the assembled
-    # prompt, ALL OFF by default: with all three off `_prompt_shape.reshape` returns
-    # its inputs unchanged and the prompt is byte-identical to today.
+    # ── Prompt SHAPE (arm G). Three independent transforms over the assembled prompt.
+    # ON by default (2026-08-13, operator call): apply to every account unless one
+    # opts out per-account. Each transform is still a no-op when its flag is off, and
+    # the `_build_messages` `shape` param defaults to OFF, so unit tests that build a
+    # prompt directly are unchanged — only the live run() path reads these defaults.
     #   regroup    — same blocks, same words, grouped identity → hard → voice →
     #                situational → this turn → contract. Today the only blocks that
     #                describe THIS turn sit buried mid-prompt under ~6KB of rules.
     #   drop_facts — remove THESE ARE THE FACTS ABOUT YOU, but ONLY where every CORE
-    #                fact (age, name, country, work) also exists elsewhere. Six of
-    #                seven live accounts carry those in separate bio lines and lose
-    #                only birthday/city/height/pets; the seventh carries NOTHING
-    #                outside the block, so the guard keeps it.
+    #                fact (age, name, country, work) also exists elsewhere. The guard
+    #                (`_prompt_shape.facts_are_redundant`) is fail-safe: it KEEPS the
+    #                block on any doubt or unparseable content, so default-on cannot
+    #                strip an account whose identity lives only there.
     #   task_line  — state which message this turn answers instead of leaving the
     #                model to infer it from position.
-    "prompt_regroup_enabled": False,
-    "prompt_drop_facts_enabled": False,
-    "prompt_task_line_enabled": False,
+    # Measured caveat: the task line alone was a WASH on the ungrouped prompt over 350
+    # paired quote turns (p=0.42). Shipped ON by explicit operator decision, not as a
+    # proven lift — disable any of the three per-account to revert.
+    "prompt_regroup_enabled": True,
+    "prompt_drop_facts_enabled": True,
+    "prompt_task_line_enabled": True,
 
     # ── Cadence controller (items 10/17/18/21) — the stop-condition subsystem.
     # ON by default (2026-07-22): "chat/sell forever" was never the behavior anyone
