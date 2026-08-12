@@ -252,6 +252,23 @@ COLD_OPEN_RUNG = 2                 # $27.00
 STEP_ON_BUY = 1
 STEP_ON_BUY_WITH_VIDEO = 2
 
+# This lane's own attribution — `pack_sender` stamps every send with it.
+PACK_ATTR_KIND = "pack_send"
+
+# How far a refusal streak may walk him DOWN the ladder.
+#
+# 🚨 Found on live prod data minutes after the first deploy: unbounded, this
+# floored EVERY existing fan at $6.70 — including a proven $50.20 buyer whose
+# next ask should have been $59. Two compounding causes, both fixed: the count
+# ran over every priced message (90,460 broadcast PPVs in 30 days against 2
+# sends from this lane, so ignoring a blast read as refusing an ask), and it had
+# no ceiling, so any long history could only ever reach the floor.
+#
+# The cap is right independent of that bug. The walk-down exists to FIND the
+# price he will pay, and $27 → $10 → $6.70 has already found it; past that it
+# stops being discovery and just gives the vault away.
+MAX_SOFTEN_RUNGS = 2
+
 
 def ladder_floor_index(cents: int) -> int:
     """Index of the highest rung at or below `cents`; 0 when below every rung."""
@@ -299,7 +316,8 @@ def ladder_rung(*, max_paid_cents: int, misses: int, has_video: bool) -> int:
     else:
         step = STEP_ON_BUY_WITH_VIDEO if has_video else STEP_ON_BUY
         target = ladder_floor_index(max_paid_cents) + step
-    return max(0, min(top, target - max(0, misses)))
+    soften = min(max(0, misses), MAX_SOFTEN_RUNGS)
+    return max(0, min(top, target - soften))
 
 
 async def has_moving_media(account_id: str, media_ids: list[int]) -> bool:
@@ -317,11 +335,17 @@ async def has_moving_media(account_id: str, media_ids: list[int]) -> bool:
 
 
 async def unbought_since_last_paid(account_id: str, fan_id: int) -> int:
-    """Priced offers he has let pass since he last bought one.
+    """Offers from THIS LANE he has let pass since he last bought anything.
 
     Counted from `messages` for the same reason `_paid_ppv_facts` is: a stored
     counter and the thread it summarises drift, and the thread is the one the
     fan actually lived through.
+
+    Asymmetric on purpose. The PURCHASE that resets the streak is any priced
+    unlock — money is money, and a fan who just bought a $50 broadcast is not in
+    a refusal streak. The REFUSALS are this lane's only: he never asked for the
+    mass PPV, so ignoring it says nothing about the price he would pay for the
+    thing he DID ask for.
     """
     from db.models import Message
 
@@ -341,6 +365,7 @@ async def unbought_since_last_paid(account_id: str, fan_id: int) -> int:
             Message.direction == "out",
             Message.price_cents > 0,
             Message.is_paid.is_not(True),
+            Message.automation_kind == PACK_ATTR_KIND,
         )
         if last_paid is not None:
             q = q.where(Message.created_at > last_paid)
