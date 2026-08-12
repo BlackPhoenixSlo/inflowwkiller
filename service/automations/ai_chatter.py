@@ -6862,8 +6862,21 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # refusal (no curated shelf, shelf too thin, verifier rejected) falls
             # straight through to the normal path — this can only ever REPLACE a
             # cheapest-item offer, never suppress one.
+            # 🚨 It runs even when the MODEL wrote an offer marker, and that is the
+            # whole point. `offer_item is None` used to guard this block, so the
+            # resolver was skipped on exactly the turns it was built for: a fan
+            # who NAMES a subject is the most likely turn for the model to sell
+            # into, and its marker is a blind pick from the priced manifest.
+            # Measured live 2026-08-12, minutes after this lane first shipped —
+            # "Do you send ass pics?" was answered with a catalog item called
+            # "Quick rate" at $8.69, captioned "maybe later if ur lucky" with the
+            # pics attached. The resolver never ran.
+            #
+            # A named ask beats a blind pick. When the pack lane sends, it clears
+            # the model's marker below so the reply ships unpriced and he gets
+            # exactly ONE ask — the one that answers his words.
             _pack_this_fan = False
-            if (_ask_now and not seller_off and offer_item is None
+            if (_ask_now and not seller_off
                     and bool(cfg.get("pack_on_ask_enabled"))
                     and forced_this_tick < _MAX_FORCED_ASKS_PER_TICK):
                 from automations import pack_sender as _packs
@@ -6873,6 +6886,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     packs_sent += 1
                     forced_this_tick += 1
                     _pack_this_fan = True
+                    # He has his ONE ask, and it is the one that answers his
+                    # words. Leaving the model's marker set here would price the
+                    # reply too and put two offers in front of him on the same
+                    # turn — the shape `max_open_offers` exists to bound.
+                    if offer_item is not None:
+                        log.info("ai_chatter pack on ask SUPERSEDES model offer "
+                                 "account=%s fan=%s item=%s", account_id, fan_id,
+                                 offer_item.id)
+                        offer_item = None
+                        offer_id = None
                     log.info("ai_chatter PACK on ask account=%s fan=%s %s n=%s px=%s",
                              account_id, fan_id, _pk.get("category"),
                              _pk.get("n"), _pk.get("price_cents"))

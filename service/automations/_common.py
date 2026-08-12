@@ -2397,7 +2397,14 @@ CONTENT_ASK_RE = re.compile(
     # Recall (2026-07-15 audit): "send nudes" / "i want nudes" — the most iconic buy
     # signal on the platform — matched neither branch. `nudes` has no innocent reading.
     r"(send|want|get|gimme|got any) (me |some |ur |your )?nudes?\b|"
-    r"send (me |ur |your |some )?(pics?|vids?|videos?|content)\b|"
+    # 🚨 The SUBJECT sits between the verb and the media word, and the fixed
+    # option list could not hold it. Measured live 2026-08-12: "Do you send ass
+    # pics?" matched NOTHING here, so the turn was never a content_ask, the ask
+    # lane never armed, and the model answered a named request with a blind
+    # catalog pick. `\w+ ` for the noun he actually named; "do (u|you) send/sell"
+    # for the question form, which is how a fan asks before he asks.
+    r"(do|d) ?(u|you|ya) (send|sell)\b|"
+    r"send (me |ur |your |some )?(\w+ )?(pics?|vids?|videos?|photos?|content)\b|"
     # NOT a bare `see (how|what|you|u|it)`. That matched "see you later babe" — the most
     # common sign-off on the platform — plus "i see what you mean" and "see you
     # tomorrow". Two goodbyes in a 6-message window were enough to make thread_heat()
