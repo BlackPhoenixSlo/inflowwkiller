@@ -72,7 +72,8 @@ from .pack_claim import (
 )
 from .pack_pricing import (
     MAX_ITEMS, MIN_ITEMS, RUNG_STICKER_CENTS, DEFAULT_STICKER_CENTS,
-    compose_by_value, quote_pack, rank_by_tier, spend_bounds,
+    compose_by_value, has_moving_media, next_rung_above, quote_pack, rank_by_tier,
+    spend_bounds,
 )
 
 log = logging.getLogger("of-relay.automation.pack_sender")
@@ -363,7 +364,13 @@ async def _price_and_compose(account_id: str, fan_id: int, avail_ids: list[int],
     path only, and the "priced above the rate card" log existed in one copy.
     Two sources of media, ONE pricing rule.
     """
-    px = await quote_pack(account_id, fan_id, item, len(avail_ids))
+    # The ladder grants +2 rungs for video, but the price is quoted BEFORE the
+    # pack is composed — so ask the SHELF first, then correct below if no clip
+    # actually made it in. Assuming-then-correcting beats reversing the
+    # price→count order this whole module is built on.
+    shelf_has_video = await has_moving_media(account_id, avail_ids)
+    px = await quote_pack(account_id, fan_id, item, len(avail_ids),
+                          has_video=shelf_has_video, cfg=cfg)
     if px is None:
         return _Priced([], 0, 0, item.id,
                        replace(empty, item_id=item.id, refusal=REFUSE_NO_PRICE))
@@ -372,6 +379,45 @@ async def _price_and_compose(account_id: str, fan_id: int, avail_ids: list[int],
     # more than eight tease stills, and the fan should get either — but only if
     # what he is charged is actually covered by what is attached.
     media, value = await compose_by_value(account_id, avail_ids, px)
+
+    # ── The shelf may LIFT a rung, the mirror of the veto above ──────
+    #
+    # 🚨 Composition stops the moment the price is covered, so a LOW rung on an
+    # expensive shelf composes under MIN_ITEMS and the whole send is refused:
+    # measured at rung 1 ($10) against a shelf of $10 stills → 1 item → refused.
+    # That would have made the walk-down — the entire point of softening — the
+    # thing that silences the lane, and it would have bitten hardest on exactly
+    # the fan who has already refused three times.
+    #
+    # Padding it out from the payoff pile is NOT the fix: the operator's 08-11
+    # ruling is that free padding never spends payoff, because a $60 pack that
+    # walks out with $270 attached has spent the next ask. So the price rises to
+    # what the shelf can honestly fill instead, one rung at a time. On a shelf of
+    # $10 stills the walk-down bottoms out at $36 rather than $6.70 — correct,
+    # because three $10 stills for $6.70 is not a discount, it is a giveaway.
+    if bool((cfg or {}).get("pack_price_ladder", True)) and len(media) < min_items:
+        cap, _tier = await spend_bounds(account_id, fan_id)
+        while len(media) < min_items:
+            lifted = next_rung_above(px)
+            if lifted is None or lifted > cap:
+                break                    # the shelf cannot be filled honestly
+            px = lifted
+            media, value = await compose_by_value(account_id, avail_ids, px)
+        log.info("pack ladder LIFTED account=%s fan=%s px=%s n=%s (a lower rung "
+                 "composed under the %s-item floor)", account_id, fan_id, px,
+                 len(media), min_items)
+
+    # The +2 was granted on a shelf that HAD video; charge it only if a clip is
+    # actually in the pack. Re-quoting can only lower the ask, so the composed
+    # media stays valid — it simply covers more than it now costs.
+    if shelf_has_video and media and not await has_moving_media(account_id, media):
+        stills_px = await quote_pack(account_id, fan_id, item, len(avail_ids),
+                                     has_video=False, cfg=cfg)
+        if stills_px is not None and stills_px < px:
+            log.info("pack ladder video step REVOKED account=%s fan=%s %s->%s "
+                     "(shelf had video, pack does not)",
+                     account_id, fan_id, px, stills_px)
+            px = stills_px
     if len(media) < min_items:
         return _Priced([], px, value, item.id,
                        replace(empty, item_id=item.id, refusal=REFUSE_TOO_THIN,

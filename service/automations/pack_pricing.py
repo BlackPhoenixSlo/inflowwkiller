@@ -218,6 +218,135 @@ async def compose_by_value(account_id: str, avail_ids: list[int],
     return chosen, total
 
 
+# ── The price ladder (operator ruling 2026-08-12) ───────────────────
+#
+# Fixed price points, and the fan has to BUY a rung to earn the next one. It
+# applies to THIS lane only — the fan asked, or the pack came off the vault
+# shelf. The convo teaser, ppv_send, mass and the unprompted upseller keep their
+# own pricing; the operator scoped it that way deliberately.
+#
+# Why a ladder at all: nothing was laddering this lane. `quote_pack` called
+# `next_price` with `rung_index=0` and `last_paid_cents=None` — every pack was a
+# cold open — so prod prices came out as $4.71, $40.91, $50.21 with no relation
+# to what the fan had ever paid.
+PRICE_LADDER_CENTS: tuple[int, ...] = (
+    670, 1_000, 2_700, 3_600, 5_900, 7_200, 8_700, 9_800, 12_900, 14_400)
+
+# Where a fan who has NEVER paid opens. Not rung 0.
+#
+# 🚨 Measured over 90 days of first-ever priced offers, revenue per ask by the
+# price we opened at: $20-30 → $2.50, >$65 → $2.36, $12-20 → $0.96, $30-45 →
+# $0.61, and <=$8 → $0.09. Opening every cold fan at $6.70 would put the whole
+# book in the worst row, ~27x below the best. $6.70 earns its place as the
+# bottom of the WALK-DOWN, which is where it actually converts: the case that
+# prompted this was a never-paid fan who refused $20.14, $10.00 and $20.14
+# again, then bought on the fourth ask at $6.58.
+#
+# The measurement is observational: the <=$8 and $30-45 rows carry the huge
+# automatic streams, so their denominators hold fans who were never going to
+# buy. Read it as "cheap does not rescue a cold ask", not as a causal curve.
+COLD_OPEN_RUNG = 2                 # $27.00
+
+# A purchase earns ONE rung, or TWO when the pack carries video — video is worth
+# more per piece (see VIDEO_CENTS_PER_10S) so it may skip a step.
+STEP_ON_BUY = 1
+STEP_ON_BUY_WITH_VIDEO = 2
+
+
+def ladder_floor_index(cents: int) -> int:
+    """Index of the highest rung at or below `cents`; 0 when below every rung."""
+    idx = 0
+    for i, rung in enumerate(PRICE_LADDER_CENTS):
+        if rung <= cents:
+            idx = i
+    return idx
+
+
+def snap_to_ladder(cents: int) -> int:
+    """The nearest rung at or below `cents`, never under the bottom rung.
+
+    Everything this lane emits lands on a rung. The shelf veto and the per-fan
+    cap both compute raw numbers, and a $43.12 quote from either would make the
+    ladder a suggestion rather than the rule.
+    """
+    if cents <= PRICE_LADDER_CENTS[0]:
+        return PRICE_LADDER_CENTS[0]
+    return PRICE_LADDER_CENTS[ladder_floor_index(cents)]
+
+
+def next_rung_above(cents: int) -> int | None:
+    """The first rung strictly above `cents`, or None at the top."""
+    for rung in PRICE_LADDER_CENTS:
+        if rung > cents:
+            return rung
+    return None
+
+
+def ladder_rung(*, max_paid_cents: int, misses: int, has_video: bool) -> int:
+    """Which rung to quote: what he has PROVEN, plus a step, minus his refusals.
+
+    `misses` is how many priced offers he has left unbought since his last
+    purchase, so the walk-down is read off the thread rather than stored — one
+    less piece of state to desync from the messages it describes.
+
+    A fan who never paid has proven nothing, so there is no step to take: he
+    opens at `COLD_OPEN_RUNG` and softens from there. Video lifts a CLIMB, not
+    an opening — "buy that level, max go 2 up if there is video involved".
+    """
+    top = len(PRICE_LADDER_CENTS) - 1
+    if max_paid_cents <= 0:
+        target = COLD_OPEN_RUNG
+    else:
+        step = STEP_ON_BUY_WITH_VIDEO if has_video else STEP_ON_BUY
+        target = ladder_floor_index(max_paid_cents) + step
+    return max(0, min(top, target - max(0, misses)))
+
+
+async def has_moving_media(account_id: str, media_ids: list[int]) -> bool:
+    """Is any of this video (or a gif)? Reads the same `MOVING_KINDS` the caption
+    counts by, so "2 vids" in the words and the +2 rung agree on what a vid is."""
+    if not media_ids:
+        return False
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.kind).where(
+                VaultItem.account_id == str(account_id),
+                VaultItem.media_id.in_([int(m) for m in media_ids]))
+        )).all()
+    return any(str(k or "").strip().lower() in MOVING_KINDS for (k,) in rows)
+
+
+async def unbought_since_last_paid(account_id: str, fan_id: int) -> int:
+    """Priced offers he has let pass since he last bought one.
+
+    Counted from `messages` for the same reason `_paid_ppv_facts` is: a stored
+    counter and the thread it summarises drift, and the thread is the one the
+    fan actually lived through.
+    """
+    from db.models import Message
+
+    async with get_session() as s:
+        last_paid = (await s.execute(
+            select(Message.created_at).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.direction == "out",
+                Message.price_cents > 0,
+                Message.is_paid.is_(True),
+            ).order_by(Message.created_at.desc()).limit(1)
+        )).scalar_one_or_none()
+        q = select(Message.message_id).where(
+            Message.account_id == str(account_id),
+            Message.fan_id == int(fan_id),
+            Message.direction == "out",
+            Message.price_cents > 0,
+            Message.is_paid.is_not(True),
+        )
+        if last_paid is not None:
+            q = q.where(Message.created_at > last_paid)
+        return len((await s.execute(q)).all())
+
+
 async def spend_bounds(account_id: str, fan_id: int) -> tuple[int, str | None]:
     """`(cap_cents, max_tier)` for THIS fan, from what he has actually paid.
 
@@ -268,7 +397,8 @@ async def rank_by_tier(account_id: str, media: list[int],
 
 
 async def quote_pack(account_id: str, fan_id: int, item: CatalogItem,
-                     avail: int) -> int | None:
+                     avail: int, *, has_video: bool = False,
+                     cfg: dict | None = None) -> int | None:
     """The price for this fan — or None meaning DO NOT OFFER.
 
     The price is quoted first, the count derives from it, and then the SHELF MAY
@@ -284,31 +414,50 @@ async def quote_pack(account_id: str, fan_id: int, item: CatalogItem,
     from .ai_chatter import _paid_ppv_facts        # local: avoid an import cycle
 
     max_paid, _last_paid = await _paid_ppv_facts(str(account_id), int(fan_id))
-    fan = upsell.FanState(
-        fan_id=int(fan_id), max_single_paid_cents=int(max_paid or 0),
-        last_paid_cents=None,                     # a pack is a cold open, not a rung
-        has_ever_paid=bool(max_paid))
-    band, _src = upsell.derive_band(
-        human_asks_cents=[], account_median_cents=None,
-        item_price_cents=int(item.price_cents or 0))
-    rng = random.Random(f"pack:{account_id}:{fan_id}:{item.id}")
-    quote = upsell.next_price(
-        fan=fan, band=band, last_paid_cents=None, rung_index=0,
-        key=f"pack:{item.id}", account_id=str(account_id), rng=rng,
-        library_bounds=(upsell.OF_PRICE_FLOOR_CENTS, upsell.OF_PRICE_MAX_CENTS),
-        escalation_mult=None, max_ask_vs_history_mult=None)
-    if quote is None:
-        return None
+    max_paid = int(max_paid or 0)
+
+    if bool((cfg or {}).get("pack_price_ladder", True)):
+        misses = await unbought_since_last_paid(account_id, fan_id)
+        rung = ladder_rung(max_paid_cents=max_paid, misses=misses,
+                           has_video=has_video)
+        quoted = PRICE_LADDER_CENTS[rung]
+        log.info("pack ladder account=%s fan=%s rung=%s/%s px=%s max_paid=%s "
+                 "misses=%s video=%s", account_id, fan_id, rung,
+                 len(PRICE_LADDER_CENTS) - 1, quoted, max_paid, misses, has_video)
+    else:
+        fan = upsell.FanState(
+            fan_id=int(fan_id), max_single_paid_cents=max_paid,
+            last_paid_cents=None,                 # a pack is a cold open, not a rung
+            has_ever_paid=bool(max_paid))
+        band, _src = upsell.derive_band(
+            human_asks_cents=[], account_median_cents=None,
+            item_price_cents=int(item.price_cents or 0))
+        rng = random.Random(f"pack:{account_id}:{fan_id}:{item.id}")
+        quote = upsell.next_price(
+            fan=fan, band=band, last_paid_cents=None, rung_index=0,
+            key=f"pack:{item.id}", account_id=str(account_id), rng=rng,
+            library_bounds=(upsell.OF_PRICE_FLOOR_CENTS, upsell.OF_PRICE_MAX_CENTS),
+            escalation_mult=None, max_ask_vs_history_mult=None)
+        if quote is None:
+            return None
+        quoted = int(quote.price_cents)
     # The per-fan ceiling, applied AFTER the ladder has spoken. `next_price`
     # already refuses to ask a cold fan more than $59 and can never exceed the
     # $200 wire max; this is the operator's middle rule, which nothing else
     # enforces — $100 unless a real PPV proves he goes higher.
     cap, _tier = await spend_bounds(account_id, fan_id)
-    px = min(int(quote.price_cents), cap)
+    px = min(quoted, cap)
     n = clamp_count(px)
     if avail < n:                    # the shelf vetoes the price
         px = max(upsell.OF_PRICE_FLOOR_CENTS, avail * CENTS_PER_ITEM)
         n = clamp_count(px)
     if min(n, avail) < MIN_ITEMS:
         return None
+    # Land on a rung. The cap and the veto above both compute raw arithmetic,
+    # and a $43.12 out of either would make the ladder advisory. Snapping DOWN
+    # can only reduce the ask, so it cannot breach the cap it just passed.
+    if bool((cfg or {}).get("pack_price_ladder", True)):
+        px = snap_to_ladder(px)
+        if clamp_count(px) > avail and avail < MIN_ITEMS:
+            return None
     return px
