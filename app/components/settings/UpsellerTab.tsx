@@ -19,6 +19,7 @@
 import { useState } from "react";
 import { Save, Sparkles } from "lucide-react";
 
+import { relay } from "@/lib/relay";
 import { Button, Card } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { cn } from "@/lib/utils";
@@ -52,6 +53,28 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
     starterSingles, slotHelp } = useSellerConfig(accountId);
   const scriptsQ = useCatalogScripts(accountId);
   const saveSinglesM = useSaveSingles(accountId);
+
+  // Prompt-shape (arm G) — the ONE bulk toggle across every model you own. It hits
+  // /admin/ai-chatter-config/prompt-shape-all, which flips the three flags on the
+  // caller's whole account set in one authenticated write (your browser session IS
+  // the auth). Off by default everywhere until pressed here.
+  const [shapeBusy, setShapeBusy] = useState(false);
+  const [shapeMsg, setShapeMsg] = useState<string | null>(null);
+  const setPromptShapeAll = async (enabled: boolean) => {
+    const verb = enabled ? "ENABLE" : "disable";
+    if (!confirm(`${verb} prompt-shape (regroup + drop-facts + task-line) on EVERY model you own?`)) return;
+    setShapeBusy(true);
+    setShapeMsg(null);
+    try {
+      const r = await relay.post<{ count: number; enabled: boolean }>(
+        "/admin/ai-chatter-config/prompt-shape-all", { enabled });
+      setShapeMsg(`✓ ${enabled ? "Enabled" : "Disabled"} on ${r.count} model${r.count === 1 ? "" : "s"}.`);
+    } catch (e) {
+      setShapeMsg(`Failed: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setShapeBusy(false);
+    }
+  };
 
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
   if (cfgQ.isLoading) return <div className="text-sm text-fg-dim">Loading…</div>;
@@ -90,6 +113,22 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
           <h3 className="text-sm font-medium">AI Upseller — sells in the chat, then hands back</h3>
           <div className="flex-1" />
           <EditRawJsonButton surface="ai-chatter-config" accountId={accountId} />
+        </div>
+
+        {/* Prompt-shape (arm G) — one click flips it on for ALL your models. */}
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-bg-soft/40 p-2">
+          <span className="text-xs text-fg-dim">
+            <b>Prompt shape (arm G)</b> — group blocks, drop redundant facts, name the
+            turn&apos;s target. Applies to <b>every model you own</b>.
+          </span>
+          <div className="flex-1" />
+          <Button size="sm" variant="secondary" disabled={shapeBusy}
+            onClick={() => void setPromptShapeAll(false)}>Turn off all</Button>
+          <Button size="sm" disabled={shapeBusy}
+            onClick={() => void setPromptShapeAll(true)}>
+            {shapeBusy ? "Applying…" : "Enable on all models"}
+          </Button>
+          {shapeMsg && <span className="w-full text-xs text-fg-dim">{shapeMsg}</span>}
         </div>
 
         <p className="text-xs text-fg-dim">

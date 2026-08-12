@@ -764,6 +764,66 @@ async def put_ai_chatter_config(body: _ConfigBody = Body(...)) -> dict[str, Any]
             **await _rhythm_view(body.account_id, row, clean)}
 
 
+# The three prompt-shape flags (arm G). Named here so the ONE bulk toggle can't drift
+# from the per-account editor's allowlist.
+_PROMPT_SHAPE_FLAGS = (
+    "prompt_regroup_enabled", "prompt_drop_facts_enabled", "prompt_task_line_enabled")
+
+
+class _PromptShapeBody(BaseModel):
+    enabled: bool = True
+
+
+@router.post("/admin/ai-chatter-config/prompt-shape-all")
+async def set_prompt_shape_all(body: _PromptShapeBody = Body(default=_PromptShapeBody())
+                               ) -> dict[str, Any]:
+    """Turn the three prompt-shape flags on (or off) for EVERY account the signed-in
+    principal owns — one click instead of editing 20 raw-JSON blobs.
+
+    Gated by the session, not a magic word: it only ever touches
+    `_actor_account_ids()`, which is the caller's own set (the full registry for a
+    master). An unauthenticated call raises 401 the same as the per-account editor.
+
+    Each account is a MINIMAL raw read-merge-write — only the three flag keys change,
+    every other stored key is preserved byte-for-byte. Deliberately NOT run through
+    `_validate_cfg`: that validator DROPS any key it does not name, which is correct
+    for the full-config PUT (the UI sends a clean blob) but would silently wipe an
+    unrecognised knob here, where the stored blob is read raw. The flags are plain
+    bools this endpoint sets itself, so there is nothing to validate. Idempotent, and
+    reversible with enabled=false. Same non-destructive path prod-config.sh uses."""
+    from auth import _actor_account_ids   # lazy: mirrors auth.py's own late imports
+    ids = _actor_account_ids()
+    if ids is None:
+        raise HTTPException(status_code=401, detail="sign in required")
+    patch = {k: bool(body.enabled) for k in _PROMPT_SHAPE_FLAGS}
+    now = datetime.utcnow()
+    applied: list[str] = []
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(AccountAiConfig).where(AccountAiConfig.account_id.in_(list(ids)))
+        )).scalars().all()
+        for row in rows:
+            try:
+                merged = json.loads(row.ai_chatter_config_json or "{}")
+                if not isinstance(merged, dict):
+                    merged = {}
+            except (TypeError, ValueError):
+                merged = {}
+            merged.update(patch)
+            await s.execute(
+                sqlite_insert(AccountAiConfig)
+                .values(account_id=row.account_id, utc_offset=0,
+                        ai_chatter_config_json=json.dumps(merged), updated_at=now)
+                .on_conflict_do_update(
+                    index_elements=["account_id"],
+                    set_={"ai_chatter_config_json": json.dumps(merged),
+                          "updated_at": now}))
+            applied.append(row.account_id)
+    log.info("prompt_shape_all enabled=%s count=%d", body.enabled, len(applied))
+    return {"enabled": bool(body.enabled), "count": len(applied),
+            "account_ids": sorted(applied)}
+
+
 # ── vault-ai config (account_ai_config.vault_ai_config_json) ─────────────────
 # The default blob and the merge live in `vault_ai_config` — the ONE home, shared
 # with `automations/describe_media` so the GET view and the sweep's view can't
