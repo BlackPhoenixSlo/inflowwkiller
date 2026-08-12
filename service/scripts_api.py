@@ -348,6 +348,13 @@ def _validate_cfg(cfg: dict) -> dict:
     # turning it off in the UI would otherwise silently keep it on.
     if "reply_context_enabled" in cfg:
         out["reply_context_enabled"] = bool(cfg["reply_context_enabled"])
+    # Prompt SHAPE (arm G) — three independent transforms, all default OFF. Same
+    # reason again: unnamed keys are DROPPED here, so without these lines the flags
+    # could never be turned ON at all and the rollout would look like a no-op.
+    for _shape_key in ("prompt_regroup_enabled", "prompt_drop_facts_enabled",
+                       "prompt_task_line_enabled"):
+        if _shape_key in cfg:
+            out[_shape_key] = bool(cfg[_shape_key])
     # Post-purchase objection judge (ships ON — see ai_chatter._DEFAULTS). Same
     # reason as the line above: this validator DROPS any key it does not name, so
     # an operator turning it off to stop the spend would have kept paying for it.
