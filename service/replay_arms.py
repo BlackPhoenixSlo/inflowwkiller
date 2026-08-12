@@ -47,9 +47,14 @@ if _HERE not in sys.path:
 # importing them means "compliant" means the same thing here as in production.
 from automations.ai_chatter import _DELIVERY_TALK_RE, _unbacked_talk  # noqa: E402
 from automations.of_ai_chat import _looks_like_echo  # noqa: E402
+# The arms call the SHIPPED transform, never a copy of it — otherwise the
+# replay measures something production does not run.
+from automations import _prompt_shape as PS  # noqa: E402
 
 PROVIDER_URL = "https://api.deepseek.com/chat/completions"
-JUDGE_MODEL = "deepseek-v4-pro"     # a stronger model grades; flash is the subject
+JUDGE_MODEL = "deepseek-v4-pro"     # ONLY used with --judge. The ARMS always run on
+                                    # the model prod used (flash) — the judge is a
+                                    # separate grader, and a human grader beats it.
 _CONTAINER_DB = "/app/service/chatterly.db"
 
 # Reply calls carry the whole persona+rules stack; the small ones are the fact-extract
@@ -75,6 +80,18 @@ def _sql(stmt: str) -> list[list[str]]:
     out = subprocess.run([os.path.join(_REPO, "scripts", "prod-read.sh"), stmt],
                          capture_output=True, text=True, check=True).stdout
     lines = [ln for ln in out.splitlines() if ln.strip()]
+    if not lines:
+        raise RuntimeError(f"prod-read returned nothing for: {stmt[:80]}")
+    # prod-read.sh has TWO output shapes: ' | '-joined from the in-container python,
+    # and sqlite3's `-column` when `docker exec` fails and it falls back to the host
+    # CLI. Splitting the second on ' | ' yields one garbage column per row and the
+    # caller then sees ZERO usable cases — a silent empty result that reads as a
+    # passing test. Seen live 2026-08-12 when one `docker exec` failed transiently
+    # (prod itself was fine). Fail loudly instead; the retry is free.
+    if " | " not in lines[0] and stmt.count(",") >= 1:
+        raise RuntimeError(
+            "prod-read fell back to the host sqlite3 CLI (docker exec failed) — its "
+            "column output cannot be parsed safely. Re-run; prod is usually fine.")
     return [ln.split(" | ") for ln in lines[1:]]        # drop the header row
 
 
@@ -109,6 +126,20 @@ STRATA: dict[str, str] = {
     "sticker": "prompt_json like '%CAT STICKERS%'",
     "custom_owed": "prompt_json like '%A CUSTOM IS ALREADY PAID FOR%'",
     "spanish": "prompt_json like '%OUTPUT LANGUAGE%'",
+    # For the arm-G ablation only: ~1 account in 4 has no FACTS-ABOUT-YOU block, and
+    # on those G is byte-identical to F — a case that cannot answer the question it
+    # was sampled for. Select the turns where the block is actually there.
+    "has_facts": "prompt_json like '%THESE ARE THE FACTS ABOUT YOU%'",
+    # Turns where he ASKS about her — the only turns that can catch an arm inventing a
+    # birthday after the facts block was cut. `bio_invent` is dead weight without them.
+    "personal": ("(prompt_json like '%how old%' or prompt_json like '%your age%' "
+                 "or prompt_json like '%where are you from%' "
+                 "or prompt_json like '%where do you live%' "
+                 "or prompt_json like '%how tall%' "
+                 "or prompt_json like '%real name%' "
+                 "or prompt_json like '%your name%' "
+                 "or prompt_json like '%boyfriend%' "
+                 "or prompt_json like '%do you have a bf%')"),
 }
 
 
@@ -182,25 +213,37 @@ def arm_a(case: Case) -> dict:
     return dict(case.body)
 
 
-def arm_b(case: Case) -> dict:
-    """A + a deterministic CURRENT TASK footer. Nothing is removed; the only change
-    is that the target of the reply is STATED instead of inferred from position and
-    bracket notation. Built from `parse_turn`, so it is reproducible and carries no
-    judgement of its own."""
-    turn = parse_turn(case.user)
+def _task_footer(user: str) -> str:
+    """The CURRENT TASK block — "" when there is nothing to name.
+
+    NOT a task for the fan: it tells the MODEL which message it is answering. The
+    transcript is a flat FAN/YOU list, so today the model infers the live line from
+    position; this states it. Deterministic, from `parse_turn`, so it carries no
+    judgement of its own. Shared by arms B and E."""
+    turn = parse_turn(user)
     if not turn.trailing_run:
-        return dict(case.body)       # nothing to name → arm B IS arm A for this case
+        return ""
     said = " / ".join(turn.trailing_run)
     lines = ["CURRENT TASK", f'The message you are replying to: "{said}"']
     if turn.has_quote and turn.quoted:
         lines.append(f'It quote-replies this earlier message: "{turn.quoted}"')
         lines.append("Answer the two of them together.")
     lines.append("Everything above this block is context, not the thing to answer.")
+    return "\n\n" + "\n".join(lines)
+
+
+def _rebuild(case: Case, system: str, user: str) -> dict:
     body = dict(case.body)
-    msgs = [dict(m) for m in body["messages"]]
-    msgs[1]["content"] = case.user + "\n\n" + "\n".join(lines)
-    body["messages"] = msgs
+    body["messages"] = [{**case.body["messages"][0], "content": system},
+                        {**case.body["messages"][1], "content": user}]
     return body
+
+
+def arm_b(case: Case) -> dict:
+    """A + the CURRENT TASK footer. Nothing removed; the only change is that the
+    target of the reply is STATED instead of inferred from position."""
+    return _rebuild(case, case.body["messages"][0]["content"],
+                    case.user + _task_footer(case.user))
 
 
 # ── C and D: transformations of the SYSTEM block ────────────────────────────
@@ -291,29 +334,169 @@ def arm_c(case: Case) -> dict:
     return body
 
 
+def _strip_who(case: Case) -> tuple[str, str]:
+    """C's ordering with WHO-THEY-ARE removed from both halves — her persona and his
+    facts. The mirror of the earlier strip: that one kept the people and dropped the
+    rules and answered "do the rules earn their keep"; this one keeps every rule and
+    drops the people, and answers "does the persona earn its keep".
+
+    Her side is the `identity` blocks. His side is everything the USER message carries
+    before the transcript — "What you know about him", his claims, his pinned message,
+    and her day — so what is left is the rules, the turn, and the conversation."""
+    system = "\n\n".join(b for b in _blocks(arm_c(case)["messages"][0]["content"])
+                        if _classify(b) != "identity")
+    user = case.user
+    head = user.find(_TRANSCRIPT_HEAD)
+    return system, (user[head:] if head != -1 else user)
+
+
 def arm_d(case: Case) -> dict:
-    """STRIPPED — the operator's proposal: persona + facts about her and him, plus the
-    output contract, and NOTHING else. Every behavioural rule block is dropped.
-
-    The contract stays because "the model emitted JSON" is a failure of format, not of
-    policy, and D exists to test whether the POLICY rules earn their keep. The user
-    message (his facts, his pins, her day, the transcript) is untouched in every arm."""
-    system = case.body["messages"][0]["content"]
-    keep = []
-    for b in _blocks(system):
-        cat = _classify(b)
-        if cat in ("identity", "contract"):
-            keep.append(b)
-        elif cat == "turn" and b.lstrip().startswith(_D_KEEPS_TURN):
-            keep.append(b)
-    body = dict(case.body)
-    msgs = [dict(m) for m in body["messages"]]
-    msgs[0]["content"] = "\n\n".join(keep)
-    body["messages"] = msgs
-    return body
+    """C, minus her persona and minus his facts."""
+    return _rebuild(case, *_strip_who(case))
 
 
-ARMS = {"A": arm_a, "B": arm_b, "C": arm_c, "D": arm_d}
+def arm_e(case: Case) -> dict:
+    """D + the CURRENT TASK footer. Isolates whether naming the target message pays
+    once the persona is gone — B tests the same footer against the FULL prompt, so
+    E-vs-D and B-vs-A are the same question asked in two different contexts."""
+    system, user = _strip_who(case)
+    return _rebuild(case, system, user + _task_footer(user))
+
+
+def arm_f(case: Case) -> dict:
+    """C + the CURRENT TASK footer. C's regrouping is the change the operator liked;
+    this asks whether naming the target message pays ON TOP of it. B asked the same
+    question against the UNGROUPED prompt and came back null over 350 cases, so a
+    difference here is about the pairing, not the footer alone."""
+    return _rebuild(case, arm_c(case)["messages"][0]["content"],
+                    case.user + _task_footer(case.user))
+
+
+# 1.8KB and the single biggest identity block: her age, birthday, height, where she
+# grew up. Note what depends on it — the `WHO YOU ARE (hard rule)` block says those
+# facts "are in the facts above; never invent them". Drop this and that rule points at
+# nothing, so the failure to watch for is not a worse tone, it is her INVENTING a
+# birthday. `bio_invent` in the graders is there for exactly this arm.
+_FACTS_HEAD = "THESE ARE THE FACTS ABOUT YOU"
+
+
+def arm_g(case: Case) -> dict:
+    """F minus the FACTS-ABOUT-YOU block — does that 1.8KB earn its place?"""
+    system = "\n\n".join(
+        b for b in _blocks(arm_c(case)["messages"][0]["content"])
+        if not b.lstrip().startswith(_FACTS_HEAD))
+    return _rebuild(case, system, case.user + _task_footer(case.user))
+
+
+# ── H: F with the VOICE prose compressed ────────────────────────────────────
+#
+# Every rule below survives; only the words explaining it are cut. The line this
+# deliberately does NOT cross: a HARD rule is never touched. `STAY ON ONLYFANS`,
+# `WHO YOU ARE`, `SELLING RULES`, `CONTENT YOU CAN ACTUALLY SEND` and the facts block
+# stay byte-identical, because a rule about off-platform contact or money is not
+# "useless crap" however wordy it reads, and a compression that quietly loosens one is
+# the worst possible outcome of a test that looks like a win.
+
+_FEEL = """THE FEEL OF TEXTING (read first — this governs everything below):
+texting is a chore, like a real girl half-glued to her phone. write the FEWEST words \
+that land the feeling AND actually address him — almost always ONE line, occasionally \
+two, basically never more. no extra bubbles, no padding, no explaining yourself. dont \
+labor over the perfect tiny line; if a slightly longer one comes out easier than \
+agonizing, thats fine.
+spend more words ONLY when it amuses you, when a longer line lands the emotion harder, \
+or when it makes HIM feel something. otherwise skip them. a short line that PUNCHES \
+beats a long one that explains, every time.
+short NEVER means dead or dodgy: even a tiny reply carries heat, a tease or warmth AND \
+engages what mattered in his message. never a flat ok/lol/nice/haha, never his own \
+words parroted back, never a cute one-liner that sidesteps his real point.
+if he ASKED you something, answer it in as few words as it takes, then STOP.
+the get-to-know backend-info question is a JUDGEMENT CALL, not a habit — sometimes \
+asking is exactly what the moment wants, sometimes dropping it and just reacting hits \
+harder. read the moment; dont do either on autopilot."""
+
+
+_REAL = """TEXT LIKE A REAL PERSON, NOT AN AI:
+- lowercase always, including 'i'. NEVER an em-dash or semicolon.
+- NEVER echo or quote his words back, and never restate them with an adjective \
+('sounds gorgeous', 'thats a whole mood', 'dangerous in the best way') — biggest bot \
+tell. react in your OWN words.
+- vary length wildly: sometimes one word, sometimes a short line. DONT open every text \
+with a reaction sound — most replies should just start with the actual thing you're \
+saying — and NEVER reuse the same opener two replies running.
+- texting sounds (lol, lmao, omg, ugh, hmm, wait, stop, oof) in MODERATION: pick a \
+different one each time, dont lean on any single one.
+- a tiny typo or missing apostrophe is fine (dont, im, ur, gonna).
+- dont be relentlessly upbeat or agreeable. tease, be a lil bratty, push back sometimes.
+- AT MOST ONE question, ever. 0-1 emoji, never the same emoji twice. never explain \
+yourself or over-clarify."""
+
+
+_STICKER_RULES = """- MOST replies need NO sticker — use one only when the emotion is strong, never force it.
+- To attach one, end your reply with a line that is exactly: STICKER: <tag>
+- A sticker can BE the whole reply — when a reaction says it all, output ONLY the \
+STICKER line, no text.
+- Max ONE per reply. The line is protocol, stripped before sending; he only sees the gif.
+- NEVER mention or describe the sticker in your text."""
+
+
+_TAG_LINE = re.compile(r"^- ([a-z_]+): *(.+)$", re.M)
+
+
+def _squeeze(block: str) -> str:
+    """One voice block, compressed. Unrecognised blocks pass through untouched."""
+    head = block.lstrip()
+    if head.startswith("THE FEEL OF TEXTING"):
+        return _FEEL
+    if head.startswith("TEXT LIKE A REAL PERSON"):
+        return _REAL
+    if head.startswith(("CAT STICKERS", "DOG & WOLF STICKERS")):
+        # The glosses STAY. Cutting them to bare tag names was the plan and it was
+        # wrong: they are not decoration, they are the routing table. Codex named the
+        # pairs that collapse without them — love/kiss, dance/celebrate, miss_you/
+        # waiting, sad/pout/grumpy, eyeroll/grumpy, shocked/confused, beg/pout, and
+        # `money`, which without "after he spoils you" fires on a man describing money
+        # TROUBLE. So this block only loses its list scaffolding (22 × "- " and a
+        # newline), which is the honest answer to "shorten the stickers": most of its
+        # length IS content. Tags are read from the block, so the male DOG & WOLF pack
+        # compresses through the same path.
+        kind = head.split(" —")[0]
+        tags = _TAG_LINE.findall(block)
+        if not tags:
+            return block                       # unfamiliar shape → leave it alone
+        roster = " · ".join(f"{t} ({g.strip().rstrip('.')})" for t, g in tags)
+        return (f"{kind} — a pack of reaction gifs, the kind real girls spam in "
+                f"texts. Tags: {roster}.\n{_STICKER_RULES}")
+    if head.startswith("HOW YOU TEXT"):
+        # First line carries her AGE and the trailing GOOD: line is per-account — both
+        # are content, not prose, so both survive verbatim.
+        lines = block.splitlines()
+        good = [ln for ln in lines if ln.lstrip().startswith("- GOOD:")]
+        return "\n".join([lines[0],
+                          "- short, casual, lowercase, contractions, u/ur/ya. react to "
+                          "what he said in a few words first.",
+                          "- VARY it every time — never open the same way twice, never "
+                          "reuse a phrase or emoji from this chat.",
+                          "- ONE question at most, never one he already answered (vague "
+                          "answer → quick follow-up, not a re-ask). no paragraphs.",
+                          "- NEVER narrate: no *asterisk actions*, no describing your "
+                          "face, body or what youre doing, no writing about yourself "
+                          "from the outside. real people type words, not stage "
+                          "directions. if the only thing left is a reaction, send nothing.",
+                          "- he gets explicit early → dont go along with it, PLAYFULLY "
+                          "tease and slow it down, THEN steer back to getting to know "
+                          "him. warm and flirty, never cold or preachy."] + good)
+    return block
+
+
+def arm_h(case: Case) -> dict:
+    """F with the voice prose compressed — same rules, fewer words."""
+    system = "\n\n".join(_squeeze(b) for b in
+                         _blocks(arm_c(case)["messages"][0]["content"]))
+    return _rebuild(case, system, case.user + _task_footer(case.user))
+
+
+ARMS = {"A": arm_a, "B": arm_b, "C": arm_c, "D": arm_d, "E": arm_e,
+        "F": arm_f, "G": arm_g, "H": arm_h}
 
 
 # ── the wire ────────────────────────────────────────────────────────────────
@@ -331,6 +514,37 @@ def _api_key() -> str:
     raise SystemExit("no DEEPSEEK_API_KEY (env or service/.env)")
 
 
+# SPEND. This module bypasses `llm_client`, which means it also bypasses the daily cap
+# and the `grok_calls` ledger — so its spend appears on the provider bill and NOWHERE in
+# the operator's dashboards. That is a footgun: a 350-case × 4-arm sweep is ~2,400 calls
+# and ~5x this account's ENTIRE normal daily LLM spend, and the first the operator would
+# hear of it is the invoice. So the module counts its own money and REFUSES to exceed
+# the budget it was given.
+_PRICE_PER_1K_CENTS = {                      # (input, output), from llm_client.MODELS
+    "deepseek-v4-flash": (0.014, 0.028),
+    "deepseek-v4-pro": (0.0435, 0.087),
+}
+_SPENT_CENTS = 0.0
+_BUDGET_CENTS = 0.0                          # 0 = unset; main() always sets it
+
+
+class BudgetExceeded(RuntimeError):
+    """Raised instead of quietly spending more than the run was authorised for."""
+
+
+def _charge(model: str, chars_in: int, chars_out: int) -> None:
+    global _SPENT_CENTS
+    cin, cout = _PRICE_PER_1K_CENTS.get(model, (0.014, 0.028))
+    _SPENT_CENTS += (chars_in / 4 / 1000) * cin + (chars_out / 4 / 1000) * cout
+    if _BUDGET_CENTS and _SPENT_CENTS > _BUDGET_CENTS:
+        raise BudgetExceeded(f"spent ${_SPENT_CENTS / 100:.2f} of "
+                             f"${_BUDGET_CENTS / 100:.2f} budget")
+
+
+def spent_usd() -> float:
+    return _SPENT_CENTS / 100
+
+
 def call(body: dict, key: str, *, retries: int = 3) -> str | None:
     """One completion. None on a hard failure — a dead case is dropped from BOTH
     arms downstream, never scored as a loss for one of them."""
@@ -340,7 +554,10 @@ def call(body: dict, key: str, *, retries: int = 3) -> str | None:
     for attempt in range(retries):
         try:
             with urllib.request.urlopen(req, timeout=180) as r:
-                return json.load(r)["choices"][0]["message"]["content"].strip()
+                txt = json.load(r)["choices"][0]["message"]["content"].strip()
+            _charge(body.get("model", ""),
+                    sum(len(m["content"]) for m in body["messages"]), len(txt))
+            return txt
         except (urllib.error.URLError, KeyError, ValueError, TimeoutError):
             if attempt == retries - 1:
                 return None
@@ -373,7 +590,31 @@ def grade_hard(text: str, case: Case) -> list[str]:
         bad.append("echo")
     if len(text) > 900:
         bad.append("overlong")
+    if _invents_bio(text, case):
+        bad.append("bio_invent")
     return bad
+
+
+_AGE_CLAIM = re.compile(r"\b(?:i'?m|im|i am)\s+(\d{2})\b", re.I)
+_HEIGHT_CLAIM = re.compile(r"\b(\d)\s*'\s*(\d{1,2})\b")
+
+
+def _invents_bio(text: str, case: Case) -> bool:
+    """She stated an age or height that is NOWHERE in the prompt production sent.
+
+    Only checks values that are checkable, and always against arm A's system block —
+    the full one — so an arm that DROPPED the facts is measured against the truth it
+    was supposed to know, which is the whole point of the check. `WHO YOU ARE (hard
+    rule)` tells her those facts "are in the facts above"; when an arm removes them,
+    this is what catches her filling the hole herself."""
+    truth = case.body["messages"][0]["content"]
+    for m in _AGE_CLAIM.finditer(text):
+        if m.group(1) not in truth:
+            return True
+    for m in _HEIGHT_CLAIM.finditer(text):
+        if f"{m.group(1)}'{m.group(2)}" not in truth.replace(" ", ""):
+            return True
+    return False
 
 
 _JUDGE = (
@@ -526,7 +767,11 @@ def main() -> None:
     ap.add_argument("--stratum", default="all",
                     choices=sorted(STRATA), help="which turns to sample")
     ap.add_argument("--json-out", dest="json_out", default="")
-    ap.add_argument("--no-judge", action="store_true")
+    ap.add_argument("--judge", action="store_true",
+                    help="add an LLM judge pass (extra calls, pro-priced). Off by "
+                         "default: you are the judge.")
+    ap.add_argument("--max-usd", type=float, default=1.0,
+                    help="hard spend ceiling; the run aborts rather than exceed it")
     a = ap.parse_args()
 
     since = a.since or f"{datetime.now(timezone.utc) - timedelta(days=7):%Y-%m-%d}"
@@ -537,9 +782,16 @@ def main() -> None:
 
     key = _api_key()
     cases = fetch_cases(a.n, since, a.stratum)
+    if not cases:
+        raise SystemExit("no cases matched — refusing to report on an empty run")
     print(f"{len(cases)} cases · arms {arms} · stratum {a.stratum}",
           file=sys.stderr)
-    results = run(cases, arms, key, do_judge=not a.no_judge)
+    global _BUDGET_CENTS
+    _BUDGET_CENTS = a.max_usd * 100
+    try:
+        results = run(cases, arms, key, do_judge=a.judge)
+    except BudgetExceeded as e:
+        raise SystemExit(f'ABORTED: {e}')
     text = report(results, arms, since, a.stratum)
     if a.json_out:
         # Raw paired output, for the human-grading page. The arm labels live HERE and
@@ -552,7 +804,14 @@ def main() -> None:
                                              .split("\n\n", 1)[0],
                         "shipped": r.case.shipped,
                         "texts": r.texts, "hard": r.hard,
-                        "winner": r.winner} for r in results], fh, indent=1)
+                        "winner": r.winner,
+                        # The PROMPTS, per arm — so the page can show what each arm
+                        # actually sent, not just what came back.
+                        "prompts": {a: {
+                            "sys_blocks": _blocks(ARMS[a](r.case)["messages"][0]["content"]),
+                            "user": ARMS[a](r.case)["messages"][1]["content"],
+                        } for a in r.texts},
+                        } for r in results], fh, indent=1)
         print(a.json_out, file=sys.stderr)
     if a.out:
         os.makedirs(a.out, exist_ok=True)
@@ -562,6 +821,8 @@ def main() -> None:
             fh.write(text)
         print(path, file=sys.stderr)
     print(text)
+    print(f"\nspent ${spent_usd():.3f} on {len(cases)} cases x {len(arms)} arms"
+          f"{' + judge' if a.judge else ' (no judge)'}", file=sys.stderr)
 
 
 if __name__ == "__main__":

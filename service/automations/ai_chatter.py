@@ -102,6 +102,7 @@ from . import _voice
 from . import _openers  # the gen_info opener pool (the deepen phase)
 from . import _pins  # his own pinned long-form message (reader + writer)
 from . import _quotes  # which bubble he quote-replied (resolver + prompt block)
+from . import _prompt_shape  # block grouping / facts ablation / task line
 # ppv_send owns the ONE price authority (`price_bounds`); ownership.py owns
 # the ONE ownership check (`owners_of_media`, keyed on MEDIA — a fan who
 # bought a clip in a mass blast has no content_offers row at all). Importing
@@ -298,6 +299,23 @@ _DEFAULTS: dict = {
     # (unreadable without the referent), and ~4/day quote a LIVE PPV — a man asking
     # about the locked item, which is the strongest buying signal we had been dropping.
     "reply_context_enabled": True,
+
+    # ── Prompt SHAPE (arm G). Three independent transforms over the assembled
+    # prompt, ALL OFF by default: with all three off `_prompt_shape.reshape` returns
+    # its inputs unchanged and the prompt is byte-identical to today.
+    #   regroup    — same blocks, same words, grouped identity → hard → voice →
+    #                situational → this turn → contract. Today the only blocks that
+    #                describe THIS turn sit buried mid-prompt under ~6KB of rules.
+    #   drop_facts — remove THESE ARE THE FACTS ABOUT YOU, but ONLY where every CORE
+    #                fact (age, name, country, work) also exists elsewhere. Six of
+    #                seven live accounts carry those in separate bio lines and lose
+    #                only birthday/city/height/pets; the seventh carries NOTHING
+    #                outside the block, so the guard keeps it.
+    #   task_line  — state which message this turn answers instead of leaving the
+    #                model to infer it from position.
+    "prompt_regroup_enabled": False,
+    "prompt_drop_facts_enabled": False,
+    "prompt_task_line_enabled": False,
 
     # ── Cadence controller (items 10/17/18/21) — the stop-condition subsystem.
     # ON by default (2026-07-22): "chat/sell forever" was never the behavior anyone
@@ -4465,6 +4483,9 @@ def _turn_kind(*, bot_accused: bool, pic_desc: str, content_ask: bool,
 
 def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     history_tail: int = _HISTORY_TAIL,
+                    # Arm G's three transforms. Defaults to OFF, so every
+                    # existing caller (and every test) builds today's prompt.
+                    shape: "_prompt_shape.Shape" = _prompt_shape.OFF,
                     style_on: bool = False,
                     nonnative_on: bool = False,
                     sell: _SellSurface = _NO_SELL,
@@ -5060,6 +5081,11 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         # with no quote build the prompt they always did.
         + quote.tail
     )
+    # Arm G. Every transform is off by default and each is a no-op when off, so this
+    # call is byte-transparent until an account opts in. Applied HERE, on the
+    # assembled strings, because that is the artifact the offline replay measured —
+    # `_prompt_shape` is the same module `replay_arms.py` imports for its arms.
+    system, user = _prompt_shape.reshape(system, user, shape)
     return ([{"role": "system", "content": system},
              {"role": "user", "content": user}], presented)
 
@@ -5493,6 +5519,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     intent_only = bool(cfg.get("intent_only"))
     pivot_on_escalation = bool(cfg.get("pivot_on_escalation"))
     reply_ctx_on = bool(cfg.get("reply_context_enabled"))
+    # Arm G. All three off by default ⇒ `reshape` returns its inputs and the
+    # prompt is byte-identical to today.
+    _shape = _prompt_shape.Shape.from_cfg(cfg)
     esc_min_msgs = int(cfg.get("min_fan_msgs_before_escalation_pitch") or 0)
     # Inert without the gate — force_ask rides ON gate_ok, and with the gate off the
     # gate never runs, so there is nothing to ride. Guarded here (not just at the call
@@ -6695,6 +6724,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # than by two independent evaluations of the same predicate.
             day_required_beat = day.required_beat(f, c.last_in_text or "")
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
+                                              shape=_shape,
                                               custom_owed=_customs.is_owed(f),
                                               opener=opener,
                                               sticker_mode=sticker_mode,
