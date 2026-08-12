@@ -65,15 +65,14 @@ from db.models import (
     CatalogItem, VaultCacheRun, VaultFolder, VaultFolderItem, VaultItem, VaultSend,
 )
 
-from . import content_resolver, upsell
+from . import content_resolver, pack_pricing
 from .pack_claim import (
     Claim, ask_clause, compose_caption, is_substitute_claim, product_description,
     render_clause, substitute_clause,
 )
 from .pack_pricing import (
     MAX_ITEMS, MIN_ITEMS, RUNG_STICKER_CENTS, DEFAULT_STICKER_CENTS,
-    compose_by_value, has_moving_media, next_rung_above, quote_pack, rank_by_tier,
-    spend_bounds,
+    PACK_ATTR_KIND, negotiate_pack, rank_by_tier, spend_bounds,
 )
 
 log = logging.getLogger("of-relay.automation.pack_sender")
@@ -110,12 +109,15 @@ PACK_LANGUAGES = frozenset({"en"})
 MIRROR_WARN_AGE = timedelta(days=7)
 
 # ── Refusals ────────────────────────────────────────────────────────
+# Two of these are RE-EXPORTED, not re-declared: `pack_pricing` raises them from
+# inside the negotiation and this module reports them, and a second copy of the
+# string would be free to drift from the one the arithmetic actually returns.
 REFUSE_DISABLED = "pack_disabled"
 REFUSE_NO_SHELF = "no_shelf"
-REFUSE_TOO_THIN = "shelf_too_thin"          # fewer than MIN_ITEMS un-bought
+REFUSE_TOO_THIN = pack_pricing.REFUSE_TOO_THIN   # fewer than min_items un-bought
 REFUSE_AUDIT = "audit_failed"
 REFUSE_LANGUAGE = "unsupported_language"
-REFUSE_NO_PRICE = "no_price"
+REFUSE_NO_PRICE = pack_pricing.REFUSE_NO_PRICE
 REFUSE_RESOLVER = "resolver_refused"
 
 
@@ -363,82 +365,23 @@ async def _price_and_compose(account_id: str, fan_id: int, avail_ids: list[int],
     already drifted inside one session: the `media_kind` fix landed on the pack
     path only, and the "priced above the rate card" log existed in one copy.
     Two sources of media, ONE pricing rule.
+
+    The negotiation itself is `pack_pricing.negotiate_pack` — price and content
+    decide each other, and that argument belongs beside the ladder it is made of
+    rather than in the sender. What is left here is the only part that is the
+    SENDER's: turning a refusal reason into the typed `PackPlan` a planner
+    returns.
     """
-    # The ladder grants +2 rungs for video, but the price is quoted BEFORE the
-    # pack is composed — so ask the SHELF first, then correct below if no clip
-    # actually made it in. Assuming-then-correcting beats reversing the
-    # price→count order this whole module is built on.
-    shelf_has_video = await has_moving_media(account_id, avail_ids)
-    px = await quote_pack(account_id, fan_id, item, len(avail_ids),
-                          has_video=shelf_has_video, cfg=cfg)
-    if px is None:
+    pack = await negotiate_pack(account_id, fan_id, item, avail_ids, cfg,
+                                min_items=min_items)
+    if pack.refusal == REFUSE_NO_PRICE:
         return _Priced([], 0, 0, item.id,
                        replace(empty, item_id=item.id, refusal=REFUSE_NO_PRICE))
-
-    # Compose by VALUE, not by a flat count: a 40-second explicit clip is worth
-    # more than eight tease stills, and the fan should get either — but only if
-    # what he is charged is actually covered by what is attached.
-    media, value = await compose_by_value(account_id, avail_ids, px)
-
-    # ── The shelf may LIFT a rung, the mirror of the veto above ──────
-    #
-    # 🚨 Composition stops the moment the price is covered, so a LOW rung on an
-    # expensive shelf composes under MIN_ITEMS and the whole send is refused:
-    # measured at rung 1 ($10) against a shelf of $10 stills → 1 item → refused.
-    # That would have made the walk-down — the entire point of softening — the
-    # thing that silences the lane, and it would have bitten hardest on exactly
-    # the fan who has already refused three times.
-    #
-    # Padding it out from the payoff pile is NOT the fix: the operator's 08-11
-    # ruling is that free padding never spends payoff, because a $60 pack that
-    # walks out with $270 attached has spent the next ask. So the price rises to
-    # what the shelf can honestly fill instead, one rung at a time. On a shelf of
-    # $10 stills the walk-down bottoms out at $36 rather than $6.70 — correct,
-    # because three $10 stills for $6.70 is not a discount, it is a giveaway.
-    if bool((cfg or {}).get("pack_price_ladder", True)) and len(media) < min_items:
-        cap, _tier = await spend_bounds(account_id, fan_id)
-        while len(media) < min_items:
-            lifted = next_rung_above(px)
-            if lifted is None or lifted > cap:
-                break                    # the shelf cannot be filled honestly
-            px = lifted
-            media, value = await compose_by_value(account_id, avail_ids, px)
-        log.info("pack ladder LIFTED account=%s fan=%s px=%s n=%s (a lower rung "
-                 "composed under the %s-item floor)", account_id, fan_id, px,
-                 len(media), min_items)
-
-    # The +2 was granted on a shelf that HAD video; charge it only if a clip is
-    # actually in the pack. Re-quoting can only lower the ask, so the composed
-    # media stays valid — it simply covers more than it now costs.
-    if shelf_has_video and media and not await has_moving_media(account_id, media):
-        stills_px = await quote_pack(account_id, fan_id, item, len(avail_ids),
-                                     has_video=False, cfg=cfg)
-        if stills_px is not None and stills_px < px:
-            log.info("pack ladder video step REVOKED account=%s fan=%s %s->%s "
-                     "(shelf had video, pack does not)",
-                     account_id, fan_id, px, stills_px)
-            px = stills_px
-    if len(media) < min_items:
-        return _Priced([], px, value, item.id,
+    if pack.refusal is not None:
+        return _Priced([], pack.price_cents, pack.value_cents, item.id,
                        replace(empty, item_id=item.id, refusal=REFUSE_TOO_THIN,
-                               detail=f"{len(media)} composable"))
-    # Operator ruling 2026-08-11: "we can price more for that content if the AI
-    # upseller chooses." So the rate card is a BASELINE, not a ceiling — the
-    # upseller knows this fan's history and willingness and may quote above it.
-    #
-    # ⚠️ What ticket 06 actually protected against was charging a lot for FEW
-    # items ($19.67 an item, 3 items, an account deleted). That protection now
-    # lives in the COUNT, not the price: MIN_ITEMS is a hard floor, composition
-    # pads toward SOFT_TARGET_ITEMS, and the caption states the real number.
-    #
-    # `value_caps_price` restores the old hard veto for anyone who wants it.
-    if value < px and bool(cfg.get("value_caps_price")):
-        px = max(upsell.OF_PRICE_FLOOR_CENTS, value)
-    if value < px:
-        log.info("pack priced ABOVE rate card account=%s fan=%s px=%s value=%s "
-                 "ratio=%.2f n=%s", account_id, fan_id, px, value,
-                 px / max(1, value), len(media))
-    return _Priced(media, px, value, item.id)
+                               detail=f"{len(pack.media)} composable"))
+    return _Priced(pack.media, pack.price_cents, pack.value_cents, item.id)
 
 
 async def _available(account_id: str, fan_id: int, media_ids: list[int], *,
@@ -833,7 +776,10 @@ async def _deliver(client, plan: PackPlan, *, voice_line: str | None,
     for what, coro in (
         ("attribution", write_outbound_attribution(
             account_id=str(account_id), fan_id=int(fan_id), message_id=int(msg_id),
-            sent_by_employee_id=None, automation_kind="pack_send",
+            # The CONSTANT, never a copy of the string: `pack_pricing` reads this
+            # attribution back to count what he has refused, and a drift between
+            # the two silently zeroes the walk-down instead of raising.
+            sent_by_employee_id=None, automation_kind=PACK_ATTR_KIND,
             body=str(result.get("text") or caption), price_cents=plan.price_cents,
             created_at=datetime.utcnow(), emit_live=True)),
         # The SLICE, never the shelf.
