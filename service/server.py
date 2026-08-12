@@ -4275,6 +4275,11 @@ async def send_message(
             reply_to_message_id=body.reply_to_message_id,
             tagged_users=body.tagged_users,
             giphy_id=body.giphy_id,
+            # A human is composing this one and has the tag picker right there,
+            # so their choice stands as made — the co-performer auto-tag
+            # (media_cotag) covers the automated senders, which have no operator
+            # to make it. Flip to True to auto-tag the composer too.
+            auto_tag=False,
         ),
     )
 
@@ -5915,6 +5920,7 @@ def of_schedule_message(chat_id: int, body: _ScheduleMessageBody = Body(...)):
         price=body.price, locked_text=body.locked_text, media_files=body.media_files,
         previews=body.previews,
         tagged_users=body.tagged_users,
+        auto_tag=False,   # same composer, same operator — see of_send_message
     ))
 
 

@@ -1170,6 +1170,73 @@ class OFClient:
             },
         )
 
+    # ── Co-performer auto-tag ───────────────────────────────────
+    # OF's release-form rule: media showing anyone besides the account owner
+    # must name that person. Enforced here rather than at the ~20 senders that
+    # attach media, because a sender added later would forget — every body
+    # below that carries vault media ids goes through these two helpers.
+    # See service/media_cotag.py for the solo/not-solo decision.
+
+    def _apply_cotags(self, body: dict, media_files, tagged_users,
+                      auto_tag: bool) -> bool:
+        """Set `body["userTags"]`; return whether WE added an id to it.
+
+        Owns the whole marshalling — which ids, the int coercion, the key name,
+        and the "omit when empty" rule — so the five bodies below state none of
+        it. An operator's explicit picks always survive; the auto tag is
+        appended, never substituted. Any failure degrades to "send what the
+        caller asked for": resolving a tag must not be able to block a send.
+
+        The return value is a LOCAL for the caller to hand to
+        `_post_dropping_auto_cotag`, deliberately not instance state — one
+        OFClient is shared across accounts' concurrent `to_thread` sends
+        (client_pool), so anything remembered on `self` would be a data race.
+        """
+        explicit = [int(u) for u in (tagged_users or [])]
+        extra: list[int] = []
+        if auto_tag:
+            try:
+                import media_cotag
+                extra = [u for u in media_cotag.cotags_for(self, media_files)
+                         if u not in explicit]
+            except Exception:
+                log_of.exception("co-performer tag resolution failed — sending as-is")
+        if explicit or extra:
+            body["userTags"] = explicit + extra
+        return bool(extra)
+
+    def _post_dropping_auto_cotag(self, path: str, body: dict, auto_added: bool):
+        """POST, and if OF refuses a body we added a tag to, retry once without it.
+
+        OF 400s the entire send on a `userTags` id it does not accept, so an
+        auto-tag that goes stale (the tag request revoked, say) would otherwise
+        take down every media send on the account. Any 4xx is treated as
+        possibly-the-tag: the retry costs one request, and if the real cause was
+        something else the retry surfaces it unchanged. Logged at ERROR because
+        an untagged multi-person send is exactly what this feature exists to
+        prevent — it should be visible, not silently absorbed.
+        """
+        try:
+            return self.post_json(path, json_body=body)
+        except OFAPIError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if not auto_added or status not in (400, 422):
+                raise
+            log_of.error(
+                "OF rejected %s with auto co-tag userTags=%r (%s) — RESENDING "
+                "UNTAGGED: %s", path, body.get("userTags"), status,
+                str(exc).splitlines()[0][:200],
+            )
+            # Forget the id OF just refused, or the resolver keeps serving it
+            # for the rest of its TTL and every send pays POST → 400 → POST.
+            try:
+                import media_cotag
+                media_cotag.forget_tag_id(getattr(self, "account_id", ""))
+            except Exception:
+                log_of.exception("could not invalidate the rejected co-tag id")
+            return self.post_json(
+                path, json_body={k: v for k, v in body.items() if k != "userTags"})
+
     # ── Messages: write ─────────────────────────────────────────
 
     def send_message(self, chat_id: str | int, text: str, *,
@@ -1179,7 +1246,8 @@ class OFClient:
                      is_forward: bool = False,
                      reply_to_message_id: int | None = None,
                      tagged_users: list[int] | None = None,
-                     giphy_id: str | None = None) -> dict:
+                     giphy_id: str | None = None,
+                     auto_tag: bool = True) -> dict:
         """POST /api2/v2/chats/{chat_id}/messages — send a message to one fan
         (or another creator, when both subscribe to each other).
 
@@ -1234,9 +1302,9 @@ class OFClient:
         # `userTags` is OF's "tag other creators in this message" field —
         # numeric user ids, captured from /self/tagged-friend-users. OF
         # rejects unknown / non-friend ids with 400, so the picker UI is
-        # the contract: only ids it surfaces will succeed.
-        if tagged_users:
-            body["userTags"] = [int(u) for u in tagged_users]
+        # the contract: only ids it surfaces will succeed. Set before the log
+        # below so the diagnostic reports what OF actually receives.
+        auto_tagged = self._apply_cotags(body, media_files, tagged_users, auto_tag)
         # Diagnostic — confirms OF receives the previews subset we expect.
         # OF silently ignores previews on free messages, so price=0 + a
         # non-empty previews list is also worth flagging.
@@ -1245,7 +1313,8 @@ class OFClient:
             chat_id, price, body["mediaFiles"], body["previews"],
             body.get("userTags") or [], body.get("giphyId"),
         )
-        return self.post_json(f"{API_BASE}/chats/{chat_id}/messages", json_body=body)
+        return self._post_dropping_auto_cotag(
+            f"{API_BASE}/chats/{chat_id}/messages", body, auto_tagged)
 
     # ── Chat message-level writes — VERIFIED LIVE ──────────────
     # All four paths are under /messages/{id}/..., NOT /chats/{cid}/messages/{mid}/...
@@ -1794,7 +1863,8 @@ class OFClient:
                          locked_text: bool = False,
                          media_files: list[int] | None = None,
                          previews: list[int] | None = None,
-                         tagged_users: list[int] | None = None) -> Any:
+                         tagged_users: list[int] | None = None,
+                         auto_tag: bool = True) -> Any:
         """POST /api2/v2/messages/queue — schedule a message for future delivery.
 
         VERIFIED LIVE. The right path is `/messages/queue`, NOT
@@ -1813,9 +1883,9 @@ class OFClient:
             "scheduledDate": scheduled_date,
             "userIds": [int(chat_id)],
         }
-        if tagged_users:
-            body["userTags"] = [int(u) for u in tagged_users]
-        return self.post_json(f"{API_BASE}/messages/queue", json_body=body)
+        auto_tagged = self._apply_cotags(body, media_files, tagged_users, auto_tag)
+        return self._post_dropping_auto_cotag(
+            f"{API_BASE}/messages/queue", body, auto_tagged)
 
     def schedule_mass_message(self, *, text: str, scheduled_date: str,
                               user_ids: list[int] | None = None,
@@ -1829,7 +1899,8 @@ class OFClient:
                               tagged_users: list[int] | None = None,
                               giphy_id: str | None = None,
                               filters: dict | None = None,
-                              online_only: bool = False) -> Any:
+                              online_only: bool = False,
+                              auto_tag: bool = True) -> Any:
         """POST /api2/v2/messages/queue — schedule a MASS message (broadcast).
         Set `user_ids` to specific fans OR `user_lists` for built-in/custom lists
         (e.g. ['fans']). `excluded_user_lists` removes whole lists from the
@@ -1866,11 +1937,11 @@ class OFClient:
             merged_filters["online"] = 1
         if merged_filters:
             body["filters"] = merged_filters
-        if tagged_users:
-            body["userTags"] = [int(u) for u in tagged_users]
+        auto_tagged = self._apply_cotags(body, media_files, tagged_users, auto_tag)
         if giphy_id:
             body["giphyId"] = str(giphy_id)
-        return self.post_json(f"{API_BASE}/messages/queue", json_body=body)
+        return self._post_dropping_auto_cotag(
+            f"{API_BASE}/messages/queue", body, auto_tagged)
 
     def cancel_scheduled(self, queue_id: int) -> Any:
         """DELETE /api2/v2/messages/queue/{queue_id} — cancel a scheduled send."""
@@ -1889,7 +1960,8 @@ class OFClient:
                           tagged_users: list[int] | None = None,
                           giphy_id: str | None = None,
                           filters: dict | None = None,
-                          online_only: bool = False) -> Any:
+                          online_only: bool = False,
+                          auto_tag: bool = True) -> Any:
         """POST /api2/v2/messages/queue — broadcast to many fans at once.
 
         VERIFIED LIVE. Same endpoint as schedule_message — without scheduledDate
@@ -1935,14 +2007,14 @@ class OFClient:
             body["filters"] = merged_filters
         if scheduled_date:
             body["scheduledDate"] = scheduled_date
-        if tagged_users:
-            body["userTags"] = [int(u) for u in tagged_users]
+        auto_tagged = self._apply_cotags(body, media_files, tagged_users, auto_tag)
         if giphy_id:
             # Same wire-shape as the chat send: top-level `giphyId`, sibling
             # of `mediaFiles`. OF web includes GIFs on broadcasts; mirror the
             # field so the relay forwards rather than dropping silently.
             body["giphyId"] = str(giphy_id)
-        return self.post_json(f"{API_BASE}/messages/queue", json_body=body)
+        return self._post_dropping_auto_cotag(
+            f"{API_BASE}/messages/queue", body, auto_tagged)
 
     # ── Posts: write ───────────────────────────────────────────
 
@@ -1955,7 +2027,8 @@ class OFClient:
                     voting_due_date: str | None = None,
                     expire_period: int | None = None,
                     tagged_users: list[int] | None = None,
-                    giphy_id: str | None = None) -> Any:
+                    giphy_id: str | None = None,
+                    auto_tag: bool = True) -> Any:
         """POST /api2/v2/posts — create a feed post.
         `posted_at` ISO for scheduling. `expire_period` in days for paid posts.
         `previews` = media ids (⊆ media_files) shown FREE as the teaser on a PAID
@@ -1973,9 +2046,9 @@ class OFClient:
         if fund_raising_target: body["fundRaisingTarget"] = fund_raising_target
         if voting_due_date:     body["votingDueDate"] = voting_due_date
         if expire_period is not None: body["expirePeriod"] = expire_period
-        if tagged_users:        body["userTags"] = [int(u) for u in tagged_users]
         if giphy_id:            body["giphyId"] = str(giphy_id)
-        return self.post_json(f"{API_BASE}/posts", json_body=body)
+        auto_tagged = self._apply_cotags(body, media_files, tagged_users, auto_tag)
+        return self._post_dropping_auto_cotag(f"{API_BASE}/posts", body, auto_tagged)
 
     def edit_post(self, post_id: int, *,
                   text: str | None = None,

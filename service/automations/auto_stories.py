@@ -52,6 +52,7 @@ import logging
 from datetime import datetime, timedelta
 
 import automation_executor as ax  # shared _make_client seam + enqueue_job
+import media_cotag                # release-form @mention for non-solo media
 from automation_registry import register
 from automations._pools import has_media_source, pick_media
 
@@ -165,10 +166,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     failed = 0
     now = datetime.utcnow()
     for mid, url in resolved:
+        # Release-form tag. A story is the one send of_client can't auto-tag for
+        # itself — OF re-uploads the media, so the body carries a convert claim
+        # with no vault id in it. We still hold the SOURCE id here, so the
+        # solo/not-solo call is made at this layer and rides along as the
+        # @mention overlay OF's own story editor emits. `story_mention` is total
+        # and owns the fail-safe; re-deciding it here would just let the two
+        # copies drift.
+        mention = media_cotag.story_mention(account_id, [mid])
         try:
             result = await asyncio.to_thread(
-                lambda u=url: client.post_story_from_url(
-                    u, watermark_text=watermark_text, return_upload=remove_dupe)
+                lambda u=url, mn=mention: client.post_story_from_url(
+                    u, watermark_text=watermark_text, mention=mn,
+                    return_upload=remove_dupe)
             )
         except Exception as e:  # noqa: BLE001 — one bad pick shouldn't strand the rest
             failed += 1

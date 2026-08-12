@@ -61,6 +61,10 @@ _REPLY_MAX_CHARS = 600        # OF truncates the chat-list preview past this
 # the caption/payload disagreement this whole lane exists to prevent, and two
 # copies of this tuple is how that happens.
 MOVING_KINDS = ("video", "gif")
+
+# Her VOICE. Named separately from stills because it is neither — see
+# `_media_phrase`, where "not moving" used to mean "a picture".
+AUDIO_KINDS = ("audio",)
 # The authored noun's own media word, stripped when the phrase names the media
 # itself: "feet pics" + a clip becomes "5 pics + 2 vids of bare feet".
 _TRAILING_MEDIA_WORD = re.compile(r"\s*\b(pics?|photos?|videos?|vids?)\b\s*$")
@@ -83,14 +87,22 @@ def _media_phrase(kinds: list[str]) -> tuple[str, int]:
     The ONE place a pack's media is counted and named. Both clause builders go
     through it, because two implementations of the contract line is exactly the
     drift that put a video inside a pack captioned "7 bare feet pics".
+
+    🚨 AUDIO is its own word. It used to fall into the `pics` bucket by
+    subtraction — anything not moving was a picture — so a voice note shipped as
+    "3 pics". 699 audio rows on this roster are retrievable today, which makes
+    that a caption that lies about what he is paying for, in the one line he
+    reads before deciding. The same bug as the video-in-a-stills-pack above,
+    caught before it reached a fan rather than after.
     """
-    vids = sum(1 for k in kinds if str(k or "").lower() in MOVING_KINDS)
-    pics = len(kinds) - vids
-    if vids and pics:
-        return f"{pics} pic{'s' * (pics > 1)} + {vids} vid{'s' * (vids > 1)}", pics + vids
-    if vids:
-        return f"{vids} vid{'s' * (vids > 1)}", vids
-    return f"{pics} pic{'s' * (pics > 1)}", pics
+    low = [str(k or "").lower() for k in kinds]
+    vids = sum(1 for k in low if k in MOVING_KINDS)
+    auds = sum(1 for k in low if k in AUDIO_KINDS)
+    buckets = ((len(low) - vids - auds, "pic"), (vids, "vid"), (auds, "voice note"))
+    parts = [f"{n} {word}{'s' * (n > 1)}" for n, word in buckets if n]
+    # An empty pack is not a phrase, but it is not this function's error to
+    # raise either — `audit_ask` rule 1 compares the count and refuses the send.
+    return (" + ".join(parts) if parts else "0 pics"), len(low)
 
 
 def render_clause(category: str, rung: str, kinds: list[str]) -> Claim:
@@ -148,6 +160,45 @@ def ask_clause(kinds: list[str], subject: str | None) -> Claim:
     if noun.lower().strip() in _MEDIA_NOUNS:
         noun = ""
     return Claim(f"{body} of {noun}" if noun else body, n)
+
+
+# The lead of a SUBSTITUTE claim, and the thing `audit_ask` checks survived to
+# the wire. It is a FRAME, not an apology: operator ruling 2026-08-13, "say I
+# think you will enjoy this, my quirky version of joi". Sold as a shortfall
+# ("i dont have that") a substitute invites him to decline; sold as HER take on
+# it, the same media is a thing only she has.
+_SUBSTITUTE_LEAD = "i think ur gonna enjoy this"
+
+
+def substitute_clause(kinds: list[str], subject: str | None) -> Claim:
+    """The claim for media that is NOT what he asked for.
+
+    🚨 The one clause that must never promise its subject. `ask_clause` renders
+    "4 vids of joi", and `audit_ask` checks count, liveness and company — never
+    whether the media matches the noun. So routing substitutes through the
+    normal builder ships a lie that passes every existing gate, which is worse
+    than the silence it replaces. The difference is whose thing it is: "my own
+    version of joi" is a frame, "4 vids of joi" is a promise.
+
+    Same `_media_phrase` as every other clause, so a mixed send says "3 pics +
+    1 vid" and the count the audit checks is the count he receives.
+    """
+    body, n = _media_phrase(kinds)
+    noun = " ".join(str(subject or "").split())[:40]
+    if noun.lower().strip() in _MEDIA_NOUNS:
+        noun = ""
+    frame = f"my own version of {noun}" if noun else "my own take on it"
+    return Claim(f"{_SUBSTITUTE_LEAD}, {frame} — {body}", n)
+
+
+def is_substitute_claim(text: str) -> bool:
+    """Did the substitute frame survive to the wire? `audit_ask`'s rule 4.
+
+    Checked at the START of the string on purpose: `compose_caption` leads with
+    the clause because OF truncates the chat-list preview, so a frame that has
+    drifted into the tail is a frame he will not read before deciding.
+    """
+    return str(text or "").lstrip().lower().startswith(_SUBSTITUTE_LEAD)
 
 
 def product_description(category: str, rung: str) -> str:
