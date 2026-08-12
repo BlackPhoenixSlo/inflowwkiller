@@ -101,8 +101,16 @@ def regroup(system: str) -> str:
     return "\n\n".join(b for cat in _ORDER for b in buckets[cat])
 
 
-def facts_are_redundant(system: str, elsewhere: str) -> bool:
+def facts_are_redundant(system: str, elsewhere: str = "") -> bool:
     """True when dropping the facts block costs no CORE identity.
+
+    `elsewhere` defaults to "" ON PURPOSE: the decision must be a function of the
+    account's own (constant) SYSTEM blocks only, never the per-fan user message. If it
+    read the transcript, the same account would drop the block for one fan and keep it
+    for the next — a system prefix that varies per fan, which defeats DeepSeek's
+    prefix cache (the whole reason static text is kept static) and makes behaviour
+    non-deterministic. Measured live 2026-08-13: account 2024813 flipped 1-of-2 that
+    way. So callers pass nothing; the bio lines carry the duplication or they do not.
 
     Conservative by construction: a block whose fields cannot be parsed returns False
     (keep it), because "I could not read it" must never resolve to "delete it"."""
@@ -194,7 +202,9 @@ def reshape(system: str, user: str, shape: Shape = OFF) -> tuple[str, str]:
         return system, user
     if shape.regroup:
         system = regroup(system)
-    if shape.drop_facts and facts_are_redundant(system, user):
+    # NB: the redundancy check reads the SYSTEM blocks only, never `user` — the drop
+    # must be stable per account, not flip per fan (see facts_are_redundant).
+    if shape.drop_facts and facts_are_redundant(system):
         system = drop_facts(system)
     if shape.task:
         user = user + task_line(user)
