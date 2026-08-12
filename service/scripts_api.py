@@ -401,6 +401,15 @@ def _validate_cfg(cfg: dict) -> dict:
     # more than the attached content is worth.
     if "value_caps_price" in cfg:
         out["value_caps_price"] = truthy(cfg["value_caps_price"])
+    # The ask/vault price ladder (operator ruling 2026-08-12), default ON.
+    #
+    # 🚨 It shipped WITHOUT this line and the commit message claimed "false
+    # restores the old quote without a deploy" — which was untrue for exactly
+    # the reason named above: an unlisted key is dropped, the save returns 200,
+    # and a default-on money feature has no brake but a redeploy. `truthy`, not
+    # `bool()`, for the same reason the two switches above use it.
+    if "pack_price_ladder" in cfg:
+        out["pack_price_ladder"] = truthy(cfg["pack_price_ladder"])
     if "rhythm_enabled" in cfg:
         out["rhythm_enabled"] = bool(cfg["rhythm_enabled"])
     if "rhythm_no_sleep" in cfg:

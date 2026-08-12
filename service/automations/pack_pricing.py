@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import random
+from dataclasses import dataclass
 
 from sqlalchemy import select
 
@@ -225,10 +226,11 @@ async def compose_by_value(account_id: str, avail_ids: list[int],
 # shelf. The convo teaser, ppv_send, mass and the unprompted upseller keep their
 # own pricing; the operator scoped it that way deliberately.
 #
-# Why a ladder at all: nothing was laddering this lane. `quote_pack` called
+# Why a ladder at all: nothing was laddering this lane. The quote called
 # `next_price` with `rung_index=0` and `last_paid_cents=None` — every pack was a
 # cold open — so prod prices came out as $4.71, $40.91, $50.21 with no relation
-# to what the fan had ever paid.
+# to what the fan had ever paid. That path survives as `_negotiate_legacy`, the
+# rollback, and it still opens cold on every send.
 PRICE_LADDER_CENTS: tuple[int, ...] = (
     670, 1_000, 2_700, 3_600, 5_900, 7_200, 8_700, 9_800, 12_900, 14_400)
 
@@ -252,8 +254,16 @@ COLD_OPEN_RUNG = 2                 # $27.00
 STEP_ON_BUY = 1
 STEP_ON_BUY_WITH_VIDEO = 2
 
-# This lane's own attribution — `pack_sender` stamps every send with it.
+# This lane's own attribution. ⚠️ `pack_sender` MUST stamp its sends with this
+# constant and not with a copy of the string: if the two drift, `misses` is
+# silently always 0, the walk-down stops existing, and nothing raises.
 PACK_ATTR_KIND = "pack_send"
+
+# What `negotiate_pack` refuses with. Declared next to the arithmetic that
+# raises them and re-exported by `pack_sender` — two tables of refusal strings
+# is exactly the drift this module was split out to end.
+REFUSE_NO_PRICE = "no_price"
+REFUSE_TOO_THIN = "shelf_too_thin"
 
 # How far a refusal streak may walk him DOWN the ladder.
 #
@@ -270,6 +280,18 @@ PACK_ATTR_KIND = "pack_send"
 MAX_SOFTEN_RUNGS = 2
 
 
+def ladder_on(cfg: dict | None) -> bool:
+    """Is the ladder governing this account? Default ON.
+
+    🚨 `pack_price_ladder` MUST stay named in `scripts_api._validate_cfg`. That
+    validator drops every key it does not list, so an unnamed flag is a brake
+    with no cable attached — the save returns 200, the key never lands, and the
+    only rollback left is a redeploy. It shipped that way on 2026-08-12 and the
+    commit message claimed a switch that did not exist.
+    """
+    return bool((cfg or {}).get("pack_price_ladder", True))
+
+
 def ladder_floor_index(cents: int) -> int:
     """Index of the highest rung at or below `cents`; 0 when below every rung."""
     idx = 0
@@ -282,9 +304,10 @@ def ladder_floor_index(cents: int) -> int:
 def snap_to_ladder(cents: int) -> int:
     """The nearest rung at or below `cents`, never under the bottom rung.
 
-    Everything this lane emits lands on a rung. The shelf veto and the per-fan
-    cap both compute raw numbers, and a $43.12 quote from either would make the
-    ladder a suggestion rather than the rule.
+    Every price the ladder itself emits lands on a rung. The shelf veto and the
+    per-fan cap both compute raw numbers, and a $43.12 quote from either would
+    make the ladder a suggestion rather than the rule. (`value_caps_price` is
+    the one documented exception — see `negotiate_pack`.)
     """
     if cents <= PRICE_LADDER_CENTS[0]:
         return PRICE_LADDER_CENTS[0]
@@ -372,22 +395,29 @@ async def unbought_since_last_paid(account_id: str, fan_id: int) -> int:
         return len((await s.execute(q)).all())
 
 
-async def spend_bounds(account_id: str, fan_id: int) -> tuple[int, str | None]:
-    """`(cap_cents, max_tier)` for THIS fan, from what he has actually paid.
+def bounds_for(max_paid_cents: int) -> tuple[int, str | None]:
+    """`(cap_cents, max_tier)` from what he has paid. The rule, without the read.
 
     `max_tier` is None for a proven buyer — no ceiling, he has earned the vault.
     Everyone else is bounded, and a fan who has never paid a cent is bounded
     twice: at $100 and at `suggestive`.
+
+    Pure so `ladder_context` can apply it to a `max_paid` it already holds.
+    `spend_bounds` is the same rule for a caller that has nothing in hand yet.
     """
+    if max_paid_cents >= PROVEN_SINGLE_PPV_CENTS:
+        return PACK_CAP_PROVEN_CENTS, None
+    if max_paid_cents > 0:
+        return PACK_CAP_CENTS, WARM_MAX_TIER
+    return PACK_CAP_CENTS, COLD_MAX_TIER
+
+
+async def spend_bounds(account_id: str, fan_id: int) -> tuple[int, str | None]:
+    """`(cap_cents, max_tier)` for THIS fan, from what he has actually paid."""
     from .ai_chatter import _paid_ppv_facts        # local: avoid an import cycle
 
     max_paid, _last = await _paid_ppv_facts(str(account_id), int(fan_id))
-    max_paid = int(max_paid or 0)
-    if max_paid >= PROVEN_SINGLE_PPV_CENTS:
-        return PACK_CAP_PROVEN_CENTS, None
-    if max_paid > 0:
-        return PACK_CAP_CENTS, WARM_MAX_TIER
-    return PACK_CAP_CENTS, COLD_MAX_TIER
+    return bounds_for(int(max_paid or 0))
 
 
 async def rank_by_tier(account_id: str, media: list[int],
@@ -421,68 +451,234 @@ async def rank_by_tier(account_id: str, media: list[int],
             + [m for m in media if rank[m] > ceiling])
 
 
-async def quote_pack(account_id: str, fan_id: int, item: CatalogItem,
-                     avail: int, *, has_video: bool = False,
-                     cfg: dict | None = None) -> int | None:
-    """The price for this fan — or None meaning DO NOT OFFER.
+# ── Settling the price and the pack together ────────────────────────
 
-    The price is quoted first, the count derives from it, and then the SHELF MAY
-    VETO the price down to what it can honestly fill. A pack the shelf cannot
-    fill is not discounted into existence; it is refused.
 
-    ⚠️ Returns the PRICE only. It used to return `(price, n)` and the sole caller
-    discarded the count — composition derives its own from the rate card, so the
-    flat-rate `n` was a second, disagreeing answer to "how many pieces" that
-    nothing consumed. It survives here as the veto arithmetic, which is its
-    only real job.
+@dataclass(frozen=True)
+class LadderCtx:
+    """Everything the ladder knows about ONE fan, read ONCE.
+
+    🚨 Why this exists. The ladder used to be applied in three passes — quote,
+    lift, revoke — each re-deriving these same facts from the database. That cost
+    20 queries an ask with `_paid_ppv_facts` running five times on identical
+    arguments, but the real damage was that no pass could see what the previous
+    one had decided: the revoke re-quoted the PRE-LIFT price and took it without
+    recomposing, measured shipping three explicit stills worth $30.00 for $10.00.
+    Read the fan once and everything after it is arithmetic that cannot disagree
+    with itself. One ask is 7 statements now, down from 20.
     """
+    max_paid_cents: int
+    misses: int
+    cap_cents: int
+
+
+async def ladder_context(account_id: str, fan_id: int) -> LadderCtx:
+    """The only time the negotiation reads the fan. Once, up front."""
     from .ai_chatter import _paid_ppv_facts        # local: avoid an import cycle
 
     max_paid, _last_paid = await _paid_ppv_facts(str(account_id), int(fan_id))
     max_paid = int(max_paid or 0)
+    cap, _tier = bounds_for(max_paid)
+    return LadderCtx(max_paid_cents=max_paid, cap_cents=cap,
+                     misses=await unbought_since_last_paid(account_id, fan_id))
 
-    if bool((cfg or {}).get("pack_price_ladder", True)):
-        misses = await unbought_since_last_paid(account_id, fan_id)
-        rung = ladder_rung(max_paid_cents=max_paid, misses=misses,
-                           has_video=has_video)
-        quoted = PRICE_LADDER_CENTS[rung]
-        log.info("pack ladder account=%s fan=%s rung=%s/%s px=%s max_paid=%s "
-                 "misses=%s video=%s", account_id, fan_id, rung,
-                 len(PRICE_LADDER_CENTS) - 1, quoted, max_paid, misses, has_video)
-    else:
-        fan = upsell.FanState(
-            fan_id=int(fan_id), max_single_paid_cents=max_paid,
-            last_paid_cents=None,                 # a pack is a cold open, not a rung
-            has_ever_paid=bool(max_paid))
-        band, _src = upsell.derive_band(
-            human_asks_cents=[], account_median_cents=None,
-            item_price_cents=int(item.price_cents or 0))
-        rng = random.Random(f"pack:{account_id}:{fan_id}:{item.id}")
-        quote = upsell.next_price(
-            fan=fan, band=band, last_paid_cents=None, rung_index=0,
-            key=f"pack:{item.id}", account_id=str(account_id), rng=rng,
-            library_bounds=(upsell.OF_PRICE_FLOOR_CENTS, upsell.OF_PRICE_MAX_CENTS),
-            escalation_mult=None, max_ask_vs_history_mult=None)
-        if quote is None:
-            return None
-        quoted = int(quote.price_cents)
-    # The per-fan ceiling, applied AFTER the ladder has spoken. `next_price`
-    # already refuses to ask a cold fan more than $59 and can never exceed the
-    # $200 wire max; this is the operator's middle rule, which nothing else
-    # enforces — $100 unless a real PPV proves he goes higher.
-    cap, _tier = await spend_bounds(account_id, fan_id)
-    px = min(quoted, cap)
-    n = clamp_count(px)
-    if avail < n:                    # the shelf vetoes the price
-        px = max(upsell.OF_PRICE_FLOOR_CENTS, avail * CENTS_PER_ITEM)
-        n = clamp_count(px)
-    if min(n, avail) < MIN_ITEMS:
+
+def veto_to_shelf(px_cents: int, avail: int) -> int:
+    """The shelf's honest ceiling: a price it cannot fill drops to what it can.
+
+    A pack the shelf cannot cover is never discounted into existence at the
+    original count — it is priced at what is actually there, or refused.
+    """
+    if avail >= clamp_count(px_cents):
+        return px_cents
+    return max(upsell.OF_PRICE_FLOOR_CENTS, avail * CENTS_PER_ITEM)
+
+
+def ladder_price(ctx: LadderCtx, *, has_video: bool, avail: int) -> int | None:
+    """The rung this fan is owed against a shelf of `avail` items, or None:
+    DO NOT OFFER. PURE — which is the whole point of `LadderCtx`.
+
+    The per-fan ceiling applies AFTER the ladder has spoken. `upsell` already
+    refuses to ask a cold fan more than $59 and can never exceed the $200 wire
+    max; the operator's MIDDLE rule — $100 unless a real PPV proves he goes
+    higher — is enforced nowhere else.
+
+    Everything this returns is a rung. The cap and the veto both compute raw
+    arithmetic and a $43.12 out of either would make the ladder advisory;
+    snapping DOWN can only reduce the ask, so it cannot breach the cap it has
+    just passed.
+    """
+    if avail < MIN_ITEMS:        # no price makes a pack out of two photos
         return None
-    # Land on a rung. The cap and the veto above both compute raw arithmetic,
-    # and a $43.12 out of either would make the ladder advisory. Snapping DOWN
-    # can only reduce the ask, so it cannot breach the cap it just passed.
-    if bool((cfg or {}).get("pack_price_ladder", True)):
-        px = snap_to_ladder(px)
-        if clamp_count(px) > avail and avail < MIN_ITEMS:
-            return None
-    return px
+    rung = ladder_rung(max_paid_cents=ctx.max_paid_cents, misses=ctx.misses,
+                       has_video=has_video)
+    capped = min(PRICE_LADDER_CENTS[rung], ctx.cap_cents)
+    return snap_to_ladder(veto_to_shelf(capped, avail))
+
+
+async def _negotiate_legacy(account_id: str, fan_id: int, item: CatalogItem,
+                            avail_ids: list[int],
+                            ) -> tuple[int, list[int], int] | None:
+    """`(price, media, value)` the pre-ladder way — `pack_price_ladder: false`.
+
+    Kept as the no-deploy rollback for an account the rungs do not suit, and
+    kept honest about what it is: it quotes every pack as a COLD OPEN
+    (`rung_index=0`, `last_paid_cents=None`) whatever the fan has paid, which is
+    how prod came to send $4.71, $40.91 and $50.21 with no relation to history.
+    There is no lift and no revoke here — neither concept exists off the rungs.
+    """
+    avail = len(avail_ids)
+    if avail < MIN_ITEMS:
+        return None
+    from .ai_chatter import _paid_ppv_facts        # local: avoid an import cycle
+
+    max_paid, _last_paid = await _paid_ppv_facts(str(account_id), int(fan_id))
+    max_paid = int(max_paid or 0)
+    fan = upsell.FanState(
+        fan_id=int(fan_id), max_single_paid_cents=max_paid,
+        last_paid_cents=None,                 # a pack is a cold open, not a rung
+        has_ever_paid=bool(max_paid))
+    band, _src = upsell.derive_band(
+        human_asks_cents=[], account_median_cents=None,
+        item_price_cents=int(item.price_cents or 0))
+    rng = random.Random(f"pack:{account_id}:{fan_id}:{item.id}")
+    quote = upsell.next_price(
+        fan=fan, band=band, last_paid_cents=None, rung_index=0,
+        key=f"pack:{item.id}", account_id=str(account_id), rng=rng,
+        library_bounds=(upsell.OF_PRICE_FLOOR_CENTS, upsell.OF_PRICE_MAX_CENTS),
+        escalation_mult=None, max_ask_vs_history_mult=None)
+    if quote is None:
+        return None
+    cap, _tier = bounds_for(max_paid)
+    px = veto_to_shelf(min(int(quote.price_cents), cap), avail)
+    media, value = await compose_by_value(account_id, avail_ids, px)
+    return px, media, value
+
+
+@dataclass(frozen=True)
+class Pack:
+    """A priced, composed pack — or the refusal that stopped it.
+
+    `media` and `value_cents` survive a `REFUSE_TOO_THIN` on purpose: the count
+    that fell short is the diagnostic, and a refusal that throws away its own
+    evidence sends an operator back to the database to find out why.
+    """
+    media: list[int]
+    price_cents: int
+    value_cents: int
+    refusal: str | None = None
+
+
+async def negotiate_pack(account_id: str, fan_id: int, item: CatalogItem,
+                         avail_ids: list[int], cfg: dict | None = None, *,
+                         min_items: int = MIN_ITEMS) -> Pack:
+    """Settle the PRICE and the CONTENT together — each one decides the other.
+
+    Composition stops the moment the price is covered, so the count a price buys
+    depends on the shelf, and whether the pack earned its video step depends on
+    the count. Three rules, in a fixed order that IS the correctness argument:
+
+      1. Quote the rung he is owed, assuming the shelf's video lands in the pack.
+      2. REVOKE that assumption if no clip actually made it in.
+      3. LIFT to the cheapest rung the shelf can honestly fill.
+
+    🚨 Revoke BEFORE lift, always. The lift is the answer to "this pack composed
+    under the floor", and it raises the price precisely because the lower one
+    could not be filled. A revoke running afterwards re-quotes the PRE-LIFT price
+    and takes it without recomposing — measured shipping three explicit stills
+    worth $30.00 for $10.00, the exact giveaway the lift exists to prevent. With
+    the revoke first, the lift has the last word and nothing can lower the price
+    out from under a pack that was composed to cover it.
+
+    Padding a thin pack out from the payoff pile is NOT the alternative: the
+    operator's 08-11 ruling is that free padding never spends payoff, because a
+    $60 pack that walks out with $270 attached has spent the next ask. So the
+    price rises to what the shelf can fill instead. On a shelf of $10 stills the
+    walk-down bottoms out at $36 rather than $6.70 — correct, because three $10
+    stills for $6.70 is not a discount, it is a giveaway.
+
+    `item` is read only by the legacy path, which needs its sticker price to
+    derive a band. The ladder does not price off the catalog row at all.
+    """
+    if ladder_on(cfg):
+        settled = await _negotiate_on_ladder(account_id, fan_id, avail_ids,
+                                             min_items=min_items)
+    else:
+        settled = await _negotiate_legacy(account_id, fan_id, item, avail_ids)
+    if settled is None:
+        return Pack([], 0, 0, REFUSE_NO_PRICE)
+
+    px, media, value = settled
+    if len(media) < min_items:
+        return Pack(media, px, value, REFUSE_TOO_THIN)
+    # Operator ruling 2026-08-11: "we can price more for that content if the AI
+    # upseller chooses." So the rate card is a BASELINE, not a ceiling — the
+    # upseller knows this fan's history and willingness and may quote above it.
+    #
+    # ⚠️ What ticket 06 actually protected against was charging a lot for FEW
+    # items ($19.67 an item, 3 items, an account deleted). That protection now
+    # lives in the COUNT, not the price: `min_items` is a hard floor, composition
+    # pads toward SOFT_TARGET_ITEMS, and the caption states the real number.
+    #
+    # `value_caps_price` restores the old hard veto for anyone who wants it.
+    #
+    # ⚠️ It OUTRANKS the ladder, and the resulting ask is the only one this lane
+    # emits that is not a rung. That is deliberate. Snapping the capped price
+    # back down to a rung was the first instinct and it is worse: an 8-item
+    # shelf worth $24 against the $36 rung would be quoted $10, giving away $14
+    # to preserve a shape. The flag's whole contract is "never charge more than
+    # the attached content is worth", so an operator who turns it on has
+    # subordinated the rungs to value on purpose. Off by default everywhere.
+    if value < px and bool((cfg or {}).get("value_caps_price")):
+        px = max(upsell.OF_PRICE_FLOOR_CENTS, value)
+    if value < px:
+        log.info("pack priced ABOVE rate card account=%s fan=%s px=%s value=%s "
+                 "ratio=%.2f n=%s", account_id, fan_id, px, value,
+                 px / max(1, value), len(media))
+    return Pack(media, px, value)
+
+
+async def _negotiate_on_ladder(account_id: str, fan_id: int,
+                               avail_ids: list[int], *,
+                               min_items: int) -> tuple[int, list[int], int] | None:
+    """`(price, media, value)` off the rungs, or None meaning DO NOT OFFER.
+
+    The three rules of `negotiate_pack`, over ONE `LadderCtx`. Every price here
+    is a rung, so the ask a fan sees is never the residue of arithmetic.
+    """
+    avail = len(avail_ids)
+    ctx = await ladder_context(account_id, fan_id)
+    shelf_has_video = await has_moving_media(account_id, avail_ids)
+
+    px = ladder_price(ctx, has_video=shelf_has_video, avail=avail)
+    if px is None:
+        return None
+    log.info("pack ladder account=%s fan=%s px=%s max_paid=%s misses=%s "
+             "shelf_video=%s avail=%s", account_id, fan_id, px,
+             ctx.max_paid_cents, ctx.misses, shelf_has_video, avail)
+    media, value = await compose_by_value(account_id, avail_ids, px)
+
+    # 2. The +2 was granted on a shelf that HAD video; charge it only if a clip
+    #    actually made it into the pack. `compose_by_value` declines to swap in a
+    #    clip worth less than the still it would displace, so a cheap short clip
+    #    on an explicit shelf lands here every time.
+    if shelf_has_video and media and not await has_moving_media(account_id, media):
+        stills_px = ladder_price(ctx, has_video=False, avail=avail)
+        if stills_px is not None and stills_px < px:
+            log.info("pack ladder video step REVOKED account=%s fan=%s %s->%s "
+                     "(shelf had video, pack does not)",
+                     account_id, fan_id, px, stills_px)
+            px = stills_px
+            media, value = await compose_by_value(account_id, avail_ids, px)
+
+    # 3. The shelf may LIFT a rung — the mirror of the veto in `ladder_price`.
+    while len(media) < min_items:
+        lifted = next_rung_above(px)
+        if lifted is None or lifted > ctx.cap_cents:
+            break                        # the shelf cannot be filled honestly
+        log.info("pack ladder LIFTED account=%s fan=%s %s->%s (a lower rung "
+                 "composed under the %s-item floor)",
+                 account_id, fan_id, px, lifted, min_items)
+        px = lifted
+        media, value = await compose_by_value(account_id, avail_ids, px)
+    return px, media, value
