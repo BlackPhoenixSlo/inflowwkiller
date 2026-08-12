@@ -65,7 +65,6 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / lease / cooldown seams
 import llm_client                  # call .chat at runtime so tests can patch it
-import of_shapes                   # pure readers for OF's wire shapes (quote-reply)
 import ownership                   # the one home for owned-media semantics
 from attribution import write_outbound_attribution
 from automation_registry import register
@@ -102,6 +101,7 @@ from . import _objection  # which apology this turn owes him (regexes + the judg
 from . import _voice
 from . import _openers  # the gen_info opener pool (the deepen phase)
 from . import _pins  # his own pinned long-form message (reader + writer)
+from . import _quotes  # which bubble he quote-replied (resolver + prompt block)
 # ppv_send owns the ONE price authority (`price_bounds`); ownership.py owns
 # the ONE ownership check (`owners_of_media`, keyed on MEDIA — a fan who
 # bought a clip in a mass blast has no content_offers row at all). Importing
@@ -869,9 +869,10 @@ class _Cand:
         # the fan-run scan, the tests that hand-build a _Cand) is untouched; both
         # lists have exactly one writer, `add_message`, so they cannot drift.
         self.msg_ids: list[int] = []
-        # The quote-reply he made, if any — filled per reply by `_reply_ctx`, read only
+        # The quote-reply he made, if any — filled per reply by `_quotes.resolve`,
+        # read only
         # by `_build_messages`. None = no quote, the overwhelming case.
-        self.reply_ctx: "QuoteRef | None" = None
+        self.reply_ctx: "_quotes.QuoteRef | None" = None
         # HIS TRAILING UNANSWERED RUN — the timestamps of every inbound since her own
         # last real outbound, oldest→newest. `messages` carries direction and body and
         # nothing else, so until this existed the engine could see THAT he wrote twice
@@ -3978,128 +3979,6 @@ async def _buyer_facts(account_id: str, fan_id: int) -> list[str]:
     ]
 
 
-# How many of his recent inbounds to check for a quote-reply. He can quote a bubble
-# and then send "lol" on top of it, so "the newest row" alone misses it; three rows
-# covers a normal unanswered run at three tiny reads.
-_REPLY_CTX_SCAN = 3
-_QUOTE_CLIP = 120                # enough of the quoted bubble to identify it in prose
-
-
-class QuoteRef(NamedTuple):
-    """One resolved quote-reply: which of his messages answered which bubble.
-
-    Named rather than a 4-tuple because two of the fields are only legible with their
-    name attached — `locked_price_cents` is 0 for a FREE bubble *and* for one he has
-    already unlocked, and `quoted_is_his` is the difference between "your earlier
-    message" and a sentence that puts his words in her mouth."""
-    his_id: int
-    quoted_id: int
-    preview: str
-    locked_price_cents: int
-    quoted_is_his: bool
-
-
-async def _reply_ctx(account_id: str, fan_id: int) -> QuoteRef | None:
-    """His most recent inbound that QUOTE-REPLIED a bubble, else None.
-
-    Read here, per reply, and NOT in `_gather`: that is one query over the whole
-    account's messages and the quote lives in `raw_json`, 64KB a row (see _gather's
-    docstring). Here it is three rows on ix_messages_account_fan_time, only for a fan
-    we are already about to answer.
-
-    It returns the id of the message that CARRIED the quote — not "his last message".
-    He can quote-reply and then send "lol", and a prompt line claiming his LAST
-    message answered her bubble is a lie the model has no way to check. Annotating
-    the exact line stays true whatever he sent after it, which is also why there is no
-    time window here: the result describes a line of the transcript, not the state of
-    the turn. (An `AND created_at > her last outbound` window looked right and was
-    wrong — `last_out_at` moves on broadcasts too, so a PPV blast landing on top of
-    his quote would have hidden it, the same way it used to steal the turn.)
-
-    `locked_price_cents` is ZERO for an already-unlocked item: the price is only worth
-    surfacing while it is still an open offer, and calling a paid item "locked" is a
-    falsehood she would repeat to the man who bought it."""
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(Message.message_id, Message.raw_json)
-            .where(Message.account_id == str(account_id),
-                   Message.fan_id == int(fan_id),
-                   Message.direction == "in",
-                   Message.raw_json.is_not(None))
-            .order_by(Message.created_at.desc(), Message.message_id.desc())
-            .limit(_REPLY_CTX_SCAN)
-        )).all()
-    for mid, raw in rows:
-        try:
-            quoted = of_shapes.quoted_reply(json.loads(raw or "{}"))
-        except (TypeError, ValueError):
-            continue          # truncated payload → no context, never a broken reply
-        if quoted is None or not quoted.get("id"):
-            continue
-        try:
-            price = float(quoted.get("price") or 0)
-        except (TypeError, ValueError):
-            price = 0.0
-        quoted_from = (quoted.get("fromUser") or {}).get("id")
-        return QuoteRef(
-            his_id=int(mid), quoted_id=int(quoted["id"]),
-            preview=_strip_html(quoted.get("text"))[:_QUOTE_CLIP],
-            locked_price_cents=0 if quoted.get("isOpened") else int(round(price * 100)),
-            quoted_is_his=int(quoted_from or 0) == int(fan_id))
-    return None
-
-
-# `[A]` marks the bubble he answered, `[replying to A]` marks his answer. The pair
-# carries its own legend — a bare arrow or a bare number needs the model to infer a
-# convention, and ASCII beats a glyph it has to resolve first. ONE label, so the two
-# strings cannot drift apart (they were built by slicing `"[A]"`, which quietly
-# assumed the closing bracket).
-_QUOTE_LABEL = "A"
-
-
-def _locked(price_cents: int) -> str:
-    """`$25.20 LOCKED` — one formatter for both the marker and the prose."""
-    return f"${price_cents / 100:.2f} LOCKED"
-
-
-def _quote_desc(ref: "QuoteRef") -> str:
-    """The quoted bubble named in prose — the fallback for when it is NOT one of the
-    lines in the prompt, so there is nothing to point `[A]` at.
-
-    `whose` is load-bearing: he can quote-reply HIS OWN message, and "your earlier
-    message: …" would then hand her his words as something she said. A prompt block
-    whose only job is grounding must not invent a line she never wrote."""
-    whose = "his own" if ref.quoted_is_his else "your"
-    if ref.locked_price_cents > 0:
-        return f"{whose} {_locked(ref.locked_price_cents)} message"
-    return (f'{whose} earlier message: "{ref.preview}"' if ref.preview
-            else f"a photo {'he' if ref.quoted_is_his else 'you'} sent")
-
-
-def _reply_marks(ref: "QuoteRef | None", rendered: set[int]) -> dict[int, str]:
-    """{message_id: line suffix} for the ONE quote-reply in the tail.
-
-    `rendered` is the ids that actually became transcript lines — NOT the ids in the
-    tail. The convo join drops empty bodies, so a caption-less PPV or a bare photo
-    send is in `msg_ids` yet has no line, and marking it would put `[A]` nowhere while
-    `[replying to A]` pointed at it. When the target has no line we name it in prose
-    on HIS line instead, which is also the outside-the-tail path.
-
-    His own line missing (a media-only quote-reply, or it aged out) ⇒ nothing at all:
-    there is no line in the prompt to annotate."""
-    if ref is None or ref.his_id not in rendered:
-        return {}
-    if ref.quoted_id in rendered:
-        # The price rides the TARGET's mark: the transcript carries her caption but
-        # never what it cost, and "he is asking about the $25 he hasn't unlocked" is
-        # the whole reason this feature earns its ~4/day.
-        tag = (_QUOTE_LABEL if ref.locked_price_cents <= 0
-               else f"{_QUOTE_LABEL} · {_locked(ref.locked_price_cents)}")
-        return {ref.quoted_id: f" [{tag}]",
-                ref.his_id: f" [replying to {_QUOTE_LABEL}]"}
-    return {ref.his_id: f" [replying to {_quote_desc(ref)}]"}
-
-
 # ── v2 safe-state derived facts (spec §5/§6/§7). ALL of these are DERIVED (no new
 # column) — read from PAID messages / ladder_quote, exactly as §10.2 requires. They
 # are only ever computed when the gate lane is on, so an off flag costs nothing.
@@ -4711,17 +4590,17 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # to today's prompt instead of labelling the wrong line.
     ids = (c.msg_ids[-history_tail:] if len(c.msg_ids) == len(c.messages)
            else [0] * len(history))
-    # Rendered lines FIRST, because `if b` drops empty bodies and the marks must key
-    # off what the model can actually see (see _reply_marks).
+    # Rendered lines FIRST, because `if b` drops empty bodies and `_quotes.render`
+    # keys off what the model can actually see.
     lines = [(d, b, mid) for (d, b), mid in zip(history, ids) if b]
     # The quote-reply annotation lives ONLY in this string. `history` stays the raw
     # (direction, body) tuples every gate below reads: `fan_just_asked` is a bare
     # `"?" in`, so a question mark in HER quoted caption would read as his question,
     # and `fan_low_effort` counts his words. Gluing generated text onto what a gate
     # reads is the `[he sent: …]` bug twice over — see _Cand.last_body.
-    marks = _reply_marks(c.reply_ctx, {mid for _, _, mid in lines})
+    quote = _quotes.render(c.reply_ctx, lines)
     convo = "\n".join(
-        f"{'FAN' if d == 'in' else 'YOU'}: {b}{marks.get(mid, '')}"
+        f"{'FAN' if d == 'in' else 'YOU'}: {b}{quote.marks.get(mid, '')}"
         for d, b, mid in lines
     )
 
@@ -5177,7 +5056,9 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         f"{_pins.pins_block(f)}"
         f"{day_user}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
-        "Reply to his last message now, in the STYLE FOR THIS MESSAGE above."
+        # `_quotes.REPLY_NOW` verbatim unless he quote-replied, so the ~93% of turns
+        # with no quote build the prompt they always did.
+        + quote.tail
     )
     return ([{"role": "system", "content": system},
              {"role": "user", "content": user}], presented)
@@ -6762,7 +6643,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Which bubble is he answering? Three tiny reads, and only for a fan who
             # has cleared every gate and is getting a reply this tick.
             if reply_ctx_on:
-                c.reply_ctx = await _reply_ctx(account_id, fan_id)
+                c.reply_ctx = await _quotes.resolve(account_id, fan_id)
             # Cat-sticker roll (code-side rate control): most replies never see
             # the sticker protocol at all; "allow" lets the model judge, "solo"
             # nudges a sticker-ONLY reply. Deterministic per reply (fan + his
@@ -6948,6 +6829,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         "ask" if (force_ask and content_ask
                                   and (gate_ok or ask_override)) else
                         "stale" if stale_ask else None)
+            # 🚨 The PACK lane rides the ASK, not `force_ask` — they are not the
+            # same permission. `force_ask` ships OFF because it INITIATES, and
+            # answering a man who typed "send me a joi" initiates nothing.
+            # Riding `_trigger == "ask"` conflated the two and left
+            # `pack_on_ask_enabled: True` inert on 12 of 20 live accounts (one
+            # fan asked twice; the resolver was never called once).
+            #
+            # Wider than the old arm in exactly two ways, both deliberate:
+            # force_ask OFF, and a HOT thread with an explicit ask — where
+            # `_trigger` says "hot" and the pack used to lose to `_force_pick`'s
+            # cheapest item. What he ASKED for beats the cheapest thing on the
+            # shelf. Every guard that made the old arm safe still applies below.
+            _ask_now = (kind not in _TURNS_NOT_SELLING and content_ask
+                        and (gate_ok or ask_override))
             # Per-TICK account budget on forced asks. _offer_caps_ok does NOT pace a
             # fan's FIRST offer (its min-msgs branch is skipped when he has no prior
             # ContentOffer), so on the tick force_ask/floor is first enabled, EVERY
@@ -6968,7 +6863,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # straight through to the normal path — this can only ever REPLACE a
             # cheapest-item offer, never suppress one.
             _pack_this_fan = False
-            if (_trigger == "ask" and not seller_off and offer_item is None
+            if (_ask_now and not seller_off and offer_item is None
                     and bool(cfg.get("pack_on_ask_enabled"))
                     and forced_this_tick < _MAX_FORCED_ASKS_PER_TICK):
                 from automations import pack_sender as _packs

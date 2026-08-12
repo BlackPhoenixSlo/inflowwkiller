@@ -52,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
@@ -66,7 +67,8 @@ from db.models import (
 
 from . import content_resolver, upsell
 from .pack_claim import (
-    Claim, ask_clause, compose_caption, product_description, render_clause,
+    Claim, ask_clause, compose_caption, is_substitute_claim, product_description,
+    render_clause, substitute_clause,
 )
 from .pack_pricing import (
     MAX_ITEMS, MIN_ITEMS, RUNG_STICKER_CENTS, DEFAULT_STICKER_CENTS,
@@ -132,6 +134,9 @@ class PackPlan:
     refusal: str | None = None
     detail: str = ""
     value_cents: int = 0        # rate-card worth of the attached payoff
+    # This send is NOT what he asked for. The claim frames it as her own version
+    # instead of promising his noun, and `audit_ask` gets a fourth rule.
+    substitute: bool = False
 
     @property
     def ok(self) -> bool:
@@ -348,7 +353,8 @@ class _Priced:
 
 async def _price_and_compose(account_id: str, fan_id: int, avail_ids: list[int],
                              item: CatalogItem, cfg: dict,
-                             empty: PackPlan) -> _Priced:
+                             empty: PackPlan, *,
+                             min_items: int = MIN_ITEMS) -> _Priced:
     """Quote the fan, then fill the quote with content. Identical for every source.
 
     🚨 This is the half `plan_ask` used to COPY from `plan_pack`. Ten of the two
@@ -366,7 +372,7 @@ async def _price_and_compose(account_id: str, fan_id: int, avail_ids: list[int],
     # more than eight tease stills, and the fan should get either — but only if
     # what he is charged is actually covered by what is attached.
     media, value = await compose_by_value(account_id, avail_ids, px)
-    if len(media) < MIN_ITEMS:
+    if len(media) < min_items:
         return _Priced([], px, value, item.id,
                        replace(empty, item_id=item.id, refusal=REFUSE_TOO_THIN,
                                detail=f"{len(media)} composable"))
@@ -514,7 +520,7 @@ async def ensure_ask_item(account_id: str) -> CatalogItem:
 
 
 async def audit_ask(account_id: str, media: list[int], claim: Claim,
-                    company: bool) -> list[str]:
+                    company: bool, *, substitute: bool = False) -> list[str]:
     """What can honestly be checked when there is no rung to check against.
 
     `audit_pack`'s rules 2 and 3 are rung-membership rules and have no meaning
@@ -540,6 +546,14 @@ async def audit_ask(account_id: str, media: list[int], claim: Claim,
     if claim.n != n:
         bad.append(f"claim states {claim.n}, attaching {n}: {claim.text!r}")
 
+    # 4. A SUBSTITUTE says so. Rules 1-3 check counts, liveness and company and
+    #    none of them reads the noun, so `ask_clause`'s "4 vids of joi" over
+    #    media that is not joi passes all three — a lie with a clean audit. The
+    #    frame is the only thing standing between "this is my version of it" and
+    #    a promise she cannot keep, so its survival is itself an audit rule.
+    if substitute and not is_substitute_claim(claim.text):
+        bad.append(f"substitute claim lost its frame: {claim.text!r}")
+
     async with get_session() as s:
         live = {int(m) for m in (await s.execute(
             select(VaultItem.media_id).where(
@@ -559,6 +573,72 @@ async def audit_ask(account_id: str, media: list[int], claim: Claim,
     return bad
 
 
+@dataclass(frozen=True)
+class _AskEnding:
+    """The two ways an ask ends, and everything that differs between them.
+
+    🚨 These three facts ALWAYS move together — a substitute needs a lower floor
+    (the closest thing she owns is often a single clip), a framing clause, and
+    the audit rule that checks the frame survived. Carrying them as three
+    separate arguments is how `plan_ask` came to be a copy of `plan_pack` with
+    ten of fourteen steps byte-identical; carrying them as one value is why
+    there is now a single planner instead of two.
+    """
+    min_items: int
+    clause: Callable[[list[str], str | None], Claim]
+    substitute: bool
+
+
+# `MIN_ITEMS` (3) exists to stop a lot of money buying few items — the shape
+# that got an account deleted — and it still binds a real ask. A substitute is
+# not a pack, though: it is the one honest clip she has, and refusing to send it
+# under a pack's floor is how this lane goes quiet again.
+_FITS = _AskEnding(MIN_ITEMS, ask_clause, False)
+_SUBSTITUTE = _AskEnding(1, substitute_clause, True)
+
+
+async def _plan_ask_from(account_id: str, fan_id: int,
+                         contract: content_resolver.Contract,
+                         media_ids: list[int], cfg: dict, empty: PackPlan,
+                         ending: _AskEnding) -> PackPlan:
+    """Price and caption resolved ids. The one spine both endings ride.
+
+    `media_kind` is not passed to `_available`: the resolver has already
+    enforced it as part of the contract.
+    """
+    avail_ids = await _available(account_id, fan_id, media_ids,
+                                 company=contract.company)
+    if len(avail_ids) < ending.min_items:
+        return replace(empty, refusal=REFUSE_TOO_THIN,
+                       detail=f"{len(avail_ids)} un-bought")
+
+    item = await ensure_ask_item(account_id)
+    priced = await _price_and_compose(account_id, fan_id, avail_ids, item, cfg,
+                                      empty, min_items=ending.min_items)
+    if priced.refusal is not None:
+        return priced.refusal
+
+    kinds = await content_resolver.kind_of(account_id, priced.media)
+    claim = ending.clause([kinds.get(m, "photo") for m in priced.media],
+                          contract.subject)
+    # ⚠️ No previews. `plan_pack` draws them from the `tease` rung, and a
+    # vault-wide ask has no rung to draw from. Attaching an arbitrary vault item
+    # as a free preview would give away payoff — audit rule 3, in spirit. The
+    # cost is that he sees OF's own blur instead of a chosen frame, which is
+    # worth revisiting once there is a tease shelf per subject.
+    bad = await audit_ask(account_id, priced.media, claim, contract.company,
+                          substitute=ending.substitute)
+    if bad:
+        log.warning("ask audit REFUSED account=%s fan=%s substitute=%s: %s",
+                    account_id, fan_id, ending.substitute, "; ".join(bad))
+        return replace(empty, item_id=item.id, price_cents=priced.price_cents,
+                       claim=claim, refusal=REFUSE_AUDIT, detail="; ".join(bad))
+    return PackPlan(str(account_id), int(fan_id), ASK_CATEGORY, "", item.id,
+                    priced.media, [], priced.price_cents, claim,
+                    value_cents=priced.value_cents,
+                    substitute=ending.substitute)
+
+
 async def plan_ask(account_id: str, fan_id: int,
                    contract: content_resolver.Contract, *,
                    cfg: dict | None = None) -> PackPlan:
@@ -567,8 +647,10 @@ async def plan_ask(account_id: str, fan_id: int,
     The same spine as `plan_pack` — same price ladder, same value composition,
     same house rules — differing only in where the ids come from (the resolver,
     not a shelf), which catalog row carries attribution, and how the claim is
-    made. `media_kind` is not passed to `_available` here because the resolver
-    has already enforced it as part of the contract.
+    made.
+
+    Two endings, one spine. Either the resolver found what he asked for, or it
+    found the nearest thing and the caption says so.
     """
     cfg = cfg or {}
     empty = PackPlan(str(account_id), int(fan_id), ASK_CATEGORY, "", None,
@@ -583,37 +665,26 @@ async def plan_ask(account_id: str, fan_id: int,
     res = await content_resolver.resolve(
         str(account_id), int(fan_id), count=MAX_ITEMS, seen=bought,
         contract=contract, require_curated=False)
-    if not res.ok:
+    if res.ok:
+        return await _plan_ask_from(account_id, fan_id, contract,
+                                    res.media_ids, cfg, empty, _FITS)
+
+    # 🚨 "i don't have that, but this is close" — the 2026-08-11 operator ruling,
+    # finally reaching a fan. Until now every refusal here returned nothing and
+    # ai_chatter fell through to a reply written before the ask was even read:
+    # one fan asked for the same thing twice and got an unrelated priced set,
+    # captioned with nothing, that he never opened.
+    #
+    # A STRICT contract is the exception. "only feet, right?" may never be
+    # answered with something adjacent — that is the one promise where a
+    # substitute is a second deception rather than a recovery, and
+    # `Contract.strict` exists to carry exactly that.
+    if contract.strict or not res.alternatives:
         return replace(empty, refusal=REFUSE_RESOLVER, detail=res.refusal or "")
-
-    avail_ids = await _available(account_id, fan_id, res.media_ids,
-                                 company=contract.company)
-    if len(avail_ids) < MIN_ITEMS:
-        return replace(empty, refusal=REFUSE_TOO_THIN,
-                       detail=f"{len(avail_ids)} un-bought")
-
-    item = await ensure_ask_item(account_id)
-    priced = await _price_and_compose(account_id, fan_id, avail_ids, item, cfg, empty)
-    if priced.refusal is not None:
-        return priced.refusal
-
-    kinds = await content_resolver.kind_of(account_id, priced.media)
-    claim = ask_clause([kinds.get(m, "photo") for m in priced.media],
-                       contract.subject)
-    # ⚠️ No previews. `plan_pack` draws them from the `tease` rung, and a
-    # vault-wide ask has no rung to draw from. Attaching an arbitrary vault item
-    # as a free preview would give away payoff — audit rule 3, in spirit. The
-    # cost is that he sees OF's own blur instead of a chosen frame, which is
-    # worth revisiting once there is a tease shelf per subject.
-    bad = await audit_ask(account_id, priced.media, claim, contract.company)
-    if bad:
-        log.warning("ask audit REFUSED account=%s fan=%s: %s",
-                    account_id, fan_id, "; ".join(bad))
-        return replace(empty, item_id=item.id, price_cents=priced.price_cents,
-                       claim=claim, refusal=REFUSE_AUDIT, detail="; ".join(bad))
-    return PackPlan(str(account_id), int(fan_id), ASK_CATEGORY, "", item.id,
-                    priced.media, [], priced.price_cents, claim,
-                    value_cents=priced.value_cents)
+    log.info("substitute for %r account=%s fan=%s (%s)",
+             contract.subject, account_id, fan_id, res.refusal)
+    return await _plan_ask_from(account_id, fan_id, contract,
+                                res.alternatives, cfg, empty, _SUBSTITUTE)
 
 
 # ── The send ────────────────────────────────────────────────────────
@@ -791,7 +862,7 @@ async def send_ask(client, account_id: str, fan_id: int,
     return await _deliver(
         client, plan, voice_line=voice_line, dry_run=dry_run,
         reaudit=lambda: audit_ask(account_id, plan.media, plan.claim,
-                                  contract.company))
+                                  contract.company, substitute=plan.substitute))
 
 
 async def send_pack_on_ask(client, account_id: str, fan_id: int, *,
@@ -823,12 +894,13 @@ async def send_pack_on_ask(client, account_id: str, fan_id: int, *,
     if not contract.asked:
         return {"status": "refused", "reason": content_resolver.NO_ASK,
                 "detail": contract.subject or ""}
-    if contract.custom_request:
-        # He described a shoot. The resolver hands back the nearest real things
-        # so she can say "i don't have that, but check this" — that is a REPLY,
-        # not a sale, and it belongs to the caller, not to this sender.
-        return {"status": "refused", "reason": content_resolver.CUSTOM_REQUEST,
-                "detail": contract.subject or ""}
+    # ⚠️ A CUSTOM REQUEST used to short-circuit to a refusal here, on the
+    # reasoning that "i don't have that, but check this" is a REPLY and not a
+    # sale. Nothing ever wrote that reply — `alternatives` has no reader
+    # anywhere in the service — so the branch spent a year turning the operator
+    # ruling into silence. It now falls through like any other ask: the
+    # resolver returns CUSTOM_REQUEST *with* substitutes attached, and
+    # `plan_ask` frames them as her own version instead of promising his shoot.
 
     # 🚨 No curated category is the COMMON case, not the error case. Exactly one
     # category exists (`feet`), so before 2026-08-11 a man asking for leather,
