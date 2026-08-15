@@ -65,6 +65,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     tagged_users = payload.get("tagged_users") or []
     employee_id = payload.get("sent_by_employee_id")
 
+    # Include-only audience at-fire recheck. The creation route stamps every
+    # human-scheduled send `send_purpose: "manual"`, which bypasses (a human
+    # send always fires); anything automation-enqueued into this kind without
+    # the stamp is re-checked against the fence at FIRE time — that is what
+    # catches dead-session backlogs and mode flips between enqueue and fire.
+    import audience_include as _audiences
+    allowed, why = await _audiences.check_at_fire(
+        account_id, fan_id, kind=_KIND, payload=payload)
+    if not allowed:
+        log.info("scheduled_send audience-blocked account=%s fan=%s (%s)",
+                 account_id, fan_id, why)
+        return {"status": "skipped", "reason": f"audience:{why}", "fan_id": fan_id}
+    purpose = "manual" if str(payload.get("send_purpose") or "") == "manual" else "gated"
+
     client = await asyncio.to_thread(ax._make_client, account_id)
     result = await ax.of_write_paced(
         account_id,
@@ -78,6 +92,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             tagged_users=tagged_users,
             giphy_id=giphy_id,
         ),
+        send_purpose=purpose,
     )
 
     msg_id = result.get("id") if isinstance(result, dict) else None

@@ -5971,6 +5971,10 @@ async def create_scheduled_send(request: Request, body: _ScheduledSendBody = Bod
         "tagged_users": body.tagged_users,
         "giphy_id": body.giphy_id,
         "sent_by_employee_id": employee_id,
+        # Typed stamp: a HUMAN scheduled this. The audience at-fire recheck
+        # bypasses manual sends; automation-enqueued scheduled_send jobs don't
+        # carry it and get re-checked against the fence at fire time.
+        "send_purpose": "manual",
     }
     job_id = await enqueue_job(
         account_id, "scheduled_send",

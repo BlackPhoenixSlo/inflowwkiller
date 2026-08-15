@@ -108,6 +108,19 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "only_fan_ids", "type": "ids", "hint": "[fan_id,…] scope the sweep to these fans (gates still apply)"},
         ],
     },
+    "audience_sync": {
+        "label": "Audience folder sync (include-only mode)", "recurring": True,
+        "surface": "brain",
+        "cadence_default_s": 900,
+        "summary": "Reconciles the operator-picked OF folder into the local "
+                   "automation-audience mirror, auto-adds provably-new subscribers "
+                   "(roster diff, OF-confirm-then-local), and maintains the "
+                   "AUTOFENCE exclude list enforce-mode broadcasts subtract. "
+                   "Created by the Brain's Audience section; does nothing while "
+                   "audience mode is off.",
+        "example": "every 15m · transactional OF→local reconcile",
+        "knobs": [],
+    },
     "send_welcome": {
         "label": "Welcome new subscribers", "recurring": True, "surface": "brain",
         "summary": "Send a generated welcome to fans who haven't been welcomed.",

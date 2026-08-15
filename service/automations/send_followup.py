@@ -686,6 +686,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skip_ids = await _load_skip_list(account_id)
     eligible = [f for f in await _load_eligible_fans(account_id, limit)
                 if f["fan_id"] not in blacklist and f["fan_id"] not in skip_ids]
+
+    # Include-only audience — before any LLM spend. (The SQL `limit` above runs
+    # first, so a narrow fence can thin a tick; the next tick picks up the rest.)
+    import audience_include as _audiences
+    audience_stats: dict = {}
+    _kept = set(await _audiences.filter_candidates(
+        account_id, [f["fan_id"] for f in eligible], kind="send_followup",
+        stats=audience_stats))
+    eligible = [f for f in eligible if f["fan_id"] in _kept]
     eligible_ids = [f["fan_id"] for f in eligible]
 
     # ── 3) DB reads that replace the DOM scrape ──────────────────────────
@@ -862,7 +871,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # only on a returned send, so the same fans stayed eligible and
                 # were regenerated every tick forever.
                 outcome = await send_dropping_bad_media(
-                    client, fid, text, media_files, log=log)
+                    client, fid, text, media_files, log=log,
+                    send_purpose="gated")
                 result = outcome.result
             except Exception as e:
                 _note_error(f"send: {e}")
@@ -917,6 +927,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     return {
         "eligible": len(eligible),
+        **audience_stats,
         "transitioned": transitioned,
         "followups_sent": sent,
         "state_advanced": advanced,

@@ -116,9 +116,14 @@ class SendOutcome(NamedTuple):
 
 async def send_dropping_bad_media(
     client, fan_id, text: str, media_files: list, *, log=log,
+    send_purpose: str | None = None,
 ) -> SendOutcome:
     """`client.send_message`, except a refused ATTACHMENT degrades to text-only
     instead of losing the message entirely.
+
+    `send_purpose` is the audience-coverage transport assert (gated / fenced /
+    manual / not_fan_dm / exempt:<reason>): untagged raises under the test
+    harness and logs loudly in prod — see audience_include.audit_send_purpose.
 
     Why this is not merely nice-to-have: a sender only advances its durable state
     on a RETURNED send, so a single permanently-bad vault id re-fires the same
@@ -130,6 +135,9 @@ async def send_dropping_bad_media(
 
     Re-raises unchanged when the failure is NOT about media — those belong to the
     caller's own skip/quarantine handling."""
+    import audience_include as _audiences
+    _audiences.audit_send_purpose(send_purpose, where="send_dropping_bad_media")
+
     async def _post(media: list):
         return await asyncio.to_thread(
             lambda: client.send_message(fan_id, text, media_files=media)

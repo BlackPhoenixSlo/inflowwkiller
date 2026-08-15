@@ -476,22 +476,11 @@ AUTO_EXCLUDE_LIST_NAME = "Auto_Exclude"
 _LIST_PAGE = 100
 
 
-def _page_all(fetch):
-    """Page an OF list endpoint to exhaustion, CAP-AGNOSTIC. `fetch(offset)`
-    returns one page. Two shapes (both verified live 2026-06-12):
-      • `/lists?format=infinite` → `{list, hasMore}` envelope — trust hasMore
-        (OF honours limit=100 but may page; never guess from page length).
-      • `/lists/{id}/users` → a BARE list with NO hasMore — page until an EMPTY
-        page, so it's correct whatever page size OF actually honours (a short-
-        page stop would under-read if OF ever caps below our requested limit).
-    Without exhaustive paging, an exclude list with >1 page of members would
-    only read page 1 and wrongly drop everyone past it as 'stale'.
-
-    Guards (2026-07-04): some OF endpoints IGNORE `offset` and report
-    hasMore=true forever (verified live on /users/me/stats/messages/group) —
-    an unguarded exhaustion loop then spins forever inside a to_thread worker
-    on the mass-broadcast hot path. Dedup by item id and stop on a page that
-    adds nothing new, plus a hard page ceiling as the backstop."""
+def _page_all_checked(fetch) -> tuple[list[dict], bool]:
+    """`_page_all` plus an explicit truncation flag: (rows, hit_backstop).
+    The audience-fence / include-mirror paths must treat a truncated crawl as a
+    FAILED sync (loud), never as a complete snapshot — a silently short read
+    would drop every member past the ceiling and un-fence / un-admit them."""
     out: list[dict] = []
     seen_ids: set = set()
     offset = 0
@@ -517,7 +506,27 @@ def _page_all(fetch):
     else:
         log.warning("_page_all hit the 200-page backstop (%d rows) — repeated-page "
                     "guard never fired; result may be truncated", len(out))
-    return out
+        return out, True
+    return out, False
+
+
+def _page_all(fetch):
+    """Page an OF list endpoint to exhaustion, CAP-AGNOSTIC. `fetch(offset)`
+    returns one page. Two shapes (both verified live 2026-06-12):
+      • `/lists?format=infinite` → `{list, hasMore}` envelope — trust hasMore
+        (OF honours limit=100 but may page; never guess from page length).
+      • `/lists/{id}/users` → a BARE list with NO hasMore — page until an EMPTY
+        page, so it's correct whatever page size OF actually honours (a short-
+        page stop would under-read if OF ever caps below our requested limit).
+    Without exhaustive paging, an exclude list with >1 page of members would
+    only read page 1 and wrongly drop everyone past it as 'stale'.
+
+    Guards (2026-07-04): some OF endpoints IGNORE `offset` and report
+    hasMore=true forever (verified live on /users/me/stats/messages/group) —
+    an unguarded exhaustion loop then spins forever inside a to_thread worker
+    on the mass-broadcast hot path. Dedup by item id and stop on a page that
+    adds nothing new, plus a hard page ceiling as the backstop."""
+    return _page_all_checked(fetch)[0]
 
 
 def _sync_exclude_list_blocking(client, ids: set[int]) -> int:

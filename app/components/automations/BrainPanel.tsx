@@ -34,6 +34,7 @@ import {
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
+import AudienceSection from "@/components/automations/AudienceSection";
 import { clockOptions, localTimeAtOffset, localTimeIn, utcLabel, zoneOffsetNow }
   from "@/lib/creatorClock";
 import { useEnrichPersona } from "@/hooks/useAccountConfig";
@@ -102,10 +103,17 @@ function isBlankBrain(c: BrainConfig): boolean {
 // but this line is what stops "Reset to defaults" from quietly un-maling an
 // account whose operator only meant to reset its brain text.
 function defaultsWithImages(defaults: BrainConfig, current: BrainConfig): BrainConfig {
+  // The audience fence is preserved across "Reset to defaults" for the same
+  // reason `voice` is: it is identity/scoping, not brain text — a reset that
+  // silently flipped an enforced fence off would unscope automations to the
+  // whole roster on one click.
   return { ...defaults, time_images: current.time_images ?? {},
            timezone: current.timezone ?? null,
            voice: current.voice ?? "her",
-           persona_facts: current.persona_facts ?? {} };
+           persona_facts: current.persona_facts ?? {},
+           audience_mode: current.audience_mode ?? "off",
+           audience_of_list_id: current.audience_of_list_id ?? null,
+           audience_auto_add: current.audience_auto_add ?? false };
 }
 
 const textareaCls =
@@ -305,6 +313,9 @@ export default function BrainPanel() {
     setForm((f) => (f ? { ...f, [key]: val } : f));
     setMsg(null);
   }
+
+  // ── Audience (include-only automation fence) — see AudienceSection ──
+  const aud = cfgQ.data?.audience;
   function setFact(key: string, text: string) {
     setForm((f) =>
       f ? { ...f, persona_facts: { ...(f.persona_facts ?? {}), [key]: text } } : f,
@@ -912,6 +923,22 @@ export default function BrainPanel() {
               })}
             </div>
           </div>
+
+          {/* Audience — include-only automation fence (saved with Save brain) */}
+          <AudienceSection
+            accountId={accountId}
+            mode={form.audience_mode ?? "off"}
+            ofListId={form.audience_of_list_id ?? null}
+            autoAdd={!!form.audience_auto_add}
+            status={aud}
+            selectCls={selectCls}
+            onChange={(patch) => {
+              setForm((f) => (f ? { ...f, ...patch } : f));
+              setMsg(null);
+            }}
+            onMsg={setMsg}
+            refetchConfig={() => cfgQ.refetch()}
+          />
 
           {/* Welcome automation — enable + cadence + live preview */}
           <div className="space-y-2 border-t border-border pt-3">

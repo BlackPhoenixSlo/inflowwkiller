@@ -132,6 +132,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if reason:
             await _clear_pending(account_id, fan_id)
             return {"sent": 0, "skipped": reason}
+        # Include-only audience at-fire recheck: the job was enqueued with a
+        # delay, so the fence may have changed since the producer's tick.
+        import audience_include as _audiences
+        allowed, why = await _audiences.check_at_fire(
+            account_id, fan_id, kind="nudge_online_fire", payload=payload)
+        if not allowed:
+            await _clear_pending(account_id, fan_id)
+            return {"sent": 0, "skipped": f"audience:{why}"}
 
     # 2. Lease (the only place nudge takes one), send, bump, release.
     if not await ax.acquire_fan_lease(account_id, fan_id, "nudge_online_fire"):
@@ -155,7 +163,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # A refused ATTACHMENT still delivers the text. This sender clears
             # its latch and never retries, so losing the send to one dead vault
             # id loses the nudge outright.
-            outcome = await send_dropping_bad_media(client, fan_id, text, media, log=log)
+            outcome = await send_dropping_bad_media(client, fan_id, text, media,
+                                                    log=log, send_purpose="gated")
             result = outcome.result
             msg_id = result.get("id") if isinstance(result, dict) else None
             if msg_id:

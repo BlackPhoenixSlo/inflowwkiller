@@ -930,6 +930,7 @@ async def post_to_feed(account_id: str, ppv: dict, *, employee_id: int | None = 
         account_id,
         lambda: client.create_post(text=caption, media_files=media_ids,
                                    price=price, previews=previews),
+        send_purpose="not_fan_dm",   # feed post, not a fan DM
     )
     of_post_id = result.get("id") if isinstance(result, dict) else None
     if of_post_id is None:
@@ -1560,6 +1561,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     #    "default" price. This is how a PPV reaches her whole free-page list
     #    without scraping it. ─────────────────────────────────────────────────────
     broadcast = None
+    # Operator decision O3: the house broadcast FIRES FENCED under the include
+    # audience (send_mass_run attaches the AUTOFENCE — no revenue blackout).
+    # This per-account/per-rule toggle is the optional skip for operators who
+    # want enforce mode to silence the house blast entirely.
+    if broadcasting and payload.get("audience_skip_broadcast"):
+        import audience_include as _audiences
+        pol = await _audiences.automation_audience(account_id)
+        if pol.mode == "enforce":
+            broadcasting = False
+            results.append({"cell": "broadcast:all", "status": "skipped",
+                            "reason": "audience_skip_broadcast"})
     if broadcasting:
         known_ids = await _all_fan_ids(account_id)
         broadcast_payload = {

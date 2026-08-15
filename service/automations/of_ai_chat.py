@@ -70,7 +70,7 @@ from . import _language
 from . import _customs
 from . import _voice  # whose voice this account writes in (NULL → 'her')
 from . import _openers  # the gen_info opener pool (the deepen phase)
-from . import _pins  # his own pinned long-form message (reader + writer)
+# 🚫 no `_pins` import — pins unwired 2026-08-15, ruling in `_pins.py`'s docstring.
 from . import rhythm  # tz_offset_for — the prompt clock (creator-local time)
 from attribution import write_outbound_attribution
 from automation_registry import register
@@ -1167,14 +1167,12 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # his question would fire the required-answer line on a turn nobody asked about.
     day_user = day.user_block(
         f, (c.last_body or "") if c.last_dir == "in" else "")
-    # His own long-form message, pinned on the thread and read back here (_pins).
     # Same USER-message placement and the same reason as the claims block: per-fan
     # text in the system prompt fragments the shared cached prefix. "" for every
     # fan with no pins, which is nearly all of them.
     user = (
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
         f"{claims_block}"
-        f"{_pins.pins_block(f)}"
         f"{day_user}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Reply to his last message now, in the STYLE FOR THIS MESSAGE above."
@@ -1241,12 +1239,16 @@ def _extract_messages(f: Fan, c: _Candidate,
     current["likes_ass"] = bool(f.likes_ass)
     history = c.messages[-history_tail:]
     convo = "\n".join(f"{'FAN' if d == 'in' else 'YOU'}: {b}" for d, b in history if b)
-    user = (f"CURRENT (ground truth — keep unless he says something new):\n"
+    # ACCOUNT-CONSTANT TEXT FIRST. `persona` is the same string for every fan on the
+    # account; `current` is per-fan JSON. With the per-fan half leading, nothing after
+    # it can be prefix-cached and the persona was re-billed at full price on every
+    # extract — on DeepSeek a static prefix is close to free, so this ordering is the
+    # whole saving. Canon still precedes the chat, which is what lets `her_claims` be
+    # deviations-only: without it every line she says about herself looks novel and
+    # the ledger fills with noise canon already answers.
+    user = (f"HER PROFILE (what is already true of her everywhere):\n{persona}\n\n"
+            f"CURRENT (ground truth — keep unless he says something new):\n"
             f"{json.dumps(current)}\n\n"
-            # Canon, so her_claims can be deviations-only. Without it every line
-            # she says about herself looks novel and the ledger fills with noise
-            # that canon already answers.
-            f"HER PROFILE (what is already true of her everywhere):\n{persona}\n\n"
             f"Chat (oldest→newest):\n{convo}\n\n"
             "Update the JSON with anything new he stated, and list any claim she "
             "made about herself that her profile does not already cover.")
@@ -1254,8 +1256,12 @@ def _extract_messages(f: Fan, c: _Candidate,
             {"role": "user", "content": user}]
 
 
-def _extract_worthwhile(f: Fan, c: _Candidate) -> bool:
+def _extract_worthwhile(f: Fan, c: _Candidate, *, claims_only: bool = False) -> bool:
     """Is a fact-extract call worth its money for this fan right now?
+
+    `claims_only=True` drops the fill-empty motive and keeps ONLY the TIER-B
+    branch — used by the CLOSER, which is not the profiling engine. See the
+    `claims_only` note in `_extract_and_fill`.
 
     The extract is FILL-EMPTY-ONLY (`_extract_and_fill` never overwrites a field
     that already carries signal), so once every target it can write is populated a
@@ -1266,11 +1272,12 @@ def _extract_worthwhile(f: Fan, c: _Candidate) -> bool:
     extract only fires on the early turns when it can actually learn something. (The
     only thing forgone at saturation is a late likes_boobs/likes_ass flip — a minor
     body-focus hint, not worth a full call every turn.)"""
-    for col in _EXTRACT_FIELDS:
-        if not nonempty(getattr(f, col, None)):
+    if not claims_only:
+        for col in _EXTRACT_FIELDS:
+            if not nonempty(getattr(f, col, None)):
+                return True
+        if not nonempty(getattr(f, "recent_events", None)):
             return True
-    if not nonempty(getattr(f, "recent_events", None)):
-        return True
     # TIER B cost gate. A saturated profile is exactly the deep-thread moment her
     # own claims start mattering, so the ledger cannot simply ride the fan-side
     # gate — but re-enabling the call wholesale would hand back the ~43%-of-lane
@@ -1313,16 +1320,31 @@ async def _extract_and_fill(account_id: str, fan_id: int, f: Fan,
                             c: _Candidate, model: str,
                             history_tail: int = _EXTRACT_HISTORY_TAIL,
                             purpose: str = _PURPOSE,
-                            persona: str = "") -> Fan:
+                            persona: str = "",
+                            claims_only: bool = False) -> Fan:
     """Extract his stated facts and persist any NEW ones onto the Fan row (fill
     empty fields only — never overwrite/guess). Updates `f` in place so this tick's
     reply + question list see the fresh facts. Raises LLMCapExceeded (caller stops);
     any other failure is swallowed and leaves `f` unchanged. `purpose` tags the
-    grok_calls audit row — ai_chatter passes its own so cost audits stay honest."""
+    grok_calls audit row — ai_chatter passes its own so cost audits stay honest.
+
+    `claims_only=True` — THE CLOSER'S MODE, and the reason ai_chatter costs one LLM
+    call per answer instead of two. PROFILING IS NOT THE CLOSER'S JOB: of_ai_chat is
+    the engine whose whole purpose is to chat a fan and fill his columns, and
+    gen_info refreshes them on its own schedule. ai_chatter filling them too meant a
+    second full-prompt call on every reply to any fan with one empty field — the
+    modal second call on a live roster.
+
+    What it must NOT drop is TIER B: `her_claims` (the persona-claims ledger) and
+    the two body-focus flags have NO other writer in the service — not gen_info's
+    `_FACT_FIELDS`, not anywhere — and `content_resolver.profile_terms` reads those
+    flags to rank the media a substitute PPV is priced from. So the TIER-B branch
+    still fires, on the ~5% of turns where SHE demonstrably said something about
+    herself, and the ledger stays alive at a twentieth of the spend."""
     # Skip the call entirely when the profile is already saturated — a fill-empty
     # -only extract can't add anything, so this is the reply's second LLM call
     # eliminated in steady state (see _extract_worthwhile).
-    if not _extract_worthwhile(f, c):
+    if not _extract_worthwhile(f, c, claims_only=claims_only):
         return f
     res = await llm_client.chat(
         model=model, messages=_extract_messages(f, c, history_tail, persona),
@@ -1662,7 +1684,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # always shipped.
     voice_blocks = await load_voice_blocks(account_id)
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
-    pins_on, pins_write = await _pins.load_flags(account_id)  # both default OFF
     max_bubbles = STYLE_MAX_BUBBLES if style_on else 2
     # Content-ask tip-ask: when a fan asks to SEE content, swap the gather question
     # for a natural "tip me $X" ask (the tip_reward automation delivers once he
@@ -1693,6 +1714,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)  # W7 cross-tick ownership
     promo_spam = await load_promo_spam_ids(account_id)
     by_fan = await _gather(account_id, only_fan_ids or None)
+
+    # ── Include-only audience: the SAME snapshot ai_chatter intersects, applied
+    # before the ownership partition below — `ai_owns` and `content_payers` are
+    # both computed FROM by_fan, so the partition shrinks together instead of
+    # reallocating fenced fans to the other engine. force_ids = operator-manual
+    # targeting, exempt (named in the exemption register).
+    import audience_include as _audiences
+    audience_stats: dict = {}
+    _kept = set(await _audiences.filter_candidates(
+        account_id, list(by_fan), kind="of_ai_chat",
+        stats=audience_stats, extra_allowed_ids=force_ids))
+    by_fan = {fid: c for fid, c in by_fan.items() if fid in _kept}
 
     # ai_chatter owns only the fans it will answer (closer mode: open offer / buying
     # intent; payers-only: men who have bought content) — drop exactly those and
@@ -2168,10 +2201,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                            profiles.get(fan_id), opener.slot)
             # Keep stored info current: refresh the profile when the gate says stale.
             await _maybe_refresh_profile(account_id, fan_id, c.fan_msg_n, now, f)
-            # Should his last message be pinned for later re-reading? Nearly always
-            # no, and the "no" costs one length check — see _pins' cost ladder.
-            await _pins.consider(account_id, f, c.last_body, client, lang=fan_lang,
-                                 enabled=pins_on, write=pins_write)
             sent += 1
             # We just replied → clear the unread badge. A mark-read failure must
             # never break the (already-persisted) send.
@@ -2203,6 +2232,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     return {
         "candidates": len(candidates),
+        **audience_stats,
         "replies_sent": sent,
         "stickers_sent": stickers_sent,
         **lane.stats,

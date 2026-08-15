@@ -414,6 +414,16 @@ def _validate_cfg(cfg: dict) -> dict:
         out["autoreply_sell_on_ask"] = truthy(cfg["autoreply_sell_on_ask"])
     if "of_ai_chat_sell_on_ask" in cfg:
         out["of_ai_chat_sell_on_ask"] = truthy(cfg["of_ai_chat_sell_on_ask"])
+    # One LLM call per answer in the closer (ships ON — see ai_chatter._DEFAULTS).
+    # Named here or the validator drops it silently, like every other key.
+    if "closer_extract_claims_only" in cfg:
+        out["closer_extract_claims_only"] = truthy(cfg["closer_extract_claims_only"])
+    # Her canon only when he asks (ships ON — see ai_chatter._DEFAULTS).
+    if "persona_facts_on_ask_only" in cfg:
+        out["persona_facts_on_ask_only"] = truthy(cfg["persona_facts_on_ask_only"])
+    # Catalogue selling in the PROMPT (ships OFF — the vault ask lane sells instead).
+    if "prompt_sell_catalog" in cfg:
+        out["prompt_sell_catalog"] = truthy(cfg["prompt_sell_catalog"])
     # The model's own "he asked to buy" line. SHADOW while it ships — it changes
     # the prompt and logs whether the model agreed with the regex; the regex still
     # decides. Named here or the validator drops it silently, as it has twice.

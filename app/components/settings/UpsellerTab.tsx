@@ -394,6 +394,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
               onChange={(e) => set({ autoreply_sell_on_ask: e.target.checked })} />
             <span className="text-sm">
               <span className="font-medium">Auto Convo may sell it</span>
+              <span className="text-[11px] text-fg-dim"> · on by default</span>
               <span className="block max-md:hidden text-fg-dim text-xs">
                 Auto Convo picks up fans nobody answered in time. It has never been
                 able to sell, so on an account with no AI Chatter a direct ask has had

@@ -236,6 +236,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         lambda: client.create_post(
             text=text, media_files=media_files, price=price, previews=previews,
         ),
+        send_purpose="not_fan_dm",   # profile post, not a fan DM
     )
     of_post_id = result.get("id") if isinstance(result, dict) else None
     if of_post_id is None:

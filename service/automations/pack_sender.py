@@ -667,6 +667,18 @@ async def _deliver(client, plan: PackPlan, *, voice_line: str | None,
                     account_id, fan_id, "; ".join(bad))
         return {"status": "refused", "reason": REFUSE_AUDIT, "detail": "; ".join(bad)}
 
+    # Include-only audience, at the single wire point every pack path shares.
+    # Belt-and-suspenders: the chat engines are already fenced at their candidate
+    # seams, so in enforce mode a fenced fan should never reach here — but this
+    # library is callable from any engine, and the manifest classifies it gated.
+    import audience_include as _audiences
+    _allowed, _why = await _audiences.audience_allows_fan(
+        account_id, fan_id, kind="pack_sender")
+    if not _allowed:
+        log.warning("pack send audience-blocked account=%s fan=%s (%s)",
+                    account_id, fan_id, _why)
+        return {"status": "refused", "reason": f"audience:{_why}"}
+
     kwargs: dict = {"price": plan.price_cents / 100, "locked_text": False,
                     "media_files": list(plan.media)}
     if plan.previews:

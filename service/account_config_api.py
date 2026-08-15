@@ -22,21 +22,24 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import audience_include
 import llm_client
 from auth import assert_account_owned
 from automations import rhythm  # tz_offset_for — the ONE clock resolver
 from automations._persona import PERSONA_FACT_FIELDS, PERSONA_FACTS_OPERATOR_ONLY
 from brain_defaults import brain_defaults
 from db.engine import get_session
-from db.models import AccountAiConfig
+from db.models import (AccountAiConfig, AudienceEnrollment, AutomationRule,
+                       List as ListModel)
 from geo_timezones import resolve_timezone_for_place
 from llm_client import MODELS, LLMCapExceeded
+from sqlalchemy import func as sa_func, select
 
 log = logging.getLogger("of-relay.account_config_api")
 
@@ -155,7 +158,64 @@ def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
         "model_by_purpose": _parse_obj(row.model_by_purpose) if row else {},
         "time_activities": _parse_obj(row.time_activities_json) if row else {},
         "time_images": _parse_obj(row.time_images_json) if row else {},
+        # Include-only automation audience. audience_of_list_id is resolved by
+        # the handlers (it lives on the local mirror row, not this row).
+        "audience_mode": audience_include.norm_audience_mode(
+            getattr(row, "audience_mode", None) if row else None),
+        "audience_list_id": getattr(row, "audience_list_id", None) if row else None,
+        "audience_auto_add": bool(getattr(row, "audience_auto_add", None)) if row else False,
     }
+
+
+async def _audience_status(account_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    """The Brain Audience section's status block: list identity, mirror health,
+    ledger counts, the visible 'outside the fence' queue — every number with its
+    denominator, so shadow week is readable before enforce is a click."""
+    list_id = cfg.get("audience_list_id")
+    out: dict[str, Any] = {
+        "mode": cfg.get("audience_mode") or "off",
+        "auto_add": bool(cfg.get("audience_auto_add")),
+        "list_id": list_id,
+        "of_list_id": None,
+        "list_name": None,
+        "member_count": 0,
+        "synced_at": None,
+        "snapshot_age_s": None,
+        "truncated": False,
+        "paused": False,
+        "baseline_ready": False,
+        "pending_first_sync": False,
+        "healthy": True,
+        "effective_mode": cfg.get("audience_mode") or "off",
+        "ledger": {},
+    }
+    if out["mode"] == "off":
+        return out
+    pol = await audience_include.automation_audience(account_id)
+    out.update(effective_mode=pol.mode, healthy=pol.healthy, paused=pol.paused,
+               pending_first_sync=(pol.reason == "pending_first_sync"),
+               reason=pol.reason, member_count=len(pol.member_ids),
+               of_list_id=pol.of_list_id)
+    async with get_session() as s:
+        row = await s.get(ListModel, int(list_id)) if list_id is not None else None
+        if row is not None and row.account_id == str(account_id):
+            meta = audience_include._parse_sync_meta(row.sync_meta_json)
+            out.update(list_name=row.name,
+                       synced_at=row.synced_at.isoformat() if row.synced_at else None,
+                       truncated=bool(meta.get("truncated")),
+                       baseline_ready=bool(meta.get("baseline_ready")))
+            if row.synced_at is not None:
+                out["snapshot_age_s"] = max(
+                    0, int((datetime.utcnow() - row.synced_at).total_seconds()))
+        counts = (await s.execute(
+            select(AudienceEnrollment.status, sa_func.count())
+            .where(AudienceEnrollment.account_id == str(account_id))
+            .group_by(AudienceEnrollment.status)
+        )).all()
+    out["ledger"] = {str(st): int(n) for st, n in counts}
+    # The named, visible "outside the fence" queue (one-click admit).
+    out["outside_queue"] = int(out["ledger"].get("rejected_not_new", 0))
+    return out
 
 
 @router.get("/admin/account-config")
@@ -164,6 +224,10 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
     async with get_session() as s:
         row = await s.get(AccountAiConfig, account_id)
     cfg = _serialize(row)
+    audience = await _audience_status(account_id, cfg)
+    # The picker's stored selection rides the config so the whole-object PUT
+    # round-trips it (BrainConfig must carry these or a Save drops them).
+    cfg["audience_of_list_id"] = audience.get("of_list_id")
     # Built once per lane, and the SINGULAR fields below are indexed out of these
     # rather than recomputed. Two calls that "obviously" agree are still two
     # answers to one question: nothing forced `defaults == defaults_by_voice[voice]`,
@@ -211,12 +275,101 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         # lane relabels "Why she started OF" one Save too late — after the operator
         # has already filled the box under the wrong prompt.
         "persona_fact_fields_by_voice": canon,
+        # Include-only audience status (mirror health, ledger, outside queue).
+        "audience": audience,
     }
 
 
 class _ConfigBody(BaseModel):
     account_id: str
     config: dict
+
+
+class _AudiencePut(NamedTuple):
+    """The PUT's resolved audience branches: which keys were SENT (absent ==
+    unchanged, exactly like `voice`), the validated values, and the resulting
+    effective state used for the enable-flow decision."""
+    mode_sent: bool
+    mode: str | None           # validated, only meaningful when mode_sent
+    list_sent: bool
+    list_id: int | None        # FINAL local lists.id (prev when not sent)
+    auto_sent: bool
+    auto: bool | None
+    prev_mode: str
+    prev_list: int | None
+    final_mode: str
+
+
+async def _audience_put_branches(cfg: dict, account_id: str) -> _AudiencePut:
+    """Validate the include-only audience keys of a brain PUT and find-or-create
+    the local mirror row. The picker sends the OF folder id; the server owns the
+    mirror (kind='automation_include'), and the stored column is the LOCAL
+    lists.id. Shadow is mandatory before enforce; direct-to-enforce takes an
+    explicit, logged override (the legal-fence case) — never a plain click."""
+    mode_raw = cfg.get("audience_mode")
+    mode_sent = "audience_mode" in cfg and mode_raw not in (None, "")
+    mode: str | None = None
+    if mode_sent:
+        mode = str(mode_raw).strip().lower()
+        if mode not in audience_include.AUDIENCE_MODES:
+            raise HTTPException(
+                422, f"audience_mode {mode_raw!r} is not one of off/shadow/enforce")
+    list_sent = "audience_of_list_id" in cfg
+    of_list_id: int | None = None
+    if list_sent and cfg.get("audience_of_list_id") not in (None, "", 0):
+        try:
+            of_list_id = int(cfg.get("audience_of_list_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(422, "audience_of_list_id must be an OF list id")
+    auto_sent = "audience_auto_add" in cfg
+    auto = bool(cfg.get("audience_auto_add")) if auto_sent else None
+
+    async with get_session() as s:
+        prev = await s.get(AccountAiConfig, account_id)
+    prev_mode = audience_include.norm_audience_mode(
+        getattr(prev, "audience_mode", None) if prev else None)
+    prev_list = getattr(prev, "audience_list_id", None) if prev else None
+    final_mode = mode if mode_sent else prev_mode
+
+    if mode_sent and mode == "enforce" and prev_mode not in ("shadow", "enforce"):
+        if not cfg.get("audience_enforce_override"):
+            raise HTTPException(
+                422, "audience_mode: shadow before enforce — run shadow first "
+                     "(or send audience_enforce_override=true; it is logged)")
+        log.warning("audience DIRECT-TO-ENFORCE override account=%s (no shadow week)",
+                    account_id)
+
+    list_id = prev_list
+    if list_sent:
+        if of_list_id is None:
+            list_id = None
+        else:
+            name = _clean_text(cfg.get("audience_list_name"),
+                               "audience_list_name") or f"OF list {of_list_id}"
+            async with get_session() as s:
+                mirror = (await s.execute(
+                    select(ListModel).where(
+                        ListModel.account_id == str(account_id),
+                        ListModel.kind == audience_include.AUDIENCE_INCLUDE_KIND,
+                        ListModel.of_list_id == of_list_id,
+                    )
+                )).scalars().first()
+                if mirror is None:
+                    mirror = ListModel(
+                        account_id=str(account_id), of_list_id=of_list_id,
+                        name=name, kind=audience_include.AUDIENCE_INCLUDE_KIND,
+                        is_system=True)
+                    s.add(mirror)
+                    await s.flush()
+                elif name and mirror.name != name:
+                    mirror.name = name
+                list_id = int(mirror.id)
+    if final_mode != "off" and list_id is None:
+        raise HTTPException(
+            422, "audience_mode needs a folder — pick one (audience_of_list_id) "
+                 "before leaving off")
+    return _AudiencePut(mode_sent, mode, list_sent, list_id, auto_sent, auto,
+                        prev_mode, prev_list, final_mode)
 
 
 @router.put("/admin/account-config")
@@ -280,6 +433,8 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     # possibly mean here is the default lane — which is the one outcome that must
     # never happen by accident. Clearing a male account back to female stays
     # possible and stays EXPLICIT: post the literal "her".
+    aud = await _audience_put_branches(cfg, body.account_id)
+
     voice_raw = cfg.get("voice")
     voice = parse_voice(voice_raw)
     voice_sent = "voice" in cfg and voice_raw not in (None, "")
@@ -375,6 +530,14 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     # NULL == "her" keeps the column sparse.
     if voice_sent:
         vals["voice"] = voice if voice == VOICE_HIM else None
+    # Audience columns join the upsert only when their key was SENT (absent ==
+    # unchanged — see the branches above). NULL == off keeps the columns sparse.
+    if aud.mode_sent:
+        vals["audience_mode"] = None if aud.mode == "off" else aud.mode
+    if aud.list_sent:
+        vals["audience_list_id"] = aud.list_id
+    if aud.auto_sent:
+        vals["audience_auto_add"] = True if aud.auto else None
     # nudge_config_json is intentionally absent → preserved on existing rows.
     set_ = {k: v for k, v in vals.items() if k != "account_id"}
     async with get_session() as s:
@@ -384,9 +547,142 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
             .on_conflict_do_update(index_elements=["account_id"], set_=set_)
         )
         row = await s.get(AccountAiConfig, body.account_id)
+
+    # Enable flow: turning the audience on (or repointing the folder) find-or-
+    # creates the audience_sync rule and enqueues an IMMEDIATE first sync — the
+    # resolver keeps enforce sitting in shadow until that sync lands.
+    if aud.final_mode != "off" and aud.list_id is not None and (
+            aud.prev_mode == "off"
+            or (aud.list_sent and aud.list_id != aud.prev_list)):
+        await _ensure_audience_sync_rule(body.account_id)
+
     log.info("account_config_saved account=%s model=%s slots=%d imgs=%d",
              body.account_id, model, len(acts), len(imgs))
-    return {"account_id": body.account_id, "config": _serialize(row)}
+    out_cfg = _serialize(row)
+    audience = await _audience_status(body.account_id, out_cfg)
+    out_cfg["audience_of_list_id"] = audience.get("of_list_id")
+    return {"account_id": body.account_id, "config": out_cfg,
+            "audience": audience}
+
+
+async def _ensure_audience_sync_rule(account_id: str) -> None:
+    """Find-or-create the enabled audience_sync rule (automation_rules has no
+    unique (account, kind) — mirror nudge_config_api._ensure_rule) and enqueue
+    an immediate first sync so the mirror exists within seconds of enabling."""
+    now = datetime.utcnow()
+    async with get_session() as s:
+        rule = (await s.execute(
+            select(AutomationRule).where(
+                AutomationRule.account_id == str(account_id),
+                AutomationRule.kind == "audience_sync",
+            ).order_by(AutomationRule.id)
+        )).scalars().first()
+        if rule is None:
+            s.add(AutomationRule(
+                account_id=str(account_id), name="Audience folder sync",
+                kind="audience_sync",
+                trigger_json=json.dumps({"every_seconds": 900}),
+                steps_json=json.dumps({}), is_enabled=True, created_at=now))
+        elif not rule.is_enabled:
+            rule.is_enabled = True
+    from automation_executor import enqueue_job, wake_supervisor  # local: load cycle
+    await enqueue_job(str(account_id), "audience_sync", payload={})
+    wake_supervisor()
+
+
+class _AudiencePauseBody(BaseModel):
+    account_id: str
+    paused: bool
+
+
+@router.post("/admin/audience/pause")
+async def audience_pause(body: _AudiencePauseBody = Body(...)) -> dict[str, Any]:
+    """The kill switch: PAUSE audience-governed automation (gated engines hold,
+    enforce-mode blasts halt) — it never silently unscopes to the full roster.
+    Runtime state on the mirror row, not in a validated config blob."""
+    assert_account_owned(body.account_id)
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, body.account_id)
+        list_id = getattr(cfg, "audience_list_id", None) if cfg else None
+        row = await s.get(ListModel, int(list_id)) if list_id is not None else None
+        if row is None or row.account_id != str(body.account_id):
+            raise HTTPException(404, "no audience folder configured for this account")
+        meta = audience_include._parse_sync_meta(row.sync_meta_json)
+        meta["paused"] = bool(body.paused)
+        row.sync_meta_json = json.dumps(meta)
+    log.warning("audience kill-switch account=%s paused=%s",
+                body.account_id, body.paused)
+    return {"account_id": body.account_id, "paused": bool(body.paused)}
+
+
+class _AudienceBackfillBody(BaseModel):
+    account_id: str
+    confirm: bool = False
+
+
+@router.post("/admin/audience/backfill")
+async def audience_backfill(body: _AudienceBackfillBody = Body(...)) -> dict[str, Any]:
+    """Operator decision O4: existing-fan backfill is a COUNT-PREVIEWED button,
+    never automatic. confirm=false returns the count; confirm=true flips every
+    `rejected_not_new` ledger row to pending_add (next audience_sync issues the
+    OF adds with its bounded retry machinery). `removed_after_confirmed` rows
+    are operator removals — FINAL, never backfilled."""
+    assert_account_owned(body.account_id)
+    from automations.audience_sync import ST_PENDING, ST_REJECTED
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(AudienceEnrollment).where(
+                AudienceEnrollment.account_id == str(body.account_id),
+                AudienceEnrollment.status == ST_REJECTED,
+            )
+        )).scalars().all()
+        if not body.confirm:
+            return {"account_id": body.account_id, "would_admit": len(rows),
+                    "confirmed": False}
+        now = datetime.utcnow()
+        for r in rows:
+            r.status = ST_PENDING
+            r.reason = "operator_backfill"
+            r.attempts = 0
+            r.next_retry_at = now
+            r.updated_at = now
+    log.info("audience backfill account=%s admitted=%d (pending OF adds via sync)",
+             body.account_id, len(rows))
+    return {"account_id": body.account_id, "admitted": len(rows), "confirmed": True}
+
+
+class _AudienceAdmitBody(BaseModel):
+    account_id: str
+    fan_id: int
+
+
+@router.post("/admin/audience/admit")
+async def audience_admit(body: _AudienceAdmitBody = Body(...)) -> dict[str, Any]:
+    """One-click admit from the visible 'outside the fence' queue: OF add first
+    (confirm-then-local — the next sync confirms membership and mirrors it),
+    ledger moves to pending_add with an operator reason."""
+    assert_account_owned(body.account_id)
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, body.account_id)
+        list_id = getattr(cfg, "audience_list_id", None) if cfg else None
+        row = await s.get(ListModel, int(list_id)) if list_id is not None else None
+    if row is None or row.account_id != str(body.account_id) or not row.of_list_id:
+        raise HTTPException(404, "no audience folder configured for this account")
+    import asyncio as _asyncio
+
+    import automation_executor as ax
+    from automations.audience_sync import ST_PENDING, _upsert_ledger
+    client = await _asyncio.to_thread(ax._make_client, body.account_id)
+    try:
+        await _asyncio.to_thread(
+            client.add_user_to_list, int(row.of_list_id), int(body.fan_id))
+    except Exception as e:  # noqa: BLE001 — pending row retries on the next sync
+        log.warning("audience admit OF add failed account=%s fan=%s (%s)",
+                    body.account_id, body.fan_id, str(e).splitlines()[0][:80])
+    await _upsert_ledger(body.account_id, int(body.fan_id), status=ST_PENDING,
+                         reason="operator_admit", attempts=1)
+    return {"account_id": body.account_id, "fan_id": int(body.fan_id),
+            "status": ST_PENDING}
 
 
 # ── 🪄 Enrich: fill the creator canon from what we already know ────────

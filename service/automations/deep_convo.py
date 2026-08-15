@@ -79,7 +79,7 @@ import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from ._persona import compose_persona
 from . import _language
-from . import _pins  # his own pinned long-form message (reader only)
+# 🚫 no `_pins` import — pins unwired 2026-08-15, ruling in `_pins.py`'s docstring.
 from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
@@ -354,10 +354,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         "code blocks, curly braces, or any metadata. Just text him back."
         f"{_language.output_language_directive(lang)}"
     )
-    # His own long-form message, pinned on the thread and read back here (_pins).
     user = (
         f"What you know about him:\n{facts_block}\n\n"
-        f"{_pins.pins_block(f)}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         f"Don't apologize. Generate a brief, 1 verb max, casual {v.reply_register} "
         "that flirts and builds on his last message. Reply now."
@@ -532,6 +530,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     profiles, skipped_no_qtease = await _load_profiles(account_id)  # both present
     if only_fan_ids:
         profiles = {fid: v for fid, v in profiles.items() if fid in only_fan_ids}
+
+    # Include-only audience — before the ai_chatter ownership handshake below
+    # (it takes set(profiles), so the partition shrinks with the fence) and
+    # before any LLM lead-in. force_ids = operator-manual targeting, exempt.
+    import audience_include as _audiences
+    audience_stats: dict = {}
+    _kept = set(await _audiences.filter_candidates(
+        account_id, list(profiles), kind="deep_convo",
+        stats=audience_stats, extra_allowed_ids=force_ids))
+    profiles = {fid: v for fid, v in profiles.items() if fid in _kept}
 
     now = datetime.utcnow()
     skipped_listed = 0          # blacklist / paused
@@ -817,6 +825,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     return {
         "profiles": len(profiles),
         "actionable": len(actionable),
+        **audience_stats,
         "q_sent": q_sent_n,
         "replies_advanced": advanced,
         "completed": completed,
@@ -909,8 +918,7 @@ def _leadin_messages(persona: str, f: Fan, c: _Candidate,
         f"{NONNATIVE_REGISTER if nonnative_on else ''}"
         f"{_language.output_language_directive(lang)}"
     )
-    user = (f"{_pins.pins_block(f)}"
-            f"Recent conversation (oldest→newest):\n{convo}\n\n"
+    user = (f"Recent conversation (oldest→newest):\n{convo}\n\n"
             "Answer his last message in one short sentence.")
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 

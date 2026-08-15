@@ -124,13 +124,29 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 "excluded_lists": len(excluded_lists)}
 
     from audiences import broadcast_lock, ensure_exclude_list, stamp_broadcast_touch
+    import audience_include as _audiences
     client = await asyncio.to_thread(ax._make_client, account_id)
 
     # Serialize sync+send per account, and mirror the guard set into the
     # Auto_Exclude OF list (OF ignores per-user `excludedUsers` on broadcasts —
     # verified live 2026-06-12). Fail CLOSED: blasting without the guard is the
     # over-send bug itself.
+    audience_stats: dict = {}
     async with broadcast_lock(account_id):
+        # Include-only audience: the blast keeps its original online-fans
+        # audience and subtracts the AUTOFENCE list; unhealthy fence in enforce
+        # mode HALTS the blast loudly — never an unfenced send.
+        try:
+            fence_ids = await _audiences.audience_fence_for_broadcast(
+                account_id, client=client, stats=audience_stats)
+        except _audiences.AudienceHalt as e:
+            log.error("online_blast: AUTOFENCE unhealthy account=%s (%s) — "
+                      "blast halted", account_id, e.reason)
+            return {"sent": 0, "skipped": f"audience_halt:{e.reason}",
+                    "slot": slot, **audience_stats}
+        for _lid in fence_ids:
+            if _lid not in excluded_lists:
+                excluded_lists = [*excluded_lists, _lid]
         if excluded:
             try:
                 auto_lid = await ensure_exclude_list(
@@ -208,4 +224,5 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "excluded_lists": len(excluded_lists),
         "guard_stamped": stamped,
         "unsend_job": unsend_job,
+        **audience_stats,
     }

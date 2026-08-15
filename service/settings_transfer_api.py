@@ -85,7 +85,12 @@ _BACKUP_KEEP = 20
 # the day that column was added. (No count in this comment on purpose: the old
 # "17" had drifted to 21 unnoticed, which is exactly the rot the test prevents.)
 CONFIG_SCALAR_COLS = ("persona", "welcome_rules", "utc_offset", "timezone", "location",
-                      "language", "voice", "daily_cost_cap_cents", "model")
+                      "language", "voice", "daily_cost_cap_cents", "model",
+                      # Include-only audience. Exported for a same-account
+                      # restore; a CLONE strips the list id and forces the mode
+                      # off (_sanitize_config_clone) — a local lists.id on
+                      # another account is a cross-account bug.
+                      "audience_mode", "audience_list_id", "audience_auto_add")
 CONFIG_JSON_COLS = ("persona_facts_json",
                     # TODAY's generated day. Exported so a RESTORE of the same
                     # account comes back whole, and dropped on CLONE — see
@@ -474,6 +479,17 @@ def _sanitize_config_clone(cfg: dict, rep: _Report) -> dict:
     if cfg.get("time_images_json"):
         rep.media_stripped.append(_path_str(ti_path))
     cfg["time_images_json"] = {} if cfg.get("time_images_json") is not None else None
+
+    # Include-only audience: audience_list_id is a LOCAL lists.id and the folder
+    # it mirrors belongs to the SOURCE account — on another account it is a
+    # cross-account bug. Strip the id, force the mode off and auto-add off; the
+    # target operator picks their own folder and re-runs shadow before enforce.
+    for _k in ("audience_list_id", "audience_mode", "audience_auto_add"):
+        _p = base + (_k,)
+        rep.visited.add(_p)
+        if cfg.get(_k):
+            rep.identity_stripped.append(_path_str(_p))
+        cfg[_k] = None
 
     # nudge: slots.*.*.image are vault ids; nudge_line_image/info_line_image are
     # BOOLEANS and stay. enabled forced off below.

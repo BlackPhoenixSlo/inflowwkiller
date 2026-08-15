@@ -483,14 +483,23 @@ def _write_gate_lock(account_id: str) -> asyncio.Lock:
 
 
 async def of_write_paced(account_id, fn, *, min_gap_s: float = _OF_WRITE_GAP_S,
-                         tries: int = 2, pause_s: float = 11.0):
+                         tries: int = 2, pause_s: float = 11.0,
+                         send_purpose: str | None = None):
     """SPACE this OF write ≥ `min_gap_s` after the previous one for this account
     (proactive — so we rarely trip the limit at all), then run it through the
     reactive async retry as a backstop.
 
+    `send_purpose` is the audience-coverage transport assert: every automation
+    write through this seam declares gated / fenced / manual / not_fan_dm /
+    exempt:<reason>. Untagged raises under the test harness and logs loudly in
+    prod — a future sender that dodges the classification manifest still trips
+    this wire (audience_include.audit_send_purpose).
+
     The spacing wait is `asyncio.sleep`: it yields the event loop, so during the
     wait the worker threads and the loop remain available for other work. If the
     account has been idle longer than the gap, there's no wait at all."""
+    import audience_include as _audiences
+    _audiences.audit_send_purpose(send_purpose, where="of_write_paced")
     aid = str(account_id)
     loop = asyncio.get_running_loop()
     async with _write_gate_lock(aid):
