@@ -26,6 +26,8 @@ import { Gift, FolderOpen, MessageCircle, Image as ImageIcon, Flame, HandCoins, 
 import { Button, Card } from "@/components/ui/primitives";
 import { SingleFolderRow, VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
+import { MediaThumb } from "@/components/settings/sellerShared";
+import { VaultPicker } from "@/components/chat/VaultPicker";
 import {
   useTipRewardConfig,
   useSaveTipRewardConfig,
@@ -109,7 +111,8 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
 
   // Item 42 — tip-request follow-up (nested tip_request config).
   const [trEnabled, setTrEnabled] = useState(false);
-  const [trMediaId, setTrMediaId] = useState<string>(""); // "" = unset
+  const [trMediaIds, setTrMediaIds] = useState<number[]>([]); // [] = unset
+  const [trPicker, setTrPicker] = useState(false);
   const [trCaption, setTrCaption] = useState("");
   const [trMinWait, setTrMinWait] = useState(2);
   const [trMaxAge, setTrMaxAge] = useState(48);
@@ -161,7 +164,9 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     );
     const tr = eff.tip_request ?? {};
     setTrEnabled(!!tr.enabled);
-    setTrMediaId(tr.media_id == null ? "" : String(tr.media_id));
+    // media_ids (the pool) wins; a legacy single media_id migrates into it here
+    // and is written back as media_ids on the next save.
+    setTrMediaIds(tr.media_ids?.length ? tr.media_ids : tr.media_id ? [tr.media_id] : []);
     setTrCaption(tr.caption ?? "");
     setTrMinWait(tr.min_wait_hours ?? 2);
     setTrMaxAge(tr.max_age_hours ?? 48);
@@ -252,10 +257,12 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
         folder: r.folder.trim(),
         price_cents: Math.max(0, Math.round(r.price * 100)),
       })),
-      // Item 42 — tip-request follow-up. media_id "" → null (stays disabled).
+      // Item 42 — tip-request follow-up. [] = no pool (stays disabled). The
+      // legacy media_id is deliberately not written back — the load above folded
+      // it into media_ids, so this save completes the migration.
       tip_request: {
         enabled: trEnabled,
-        media_id: trMediaId.trim() === "" ? null : Math.max(1, Math.round(Number(trMediaId) || 0)),
+        media_ids: trMediaIds,
         caption: trCaption.trim(),
         min_wait_hours: trMinWait,
         max_age_hours: trMaxAge,
@@ -903,7 +910,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       <Section
         icon={<HandCoins size={15} />}
         title="Ask a quiet mass-buyer for a tip"
-        subtitle="When a fan buys one of your mass PPVs and then doesn't reply, send them one free teaser image with a caption asking for a tip — to warm the chat back up. One global image for everyone."
+        subtitle="When a fan buys one of your mass PPVs and then doesn't reply, send them one free teaser image with a caption asking for a tip — to warm the chat back up. Pick as many teasers as you like — each fan gets ONE, at random."
         toggle={
           <Toggle
             checked={trEnabled}
@@ -916,24 +923,31 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       >
         {trEnabled && (
           <div className="space-y-4">
-            <label className="block space-y-1">
-              <div className="text-xs font-medium text-fg">Teaser image — vault media id</div>
-              <input
-                type="number"
-                min={1}
-                className={`${INPUT} w-56`}
-                placeholder="e.g. MEDIA_ID"
-                value={trMediaId}
-                onChange={(e) => {
-                  markDirty();
-                  setTrMediaId(e.target.value);
-                }}
-              />
-              <div className="text-[11px] text-fg-dim/70">
-                The one free image sent to every quiet mass-buyer. Blank = disabled
-                (nothing sends). Grab the id from a vault item.
+            <div className="space-y-1">
+              <div className="text-xs font-medium text-fg">Teaser images — from the vault</div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {trMediaIds.map((id) => (
+                  <MediaThumb
+                    key={id}
+                    id={id}
+                    accountId={accountId}
+                    size={48}
+                    onRemove={() => {
+                      markDirty();
+                      setTrMediaIds((ids) => ids.filter((x) => x !== id));
+                    }}
+                  />
+                ))}
+                <Button size="sm" variant="secondary" onClick={() => setTrPicker(true)}>
+                  <ImageIcon className="size-4" />
+                  {trMediaIds.length ? "Change selection" : "Pick from vault"}
+                </Button>
               </div>
-            </label>
+              <div className="text-[11px] text-fg-dim/70">
+                Every quiet mass-buyer gets ONE of these free, picked at random per
+                fan. None selected = disabled (nothing sends).
+              </div>
+            </div>
             <label className="block space-y-1">
               <div className="text-xs font-medium text-fg">Caption</div>
               <input
@@ -990,6 +1004,22 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
           </span>
         )}
       </div>
+
+      {/* Multi-select vault picker for the tip-request teaser pool. */}
+      {trPicker && (
+        <VaultPicker
+          open
+          onClose={() => setTrPicker(false)}
+          accountId={accountId}
+          fanId={null}
+          initialSelectedIds={trMediaIds}
+          onConfirm={(picked) => {
+            markDirty();
+            setTrMediaIds(picked.map((m) => m.id));
+            setTrPicker(false);
+          }}
+        />
+      )}
 
       {/* Vault folder picker for the active tier. */}
       {pickerTier !== null && (

@@ -508,17 +508,20 @@ def _sanitize_config_clone(cfg: dict, rep: _Report) -> dict:
                             rep.media_stripped.append(_path_str(kpath))
                         slot_v["image"] = []
 
-    # tip_reward: tip_request.media_id is a vault id; tiers[].folders are NAMES
-    # (portable — resolved per-account at send) and are kept, with a warning.
+    # tip_reward: tip_request.media_id/media_ids are vault ids; tiers[].folders
+    # are NAMES (portable — resolved per-account at send) and are kept, with a warning.
     tr = cfg.get("tip_reward_config_json")
     if isinstance(tr, dict):
         treq = tr.get("tip_request")
-        if isinstance(treq, dict) and "media_id" in treq:
-            kpath = base + ("tip_reward_config_json", "tip_request", "media_id")
-            rep.visited.add(kpath)
-            if treq.get("media_id"):
-                rep.media_stripped.append(_path_str(kpath))
-            treq["media_id"] = None
+        if isinstance(treq, dict):
+            for key, cleared in (("media_id", None), ("media_ids", [])):
+                if key not in treq:
+                    continue
+                kpath = base + ("tip_reward_config_json", "tip_request", key)
+                rep.visited.add(kpath)
+                if treq.get(key):
+                    rep.media_stripped.append(_path_str(kpath))
+                treq[key] = cleared
         if any(t.get("folders") for t in (tr.get("tiers") or []) if isinstance(t, dict)):
             rep.warnings.append("tip_reward tiers reference vault FOLDER NAMES — "
                                 "verify those folders exist on this account")

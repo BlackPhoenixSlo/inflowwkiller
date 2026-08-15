@@ -71,6 +71,7 @@ _TIP_REQUEST_INT_KNOBS = {
     "guard_hours": (0, 8760),
     "limit": (1, 5000),
 }
+_MAX_TIP_REQUEST_MEDIA = 50    # teaser-pool size cap (mirrors folder/tier caps)
 
 
 def _validate_tip_request(t: Any) -> dict:
@@ -90,6 +91,20 @@ def _validate_tip_request(t: Any) -> dict:
                 out["media_id"] = int(mid)
             except (TypeError, ValueError):
                 raise HTTPException(422, "tip_request.media_id must be a number")
+    # Teaser POOL — each send picks one at random. None/[] = explicit clear.
+    if "media_ids" in t:
+        raw = t["media_ids"] if t["media_ids"] is not None else []
+        if not isinstance(raw, (list, tuple)):
+            raise HTTPException(422, "tip_request.media_ids must be a list")
+        ids: list[int] = []
+        for mid in raw[:_MAX_TIP_REQUEST_MEDIA]:
+            try:
+                mid = int(mid)
+            except (TypeError, ValueError):
+                raise HTTPException(422, "tip_request.media_ids must be numbers")
+            if mid > 0 and mid not in ids:
+                ids.append(mid)
+        out["media_ids"] = ids
     if "caption" in t:
         out["caption"] = str(t["caption"] or "")[:_CAPTION_MAX]
     for k, (lo, hi) in _TIP_REQUEST_INT_KNOBS.items():

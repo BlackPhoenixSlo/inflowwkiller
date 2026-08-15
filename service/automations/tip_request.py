@@ -3,9 +3,9 @@ teaser image + an ask-for-a-tip caption (backlog item 42).
 
 Trigger (SWEEP): a fan BOUGHT a mass PPV inside the window and has NOT replied
 since — the money's warm but the conversation went cold, so we send ONE free
-vault image (the account's GLOBAL DEFAULT tip-request teaser) with a caption
-that asks for a tip. No LLM, no per-fan generation: one configured image + one
-caption. The purchase signal is `messages.is_paid` (flipped by the ledger's
+vault image picked AT RANDOM from the account's configured teaser pool, with a
+caption that asks for a tip. No LLM, no per-fan generation: a configured image
+pool + one caption. The purchase signal is `messages.is_paid` (flipped by the ledger's
 `transaction_ingest._link_ppv_message` — the only reliable PPV-unlock signal);
 "mass" = the buy rode a broadcast (`mass_run_id IS NOT NULL`).
 
@@ -18,8 +18,8 @@ Design constraints (lane L7):
   • Per-fan send dedup is a cooldown stamp in `fans.custom_fields['_tip_request']`
     — namespaced, migration-free, mirroring tip_reward's `_image_reply` stamp.
 
-Ships DISABLED (enabled=false, no media_id). A creator enables it and picks the
-global tip-request image; a `tip_request` automation_rule with a cadence trigger
+Ships DISABLED (enabled=false, no media). A creator enables it and picks the
+tip-request image pool; a `tip_request` automation_rule with a cadence trigger
 fires this sweep.
 """
 from __future__ import annotations
@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from datetime import datetime, timedelta
 
 import automation_executor as ax        # _make_client seam
@@ -48,10 +49,12 @@ _AUTOMATION_KIND = "tip_request"
 _STATE_KEY = "_tip_request"    # fans.custom_fields per-fan cooldown stamp
 
 # Built-in defaults for any key the config omits. DISABLED + no media → a fresh
-# account never fires until a creator enables it and picks the teaser image.
+# account never fires until a creator enables it and picks the teaser image(s).
 _DEFAULTS = {
     "enabled": False,
-    "media_id": None,          # GLOBAL-default tip-request teaser (vault media id)
+    "media_ids": None,         # tip-request teaser POOL (vault media ids); each
+                               # send picks one at random
+    "media_id": None,          # legacy single-image key, folded into the pool
     "caption": "hope you loved that 🥺 wanna send me a lil tip so i keep going?",
     "min_wait_hours": 2,       # give the fan time to reply naturally first
     "max_age_hours": 48,       # don't chase a purchase older than this
@@ -79,10 +82,28 @@ async def _load_config(account_id: str) -> dict:
     return merged
 
 
+def _teaser_pool(cfg: dict) -> list[int]:
+    """The configured teaser images as a deduped positive-int list. The legacy
+    single `media_id` rides along as one more candidate, so configs saved before
+    the pool existed keep firing unchanged."""
+    raw = cfg.get("media_ids")
+    candidates = list(raw) if isinstance(raw, (list, tuple)) else []
+    candidates.append(cfg.get("media_id"))   # legacy single-image key
+    pool: list[int] = []
+    for mid in candidates:
+        try:
+            mid = int(mid)                   # int(None) → TypeError → skipped
+        except (TypeError, ValueError):
+            continue
+        if mid > 0 and mid not in pool:
+            pool.append(mid)
+    return pool
+
+
 async def is_enabled(account_id: str) -> bool:
-    """On AND a teaser image is set — both required to fire."""
+    """On AND at least one teaser image is set — both required to fire."""
     cfg = await _load_config(account_id)
-    return bool(cfg.get("enabled") and cfg.get("media_id"))
+    return bool(cfg.get("enabled") and _teaser_pool(cfg))
 
 
 def _cooled_down(fan: Fan | None, cooldown_hours: int) -> bool:
@@ -157,10 +178,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     only_fan = payload.get("fan_id")
 
     cfg = await _load_config(account_id)
-    media_id = cfg.get("media_id")
+    pool = _teaser_pool(cfg)
     if not cfg.get("enabled") and not force:
         return {"status": "skipped", "reason": "disabled"}
-    if not media_id:
+    if not pool:
         return {"status": "skipped", "reason": "no_media_id"}
 
     caption = apply_word_restriction(str(cfg.get("caption") or ""))
@@ -245,9 +266,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
         if client is None:
             client = await asyncio.to_thread(ax._make_client, account_id)
+        media_id = random.choice(pool)   # per-fan pick, so the pool rotates
         try:
             result = await asyncio.to_thread(
-                lambda fid=int(fid), mid=int(media_id):
+                lambda fid=int(fid), mid=media_id:
                     client.send_message(fid, caption, media_files=[mid], price=0)
             )
         except Exception:
