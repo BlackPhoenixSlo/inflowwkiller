@@ -411,14 +411,9 @@ def day_block(day_log: dict, hour: int | None, voice: object = None) -> str:
             "about you.")
     return (
         f"YOUR DAY SO FAR: {beat['text']}\n"
-        "That is WHAT HAPPENED, not a line to recite. Never quote it back word for "
-        "word — say it the way it would come out of your mouth this minute, and "
-        "differently every time it comes up. Lead with a different part of it, or "
-        "mention a detail from it that isn't written down. It is the ONE thing about "
-        "yourself you may bring up without being asked: half a sentence, in passing, "
-        "never a stage direction, never twice in one conversation, and never a "
-        "different version of what happened later today. NEVER invent an activity, "
-        "and never stretch one to match his."
+        "WHAT HAPPENED, not a script: never quote it, rephrase fresh. the ONE "
+        "thing you may raise unprompted — half a sentence, in passing, once. "
+        "never contradict it, never invent or stretch an activity to match his."
         f"{lane}\n\n")
 
 
@@ -442,11 +437,8 @@ def relatable_block(day_log: dict, hour: int | None, f: Fan | None) -> str:
                 "something he's into. Say what it was and let him have the opening; "
                 "don't explain the connection or tell him it reminded you of him.\n\n")
     return (f"ALSO TODAY, EARLIER: {beat['text']}\n"
-            "That one lines up with something he's into. If it fits the moment, "
-            "mention it instead of (or after) what you're doing now — one clause, "
-            "dropped in like it just occurred to you. Don't announce that it's "
-            "something he likes, don't ask if he likes it, and skip it entirely if "
-            "the conversation is somewhere else.\n\n")
+            "matches what he's into — one offhand clause if it fits, else skip. "
+            "never announce the link.\n\n")
 
 
 # The per-turn half. `day_block` PERMITS; this REQUIRES.
@@ -596,16 +588,13 @@ def day_ask_block(day_log: dict, hour: int | None, f: Fan | None,
     if not beat:
         return ""
     if beat["id"] in used_beat_ids(f, day_log.get("date", "")):
-        # He asked again and she has already told him this one. Do NOT re-assert it
-        # — repeating today's only beat verbatim is the cuckoo clock in miniature.
-        return ("HE IS ASKING ABOUT YOUR DAY AGAIN — you already told him what you "
-                "did today, so don't repeat it. Add a small NEW detail about it or "
-                "turn it back on him warmly.\n\n")
-    return ("HE ASKED ABOUT YOUR DAY — answer it. Your reply MUST say what you "
-            "actually did, from YOUR DAY SO FAR above, in your own words, before "
-            "anything else. Don't bounce it back to him and don't answer with only "
-            "a question. One beat, half a sentence — then you may ask him one "
-            "thing.\n\n")
+        # Asked again — re-asserting the only beat verbatim is the cuckoo clock
+        # in miniature.
+        return ("HE ASKED ABOUT YOUR DAY AGAIN — dont repeat it: new detail or "
+                "turn it back warmly.\n\n")
+    return ("HE ASKED ABOUT YOUR DAY — answer FIRST from YOUR DAY SO FAR, own "
+            "words, half a sentence. dont bounce it back; then one question "
+            "max.\n\n")
 
 
 def covers_for(day_log: dict) -> tuple[str, ...]:
@@ -625,43 +614,23 @@ def covers_for(day_log: dict) -> tuple[str, ...]:
 
 # ── The producer ─────────────────────────────────────────────────────
 _SYSTEM = (
-    "You write ONE day in the life of an OnlyFans creator, as SHE would text it.\n"
-    "You are given who she is, and a sample of the kind of day she has. Write a "
-    "DIFFERENT, believable day for the date given — same person, same city, same "
-    "habits, but not the same day.\n"
+    "Write a DIFFERENT believable day in this OnlyFans creator's life, as SHE "
+    "would text it — same person/city/habits as the sample, never contradict "
+    "her facts.\n"
     "Respond with a SINGLE JSON object and nothing else:\n"
     '{"beats":[{"id":"","slot":"","text":""}],"covers":[{"id":"","kind":"","text":""}]}\n'
-    "RULES:\n"
-    "- Exactly 6 beats, one per slot, in this order: morning_1, morning_2, "
-    "afternoon_1, afternoon_2, evening, night. `id` is a short unique string, and "
-    "`topics` is 2-4 lowercase words naming what the beat is ABOUT ('hiking', "
-    "'movie', 'cooking', 'dogs', 'thrifting', 'architecture', 'car').\n"
-    "- SPREAD THE DAY ACROSS DIFFERENT AREAS OF HER LIFE. Her hobbies are what she "
-    "loves, not all she does. At most TWO beats may share a topic, and the six "
-    "together should touch at least four DIFFERENT areas — pick from things like: "
-    "what she watched or is watching, what she cooked or ate, errands and chores, "
-    "friends and family, music, something she bought or is saving for, her body "
-    "(gym, bath, hair, nails), somewhere in town she went, something she fixed or "
-    "made, something she read or is learning, weather, her pets, her hobbies.\n"
-    "- The point of that spread is that a real person has an ordinary life around "
-    "her hobbies. A day that is all fishing, or all thrift shops, is a schedule.\n"
-    "- The 6 beats are ONE CONTINUOUS DAY in order. Later beats may refer back to "
-    "earlier ones ('still sore from this morning'), never contradict them, and "
-    "never describe the same activity twice.\n"
-    "- Each `text` is HALF A SENTENCE she would actually text: lowercase, casual, "
-    "concrete, 3-14 words. No stage directions, no asterisks, no roleplay. At most "
-    "one emoji, usually none.\n"
-    "- CONCRETE beats a generic one. 'took the dogs up the ridge trail, legs are "
-    "dead' beats 'went for a walk'. Name the thing.\n"
-    "- It must be an ORDINARY day. No emergencies, no drama, nothing that invites a "
-    "crisis conversation, nothing sexual, nothing about filming or her job as a "
-    "creator, and nothing that costs money she would have to explain.\n"
-    "- NEVER contradict the facts about her. If she has dogs she does not have a "
-    "cat; if she lives inland she was not at the beach.\n"
-    "- 3 `covers`: short apologies for having been away from her phone, each "
-    "CONSISTENT with the beats above ('sorry, was still out with the dogs'). "
-    "`kind` is one of: busy, asleep, long. These explain a GAP, so they look "
-    "backwards at what she was doing — never a new activity."
+    "- exactly 6 beats, one per slot, in order: morning_1, morning_2, "
+    "afternoon_1, afternoon_2, evening, night. `id` short unique; `topics` = "
+    "2-4 lowercase words naming what the beat is ABOUT.\n"
+    "- ONE continuous ORDINARY day — no drama, sex, filming/creator work, or "
+    "odd money — across 4+ life areas (food, chores, friends, gym, town, "
+    "pets, shows), max TWO beats per topic. beats may refer back, never "
+    "contradict or repeat.\n"
+    "- `text`: HALF A SENTENCE she'd text — lowercase, concrete, 3-14 words, "
+    "no asterisks, at most one emoji. 'took the dogs up the ridge trail' "
+    "beats 'went for a walk'.\n"
+    "- 3 `covers`: sorry-was-away lines that look BACK at the beats "
+    "(`kind`: busy, asleep, long) — never a new activity."
 )
 
 
@@ -825,13 +794,12 @@ async def ensure_day_log(account_id: str, cfg_row, model: str, purpose: str,
             return fresh
         # The FULL identity — prose, location, and the structured canon — not the
         # raw `persona` column. That column is one sentence on most accounts (315
-        # chars on the busiest account, and it is all hobbies and body stats), while the canon
-        # beside it holds 23 filled fields: school, family, living situation, daily
-        # routine, dreams, travel, upbringing, music. Handing the generator only the
-        # prose is what made her days cluster on her hobbies — they were the only
-        # thing it knew about her. `compose_persona` is the same composer both chat
-        # engines use, so the day is written from exactly the person the reply is
-        # written by.
+        # chars on the busiest account, and it is all hobbies and body stats), while
+        # the canon beside it adds job, family, relationship, kids. Handing the
+        # generator only the prose is what made her days cluster on her hobbies —
+        # they were the only thing it knew about her. `compose_persona` is the same
+        # composer both chat engines use, so the day is written from exactly the
+        # person the reply is written by.
         persona = _persona.compose_persona(cfg_row, fallback="").strip()
         seed = load_dict(getattr(cfg_row, "time_activities_json", None))
         row = await generate_day_log(account_id, persona, seed, tz_off,

@@ -335,6 +335,11 @@ def _validate_cfg(cfg: dict) -> dict:
         out["intent_only"] = bool(cfg["intent_only"])
     if "engage_old_fans" in cfg:
         out["engage_old_fans"] = bool(cfg["engage_old_fans"])
+    # The payer floor (ships ON — see ai_chatter._DEFAULTS). Listed here because this
+    # validator DROPS any key it does not name, so an operator turning the seller
+    # loose on non-buyers would have saved a config the engine never sees.
+    if "payers_only" in cfg:
+        out["payers_only"] = bool(cfg["payers_only"])
     if "pivot_on_escalation" in cfg:
         out["pivot_on_escalation"] = bool(cfg["pivot_on_escalation"])
     if "unsend_expired_offer" in cfg:
@@ -396,6 +401,24 @@ def _validate_cfg(cfg: dict) -> dict:
         out["pack_send_enabled"] = truthy(cfg["pack_send_enabled"])
     if "pack_on_ask_enabled" in cfg:
         out["pack_on_ask_enabled"] = truthy(cfg["pack_on_ask_enabled"])
+    # ── The same lane, called by the OTHER chat engines (both ship OFF) ────
+    #
+    # Auto Convo and OF AI Chat sell through `sell_lane`, which re-checks every
+    # seller brake plus the qualification gate, so these two grant a permission
+    # and not a bypass. They live in THIS blob rather than each engine's own
+    # because the shelf flags above, the offer caps and the gate they depend on
+    # are all here — two engines reading two copies of a cap is two caps.
+    #
+    # `truthy` for the same money reason as the two above.
+    if "autoreply_sell_on_ask" in cfg:
+        out["autoreply_sell_on_ask"] = truthy(cfg["autoreply_sell_on_ask"])
+    if "of_ai_chat_sell_on_ask" in cfg:
+        out["of_ai_chat_sell_on_ask"] = truthy(cfg["of_ai_chat_sell_on_ask"])
+    # The model's own "he asked to buy" line. SHADOW while it ships — it changes
+    # the prompt and logs whether the model agreed with the regex; the regex still
+    # decides. Named here or the validator drops it silently, as it has twice.
+    if "sell_signal_enabled" in cfg:
+        out["sell_signal_enabled"] = truthy(cfg["sell_signal_enabled"])
     # The rate card is a BASELINE, not a ceiling (operator ruling 2026-08-11).
     # This restores the old hard veto for an account that wants it: never charge
     # more than the attached content is worth.

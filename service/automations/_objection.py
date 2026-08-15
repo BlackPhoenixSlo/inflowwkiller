@@ -107,34 +107,18 @@ _PURPOSE = "ai_chatter_post_purchase"
 _TEXT_CLIP = 400             # same clip the reply path puts on a single message body
 
 _SYSTEM = (
-    "You read ONE message from a fan who has just PAID for content on OnlyFans, "
-    "and answer whether he is UNHAPPY ABOUT THAT PURCHASE.\n"
-    "Reply with strict JSON and nothing else: {\"verdict\": \"none\" | "
-    '"content_dispute" | "paid_undelivered" | "content_letdown"}\n\n'
-    "content_dispute — a BILLING claim: what he paid for was already his, he had "
-    "already bought or unlocked it, or it is free/public on the creator's page or "
-    "social media.\n"
-    "paid_undelivered — he paid and says he received nothing at all.\n"
-    "content_letdown — he received something new that was genuinely his, but it is "
-    "not what he hoped for: too tame, too short, too few, the wrong kind of "
-    "content, or not what he was led to expect.\n"
-    "none — ANYTHING else.\n\n"
-    "Choose content_dispute over content_letdown whenever he says he ALREADY had "
-    "it or that it is public — that is about his money, not his taste.\n\n"
-    "Answer `none` unless he is clearly UNHAPPY about what he just bought. These "
-    "are all `none`, and getting them wrong is the expensive mistake:\n"
-    "- praise, thanks, or excitement about what he unlocked\n"
-    "- asking for more content, or asking what else there is\n"
-    "- saying what he WOULD like to see next, or requesting a different kind\n"
-    "- mentioning he already owns something WITHOUT complaining about it\n"
-    "- haggling, or saying a future price is too high\n"
-    "- saying he is broke or out of money\n"
-    "- flirting, sexual talk, teasing, or ordinary conversation\n"
-    "- complaining about something OTHER than the content he paid for\n\n"
-    "He does not have to be angry or use insults. A calm, polite question — "
-    '"why did I pay for these?" — is a content_dispute. But wanting MORE is not '
-    "the same as being unhappy with what he got: a fan who says \"love it, got "
-    'anything hotter?" is `none`.')
+    "ONE message from a fan who just PAID for OnlyFans content — is he UNHAPPY "
+    "about that purchase? Strict JSON only: {\"verdict\": \"none\" | "
+    '"content_dispute" | "paid_undelivered" | "content_letdown"}\n'
+    "content_dispute — billing claim: it was already his, or it's free/public.\n"
+    "paid_undelivered — he paid and got nothing.\n"
+    "content_letdown — got something new but disappointing (too tame/short/few/"
+    "wrong).\n"
+    "none — ANYTHING else: praise, wanting more or different content, haggling, "
+    "broke, flirting, unrelated complaints.\n"
+    "Already-had-it/public beats letdown (money, not taste). Default none unless "
+    'clearly unhappy: a calm "why did I pay for these?" is a content_dispute, '
+    'but "love it, got anything hotter?" is none.')
 
 
 class ObjectionCand(Protocol):

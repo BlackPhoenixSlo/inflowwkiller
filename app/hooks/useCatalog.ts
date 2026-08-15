@@ -64,6 +64,8 @@ export interface AiChatterConfig {
   /** Also engage fans flagged `old_fan_pre_ai` (onboarded before the AI) —
    *  mostly pure convo, with an info question ~every old_fan_question_every replies. */
   engage_old_fans?: boolean;
+  /** Payer floor — undefined means the default, which is ON. */
+  payers_only?: boolean;
   old_fan_question_every?: number;
   sla_minutes?: number;
   max_lifetime_spend_cents?: number;
@@ -139,6 +141,13 @@ export interface AiChatterConfig {
    *  disagree. */
   pack_send_enabled?: boolean;
   pack_on_ask_enabled?: boolean;
+  /** The same ask lane, reached by the OTHER chat engines through `sell_lane`,
+   *  which re-checks every seller brake plus the qualification gate — so these
+   *  grant a permission, never a bypass. They live in the closer's config
+   *  because the shelf flags, the offer caps and the gate they depend on do.
+   *  Both OFF by default. */
+  autoreply_sell_on_ask?: boolean;
+  of_ai_chat_sell_on_ask?: boolean;
   /** The rate card is a BASELINE, not a ceiling (operator ruling 2026-08-11) —
    *  the upseller may quote above it for a fan whose history supports it. This
    *  restores the hard veto: never charge more than the attached content is

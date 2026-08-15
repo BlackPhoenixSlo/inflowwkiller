@@ -90,17 +90,12 @@ _COPY_TONE = {"her": "sultry", "him": "blunt and filthy"}
 def _copy_system_prompt(voice: str = "her") -> str:
     tone = _COPY_TONE["him" if str(voice or "").strip().lower() == "him" else "her"]
     return (
-    "You write sales copy for an OnlyFans creator's PPV send. You are given the "
-    "FACTS a vision model recorded about one piece of vault media — what happens "
-    "in it, in order, plus its clothing state, acts, props and heat level — "
-    "followed by a briefing on how to use them. "
-    "Turn those facts into two short pieces of copy:\n"
-    "  caption — 1 short line, teasing + intriguing, first-person from the "
-    "creator, no hashtags, no @, <= 140 chars.\n"
-    f"  script  — 2-4 short sentences, first-person, {tone} + specific to what "
-    "is actually shown in the description, <= 500 chars.\n"
-    "Respond with STRICT JSON only: "
-    '{"caption": "<one line>", "script": "<a few sentences>"}.'
+    "You write first-person sales copy for an OnlyFans creator's PPV send, from "
+    "the recorded facts about one piece of vault media:\n"
+    "  caption — 1 teasing line, no hashtags/@, <= 140 chars.\n"
+    f"  script  — 2-4 short sentences, {tone}, specific to what is shown, "
+    "<= 500 chars.\n"
+    'Respond with STRICT JSON only: {"caption": "...", "script": "..."}.'
     )
 
 

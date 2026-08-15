@@ -356,6 +356,29 @@ async def _alternatives(account_id: str, fan_id: int, pool: list[tuple[int, str]
     return (await solo_only(account_id, [mid for mid, _ in broad]))[:count]
 
 
+async def last_resort(account_id: str, fan_id: int, *, seen: set[int],
+                      count: int) -> list[int]:
+    """SOMETHING from the vault, whatever the ask was. Never raises, never empty
+    unless the vault genuinely is.
+
+    Operator ruling 2026-08-15: an ask must never end in silence. Every refusal
+    branch above already carries `alternatives`, but three of them cannot —
+    `LLM_UNAVAILABLE` twice and `VERIFY_REJECTED` — because at that point there is
+    no trustworthy pool left to draw from. This is the caller-side floor under all
+    of them: his profile terms first, the vault at large after, SOLO throughout.
+
+    It makes NO claim about the subject. Whatever comes back is a substitute and
+    the caption must say so — `pack_claim.substitute_clause` is the only honest
+    frame for it, and `audit_ask(substitute=True)` is what checks the frame held.
+    """
+    try:
+        return await _alternatives(account_id, fan_id, [], seen, count)
+    except Exception:
+        log.warning("last_resort failed account=%s fan=%s", account_id, fan_id,
+                    exc_info=True)
+        return []
+
+
 async def kind_of(account_id: str, media_ids: list[int]) -> dict[int, str]:
     if not media_ids:
         return {}

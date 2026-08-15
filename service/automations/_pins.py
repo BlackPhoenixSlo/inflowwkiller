@@ -441,33 +441,16 @@ def _judge_system(voice: str = "her") -> str:
     subj, obj_caps, obj = _JUDGE_PRONOUNS[
         "him" if str(voice or "").strip().lower() == "him" else "her"]
     return (
-    "You decide whether to keep one message a man sent an OnlyFans creator, so "
-    f"{subj} "
-    "can re-read it weeks later and sound like someone who listened.\n\n"
-    "KEEP it only if it is a longer explanation of HIS OWN LIFE — what he does for "
-    "work, his daily routine, where he lives, his family, his history, his skills, "
-    "his health, his plans. The test: would a stranger reading only this message "
-    "learn something TRUE and LASTING about him?\n\n"
-    "KEEP even when it also mentions money, is negative or sad, names a relative, "
-    "or contains a swear word. Men describe their working lives in terms of pay and "
-    "overtime, and a hard year is still a fact about him. None of that disqualifies.\n\n"
-    "DO NOT KEEP:\n"
-    "- sexual fantasy or roleplay — everything in it is imagined, not true\n"
-    f"- love letters, poems, song lyrics, compliments about {obj_caps}\n"
-    "- promos, price lists, agency pitches, anything selling something\n"
-    f"- requests for custom content, or questions about {obj}\n"
-    "- complaints, accusations, goodbyes\n"
-    "- a passing mood or a one-off event with no lasting fact ('flying today', "
-    "'money is tight this month')\n"
-    "- anything that would identify him to a stranger: an address, an employer plus "
-    "a town, a handle, a phone number\n\n"
-    "Worked refusal — KEEP THIS ONE OUT even though it is calm, long and factual: a "
-    "man explaining he has lost his job, is separating from his wife, and when his "
-    "kids are out of the apartment. It is a crisis plus an absence schedule, and it "
-    "must never sit at the top of an erotic chat.\n\n"
-    "Any language. Reply as JSON: {\"keep\": true|false, \"topic\": \"<one or two "
-    "words: occupation, routine, family, history, health, plans, hobby, location>\", "
-    "\"fact\": \"<the single most useful thing it says about him, under 12 words>\"}"
+    "KEEP a fan's message only if it teaches something TRUE and LASTING about "
+    f"HIS OWN LIFE, so {subj} can re-read it later and sound like someone who "
+    "listened. money, sadness or swearing dont disqualify.\n"
+    f"NEVER KEEP: fantasy/roleplay, compliments about {obj_caps}, anything "
+    f"selling, requests or questions about {obj}, passing moods, identifying "
+    "details (address, employer+town, handle, number), or a crisis + "
+    "when-he's-alone schedule however calm it reads.\n"
+    'Any language. Reply as JSON: {"keep": true|false, "topic": "<one or two '
+    'words: occupation, routine, family, history, health, plans, hobby, '
+    'location>", "fact": "<most useful fact about him, under 12 words>"}'
     )
 
 
@@ -548,10 +531,8 @@ def pins_block(fan) -> str:
             if _safe_to_read(str(p.get("text") or ""), str(p.get("src") or ""))]
     lines = [f"- {p['text']}" for p in _rank(safe)[:CAP]]
     return _pinned_block(
-        "HE WROTE THIS TO YOU HIMSELF, IN HIS OWN WORDS. Treat it as something you "
-        "remember about him and bring a SPECIFIC detail from it into the conversation "
-        "when it fits — ask him how that part is going. Never quote it back at him, "
-        "never recite it as a list, and never let on that you have it saved:", lines)
+        "HE told you this — bring a SPECIFIC detail in when it fits; never quote "
+        "it back or let on it's saved:", lines)
 
 
 def _safe_to_read(text: str, src: str = "") -> bool:

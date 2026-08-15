@@ -49,6 +49,7 @@ from . import _language
 from . import _pins  # his own pinned long-form message (reader only)
 from . import _customs
 from . import _voice  # whose voice this account writes in (NULL → 'her')
+from . import sell_lane  # THE gate every priced send passes through
 from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
@@ -110,6 +111,9 @@ def _defaults() -> dict:
         # we don't fully know yet.
         "info_not_required": True,
     }
+    # NOTE: the vault-sell permission is deliberately NOT here. It lives in
+    # `ai_chatter_config_json` as `autoreply_sell_on_ask`, next to the shelf flags,
+    # the offer caps and the qualification gate it depends on — see `run()`.
 
 
 async def _load_config(account_id: str) -> dict | None:
@@ -146,13 +150,11 @@ def _in_quiet_hours(cfg: dict, now: datetime) -> bool:
 
 # ── Re-engagement style variety (controls vibe + shape, never sells) ──
 _STYLE_VARIANTS = (
-    "answer his last message directly, then a light tease.",
-    "react to what he said and keep the banter going, casual.",
-    "a short flirty reply, NO question.",
-    "reply warm + playful, like you've been thinking about him.",
-    "if the recent vibe was sexual, keep it going — one suggestive line (still NO pics/PPV).",
-    ("two TINY texts — output as TWO LINES with a line break between (a quick "
-     "reaction, then your line). 0-1 emoji."),
+    "answer him directly, then a light tease.",
+    "short flirty reply, NO question.",
+    "warm + playful, like you've been thinking of him.",
+    "vibe sexual? keep it going — one suggestive line, still NO pics/PPV.",
+    "two TINY texts on separate lines. 0-1 emoji.",
 )
 
 
@@ -218,45 +220,37 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         # at all (and the wrong conclusion that customs don't sell) or a violation
         # of the lane's defining rule, with no way to tell from outside which.
         #
-        # The ban stays absolute for everything Auto Convo has never sold. It now
-        # names the single exception the account has explicitly opted into, so the
-        # two rules describe one policy instead of contradicting each other. With
-        # `sell_customs` off this is byte-identical to what has always shipped.
+        # The ban stays absolute for everything Auto Convo has never sold; the
+        # sell_customs branch names the single opted-into exception, so the two
+        # rules describe one policy instead of contradicting each other.
         _never_sell = (
-            "- NEVER offer, mention, or hint at PPV, paid content, pics, or videos. "
-            "This is purely keeping the conversation going.\n"
+            "- NEVER offer or hint at PPV, pics, or anything paid — this is "
+            "purely conversation.\n"
             if not v.sell_customs else
-            "- NEVER offer, mention, or hint at PPV, pics, or videos — this is "
-            "keeping the conversation going, not selling. The ONE exception is a "
-            "custom voice note (see the LIVE PROOF rule below): you may mention "
-            "that if it comes up naturally. Nothing else, ever.\n"
+            "- NEVER offer or hint at PPV, pics, or anything paid. ONE exception: "
+            "a custom voice note (see LIVE PROOF below) if it comes up naturally.\n"
         )
         hard_rules = (
             "HARD RULES:\n"
             f"{_never_sell}"
-            "- You already KNOW him — do NOT re-ask his name, age, location, job or "
-            "hobbies. Use what you know to make it personal.\n"
-            "- Don't apologize for being slow or mention the delay — just reply "
-            "naturally, warm and easy, never needy.\n"
-            "- Match the vibe of the recent messages: if it was getting sexual, keep "
-            "it flirty/suggestive; if it was casual, stay casual.\n"
-            "- SHORT and human: lowercase, contractions, u/ur/ya, 0-1 emoji, vary "
-            "your wording — never reuse a line or emoji you've already used here. "
-            "No paragraphs.\n"
+            "- make him feel SPECIAL, like the only one — that feeling is why "
+            "fans stay and buy. you KNOW him: never re-ask name/age/job, use it.\n"
+            "- never apologize for the delay, never needy.\n"
+            "- match the recent vibe: sexual stays suggestive, casual stays casual.\n"
+            "- SHORT: lowercase, u/ur, 0-1 emoji, never reuse a line or emoji from "
+            "this chat, no paragraphs.\n"
             f"{NO_NARRATION_RULE}"
         )
 
     # The prompt clock ("" when the account has no tz configured → byte-equal
     # prompt) — same block as of_ai_chat. A model with no clock invents one.
     clock_block = (
-        f"RIGHT NOW for you it is {clock}. If the time, your day, or what "
-        "you're doing comes up, stay consistent with this clock — never claim "
-        "a different time of day.\n\n" if clock else "")
+        f"RIGHT NOW for you it is {clock} — never claim a different time of "
+        "day.\n\n" if clock else "")
     system = (
         f"{persona}\n"
-        "A fan you've already been chatting with MESSAGED YOU and is waiting for a "
-        "reply — keep the conversation going naturally. Reply to his last message "
-        "like you just got back to your phone. You are 100% human, never a bot.\n\n"
+        "A fan messaged you — reply to his last message like you just got back "
+        "to your phone. 100% human, never a bot.\n\n"
         f"{v.painful_texting + chr(10) + chr(10) if painful_on else ''}"
         f"{clock_block}"
         f"{directive}\n\n"
@@ -527,6 +521,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         ai_chatter_owns = await _ai_chatter_enabled(account_id)
     except Exception:
         log.debug("autoreply ai_chatter gate check failed", exc_info=True)
+    # The vault sell lane: config, permission, counter snapshot, budget and tally,
+    # all on one object. Its `cfg` is the CLOSER's, and so is the permission key —
+    # the shelf switches, the offer caps and the gate it depends on all live there,
+    # and two engines reading two copies of a cap is two caps.
+    lane = await sell_lane.for_run(account_id, engine=_PURPOSE,
+                                   permission_key="autoreply_sell_on_ask")
+
     client = None
     sent = skipped_spend = skipped_cap = skipped_raced = errors = 0
     skipped_restricted = 0   # muted creator / manual "restrict from automations"
@@ -587,83 +588,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             skipped_raced += 1
             continue
 
-        history = await _history(account_id, fid, tail)
-        style = random.choice(style_pool)
-        # He spoke last (the trigger) → his ask is the latest inbound. Tip-ask only
-        # when the closer doesn't own the account (double-pitch guard above).
-        last_in = next((b for d, b in reversed(history) if d == "in"), "")
-        # Per-fan language: fans.language (manual pin or gen_info detection) overrides
-        # the account default; unset → account default.
-        fan_lang = _language.resolve_language(account_lang, getattr(f, "language", None))
-        content_ask = (not ai_chatter_owns) and _language.is_content_ask(last_in, fan_lang)
-        # The bundle narrowed to THIS fan: a custom is only mentioned to a man who
-        # has proven he pays. Below the bar the permission and its price band come
-        # out of every block that carries them, `live_proof` included.
-        v = _voice.for_fan(voice_blocks, f)
-        tip_ask_block = (build_tip_ask_block(tip_amount, tip_template,
-                                            v.sell_customs)
-                         if tip_ask_enabled else "")
-        msgs = _build_messages(persona, f, history, style, style_on=style_on,
-                               nonnative_on=nonnative_on, lang=fan_lang,
-                               content_ask=content_ask,
-                               tip_ask_block=tip_ask_block,
-                               painful_on=painful_on, clock=_clock_line(clock_tz),
-                               v=v,
-                               custom_owed=_customs.is_owed(f))
-        try:
-            res = await llm_client.chat(model=model, messages=msgs, purpose=_PURPOSE,
-                                        account_id=account_id, fan_id=fid,
-                                        temperature=_TEMPERATURE)
-        except LLMCapExceeded:
-            log.warning("autoreply LLM cap reached account=%s — stopping", account_id)
-            break
-        except Exception:
-            errors += 1
-            log.warning("autoreply generate failed account=%s fan=%s", account_id, fid,
-                        exc_info=True)
-            continue
-
-        raw = (res.content or "").strip()
-        # Deterministic floor under ONPLATFORM_GUARDRAIL: if the model still leaked
-        # a number / off-platform handle / meetup arrangement, swap for a deflection.
-        # The shared send chokepoint (_outbound): off-platform guard, then the
-        # account-wide emoji strip, before the split. No PHASE 2 consistency check
-        # — autoreply does not implement it, which is why there is no
-        # `consistency_autoreply` flag to switch on (see _common.CONSISTENCY_AUTOMATIONS).
-        raw, _leak = await finalize_draft(
-            raw, account_id=account_id, fan_id=fid, purpose=_PURPOSE,
-            strip_emoji=strip_emoji_on, v=v)
-        parts = [apply_word_restriction(p)[:_REPLY_MAX_CHARS]
-                 for p in split_for_bubbles(raw, max_bubbles,
-                                            rng=random.Random(f"split:{f.fan_id}:{raw}"))
-                 if p.strip()][:max_bubbles]
-        # Don't open with the same reaction word we just used ('oof' every send).
-        if style_on and parts:
-            parts = _dedupe_lead_reaction(parts, [b for d, b in history if d == "out"])
-        if not parts:
-            errors += 1
-            continue
-        name_protect = [n for n in (f.real_name, f.generated_nickname,
-                                    f.of_display_name) if n]
-        if nonnative_on:  # opt-in: deterministic non-native misspellings (always)
-            # ONE rng for the whole reply — see apply_nonnative_spacing.
-            _q_rng = random.Random(f"{f.fan_id}:{raw}:q")
-            parts = [apply_nonnative_style(p, protect=name_protect)
-                     for p in parts]
-            if spacing_on:
-                parts = [apply_nonnative_spacing(p, _q_rng) for p in parts]
-        if typo_on:  # opt-in: a realistic thumb-slip (+ a throttled "*fix" bubble)
-            protect = name_protect + (list(NONNATIVE_OUTPUTS) if nonnative_on else [])
-            parts = await apply_typo_throttle(
-                account_id, f.fan_id, parts, random.Random(f"{f.fan_id}:{raw}"),
-                protect=protect, max_bubbles=max_bubbles)
-        if dry_run:
-            sent += 1
-            continue
-
-        # Just before sending: a fresh cooldown read (catches a fan a sibling
-        # paused EARLIER THIS TICK, after our candidate snapshot), then the
-        # DB-atomic fan-lease so two senders can't both message him this tick.
+        # Cooldown read + the DB-atomic fan-lease, BEFORE any generation. The lease
+        # moved up here from below the LLM call for two reasons that point the same
+        # way: it is the cross-engine mutex `sell_lane` requires, and a reply drawn
+        # before we hold it is a reply we may throw away — on a selling turn we
+        # would pay for a generation the sale replaces. of_ai_chat and ai_chatter
+        # have always taken it in this order; autoreply was the odd one out.
         if await ax.fan_on_cooldown(account_id, fid):
             skipped_cooldown += 1
             continue
@@ -679,12 +609,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # right after us), on anything else it RELEASES for a faster retry.
         sent_ok = False
         try:
-            # Re-check AFTER acquiring: the LLM call above can take longer than a
-            # sibling's short (10-15s) cooldown, so someone may have answered him
-            # while we generated. If he's no longer waiting, stand down.
-            if not await _fan_still_waiting(account_id, fid, inbound_at):
-                skipped_raced += 1
-                continue
+            history = await _history(account_id, fid, tail)
+            # He spoke last (the trigger) → his ask is the latest inbound.
+            last_in = next((b for d, b in reversed(history) if d == "in"), "")
+            # Per-fan language: fans.language (manual pin or gen_info detection)
+            # overrides the account default; unset → account default.
+            fan_lang = _language.resolve_language(account_lang,
+                                                  getattr(f, "language", None))
+            # Tip-ask only when the closer doesn't own the account (the double-pitch
+            # guard above) — and the same test arms the vault sale below, so the two
+            # money surfaces can never both fire on one turn.
+            content_ask = ((not ai_chatter_owns)
+                           and _language.is_content_ask(last_in, fan_lang))
 
             if client is None:
                 try:
@@ -693,6 +629,103 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     log.warning("autoreply client init failed account=%s", account_id,
                                 exc_info=True)
                     break
+
+            # ── He asked to SEE something. Sell him that, from the vault ──
+            #
+            # Auto Convo has been never-PPV since it shipped, and the reason was
+            # sound: it is a keep-warm layer with no seller's brakes of its own, so
+            # anything it sold would be sold blind. `sell_lane` IS those brakes, so
+            # the rule is now "never sells UNGUARDED" instead of "never sells" —
+            # which matters most on the accounts that run Auto Convo with no closer
+            # at all, where a content ask has never had any path to a sale.
+            #
+            # A sale REPLACES this turn's banter (he gets the priced answer to what
+            # he typed, not that plus "so what are u up to") and COUNTS as a send:
+            # `sent` is what `max_sends` bounds, so a sale that skipped it would let
+            # one run ship its whole reply budget plus unbounded priced PPVs.
+            if content_ask and await lane.sell(
+                    client, fid,
+                    sell_lane.Turn(text=last_in, at=inbound_at, lang=fan_lang),
+                    fan=f, dry_run=dry_run):
+                sent += 1
+                sent_ok = True   # a priced send IS a send: keep the lease to TTL
+                await _save_state(account_id, fid, spell_inbound_at=spell_anchor,
+                                  nudges_sent=nudges + 1,
+                                  last_nudge_at=datetime.utcnow())
+                continue
+
+            style = random.choice(style_pool)
+            # The bundle narrowed to THIS fan: a custom is only mentioned to a man
+            # who has proven he pays. Below the bar the permission and its price
+            # band come out of every block that carries them, `live_proof` included.
+            v = _voice.for_fan(voice_blocks, f)
+            tip_ask_block = (build_tip_ask_block(tip_amount, tip_template,
+                                                v.sell_customs)
+                             if tip_ask_enabled else "")
+            msgs = _build_messages(persona, f, history, style, style_on=style_on,
+                                   nonnative_on=nonnative_on, lang=fan_lang,
+                                   content_ask=content_ask,
+                                   tip_ask_block=tip_ask_block,
+                                   painful_on=painful_on, clock=_clock_line(clock_tz),
+                                   v=v,
+                                   custom_owed=_customs.is_owed(f))
+            try:
+                res = await llm_client.chat(model=model, messages=msgs, purpose=_PURPOSE,
+                                            account_id=account_id, fan_id=fid,
+                                            temperature=_TEMPERATURE)
+            except LLMCapExceeded:
+                log.warning("autoreply LLM cap reached account=%s — stopping", account_id)
+                break
+            except Exception:
+                errors += 1
+                log.warning("autoreply generate failed account=%s fan=%s", account_id, fid,
+                            exc_info=True)
+                continue
+
+            raw = (res.content or "").strip()
+            # Deterministic floor under ONPLATFORM_GUARDRAIL: if the model still leaked
+            # a number / off-platform handle / meetup arrangement, swap for a deflection.
+            # The shared send chokepoint (_outbound): off-platform guard, then the
+            # account-wide emoji strip, before the split. No PHASE 2 consistency check
+            # — autoreply does not implement it, which is why there is no
+            # `consistency_autoreply` flag to switch on (see _common.CONSISTENCY_AUTOMATIONS).
+            raw, _leak = await finalize_draft(
+                raw, account_id=account_id, fan_id=fid, purpose=_PURPOSE,
+                strip_emoji=strip_emoji_on, v=v)
+            parts = [apply_word_restriction(p)[:_REPLY_MAX_CHARS]
+                     for p in split_for_bubbles(raw, max_bubbles,
+                                                rng=random.Random(f"split:{f.fan_id}:{raw}"))
+                     if p.strip()][:max_bubbles]
+            # Don't open with the same reaction word we just used ('oof' every send).
+            if style_on and parts:
+                parts = _dedupe_lead_reaction(parts, [b for d, b in history if d == "out"])
+            if not parts:
+                errors += 1
+                continue
+            name_protect = [n for n in (f.real_name, f.generated_nickname,
+                                        f.of_display_name) if n]
+            if nonnative_on:  # opt-in: deterministic non-native misspellings (always)
+                # ONE rng for the whole reply — see apply_nonnative_spacing.
+                _q_rng = random.Random(f"{f.fan_id}:{raw}:q")
+                parts = [apply_nonnative_style(p, protect=name_protect)
+                         for p in parts]
+                if spacing_on:
+                    parts = [apply_nonnative_spacing(p, _q_rng) for p in parts]
+            if typo_on:  # opt-in: a realistic thumb-slip (+ a throttled "*fix" bubble)
+                protect = name_protect + (list(NONNATIVE_OUTPUTS) if nonnative_on else [])
+                parts = await apply_typo_throttle(
+                    account_id, f.fan_id, parts, random.Random(f"{f.fan_id}:{raw}"),
+                    protect=protect, max_bubbles=max_bubbles)
+            if dry_run:
+                sent += 1
+                continue
+
+            # Re-check after the generation: the LLM call can take longer than a
+            # sibling's short (10-15s) cooldown, so someone may have answered him
+            # while we drew the reply. If he's no longer waiting, stand down.
+            if not await _fan_still_waiting(account_id, fid, inbound_at):
+                skipped_raced += 1
+                continue
 
             for idx, part in enumerate(parts):
                 await hold_with_typing(account_id, fid,
@@ -733,6 +766,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "skipped_unreachable": skipped_unreachable, "skipped_spam": skipped_spam,
             "skipped_hot_lead": skipped_hot_lead, "skipped_cooldown": skipped_cooldown,
             "skipped_locked": skipped_locked,
+            **lane.stats,
             "errors": errors, "dry_run": dry_run, "model": model}
 
 

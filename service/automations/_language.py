@@ -90,12 +90,8 @@ def output_language_directive(lang: str) -> str:
         return ""
     name = LANG_DISPLAY.get(code, code)
     return (
-        f"\n\nOUTPUT LANGUAGE: Write EVERY message to the fan in {name} "
-        f"({code}), in a natural, casual, native texting register — not translated, "
-        f"not formal. Match the fan's dialect if he shows one. "
-        f"Do NOT switch to English. The ONLY thing that stays in English is any literal "
-        f"protocol marker you were told to emit (e.g. a line starting with '>>OFFER') — "
-        f"emit it EXACTLY as instructed, in English, never translated."
+        f"\n\nOUTPUT LANGUAGE: {name} ({code}) only, casual native texting — but "
+        f"protocol markers like '>>OFFER' stay in English, verbatim."
     )
 
 
@@ -109,11 +105,9 @@ def qtease_directive(lang: str) -> str:
         return ""
     name = LANG_DISPLAY.get(code, code)
     return (
-        f"\n\nLANGUAGE: The fan writes in {name} ({code}). Write the fields "
-        f'"Q1","Q2","Q3","Tease1","Tease2","Tease3" in {name}, as a native would text him '
-        f"(they are sent to him word-for-word). Keep every extracted FACT (real_name, "
-        f"his_age, home_city, home_country, occupation, employer, hobbies, etc.) exactly as "
-        f"he stated it. short_bio and bullet_points stay in English (they're for the operator)."
+        f"\n\nLANGUAGE: Q1-Q3 and Tease1-Tease3 in {name} ({code}), native texting "
+        f"(sent to him verbatim). extracted facts exactly as he stated them; "
+        f"short_bio and bullet_points in English."
     )
 
 
@@ -307,6 +301,24 @@ def detect_stated_cap(text, lang="en"):
         return int(m.group(2)) * 100 if m else None
     from . import upsell
     return upsell.detect_stated_cap(text)
+
+
+def is_fan_pull(text, lang="en") -> bool:
+    """Is HE explicitly PULLING to buy — a content-ask, or a price he named himself?
+
+    THE CANONICAL COPY. This predicate is the single thing that lifts a spend-regret
+    offers-pause (`upsell.qualify`'s `fan_pull`), and it had grown four
+    implementations: `ai_chatter._fan_pull`, `upsell.qualify`'s own inline version,
+    and two in `sell_lane`. Three of those were English-only while the engines armed
+    on `is_content_ask(text, lang)` — so on an `es` account the lane fired and then
+    the pause refused to lift, killing the one measured exception in the ladder
+    (37/37 broke-then-buyers bought a FRESH offer).
+
+    Deliberately STRICTER than heat: pure arousal is not consent to be re-priced. A
+    broke man mid-sext trips the escalation detector every turn; only a real buy
+    signal — or a price HE names — proves the "broke" wasn't final.
+    """
+    return is_content_ask(text, lang) or detect_stated_cap(text, lang) is not None
 
 
 def detect_bot_accusation(text, lang="en") -> bool:
