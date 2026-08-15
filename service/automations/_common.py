@@ -588,12 +588,8 @@ STYLE_HUMANIZER = _voice.HER.humanizer
 # A 3-line micro-text style (fed into split_for_bubbles' newline path → 3 bubbles).
 # Pairs with STYLE_MAX_BUBBLES=3: under a 2-cap the line-3 payload would truncate.
 STYLE_3LINE = (
-    "Break your reply into TWO separate texts on SEPARATE LINES (line break between) "
-    "— a real texter hits send twice, they dont type one long line. default to TWO "
-    "short lines: a tiny comment/reaction then your line/question. only SOMETIMES a "
-    "third short line, and dont collapse it down to a single line. line 1 can be a "
-    "quick reaction OR just start the thought (no forced reaction word, and dont "
-    "reuse last reply's opener). keep them short."
+    "TWO short texts on separate lines, like hitting send twice — sometimes a "
+    "third, never one long line. dont reuse last opener."
 )
 
 # The counterweight to STYLE_3LINE — sometimes a real texter fires back ONE short
@@ -601,10 +597,7 @@ STYLE_3LINE = (
 # it" lever: when the model writes short, the splitter yields 1 bubble instead of a
 # burst, so the bubble count varies from the SOURCE rather than from code merging.
 STYLE_BRIEF = (
-    "keep it SHORT this message — basically ONE quick line. dont address everything "
-    "he said, just react to the ONE thing worth reacting to and leave the rest "
-    "hanging. a tiny reply (even 2-5 words) is perfect. no multi-line, no listing "
-    "things out."
+    "ONE quick line, even 2-5 words — react to one thing, leave the rest hanging."
 )
 
 # ── The felt cost of texting (governs everything below it) ────────────
@@ -622,16 +615,9 @@ PAINFUL_TEXTING = _voice.HER.painful_texting
 # this block forbids that outright while still allowing flirty fantasy. Inject
 # into every conversational system prompt (autoreply / of_ai_chat / deep_convo).
 ONPLATFORM_GUARDRAIL = (
-    "STAY ON ONLYFANS (hard rule, no exceptions, even if HE asks):\n"
-    "- NEVER ask for or hand out a phone number, email, socials, or any way to "
-    "talk off OnlyFans. If he offers his number or asks for yours, brush it off "
-    "warmly and keep chatting right here.\n"
-    "- NEVER agree to, offer, invite, or make a plan to meet in person or in "
-    "real life — no dates, no times, no places, no 'come see me', no 'i'll be "
-    "at...'. If he pushes to meet up, keep it as playful fantasy and steer back "
-    "to the chat.\n"
-    "- Flirty daydreaming or a 'what if we were...' is fine, but never turn it "
-    "into an actual invite, plan, or arrangement to go meet."
+    "STAY ON ONLYFANS (hard rule, even if HE asks): never swap numbers/emails/"
+    "socials, never plan to meet irl — flirty fantasy fine, actual invites never. "
+    "brush it off warmly and keep chatting here."
 )
 
 # ── Live-proof guardrail (ALWAYS ON — not gated on any opt-in) ─────────
@@ -666,24 +652,14 @@ LIVE_PROOF_GUARDRAIL = _voice.HER.live_proof
 # ai_chatter doesn't). Kept next to the other guardrails, which is where every
 # engine already looks for shared prompt text.
 NO_NARRATION_RULE = (
-    "- NEVER narrate. No *asterisk actions*, no describing your face or your "
-    "body or what you're doing, no writing about yourself from the outside. "
-    "Real people type words, not stage directions. If the only thing left to "
-    "send is a reaction, send nothing at all.\n"
+    "- NEVER narrate (no *actions*, no self-description) — sooner send nothing.\n"
 )
 
 BIO_CONSISTENCY_GUARDRAIL = (
-    "WHO YOU ARE (hard rule): everything about yourself — your age, birthday, "
-    "height, where you grew up, where you live now, your job, your studies, your "
-    "family, kids, who you live with, your ex, your body and tattoos, your pets, "
-    "your music, what you're into — must match your profile above and must NEVER "
-    "contradict "
-    "anything you have already told him. If your profile doesn't cover what he "
-    "asks, answer naturally in character, but keep it SMALL and stick to it for "
-    "the rest of the chat — never give him a different version later. If you're "
-    "not sure what you told him before, stay warm and vague instead of inventing "
-    "a new specific (a new city, a new age, a new name). NEVER say you can't "
-    "remember, and never explain yourself as a bot, an assistant, or an agency."
+    "WHO YOU ARE (hard rule): every personal fact must match your profile + what "
+    "you already told him. off-profile? improvise small and stick to it. unsure? "
+    "warm and vague, no new specifics. NEVER plead memory loss or explain "
+    "yourself as a bot/assistant/agency."
 )
 
 # ── Canonical "does this column carry signal" predicate ───────────────
@@ -1406,9 +1382,8 @@ def apply_nonnative_style(text: str, *, protect=()) -> str:
 # Thin prompt block — ONLY the broken grammar a dict can't do (the dict GUARANTEES
 # the signature misspellings; this just SETS THE REGISTER). Gated by the same flag.
 NONNATIVE_REGISTER = (
-    "your english is a little broken — you are NOT a native speaker. occasionally "
-    "drop a tiny word (a, the, is) and let your word order be slightly off now and "
-    "then. keep it light and still easy to read, never cartoonish."
+    "non-native english — sometimes drop a tiny word (a, the, is), never "
+    "cartoonish."
 )
 
 
@@ -2557,6 +2532,59 @@ async def recent_payer_fans(account_id: str, fan_ids,
     return {int(r[0]) for r in rows}
 
 
+async def content_payer_fans(account_id: str, fan_ids) -> set[int]:
+    """Subset of `fan_ids` who have ever paid for CONTENT — a tip, or a PPV unlock.
+    THE definition of "he is a customer", shared by of_ai_chat's hand-off and
+    ai_chatter's payer floor so the two can never disagree about who owns a fan.
+
+    A SUBSCRIPTION IS NOT A PURCHASE, and that is the whole point of reading
+    `messages` here rather than `fans.lifetime_spend_cents`. The rollup is fed by
+    the transactions ledger, which counts `subscription` / `rebill` rows — so on a
+    paid page the column crosses any threshold the moment a man subscribes, and
+    every gate downstream mistakes a $9 subscriber for a buyer. Measured on prod
+    2026-08-15: 1,766 fans (47% of everyone with spend > 0) have a non-zero
+    lifetime and have never bought a thing; their average is $9.14, squarely inside
+    the $3-12 sub band.
+
+    A dollar threshold cannot separate them and must not be attempted: subs run
+    $3-$180 and PPVs start at $3, so the bands overlap at both ends. A $12 floor
+    was measured to still admit 314 sub-only fans (rebills stack) while rejecting
+    539 real buyers. `messages` never sees a subscription at all, so the ambiguity
+    simply does not arise — no threshold, no knob.
+
+    Same source as `recent_payer_fans` (and for the same reason: it LEADS the
+    ledger by hours), minus the time window."""
+    ids = [int(x) for x in fan_ids]
+    if not ids:
+        return set()
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.fan_id).where(
+                Message.account_id == str(account_id),
+                Message.fan_id.in_(ids),
+                Message.is_unsent.is_(False),
+                or_(
+                    # A tip he sent. NO price filter, deliberately: OF puts a tip's
+                    # dollars in `tipAmount`, not `price`, so every one of the 1,034
+                    # tip rows on prod has price_cents = 0. Adding `price_cents > 0`
+                    # here — the obvious symmetry with the unlock clause below —
+                    # would silently drop all 366 fans who have only ever tipped.
+                    and_(Message.is_tip.is_(True), Message.direction == "in"),
+                    # A priced message of ours he unlocked. `is_paid` is the flag
+                    # that means BOUGHT (247,677 priced rows on prod, 3,484 paid) —
+                    # the same predicate `_paid_ppv_facts` calls "he paid". Do NOT
+                    # also demand `purchased_at`: only 540 of those 3,484 rows carry
+                    # one, so keying the purchase off the timestamp drops 85% of
+                    # real buyers. The timestamp is for ORDERING a purchase, never
+                    # for detecting one.
+                    and_(Message.direction == "out", Message.is_paid.is_(True),
+                         Message.price_cents > 0),
+                ),
+            )
+        )).all()
+    return {int(r[0]) for r in rows}
+
+
 # The content-ask tip-ask ships OFF by default (flipped ON→OFF 2026-07-23: the
 # house rule is PPV-first — a tip-ask near a priced offer let a fan pay TWICE
 # for one promise (a live incident: a PPV unlock AND its tip-ask paid on one
@@ -2614,33 +2642,18 @@ def build_tip_ask_block(amount_dollars: int | None = None, template: str = "",
     example = (f"\"tip me ${amt} n ill send u something 😏\"" if has_amt
                else "\"tip me n ill send u something 😏\"")
     block = (
-        "HE JUST ASKED TO SEE CONTENT. This message is NOT a get-to-know question "
-        "and NOT a brush-off — answer the ask. In your OWN voice, ONE short human "
-        f"line, tease him a little and tell him to TIP for it — either {chat_tip} "
-        "and you'll send him something, OR drop a tip under any post/pic of yours "
-        "he likes (that shows you what he's into, and you'll spoil him back for "
-        "it). Pick whichever way flows naturally — you don't have to name both. Be "
-        "playful and a touch teasing, never needy, desperate, or pushy. NEVER write "
-        "the bare word \"tip\" on its own — always a natural line, e.g. "
-        f"{example} or \"drop a lil tip under a post u like n ill spoil u 😈\". "
-        "Don't attach anything now and don't name a specific piece — just the "
-        "teasing tip-ask (the content goes out once he tips)."
-        # ── The customs framing (account opt-in, DEFAULT OFF) ──
-        # Operator ruling 2026-08-02: on a customs account the tip-ask IS the
-        # custom ask, and v1 is a VOICE NOTE specifically — "start with voicenotes
-        # as its what mostly is, rest is non important". Short clips and calls are
-        # explicitly out of scope for now.
-        #
-        # The SELLING lead-in is this surface's own; the fence after it is
-        # `_voice.CUSTOMS_CONDITIONS`, shared verbatim with the refusal rule and the
-        # ai_chatter manifest. It has to be here at all because the block above says
-        # "the content goes out once he tips", which on its own reads as
-        # *immediately* — and a custom does not, so a model that says it will has
-        # made a promise the manual fulfilment path cannot keep.
-        + ("\n\nWHAT HE IS TIPPING FOR: a CUSTOM VOICE NOTE — you record it for "
-           "him personally, after he tips. Make that clear in your own words so he "
-           "knows what he's buying: it is made FOR HIM, and it comes a little "
-           f"later, not this second. {_voice.CUSTOMS_CONDITIONS}"
+        "HE JUST ASKED TO SEE CONTENT — answer the ask. ONE short teasing line "
+        f"(never needy or pushy) telling him to {chat_tip}, or tip under a post "
+        "he likes and you'll spoil him back. NEVER the bare word \"tip\" — say it "
+        f"like {example}. attach nothing, name no piece — it goes out once he tips."
+        # Customs (account opt-in, DEFAULT OFF) — operator ruling 2026-08-02: the
+        # tip-ask IS the custom ask, v1 = VOICE NOTE only (clips/calls out of
+        # scope). The fence is `_voice.CUSTOMS_CONDITIONS` (shared verbatim with
+        # the refusal rule + ai_chatter manifest); it must be here because "goes
+        # out once he tips" reads as *instant* and a custom is not.
+        + ("\n\nWHAT HE'S TIPPING FOR: a CUSTOM VOICE NOTE recorded FOR HIM "
+           "after he tips — make clear it comes a little later, not this second. "
+           f"{_voice.CUSTOMS_CONDITIONS}"
            if sell_customs else "")
     )
     tmpl = (template or "").strip()

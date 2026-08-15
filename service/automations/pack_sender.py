@@ -1,8 +1,8 @@
 """service/automations/pack_sender.py — sell him the thing he asked for.
 
 A **pack** is one rung of a curated category (`feet-nude`), sold as a priced PPV
-to a fan who asked for it. This module owns the product row, the audit that
-stops it lying, the price/count, and the send.
+to a fan who asked for it. This module owns the product row, the plan (what
+would be sent, at what price), and the wire.
 
 ## The one sentence
 
@@ -34,7 +34,12 @@ Split on 2026-08-11, when this file crossed 1,200 lines:
     which pieces cover a quote. *What is it worth and what may he be charged.*
   * `pack_claim` — every word the fan reads, and the count it promises.
     *The contract.*
-This module keeps the shelf, the audits, the product row, and the wire.
+  * `pack_audit` — the rules that refuse a send whose media does not match its
+    caption, plus the shelf read two of them are asked against. *Can it lie?*
+    (2026-08-15, when the plan/deliver split pushed this file over 1,000 again.)
+This module keeps the product row, the planning, and the wire — decide what to
+send (`plan_*`), then send it (`deliver`). Those halves are apart because the
+closer owes the fan his ANSWER before the priced box that answers it.
 
 ⚠️ `avail` is un-BOUGHT, not un-sent (ticket 14). Keying on SENT would let one
 declined $59 offer permanently strip 11 items from the rung — the fan's own
@@ -52,23 +57,26 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
-import ownership
 import vault_pack_picker
 from db.engine import get_session
-from db.models import (
-    CatalogItem, VaultCacheRun, VaultFolder, VaultFolderItem, VaultItem, VaultSend,
-)
+from db.models import CatalogItem, VaultItem, VaultSend
 
 from . import content_resolver, pack_pricing
+# Re-exported on purpose: `audit_pack` / `audit_ask` / `mirror_warning` are part
+# of this module's surface (the operator UI and the pack tests reach them through
+# it), and the import line is where a reader learns the rules moved out.
+from .pack_audit import (  # noqa: F401
+    audit_ask, audit_pack, mirror_warning, shelf_media,
+)
 from .pack_claim import (
-    Claim, ask_clause, compose_caption, is_substitute_claim, product_description,
-    render_clause, substitute_clause,
+    Claim, ask_clause, compose_caption, product_description, render_clause,
+    substitute_clause,
 )
 from .pack_pricing import (
     MAX_ITEMS, MIN_ITEMS, RUNG_STICKER_CENTS, DEFAULT_STICKER_CENTS,
@@ -94,19 +102,6 @@ PREVIEW_MAX = 3
 # authored per language, not before.
 PACK_LANGUAGES = frozenset({"en"})
 
-# ⚠️ Mirror age is a WARNING, not a refusal — corrected 2026-08-11.
-#
-# The first cut refused any send when the vault mirror was stale, on the theory
-# that rung membership had become OF-backed. That was wrong: `_shelf_media`
-# reads `VaultFolderItem`, the INTERNAL membership the picker wrote. It is
-# operator-authored, exact, and does not decay. The mirror is only our cache of
-# OF's own listing, and media ids are stable — OF resolves them at send time
-# whatever our cache says.
-#
-# What DOES matter is narrower and is checked directly: every id about to be
-# charged for must still be a live `VaultItem` (not soft-deleted). A genuinely
-# dead id fails loudly at the wire, which is the right place for it.
-MIRROR_WARN_AGE = timedelta(days=7)
 
 # ── Refusals ────────────────────────────────────────────────────────
 # Two of these are RE-EXPORTED, not re-declared: `pack_pricing` raises them from
@@ -146,35 +141,6 @@ class PackPlan:
         return self.refusal is None and bool(self.media)
 
 
-async def _shelf_media(account_id: str, category: str, rung: str) -> list[int]:
-    """The rung's media in OPERATOR RANK order (manual_order, NULLs last).
-
-    Read live: the folder is the product, so an item added today is sold today.
-    """
-    cat = vault_pack_picker.CATEGORIES.get(category)
-    if cat is None:
-        return []
-    async with get_session() as s:
-        folder = (await s.execute(
-            select(VaultFolder).where(
-                VaultFolder.account_id == str(account_id),
-                VaultFolder.name == cat.folder_name(rung),
-                VaultFolder.deleted_at.is_(None))
-        )).scalar_one_or_none()
-        if folder is None:
-            return []
-        return [int(m) for m in (await s.execute(
-            select(VaultFolderItem.media_id).where(
-                VaultFolderItem.account_id == str(account_id),
-                VaultFolderItem.folder_id == folder.id,
-            ).order_by(
-                VaultFolderItem.manual_order.is_(None),
-                VaultFolderItem.manual_order,
-                VaultFolderItem.media_id,
-            )
-        )).scalars().all()]
-
-
 async def _filter_kind(account_id: str, media: list[int], kind: str | None) -> list[int]:
     """Keep only media of the promised KIND. "send me a video" is a promise too,
     and a photo does not satisfy it."""
@@ -207,78 +173,6 @@ async def _bought_media(account_id: str, fan_id: int) -> set[int]:
                 VaultSend.was_purchased.is_(True))
         )).scalars().all()
     return {int(m) for m in rows}
-
-
-async def _mirror_age(account_id: str) -> timedelta | None:
-    """How stale the vault mirror is. None when it has never been collected."""
-    async with get_session() as s:
-        last = (await s.execute(
-            select(func.max(VaultCacheRun.finished_at)).where(
-                VaultCacheRun.account_id == str(account_id),
-                VaultCacheRun.status == "done")
-        )).scalar_one_or_none()
-    return None if last is None else (datetime.utcnow() - last)
-
-
-# ── The audit ───────────────────────────────────────────────────────
-
-async def audit_pack(account_id: str, category: str, rung: str,
-                     media: list[int], previews: list[int]) -> list[str]:
-    """Four set rules plus freshness. Returns the violations; empty is a pass.
-
-    Runs at pack save AND again immediately before send — folder membership is
-    mutable, and this map's own re-triage moved 19 items after the fact. A pack
-    that passed on Monday can be a lie on Friday.
-
-    ⚠️ Honest ceiling: this proves *"the attached media is what a human filed
-    under this rung"*, never *"the attached media depicts this rung"*. That is
-    still the whole distance between here and a caption that cannot lie about its
-    own composition.
-    """
-    bad: list[str] = []
-    M, P = list(media), list(previews)
-    setM, setP = set(M), set(P)
-
-    if not setP <= setM:
-        bad.append(f"rule1 P⊄M: {sorted(setP - setM)}")
-
-    R = set(await _shelf_media(account_id, category, rung))
-    paid = setM - setP
-    if not paid <= R:
-        bad.append(f"rule2 paid items outside {category}-{rung}: {sorted(paid - R)}")
-
-    T = set(await _shelf_media(account_id, category, "tease"))
-    if T and not setP <= T:
-        bad.append(f"rule3 previews outside the tease rung: {sorted(setP - T)}")
-
-    if len(paid) < MIN_ITEMS:
-        bad.append(f"rule4 |M−P| = {len(paid)} < {MIN_ITEMS}")
-
-    # Rule 5 — every paid id must still EXIST. Membership is exact, but an item
-    # soft-deleted after two clean collect sweeps is gone from her vault, and
-    # charging for it would deliver nothing.
-    if paid:
-        async with get_session() as s:
-            live = {int(m) for m in (await s.execute(
-                select(VaultItem.media_id).where(
-                    VaultItem.account_id == str(account_id),
-                    VaultItem.media_id.in_(sorted(paid)),
-                    VaultItem.removed_at.is_(None))
-            )).scalars().all()}
-        missing = sorted(paid - live)
-        if missing:
-            bad.append(f"rule5 media no longer in the vault: {missing}")
-    return bad
-
-
-async def mirror_warning(account_id: str) -> str:
-    """A note for the log/operator when the cache is old — never a refusal."""
-    age = await _mirror_age(account_id)
-    if age is None:
-        return "vault never collected"
-    if age > MIRROR_WARN_AGE:
-        return f"vault mirror {age.days}d old — Collect to refresh thumbnails"
-    return ""
 
 
 # ── The product row ─────────────────────────────────────────────────
@@ -422,7 +316,7 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
     if stop is not None:
         return stop
 
-    shelf = await _shelf_media(account_id, category, rung)
+    shelf = await shelf_media(account_id, category, rung)
     if not shelf:
         return replace(empty, refusal=REFUSE_NO_SHELF)
     bought = await _bought_media(account_id, fan_id)
@@ -438,7 +332,7 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
     if priced.refusal is not None:
         return priced.refusal
 
-    tease = await _shelf_media(account_id, category, "tease")
+    tease = await shelf_media(account_id, category, "tease")
     previews = [m for m in tease if m not in priced.media][:PREVIEW_MAX]
     # Previews ride FREE inside the send and are never stamped owned, so they may
     # repeat across sends. `previews ⊆ media` is what the audit's rule 1 wants, so
@@ -506,60 +400,6 @@ async def ensure_ask_item(account_id: str) -> CatalogItem:
             s.add(row)
             await s.flush()
         return row
-
-
-async def audit_ask(account_id: str, media: list[int], claim: Claim,
-                    company: bool, *, substitute: bool = False) -> list[str]:
-    """What can honestly be checked when there is no rung to check against.
-
-    `audit_pack`'s rules 2 and 3 are rung-membership rules and have no meaning
-    here — there is no shelf, and inventing one would be theatre. Three things
-    still hold and all three have drawn blood before:
-
-      1. the count in the claim is the count he receives (the claim IS the
-         contract, and a caption that over-counts is the 2026-07-31 shape);
-      2. every id is still a live `VaultItem` — a soft-deleted id is charged for
-         and never arrives;
-      3. nobody else is in it unless he asked (2026-08-11, "very important").
-
-    🚨 Rule 1 compares two integers. It used to recover the count by summing every
-    digit in the RENDERED clause, and the clause ends in the fan's own words — so
-    "34DD tits" summed to 41 against 7 attached items, "2 girls" to 9, "your top 3
-    sets" to 10, and each of those men got a silent `audit_failed` instead of the
-    thing he asked for. `Claim` carries the number the caption actually made.
-    """
-    bad: list[str] = []
-    if not media:
-        return ["nothing attached"]
-    n = len(media)
-    if claim.n != n:
-        bad.append(f"claim states {claim.n}, attaching {n}: {claim.text!r}")
-
-    # 4. A SUBSTITUTE says so. Rules 1-3 check counts, liveness and company and
-    #    none of them reads the noun, so `ask_clause`'s "4 vids of joi" over
-    #    media that is not joi passes all three — a lie with a clean audit. The
-    #    frame is the only thing standing between "this is my version of it" and
-    #    a promise she cannot keep, so its survival is itself an audit rule.
-    if substitute and not is_substitute_claim(claim.text):
-        bad.append(f"substitute claim lost its frame: {claim.text!r}")
-
-    async with get_session() as s:
-        live = {int(m) for m in (await s.execute(
-            select(VaultItem.media_id).where(
-                VaultItem.account_id == str(account_id),
-                VaultItem.media_id.in_(media),
-                VaultItem.removed_at.is_(None))
-        )).scalars().all()}
-    dead = [m for m in media if m not in live]
-    if dead:
-        bad.append(f"{len(dead)} dead media: {dead[:4]}")
-
-    if not company:
-        solo = set(await content_resolver.solo_only(account_id, media))
-        others = [m for m in media if m not in solo]
-        if others:
-            bad.append(f"{len(others)} with someone else in them: {others[:4]}")
-    return bad
 
 
 @dataclass(frozen=True)
@@ -664,19 +504,108 @@ async def plan_ask(account_id: str, fan_id: int,
     # one fan asked for the same thing twice and got an unrelated priced set,
     # captioned with nothing, that he never opened.
     #
-    # A STRICT contract is the exception. "only feet, right?" may never be
-    # answered with something adjacent — that is the one promise where a
-    # substitute is a second deception rather than a recovery, and
-    # `Contract.strict` exists to carry exactly that.
-    if contract.strict or not res.alternatives:
+    # 🚨 ALWAYS SOMETHING FROM THE VAULT — operator ruling 2026-08-15. Measured
+    # that day: one fan asked once, and the same message was resolved 580 times
+    # over 44 hours because every attempt refused and he was sent NOTHING. Silence
+    # is not the safe answer; it is just the failure nobody logs.
+    #
+    # Three refusal branches cannot carry alternatives of their own
+    # (`LLM_UNAVAILABLE` twice, `VERIFY_REJECTED`) because at that point no
+    # trustworthy pool is left. `last_resort` is the floor under them: his profile
+    # terms first, the vault at large after, SOLO throughout.
+    #
+    # ⚠️ A STRICT contract remains the exception, and this is the one place the
+    # ruling is not applied. "only feet, right?" — asked three times, answered with
+    # a bra selfie — is why this module exists at all: that fan paid $3.25, deleted
+    # his OnlyFans account, and wrote "Goodbye, you stupid liar." For an exclusive
+    # promise a substitute is not a recovery, it is a second deception, so a strict
+    # ask still fails closed and the caller says something instead of sending it.
+    alts = res.alternatives or await content_resolver.last_resort(
+        str(account_id), int(fan_id), seen=bought, count=MAX_ITEMS)
+    if contract.strict or not alts:
         return replace(empty, refusal=REFUSE_RESOLVER, detail=res.refusal or "")
-    log.info("substitute for %r account=%s fan=%s (%s)",
-             contract.subject, account_id, fan_id, res.refusal)
+    log.info("substitute for %r account=%s fan=%s (%s, %s from last_resort)",
+             contract.subject, account_id, fan_id, res.refusal,
+             "0" if res.alternatives else len(alts))
     return await _plan_ask_from(account_id, fan_id, contract,
-                                res.alternatives, cfg, empty, _SUBSTITUTE)
+                                alts, cfg, empty, _SUBSTITUTE)
 
 
 # ── The send ────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class Delivery:
+    """A plan that PASSED every decide-time check, carrying the re-audit that must
+    still run against the wire. **Nothing has been sent.**
+
+    🚨 THE SEAM, and why it is worth a type. Deciding what to sell reads the
+    thread, calls the resolver (up to two LLM calls) and prices the result — all
+    read-only, all repeatable. Sending charges a real card and has no undo. They
+    were one call because there was one caller; the closer needs them apart, for
+    two reasons that are both about the fan:
+
+      * He asked a QUESTION. The answer belongs in front of him before the PPV
+        that answers it — a priced box arriving first, with the reply behind it,
+        reads as a vending machine.
+      * Whether to strip the model's own catalog offer off that reply is only
+        knowable once the resolver has actually found media. Guessing early
+        deletes a live catalog offer on every ask the vault then refuses.
+
+    The re-audit is a closure rather than a rule name because the two lanes check
+    different things — rung membership for a curated pack, the claim's own count
+    and company for a whole-vault ask — and each needs the arguments its planner
+    already resolved.
+    """
+    plan: PackPlan
+    reaudit: Callable[[], Awaitable[list[str]]]
+
+    @property
+    def price_cents(self) -> int:
+        return self.plan.price_cents
+
+    @property
+    def n(self) -> int:
+        return len(self.plan.media)
+
+
+def _refusal(plan: PackPlan) -> dict:
+    """A refused plan, in the wire-result shape every caller already reads."""
+    return {"status": "refused", "reason": plan.refusal, "detail": plan.detail,
+            "price_cents": plan.price_cents, "n": len(plan.media),
+            "category": plan.category}
+
+
+async def deliver(client, d: Delivery, *, voice_line: str | None = None,
+                  dry_run: bool = False) -> dict:
+    """Put a decided `Delivery` on the wire. The half that spends money."""
+    return await _deliver(client, d.plan, voice_line=voice_line,
+                          dry_run=dry_run, reaudit=d.reaudit)
+
+
+async def plan_pack_delivery(account_id: str, fan_id: int, category: str,
+                             rung: str, *, cfg: dict | None = None,
+                             company: bool = False,
+                             media_kind: str | None = None
+                             ) -> tuple[Delivery | None, dict]:
+    """Decide a curated-rung pack. `(delivery, refusal)` — exactly one is truthy."""
+    cfg = cfg or {}
+    plan = await plan_pack(account_id, fan_id, category, rung, cfg=cfg,
+                           company=company, media_kind=media_kind)
+    if not plan.ok:
+        log.info("pack refused account=%s fan=%s %s-%s: %s %s",
+                 account_id, fan_id, category, rung, plan.refusal, plan.detail)
+        return None, _refusal(plan)
+    return Delivery(
+        plan,
+        # The audit runs AGAIN immediately before the wire. Folder membership is
+        # mutable and this map's own re-triage moved 19 items after the fact: a
+        # pack that passed at plan time can be a lie by send time. With the two
+        # phases split that gap is now a whole reply wide, which makes the
+        # re-audit load-bearing rather than belt-and-braces.
+        lambda: audit_pack(account_id, category, rung,
+                           plan.media + plan.previews, plan.previews),
+    ), {}
+
 
 async def send_pack(client, account_id: str, fan_id: int, category: str,
                     rung: str, *, cfg: dict | None = None,
@@ -705,22 +634,12 @@ async def send_pack(client, account_id: str, fan_id: int, category: str,
     Recording the shelf would stamp every item sent and, on purchase, owned —
     silently deleting every future sale from this rung.
     """
-    cfg = cfg or {}
-    plan = await plan_pack(account_id, fan_id, category, rung, cfg=cfg,
-                           company=company, media_kind=media_kind)
-    if not plan.ok:
-        log.info("pack refused account=%s fan=%s %s-%s: %s %s",
-                 account_id, fan_id, category, rung, plan.refusal, plan.detail)
-        return {"status": "refused", "reason": plan.refusal, "detail": plan.detail,
-                "price_cents": plan.price_cents, "n": len(plan.media)}
-
-    return await _deliver(
-        client, plan, voice_line=voice_line, dry_run=dry_run,
-        # The audit runs AGAIN immediately before the wire. Folder membership is
-        # mutable and this map's own re-triage moved 19 items after the fact: a
-        # pack that passed at plan time can be a lie by send time.
-        reaudit=lambda: audit_pack(account_id, category, rung,
-                                   plan.media + plan.previews, plan.previews))
+    d, refused = await plan_pack_delivery(account_id, fan_id, category, rung,
+                                          cfg=cfg, company=company,
+                                          media_kind=media_kind)
+    if d is None:
+        return refused
+    return await deliver(client, d, voice_line=voice_line, dry_run=dry_run)
 
 
 async def _deliver(client, plan: PackPlan, *, voice_line: str | None,
@@ -740,7 +659,7 @@ async def _deliver(client, plan: PackPlan, *, voice_line: str | None,
         return {"status": "dry_run", "price_cents": plan.price_cents,
                 "n": len(plan.media), "media": plan.media,
                 "previews": plan.previews, "caption": caption,
-                "item_id": plan.item_id}
+                "item_id": plan.item_id, "category": plan.category}
 
     bad = await reaudit()
     if bad:
@@ -806,7 +725,12 @@ async def _deliver(client, plan: PackPlan, *, voice_line: str | None,
              len(plan.media), plan.price_cents, msg_id)
     return {"status": "ok", "message_id": int(msg_id), "item_id": plan.item_id,
             "price_cents": plan.price_cents, "n": len(plan.media),
-            "media": plan.media, "previews": plan.previews, "caption": caption}
+            "media": plan.media, "previews": plan.previews, "caption": caption,
+            # The plan already knows which lane sold him — `ASK_CATEGORY` for a
+            # whole-vault ask, the curated name otherwise. It used to be stapled
+            # on by the caller afterwards, in three places, from a value it had
+            # re-derived.
+            "category": plan.category}
 
 
 
@@ -831,30 +755,85 @@ async def _has_bought_from(account_id: str, fan_id: int, category: str) -> bool:
     if cat is None:
         return False
     for rung in cat.rungs:
-        if bought & set(await _shelf_media(account_id, category, rung)):
+        if bought & set(await shelf_media(account_id, category, rung)):
             return True
     return False
 
 
-async def send_ask(client, account_id: str, fan_id: int,
-                   contract: content_resolver.Contract, *,
-                   cfg: dict | None = None,
-                   voice_line: str | None = None,
-                   dry_run: bool = False) -> dict:
-    """Sell him what he asked for, drawn from the whole vault. One call."""
+async def plan_ask_delivery(account_id: str, fan_id: int,
+                            contract: content_resolver.Contract, *,
+                            cfg: dict | None = None
+                            ) -> tuple[Delivery | None, dict]:
+    """Decide a whole-vault ask. `(delivery, refusal)` — exactly one is truthy."""
     cfg = cfg or {}
     if not cfg.get("pack_send_enabled"):
-        return {"status": "refused", "reason": REFUSE_DISABLED}
+        return None, {"status": "refused", "reason": REFUSE_DISABLED}
     plan = await plan_ask(account_id, fan_id, contract, cfg=cfg)
     if not plan.ok:
         log.info("ask refused account=%s fan=%s subject=%r: %s %s",
                  account_id, fan_id, contract.subject, plan.refusal, plan.detail)
-        return {"status": "refused", "reason": plan.refusal, "detail": plan.detail,
-                "price_cents": plan.price_cents, "n": len(plan.media)}
-    return await _deliver(
-        client, plan, voice_line=voice_line, dry_run=dry_run,
-        reaudit=lambda: audit_ask(account_id, plan.media, plan.claim,
-                                  contract.company, substitute=plan.substitute))
+        return None, _refusal(plan)
+    return Delivery(
+        plan,
+        lambda: audit_ask(account_id, plan.media, plan.claim,
+                          contract.company, substitute=plan.substitute),
+    ), {}
+
+
+async def plan_on_ask(account_id: str, fan_id: int, *,
+                      cfg: dict | None = None) -> tuple[Delivery | None, dict]:
+    """He asked for content → decide what to sell him. **Sends nothing.**
+
+    The whole of `send_pack_on_ask` except the wire: read the ask off the thread,
+    pick the lane (curated rung or whole vault), resolve, audit, price. See
+    `Delivery` for why the two halves are apart, and `send_pack_on_ask` — which is
+    now this plus one line — for the rung ladder's reasoning.
+
+    The ladder RETRY lives here rather than around the send because
+    `REFUSE_TOO_THIN` is a plan-time refusal: the shelf is spent, which is known
+    before anything is charged. Retrying at send time would have meant a second
+    wire call after the first had already been reported.
+    """
+    cfg = cfg or {}
+    if not cfg.get("pack_send_enabled"):
+        return None, {"status": "refused", "reason": REFUSE_DISABLED}
+
+    contract = await content_resolver.read_contract(str(account_id), int(fan_id))
+    if not contract.asked:
+        return None, {"status": "refused", "reason": content_resolver.NO_ASK,
+                      "detail": contract.subject or ""}
+    # ⚠️ A CUSTOM REQUEST used to short-circuit to a refusal here, on the
+    # reasoning that "i don't have that, but check this" is a REPLY and not a
+    # sale. Nothing ever wrote that reply — `alternatives` has no reader
+    # anywhere in the service — so the branch spent a year turning the operator
+    # ruling into silence. It now falls through like any other ask: the
+    # resolver returns CUSTOM_REQUEST *with* substitutes attached, and
+    # `plan_ask` frames them as her own version instead of promising his shoot.
+
+    # 🚨 No curated category is the COMMON case, not the error case. Exactly one
+    # category exists (`feet`), so before 2026-08-11 a man asking for leather,
+    # for booty, for "vids for purchase", or saying a bare "show me" was refused
+    # here while the resolver was finding him good media two calls away.
+    if not contract.category:
+        return await plan_ask_delivery(account_id, fan_id, contract, cfg=cfg)
+
+    category = contract.category
+    rung = contract.rung if contract.rung in (DEFAULT_RUNG, LADDER_RUNG) else DEFAULT_RUNG
+    if rung == LADDER_RUNG and not await _has_bought_from(account_id, fan_id, category):
+        rung = DEFAULT_RUNG
+
+    d, refused = await plan_pack_delivery(account_id, fan_id, category, rung,
+                                          cfg=cfg, company=contract.company,
+                                          media_kind=contract.media_kind)
+    # He asked for the product rung and it is spent — try the ladder rung, but
+    # only if he has already bought from this category.
+    if (d is None and refused.get("reason") == REFUSE_TOO_THIN
+            and rung == DEFAULT_RUNG
+            and await _has_bought_from(account_id, fan_id, category)):
+        d, refused = await plan_pack_delivery(
+            account_id, fan_id, category, LADDER_RUNG, cfg=cfg,
+            company=contract.company, media_kind=contract.media_kind)
+    return d, refused
 
 
 async def send_pack_on_ask(client, account_id: str, fan_id: int, *,
@@ -877,50 +856,11 @@ async def send_pack_on_ask(client, account_id: str, fan_id: int, *,
     Refuses — loudly, in the return value — rather than substituting. For a
     strict promise a generic send is worse than no send: it turns a recoverable
     delay into a second deception.
+
+    Decide-then-send, in one call, for every caller that has nothing to say
+    between the two. `sell_lane` splits them for the closer — see `Delivery`.
     """
-    cfg = cfg or {}
-    if not cfg.get("pack_send_enabled"):
-        return {"status": "refused", "reason": REFUSE_DISABLED}
-
-    contract = await content_resolver.read_contract(str(account_id), int(fan_id))
-    if not contract.asked:
-        return {"status": "refused", "reason": content_resolver.NO_ASK,
-                "detail": contract.subject or ""}
-    # ⚠️ A CUSTOM REQUEST used to short-circuit to a refusal here, on the
-    # reasoning that "i don't have that, but check this" is a REPLY and not a
-    # sale. Nothing ever wrote that reply — `alternatives` has no reader
-    # anywhere in the service — so the branch spent a year turning the operator
-    # ruling into silence. It now falls through like any other ask: the
-    # resolver returns CUSTOM_REQUEST *with* substitutes attached, and
-    # `plan_ask` frames them as her own version instead of promising his shoot.
-
-    # 🚨 No curated category is the COMMON case, not the error case. Exactly one
-    # category exists (`feet`), so before 2026-08-11 a man asking for leather,
-    # for booty, for "vids for purchase", or saying a bare "show me" was refused
-    # here while the resolver was finding him good media two calls away.
-    if not contract.category:
-        res = await send_ask(client, account_id, fan_id, contract, cfg=cfg,
-                             voice_line=voice_line, dry_run=dry_run)
-        res.setdefault("category", ASK_CATEGORY)
-        res.setdefault("asked", contract.quote)
-        return res
-
-    category = contract.category
-    rung = contract.rung if contract.rung in (DEFAULT_RUNG, LADDER_RUNG) else DEFAULT_RUNG
-    if rung == LADDER_RUNG and not await _has_bought_from(account_id, fan_id, category):
-        rung = DEFAULT_RUNG
-
-    res = await send_pack(client, account_id, fan_id, category, rung, cfg=cfg,
-                          voice_line=voice_line, company=contract.company,
-                          media_kind=contract.media_kind, dry_run=dry_run)
-    # He asked for the product rung and it is spent — try the ladder rung, but
-    # only if he has already bought from this category.
-    if (res.get("reason") == REFUSE_TOO_THIN and rung == DEFAULT_RUNG
-            and await _has_bought_from(account_id, fan_id, category)):
-        res = await send_pack(client, account_id, fan_id, category, LADDER_RUNG,
-                              cfg=cfg, voice_line=voice_line,
-                              company=contract.company,
-                              media_kind=contract.media_kind, dry_run=dry_run)
-    res.setdefault("category", category)
-    res.setdefault("asked", contract.quote)
-    return res
+    d, refused = await plan_on_ask(account_id, fan_id, cfg=cfg)
+    if d is None:
+        return refused
+    return await deliver(client, d, voice_line=voice_line, dry_run=dry_run)

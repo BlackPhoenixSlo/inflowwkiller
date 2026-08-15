@@ -37,49 +37,31 @@ log = logging.getLogger("of-relay.automation.cat_stickers")
 
 # tag -> (when-to-use line for the prompt, giphy ids to rotate among)
 _CATALOG: dict[str, tuple[str, tuple[str, ...]]] = {
-    'laugh': ('he said something genuinely funny',
+    'laugh': ('genuinely funny',
               ('2g6sCTsSoVuSfSxK4W', 'M8lbkkn8BFFLO', '96suQaNpBRyE')),
-    'love': ('warm affectionate moment, he said something sweet',
+    'love': ('he said something sweet',
              ('a9VAlh8bgb0SA', 'LVXJQat47MwQU', 'ohiWzVWGkAOCA', '5QXd9CLYmU944', 'zGJegUgNbPOtW')),
-    'kiss': ('goodnight/goodbye kiss or after a compliment',
+    'kiss': ('goodnight/goodbye kiss',
              ('W1hd3uXRIbddu', 'xI1pK446iNJeg')),
-    'flirty': ('playful teasing, being cheeky',
+    'flirty': ('playful teasing',
                ('KI5JqBqOKCPjG', 'HB9nUzmw6L74HHWpqN')),
-    'shy': ('he complimented you and you play coy',
+    'shy': ('play coy after a compliment',
             ('xFOc3rYIGE3aE', 'Iwt30C4BH94ty', '33JJnbUuorikA5zWgB', 'dxqOkrl29R8ac')),
-    'excited': ('genuinely hyped about something he said',
-                ('Yt09iFvD9u5AQ', 'PUBxelwT57jsQ')),
-    'dance': ('celebrating, happy vibes, party mood',
-              ('TjSPQgowhhJdHgvnwA', '6v1v8O3go6r0uLI1xT', 'fx8HHVnj3Zpo1lbCkS', 'WXB88TeARFVvi')),
-    'celebrate': ('he bought/tipped or shared good news',
+    'celebrate': ('he bought/tipped or good news',
                   ('TbRkubcqlgBksEqMv4', 'A0Zt7yuDULiy4ofmVD', 'NfzERYyiWcXU4', 'Ga0gHvT84m3yTE8lIp')),
-    'miss_you': ('he was away, you missed him',
+    'miss_you': ('he was away',
                  ('vxsoC27UotxBK', 'vFjAksOeerSdW', 'MDJ9IbxxvDUQM', '1FkCqpyObTuo0', 'd9eL06htb5Vks', 'SgZtvjwcfq0ww')),
-    'sad': ('he said something sad or is leaving',
-            ('LdMWg0xQTfmcpFF5Yt', 'aWMJvA76tNnBR9gkpT', 'TZBED1pP5m8N2', 'UrhRmF81nrHG3cBIqO', '7AzEXdIb1wyCTWJntb')),
-    'pout': ('playfully sulking, he ignored you or said no',
-             ('Ev477g37MJORyOWfdG', 'OHRF8LZis06OiPDJby', '7H9Cl4X9d68RIk3CNv', 'ZJieMJ372LLjXsInfV')),
-    'eyeroll': ('sassy reaction to something silly',
+    'eyeroll': ('sassy, something silly',
                 ('1wqK6DFqm5FW8ZCdJ9', 'NxwRDSUNzXshW', 'nazt106Gb1Ga4')),
-    'shocked': ('surprising/wild thing he said',
+    'shocked': ('wild thing he said',
                 ('Cdkk6wFFqisTe', '135QXxqZ9d0QGk', 'BBNYBoYa5VwtO', '113YkW9oWdtFlu')),
-    'confused': ('his message made no sense',
-                 ('qZgHBlenHa1zKqy6Zn', 'blPpTGDhn6hEI', 'EqTWMRQnJniN1ymau8', 'GRk3GLfzduq1NtfGt5', 'lvrIdlYCod54kOrguY')),
-    'sleepy': ('goodnight, being cozy in bed',
+    'sleepy': ('goodnight, cozy in bed',
                ('12cYyFxlbIgXeg', 'GxQABXQhII7cY', 'Tfr91anUahoME', 'lFpvlU0or3SHC', 'DRNsbfCHNznxe')),
     'good_morning': ('morning greeting',
                      ('8B0TmFIOZ9iJJgJu8T', 'OWQzUnzgX7bS8', '10zHDq77BLwcy4', 'cwxKYaFLOBd1S', 'AC8n0wdJvnA6A', 'papAALBn286ty')),
-    'wave_hi': ('greeting after a while, saying hi',
-                ('ToMjGpRZ4gF6YuAT4li', 'X7Bckr1JaJS1opWTzO', 'H55IwUvuvmd8YiyGZX', 'xun2qNfnK1cV5r07GM', 'HYpZKsyLOn1ks')),
-    'thumbs_up': ('agreeing, confirming plans',
-                  ('KtKi9n1k5h5bW', 'kchkvMhb25mwPADv4z', '5gXYzsVBmjIsw')),
-    'grumpy': ('playful fake-mad at him',
-               ('xinkUUmE1ww5mbOd8E', 'haCYYKWRVeilcEL65X', '7rBemb9RiAEtW')),
-    'waiting': ('he went quiet mid-convo',
+    'waiting': ('he went quiet',
                 ('ZT0YXuyEN2ZdNLmAq8', 'cbLcSvHw50bJ8UuImn', 'm22Lj3VfcwDNvqc2Rd', 'tTImgMAq1DDuVnPrbX')),
-    'beg': ('playfully begging him for something',
-            ('5Ac3lAE4Ydz6E', 'aXlUz1p4dpNks', '4u8WdgQEMVaj6', 'MFYVUQWYW3ZPC2QNJh', 'ZyNQFqZLFUhr2', 'ciZYL6PAuysz6')),
-    'money': ('money talk, after he spoils you',
+    'money': ('money talk, he spoils you',
               ('XQKBuQmfjt1xm', '10RTemEe5yjo0U', 'cLLgfNJiKppgA', 'ND6xkVPaj8tHO')),
 }
 
@@ -318,8 +300,9 @@ _TAGS_NOT_FOR_HIM = frozenset({
     "excited",
 })
 
-# The MALE pack — 38 gifs, dogs and wolves, hand-picked 2026-08-02 via
-# `cat_stickers/harvest_male.py` → contact sheets → `finalize_male.py`.
+# The MALE pack — dogs and wolves, hand-picked 2026-08-02 via
+# `cat_stickers/harvest_male.py` → contact sheets → `finalize_male.py`;
+# pruned 2026-08-15 alongside the female catalog (dropped tags live in git).
 #
 # Only the gif ids differ: a tag means the same thing in both lanes, so the
 # when-to-use lines are read from `_CATALOG` above and are never duplicated
@@ -337,22 +320,14 @@ _TAGS_NOT_FOR_HIM = frozenset({
 # was opened to fix — the fan reads it as a photo of "him" (it is not, and a
 # reverse image search says so) or as a forwarded celebrity reaction, which no
 # real person sends as a selfie. The cat pack works precisely because a cat is
-# NOBODY. So the male pack is animals too, and `thumbs_up` keeps 2 clips rather
-# than borrowing a stranger's face to reach 3.
+# NOBODY. So the male pack is animals too.
 _CATALOG_HIM: dict[str, tuple[str, ...]] = {
     'laugh': ('FLKUJnRt6cGBG102B0', 'Ut0KxC3gnIwcEpmTZW', 'XN8YOV0H6YfVFFGxth'),
     'flirty': ('sWBzg2D15WwQjHcxbt', 'eKP4xPPkYm7WyMyDR2', 'zZbkdtXpqqkARUomtQ'),
-    'sad': ('3o7WTutp8jXuC9IUMg', 'ZbE122VAmvzl3ijeHi', 'EW79wVgSajjv44E8Hs'),
     'eyeroll': ('Wwn5NKv4At2CIc8XQa', '11nQ2iZnQpPkgo', 'TZC932cYxsgr87gowA'),
     'shocked': ('ZK92FCOPbY8JaFhiMM', '1ZNI35FsYGMtko7m9k', 'hoictzHHdRbZr0XrqE'),
-    'confused': ('3ohc17IuNgUpALSaIM', 'nQx7UfXA79HCp5vF9E', 'gIfv29q3ULtqjYTR7B'),
     'sleepy': ('d26dt3KtXoPeft6Lm6', '13MqteASr9UOGs', 'NFnR57Oj2LiWcJUb01'),
     'good_morning': ('b9NywKMAEpmPm', 'ROjjp6hqqgACs', 'OssGz3OQzVqb6'),
-    'wave_hi': ('o22WjU9bIgFWM', 'ZacOWV6SEb9CcmBJZe', 'gVYk3rI8YjtAI'),
-    # 2, not 3 — see the gym/combat note above. Two is the floor the cat pass
-    # already set on `eyeroll` and `confused`: empty > wrong.
-    'thumbs_up': ('sbzW9cwJksYfO2CNty', '9qHJZZrXsgb1pp8Dqu'),
-    'grumpy': ('9IZKPmNdZ7juU', 'iOGwrvGQBlo613onPO', 'mcHOSTJMjCrjW'),
     'waiting': ('hgT3tIssMXLTc7ZwwT', '1xV85u4aYIXfpVh8xW', 'UNkS45j4Rcam9TyOQ2'),
     'money': ('RoS4JYcw0RvK8', 'VRwGkD5zYcbW8', '12pJ8OxSWwO86Y'),
 }
@@ -389,28 +364,21 @@ def prompt_block(mode: str, voice: str = "her") -> str:
              if male else "the kind real girls spam in texts")
     noun = _PACK_NOUN["him" if male else "her"]
     block = (
-        f"{noun.upper()} STICKERS — you have a pack of {noun} reaction gifs, "
-        f"{frame}. Tags you can send:\n" + tag_lines + "\n"
-        "Sticker rules:\n"
-        "- MOST replies need NO sticker — use one only when the emotion is "
-        "strong. Never force it.\n"
-        "- To attach one, end your reply with a line that is exactly: "
-        "STICKER: <tag>\n"
-        "- A sticker can BE the whole reply — when a reaction says it all, "
-        "output ONLY the STICKER line, no text.\n"
-        "- Max ONE sticker per reply. The STICKER line is protocol — it's "
-        "stripped before sending, the fan only sees the gif.\n"
+        f"{noun.upper()} STICKERS — {noun} reaction gifs, "
+        f"{frame}. Tags:\n" + tag_lines + "\n"
+        "Rules: MOST replies need NO sticker, max ONE. to attach, end your "
+        "reply with a line that is exactly: STICKER: <tag> — it's stripped, "
+        "the fan only sees the gif. it can BE the whole reply (ONLY the "
+        "STICKER line, no text). "
         # The only leak class a regex cannot touch. Three fans got prose instead
         # of a gif ("a cat sticker feels right here", "sticker works for this"):
         # the model narrating the reaction rather than emitting the marker. No
         # strip can catch that without also eating the fan who genuinely talks
         # about stickers, so it has to be prevented upstream, here.
-        "- NEVER mention or describe the sticker in your text. The marker sends "
-        "it, or nothing does."
+        "NEVER mention the sticker in your text."
     )
     if mode == "solo":
         block += (
-            "\n- THIS message: a reaction sticker says it all — if ANY sticker "
-            "fits this moment, reply with ONLY the STICKER line, no text. Only "
-            "add text if truly no sticker fits.")
+            "\n- THIS message: if ANY sticker fits, reply with ONLY the "
+            "STICKER line, no text.")
     return block

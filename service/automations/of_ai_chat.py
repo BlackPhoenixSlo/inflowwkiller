@@ -21,7 +21,8 @@ What it does, per tick (`run(account_id, payload, *, run_id)`):
      a candidate ONLY when the fan spoke last (`last.direction == 'in'`); if WE
      sent last there is nothing to answer (the spec's "You: " sidebar skip).
   3. Stop-conditions that PERSIST a skip (so a banned fan stays banned across
-     ticks): lifetime spend > $1 → "spent"; ≥ 10 fan messages → "too_long";
+     ticks): he BOUGHT CONTENT (a tip or a PPV unlock — never a subscription)
+     → "spent"; ≥ 10 fan messages → "too_long";
      info-complete (≥ 75% of the four bio field-groups filled) → "info". Each
      writes a `skip_list` row and drops the fan. `automation_paused_until` (human
      override) and the blacklist/skip_list membership drop a fan WITHOUT writing
@@ -90,6 +91,7 @@ from ._common import (
     STYLE_3LINE, STYLE_BRIEF, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction,
     build_facts_note, build_structured_nickname, build_tip_ask_block, coerce_ids,
+    content_payer_fans,
     facts_from_fan, hold_with_typing, apply_typo_throttle, is_content_ask,
     is_substantive_msg,
     load_cat_sticker_tuning, load_cat_stickers_flag,
@@ -109,6 +111,7 @@ from ._persona import (
 from ._outbound import ConsistencyCtx, finalize_draft
 from . import cat_stickers  # reaction-gif pack (same roll/parse/send seam as ai_chatter)
 from . import gen_info  # profile_is_stale() — the refresh-if-stale hook below
+from . import sell_lane  # THE gate every priced send passes through
 
 # A 200-from-OF without a message id can't be persisted (message_id is the PK),
 # so eligibility ("fan spoke last") would re-fire next tick → double-reply.
@@ -119,7 +122,6 @@ log = logging.getLogger("of-relay.automation.of_ai_chat")
 
 # ── Knobs (ported from 05_of_ai_chat.md) ─────────────────────────────
 _PURPOSE = "of_ai_chat"          # also the account_ai_config.model_by_purpose key
-_SPEND_GATE_CENTS = 100          # bought_amount > $1 → hand off to humans
 _MAX_FAN_MESSAGES = 10           # runaway-conversation cutoff (spec MAX_FAN_MESSAGES)
 _MAX_TURNS = 30                  # hard per-fan reply cap → hand off to deep_convo.
                                  # _MAX_FAN_MESSAGES counts the FAN's messages; this
@@ -153,15 +155,11 @@ _REPLY_COOLDOWN_S = 10
 _STYLE_VARIANTS = (
     "one short line, one emoji that fits.",
     "one short line, NO emoji this time.",
-    ("TWO separate texts — output them as TWO LINES with a line break between "
-     "(line 1 = a 2-4 word reaction, line 2 = your line/question). Both tiny. "
-     "Example:\ndamn really?\nso what's ur fave map?"),
-    ("TWO separate texts on two lines (line break between) — react on line 1, "
-     "then tease or ask on line 2. Keep both super short, 0-1 emoji."),
-    "one short line, all lowercase, no ending punctuation — lazy/casual.",
-    "one short line; if you use an emoji make it NOT 😏 (try 😈 🙈 😅 🥵) or skip it.",
-    ("DON'T gush or elaborate on his last answer — a 1-2 word ack (or none), then "
-     "straight to your next question. e.g. \"cool, what do u do for work?\""),
+    ("TWO tiny texts on separate lines — a 2-4 word reaction, then your "
+     "line/question. 0-1 emoji."),
+    "one lazy lowercase line, no ending punctuation.",
+    "one short line, emoji NOT 😏 (😈 🙈 😅 🥵) or none.",
+    "dont gush over his answer — a 1-2 word ack, then straight to your next question.",
 )
 
 # When we deliberately SKIP the question this turn (a "breather"), vary HOW it reads
@@ -169,12 +167,9 @@ _STYLE_VARIANTS = (
 # _STYLE_VARIANTS. One is rolled per breather. (A breather that ANSWERS a question he
 # just asked is handled separately — see _build_messages.)
 _BREATHER_VARIANTS = (
-    "THIS MESSAGE: don't ask anything — just react to what he said in a few words "
-    "and let it breathe. (You'll ask next time.)",
-    "THIS MESSAGE: don't ask anything — tease him or be a lil bratty about what he "
-    "said, playful not mean. (You'll ask next time.)",
-    "THIS MESSAGE: don't ask anything — react, then add a small thought of your own "
-    "to keep it flowing. (You'll ask next time.)",
+    "THIS MESSAGE: don't ask anything — just react, let it breathe.",
+    "THIS MESSAGE: don't ask anything — tease him a lil, playful not mean.",
+    "THIS MESSAGE: don't ask anything — react + a small thought of your own.",
 )
 
 # Emoji (with optional variation selector) + the LLM em-dash "tell".
@@ -624,7 +619,8 @@ async def _load_mid_funnel_fans(account_id: str) -> set[int]:
 
 
 class _Candidate:
-    __slots__ = ("fan_id", "fan_msg_n", "last_dir", "last_body", "messages")
+    __slots__ = ("fan_id", "fan_msg_n", "last_dir", "last_body", "messages",
+                 "last_in_at", "last_out_at")
 
     def __init__(self, fan_id: int):
         self.fan_id = fan_id
@@ -632,6 +628,12 @@ class _Candidate:
         self.last_dir = ""
         self.last_body = ""
         self.messages: list[tuple[str, str]] = []  # (direction, body) oldest→newest
+        # When each side last spoke. This lane never needed them — it replies to
+        # whoever spoke last and lets the model read recency out of the transcript.
+        # `upsell.qualify` does need them: a thread with no inbound TIME is "stale"
+        # to the gate, so a Turn built without these silently refuses every sale.
+        self.last_in_at: datetime | None = None
+        self.last_out_at: datetime | None = None
 
 
 async def _gather(account_id: str,
@@ -649,11 +651,12 @@ async def _gather(account_id: str,
         where.append(Message.fan_id.in_(fan_ids))
     async with get_session() as s:
         rows = (await s.execute(
-            select(Message.fan_id, Message.direction, Message.body, Message.image_desc)
+            select(Message.fan_id, Message.direction, Message.body,
+                   Message.image_desc, Message.created_at)
             .where(*where)
             .order_by(Message.fan_id, Message.created_at, Message.message_id)
         )).all()
-    for fan_id, direction, body, image_desc in rows:
+    for fan_id, direction, body, image_desc, created_at in rows:
         c = out.get(fan_id)
         if c is None:
             c = out[fan_id] = _Candidate(int(fan_id))
@@ -661,6 +664,11 @@ async def _gather(account_id: str,
         c.messages.append((direction, text))
         c.last_dir = direction
         c.last_body = text
+        # Rows arrive oldest→newest per fan, so a plain assignment IS the latest.
+        if direction == "in":
+            c.last_in_at = created_at
+        else:
+            c.last_out_at = created_at
         # Count only substantive inbound toward the runaway-loop cap: emoji-only
         # reactions are not a real message turn (see is_substantive_msg). gen_info
         # counts the same way, so the staleness baseline stays on one scale.
@@ -1020,23 +1028,21 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         # openers exist to improve on.
         need_block = _openers.need_block(opener)
     elif not question_lines:
-        need_block = "You know enough about him now — just chat and flirt naturally."
+        need_block = "You know enough — just chat and flirt naturally."
     elif ask:
         # The list is already ordered (fresh topics first, dodged ones poked
         # later), so just tell it to ask ONE naturally — don't insist or re-ask
         # the same thing he dodged; move on and circle back.
         need_block = (
-            "YOUR GOAL THIS MESSAGE: find out ONE of these about him. Pick whichever "
-            "flows best from what he just said and weave it in naturally — any order "
-            "is fine. If he dodged something earlier, DON'T re-ask it back-to-back; "
-            "just move on to another one and you can poke it again later:\n" + question_lines
+            "YOUR GOAL THIS MESSAGE: find out ONE of these about him — whichever "
+            "flows naturally from what he just said. DON'T re-ask a dodge "
+            "back-to-back; poke it again later:\n" + question_lines
         )
     elif fan_just_asked:
         # #2 he asked us something — answer it, don't ignore it to fire our own Q.
         need_block = (
-            "THIS MESSAGE: he just asked you something — answer it warmly and briefly "
-            "in your own words, and DON'T fire a question back this time. (You'll ask "
-            "next time.)"
+            "THIS MESSAGE: he just asked you something — answer it warmly in your "
+            "own words, DON'T fire a question back this time."
         )
     else:
         need_block = random.choice(_BREATHER_VARIANTS)  # #4 vary the breather itself
@@ -1047,8 +1053,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # unprompted out of fixation.)
     name_dodged = (not nonempty(f.real_name) and "name:2" in asked)
     dodge_note = (
-        "\n\nIMPORTANT: you asked his name twice and he dodged — do NOT ask his name "
-        "again. Pick a playful nickname for him and just use it from now on."
+        "\n\nIMPORTANT: he dodged his name twice — NEVER ask it again; use a "
+        "playful nickname instead."
         if name_dodged else "")
 
     # Per-message style dice so replies don't all look identical (the bot tell:
@@ -1063,13 +1069,12 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # mid-prompt loses to the goal/style lines (verified live in ai_chatter:
     # 5/5 solo rolls yielded plain text until the directive moved here).
     if sticker_mode == "solo":
-        style = ("a cat sticker says it all this time — if one of the CAT "
-                 "STICKERS below fits his last message, reply with ONLY the "
-                 "STICKER line, no text at all. Only write text if truly "
+        style = ("if a CAT STICKER below fits his last message, reply with ONLY "
+                 "the STICKER line, no text. text only if truly none fits. "
                  # See ai_chatter's copy: this slot is what the closing user line
                  # points at, so the directive is echo-able by construction. The
                  # marker rule in cat_stickers.parse_marker is the floor under it.
-                 "none fits. Never write this instruction out as the message.")
+                 "Never write this instruction out as the message.")
     # When selling, force a single teasing line — a multi-line/breather variant
     # would fight the "ONE short line" tip-ask block. Beats a solo roll too: a
     # tip-ask must carry text (the gif can still ride after it).
@@ -1094,33 +1099,32 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # a piece or attaches media; it only asks for the tip.
     offer_clause = "" if selling else "don't offer pics or videos yet; "
     nudes_rule = "" if selling else (
-        "- If he gets explicit early or asks for nudes/pics: don't go along with it "
-        "and don't offer anything — playfully tease and slow it down, then steer "
-        "back to getting to know him. Warm and flirty, never cold or preachy.\n")
+        "- if he pushes nudes/pics early: don't go along and don't offer anything "
+        "— tease, slow it down, steer back to getting to know him. warm, never "
+        "preachy.\n")
     # The prompt clock ("" when the account has no tz configured → byte-equal
     # prompt). One hard consistency rule: "what time is it where you are?" is
     # the classic bot trap, and a model with no clock invents one.
     clock_block = (
-        f"RIGHT NOW for you it is {clock}. If the time, your day, or what "
-        "you're doing comes up, stay consistent with this clock — never claim "
-        "a different time of day.\n\n" if clock else "")
+        f"RIGHT NOW for you it is {clock} — never claim a different time of "
+        "day.\n\n" if clock else "")
     # TODAY's day, read at the creator-local hour — see ai_chatter's twin. "" when
     # the account has no day log, so the prompt stays byte-equal.
     day_sys = day.system_block(v.voice)
     system = (
         f"{persona}\n"
-        "You're texting a fan to get to know him while flirting. You are 100% human "
-        "— never sound like a bot or an assistant. "
+        "You're texting a fan — flirting, getting to know him. 100% human, never "
+        "a bot or an assistant. "
         # The ban, conditional — verbatim when she has no day to give, replaced when
         # she does. Identical rule and identical reasoning to ai_chatter's; these two
         # preambles have always been near-verbatim twins and must not drift here, or
         # the same fan gets a different creator depending on which engine answered.
         + ("Use only what you've learned about him; don't share your own info "
            "unless he asks; " if not day_sys else
-           "Use what you've learned about him, and give a little back — one short "
-           "beat of your own day when it fits, never a paragraph; ")
+           "Use what you've learned about him and give a little back — one short "
+           "beat of your day, never a paragraph; ")
         + f"{offer_clause}he may "
-        "send several texts in a row — read them all, reply to the latest.\n\n"
+        "send several texts — read all, reply to the latest.\n\n"
         f"{v.painful_texting + chr(10) + chr(10) if painful_on else ''}"
         f"{clock_block}{day_sys}"
         f"{need_block}{dodge_note}\n\n"
@@ -1130,12 +1134,10 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         # like a 22-year-old. See _common.persona_register_age.
         f"HOW YOU TEXT (a real {persona_register_age(persona)}yo {v.texter_noun}, "
         "not an assistant):\n"
-        "- Short and casual. lowercase, contractions, u/ur/ya. React to what he "
-        "said in a few words first.\n"
-        "- VARY it every time — don't open the same way twice, and don't reuse a "
-        "phrase or an emoji you've already used in this chat.\n"
-        "- At most ONE question, never one he already answered (if his answer was "
-        "vague, ask a quick follow-up instead of re-asking). No paragraphs.\n"
+        "- short and casual: lowercase, u/ur/ya. react to what he said first.\n"
+        "- VARY it — never reuse an opener, phrase, or emoji from this chat.\n"
+        "- at most ONE question, never one he already answered (vague answer → "
+        "quick follow-up). no paragraphs.\n"
         f"{NO_NARRATION_RULE}"
         f"{nudes_rule}"
         f"{_good_examples(f, asked, have_durable_name)}\n"
@@ -1607,23 +1609,30 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # gets the spend/too_long/info checks; it only limits the candidate set.
     only_fan_ids = coerce_ids(payload.get("only_fan_ids"))
 
-    # PPVscriptAI hand-over: when ai_chatter is the FULL chatter it REPLACES us —
-    # its population (every fan under its spend gate, default $1000) is a superset
-    # of ours (the $1 gather pool), so running both would be a second bot voice on
-    # the same fans → stand down for the whole account. But when ai_chatter is the
-    # CLOSER (intent_only) it answers ONLY buyers and leaves pure chatter to us, so
-    # we KEEP RUNNING and instead drop just the fans it owns (computed once by_fan
-    # is built). force_ids still targets manually. Lazy import: cycle.
-    ai_closer = False
+    # PPVscriptAI hand-over: when ai_chatter chats EVERYONE it REPLACES us — its
+    # population is then a superset of ours, so running both would be a second bot
+    # voice on the same fans → stand down for the whole account.
+    #
+    # Otherwise it owns only a SUBSET — the CLOSER answers buyers, the PAYER FLOOR
+    # answers men who have bought content — and we keep running and drop exactly the
+    # fans it owns (`engaged_subset`, once by_fan is built).
+    #
+    # ⚠️ ASK ai_chatter WHETHER IT OWNS EVERYONE; never re-derive it from flags here.
+    # This early return happens BEFORE the gather, so `engaged_subset` never runs to
+    # correct a wrong answer: get it wrong for the payer floor and both engines
+    # abandon every non-buyer at once — the seller refuses him and we have already
+    # gone home. `owns_whole_account` is that question, stated once, next to
+    # `engaged_subset` so the two cannot drift.
+    # force_ids still targets manually. Lazy import: cycle.
+    ai_subset = False
     if not force_ids:
         try:
             from .ai_chatter import (is_enabled as _ai_chatter_enabled,
-                                     is_intent_only as _ai_chatter_intent_only)
+                                     owns_whole_account as _ai_chatter_owns_all)
             if await _ai_chatter_enabled(account_id):
-                if await _ai_chatter_intent_only(account_id):
-                    ai_closer = True
-                else:
+                if await _ai_chatter_owns_all(account_id):
                     return {"status": "skipped", "reason": "ai_chatter_owns_account"}
+                ai_subset = True
         except Exception:
             log.debug("of_ai_chat ai_chatter gate check failed", exc_info=True)
 
@@ -1685,15 +1694,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     promo_spam = await load_promo_spam_ids(account_id)
     by_fan = await _gather(account_id, only_fan_ids or None)
 
-    # Closer-mode ai_chatter owns only the fans it will answer (open offer / buying
-    # intent) — drop exactly those and cover the rest. Empty unless ai_closer.
+    # ai_chatter owns only the fans it will answer (closer mode: open offer / buying
+    # intent; payers-only: men who have bought content) — drop exactly those and
+    # cover the rest. Empty unless it owns a subset.
     ai_owns: set[int] = set()
-    if ai_closer:
+    if ai_subset:
         try:
             from .ai_chatter import engaged_subset as _ai_chatter_engaged
             ai_owns = await _ai_chatter_engaged(account_id, set(by_fan))
         except Exception:
             log.debug("of_ai_chat engaged_subset failed", exc_info=True)
+
+    # Who has bought CONTENT — a tip or a PPV unlock. THE hand-off line: above it a
+    # man is the seller's, below it he is ours. One batched query for the whole
+    # candidate set, and deliberately not `fans.lifetime_spend_cents` — that column
+    # counts the SUBSCRIPTION, so on a paid page it graduated every new subscriber
+    # to the seller the moment he subscribed, and this engine never gathered a thing
+    # about him. See `content_payer_fans` for the measurements.
+    content_payers = await content_payer_fans(account_id, set(by_fan))
 
     # of_client only — no DOM. Built via the executor seam tests override.
     client = await asyncio.to_thread(ax._make_client, account_id)
@@ -1756,7 +1774,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if fan_id in promo_spam:
                 skipped_spam += 1
                 continue
-            if int(f.lifetime_spend_cents or 0) > _SPEND_GATE_CENTS:
+            # He bought CONTENT → he is a customer, hand him to the seller. A
+            # SUBSCRIPTION is not a purchase and no longer graduates him: paying to
+            # get in the door is what makes him ours to work, not what ends it.
+            if fan_id in content_payers:
                 await _skip_and_collect(account_id, fan_id, "spent")
                 newly_skiplisted += 1
                 continue
@@ -1797,6 +1818,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_cooldown = 0
     errors = 0
     cap_hit = False
+    # The vault sell lane: config, permission, counter snapshot, budget and tally,
+    # all on one object. Its `cfg` is the CLOSER's, and so is the permission key —
+    # the shelf switches, the offer caps and the gate it depends on all live there,
+    # and two engines reading two copies of a cap is two caps.
+    lane = await sell_lane.for_run(account_id, engine=_PURPOSE,
+                                   permission_key="of_ai_chat_sell_on_ask")
 
     for c in candidates:
         if sent >= max_replies:
@@ -1870,6 +1897,33 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Per-fan language: a manual pin or gen_info detection on this fan
             # (fans.language) overrides the account default; unset → account default.
             fan_lang = _language.resolve_language(account_lang, getattr(f, "language", None))
+
+            # ── He asked to SEE something. Answer with the thing, priced ──
+            #
+            # of_ai_chat is the info-gather lane and its prompt says "don't offer
+            # pics or videos yet" — so its whole answer to a direct ask has been a
+            # tip-ask line at best, and nothing at all where the tip-ask is off.
+            # `sell_lane` supplies the brakes this engine has never had, so the ask
+            # can be answered with the media instead of deflected.
+            #
+            # Runs BEFORE the extract and the reply generation: on a selling turn
+            # both LLM calls are skipped, so this lane is cheaper than the banter it
+            # replaces. The lease taken above is still held — that is the mutex, and
+            # `sell` requires the caller to hold it.
+            #
+            # A sale REPLACES this turn's reply, and COUNTS as one: `sent` is what
+            # `max_replies` bounds, so a sale that skipped it would let a run ship
+            # its whole reply budget plus an unbounded number of priced PPVs.
+            if await lane.sell(client, fan_id,
+                               sell_lane.Turn(text=c.last_body, at=c.last_in_at,
+                                              our_last_at=c.last_out_at,
+                                              lang=fan_lang),
+                               fan=f, dry_run=dry_run):
+                sent += 1
+                sent_ok = True   # a priced send IS a send — lease + state as one
+                await _mark_reply_sent(account_id, fan_id, now)
+                continue
+
             # Cat-sticker roll (code-side rate control, same seam as ai_chatter):
             # deterministic per reply (fan + his latest text) so a re-run rolls
             # the same. Cooldown (per-account gap knob) forces skip.
@@ -2151,6 +2205,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "candidates": len(candidates),
         "replies_sent": sent,
         "stickers_sent": stickers_sent,
+        **lane.stats,
         "skipped_listed": skipped_listed,
         "skipped_not_turn": skipped_not_turn,
         "skipped_spam": skipped_spam,

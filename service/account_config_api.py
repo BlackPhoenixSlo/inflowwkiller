@@ -54,7 +54,6 @@ PURPOSES: tuple[str, ...] = (
 # for the editor dropdown. Sourced from the language layer so there's one list.
 from automations._language import KNOWN_LANGS, LANG_DISPLAY, norm_lang  # noqa: E402
 from automations._voice import (  # noqa: E402
-    STORAGE_KEY_NOTE as _STORAGE_KEY_NOTE,
     VOICE_HER, VOICE_HIM, fact_labels, fact_placeholders, norm_voice, parse_voice,
     pronouns as _voice_pronouns)
 LANGUAGES: tuple[dict, ...] = tuple(
@@ -445,14 +444,14 @@ def _enrich_system(voice: object) -> str:
         "Chilean one).\n"
         "- You are AUTHORING a persona, not extracting facts about a real "
         "person. So where the persona is silent, INVENT something ordinary and "
-        "plausible and commit to it — a home city, who "
-        f"{p.subject} lives with, whether {p.subject} has kids, a sentence about "
-        f"{p.possessive} childhood. Leaving these blank is the WORST outcome, "
+        "plausible and commit to it — a home city, "
+        f"{p.possessive} relationship status, whether {p.subject} has kids. "
+        "Leaving these blank is the WORST outcome, "
         "not the safe one: the chat AI will then improvise a DIFFERENT answer "
         "every time a fan asks, and fans notice. A committed invention beats an "
         "improvised one.\n"
         "- Keep every value SHORT and concrete: a city name, one clause, a plain "
-        "phrase. `upbringing` is at most one sentence.\n"
+        "phrase.\n"
         "- Prefer a real, ordinary, plausible place a real person would be from. "
         "No celebrities, no landmarks, nothing exotic or newsworthy.\n"
         "- Use \"\" ONLY when a value would risk contradicting something already "
@@ -463,18 +462,12 @@ def _enrich_system(voice: object) -> str:
         "Body art is visible in "
         f"{p.possessive} photos, so both an invented tattoo and a wrongly denied "
         "one are things a fan can see are false.\n"
-        "- `birthday` must agree with `age`. `height` in both cm and feet if "
-        "stated.\n"
-        "- These are also rapport material, not just a consistency check: "
-        "`music`, `travel`, `dreams`, `her_type` and `school` are what "
-        f"{p.subject} RELATES to a fan with, so make them specific enough to "
-        "start a conversation ('grunge, mostly Alice in Chains' beats 'rock').\n"
         # DERIVED, never retyped. This list used to be a literal spelled out three
         # lines below the two constants it restates — both imported at the top of
-        # this file — so adding a 27th fact meant editing two places and only one
+        # this file — so adding a fact meant editing two places and only one
         # of them was enforced anywhere. They had not drifted yet; that is the
         # only reason this is a cheap fix rather than a bug hunt.
-        f"Keys: {_ENRICH_KEYS}.{_STORAGE_KEY_NOTE[norm_voice(voice)]}\n"
+        f"Keys: {_ENRICH_KEYS}.\n"
         "NEVER output `kinks`, `limits` or `tattoos` — the first two are the "
         "creator's own business decision, and the third is visible in "
         f"{p.possessive} photos."

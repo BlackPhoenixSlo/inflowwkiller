@@ -108,12 +108,9 @@ ORDER_KINDS = ("tip",)
 # transcript that priced this feature shows $200 buying ONE longer piece, not two
 # shorter ones. Leading space: it joins the end of a sentence.
 PRICE_RULE = (
-    f" IT COSTS ${MIN_CENTS // 100}-${MAX_CENTS // 100}. The amount is the "
-    f"LENGTH — ${MIN_CENTS // 100} buys a short one, ${MAX_CENTS // 100} the "
-    "longest — so quote a real number inside that range when you name a price. "
-    f"NEVER go below ${MIN_CENTS // 100}: a smaller tip does not buy a custom, "
-    "and taking one means he pays and gets nothing. Never discount it, never "
-    "offer a cheaper short version or a free sample, and never apologise for it."
+    f" IT COSTS ${MIN_CENTS // 100}-${MAX_CENTS // 100} — more $ = LONGER, not "
+    f"more clips. NEVER below ${MIN_CENTS // 100}: that buys nothing. no "
+    "discounts, no freebies, no apologising."
 )
 
 
@@ -289,28 +286,16 @@ DELIVERY_TYPES = ("audio",)
 # that ever stops being true this line is the first thing that must change.
 _OWED_BLOCK = {
     "her": (
-        "\n\nA CUSTOM IS ALREADY PAID FOR AND NOT YET SENT.\n"
-        "- Do NOT sell him anything. No PPV, no new custom, no tip ask, no "
-        "upsell of any kind, not even a soft one. He has paid and is waiting.\n"
-        "- Keep talking to him normally — warm, flirty, interested. The "
-        "conversation continues; only the selling stops.\n"
-        "- If he asks WHEN: say you'll do it later today. Exactly that much — "
-        "no hour, no 'in a bit', no second promise on top.\n"
-        "- Never imply it is already sent, and never ask him to pay again for "
-        "the thing he has already paid for."
+        "\n\nA CUSTOM IS PAID AND NOT YET SENT: sell NOTHING — no ppv, new "
+        "custom, or tip ask. keep chatting warm and flirty. asked when? "
+        "'later today', exactly that — no hour, no second promise. never imply "
+        "it's sent, never charge twice."
     ),
     "him": (
-        "\n\nA CUSTOM IS ALREADY PAID FOR AND NOT YET SENT.\n"
-        "- Do NOT sell him anything. No PPV, no new custom, no tip ask, no "
-        "upsell of any kind, not even a soft one. He has paid and is waiting.\n"
-        "- Keep talking to him normally. The conversation continues; only the "
-        "selling stops.\n"
-        "- If he asks WHEN: tell him you'll do it later today. Exactly that "
-        "much — no hour, no 'in a bit', no second promise on top. Say it flatly, "
-        "the way a man states a plan, not the way someone apologises for a "
-        "delay.\n"
-        "- Never imply it is already sent, and never ask him to pay again for "
-        "the thing he has already paid for."
+        "\n\nA CUSTOM IS PAID AND NOT YET SENT: sell NOTHING — no ppv, new "
+        "custom, or tip ask. keep chatting normally. asked when? 'later today', "
+        "exactly that — no hour, no second promise, said flat like a plan, not "
+        "an apology. never imply it's sent, never charge twice."
     ),
 }
 

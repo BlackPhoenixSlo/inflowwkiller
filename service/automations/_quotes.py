@@ -268,8 +268,7 @@ def _tail(ref: QuoteRef, on_screen: bool, *, carrier_is_newest: bool) -> str:
         # already says "his own", so prefixing it again says it twice.
         quoted = _desc(ref)
     return (
-        f"{legend} He quote-replied {quoted} — THAT message is what he is talking "
-        "about, and the line he just sent is his comment on it. Read the two as ONE "
-        "message and answer that. Don't ask him for anything the quoted message "
-        "already tells you (a new, specific follow-up is fine).\n\n"
+        f"{legend} He quote-replied {quoted}. Read the two as ONE message and "
+        "answer that — don't ask for what it already tells you (a specific "
+        "follow-up is fine).\n\n"
         "Reply to that now, in the STYLE FOR THIS MESSAGE above.")

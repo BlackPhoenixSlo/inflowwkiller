@@ -287,6 +287,28 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           </label>
         </div>
 
+        {/* ── payer floor ── */}
+        <div className="rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-2 text-sm">
+          <label className="flex items-start gap-2 cursor-pointer">
+            {/* Default ON, and an account that has never saved this key has no
+                stored value — so `!== false` is what makes the box match what the
+                engine actually does. `!!cfg.payers_only` would draw it unchecked
+                on every untouched account while the floor was live. */}
+            <input type="checkbox" className="mt-0.5" checked={cfg.payers_only !== false}
+              onChange={(e) => set({ payers_only: e.target.checked })} />
+            <span>
+              <span className="font-medium">Only chat fans who have bought before</span>
+              <span className="block text-fg-dim text-xs">
+                The Upseller answers a fan once he has bought <b>content</b> — a tip or an
+                unlocked PPV. <b>A subscription doesn&apos;t count</b>: paying to get in the
+                door is what makes him worth working, not what ends it. Everyone below the
+                line stays with Auto Convo, which keeps chatting and profiling him until he
+                buys something. Fans mid-sale and engaged old fans are always answered.
+              </span>
+            </span>
+          </label>
+        </div>
+
         {/* ── old fans ── */}
         <div className="rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-2 text-sm">
           <label className="flex items-start gap-2 cursor-pointer">

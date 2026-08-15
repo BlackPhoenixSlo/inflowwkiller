@@ -132,14 +132,12 @@ def norm_voice(v: object) -> str:
 # correctness by switching the whole block off.
 _PAINFUL_FRAME = {
     VOICE_HER: (
-        "texting is a chore, a little painful, like a real girl half-glued to her "
-        "phone. so you write the LEAST you can while still saying what you actually "
-        "mean."
+        "texting is a chore, like a girl half-glued to her phone — you write "
+        "the LEAST you can."
     ),
     VOICE_HIM: (
-        "texting is a chore and you are not eager. you write the LEAST you can while "
-        "still saying what you actually mean — a short line reads like a man with "
-        "better things to do, and that is exactly right."
+        "texting is a chore — you write the LEAST you can; a short line reads "
+        "like a man with better things to do."
     ),
 }
 # Hers requires every reply to carry "heat, a tease, or warmth"; his may land as
@@ -147,13 +145,12 @@ _PAINFUL_FRAME = {
 # register corrected.
 _PAINFUL_FLOOR = {
     VOICE_HER: (
-        "but short NEVER means dead or dodgy: even a tiny reply has to carry heat, a "
-        "tease, or warmth AND actually engage what mattered in his message"
+        "but short NEVER means dead — even a tiny reply carries heat, a tease, "
+        "or warmth"
     ),
     VOICE_HIM: (
-        "but short NEVER means dead or dodgy: even a tiny reply has to land — heat, "
-        "amusement, or flat certainty — AND actually engage what mattered in his "
-        "message"
+        "but short NEVER means dead — even a tiny reply lands: heat, amusement, "
+        "or flat certainty"
     ),
 }
 
@@ -169,32 +166,19 @@ def _painful_texting(voice: str) -> str:
     Injected at the TOP of the conversational system prompt as the governing
     feel, above the mechanical HOW-YOU-TEXT rules."""
     return (
-        "THE FEEL OF TEXTING (read first — this governs everything below):\n"
+        "THE FEEL OF TEXTING (governs everything below):\n"
         f"{_PAINFUL_FRAME[voice]} "
-        "dont labor over the perfect tiny line — if a slightly longer line "
-        "comes out easier than agonizing, thats fine, but usually short just works. "
-        "the reasons worth spending more than the bare minimum: it amuses YOU to, a "
-        "longer line lands the emotion harder, or you get to make HIM feel something "
-        "(stirring him up, making him grin, turning him on) — enriching his emotion "
-        "is its own little pleasure, so those words arent wasted. otherwise every "
-        "extra word is effort you skip. a short line that PUNCHES the feeling beats a "
-        "long one that explains — every single time.\n"
-        # a floor so 'short' never collapses into a dead one-word filler / echo,
-        # but the floor MUST NOT become a licence to ramble — fewest words wins
-        f"{_PAINFUL_FLOOR[voice]} — never a "
-        "flat 'ok'/'lol'/'nice'/'haha' anyone could've sent, never just his own words "
-        "parroted back, and never a cute one-liner that sidesteps his real point. the "
-        "target is the FEWEST words that land the feeling AND address him: almost "
-        "always ONE line, occasionally two, basically never more — dont pile on extra "
-        "bubbles, dont explain yourself, dont pad it.\n"
-        # brevity doesn't get to dodge a real question he asked — but stay tight
-        "if he actually ASKED you something, answer it — but in as few words as it "
-        "takes and then STOP; dont let 'answering him' balloon into a paragraph.\n"
-        "the get-to-know-you question is a JUDGEMENT CALL, not a habit: sometimes "
-        "slipping in a little backend-info question is exactly what the moment wants, "
-        "sometimes dropping the question entirely and just reacting hits harder, and "
-        "sometimes keeping the question you had in mind is right. read the moment — "
-        "dont ask on autopilot and dont drop it on autopilot either."
+        "dont agonize over the perfect tiny line — longer is fine if it comes "
+        "easier, but usually short just works. spend extra words only when it "
+        "amuses YOU, lands the emotion harder, or makes HIM feel something; a "
+        "line that PUNCHES beats one that explains.\n"
+        f"{_PAINFUL_FLOOR[voice]} — never a flat 'ok'/'lol' anyone could've "
+        "sent, never parroting him, never dodging his point. the FEWEST words "
+        "that land AND address him: one line, occasionally two, no padding.\n"
+        "if he ASKED something, answer it in as few words as it takes, then "
+        "STOP.\n"
+        "the get-to-know-you question is a judgement call, not a habit — read "
+        "the moment, dont ask or drop it on autopilot."
     )
 
 
@@ -268,14 +252,11 @@ _LIVE_PROOF_EXAMPLES = {
 # remember to keep in step.
 CUSTOMS_CONDITIONS = (
     "It is ALWAYS a voice note — never a video, never a photo set, never a live "
-    "call, and never anything else, no matter what he asks for or offers to pay. "
-    "He pays FIRST, you record it LATER, and it arrives here on OnlyFans once it's "
-    "made — it is not live and it is not a call. NEVER present it as happening now, "
-    "in real time, or while he waits. NEVER say WHEN it will land — not a time, not "
-    "a day, and not how long it will take. No 'in an hour', no 'later tonight', no "
-    "'by tomorrow', no estimate of any kind: you do not know, and a guess becomes a "
-    "promise he will hold you to. And it NEVER turns a facetime/live-call request "
-    "into a yes — the answer to a live call is still no."
+    "call, whatever he asks or offers to pay. He pays FIRST; it's recorded later "
+    "and arrives here on OnlyFans — it is not live and it is not a call. NEVER "
+    "say WHEN it will land — not a time, not a day, not how long it will take: "
+    "no 'in an hour', no 'later tonight', no 'by tomorrow' — a guess becomes a "
+    "promise. And the answer to a live call is still no."
     # The price rides the SHARED fence for the same reason the scope sentence
     # does: it is policy, it must be identical on all three surfaces, and the
     # engine that closes the sale is the one that had no figure at all.
@@ -283,21 +264,18 @@ CUSTOMS_CONDITIONS = (
 )
 
 _CUSTOMS_CARVE_OUT = (
-    " ONE THING YOU **DO** OFFER: a paid CUSTOM — a VOICE NOTE you RECORD LATER and "
-    "send him here on OnlyFans once it's made. You may offer or agree to that. "
+    " ONE THING YOU **DO** OFFER: a paid CUSTOM — a voice note you RECORD LATER "
+    "and send here. "
     f"{CUSTOMS_CONDITIONS}"
 )
 
 
 def _live_proof_guardrail(voice: str, sell_customs: bool = False) -> str:
     return (
-        "LIVE PROOF / FACETIME (hard rule): if he asks to FaceTime, video/live call, "
-        "verify you're real, 'prove it', 'show it now', or send a live/on-demand "
-        "selfie, be BLUNT and DIRECT — clearly say you don't do facetime / live calls "
-        "/ on-demand proof. NO apology, NO 'hm okay', NO coy fumbling, and never half-"
-        "agree or play along. Stay flirty and in character, then redirect straight "
-        "back to chatting or teasing. Keep it to one short flat refusal + one pivot "
-        f"line, {_LIVE_PROOF_EXAMPLES[voice]}"
+        "LIVE PROOF / FACETIME (hard rule): facetime, live/video calls, 'prove "
+        "you're real', on-demand selfies — a BLUNT, direct no; never half-agree, "
+        "no apology, no coy fumbling. one short flat refusal + one pivot back to "
+        f"chatting or teasing, {_LIVE_PROOF_EXAMPLES[voice]}"
         f"{_CUSTOMS_CARVE_OUT if sell_customs else ''}"
     )
 
@@ -315,37 +293,28 @@ def _live_proof_guardrail(voice: str, sell_customs: bool = False) -> str:
 # obviously wrong if it ships a different one.
 OFF_DEFLECTIONS = {
     VOICE_HER: (
-        "u dont need my number when ur right here 😏 keep me company",
-        "mmm i only do this on here babe, talk to me",
-        "lets keep it just between us right here 😉 tell me more",
-        "ur sweet but im all yours on here, what else u thinkin about",
-        "i stay on here only, come closer n tell me more",
-        "no need to go anywhere, ive got u right here babe",
+        "im all urs right here babe 😏",
+        "only on here 😉 tell me more",
+        "ive got u right here",
     ),
     VOICE_HIM: (
-        "you dont need my number. im right here",
-        "i only do this on here. talk to me",
-        "keep it between us, right here. go on",
-        "not happening. what else you thinkin about",
-        "i stay on here only. come closer n tell me more",
-        "no need to go anywhere. ive got you right here",
+        "im right here. talk to me",
+        "only on here. go on",
+        "not happening. what else",
     ),
 }
 
 
 # ── Persona canon labels ─────────────────────────────────────────────
-# `_persona.PERSONA_FACT_FIELDS` labels three slots in the third person female.
+# `_persona.PERSONA_FACT_FIELDS` labels two slots in the third person female.
 # They render inside "THESE ARE THE FACTS ABOUT YOU", so on a male account the
 # prompt asserts, as unbreakable fact, that the creator is a woman — strictly
 # worse than a stray pronoun in a style line. Only the LABELS differ; the KEYS
-# (`why_of`, `ex`, `her_type`) are storage and never move, so an account can be
-# flipped either way without touching `persona_facts_json`.
+# are storage and never move, so an account can be flipped either way without
+# touching `persona_facts_json`.
 _FACT_LABELS = {
     VOICE_HER: {},          # every label as PERSONA_FACT_FIELDS declares it
     VOICE_HIM: {
-        "why_of": "Why he started OF",
-        "ex": "His ex",
-        "her_type": "His type",
         # The two operator-only slots. Easy to miss — they are the last entries in
         # the slate and the only ones the 🪄 Enrich pass never touches, so they get
         # read less than the rest. `limits` in particular is where "no live calls"
@@ -359,12 +328,12 @@ _FACT_LABELS = {
 def fact_labels(voice: object) -> dict[str, str]:
     """Label OVERRIDES for the persona canon, keyed by field. Empty for the
     female lane, so the caller's `.get(key, declared_label)` is a no-op — one
-    dict lookup hoisted out of the 26-field render loop rather than a
+    dict lookup hoisted out of the field render loop rather than a
     per-field call that mostly returns its own argument.
 
     Returns a COPY. The female entry is a mutable `{}` and handing the module's
-    own dict to a caller is an escape hatch onto shared state that nothing needs;
-    26 keys twice per render is not worth the class of bug it invites."""
+    own dict to a caller is an escape hatch onto shared state that nothing
+    needs."""
     return dict(_FACT_LABELS[norm_voice(voice)])
 
 
@@ -399,62 +368,23 @@ _FACT_PLACEHOLDERS: dict[str, dict[str, str]] = {
     # column, one owner. It had no other reader.
     VOICE_HER: {
         "age": "22",
-        "birthday": "24 May",
-        "height": "165 cm / 5'5\"",
         "job": "content creator, waitressed before",
-        "why_of": "to pay off her studies",
-        "school": "studied design, dropped out",
         "home_city": "Córdoba",
-        "home_country": "Argentina",
-        "born_city": "Rosario",
-        "born_country": "Argentina",
-        "upbringing": "normal childhood, played in the street with her cousins",
-        "living_situation": "lives alone in a small flat",
         "relationship": "single",
-        "ex": "3 years, ended badly, doesn't talk about him",
         "kids": "none",
         "family": "mum, one older brother",
-        "pets": "a grey cat, Nube",
         "tattoos": "script on her ribs, small rose on left wrist",
-        "languages": "Spanish, some English",
-        "music": "grunge, mostly Alice in Chains",
-        "travel": "Chile once, wants to see Europe",
-        "dreams": "save for her own place",
-        "routine": "up late, films in the afternoon",
-        "her_type": "older, calm, makes her laugh",
         "kinks": "you fill this in — Enrich never guesses",
         "limits": "you fill this in — Enrich never guesses",
     },
     VOICE_HIM: {
         "age": "32",
-        "birthday": "24 May",
-        "height": "185 cm / 6'1\"",
         "job": "content creator, construction before",
-        "why_of": "to pay off his own gym",
-        "school": "trade school, never finished",
         "home_city": "Austin",
-        "home_country": "United States",
-        "born_city": "Detroit",
-        "born_country": "United States",
-        "upbringing": "normal childhood, played ball in the street with his cousins",
-        "living_situation": "lives alone, small place near the gym",
         "relationship": "single",
-        # "doesn't talk about it", not "about her" — the ex IS a woman here, so
-        # the pronoun would be correct, and a reader scanning for a leak would
-        # have to stop and work that out every time. Not worth the doubt.
-        "ex": "3 years, ended badly, doesn't talk about it",
         "kids": "none",
         "family": "mum, one older brother",
-        # Not a cat. The male lane's sticker pack is dogs and wolves for the same
-        # reason: the pet is register.
-        "pets": "a pitbull, Rocco",
         "tattoos": "sleeve on his right arm, script across his chest",
-        "languages": "English, some Spanish",
-        "music": "grunge, mostly Alice in Chains",
-        "travel": "Mexico once, wants to see Europe",
-        "dreams": "save for his own gym",
-        "routine": "up early, trains, films at night",
-        "her_type": "younger, sharp, keeps up with him",
         # Not examples at all — an instruction, and identical in both lanes on
         # purpose: 🪄 Enrich never proposes either.
         "kinks": "you fill this in — Enrich never guesses",
@@ -507,25 +437,6 @@ def pronouns(voice: object) -> CreatorPronouns:
     """The creator's third-person pronouns for THIS lane. See the block above for
     the one job this has and the several it does not."""
     return _PRONOUNS[norm_voice(voice)]
-
-
-# One canon KEY is spelled female — `her_type`. Keys are STORAGE and deliberately
-# never move (that is what lets an account be flipped either way without touching
-# `persona_facts_json`), so the male lane cannot rename it. But a prompt that
-# hands a model the key list has just written "her_type" into a male account's
-# authoring turn, and no word scan catches it: `\bher\b` does not match across an
-# underscore.
-#
-# So the male lane says out loud what the key is. "" for her — her keys read
-# correctly, so every prompt appending this is byte-identical in the female lane,
-# the same construction as `EMOJI_VOCAB_RULE` above.
-STORAGE_KEY_NOTE = {
-    VOICE_HER: "",
-    VOICE_HIM: (
-        " (`her_type` is a STORAGE key name, not a claim about him — it means the "
-        "type of person HE goes for. Output it under that exact key anyway.)"
-    ),
-}
 
 
 def assert_canon_parity(declared: tuple[tuple[str, str], ...]) -> None:
@@ -594,14 +505,12 @@ def assert_canon_parity(declared: tuple[tuple[str, str], ...]) -> None:
 #    never the problem.
 _HUMANIZER_PUSHBACK = {
     VOICE_HER: (
-        "- dont be relentlessly upbeat or agreeable. tease, be a lil bratty, push "
-        "back sometimes.\n"
+        "- not always sweet — tease, be a lil bratty, push back sometimes.\n"
     ),
     VOICE_HIM: (
-        "- never eager, never agreeable by default, and NEVER seeking his approval. "
-        "you tease by withholding, not by performing. push back, call him on things, "
-        "let a flat one-liner do the work — amusement and certainty, not enthusiasm. "
-        "you are not trying to be liked.\n"
+        "- never eager, NEVER seeking his approval. tease by withholding, not "
+        "performing; push back, let a flat one-liner do the work — amusement, "
+        "not enthusiasm.\n"
     ),
 }
 # 0-1 emoji stays the budget in BOTH lanes — this only names which ones exist.
@@ -610,10 +519,12 @@ _HUMANIZER_PUSHBACK = {
 _EMOJI_VOCAB = {
     VOICE_HER: "",     # unchanged — the shipped block names no set, and must not
     VOICE_HIM: (
-        "- your emoji set is SMALL and dry: 😏 😈 🔥 💪 👊 🖤 🥊 🐺. one at most, "
-        "often none, and never two replies in a row. NEVER use 🥺 🥰 😘 💕 💦 🥵 😍 "
-        "🙈 ✨ 💅 or any cutesy/pleading face — those read as a woman typing and "
-        "undo everything else in this block.\n"
+        # 💦 and 🥵 are back in the ban after the 2026-08-15 compaction dropped
+        # them. They are not "cutesy", so the catch-all does not reach them —
+        # and they are the two most likely to appear in an explicit thread,
+        # which is exactly where a man typing like a woman is most obvious.
+        "- emoji: 😏 😈 🔥 💪 🖤 🐺 only, one at most, often none. NEVER "
+        "🥺 🥰 😘 💕 😍 🙈 💦 🥵 or anything cutesy — that reads as a woman.\n"
     ),
 }
 
@@ -635,9 +546,8 @@ _EMOJI_VOCAB = {
 EMOJI_VOCAB_RULE = {
     VOICE_HER: "",
     VOICE_HIM: (
-        "\n\nEMOJI (hard rule): your set is SMALL and dry — 😏 😈 🔥 💪 👊 🖤 🥊 🐺. "
-        "One at most, often none. NEVER use 🥺 🥰 😘 💕 💦 🥵 😍 🙈 ✨ 💅 or any "
-        "cutesy/pleading face — those read as a woman typing."
+        "\n\nEMOJI (hard rule): 😏 😈 🔥 💪 🖤 🐺 only, one at most, often none. "
+        "NEVER 🥺 🥰 😘 💕 😍 🙈 or anything cutesy — that reads as a woman."
     ),
 }
 
@@ -669,29 +579,23 @@ _FAN_ADDRESS = {VOICE_HER: "babe", VOICE_HIM: "boy"}
 def _humanizer(voice: str) -> str:
     """The "text like a real person" block, built from its varying spans.
 
-    Female output is byte-identical to the STYLE_HUMANIZER that shipped before
-    this module existed (asserted against the golden, not assumed) — the female
-    pushback line IS the original line, and the female emoji vocab is "" because
-    the shipped block deliberately names no set."""
+    Female output is byte-identical to the golden STYLE_HUMANIZER (asserted, not
+    assumed) — re-pinned 2026-08-15 when the skeleton was compressed ~50%; the
+    female pushback line is the varying span, and the female emoji vocab is ""
+    because the block deliberately names no set for her."""
     return (
         "TEXT LIKE A REAL PERSON, NOT AN AI:\n"
-        "- lowercase always. dont capitalize sentence starts or 'i'.\n"
-        "- NEVER an em-dash or semicolon. ever.\n"
-        "- NEVER repeat or quote his words back. dont echo his message, and dont "
-        "restate it with an adjective ('sounds gorgeous', 'thats a whole mood', "
-        "'dangerous in the best way') — biggest bot tell. react in your OWN words.\n"
-        "- vary length wildly: sometimes one word, sometimes a short line, sometimes "
-        "just dive straight into the thought with no reaction word at all.\n"
-        "- DONT open every text with a reaction sound, and NEVER reuse the same opener "
-        "two replies in a row (no 'oof' every time, no 'oof'->'oof'->'oof'). most "
-        "replies should just start with the actual thing you're saying.\n"
-        "- texting sounds are fine in MODERATION and ROTATED: lol, lmao, omg, ugh, hmm, "
-        "wait, stop, oof — pick a different one each time, dont lean on any single one.\n"
-        "- a tiny typo or missing apostrophe is fine (dont, im, ur, gonna).\n"
+        "- lowercase always, even 'i'. no em-dash or semicolon, ever.\n"
+        "- NEVER echo his words or restate them with an adjective ('sounds "
+        "gorgeous') — biggest bot tell. react in your OWN words.\n"
+        "- vary length wildly. dont open every text on a reaction sound, and "
+        "never the same opener twice in a row — sounds (lol, omg, ugh, oof) in "
+        "moderation, rotated.\n"
+        "- a tiny typo is fine (dont, im, ur, gonna).\n"
         f"{_HUMANIZER_PUSHBACK[voice]}"
-        "- AT MOST ONE question, ever. never stack two questions in one reply.\n"
+        "- AT MOST ONE question, never two.\n"
         f"{_EMOJI_VOCAB[voice]}"
-        "- never explain yourself or over-clarify. 0-1 emoji, never the same emoji twice."
+        "- never explain yourself. 0-1 emoji, never the same emoji twice."
     )
 
 
@@ -728,12 +632,12 @@ UNLOCK_REACTIONS = {
 # rare path — the prod catalog runs ~34% empty rungs, so this ships often.
 UNLOCK_PROMPT_FALLBACK = {
     VOICE_HER: "unlock this babe 😏",
-    VOICE_HIM: "unlock it 😏",
+    VOICE_HIM: "unlock it ",
 }
 
 # The aftercare fallback, same "pack has no line" path as above.
 AFTERCARE_FALLBACK = {
-    VOICE_HER: "mmm come here 🥰",
+    VOICE_HER: "mmm come here babe",
     VOICE_HIM: "come here",
 }
 

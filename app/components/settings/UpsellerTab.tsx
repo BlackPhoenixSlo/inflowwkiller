@@ -372,6 +372,57 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
             </span>
           </span>
         </label>
+
+        {/* ── who else may answer the ask ──────────────────────────────────
+            The same lane, reached by the other chat engines through sell_lane,
+            which re-checks every seller brake plus the qualification gate. Both
+            ship OFF: Auto Convo has been never-PPV since it shipped, so this is
+            a real change of what that engine does and it is the operator's to
+            make per account, not a default. Inert without the master switch for
+            the same reason the trigger above is. */}
+        <div className={cn("space-y-2 pt-1",
+          cfg.pack_on_ask_enabled ? "" : "opacity-50 pointer-events-none")}>
+          <div className="text-fg-dim text-xs">
+            Who may answer it — by default only the AI Chatter can. Turn these on for
+            accounts where another engine is doing the talking, or the ask goes
+            unanswered.
+          </div>
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input type="checkbox" className="mt-0.5"
+              checked={!!cfg.autoreply_sell_on_ask}
+              disabled={!cfg.pack_on_ask_enabled}
+              onChange={(e) => set({ autoreply_sell_on_ask: e.target.checked })} />
+            <span className="text-sm">
+              <span className="font-medium">Auto Convo may sell it</span>
+              <span className="block max-md:hidden text-fg-dim text-xs">
+                Auto Convo picks up fans nobody answered in time. It has never been
+                able to sell, so on an account with no AI Chatter a direct ask has had
+                no path to a sale at all. With this on, an ask is answered with the
+                content and <b>replaces</b> that turn&apos;s small talk — he gets one
+                message, not a PPV and a &quot;so what are u up to&quot;.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input type="checkbox" className="mt-0.5"
+              checked={!!cfg.of_ai_chat_sell_on_ask}
+              disabled={!cfg.pack_on_ask_enabled}
+              onChange={(e) => set({ of_ai_chat_sell_on_ask: e.target.checked })} />
+            <span className="text-sm">
+              <span className="font-medium">OF AI Chat may sell it</span>
+              <span className="text-[11px] text-fg-dim"> · on by default</span>
+              <span className="block max-md:hidden text-fg-dim text-xs">
+                The getting-to-know-him lane. Its answer to <i>&quot;can i see
+                something&quot;</i> has been another question, or a tip ask. With this
+                on it sends the thing instead — and skips its own reply generation
+                that turn, so a selling turn costs <i>less</i>, not more.
+                <b> Leave it on unless you have a reason:</b> the AI Chatter only
+                answers men who have already bought, so this lane is the only one that
+                can sell a fan his first thing.
+              </span>
+            </span>
+          </label>
+        </div>
       </Card>
 
       {/* ── offer pacing ── */}

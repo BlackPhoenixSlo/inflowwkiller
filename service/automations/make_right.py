@@ -177,86 +177,30 @@ _DEFAULTS: dict = {
 # Warm, human apology openers (bubble 1), keyed to the MISTAKE so the words match
 # what actually went wrong. Seeded per fan+incident so a dry-run preview and the real
 # send show the SAME words.
+# One pool per MISTAKE — an apology aimed at the wrong grievance reads as not
+# listening (08-04: arguing "that set really is different" turned a $8.28
+# complaint into a fight). Never defend the content, never promise a refund,
+# NEVER a price in a hard_decline exchange, and content_letdown may not admit
+# a billing error — nothing was double-charged, he's just disappointed.
 _APOLOGY_FRAMES = {
     "dup_charge": [
         "hey {name} 🙈 i think my messages got crossed and i sent you the same thing twice — that's totally on me, i'm so sorry",
         "omg {name} i just realised i doubled up on you by mistake 🥺 that was my fault, i feel awful",
-        "{name} i owe you an apology — looks like i sent you something you'd already gotten. my bad completely 💕",
     ],
-    "paid_undelivered": [
-        "hey {name} 🙈 i just saw you paid and i never sent you anything back — that's completely on me, i'm so sorry",
-        "omg {name} you supported me and got NOTHING in return?? 🥺 that's my fault, let me fix it right now",
-        "{name} i owe you an apology — you paid and i left you hanging with nothing. so not okay of me 💕",
-    ],
-    # He pushed back HARD (chargeback / report / unsubscribe words). De-escalate:
-    # own it, drop the selling, stay a person. NEVER a price in this exchange.
-    "hard_decline": [
-        "{name} i'm sorry, i hear you 🥺 i got carried away with the paid stuff and that's on me. no more of that — i just like talking to you",
-        "ok {name} you're right and i'm sorry 💕 forget the unlocks, that was pushy of me. i'd rather just have you here",
-        "hey {name}, i'm sorry if i made this feel like a cash grab 🙈 that's not what i want with you. no more pushing, promise",
-    ],
-    # He paid for something he'd already seen, or that is free on the public page.
-    # These get their OWN frames because the `hard_decline` set above answers a
-    # different sentence: it apologises for PUSHING, and he is not complaining
-    # about being pushed — he is telling us we charged him for something that was
-    # already his. An apology aimed at the wrong grievance reads as not listening,
-    # which is exactly what the seller did for four bubbles in the 08-04 incident.
-    #
-    # ⚠️ None of these argues the content. "that set really is different" may even
-    # be TRUE — it does not matter, and saying it is what turned a $8.28 complaint
-    # into a fight. He believes he paid twice for the same thing; the only move is
-    # to own it and stop charging. Same no-refund-promise rule as every pool here.
-    "content_dispute": [
-        "oh no {name} 🙈 if you'd already seen those then i've charged you for nothing and that's completely on me, i'm sorry",
-        "{name} i'm so sorry 🥺 you shouldn't be paying me for stuff you've already got — that's my mistake, not yours",
-        "ugh {name} you're right and i feel awful 💕 i should be checking what you've already seen before i send you anything paid",
-    ],
-    # He paid, it WAS new, and it still wasn't what he hoped for. Nothing was
-    # double-charged, so none of these may say it was: "you got charged twice" at a
-    # man who is simply disappointed is a false admission about his money AND an
-    # answer to a question he never asked.
-    #
-    # ⚠️ No line here defends the content, and none of them promises a specific
-    # thing next time. Measured on prod, the fans in this class say exactly what
-    # they wanted ("didn't see any dick in those", "only showed me the side boob of
-    # one titty") — the recovery is to hear it and hand him something, not to argue
-    # that the set was good or to book a custom she may not deliver.
-    "content_letdown": [
-        "aw {name} i'm sorry that one missed 🙈 that's on me for not reading you better — let me make it up to you",
-        "{name} i hear you 🥺 that wasn't what you were hoping for and i'd rather know than have you not say it",
-        "ugh sorry {name} 💕 not my best call on what to send you. tell me what you actually want to see",
-    ],
+    "paid_undelivered": ["hey {name} 🙈 i just saw you paid and i never sent you anything back — that's completely on me, i'm so sorry"],
+    "hard_decline": ["{name} i'm sorry, i hear you 🥺 i got carried away with the paid stuff and that's on me. no more of that — i just like talking to you"],
+    "content_dispute": ["oh no {name} 🙈 if you'd already seen those then i've charged you for nothing and that's completely on me, i'm sorry"],
+    "content_letdown": ["aw {name} i'm sorry that one missed 🙈 that's on me for not reading you better — let me make it up to you"],
 }
 _DEFAULT_APOLOGY_KIND = "dup_charge"
-# Bubble 2 lead-in for the FIRST free gift (rides the apology).
-_GIFT_LEADS = [
-    "so here's a little something extra just for you, on me 💕",
-    "let me make it up to you — these are free, just because 😘",
-    "consider these a thank-you for your patience 🥰",
-]
-# Lead-in for the follow-up free pieces (sent as he keeps replying).
-_FREE_LEADS = [
-    "here's another one just because 🥰",
-    "and this one too, on me 😘",
-    # `{name}`, not a literal "babe" — these leads are substituted like every other
-    # pool here. With a one-turn exchange the line was rare; at three turns it lands
-    # on most recoveries, and calling a man "babe" two bubbles after the apology
-    # used his actual name is the tell that nobody is really there.
-    "take this one as well {name} 💕",
-    "one more little treat for you 🙈",
-]
-# The soft pivot back to selling — a priced tease after we've made things right.
-_PPV_TEASES = [
-    "ok now that we're good 😌 i made you something special... unlock it? 😏",
-    "since you've been so sweet about it — here's a lil something HOT, just for you 🔥",
-    "feeling generous now 😈 want to see what i've really got? 💋",
-]
-# One gentle nudge if he goes quiet mid-exchange.
-_NUDGE_LINES = [
-    "still here whenever you're ready babe 💕",
-    "no rush — just wanted you to know i'm thinking of you 🥰",
-    "hope you're doing ok 🙈 message me back when you can",
-]
+# Free-gift lead-ins (bubble 2 rides the apology), then the priced pivot and the
+# quiet-nudge. Follow-up leads say {name}, never a literal "babe" — a pet name
+# two bubbles after an apology that used his real name is the tell that nobody
+# is really there.
+_GIFT_LEADS = ["so here's a little something extra just for you, on me 💕"]
+_FREE_LEADS = ["here's another one just because 🥰", "take this one as well {name} 💕"]
+_PPV_TEASES = ["ok now that we're good 😌 i made you something special... unlock it? 😏"]
+_NUDGE_LINES = ["still here whenever you're ready babe 💕"]
 
 # ── The MALE pools ───────────────────────────────────────────────────────────
 # Same keys, same counts. This engine ships DEFAULT OFF, but `ai_chatter` calls
@@ -283,67 +227,20 @@ _APOLOGY_FRAMES_HIM = {
     "dup_charge": [
         "{name} you got charged twice for the same thing. thats my screwup, not yours. im fixing it",
         "{name} i sent you something you already bought. my mistake. im on it now",
-        "{name} that hit you twice. mine to fix, and im fixing it",
     ],
-    "paid_undelivered": [
-        "{name} you paid and i never sent it. thats on me. fixing it now",
-        "{name} money went out and nothing came back. my fault. im on it",
-        "{name} you paid, i left you with nothing. mine to fix",
-    ],
-    # NEVER a price in this lane — same rule as hers.
-    "hard_decline": [
-        "understood {name}. i pushed too hard on the paid stuff. thats done. youre still welcome here",
-        "heard you {name}. no more unlocks, no more asks. id rather keep the conversation",
-        "{name} you said it straight and you were right to. im done selling at you",
-    ],
-    # He owns the error and stops — he does not perform feeling awful about it,
-    # and he does not defend the content. See the female twin for why arguing the
-    # set is the one move that cannot be made here.
-    "content_dispute": [
-        "{name} you paid for something you already had. thats my error. it doesnt happen again",
-        "youre right {name}. i charged you for what you already own. mine to fix, and im fixing it",
-        "{name} i should have checked what youd already seen. i didnt. thats on me",
-    ],
-    # He names the miss and asks what the man wanted — he does not perform regret
-    # and he does not defend the set. Same no-billing-admission rule as the female
-    # twin: nothing here says he was charged twice, because he wasn't.
-    "content_letdown": [
-        "{name} that one missed. my call, not your fault. tell me what you actually want",
-        "not what you were after {name}. noted. what should i have sent",
-        "{name} i read that wrong. say what you want to see and ill sort it",
-    ],
+    "paid_undelivered": ["{name} you paid and i never sent it. thats on me. fixing it now"],
+    "hard_decline": ["understood {name}. i pushed too hard on the paid stuff. thats done. youre still welcome here"],
+    "content_dispute": ["{name} you paid for something you already had. thats my error. it doesnt happen again"],
+    "content_letdown": ["{name} that one missed. my call, not your fault. tell me what you actually want"],
 }
-# ⚠️ The four pools below carry NO {name}, exactly like their female twins, even
-# though the call sites all run .replace("{name}", name). Adding one would change
-# what a fan sees rather than just the wording — and these ride directly behind an
-# apology bubble that already opened with his name, so a second address in two
-# consecutive bubbles reads as a script.
-_GIFT_LEADS_HIM = [
-    "sending you something while i fix this. on me",
-    "this ones free. no strings",
-    "take this. no charge",
-]
-_FREE_LEADS_HIM = [
-    "heres another one. free",
-    "that one too",
-    "and this. still nothing to pay",
-    "last one, then im done",
-]
-# He never argues the value — a dom who tells a fan it is "worth the money" has
-# already conceded the price.
-_PPV_TEASES_HIM = [
-    "were square. made something new since. your call 😏",
-    "back to it. this ones new 🔥",
-    "since were good, theres something you havent seen 😈",
-]
-# Three different beats: available / noticing / handing him the move. Hers are all
-# one beat (permanent availability), which works because it reassures; from him it
-# reads as waiting around.
-_NUDGE_LINES_HIM = [
-    "still here when you want to pick this back up",
-    "you went quiet. all good?",
-    "doors open. your move",
-]
+# No {name} below (call sites still .replace it) — these ride right behind an
+# apology bubble that already opened with his name, and a second address in two
+# consecutive bubbles reads as a script. He never argues the value — a dom who
+# tells a fan it is "worth the money" has already conceded the price.
+_GIFT_LEADS_HIM = ["sending you something while i fix this. on me"]
+_FREE_LEADS_HIM = ["heres another one. free", "that one too"]
+_PPV_TEASES_HIM = ["were square. made something new since. your call 😏"]
+_NUDGE_LINES_HIM = ["still here when you want to pick this back up"]
 
 # Keyed by NAME, not by `id(pool)`. The first cut keyed this dict on the identity
 # of the module-level lists, which meant any rebinding, copy or slice silently

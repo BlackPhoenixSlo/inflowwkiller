@@ -94,8 +94,8 @@ def _persona_location_line(location: str | None) -> str:
 
 # ── Structured creator canon (account_ai_config.persona_facts_json) ───
 # The facts she must never contradict, pinned ABOVE the free-text persona. Order
-# is deliberate: identity first, then origin, then the softer colour — a bullet
-# buried mid-prompt loses to the goal/style lines (same lesson the sticker marker
+# is deliberate: identity first, then the softer colour — a bullet buried
+# mid-prompt loses to the goal/style lines (same lesson the sticker marker
 # and the clock block both learned the hard way).
 # The slate is driven by what fans MEASURABLY ask (inbound sweep, 2026-07-25,
 # all accounts, test account excluded — hits in brackets). Two counts were thrown
@@ -103,35 +103,22 @@ def _persona_location_line(location: str | None) -> str:
 # (532) is mostly fans naming THEIR favourites or calling her "my favorite girl",
 # and "gym" (323) is almost entirely peer-creator promo captions landing in the
 # inbox, not questions.
+# Cut to the high-ask core on 2026-08-15 (was 26 slots): every slot is operator
+# surface + two lane placeholders + parity to maintain, and 26 pinned bullets
+# outweighed the goal/style lines they sit above. Keys dropped from the slate are
+# silently ignored by _parse_persona_facts — stored persona_facts_json needs no
+# migration, those values just stop rendering.
 PERSONA_FACT_FIELDS: tuple[tuple[str, str], ...] = (
     ("age", "Age"),                                  # [173]
-    ("birthday", "Birthday"),                        # [12] low volume, huge blast radius
-    ("height", "Height"),                            # [22]
     ("job", "Work"),                                 # [81]
-    ("why_of", "Why she started OF"),                # [2] rare but THE authenticity question
-    ("school", "School / studies"),                  # [44]
     ("home_city", "Lives in"),                       # [92]
-    ("home_country", "Country"),
-    ("born_city", "Born in"),
-    ("born_country", "Born country"),
-    ("upbringing", "Growing up"),                    # [31]
-    ("living_situation", "Living situation"),        # [9]
     ("relationship", "Relationship"),                # [325] the most-asked of all
-    ("ex", "Her ex"),                                # [44]
     ("kids", "Kids"),                                # [163] binary — catastrophic to flip
     ("family", "Family"),                            # [82]
-    ("pets", "Pets"),                                # [23]
-    # Fans do not ask WHETHER she has tattoos — they read them off her photos
-    # ("El tatuaje entre tus pechos que dice?", "Motionless in white tattoo
-    # spotted?"). Body art is VISIBLE EVIDENCE, so unlike a birthplace there is a
-    # picture to check her answer against. [179]
-    ("tattoos", "Tattoos / marks"),
-    ("languages", "Languages"),                      # [24]
-    ("music", "Music taste"),                        # [28]
-    ("travel", "Been to / travel"),                  # [180 raw, heavily diluted]
-    ("dreams", "Dreams / goals"),                    # [79]
-    ("routine", "Daily routine / work hours"),       # "Are you working tonight?"
-    ("her_type", "Her type in men"),                 # [10] asked implicitly far more
+    # Fans read tattoos off her photos — body art is VISIBLE EVIDENCE, so there
+    # is a picture to check her answer against. Operator-only, like the two
+    # below. [179]
+    ("tattoos", "Tattoos"),
     # ── Operator-only (see PERSONA_FACTS_OPERATOR_ONLY) ──
     ("kinks", "What she's into"),                    # [65] and it saturates the sample
     ("limits", "What she won't do"),                 # fans don't ask, they PUSH
@@ -157,7 +144,7 @@ PERSONA_FACTS_OPERATOR_ONLY: frozenset[str] = frozenset({"kinks", "limits", "tat
 # `_voice._FACT_PLACEHOLDERS`, one lane each, read through `fact_placeholders()`.
 # They were here, in the female lane only, until the male lane needed them too:
 # every one of them is a worked example of the creator's own life, so unlike the
-# LABELS (21 of which just name the field) there is no lane-neutral version to
+# LABELS (most of which just name the field) there is no lane-neutral version to
 # keep as a default. `_voice` owns text that reads differently per lane.
 #
 # This is the slate's home, so this is where both tables get bound to it: a canon
@@ -507,32 +494,15 @@ def compose_persona(cfg, *, fallback: str) -> str:
 # deflection would be neither. Rewriting outbound text at the send chokepoint is
 # established here — guard_offplatform already does it.
 _CONSISTENCY_SYSTEM = (
-    "You check one outgoing message from an OnlyFans creator against what she has "
-    "already established about herself, and you are STRICT about contradictions "
-    "but generous about everything else.\n"
-    "You are given HER PROFILE (true of her everywhere) and, when present, WHAT "
-    "SHE ALREADY TOLD THIS FAN (true for this conversation, even where it differs "
-    "from the profile — she cannot un-say it).\n"
-    "Respond with a SINGLE JSON object and nothing else:\n"
+    "Check one outgoing creator message against HER PROFILE and, when present, "
+    "WHAT SHE ALREADY TOLD THIS FAN (fan-told wins). Respond with ONLY:\n"
     '{"contradicts": true|false, "which": "", "fix": ""}\n'
-    "RULES:\n"
-    "- `contradicts` is true ONLY when the message states something about HERSELF "
-    "that cannot both be true alongside the profile or what she already told him "
-    "— a different age, city, country, job, living situation, relationship, "
-    "family, or pet. A different WORDING of the same fact is not a "
-    "contradiction.\n"
-    "- Flirting, teasing, fantasy, plans, moods, opinions, sexual talk and "
-    "anything about HIM are NEVER contradictions. Neither is a fact she simply "
-    "has not mentioned before — she is allowed to say new things.\n"
-    "- When in doubt, answer false. A false alarm rewrites a message that was "
-    "fine, which is worse than letting a borderline line through.\n"
-    "- `which`: if true, name the conflict in a few words (e.g. \"says Chile, "
-    "already told him Argentina\"). Empty when false.\n"
-    "- `fix`: if true, rewrite HER message so it agrees with what she already "
-    "said. Keep her exact voice, length, punctuation, emoji and LANGUAGE, and "
-    "change as little as possible — only the contradicting detail. Never "
-    "apologise, never correct herself out loud, never mention a mistake, never "
-    "say she forgot. Empty when false."
+    "true ONLY when a fact about HERSELF clashes outright — age, city, job, "
+    "living/relationship, family, pet. rewording, flirting, fantasy, anything "
+    "about HIM, or a NEW fact never count. when in doubt: false.\n"
+    "which: the clash in a few words. fix: her message minimally rewritten to "
+    "agree — same voice, length, LANGUAGE; never apologise or mention a "
+    "mistake. both empty when false."
 )
 
 
