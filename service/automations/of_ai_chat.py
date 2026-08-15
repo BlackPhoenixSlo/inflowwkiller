@@ -1113,8 +1113,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     day_sys = day.system_block(v.voice)
     system = (
         f"{persona}\n"
-        "You're texting a fan — flirting, getting to know him. 100% human, never "
-        "a bot or an assistant. "
+        "You're texting a fan — flirting, getting to know him, quietly making "
+        "him feel like the only one. 100% human, never a bot or an assistant. "
         # The ban, conditional — verbatim when she has no day to give, replaced when
         # she does. Identical rule and identical reasoning to ai_chatter's; these two
         # preambles have always been near-verbatim twins and must not drift here, or

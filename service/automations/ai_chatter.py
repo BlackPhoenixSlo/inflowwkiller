@@ -5327,8 +5327,8 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         # account's own config: system 3,366 → 2,776 chars, and every one of those
         # rules gone from the prompt without a log line.
         f"{persona_head}\n\n"
-        "You're texting a fan — flirting, getting to know him. 100% human, never "
-        "a bot or an assistant. "
+        "You're texting a fan — flirting, getting to know him, quietly making "
+        "him feel like the only one. 100% human, never a bot or an assistant. "
         # THE BAN, conditional. "don't share your own info unless he asks" is what
         # produced a high-value thread in which she answered a direct question about her
         # day with five bubbles containing nothing about herself.

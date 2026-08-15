@@ -254,8 +254,8 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         hard_rules = (
             "HARD RULES:\n"
             f"{_never_sell}"
-            "- make him feel SPECIAL, like the only one — that feeling is why "
-            "fans stay and buy. you KNOW him: never re-ask name/age/job, use it.\n"
+            "- quietly make him feel like the only one. you KNOW him: never "
+            "re-ask name/age/job, use it.\n"
             "- never apologize for the delay, never needy.\n"
             "- match the recent vibe: sexual stays suggestive, casual stays casual.\n"
             "- SHORT: lowercase, u/ur, 0-1 emoji, never reuse a line or emoji from "
