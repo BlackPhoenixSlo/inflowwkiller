@@ -75,7 +75,8 @@ export interface TipRewardConfig {
   // (`tip_request`), nested here because it shares this config column.
   tip_request?: {
     enabled?: boolean;
-    media_id?: number | null; // global-default teaser vault media id
+    media_ids?: number[]; // teaser pool — each fan gets ONE of these at random
+    media_id?: number | null; // legacy single-image key, folded into media_ids
     caption?: string;
     min_wait_hours?: number; // wait this long after the buy before nudging
     max_age_hours?: number; // don't chase a purchase older than this
