@@ -261,10 +261,51 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # two concurrent broadcasts can't rewrite that list under each other. Build
     # the client first — the sync needs it.
     from audiences import broadcast_lock, ensure_exclude_list
+    import audience_include as _audiences
     client = await asyncio.to_thread(ax._make_client, account_id)
     is_list_audience = bool(user_lists or online_only or filters)
 
+    # ── Include-only audience (audience_mode) ────────────────────────────
+    # Subtraction, never replacement: a list/online broadcast keeps its ORIGINAL
+    # audience and gets the AUTOFENCE exclude list attached below; an explicit
+    # recipient list is INTERSECTED with the include mirror (never widened).
+    # Shadow mode logs both with denominators and changes nothing. Covers every
+    # delegating sender too (mass_premade, arc_tease, vault_daily_reminder,
+    # ppv_send) — they all fire through this run.
+    audience_stats: dict = {}
+    audience_pol = await _audiences.automation_audience(account_id)
+    if audience_pol.mode != "off" and recipients:
+        recipients = await _audiences.filter_candidates(
+            account_id, recipients, kind="send_mass_message",
+            policy=audience_pol, stats=audience_stats)
+        if not recipients and not is_list_audience:
+            halted = audience_stats.get("audience_halted")
+            log.warning("send_mass_message: audience fence left no explicit "
+                        "recipients account=%s (%s)", account_id,
+                        halted or "audience_empty")
+            # A HALT (stale mirror / kill switch) is an error — loud, like the
+            # fence halt below; a genuinely-empty intersection is a plain skip.
+            if halted:
+                return {"status": "error", "reason": f"audience_halt:{halted}",
+                        **audience_stats}
+            return {"status": "skipped", "reason": "audience_empty",
+                    **audience_stats}
+
     async with broadcast_lock(account_id):
+        if audience_pol.mode != "off" and is_list_audience:
+            try:
+                fence_ids = await _audiences.audience_fence_for_broadcast(
+                    account_id, client=client, policy=audience_pol,
+                    stats=audience_stats)
+            except _audiences.AudienceHalt as e:
+                # HALT loudly — an enforce-mode blast never sends unfenced.
+                log.error("send_mass_message: AUTOFENCE unhealthy account=%s "
+                          "(%s) — broadcast halted", account_id, e.reason)
+                return {"status": "error", "reason": f"audience_halt:{e.reason}",
+                        **audience_stats}
+            for _lid in fence_ids:
+                if _lid not in excluded_user_lists:
+                    excluded_user_lists = [*excluded_user_lists, _lid]
         if excl_set and is_list_audience:
             try:
                 auto_lid = await ensure_exclude_list(
@@ -319,7 +360,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 previews=previews,
                 filters=filters,
                 online_only=online_only,
-            )
+            ),
+            send_purpose="fenced",
         )
     # OF's queue id — needed by callers that schedule a forever-window unsend
     # (mass_premade, the relay auto-unsend timer). NOT persisted on mass_runs.
@@ -413,4 +455,5 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # R1/R2: fans dropped because they already answered this funnel.
         "skipped_already_answered": len(skipped_answered),
         "skipped_already_answered_ids": skipped_answered,
+        **audience_stats,
     }

@@ -224,9 +224,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 Fan.automation_paused_until > now))).scalars().all())
     excl |= {int(x) for x in paused}
 
+    # Include-only audience — intersect BEFORE the [:max_per_run] slice so the
+    # cap spends on fans the fence actually allows.
+    import audience_include as _audiences
+    audience_stats: dict = {}
+    cold = await _audiences.filter_candidates(
+        account_id, cold, kind="reengage_buyers", stats=audience_stats)
+
     picks = [fid for fid in cold if fid not in excl][:max_per_run]
     if not picks:
-        return {"sent": 0, "skipped": "all_excluded", "candidates": len(cold)}
+        return {"sent": 0, "skipped": "all_excluded", "candidates": len(cold),
+                **audience_stats}
 
     async with get_session() as s:
         fans = {int(f.fan_id): f for f in (await s.execute(
@@ -293,4 +301,4 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             await ax.release_fan_lease(account_id, fid)
 
     return {"sent": sent, "errors": errors, "candidates": len(cold),
-            "picked": len(picks), "tone": tone}
+            "picked": len(picks), "tone": tone, **audience_stats}

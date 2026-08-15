@@ -1,6 +1,27 @@
 """
 _pins.py — which of a fan's OWN messages the model gets to re-read later.
 
+🚫 UNWIRED 2026-08-15 (operator ruling) — READ THIS BEFORE THE REST
+------------------------------------------------------------------
+NOTHING READS A PIN INTO A PROMPT ANY MORE. `ai_chatter`, `of_ai_chat`,
+`autoreply` and `deep_convo` no longer import this module at all; all five
+`pins_block(f)` call sites and both `consider(...)` sites are gone. Everything
+below still describes the design accurately, and the code still works — it simply
+has no chat caller.
+
+WHY IT HAD TO BE THE CALL SITES, not the flags: the READER was never gated.
+`pins_block` reads `fans.custom_fields["_pins"]` directly and consults neither
+`load_flags` nor `PINS_OFF`, so every already-captured pin kept rendering into four
+engines' prompts no matter what an operator set. Turning the flags off could not
+achieve this ruling; deleting the call sites is what does.
+
+⚠️ NOTHING UNPINS. Anything the writer pinned is still pinned on the OnlyFans
+thread and still visible in the human chat rail — this stopped the reading, not the
+pinning. A sweep would be its own operation.
+
+The module survives the unwire on purpose: `style_config_api` still serves its flag
+rows and `test_style_config`'s loader-coverage scan still walks them.
+
 THE PROBLEM
 -----------
 `gen_info` flattens a fan into fields, and a field is an INDEX, not the substance.

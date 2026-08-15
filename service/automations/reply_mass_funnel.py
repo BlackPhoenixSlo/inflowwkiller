@@ -748,6 +748,29 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     errors = 0
     cap_hit = False
 
+    # Include-only audience: one policy read for the whole tick. Applied at BOTH
+    # per-fan seams — discovery (stops enrolling outside fans) and the due-state
+    # walk (stops advancing already-enrolled fans who left/never were in the
+    # folder) — before any LLM step-text spend. `only_fan` is operator-explicit
+    # targeting and stays exempt (like force_ids).
+    import audience_include as _audiences
+    _audience_pol = await _audiences.automation_audience(account_id)
+    audience_skipped = 0
+
+    async def _audience_allows(fan_id: int) -> bool:
+        nonlocal audience_skipped
+        if _audience_pol.mode == "off" or (only_fan is not None and fan_id == only_fan):
+            return True
+        if _audience_pol.mode == "shadow":
+            if int(fan_id) not in _audience_pol.member_ids:
+                audience_skipped += 1        # would-skip; shadow gates nothing
+            return True
+        ok, _why = await _audiences.audience_allows_fan(
+            account_id, fan_id, kind="reply_mass_funnel", policy=_audience_pol)
+        if not ok:
+            audience_skipped += 1
+        return ok
+
     for mass_run_id, funnel_id, queue_id, started_at, discovery_closed_at, audience in runs:
         steps = await _load_funnel_steps(funnel_id)
         if not steps:
@@ -791,6 +814,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         account_id, fan_id, since=broadcast_at)
                     if last_in is None or last_in > discovery_closed_at:
                         continue
+                # Audience fence: the responder-dedup row above is ALWAYS
+                # recorded (so a later admit can never re-send the opener), but
+                # an outside fan is not ENROLLED for the walk.
+                if not await _audience_allows(fan_id):
+                    continue
                 if await _ensure_state(mass_run_id, fan_id, now):
                     discovered += 1
 
@@ -809,6 +837,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 continue
 
             fan_id = int(cs.fan_id)
+            # Audience fence at the walk too: a fan who left (or never joined)
+            # the folder stops advancing — his state simply waits; an admit
+            # resumes it on a later tick.
+            if not await _audience_allows(fan_id):
+                continue
             # Another automation messaged this fan recently → rest it (W3 cooldown).
             if await ax.fan_on_cooldown(account_id, fan_id):
                 skipped_cooldown += 1
@@ -961,6 +994,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "blocked": blocked,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
+        "audience_mode": _audience_pol.mode,
+        "audience_skipped": audience_skipped,
         "errors": errors,
         "cap_hit": cap_hit,
         "dry_run": dry_run,

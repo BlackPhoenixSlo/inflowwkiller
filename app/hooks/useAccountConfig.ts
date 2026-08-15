@@ -43,6 +43,44 @@ export interface BrainConfig {
   model_by_purpose: Record<string, string>;
   time_activities: Record<string, string>;
   time_images: Record<string, number>;
+  /**
+   * Include-only automation audience. These MUST stay on this type and travel
+   * with the form (Save PUTs the whole config object back — a field the type
+   * doesn't know about is a field a rebuild silently drops, and dropping the
+   * mode would reset an enforced fence to off). Server semantics: absent key =
+   * unchanged; "off" | "shadow" | "enforce"; shadow is mandatory before
+   * enforce unless `audience_enforce_override` rides the same PUT.
+   */
+  audience_mode: string;
+  /** The picked OF folder id (the server owns the local mirror row). */
+  audience_of_list_id: number | null;
+  /** Local lists.id of the mirror row — informational, server-owned. */
+  audience_list_id?: number | null;
+  audience_auto_add: boolean;
+  /** Transient: rides one PUT to allow direct-to-enforce (logged server-side). */
+  audience_enforce_override?: boolean;
+}
+
+/** Audience status block served beside the config (mirror health + ledger). */
+export interface AudienceStatus {
+  mode: string;
+  effective_mode: string;
+  auto_add: boolean;
+  list_id: number | null;
+  of_list_id: number | null;
+  list_name: string | null;
+  member_count: number;
+  synced_at: string | null;
+  snapshot_age_s: number | null;
+  truncated: boolean;
+  paused: boolean;
+  baseline_ready: boolean;
+  pending_first_sync: boolean;
+  healthy: boolean;
+  reason?: string | null;
+  ledger: Record<string, number>;
+  /** The named, visible "outside the fence" queue (one-click admit). */
+  outside_queue?: number;
 }
 
 /** One creator-canon field, as served by the API — the single source of truth. */
@@ -79,6 +117,8 @@ export interface AccountConfigResp {
   languages: LanguageOption[]; // language codes + labels for the dropdown
   /** Creator-canon fields, ordered by how often fans ask. Single source of truth. */
   persona_fact_fields: PersonaFactField[];
+  /** Include-only audience status (mirror health, ledger, outside queue). */
+  audience?: AudienceStatus;
 }
 
 export function useAccountConfig(accountId: string | null) {

@@ -1145,11 +1145,22 @@ class Post(Base):
 
 class List(Base):
     """OF list / our local list. kind drives behavior:
-       regular     — mirrors an OF list
-       exclude     — automatic skip in mass DM
-       hidden      — drop from default inbox
-       post_label  — labels on profile posts
-       smart       — saved query (query_json)"""
+       regular            — mirrors an OF list
+       exclude            — automatic skip in mass DM
+       hidden             — drop from default inbox
+       post_label         — labels on profile posts
+       smart              — saved query (query_json)
+       automation_include — the include-only automation audience mirror: a local
+                            snapshot of ONE operator-picked OF folder
+                            (of_list_id), reconciled OF→local by the
+                            `audience_sync` automation. `list_members` under
+                            this row is the gate-time read for every gated
+                            engine (no OF round-trip at send time).
+       autofence          — the per-account AUTOFENCE system list: ONE stable
+                            OF list id holding (sendable universe − include
+                            members), attached to enforce-mode broadcasts via
+                            `excludedLists`. Membership lives OF-side; the row
+                            pins the stable id + fence health in sync_meta_json."""
     __tablename__ = "lists"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -1161,6 +1172,16 @@ class List(Base):
     kind: Mapped[str] = mapped_column(String, nullable=False)
     query_json: Mapped[str | None] = mapped_column(Text)
     is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # audience_sync runtime state (automation_include / autofence rows only).
+    # Last COMPLETE successful OF→local reconcile; NULL = never synced, and the
+    # audience resolver treats an enforce-mode account whose mirror has never
+    # synced as still-in-shadow rather than darkening the roster.
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Free-shape RUNTIME state (scan generations, baseline readiness, truncation,
+    # fence health, kill-switch pause). Deliberately NOT in a validated config
+    # blob: config validators are strict allowlists that silently drop unknown
+    # keys, which is exactly the fail-open trap runtime state must not sit behind.
+    sync_meta_json: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _ts_now()
 
 
@@ -1174,6 +1195,44 @@ class ListMember(Base):
     added_at: Mapped[datetime] = _ts_now()
     added_by_employee_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("employees.id", ondelete="SET NULL")
+    )
+
+
+class AudienceEnrollment(Base):
+    """Stateful auto-add ledger for the include-only automation audience.
+
+    One row per (account, fan) the roster-diff has ever judged. States:
+      pending_add            — provably new; OF add issued, membership not yet
+                               confirmed by a complete list crawl. Only THIS
+                               state retries (bounded backoff via attempts /
+                               next_retry_at).
+      confirmed              — seen inside the OF folder after our add. From
+                               here, later ABSENCE from the folder is operator
+                               intent and is FINAL (→ removed_after_confirmed);
+                               the machine never re-adds.
+      removed_after_confirmed— operator removed the fan after we confirmed him.
+                               Terminal. Never re-added, never retried.
+      rejected_not_new       — cannot be proven new (pre-dates enable, returning
+                               churner, incomplete baseline). Never silently
+                               added; surfaced in the visible "outside the
+                               fence" queue with one-click admit.
+    """
+    __tablename__ = "audience_enrollments"
+
+    account_id: Mapped[str] = mapped_column(String, primary_key=True)
+    fan_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    # Which roster-scan generation first saw this fan (baseline discipline: a
+    # fan is provably new only when first seen AFTER a two-scan-stable baseline).
+    first_seen_gen: Mapped[int | None] = mapped_column(Integer)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime)
+    reason: Mapped[str | None] = mapped_column(String)
+    first_seen_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        Index("ix_audience_enroll_status", "account_id", "status"),
     )
 
 
@@ -1464,6 +1523,22 @@ class AccountAiConfig(Base):
     # safety net. Absent/NULL → make_right's built-in defaults (DISABLED + preview-only).
     # Own column to avoid the nudge/webhook shallow-merge collision.
     make_right_config_json: Mapped[str | None] = mapped_column(Text)
+    # Include-only automation audience mode. Three COLUMNS, deliberately not keys
+    # in a *_config_json blob: the mass senders never read those blobs, and every
+    # blob writer is a strict allowlist whose one stale copy silently drops the
+    # keys — a fail-open on an audience fence. NULL audience_mode ≡ 'off'
+    # (default OFF; nullable so init_db's ADD-COLUMN catch-up lands it on prod
+    # with no backfill). 'shadow' logs would-be skips and gates nothing;
+    # 'enforce' gates. Shadow is mandatory before enforce (config API rule).
+    audience_mode: Mapped[str | None] = mapped_column(String)
+    # Local lists.id of the kind='automation_include' mirror row (NOT the OF
+    # list id — that lives on the List row). Plain Integer, no FK: the additive
+    # ALTER-ADD-COLUMN catch-up can't create constraints, and a fresh-box
+    # create_all growing one the upgraded boxes lack would fork the schema.
+    audience_list_id: Mapped[int | None] = mapped_column(Integer)
+    # Auto-add newly subscribed fans to the include folder (roster-diff pull;
+    # the mixed notifications feed is only a latency fast-path). NULL ≡ off.
+    audience_auto_add: Mapped[bool | None] = mapped_column(Boolean)
     updated_at: Mapped[datetime] = _ts_now()
 
 

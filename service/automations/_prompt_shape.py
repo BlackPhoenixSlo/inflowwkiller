@@ -130,9 +130,39 @@ def facts_are_redundant(system: str, elsewhere: str = "") -> bool:
     return found_core
 
 
+def split_facts(text: str) -> tuple[str, str]:
+    """(everything else, the facts block) — THE one place that decides what "the
+    facts block" is.
+
+    Both halves matter now, and to different callers. `drop_facts` below throws the
+    second one away; `ai_chatter._build_messages` keeps it and re-attaches it to the
+    USER message on the turns a fan has actually asked who she is
+    (`persona_facts_on_ask_only`). Those were briefly two implementations against the
+    same header — a partition in `_persona` and this block filter — which is how the
+    two silently disagree about a persona whose canon is not last.
+
+    Both halves re-join on the canonical blank line, exactly as `drop_facts` has
+    always done. Returns (text, "") when there is no canon, so an account that never
+    filled one in builds a byte-identical prompt."""
+    kept: list[str] = []
+    facts: list[str] = []
+    for b in blocks(text or ""):
+        (facts if b.lstrip().startswith(FACTS_HEAD) else kept).append(b)
+    return "\n\n".join(kept), "\n\n".join(facts)
+
+
 def drop_facts(system: str) -> str:
-    return "\n\n".join(b for b in blocks(system)
-                       if not b.lstrip().startswith(FACTS_HEAD))
+    """The facts block removed.
+
+    ⚠️ REACHES A FACTS BLOCK ONLY WITH `persona_facts_on_ask_only` OFF. `ai_chatter`
+    is `apply`'s only caller, and with that gate ON it splits the canon off the
+    persona BEFORE assembling the system string — so nothing is left here to drop and
+    `facts_are_redundant` returns False at its first guard. The gate supersedes this
+    transform where both apply (it is strictly stronger: the canon rides only when he
+    asks, rather than only when some other block happens to repeat it), and this stays
+    as the ablation for accounts on the legacy path. If the gate's default holds for a
+    week, this and `facts_are_redundant` come out with `prompt_drop_facts_enabled`."""
+    return split_facts(system)[0]
 
 
 def task_line(user: str) -> str:

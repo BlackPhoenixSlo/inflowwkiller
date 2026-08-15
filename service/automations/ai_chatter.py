@@ -61,7 +61,7 @@ from collections import Counter
 from random import Random
 import re
 from datetime import datetime, timedelta
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -96,14 +96,17 @@ from ._leash import (  # noqa: F401 — re-exported for fans.py / tests
     spend_caps, spend_windows,
 )
 from ._markers import protocol_marker_re
-from ._persona import fan_claims_block, persona_register_age
+from ._persona import (
+    asks_about_her as _persona_asks_about_her, fan_claims_block,
+    persona_register_age,
+)
 from ._outbound import ConsistencyCtx, finalize_draft
 from . import _language
 from . import _customs
 from . import _objection  # which apology this turn owes him (regexes + the judge)
 from . import _voice
 from . import _openers  # the gen_info opener pool (the deepen phase)
-from . import _pins  # his own pinned long-form message (reader + writer)
+# 🚫 no `_pins` import — pins unwired 2026-08-15, ruling in `_pins.py`'s docstring.
 from . import _quotes  # which bubble he quote-replied (resolver + prompt block)
 from . import _prompt_shape  # block grouping / facts ablation / task line
 from . import sell_lane  # THE gate every priced send passes through (all engines)
@@ -176,6 +179,11 @@ _MAX_FORCED_ASKS_PER_TICK = 3
 # else's message and let her keep talking past the burst limit).
 _OUR_KINDS = frozenset({_PURPOSE, _KIND_UPSELL})
 _REPLY_COOLDOWN_S = 10           # live chat — same short rest as of_ai_chat
+# 🙋 Per-fan memory of "he has asked who she is" — the sticky half of the gate in
+# run() that decides whether her canon rides the prompt. Its own namespace under the
+# same `fans.custom_fields` boundary the day-log ledger uses, so per-fan memory has
+# one home rather than two.
+_BIO_ASKED_KEY = "_bio_asked"
 # Consecutive rows of HERS closer together than this are bubbles of ONE reply, not
 # separate replies (the humanizer types a reply out as 3-5 rows, seconds apart, and
 # the cadence caps count replies). Comfortably above the longest inter-bubble typing
@@ -605,17 +613,76 @@ _DEFAULTS: dict = {
     # pack itself, out of band, and `continue`s — the model never writes the offer
     # and never sees that it happened.
     #
-    # Auto Convo stays OFF. It has been never-PPV since it shipped, it is the
-    # keep-warm layer that runs when nobody else will, and it already stands down
-    # whole-account when the closer is on — so the fan it reaches is not the fan
-    # this ruling is about. One word here changes that when it should.
-    "autoreply_sell_on_ask": False,
+    # AUTO CONVO SELLS TOO — operator ruling 2026-08-15, the same day and the same
+    # reasoning one step further. It has been never-PPV since it shipped, and that
+    # rule was written when it had nothing to sell WITH: it could only have pitched
+    # in prose, from a catalog, in the keep-warm lane. The vault lane is not that.
+    # It sends the pack itself, out of band, on his own explicit words, and the
+    # never-PPV instruction in its prompt stays true because the model never writes
+    # the offer and never learns it happened.
+    #
+    # ⚠️ WHAT THIS DEFAULT ACTUALLY REACHES, stated exactly, because the obvious
+    # reading is wrong: `autoreply.run` sets `ai_chatter_owns` from
+    # `ai_chatter.is_enabled`, which is the account's `enabled` flag and NOTHING
+    # finer — not the payer floor, not `engaged_subset`. Its `content_ask` local is
+    # `(not ai_chatter_owns) and …`, so on an account with the closer ON this flag
+    # changes nothing at all, including for the fans `payers_only` skips. Those men
+    # are of_ai_chat's, and `of_ai_chat_sell_on_ask` above is what answers them.
+    #
+    # This one is for the accounts with NO closer (7 of 21 live), where Auto Convo
+    # IS the chat and a man who typed "send me a video" got banter and nothing else.
+    "autoreply_sell_on_ask": True,
     "of_ai_chat_sell_on_ask": True,
-    # The model's own "he asked to buy" line. SHADOW ONLY while this ships: it
-    # changes the prompt and records whether the model agreed with the regex, and
-    # `_sell_signal.decide` still returns the regex verdict. Arming it is a
-    # one-line change there, once a week of live disagreement counts exists.
-    "sell_signal_enabled": False,
+    # ONE LLM CALL PER ANSWER — operator ruling 2026-08-15. The closer's second
+    # call was the fact-extract, and it fired for any fan with a single empty
+    # profile column, which on a live roster is most of them. Profiling is
+    # of_ai_chat's job (it exists to chat him and fill those columns) and
+    # gen_info's; the closer duplicating it bought a full-prompt call per reply.
+    #
+    # ⚠️ This does NOT disable the extract. It narrows it to TIER B — the ~5% of
+    # turns where SHE said something about herself — because `her_claims` and the
+    # two body-focus flags have no other writer anywhere in the service, and
+    # `content_resolver.profile_terms` prices substitute PPVs off those flags.
+    # See `of_ai_chat._extract_and_fill`'s `claims_only`.
+    "closer_extract_claims_only": True,
+    # 🙋 HER CANON RIDES THE PROMPT ONLY WHEN HE ASKS ABOUT HER — operator ruling
+    # 2026-08-15. Her PROSE persona is unconditional (it is who she is on every
+    # turn); the FACTS TABLE — age, job, city, family, tattoos — is the half a fan
+    # only needs once he asks, and it was 322 chars of every prompt on an account
+    # with canon filled. `_persona.asks_about_her` is the detector, it already
+    # exists, it is bilingual and it costs no call. STICKY per fan once he asks.
+    "persona_facts_on_ask_only": True,
+    # 🚫 THE PROMPT DOES NOT SELL — operator ruling 2026-08-15. Selling happens when
+    # HE ASKS, through the vault ask lane (`sell_lane` → `pack_sender`), which sends
+    # the pack itself, out of band, on his own words. The model is no longer handed a
+    # sellable manifest, no longer asked to write a pitch, and no longer emits an
+    # `>>OFFER` line — the blind cheapest-item pick goes with it.
+    #
+    # A FLAG, NOT A DELETION, and deliberately so: the catalogue paths stay in place
+    # and go dark, because `_NO_SELL` is a shape every one of them already handles
+    # (`close=""`, `marker=False`), and because a money surface that has been live on
+    # 13 accounts should be provably silent for a week before its code is cut. Turn it
+    # back on per account from the raw-JSON editor; nothing needs a redeploy.
+    #
+    # ⚠️ CUSTOMS ARE NOT CATALOGUE. A custom is recorded to order, has no rows, and is
+    # sold by TIP on the male lane — `_manifest_block`'s customs half still renders.
+    "prompt_sell_catalog": False,
+    # 🔔 THE MODEL'S OWN "he asked to buy" LINE — ARMED 2026-08-15 (operator ruling),
+    # in `ai_chatter` and `autoreply`. `_sell_signal.decide` is now an OR: either the
+    # regex or the model sees an ask and the vault lane runs.
+    #
+    # It shipped shadow, waiting on a week of live disagreement counts. The ruling is
+    # to collect those counts ARMED instead — the roster is small accounts kept for
+    # exactly this case, and the shadow week could only ever have been gathered by
+    # turning the prompt block on anyway, so shadow bought a delay and no safety.
+    #
+    # WHAT IT COSTS WHEN IT IS WRONG, stated plainly because that is what makes OR the
+    # right operator: a false positive is one vault pack sent to a man who did not ask
+    # (priced, refundable, and `sell_lane` still applies every brake — caps, spend
+    # velocity, ownership dedup). A false negative is the sale, silently. The regex has
+    # been the only reader and every gap in it was found in production by a fan who
+    # asked and got banter.
+    "sell_signal_enabled": True,
     # force_ask: the OFFER is emitted by the MODEL (an offer marker it may or may not
     # write). So a fan the gate has already cleared, with a priced manifest in front
     # of the model, still gets pure chat whenever the model declines to sell — which
@@ -3981,13 +4048,15 @@ def _recent_realized_raw(rst: RhythmState | None) -> list[dict]:
 # welcome / followup / mass — a cross-automation, UI-invisible blackout. A decline
 # is LADDER-scoped (ladder_state.offers_paused_until / status) and nothing else.
 
-def _sell_turn(c: "_Cand", lang: str) -> sell_lane.Turn:
+def _sell_turn(c: "_Cand", lang: str, *, model_says_ask: bool = False) -> sell_lane.Turn:
     """His side of this turn, as the seller reads it. One place, so the closer and
     the seam can never disagree about which message (or which language) is being
-    judged."""
+    judged — nor about whether the MODEL also read an ask in it (`_sell_signal`),
+    which the lane's own `is_ask` ORs with its regex."""
     return sell_lane.Turn(text=c.last_body, at=c.last_in_at,
                           our_last_at=c.last_out_at,
-                          fan_spoke_last=(c.last_dir == "in"), lang=lang)
+                          fan_spoke_last=(c.last_dir == "in"), lang=lang,
+                          model_says_ask=model_says_ask)
 
 
 async def _load_ladders(account_id: str, fan_ids) -> dict[int, LadderState]:
@@ -4744,6 +4813,24 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     # Arm G's three transforms. Defaults to OFF, so every
                     # existing caller (and every test) builds today's prompt.
                     shape: "_prompt_shape.Shape" = _prompt_shape.OFF,
+                    # 🙋 WHERE HER CANON GOES THIS TURN. The facts table is the half of
+                    # the persona a fan only needs when he asks — her age, job, city,
+                    # family. Her PROSE persona is unconditional: it is who she is on
+                    # every turn, so this moves one block, never the whole string.
+                    #
+                    # 🚨 THREE STATES, AND A BOOLEAN CANNOT HOLD THEM. The first cut
+                    # took `bio_asked: bool`, split the canon off unconditionally and
+                    # rendered it only when True — so `persona_facts_on_ask_only=False`,
+                    # the operator's escape hatch, put her canon in NEITHER message and
+                    # deleted it from the prompt outright. "Gate off" and "gate on, he
+                    # has not asked" are different prompts and must be sayable apart.
+                    #
+                    #   "keep" — the canon rides the SYSTEM prompt (gate off = legacy,
+                    #            and the default, so every other caller and every test
+                    #            builds a byte-identical prompt)
+                    #   "hide" — gate on, he has not asked: the canon rides nowhere
+                    #   "show" — gate on, he asked: it moves to the USER message
+                    canon: Literal["keep", "hide", "show"] = "keep",
                     sell_signal: bool = False,
                     style_on: bool = False,
                     nonnative_on: bool = False,
@@ -5190,7 +5277,17 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # and the FULL sell block lands as its own section near the end of the
     # prompt (high salience — inlining 20 manifest lines mid-sentence buried it).
     has_sell = sell.live
-    offers_line = sell.intro if has_sell else "don't offer pics or videos yet."
+    # 🚨 THE FALLBACK IS NOT "don't offer pics or videos yet" ANY MORE, and it could
+    # not stay: with `prompt_sell_catalog` off this is the DEFAULT line on every
+    # account, and it is a falsehood on exactly the turns that matter — the vault ask
+    # lane charges him for a pack on the same turn, the hot/convo teaser attaches paid
+    # media, and `_manifest_block`'s own comment records the last time this shipped as
+    # "AN OUTRIGHT FALSEHOOD ON A LIVE ACCOUNT". What is true post-cut: she never
+    # names a price or a piece HERE; anything priced goes out of band, and telling him
+    # it does not exist is how she ends up denying the box in front of him.
+    offers_line = sell.intro if has_sell else (
+        "never name a price or pitch a piece yourself — if he asks to see "
+        "something, say yes warmly and let it arrive.")
     sell_section = f"\n\n{sell.block.strip()}\n\n" if has_sell else "\n\n"
 
     # The prompt clock ("" when the account has no tz configured → byte-equal
@@ -5207,8 +5304,29 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # prompt they read as two unrelated rules; adjacent they read as one situation.
     day_sys = day.system_block(v.voice)
 
+    # Where the canon goes this turn — see the `canon` parameter. The split comes from
+    # `_prompt_shape.split_facts`, which is also what `drop_facts` splits on, so the
+    # two can never disagree about what "the facts block" is. On "keep" nothing is
+    # split at all, and on an account with no canon both halves are already inert.
+    #
+    # ⚠️ NEW NAMES, never a rebind of `persona`. `persona_register_age(persona)` below
+    # still wants the WHOLE persona: the age it reads may live in the canon (a slot
+    # rendering "44 year old nurse" matches its prose regex), and rebinding here
+    # silently dropped that account's register line back to the 22yo default.
+    persona_head, bio_facts = (
+        (persona, "") if canon == "keep" else _prompt_shape.split_facts(persona))
     system = (
-        f"{persona}\n"
+        # 🚨 TWO NEWLINES, AND IT IS LOAD-BEARING. `compose_persona` ends with its
+        # facts table ("THESE ARE THE FACTS ABOUT YOU\n- Age: …"), and a SINGLE \n
+        # glued that table to the role sentence below into ONE paragraph as far as
+        # `_prompt_shape.blocks()` is concerned — which splits on a blank line. So
+        # `drop_facts`, on by default for every account since 2026-08-13, was
+        # deleting the whole paragraph: the facts AND "You're texting a fan",
+        # "100% human, never a bot or an assistant", the self-disclosure ban, the
+        # offers line and "read all, reply to the latest". Measured on a live
+        # account's own config: system 3,366 → 2,776 chars, and every one of those
+        # rules gone from the prompt without a log line.
+        f"{persona_head}\n\n"
         "You're texting a fan — flirting, getting to know him. 100% human, never "
         "a bot or an assistant. "
         # THE BAN, conditional. "don't share your own info unless he asks" is what
@@ -5267,6 +5385,11 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # produced the contradictions all live in this engine, not of_ai_chat's
     # (_MAX_TURNS=30 / _MAX_FAN_MESSAGES=10 / $1 spend gate).
     claims_block = fan_claims_block(f)
+    # 🙋 HER CANON, ONLY WHEN HE ASKED. In the USER message, not the system: it is
+    # now per-fan text, and per-fan text in the system prompt fragments the shared
+    # cached prefix and costs multiples of its own tokens (the rule `_daylog` and
+    # `_pins` both state). "" on every ordinary turn, which is nearly all of them.
+    bio_block = f"{bio_facts}\n\n" if (canon == "show" and bio_facts) else ""
     # "He asked about your day — ANSWER it." USER message, because it is keyed to
     # THIS fan: his question, and his own ledger of beats already heard. The system
     # block above only PERMITS the disclosure, and permission alone is inert — against
@@ -5279,12 +5402,11 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # halves are per-fan, so both belong in the user message, and the system block
     # above is the account-constant half.
     day_user = day.user_block(f, c.last_in_text or "")
-    # His own long-form message, pinned on the thread and read back here (_pins) —
     # same placement and reasoning as of_ai_chat's.
     user = (
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
+        f"{bio_block}"
         f"{claims_block}"
-        f"{_pins.pins_block(f)}"
         f"{day_user}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         # `_quotes.REPLY_NOW` verbatim unless he quote-replied, so the ~93% of turns
@@ -5605,7 +5727,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # answers most of the messages kept sending them.
     strip_emoji_on = await load_strip_emojis(account_id)
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
-    pins_on, pins_write = await _pins.load_flags(account_id)  # both default OFF
+    # The closer answers in ONE call; the extract narrows to her own claims.
+    extract_claims_only = bool(cfg.get("closer_extract_claims_only", True))
+    bio_gate_on = bool(cfg.get("persona_facts_on_ask_only", True))
+    prompt_sells = bool(cfg.get("prompt_sell_catalog", False))
     stickers_on = await load_cat_stickers_flag(account_id)    # cat reaction gifs (default ON)
     sticker_skip_w, sticker_solo_w, sticker_gap_min = \
         await load_cat_sticker_tuning(account_id)             # per-account rate knobs
@@ -5732,6 +5857,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                            session_gap_min=session_gap_min,
                            day_window=QUOTA_WINDOW if quota_on else None)
 
+    # ── Include-only audience: intersect HERE, before every ownership/spend
+    # snapshot. `seller_owned_fans`' `always` set is built FROM by_fan, so a
+    # fenced fan can never be resurrected by it; the of_ai_chat/deep_convo
+    # partition reads `engaged_subset(by_fan-derived sets)` and shrinks with it.
+    # force_ids is operator-explicit manual targeting — exempt, like the manual
+    # stamp (the exemption register names it).
+    import audience_include as _audiences
+    audience_stats: dict = {}
+    _kept = set(await _audiences.filter_candidates(
+        account_id, list(by_fan), kind="ai_chatter",
+        stats=audience_stats, extra_allowed_ids=force_ids))
+    by_fan = {fid: c for fid, c in by_fan.items() if fid in _kept}
+
     client = await asyncio.to_thread(ax._make_client, account_id)
 
     # ── M3 offer layer: resolve unlocks FIRST (a fan doesn't have to speak to
@@ -5751,6 +5889,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Max unpaid PPVs he may hold at once — configurable, but never below the default 2
     # (the whole point is that a second offer in a row is allowed).
     max_open_offers = max(_MAX_OPEN_OFFERS, int(cfg.get("max_open_offers") or 0))
+    # …and the EFFECTIVE ceiling is ONE when the prompt does not sell. "A second offer
+    # in a row is allowed" is a statement about a model that can pitch a second rung,
+    # and with the catalogue out of the prompt there is no second rung to pitch — only
+    # a live PPV she must still be able to talk about ("whats in it?"). Named here,
+    # next to the number it derives from, rather than as an extra disjunct on each of
+    # the branches that read it.
+    open_offer_ceiling = max_open_offers if prompt_sells else 1
     # How much cheaper the pending piece is re-priced when he haggles (0.10 = 10% off).
     haggle_pct = float(cfg.get("haggle_discount_pct") or _HAGGLE_DISCOUNT_PCT)
     # How much off a priced TEASER we RESEND when he balks on it (up to 0.20 = 20%).
@@ -5775,7 +5920,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # daring at all. Read once per run, not per fan.
     describe_on, _describe_seed, _describe_scope = \
         await _tip_reward.image_describe_flags(account_id)
-    scripts, catalog_items = await _load_catalog(account_id)
+    # 🚫 THE PROMPT DOES NOT SELL — ONE GATE, HERE, at the shelf. Everything the
+    # catalogue reaches in this sweep is downstream of these two names (`catalog_items`
+    # decides whether a sell block is built; `scripts` only ever rides into
+    # `_offerable_for_fan` beside it), so emptying the shelf is what "she has nothing
+    # priced to pitch" means — and every branch below then reads exactly as it did
+    # before the flag existed, instead of each re-asking whether selling is on.
+    # An empty shelf is a state those branches have always handled: it is what an
+    # account that never built a catalogue has.
+    #
+    # ⚠️ SCOPE IS THE PROMPT. `_fire_post_buy_rung` loads its own catalogue and is
+    # untouched — a post-buy rung is a priced attach sent out of band on a purchase,
+    # not a pitch the model writes, so it is not what this ruling is about.
+    scripts, catalog_items = (
+        await _load_catalog(account_id) if prompt_sells else ({}, []))
     offer_stats = await _resolve_open_offers(account_id, client, cfg,
                                              dry_run=dry_run,
                                              only_fan_ids=only_fan_ids or None)
@@ -5839,7 +5997,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # closer's permission to sell IS `pack_on_ask_enabled`; the per-engine keys
     # exist only for the engines that were never sellers.
     lane = await sell_lane.for_run(account_id, engine=_PURPOSE, cfg=cfg)
-    signal_on = bool(cfg.get("sell_signal_enabled"))
+    # 🔔 …and `lane.on`, because the signal's ONLY consumer is that lane. With the
+    # shelf or the ask-trigger off, every sale refuses `R_DISABLED` before it reads a
+    # word he wrote — so asking the model would buy a prompt block and a protocol line
+    # on every reply, for an answer nothing can act on. Same fold as autoreply's.
+    signal_on = lane.on and bool(cfg.get("sell_signal_enabled"))
 
     async with get_session() as s:
         fan_rows = (await s.execute(
@@ -6490,7 +6652,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             try:
                 f = await _extract_and_fill(account_id, fan_id, f, c, model,
                                             _EXTRACT_HISTORY_TAIL, purpose=_PURPOSE,
-                                            persona=persona)
+                                            persona=persona,
+                                            claims_only=extract_claims_only)
             except LLMCapExceeded:
                 cap_hit = True
                 log.warning("ai_chatter LLM cap reached (extract) account=%s — stopping",
@@ -6687,7 +6850,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if open_count and await _unlocked_since_open_offers(
                     account_id, fan_id, open_offers_f):
                 open_count -= 1
-            second_offer = pending is not None and open_count < max_open_offers
+            second_offer = pending is not None and open_count < open_offer_ceiling
             # Per-fan language: fans.language (manual pin or gen_info detection)
             # overrides the account default; unset → account default. Resolved HERE
             # (not at the prompt-build below) because the haggle detector needs it —
@@ -6702,7 +6865,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # re-tease, no post_buy. The LLM reply below still runs (she talks).
             if seller_off:
                 pass
-            elif pending is not None and open_count >= max_open_offers:
+            # 🚨 ONE unpaid PPV is enough to reach this when the prompt does not sell
+            # (see `open_offer_ceiling`). The bar used to be the raw `max_open_offers`
+            # (≥2), which is a state a vault sale never produces — so after
+            # `pack_sender` charged him for a box, the very next turn told the model
+            # "don't offer pics or videos yet" and she could not answer "whats in it?"
+            # about the thing he was looking at. Silent: no log, no counter. With the
+            # catalogue gone from the prompt this is the ONLY surface that can speak
+            # about a live offer at all.
+            #
+            # ⚠️ WITH the catalogue in the prompt the ceiling is unchanged, and it has
+            # to be: one pending PPV must NOT land here, because `_second_offer_block`
+            # owns that state and is what allows a second rung before the cap.
+            elif pending is not None and open_count >= open_offer_ceiling:
                 # Max unpaid PPVs already on the table — stop pitching, just chat.
                 sell = _pending_block(pending, await _get_item(int(pending.item_id)))
             # ⚠️ THE CATALOGUE IS NOT THE PRECONDITION ON SELLING — HAVING SOMETHING
@@ -7009,8 +7184,32 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # -send stamp below and the prompt block agree by construction rather
             # than by two independent evaluations of the same predicate.
             day_required_beat = day.required_beat(f, c.last_in_text or "")
+            # 🙋 HAS HE ASKED WHO SHE IS? Her canon table rides the prompt only then.
+            #
+            # STICKY, and that is the whole design. A man who asks her age on turn 4
+            # and follows up on turn 5 ("and ur from where?") must still be talking to
+            # someone who knows — a gate read fresh off each inbound would hand him a
+            # prompt with no facts on the follow-up, which is precisely the thread
+            # shape the bio guardrail exists for. So: this run's inbound, OR the bit
+            # stamped on a previous confirmed send. Same state boundary as the day-log
+            # ledger, so there is one place per-fan memory lives, not two.
+            #
+            # The stored bit is named separately because the confirmed-send stamp below
+            # reads it again: it writes only when the canon actually shipped and the
+            # bit was not already set, which is exactly "he asked for the first time".
+            #
+            # ⚠️ GATE OFF IS "keep", NOT "hide". With the gate off her canon rides the
+            # SYSTEM prompt exactly as it always has — that is what an escape hatch is
+            # for. Collapsing the two into one boolean is how the first cut deleted her
+            # canon from both messages; see the `canon` parameter.
+            bio_was_asked = fan_state(f, _BIO_ASKED_KEY).get("asked") is True
+            bio_asks_now = any(_persona_asks_about_her(b)
+                               for d, b in c.messages[-_HISTORY_TAIL:] if d == "in")
+            canon = ("keep" if not bio_gate_on
+                     else "show" if (bio_was_asked or bio_asks_now) else "hide")
             msgs, presented = _build_messages(persona, f, c, asked, history_tail,
                                               shape=_shape,
+                                              canon=canon,
                                               custom_owed=_customs.is_owed(f),
                                               opener=opener,
                                               sticker_mode=sticker_mode,
@@ -7063,8 +7262,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Sell signal: the model's own read of "did he ask to buy". ALWAYS
             # stripped (a fan must never see the protocol) even with the block
             # off, because a model that has seen it once in a prefix-cached
-            # conversation can emit it later unprompted. SHADOW ONLY — `decide`
-            # returns the regex verdict and merely records the disagreement.
+            # conversation can emit it later unprompted. ARMED 2026-08-15 — `decide`
+            # is an OR now, and the same verdict rides the Turn into the lane below,
+            # which is where the authoritative detector lives.
             raw, _model_ask = _sell_signal.parse(raw)
             if signal_on:
                 vault_ask = _sell_signal.decide(
@@ -7245,7 +7445,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # is what the seam requires: leases are not re-entrant, so it must
                 # never take or release one of its own.
                 _pack_plan = await lane.plan(
-                    fan_id, _sell_turn(c, fan_lang), fan=f,
+                    # `_model_ask` is the model's own line on THIS turn, parsed off
+                    # the draft above — the lane ORs it with its regex, and without
+                    # it a model-only ask is refused `R_NOT_ARMED` inside the gate
+                    # however plainly `vault_ask` said yes out here.
+                    fan_id, _sell_turn(c, fan_lang,
+                                       model_says_ask=signal_on and _model_ask),
+                    fan=f,
                     blocked=seller_off,
                     counters=sell_lane.AskCounters(
                         asks_today=int(asks_by_fan.get(fan_id, 0)),
@@ -7560,8 +7766,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # real media rides (a teaser) or an unpaid PPV is already pending (then
             # "go unlock the one i sent" is true, not a phantom). offer_item is None
             # here, so a fresh priced PPV never reaches this branch.
-            if catalog_items and offer_item is None:
-                _phantom = teaser is None and pending is None
+            #
+            # 🚨 `_pack_plan` IS REAL MEDIA. The vault lane decides above and delivers
+            # at the end of this turn (`lane.deliver`), and it CLEARS `offer_item` on
+            # the way past — so a truthful "sending it now babe" was being read as a
+            # hallucination on the one turn it is literally true. If it was the only
+            # bubble, `if not parts: continue` then abandoned the turn and dropped the
+            # plan: the sale lost, counted nowhere but `unbacked_stripped`.
+            #
+            # ⚠️ The `catalog_items` guard is gone with it. It scoped this floor to
+            # accounts holding enabled catalog rows, which is exactly backwards — an
+            # empty shelf is where the model has NO grounded price to quote, so it is
+            # where an invented one is most likely and least excusable.
+            if offer_item is None:
+                _phantom = teaser is None and pending is None and _pack_plan is None
 
                 def _bad(p: str) -> bool:
                     return _unbacked_talk(p) or (_phantom
@@ -8076,10 +8294,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Item 22 — profile-less fan below gen_info's staleness gate: force one
             # regen so his notes get built now instead of never.
             await _maybe_bootstrap_profile(account_id, fan_id)
-            # Should his last message be pinned for later re-reading? Nearly always
-            # no, and the "no" costs one length check — see _pins' cost ladder.
-            await _pins.consider(account_id, f, c.last_body, client, lang=fan_lang,
-                                 enabled=pins_on, write=pins_write)
             sent += 1
             # The picture play is spent for the cooldown — burn it, so a long thread
             # never re-dares. Stamped on CONFIRMED send, not on the decision, so a
@@ -8101,6 +8315,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await set_fan_state(
                     account_id, fan_id, _daylog.STATE_KEY,
                     _daylog.mark_beat_used(f, day.date, day_required_beat))
+            # He asked who she is, and she has now answered — remember it, so the
+            # follow-up two turns later still reaches a prompt that knows her canon.
+            # On the CONFIRMED send, never on the decision: a failed send must leave
+            # the next turn free to gate itself off his words again.
+            #
+            # Keyed to `canon`, the same value the prompt was built from, so the bit
+            # is stamped exactly when the canon actually shipped — never re-derived
+            # from the two halves, and never written at all with the gate off.
+            if canon == "show" and not bio_was_asked:
+                await set_fan_state(account_id, fan_id, _BIO_ASKED_KEY,
+                                    {"asked": True})
             # Persist the offer the moment its message is confirmed on the wire.
             # A teaser is its own delivery (advance immediately); a paid offer
             # opens and waits on the unlock watcher. VaultSend rows land at
@@ -8150,14 +8375,22 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         # daily_ask_cents is what the fan was ASKED today: the churn
                         # path is asks, and a fan who buys nothing never trips a
                         # spend cap.
-                        day = (rhythm.local_now(now, tz_off)).strftime("%Y-%m-%d")
+                        # 🚨 `ladder_day`, NOT `day`. This used to rebind `day` — the
+                        # `_daylog.Day` object bound ONCE for the whole sweep at the
+                        # top of run() — to a date STRING, for every remaining
+                        # candidate. The next fan then called `day.covers` (rhythm on)
+                        # or `day.required_beat` and got AttributeError on a str, which
+                        # the per-fan `except` swallowed as "per-fan loop errored" and
+                        # SKIPPED HIM. One fan taking an offer silently cost every fan
+                        # behind him in the same tick. (`local_day` is already taken.)
+                        ladder_day = (rhythm.local_now(now, tz_off)).strftime("%Y-%m-%d")
                         prior = (int(fan_ladder.daily_ask_cents or 0)
                                  if (fan_ladder is not None
-                                     and fan_ladder.daily_day == day) else 0)
+                                     and fan_ladder.daily_day == ladder_day) else 0)
                         await _save_ladder(
                             account_id, fan_id, status=upsell.STATUS_OPEN,
                             rung_index=rung_index + 1, last_ask_at=now,
-                            session_idle_at=now, daily_day=day,
+                            session_idle_at=now, daily_day=ladder_day,
                             daily_ask_cents=prior + (ask_cents or
                                                      int(offer_item.price_cents or 0)))
                     # Item 18 — schedule the ONE delayed re-engage nudge for this
@@ -8236,6 +8469,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     return {
         "mode": mode,
         "candidates": len(candidates),
+        **audience_stats,
         "replies_sent": sent,
         "offers_made": offers_made,
         "offers_made_on_escalation": offers_made_on_escalation,

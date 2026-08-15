@@ -206,6 +206,13 @@ class Turn:
     our_last_at: datetime | None = None
     fan_spoke_last: bool = True
     lang: str = "en"
+    # 🔔 THE SECOND READER. The model, which read his message anyway to write the
+    # reply, said he asked to buy (`_sell_signal`). Carried ON THE TURN rather than
+    # passed to `sell`/`plan`, because `is_ask` is the authority and this is an input
+    # to that question, not an override of it — see the note there.
+    #
+    # Defaults False, so every existing caller and every test gets today's verdict.
+    model_says_ask: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -355,8 +362,20 @@ class SellLane:
     # ── read-only predicates ────────────────────────────────────────
 
     def is_ask(self, turn: Turn) -> bool:
-        """Did he ask to SEE something this turn, in HIS language?"""
-        return _language.is_content_ask(turn.text, turn.lang)
+        """Did he ask to SEE something this turn, in HIS language? TWO readers, OR'd.
+
+        🚨 THIS IS WHY ARMING `_sell_signal` IN THE ENGINES WAS NOT ENOUGH. The gate
+        below re-runs the detector for EVERY caller — deliberately, so that no engine
+        can find a way past the trigger — which means a model-only ask died here with
+        `R_NOT_ARMED` no matter what the engine had decided upstream. The signal was
+        wired into `ai_chatter` from the day it shipped and could never have fired.
+
+        So the second reader lands HERE, where the authority already is. The regex is
+        still evaluated on every call; `model_says_ask` can only ever ADD an ask, never
+        veto one — an AND would let a distracted model kill a plainly matched request,
+        which is strictly worse than the regex alone. See `_sell_signal.decide`."""
+        return (_language.is_content_ask(turn.text, turn.lang)
+                or bool(turn.model_says_ask))
 
     @property
     def stats(self) -> dict:

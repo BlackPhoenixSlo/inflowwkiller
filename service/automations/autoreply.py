@@ -46,9 +46,10 @@ import automation_executor as ax
 import llm_client
 from ._persona import compose_persona
 from . import _language
-from . import _pins  # his own pinned long-form message (reader only)
+# 🚫 no `_pins` import — pins unwired 2026-08-15, ruling in `_pins.py`'s docstring.
 from . import _customs
 from . import _voice  # whose voice this account writes in (NULL → 'her')
+from . import _sell_signal  # the model's own "he asked to buy" line (ARMED, OR)
 from . import sell_lane  # THE gate every priced send passes through
 from attribution import write_outbound_attribution
 from automation_registry import register
@@ -135,6 +136,22 @@ async def _load_config(account_id: str) -> dict | None:
     return cfg
 
 
+def _sell_turn(last_in: str, at: datetime | None, lang: str, *,
+               model_says_ask: bool = False) -> sell_lane.Turn:
+    """His side of this turn, as the seller reads it.
+
+    ONE place, because `run` now has TWO sale moments — the regex one before the
+    generation and the model-only one after the reply lands — and two hand-built
+    turns are two chances to judge different words, a different language, or a
+    different inbound. Same reason `ai_chatter._sell_turn` exists.
+
+    `fan_spoke_last` / `our_last_at` are left at their defaults on purpose, unlike
+    the closer's: every autoreply candidate IS a fan waiting on an unanswered
+    inbound (that is the trigger), so the default `True` is not an assumption here."""
+    return sell_lane.Turn(text=last_in, at=at, lang=lang,
+                          model_says_ask=model_says_ask)
+
+
 def _in_quiet_hours(cfg: dict, now: datetime) -> bool:
     """True if the creator-local hour is inside quiet_hours_json=[start,end].
     null / [0,0] → never quiet (24/7). Mirrors the executor's gate."""
@@ -162,6 +179,10 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
                     style: str, style_on: bool = False,
                     nonnative_on: bool = False,
                     content_ask: bool = False,
+                    # 🔔 Ask the model to flag a buy-ask the regex may have missed.
+                    # Defaults OFF so every other caller (and every test) builds
+                    # today's prompt byte-for-byte. See `_sell_signal`.
+                    sell_signal: bool = False,
                     tip_ask_block: str = "",
                     custom_owed: bool = False,
                     painful_on: bool = True,
@@ -269,11 +290,13 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
         f"{_language.output_language_directive(lang)}"
         f"{_customs.prompt_block(custom_owed, v.voice)}"
+        # LAST, and after the output contract it is the sanctioned exception to —
+        # same placement as the closer's, so a model that has read one prompt reads
+        # the other the same way.
+        f"{chr(10) + chr(10) + _sell_signal.BLOCK if sell_signal else ''}"
     )
-    # His own long-form message, pinned on the thread and read back here (_pins).
     user = (
         f"What you know about him:\n{facts_block}\n\n"
-        f"{_pins.pins_block(f)}"
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Reply to his last message now, in THIS MESSAGE's style."
     )
@@ -475,7 +498,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     cands = await _candidates(account_id, cfg, now)  # [(fan, our_last_out_at)]
     if only_set is not None:
         cands = [(f, t) for (f, t) in cands if int(f.fan_id) in only_set]
-    cands = cands[:limit]
+
+    # Include-only audience (operator decision O1: autoreply IS gated) — before
+    # the [:limit] slice so the fence can't eat the tick's budget, and before
+    # any LLM spend.
+    import audience_include as _audiences
+    audience_stats: dict = {}
+    _kept = set(await _audiences.filter_candidates(
+        account_id, [int(f.fan_id) for (f, _) in cands], kind="autoreply",
+        stats=audience_stats))
+    cands = [(f, t) for (f, t) in cands if int(f.fan_id) in _kept][:limit]
 
     # autoreply gates on automation_paused_until, not skip_list — so load the
     # HARD skips (muted_creator / manual "restrict this fan") explicitly and skip
@@ -527,6 +559,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # and two engines reading two copies of a cap is two caps.
     lane = await sell_lane.for_run(account_id, engine=_PURPOSE,
                                    permission_key="autoreply_sell_on_ask")
+    # 🔔 The model's own read of "did he ask to buy" — ARMED, OR'd with the regex.
+    # Off `lane.cfg` (the CLOSER's blob) for the same reason the shelf flags are:
+    # one config owns the selling knobs, and two engines reading two copies of a
+    # switch is two switches.
+    #
+    # ALL THREE CONDITIONS ARE "can this signal possibly act", not preferences —
+    # every one of them makes the answer unusable, so asking for it would be a
+    # prompt block and a protocol line bought on every reply for nothing:
+    #   `ai_chatter_owns` — the closer owns the fan; `content_ask` carries the same
+    #                       guard and autoreply's money surfaces both stand down
+    #   `lane.on`         — no shelf, no ask-trigger, or no permission: every sale
+    #                       refuses `R_DISABLED` before it reads a word he wrote
+    signal_on = (not ai_chatter_owns and lane.on
+                 and bool(lane.cfg.get("sell_signal_enabled")))
 
     client = None
     sent = skipped_spend = skipped_cap = skipped_raced = errors = 0
@@ -644,8 +690,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # `sent` is what `max_sends` bounds, so a sale that skipped it would let
             # one run ship its whole reply budget plus unbounded priced PPVs.
             if content_ask and await lane.sell(
-                    client, fid,
-                    sell_lane.Turn(text=last_in, at=inbound_at, lang=fan_lang),
+                    client, fid, _sell_turn(last_in, inbound_at, fan_lang),
                     fan=f, dry_run=dry_run):
                 sent += 1
                 sent_ok = True   # a priced send IS a send: keep the lease to TTL
@@ -665,6 +710,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             msgs = _build_messages(persona, f, history, style, style_on=style_on,
                                    nonnative_on=nonnative_on, lang=fan_lang,
                                    content_ask=content_ask,
+                                   sell_signal=signal_on,
                                    tip_ask_block=tip_ask_block,
                                    painful_on=painful_on, clock=_clock_line(clock_tz),
                                    v=v,
@@ -683,6 +729,27 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 continue
 
             raw = (res.content or "").strip()
+            # 🔔 The model's "he asked to buy" line. ALWAYS stripped — even with the
+            # block off — because a model that has seen the protocol once in a
+            # prefix-cached conversation can emit it later unprompted, and a fan must
+            # never read "SELL: yes". Same discipline as the closer's marker parse.
+            raw, _model_ask = _sell_signal.parse(raw)
+            # 🔔 FOR THE RECORD, on every reply the model wrote — the disagreement
+            # rates between the two readers are the whole point of arming this, and
+            # they are only comparable across engines if both log on the same event.
+            # `record`, not `decide`: the OR is not what acts here (see below), and a
+            # `decide` whose verdict is thrown away reads like a bug.
+            if signal_on:
+                _sell_signal.record(regex_says=content_ask, model_says=_model_ask,
+                                    account_id=account_id, fan_id=fid,
+                                    engine=_PURPOSE)
+            # …and what acts is the model-ONLY case, which is the recall this exists
+            # for. `content_ask` is not an OR here but a BAR: the regex path already
+            # took its shot above and `continue`d on success, so reaching this line
+            # with it True means that sale was REFUSED (caps, no matching media) —
+            # and a refused ask must not be re-attempted on the same inbound.
+            # `sell_lane` memoes and counts it exactly once.
+            model_added_ask = signal_on and _model_ask and not content_ask
             # Deterministic floor under ONPLATFORM_GUARDRAIL: if the model still leaked
             # a number / off-platform handle / meetup arrangement, swap for a deflection.
             # The shared send chokepoint (_outbound): off-platform guard, then the
@@ -756,11 +823,39 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _save_state(account_id, fid, spell_inbound_at=spell_anchor,
                                   nudges_sent=nudges + 1, last_nudge_at=datetime.utcnow())
                 sent += 1
+                # 🔔 THE MODEL CAUGHT AN ASK THE REGEX MISSED — sell it, AFTER the
+                # answer. The other ordering in this loop, and deliberately so:
+                #
+                #   * regex ask → we knew before generating, so the pack REPLACES the
+                #     banter (he gets the priced answer to what he typed, nothing else)
+                #   * model ask → we only learned it FROM the draft, so the answer has
+                #     already gone out and the pack follows it
+                #
+                # That second shape is the closer's ("the answer lands before the PPV
+                # that answers it"), so a fan reads the same conversation either way:
+                # she replies, then the thing he asked for arrives. Waiting for the
+                # NEXT turn instead would need the ask to survive in the regex, which
+                # is the gap this exists to close.
+                #
+                # ⚠️ KNOWN, AND NOT WORTH THE RESTRUCTURE: `dry_run` returns above
+                # (before the wire) so this branch never runs under it, while the
+                # regex sale — which happens before that return — does. A dry-run
+                # report therefore UNDERSTATES model-only sales. Reaching it would
+                # mean splitting the dry-run early-exit around the whole send block,
+                # which buys a diagnostic number at the price of the live path's
+                # shape. The live counters (`sold` / `sell_refused`) are unaffected.
+                if model_added_ask and await lane.sell(
+                        client, fid,
+                        _sell_turn(last_in, inbound_at, fan_lang,
+                                   model_says_ask=True),
+                        fan=f, dry_run=dry_run):
+                    sent += 1
         finally:
             if not sent_ok:
                 await ax.release_fan_lease(account_id, fid)
 
     return {"enabled": True, "candidates": len(cands), "sent": sent,
+            **audience_stats,
             "skipped_spend": skipped_spend, "skipped_cap": skipped_cap,
             "skipped_raced": skipped_raced, "skipped_restricted": skipped_restricted,
             "skipped_unreachable": skipped_unreachable, "skipped_spam": skipped_spam,

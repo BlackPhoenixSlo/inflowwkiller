@@ -696,6 +696,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         or (now - st.last_seen_online_at) > gap
     ]
 
+    # Include-only audience: filter the producer so fenced fans never even get a
+    # fire-job enqueued. The firer re-checks at fire time regardless (jobs sit
+    # in the queue through the delay+jitter window, so a producer-only gate
+    # would leak every in-flight job across a mode flip).
+    import audience_include as _audiences
+    audience_stats: dict = {}
+    newly = await _audiences.filter_candidates(
+        account_id, newly, kind="nudge_online_fire", stats=audience_stats)
+
     max_per = int(cfg.get("max_per_tick", 25))
     handled = newly[:max_per]
     overflow = set(newly[max_per:])
@@ -740,4 +749,5 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "enqueued": enqueued,
         "skipped": skipped,
         "skip_reasons": skip_reasons,
+        **audience_stats,
     }

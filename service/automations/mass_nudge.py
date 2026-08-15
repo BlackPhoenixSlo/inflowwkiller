@@ -297,6 +297,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     excl |= await exclude_list_fan_ids(account_id, MASSDMEXCLUDE_LIST)
     recipients = [fid for fid in online if fid not in excl]
 
+    # Include-only audience: this is an explicit-userIds broadcast, so the fence
+    # is a plain intersection (never widened) — before the send, no LLM here.
+    import audience_include as _audiences
+    audience_stats: dict = {}
+    recipients = await _audiences.filter_candidates(
+        account_id, recipients, kind="mass_nudge", stats=audience_stats)
+
     if cfg.get("dry_run"):
         return {"dry_run": True, "slot": slot, "variation_idx": idx,
                 "text": text, "image_attached": bool(media),
@@ -307,7 +314,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # Everyone online was nudged/DMed inside the window — the dedup working.
         return {"sent": 0, "skipped": "all_in_cooldown", "slot": slot,
                 "online": len(online), "excluded": len(online),
-                "recipients": 0, "window_hours": window}
+                "recipients": 0, "window_hours": window, **audience_stats}
 
     try:
         result = await asyncio.to_thread(lambda: client.send_mass_message(
@@ -353,4 +360,5 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "excluded": len(online) - len(recipients),
         "window_hours": window,
         "unsend_job": unsend_job,
+        **audience_stats,
     }

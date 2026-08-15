@@ -180,8 +180,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             ready_before=now - timedelta(hours=min_wait_h),
             fresh_after=now - timedelta(hours=max_age_h),
         )
+    # Include-only audience: gate the sweep; the fan-scoped manual/force path
+    # above is operator-explicit targeting and stays exempt (like force_ids).
+    import audience_include as _audiences
+    audience_stats: dict = {}
+    if only_fan is None:
+        _kept = set(await _audiences.filter_candidates(
+            account_id, list(candidates), kind="tip_request",
+            stats=audience_stats))
+        candidates = {fid: t for fid, t in candidates.items() if fid in _kept}
     if not candidates:
-        return {"status": "ok", "reason": "no_candidates", "sent": 0}
+        return {"status": "ok", "reason": "no_candidates", "sent": 0,
+                **audience_stats}
 
     # ── Eligibility sets (skip-list + cross-automation contact guard) ─
     hard_skip: set[int] = set() if force else await load_hard_skip_ids(account_id)
@@ -269,4 +279,4 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                  account_id, fid, media_id, msg_id)
 
     return {"status": "ok", "sent": sent, "skipped": skipped, "errors": errors,
-            "candidates": len(candidates), "dry_run": dry_run}
+            "candidates": len(candidates), "dry_run": dry_run, **audience_stats}

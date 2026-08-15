@@ -398,27 +398,14 @@ async def _established_fan_ids(
       • the fan may fire off a few opening messages → several INBOUND rows.
     We treat a fan as established only once they EXCEED a tolerance: more than
     `max_outbound` outbound OR more than `max_inbound` inbound messages. One
-    grouped scan over the (≤`limit`) notification fans per tick."""
-    if not fan_ids:
-        return set()
-    ids = [int(f) for f in fan_ids]
-    out_c: dict[int, int] = {}
-    in_c: dict[int, int] = {}
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(Message.fan_id, Message.direction, func.count())
-            .where(Message.account_id == str(account_id), Message.fan_id.in_(ids))
-            .group_by(Message.fan_id, Message.direction)
-        )).all()
-    for fid, direction, cnt in rows:
-        if direction == "out":
-            out_c[int(fid)] = int(cnt)
-        elif direction == "in":
-            in_c[int(fid)] = int(cnt)
-    return {
-        fid for fid in ids
-        if out_c.get(fid, 0) > max_outbound or in_c.get(fid, 0) > max_inbound
-    }
+    grouped scan over the (≤`limit`) notification fans per tick.
+
+    The scan itself is HOISTED to audience_include.established_fan_ids so the
+    audience roster-diff auto-add applies the identical renewal tolerance; this
+    stays as the module's local name so its call sites and tests don't move."""
+    import audience_include
+    return await audience_include.established_fan_ids(
+        account_id, fan_ids, max_outbound=max_outbound, max_inbound=max_inbound)
 
 
 async def _mark_welcomed(account_id: str, fan_id: int, username: str | None) -> None:
@@ -960,6 +947,34 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 new_subs = [s for s in new_subs if s["id"] not in hard_skip]
                 skipped_restricted = before - len(new_subs)
 
+    # Include-only audience — ordered AFTER the auto-add fast-path, on purpose:
+    # a provably-new sub is enrolled into the operator's folder first (pending
+    # OF confirm) and counts as INSIDE, so enforce mode never eats the welcome
+    # of the very fan it is about to admit. Fans the ledger refuses (returning
+    # churner, pre-baseline) stay subject to the gate: shadow logs, enforce skips.
+    skipped_audience = 0
+    if new_subs:
+        import audience_include as _audiences
+        from . import audience_sync as _audience_sync
+        _pol = await _audiences.automation_audience(account_id)
+        if _pol.mode != "off":
+            enrolled: set[int] = set()
+            if _pol.auto_add:
+                for _s in new_subs:
+                    try:
+                        if await _audience_sync.fast_path_enroll(
+                                account_id, _s["id"], client=client):
+                            enrolled.add(int(_s["id"]))
+                    except Exception:  # noqa: BLE001 — the roster diff is the guarantee
+                        log.warning("audience fast-path enroll failed account=%s fan=%s",
+                                    account_id, _s["id"], exc_info=True)
+            kept = set(await _audiences.filter_candidates(
+                account_id, [s["id"] for s in new_subs], kind="send_welcome",
+                policy=_pol, extra_allowed_ids=enrolled))
+            before = len(new_subs)
+            new_subs = [s for s in new_subs if int(s["id"]) in kept]
+            skipped_audience = before - len(new_subs)
+
     new_total = len(new_subs)
 
     batch_capped = new_total > max_welcomes
@@ -1112,7 +1127,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # welcome_sent claim unwritten, so the next sweep regenerates
                     # and re-fails, forever.
                     outcome = await send_dropping_bad_media(
-                        client, fan_id, part, media, log=log)
+                        client, fan_id, part, media, log=log,
+                        send_purpose="gated")
                     result = outcome.result
                 except Exception as e:
                     if idx == 0:
@@ -1195,6 +1211,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_existing": skipped_existing,
         "skipped_guard": skipped_guard,
         "skipped_restricted": skipped_restricted,
+        "skipped_audience": skipped_audience,
         "errors": errors,
         "cap_hit": cap_hit,
         "batch_capped": batch_capped,
