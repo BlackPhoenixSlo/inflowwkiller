@@ -477,6 +477,10 @@ export interface OFMessage {
   _pending?: boolean;
   _failed?: boolean;
   _failedReason?: string;    // human-readable upstream reason (OF error)
+  /** Vault ids OF named in `payload.removeFromInputMediaIds` — the exact
+   *  attachments it refused. The bubble marks those tiles so the operator
+   *  drops the right one; see lib/sendFailure. */
+  _failedMediaIds?: number[];
   _tempId?: number;
   /** Set on pseudo-rows synthesized from a scheduled send (the executor-fired
    *  `scheduled_jobs` queue). `_fireAt` is the ISO timestamp it delivers at;

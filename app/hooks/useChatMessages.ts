@@ -28,6 +28,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { relay, type OFMessage, type OFMessagesResp } from "@/lib/relay";
+import type { SendFailure } from "@/lib/sendFailure";
 import { eventBus } from "@/lib/events";
 import { toUtcIso } from "@/hooks/useInboxRealtime";
 import { perfDelivered, perfError, perfLog, perfOpId } from "@/lib/perfLog";
@@ -265,13 +266,25 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
     [qc, queryKey],
   );
 
-  /** Mark an optimistic message as failed (Retry button shows). */
+  /** Mark an optimistic message as failed (Retry button shows).
+   *
+   *  Takes the whole {@link SendFailure} rather than its fields: it is exactly
+   *  what `parseSendFailure` returns, so the send path reads "parse, then
+   *  store" with no shape in between. `refusedMediaIds` is absent for every
+   *  failure that isn't about media (network, the 409 re-sale block, a plain
+   *  500), which is why the bubble tests it rather than the reason text. */
   const failLocal = useCallback(
-    (tempId: number, reason?: string) => {
+    (tempId: number, failure?: SendFailure) => {
       qc.setQueryData<OFMessage[]>(queryKey, (prev = []) => {
         return prev.map((m) =>
           m._tempId === tempId
-            ? { ...m, _failed: true, _pending: false, _failedReason: reason }
+            ? {
+                ...m,
+                _failed: true,
+                _pending: false,
+                _failedReason: failure?.reason,
+                _failedMediaIds: failure?.refusedMediaIds,
+              }
             : m,
         );
       });

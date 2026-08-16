@@ -20,6 +20,7 @@ import {
   VaultAiCaptionOverlay,
 } from "@/components/chat/VaultPicker";
 import { proxyImage, proxyScrubFrame, type VaultMedia } from "@/lib/relay";
+import { fmtDuration } from "@/lib/format";
 
 const SCRUB_FRAMES = 12;
 const SCRUB_INTERVAL_MS = 450;
@@ -33,13 +34,6 @@ function rawThumb(m: VaultMedia): string | undefined {
     m.files?.full?.url ||
     undefined
   );
-}
-
-function fmtDuration(sec?: number): string | null {
-  if (!sec || sec <= 0) return null;
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 interface AiMeta {
@@ -289,12 +283,12 @@ export default function VaultTile({
           title="Preview video"
           className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/60 hover:bg-black/85 text-white text-[10px] leading-none cursor-pointer select-none"
         >
-          ▶ {dur ?? ""}
+          ▶ {dur}
         </span>
       )}
       {isVideo && !onPlay && (
         <div className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px] leading-none pointer-events-none">
-          {dur ?? "▶"}
+          {dur || "▶"}
         </div>
       )}
       {m.type === "gif" && (

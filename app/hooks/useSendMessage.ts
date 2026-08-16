@@ -25,6 +25,7 @@ import { useCallback, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { relay, RelayError, type OFChatItem, type OFMedia, type OFMessage, type SendMessageBody, type VaultMedia } from "@/lib/relay";
+import { parseSendFailure, type SendFailure } from "@/lib/sendFailure";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import {
   useRosterCountActions,
@@ -74,30 +75,6 @@ interface SendOpts {
    *  as a GIF message — `text` typically empty, `media_files` empty,
    *  `giphyId` rides at the top level. One GIF per send. */
   giphyId?: string;
-}
-
-/** Best human-readable reason for a failed send, from either shape the relay
- *  answers with: its OWN pre-flight refusal (`detail.message` — no OF call
- *  happened) or OF's `{error:{message}}` wrapped in `detail.upstream_body`.
- *  Returns undefined if neither matches, so the caller can fall back. */
-function extractSendErrorMessage(err: RelayError): string | undefined {
-  const body = err.body as
-    | { detail?: { upstream_body?: string; message?: string } }
-    | undefined;
-  // The relay's OWN pre-flight guards answer before any OF round-trip — the
-  // already-owned re-sale block (409) is the current one — so there is no
-  // `upstream_body` to dig through, just a plain { error, message }. Prefer
-  // that verbatim; without it the operator only sees "HTTP 409".
-  const own = body?.detail?.message;
-  if (typeof own === "string" && own) return own;
-  const raw = body?.detail?.upstream_body;
-  if (typeof raw !== "string") return undefined;
-  try {
-    const parsed = JSON.parse(raw) as { error?: { message?: string } };
-    return parsed?.error?.message;
-  } catch {
-    return undefined;
-  }
 }
 
 function vaultToOFMedia(v: VaultMedia): OFMedia {
@@ -162,20 +139,20 @@ export function useSendMessage(opts: UseSendMessageOpts) {
         return true;
       } catch (err) {
         // Leave the optimistic in place but flag it failed so Retry can
-        // recover. Spread the upstream details so logs surface OF's
-        // actual rejection reason (status + body), not "[object Object]".
-        let reason: string | undefined;
+        // recover, carrying what OF (or our own pre-flight guard) said and
+        // which attachments it blamed — one parse of one envelope, see
+        // lib/sendFailure. The console line spreads the upstream details so
+        // logs read as status + body, not "[object Object]".
+        let failure: SendFailure;
         if (err instanceof RelayError) {
           console.warn("[send] failed", { status: err.status, body: err.body, message: err.message });
-          // The relay wraps OF's payload as
-          //   { detail: { upstream_status, upstream_body: "<json string>" } }
-          // Dig the inner OF message out so the UI can show what OF complained about.
-          reason = extractSendErrorMessage(err) ?? `HTTP ${err.status}`;
+          const parsed = parseSendFailure(err.body);
+          failure = { ...parsed, reason: parsed.reason ?? `HTTP ${err.status}` };
         } else {
           console.warn("[send] failed", err);
-          reason = (err as Error)?.message;
+          failure = { reason: (err as Error)?.message };
         }
-        failLocal(tempId, reason);
+        failLocal(tempId, failure);
         // The optimistic roster decrement in the send path assumed this would
         // land; it didn't → reconcile the badge to OF truth (force past the 8s
         // cooldown — this only fires on the rare failure path).

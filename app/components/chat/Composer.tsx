@@ -25,6 +25,8 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { Button } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
+import { fmtDuration } from "@/lib/format";
+import { isOverlongForMessage, MESSAGE_VIDEO_LIMIT_S } from "@/lib/sendFailure";
 import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { useReorder } from "@/hooks/useReorder";
 import { useSavedReplies } from "@/hooks/useSavedReplies";
@@ -191,6 +193,10 @@ export function Composer({
 
   const numericPrice = parsePrice(price);
   const hasAttachments = attached.length > 0;
+  // Attachments long enough that OF is likely to answer "Something wrong with
+  // attached media" and kill the whole send. Advisory: the ceiling is inferred
+  // from five live sends, so this warns and never blocks (lib/sendFailure).
+  const overlong = useMemo(() => attached.filter(isOverlongForMessage), [attached]);
   const reorder = useReorder(attached, setAttached, (m) => m.id);
   // Clamp on read so removing tiles never leaves previewCount past the
   // end (would render phantom FREE badges on indices beyond the array).
@@ -645,6 +651,11 @@ export function Composer({
               // free/paid colors below when no purchase record exists.
               const fanEntry = fanVaultQ.data?.by_media[String(m.id)];
               const wasBought = fanEntry?.was_purchased === true;
+              // Long videos come back as "Something wrong with attached media"
+              // — a 400 that names the id but costs the whole send. Flag the
+              // chip rather than refusing it: the exact ceiling is inferred,
+              // not documented (see lib/sendFailure).
+              const tooLong = isOverlongForMessage(m);
               return (
                 <Fragment key={m.id}>
                   {showDivider && idx === effectivePreviewCount && (
@@ -717,6 +728,14 @@ export function Composer({
                     >
                       ✕
                     </button>
+                    {tooLong && (
+                      <div
+                        className="absolute left-0.5 bottom-5 px-1 rounded bg-warn text-black text-[9px] font-bold leading-tight shadow"
+                        title={`${fmtDuration(m.duration)} — over the ${fmtDuration(MESSAGE_VIDEO_LIMIT_S)} an attachment usually has to stay under`}
+                      >
+                        ⚠ {fmtDuration(m.duration)}
+                      </div>
+                    )}
                     {/* Per-row inline price. Every chip writes to the single
                      *  composer-level `price` state, so they all mirror each
                      *  other — typing in row 2 updates rows 1 and 3 too. */}
@@ -749,6 +768,23 @@ export function Composer({
             >
               +
             </button>
+          </div>
+        )}
+
+        {overlong.length > 0 && (
+          <div
+            className="flex items-start gap-1.5 rounded-md border border-warn/40 bg-warn/10 px-2 py-1 text-[11px] leading-snug text-warn"
+            role="status"
+          >
+            <span aria-hidden>⚠</span>
+            <span>
+              {`${
+                overlong.length === 1
+                  ? `That ${fmtDuration(overlong[0].duration)} video is`
+                  : `${overlong.length} attachments are`
+              } longer than ${fmtDuration(MESSAGE_VIDEO_LIMIT_S)}. OF often refuses those`
+                + ` outright, which fails the whole send — post it or trim it if this bounces.`}
+            </span>
           </div>
         )}
 
