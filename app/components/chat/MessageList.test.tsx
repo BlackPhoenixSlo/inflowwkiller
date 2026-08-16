@@ -232,46 +232,95 @@ describe("MessageList refused-attachment marking", () => {
     vi.unstubAllGlobals();
   });
 
-  const failedSend = (): OFMessage =>
-    msg({
+  /** A failed send of `count` attachments, with the ids at `refusedIdx`
+   *  refused. Parameterised on purpose: the first version of these tests
+   *  hard-coded TWO tiles, which is under IMAGE_CAP=3, so `items.slice(0, cap)`
+   *  could never truncate and the assertions passed no matter what the render
+   *  cap did. The incident that produced the feature was a FOUR-media bundle —
+   *  the shape the parser test already encodes and the render test could not
+   *  express. */
+  const failedSend = (count: number, refusedIdx: number[], over: Partial<SeedMsg> = {}): OFMessage => {
+    const media = Array.from({ length: count }, (_, i) => ({
+      id: 3000000000 + i,
+      type: "video",
+      files: { thumb: { url: `https://cdn/${i}.jpg` } },
+    }));
+    return msg({
       id: -1,
       _tempId: -1,
       _failed: true,
       _failedReason: "Something wrong with attached media, please try to upload it again",
-      _failedMediaIds: [3468787295],
+      _failedMediaIds: refusedIdx.map((i) => 3000000000 + i),
       text: "sparing",
       price: 144,
       fromUser: { id: 555 },
-      media: [
-        { id: 3467512146, type: "video", files: { thumb: { url: "https://cdn/a.jpg" } } },
-        { id: 3468787295, type: "video", files: { thumb: { url: "https://cdn/b.jpg" } } },
-      ],
+      media,
+      ...over,
     } as Partial<SeedMsg> & { id: number });
+  };
 
-  it("counts the refused attachments in the failure line", () => {
+  const marks = (c: HTMLElement) =>
+    c.querySelectorAll("div[title^='OF refused this attachment']");
+
+  it("counts the refused attachments beside the tiles", () => {
     const { container } = renderWithProviders(
-      <MessageList {...baseProps} messages={[failedSend()]} ownerUserId={555} />,
+      <MessageList {...baseProps} messages={[failedSend(2, [1])]} ownerUserId={555} />,
     );
     expect(container.textContent).toContain("remove 1 of 2");
   });
 
   it("marks the tile OF named and leaves its neighbour alone", () => {
     const { container } = renderWithProviders(
-      <MessageList {...baseProps} messages={[failedSend()]} ownerUserId={555} />,
+      <MessageList {...baseProps} messages={[failedSend(2, [1])]} ownerUserId={555} />,
     );
-    const marks = container.querySelectorAll("div[title^='OF refused this attachment']");
-    expect(marks.length).toBe(1);
-    expect(marks[0].textContent).toContain("REMOVE");
+    expect(marks(container).length).toBe(1);
+    expect(marks(container)[0].textContent).toContain("REMOVE");
+  });
+
+  it("marks a refused tile that sits PAST the 3-tile render cap", () => {
+    // The incident's own shape. Before the fix the row rendered 3 tiles + a
+    // "+1" pill, the footer claimed "remove 1 of 4", and nothing was marked.
+    const { container } = renderWithProviders(
+      <MessageList {...baseProps} messages={[failedSend(4, [3])]} ownerUserId={555} />,
+    );
+    expect(marks(container).length).toBe(1);
+    expect(container.textContent).toContain("remove 1 of 4");
+    // Force-opened, so no tile is hidden behind a pill that carries no warning.
+    expect(container.textContent).not.toContain("+1");
+  });
+
+  it("marks BOTH when OF names one visible and one hidden tile", () => {
+    // One mark beside a count of two is worse than none: it reads as a complete
+    // answer, so the operator drops that tile and fails identically on the other.
+    const { container } = renderWithProviders(
+      <MessageList {...baseProps} messages={[failedSend(4, [1, 3])]} ownerUserId={555} />,
+    );
+    expect(marks(container).length).toBe(2);
+    expect(container.textContent).toContain("remove 2 of 4");
+  });
+
+  it("never claims a count it cannot point at", () => {
+    // OF naming an id this bubble does not hold (a fresh-claim upload whose
+    // vault id only exists server-side). The count is an intersection, so it
+    // stays silent rather than printing a number over an unmarked row.
+    const stray = failedSend(2, [], { _failedMediaIds: [999999999] });
+    const { container } = renderWithProviders(
+      <MessageList {...baseProps} messages={[stray]} ownerUserId={555} />,
+    );
+    expect(marks(container).length).toBe(0);
+    expect(container.textContent).not.toContain("remove");
+    // OF's own sentence still reaches the operator.
+    expect(container.textContent).toContain("Something wrong with attached media");
   });
 
   it("says nothing extra when the failure is not about media", () => {
-    const noIds = { ...failedSend(), _failedMediaIds: undefined };
+    const noIds = failedSend(2, [], { _failedMediaIds: undefined });
     const { container } = renderWithProviders(
       <MessageList {...baseProps} messages={[noIds]} ownerUserId={555} />,
     );
     expect(container.textContent).toContain("failed — retry");
     expect(container.textContent).not.toContain("remove");
-    expect(container.querySelectorAll("div[title^='OF refused this attachment']").length).toBe(0);
+    expect(marks(container).length).toBe(0);
   });
 });
 

@@ -20,20 +20,22 @@
  * `detail.upstream_body` inside RelayError's `body` — so a second reader would
  * be a second place to keep that envelope shape correct.
  *
- * The last export is the same question asked BEFORE the round-trip. Of the five
- * vault items in play that night, OF's own `/vault/media/{id}` describes the
- * refused pair and the accepted trio identically — `canView: true`,
- * `hasError: false`, `isReady: true`, no DRM, both `videoSources` present.
- * Duration is the only field that separates them:
+ * WHY the item is refused is still unknown, and one wrong answer is recorded
+ * here so it is not re-derived. The five items in play that night split 599s
+ * and 394s refused against 279s / 93s / 25s sent, which reads like a duration
+ * ceiling near 5:00 — it is not one. `vault_sends` joined to `vault_items`
+ * says 132 videos longer than 300s were DELIVERED in 2026-08 alone, the
+ * longest 2029s, and 4,540s over the whole table. A pre-send warning built on
+ * that inference shipped and was removed the same night.
  *
- *      599s  refused        279s  sent
- *      394s  refused         93s  sent
- *                            25s  sent
- *
- * So the ceiling lies somewhere in (279, 394] and 5:00 is the round number
- * inside it. That is an INFERENCE from five points, which is exactly why it
- * warns and never blocks: a hard stop at a guessed threshold would refuse sends
- * OF would have taken, and OF is the only authority on its own limit.
+ * The one asymmetry that survives: both refused items have ZERO `vault_sends`
+ * rows — they have never been delivered — while all three accepted ones had
+ * been sent before. OF's `/vault/media/{id}` reports the two groups
+ * identically (`canView`, `isReady`, `hasError: false`, no DRM, both
+ * `videoSources`, same `listStates` shape), so whatever the condition is, the
+ * vault API does not expose it and only the send path sees it. Until something
+ * distinguishes them, the honest UI is to report what OF said and mark the id
+ * it named — never to predict.
  */
 
 /** What a failed send knows about itself. `reason` is for the operator to read;
@@ -44,10 +46,6 @@ export interface SendFailure {
   /** Vault ids OF named in `payload.removeFromInputMediaIds`. */
   refusedMediaIds?: number[];
 }
-
-/** Seconds past which a video usually comes back as "Something wrong with
- *  attached media". Advisory — see the module note on why this is not a block. */
-export const MESSAGE_VIDEO_LIMIT_S = 300;
 
 /** Everything the relay's error body will tell us about a failed send.
  *
@@ -87,14 +85,3 @@ export function parseSendFailure(body: unknown): SendFailure {
   };
 }
 
-/** True when this attachment is long enough that OF is likely to refuse it.
- *
- *  Only videos carry a duration worth testing; a photo has none and an audio
- *  note is short, so both fall through to false without a type check that would
- *  have to be kept in step with OF's type strings. */
-export function isOverlongForMessage(
-  media: { duration?: number | null } | null | undefined,
-): boolean {
-  const d = media?.duration;
-  return typeof d === "number" && d > MESSAGE_VIDEO_LIMIT_S;
-}
