@@ -620,7 +620,7 @@ async def _load_mid_funnel_fans(account_id: str) -> set[int]:
 
 class _Candidate:
     __slots__ = ("fan_id", "fan_msg_n", "last_dir", "last_body", "messages",
-                 "last_in_at", "last_out_at")
+                 "last_in_at", "last_out_at", "farewell")
 
     def __init__(self, fan_id: int):
         self.fan_id = fan_id
@@ -628,6 +628,10 @@ class _Candidate:
         self.last_dir = ""
         self.last_body = ""
         self.messages: list[tuple[str, str]] = []  # (direction, body) oldest→newest
+        # The runaway cutoff decided to end the gather with this fan. The cut is
+        # DEFERRED to the send loop (where the lease is held) so his last message
+        # from this lane can be the gather-close PPV instead of silence.
+        self.farewell = False
         # When each side last spoke. This lane never needed them — it replies to
         # whoever spoke last and lets the model read recency out of the transcript.
         # `upsell.qualify` does need them: a thread with no inbound TIME is "stale"
@@ -1435,6 +1439,55 @@ async def _graduate(client, account_id: str, fan_id: int, f: Fan) -> None:
                   account_id, fan_id, exc_info=True)
 
 
+# Digit- and currency-free on purpose: `compose_caption` REJECTS a voice line
+# carrying either (the claim clause above it is the contract), so a number here
+# would silently drop the whole line.
+_FAREWELL_LINE = "made u a lil something 😘 open it when ur alone"
+
+
+async def _send_gather_close(client, cfg: dict, account_id: str, fan_id: int,
+                             *, dry_run: bool = False) -> bool:
+    """The gather-close PPV: a few pictures from the operator-picked folder,
+    priced, sent as this lane's LAST message to a graduating fan.
+
+    True only when the priced send went out (or dry-ran) — every other outcome
+    (no folder configured, folder missing, pool too thin, audit refusal, wire
+    error, unexpected exception) is logged and False. NEVER RAISES, so the
+    caller's graduation can never hinge on a send.
+
+    The folder knob doubles as the switch: empty → the feature is off and this
+    returns immediately. Media resolution is `tip_reward.folder_media_pool` —
+    the one name→ids read every folder-configured lane shares.
+    """
+    folder = str((cfg or {}).get("gather_close_folder") or "").strip()
+    if not folder:
+        return False
+    try:
+        from . import pack_sender, tip_reward
+        pool = await asyncio.to_thread(tip_reward.folder_media_pool, client, folder)
+        if pool is None:
+            log.info("gather-close folder not found account=%s name=%r",
+                     account_id, folder)
+            return False
+        d, refused = await pack_sender.plan_farewell_delivery(
+            account_id, fan_id, pool,
+            price_cents=int(cfg.get("gather_close_price_cents") or 1000),
+            count=int(cfg.get("gather_close_count") or 3),
+            cfg=cfg)
+        if d is None:
+            log.info("gather-close refused account=%s fan=%s: %s %s",
+                     account_id, fan_id, refused.get("reason"),
+                     refused.get("detail") or "")
+            return False
+        res = await pack_sender.deliver(client, d, voice_line=_FAREWELL_LINE,
+                                        dry_run=dry_run)
+        return str(res.get("status")) in ("ok", "dry_run")
+    except Exception:
+        log.warning("of_ai_chat gather-close failed account=%s fan=%s",
+                    account_id, fan_id, exc_info=True)
+        return False
+
+
 async def _maybe_push_nickname(client, account_id: str, fan_id: int, f: Fan) -> None:
     """Update the structured nickname EVERY convo tick and push it to OF when it
     changed (V1 apply_nickname_in_chat). Mirrors to fans.custom_nickname. Notes are
@@ -1826,10 +1879,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # openers were mined for, and applying this to him is what kept the
             # deepen phase unreachable (368 fans cut by too_long against 21 who ever
             # completed the gather).
+            #
+            # The cut itself is DEFERRED to the send loop: marked here, executed
+            # there under the fan lease, so his last message from this lane can be
+            # the gather-close PPV (folder knob set) instead of silence. The
+            # `too_long` row still lands the tick he is processed — a fan the
+            # reply budget postpones is simply re-marked next tick.
             if not _gather_done(f, asked_f) and c.fan_msg_n >= _MAX_FAN_MESSAGES:
-                await _skip_and_collect(account_id, fan_id, "too_long")
-                newly_skiplisted += 1
-                continue
+                c.farewell = True
         candidates.append(c)
 
     # Deterministic order; most-recent-talkers first via inbound volume.
@@ -1847,6 +1904,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     sent = 0
     stickers_sent = 0       # cat reaction gifs delivered (incl. sticker-only replies)
+    farewells_sent = 0      # gather-close PPVs that went out with a graduation
     skipped_locked = 0
     skipped_cooldown = 0
     errors = 0
@@ -1857,6 +1915,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # and two engines reading two copies of a cap is two caps.
     lane = await sell_lane.for_run(account_id, engine=_PURPOSE,
                                    permission_key="of_ai_chat_sell_on_ask")
+
+    async def _close_with_farewell(fan_id: int) -> None:
+        """The gather-close PPV + its bookkeeping — ONE copy for both graduation
+        paths (the runaway cut and the info handoff). `_send_gather_close` never
+        raises; a False just means the graduation goes out silent, as it always
+        did. A priced send IS a send — lease + state as one."""
+        nonlocal farewells_sent, sent, sent_ok
+        if await _send_gather_close(client, lane.cfg, account_id, fan_id,
+                                    dry_run=dry_run):
+            farewells_sent += 1
+            sent += 1
+            sent_ok = True
+            await _mark_reply_sent(account_id, fan_id, now)
 
     for c in candidates:
         if sent >= max_replies:
@@ -1875,6 +1946,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         sent_ok = False
         try:
             f = fans.get(fan_id) or Fan(account_id=str(account_id), fan_id=fan_id)
+            # ── The runaway cut, executed under the lease. His last message from
+            # this lane is the gather-close PPV (when the folder knob is set),
+            # then the `too_long` row lands exactly as it always has. No fact
+            # extract first — the old cut path never spent an LLM call on him,
+            # and the graduation's gen_info regen still runs.
+            if c.farewell:
+                await _close_with_farewell(fan_id)
+                await _skip_and_collect(account_id, fan_id, "too_long")
+                newly_skiplisted += 1
+                continue
             # Inline fact fill (V1): save the facts he just stated BEFORE replying,
             # so age/job/location land this turn. Cap → stop the run cleanly.
             try:
@@ -1924,9 +2005,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # tomorrow" — which matters, because None GRADUATES the fan below.
                 opener = _openers.next_for(f, profiles.get(fan_id), one_pass=True)
                 if opener is None:
+                    # The lane is finished with him — close with the gather-close
+                    # PPV (folder knob set) so the graduation's last message is
+                    # the parting set, not the tail of a question. A refusal
+                    # changes nothing: he graduates either way.
+                    await _close_with_farewell(fan_id)
                     await _graduate(client, account_id, fan_id, f)
                     newly_skiplisted += 1
-                    continue  # finally releases the lease (sent_ok stays False)
+                    continue  # finally releases the lease
             # Per-fan language: a manual pin or gen_info detection on this fan
             # (fans.language) overrides the account default; unset → account default.
             fan_lang = _language.resolve_language(account_lang, getattr(f, "language", None))
@@ -2235,6 +2321,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         **audience_stats,
         "replies_sent": sent,
         "stickers_sent": stickers_sent,
+        "farewells_sent": farewells_sent,
         **lane.stats,
         "skipped_listed": skipped_listed,
         "skipped_not_turn": skipped_not_turn,

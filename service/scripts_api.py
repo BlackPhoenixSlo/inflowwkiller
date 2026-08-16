@@ -131,6 +131,12 @@ _INT_KNOBS = {
     "rhythm_stepout_max_minutes": (1, 24 * 60),
     # 0 = no early exit; she stays gone for the full draw. A real configuration.
     "rhythm_stepout_break_msgs": (0, 20),
+    # Gather-close PPV (of_ai_chat's parting set). Price is clamped to OF's wire
+    # range at the send site too; these bounds keep the stored value sane. Count
+    # floors at 2 = pack_sender.FAREWELL_MIN_ITEMS — a stored 1 would be a knob
+    # position the planner refuses forever (the 2026-07-31 value shape).
+    "gather_close_price_cents": (300, 20_000),
+    "gather_close_count": (2, 10),
 }
 
 # Float-valued knobs (ladder aggressiveness). Clamped to sane ranges: the ceiling
@@ -401,6 +407,13 @@ def _validate_cfg(cfg: dict) -> dict:
         out["pack_send_enabled"] = truthy(cfg["pack_send_enabled"])
     if "pack_on_ask_enabled" in cfg:
         out["pack_on_ask_enabled"] = truthy(cfg["pack_on_ask_enabled"])
+    # Gather-close PPV: the vault folder of_ai_chat's parting set is drawn from.
+    # The FOLDER IS THE SWITCH (empty = off), so this string must be named here —
+    # the validator DROPS unnamed keys, and a picker whose choice never lands is
+    # the exact silent-eaten-key bug this map has shipped twice. Its two numeric
+    # knobs ride _INT_KNOBS above.
+    if "gather_close_folder" in cfg:
+        out["gather_close_folder"] = str(cfg["gather_close_folder"] or "").strip()[:120]
     # ── The same lane, called by the OTHER chat engines (both ship OFF) ────
     #
     # Auto Convo and OF AI Chat sell through `sell_lane`, which re-checks every
