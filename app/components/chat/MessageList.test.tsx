@@ -274,3 +274,40 @@ describe("MessageList refused-attachment marking", () => {
     expect(container.querySelectorAll("div[title^='OF refused this attachment']").length).toBe(0);
   });
 });
+
+/**
+ * A landed co-performer tag. The bubble renders `releaseForms` — what OF
+ * STORED — so an operator can tell a tag that stuck from one OF dropped. Until
+ * 2026-08-17 the chat body sent its ids in `userTags`, which that endpoint
+ * ignores, and nothing rendered the field: the send looked identical either way.
+ */
+describe("MessageList release-form tags", () => {
+  it("names the tagged co-performer on the bubble", () => {
+    const { container } = renderWithProviders(
+      <MessageList
+        {...baseProps}
+        messages={[
+          msg({
+            id: 7,
+            text: "collab",
+            fromUser: { id: 555 },
+            releaseForms: [{ id: 424242, name: "Ava Rae", type: "user", partnerSource: "tag" }],
+          } as Partial<SeedMsg> & { id: number }),
+        ]}
+        ownerUserId={555}
+      />,
+    );
+    expect(container.textContent).toContain("Ava Rae");
+  });
+
+  it("shows nothing when OF stored no tag, however the send was composed", () => {
+    const { container } = renderWithProviders(
+      <MessageList
+        {...baseProps}
+        messages={[msg({ id: 8, text: "collab", fromUser: { id: 555 }, releaseForms: [] })]}
+        ownerUserId={555}
+      />,
+    );
+    expect(container.querySelector("[title^='Tagged on OnlyFans']")).toBeNull();
+  });
+});
