@@ -923,6 +923,19 @@ function Bubble({
                   · {truncate(msg._failedReason, 80)}
                 </span>
               )}
+              {/* OF's sentence never says WHICH attachment, so translate the
+               *  ids it did give us into a count pointing at the marked tiles.
+               *  Retrying the same bundle can only fail the same way. Gated on
+               *  the media too: ids can only refer to tiles this bubble
+               *  rendered, so with none there is nothing to count against. */}
+              {msg._failedMediaIds?.length && msg.media?.length ? (
+                <span
+                  className="text-err font-medium"
+                  title="OF refused these exact attachments — drop them and re-send; a plain retry sends the same bundle."
+                >
+                  · remove {msg._failedMediaIds.length} of {msg.media.length}
+                </span>
+              ) : null}
             </>
           )}
           </div>
@@ -972,6 +985,11 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
   const fanVaultQ = useFanVaultHistory(accountId, fanId, isOutgoing && fanId != null);
   const isPPV = !!msg.price && msg.price > 0;
   const previewIds = msg.previews ?? [];
+  // Attachments OF itself refused on a failed send; empty on every other
+  // message. Same shape and same membership test as `previewIds` above — both
+  // are "which of these tiles is special", and a bundle is small enough that a
+  // Set would be ceremony.
+  const refusedIds = msg._failedMediaIds ?? [];
   // Price label fits in the same 5-char corner pill as "BOUGHT" / "FREE".
   const priceLabel = msg.price != null
     ? `$${msg.price % 1 === 0 ? msg.price : msg.price.toFixed(2)}`
@@ -1049,6 +1067,33 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
               </div>
             ) : null
           );
+          // OF named this exact id in `payload.removeFromInputMediaIds`, so say
+          // it ON the tile: the failure line below can only repeat OF's
+          // sentence, which talks about "media" without saying which — and a
+          // bundle of near-identical thumbs is exactly where that fails the
+          // operator (lib/sendFailure records what it cost on 2026-08-16).
+          const wasRefused = m.id != null && refusedIds.includes(m.id);
+          // Everything painted ON the tile, as one node. The three branches
+          // below differ in what they wrap, not in the chrome they carry, so
+          // the chrome is composed once here — including the outline, which is
+          // an inset element rather than a class so no branch has to grow a
+          // conditional className for it.
+          const overlays = (
+            <>
+              {badge}
+              {wasRefused && (
+                <>
+                  <div className="absolute inset-0 rounded-md border-2 border-err pointer-events-none z-10" />
+                  <div
+                    className="absolute inset-x-0 bottom-0 bg-err/85 text-white text-[9px] font-bold leading-tight text-center py-0.5 z-10 pointer-events-none"
+                    title="OF refused this attachment — remove it and the rest of the bundle sends"
+                  >
+                    REMOVE
+                  </div>
+                </>
+              )}
+            </>
+          );
           if (locked) {
             // Generic lock placeholder (incoming, unpaid). Same box as a
             // loaded tile would claim — its real dims don't matter until the
@@ -1059,7 +1104,7 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
                 style={{ width: box.w, height: box.h }}
                 className="relative flex-none bg-black/30 rounded-md grid place-items-center text-[11px] leading-tight text-warn border border-warn/30 overflow-hidden"
               >
-                {badge}
+                {overlays}
                 🔒
               </div>
             );
@@ -1073,7 +1118,7 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
                 style={{ width: box.w, height: box.h }}
                 className="relative flex-none bg-bg/30 rounded-md grid place-items-center text-center text-[9px] leading-tight px-1 opacity-70 overflow-hidden"
               >
-                {badge}
+                {overlays}
                 …
               </div>
             );
@@ -1101,7 +1146,7 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
               // dims it letterboxes inside the neutral fallback box.
               className="relative block flex-none overflow-hidden rounded-md bg-black/20 cursor-zoom-in"
             >
-              {badge}
+              {overlays}
               <MediaTile
                 mediaId={m.id ?? null}
                 proxiedUrl={thumb}

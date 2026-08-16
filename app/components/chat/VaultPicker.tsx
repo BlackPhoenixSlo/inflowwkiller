@@ -29,6 +29,7 @@ import { useFanVaultHistory, type FanVaultEntry } from "@/hooks/useFanVaultHisto
 import { useWallMedia } from "@/hooks/useWallMedia";
 import { useBlurMode, blurImageClass } from "@/hooks/useBlurMode";
 import { proxyImage, proxyScrubFrame, type VaultList, type VaultMedia } from "@/lib/relay";
+import { fmtDuration } from "@/lib/format";
 import { perfLog, perfOpId, perfPainted } from "@/lib/perfLog";
 
 // Hover-preview slideshow tuning. 12 evenly-spaced frames @ 600ms each
@@ -1545,7 +1546,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
                       className="absolute bottom-1 right-1 bg-black/60 hover:bg-black/85 text-white grid place-items-center md:block text-[12px] md:text-[10px] min-h-[40px] md:min-h-0 px-3 md:px-1.5 py-0 md:py-0.5 rounded cursor-pointer select-none"
                       title="Preview video"
                     >
-                      ▶ {fmtDur(m.duration)}
+                      ▶ {fmtDuration(m.duration)}
                     </span>
                   )}
                   {drmOnly && (
@@ -1802,13 +1803,6 @@ export function VaultVideoPreview({
       </div>
     </div>
   );
-}
-
-function fmtDur(sec?: number): string {
-  if (!sec || sec <= 0) return "";
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 /** Mutually-exclusive tile state. Order matches the desktop-app:

@@ -11,7 +11,7 @@
  *     FIRST render when the owner id is supplied synchronously (in the app,
  *     ChatSurface hydrates it from the `of-owner:<acct>` localStorage cache).
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test-utils";
@@ -204,5 +204,73 @@ describe("load errors never hide cached history", () => {
     );
     expect(container.textContent).toContain("timed out");
     expect(container.textContent).not.toContain("no longer exists");
+  });
+});
+
+/**
+ * A failed media send: OF names the offending attachment in
+ * `payload.removeFromInputMediaIds`, `useSendMessage` parks it on the bubble as
+ * `_failedMediaIds`, and the bubble has to point AT it. On 2026-08-16 the same
+ * item was re-picked into three bundles because the footer only ever repeated
+ * OF's sentence, which says "media" without saying which.
+ */
+describe("MessageList refused-attachment marking", () => {
+  // jsdom has no IntersectionObserver and MediaTile's lazy path constructs one
+  // on mount — these are the only cases here that render tiles at all.
+  class IOStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords(): unknown[] {
+      return [];
+    }
+  }
+  beforeEach(() => {
+    vi.stubGlobal("IntersectionObserver", IOStub);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const failedSend = (): OFMessage =>
+    msg({
+      id: -1,
+      _tempId: -1,
+      _failed: true,
+      _failedReason: "Something wrong with attached media, please try to upload it again",
+      _failedMediaIds: [3468787295],
+      text: "sparing",
+      price: 144,
+      fromUser: { id: 555 },
+      media: [
+        { id: 3467512146, type: "video", files: { thumb: { url: "https://cdn/a.jpg" } } },
+        { id: 3468787295, type: "video", files: { thumb: { url: "https://cdn/b.jpg" } } },
+      ],
+    } as Partial<SeedMsg> & { id: number });
+
+  it("counts the refused attachments in the failure line", () => {
+    const { container } = renderWithProviders(
+      <MessageList {...baseProps} messages={[failedSend()]} ownerUserId={555} />,
+    );
+    expect(container.textContent).toContain("remove 1 of 2");
+  });
+
+  it("marks the tile OF named and leaves its neighbour alone", () => {
+    const { container } = renderWithProviders(
+      <MessageList {...baseProps} messages={[failedSend()]} ownerUserId={555} />,
+    );
+    const marks = container.querySelectorAll("div[title^='OF refused this attachment']");
+    expect(marks.length).toBe(1);
+    expect(marks[0].textContent).toContain("REMOVE");
+  });
+
+  it("says nothing extra when the failure is not about media", () => {
+    const noIds = { ...failedSend(), _failedMediaIds: undefined };
+    const { container } = renderWithProviders(
+      <MessageList {...baseProps} messages={[noIds]} ownerUserId={555} />,
+    );
+    expect(container.textContent).toContain("failed — retry");
+    expect(container.textContent).not.toContain("remove");
+    expect(container.querySelectorAll("div[title^='OF refused this attachment']").length).toBe(0);
   });
 });
