@@ -758,18 +758,6 @@ export function ChatList({
                     />
                     <span>Blur images till hover</span>
                   </label>
-                  {/* Phone escape hatch: "till hover" has no reveal on touch,
-                   *  and the mode is persisted from desktop. Offer a one-tap
-                   *  way out instead of the (unusable) toggle above. */}
-                  {blurMode === "hover" && (
-                    <button
-                      type="button"
-                      onClick={() => setBlurMode("off")}
-                      className="w-full md:hidden flex items-center gap-2 px-3 py-2 text-xs text-left text-warn hover:bg-bg-elev-1 border-t border-border/60"
-                    >
-                      ◐ Images blurred (hover mode) — tap to unblur
-                    </button>
-                  )}
                   <label className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-fg hover:bg-bg-elev-1 cursor-pointer select-none">
                     <input
                       type="checkbox"
