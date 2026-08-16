@@ -20,15 +20,47 @@ from collections.abc import Iterable
 from db.models import Fan
 
 
-# The nickname's Bonus slot — (label, cents floor), richest first. ONE source:
-# gen_info._spend_tier picks a label from here and _PLACE_WORDS below rejects the
-# same labels, so a new tier can never quietly become a fan's name. They landed in
-# the Name slot on 50 prod fans when every other slot was empty.
+# The spend tiers — (label, cents floor), richest first. RETIRED as a nickname
+# slot: nothing authors these into a label any more, and `strip_spend_tier` below
+# takes them back out of every one we touch. The tuple stays because the labels
+# are still LOAD-BEARING as a denylist — _PLACE_WORDS reads it (so a legacy
+# 'Spender/…' can never become a fan's name, which it did on 50 prod fans), and
+# the strip reads it to know what to remove.
+#
+# Why it was retired: the tier was stamped into the OF chat header ONCE, from
+# `lifetime_spend_cents` at generation time, and never re-derived — so it rotted
+# in place. Measured on prod 2026-08-16: of the 766 fans carrying a tier in the
+# label the team actually reads, 225 were already wrong — 92 read '/Free' after
+# they had paid (daddywilko was '/Free' on $24.99 across four PPV unlocks), 120
+# read '/Spender' under the $50 floor, 13 read '/Buyer' on $0. A label that is
+# wrong 29% of the time is worse than no label, and it got worse every day.
 SPEND_TIERS = (("Whale", 50000), ("Spender", 5000), ("Buyer", 1), ("Free", 0))
+
+SPEND_TIER_WORDS = frozenset(label.lower() for label, _ in SPEND_TIERS)
+
+
+def strip_spend_tier(label: str | None) -> str:
+    """Drop every whole SEGMENT that is a derived spend tier: 'DaddyWilko/Free' →
+    'DaddyWilko', 'Garrett/Delta,Canada/30/Spender' → 'Garrett/Delta,Canada/30'.
+
+    Segment-exact and case-insensitive — never a substring — so a fan called
+    Freeman, a job 'Freelancer' and a city 'Freetown' all survive. A label that was
+    NOTHING but a tier ('Spender') correctly collapses to '', and the callers'
+    existing name-hint fallback re-anchors it from his real name.
+
+    This is the half of the retirement that actually ends it. Not authoring a new
+    tier is not enough on its own: gen_info feeds the stored `generated_nickname`
+    back to the model as KNOWN INFO ground truth to 'refine + keep complete', and
+    apply_profiles re-pushes the stored `fan_profiles.nickname` to OF, so a tier
+    written once would otherwise re-assert itself forever."""
+    if not label:
+        return ""
+    segs = (p.strip() for p in str(label).split("/"))
+    return "/".join(p for p in segs if p and p.lower() not in SPEND_TIER_WORDS)
 
 
 # ── Words that are a PLACE (or a derived label), never a fan's first name ─────
-# gen_info builds `Name/City,Country/Age/Job/Bonus` and, when it can't find a
+# gen_info builds `Name/City,Country/Age/Job` and, when it can't find a
 # name, the model puts the COUNTRY in the Name slot ('Canada/Canada/office job')
 # or _clean_nickname slides the derived spend tier up into it ('Spender/…').
 # Both then read as the fan's name — 132 prod fans resolved to "Canada" and 50
@@ -86,7 +118,7 @@ usa us uk gb uae nz
     "united states", "united kingdom", "great britain", "new hampshire",
     "new jersey", "new mexico", "new york", "rhode island", "west virginia",
     "nova scotia", "british columbia", "burkina faso", "puerto rican",
-}) | frozenset(label.lower() for label, _ in SPEND_TIERS)
+}) | SPEND_TIER_WORDS
 
 
 def is_place_word(s: str | None) -> bool:

@@ -64,6 +64,7 @@ from db.engine import get_session
 from db.models import Blacklist, Fan, FanProfile
 from of_client import OFClient   # OF push (nickname/note) — apply_profiles APPLIES, not gathers
 from ._common import build_facts_note, coerce_ids
+from .names import strip_spend_tier
 
 log = logging.getLogger("of-relay.automation.apply_profiles")
 
@@ -84,11 +85,17 @@ _WS_RE = re.compile(r"\s+")
 # ── Pure helpers (ports of the spec's pure functions) ────────────────
 
 def _clean_nickname(s: str | None) -> str:
-    """Drop empty + placeholder ('??') segments, collapse slashes, trim (same as
-    gen_info — the model sometimes emits '??' for unknown slots)."""
+    """Drop empty + placeholder ('??') segments and any derived SPEND TIER, collapse
+    slashes, trim (same as gen_info — the model sometimes emits '??' for unknown
+    slots).
+
+    The tier strip matters MORE here than in gen_info: this module reads the stored
+    `fan_profiles.nickname` — written before the tier was retired for ~1,000 fans —
+    and pushes it to the OF chat header. Without the strip it would keep re-asserting
+    a '/Free' onto fans who have since paid. See names.strip_spend_tier."""
     if not s:
         return ""
-    parts = [p.strip() for p in str(s).split("/")]
+    parts = [p.strip() for p in strip_spend_tier(s).split("/")]
     parts = [p for p in parts if any(ch.isalnum() for ch in p)]
     return _WS_RE.sub(" ", "/".join(parts)).strip()
 
