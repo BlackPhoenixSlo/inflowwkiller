@@ -11,23 +11,41 @@
  * modal back. No passwords, no sessions — your team won't scam each other
  * (per the plan §5).
  *
+ * `roster` is derived from useRoster() during render. It used to be
+ * provider state that EmployeePickerGate copied in via useEffect while
+ * rendering its buttons off a query of its own — two sources of truth one
+ * commit apart, so the commit that PAINTED the picker wired every button
+ * to a `pick` closed over an empty roster. A click landing there threw
+ * "employee N not in roster" past the ErrorBoundary (React re-throws
+ * event-handler errors to window) and silently did nothing. One source,
+ * read during render, means no such commit exists.
+ *
  * Phase D may layer real auth on top via a feature flag; the context API
  * here stays the same so views don't have to refactor.
  */
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
+
+import { useRoster } from "@/hooks/useRoster";
 import type { Employee } from "@/lib/relay";
 
 const LS_KEY = "chatterly:employee_id";
 
+/** Stable identity for the "no roster yet" case so `current`'s memo and
+ *  every consumer's deps don't churn on each render. */
+const EMPTY_ROSTER: Employee[] = [];
+
 interface EmployeeContextValue {
   /** Currently-picked employee — null until the user chooses. */
   current: Employee | null;
-  /** Full roster (active only by default). Populated by the picker modal. */
+  /** Full roster, disabled rows and chatter mirrors included — attribution
+   *  flows (orphan tips, audit) need to resolve a name for every id. The
+   *  picker narrows it to pickable rows itself. */
   roster: Employee[];
-  setRoster: (rs: Employee[]) => void;
-  /** Pick an employee id; throws if not in roster. Persisted to localStorage. */
-  pick: (id: number) => void;
+  /** Record who's at the keyboard. Takes the row rather than an id: every
+   *  caller picks out of the roster it just rendered, so there is no id to
+   *  validate and no failure mode to handle. */
+  pick: (employee: Employee) => void;
   /** Clear the pick. Browser will re-show the picker on next render. */
   clear: () => void;
   /** True once we've completed first-load hydration. Use this to gate
@@ -42,7 +60,6 @@ interface EmployeeContextValue {
 const EmployeeContext = createContext<EmployeeContextValue | null>(null);
 
 export function EmployeeProvider({ children }: { children: React.ReactNode }) {
-  const [roster, setRoster] = useState<Employee[]>([]);
   const [pickedId, setPickedId] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
 
@@ -60,21 +77,19 @@ export function EmployeeProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Same cache entry the settings tabs and the picker read — the gate calls
+  // useRoster() too and therefore renders this exact array.
+  const { query } = useRoster();
+  const roster = query.data?.employees ?? EMPTY_ROSTER;
+
   const current = useMemo(() => {
     if (pickedId == null) return null;
     return roster.find((e) => e.id === pickedId && e.is_active) ?? null;
   }, [pickedId, roster]);
 
-  const pick = (id: number) => {
-    const found = roster.find((e) => e.id === id);
-    if (!found) {
-      throw new Error(`employee ${id} not in roster`);
-    }
-    if (!found.is_active) {
-      throw new Error(`employee ${found.display_name} is disabled`);
-    }
-    setPickedId(id);
-    try { window.localStorage.setItem(LS_KEY, String(id)); } catch {}
+  const pick = (employee: Employee) => {
+    setPickedId(employee.id);
+    try { window.localStorage.setItem(LS_KEY, String(employee.id)); } catch {}
   };
 
   const clear = () => {
@@ -83,7 +98,7 @@ export function EmployeeProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <EmployeeContext.Provider value={{ current, roster, setRoster, pick, clear, hydrated, pickedId }}>
+    <EmployeeContext.Provider value={{ current, roster, pick, clear, hydrated, pickedId }}>
       {children}
     </EmployeeContext.Provider>
   );
