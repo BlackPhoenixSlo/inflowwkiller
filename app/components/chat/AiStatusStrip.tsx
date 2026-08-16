@@ -112,8 +112,8 @@ type Chip = { text: string; tone: string; title: string };
  * _quota_gate's exit order copied into a component.
  *
  * Deliberately does NOT restate the wait or the dry streak in its TEXT: when a hold is
- * being served the state badge beside it already says "Daily quota reached (35/15),
- * she goes quiet for 19.4h…", and the same sentence twice on an 11px line is noise.
+ * being served the state badge beside it already says "Quiet for 19.4h · daily cap
+ * reached (35/15)", and the same sentence twice on an 11px line is noise.
  * Both stay in the title, which is also what covers the case where a rhythm break or a
  * skip-list entry outranks the quota badge and suppresses it entirely.
  */
@@ -151,22 +151,40 @@ function dailyChip(d: NonNullable<AiStatus["cadence"]["daily"]>): Chip | null {
   const wait = d.backoff_hours != null ? ` Quiet for ${hours(d.backoff_hours)} from the last reply — a manual message or a mass send does not move it.` : "";
   const why = DAILY_WHY[d.reason] ? ` ${DAILY_WHY[d.reason]}` : "";
   // Where he is on the ladder, drawn as the ladder. "4h · 12h · 24h · [72h]" says in
-  // one glance what the number alone cannot: that it CYCLES, so the rung after the
-  // longest is the shortest, and that he walked every rung to get where he is.
+  // one glance what the number alone cannot: that it CYCLES, so the step after the
+  // longest is the shortest, and that he walked every step to get where he is.
   const rungs = d.ladder_hours && d.rung != null
     ? d.ladder_hours.map((h, i) => (i === d.rung ? `[${hours(h)}]` : hours(h))).join(" · ")
     : null;
   const step = rungs && d.ladder_hours && d.rung != null
-    ? ` Ladder ${rungs}, then back to the first — next step ${hours(d.ladder_hours[(d.rung + 1) % d.ladder_hours.length])}.`
+    ? ` Quiet steps: ${rungs}, then back to the first — after this one comes ${hours(d.ladder_hours[(d.rung + 1) % d.ladder_hours.length])}.`
     : "";
   const free = d.held ? whenLabel(d.free_at) : null;
+  // "step 4 of 4", never "rung 4/4": both halves of that were jargon — the word, and a
+  // fraction that reads like a score. The chip says WHERE on the ladder he is; the
+  // badge beside it says how long the step lasts.
+  const where = d.held && d.rung != null && d.ladder_hours
+    ? ` · step ${d.rung + 1} of ${d.ladder_hours.length}` : "";
+  // The counter and the hold can disagree, and only one way round: the quota day
+  // TUMBLES — it opens on a reply of hers and closes after 12h of her silence — so it
+  // usually rolls over under a fan who is mid-backoff. That is the moment someone reads
+  // a hold beside "0/25" and calls the strip broken, so the chip says it in words.
+  // ("today" was dropped from the text for the same reason: it is a calendar word for
+  // a window that is not a calendar day.) Same predicate, same sentence, as the badge
+  // that owns this state — `fan_status_copy.daily_quota_badge`.
+  const rolled = d.held && d.used < d.quota
+    ? " His count has already rolled over — a new day hands his ALLOWANCE back, never his wait, so the number reads fresh while the quiet stretch keeps running."
+    : "";
   return {
-    text: `📅 ${d.used}/${d.quota} today`
-      + (d.held && d.rung != null && d.ladder_hours ? ` · rung ${d.rung + 1}/${d.ladder_hours.length}` : "")
-      + (free ? ` → ${free}` : ""),
+    // The chip repeats the state badge's wake time on purpose: a rhythm break or a skip
+    // row outranks the quota badge and suppresses it, and then this is the only place
+    // the instant appears at all. Both print it the same way, so a reader who sees it
+    // twice sees one answer twice rather than two answers to compare.
+    text: `📅 ${d.used}/${d.quota} replies${where}` + (free ? ` → ${free}` : ""),
     tone: d.held ? "text-amber-400" : "text-fg-dim",
     title:
-      `${d.used} of ${d.quota} replies used in the last 24h.${dry}${wait}${step}${why} ` +
+      `${d.used} of ${d.quota} replies used in the current day, which opens on a reply ` +
+      `of hers and closes once she has been quiet 12h.${rolled}${dry}${wait}${step}${why} ` +
       `A purchase or a content ask lifts this immediately.${shadow}`,
   };
 }
@@ -193,7 +211,10 @@ function teaserChip(t: NonNullable<AiStatus["teaser"]>): Chip | null {
         ? `${money(t.cents)}–${money(t.cents_max)}`
         : money(t.cents);
   const due = t.remaining <= 0;
-  const rung = t.rung != null ? ` · rung ${t.rung + 1}/${t.rungs}` : "";
+  // Same rule as the quota chip: "price step 5 of 7", not "rung 5/7". The word is
+  // house jargon, and this ladder is a DIFFERENT one — prices, not quiet time — so
+  // reusing the term made two unrelated ladders read as one.
+  const rung = t.rung != null ? ` · price step ${t.rung + 1} of ${t.rungs}` : "";
   return {
     text: `🎁 ${due ? "tease due" : `tease in ${t.remaining}`} · ${ask}`,
     tone: due ? "text-amber-400" : "text-fg-dim",
@@ -202,8 +223,8 @@ function teaserChip(t: NonNullable<AiStatus["teaser"]>): Chip | null {
       (due ? "The next reply can carry it. " : "") +
       (t.softened
         ? "This ask is SOFTENED — the last tease didn't sell, so it decays toward his proven-spend floor and then alternates that with a free tease, rather than climbing. "
-        : "This is the ladder's own rung price — it climbs only when a tease actually SELLS. ") +
-      (t.adaptive ? "" : "Legacy mode: the rung climbs on every send, sold or not. ") +
+        : "This is the price step's own ask — it climbs only when a tease actually SELLS. ") +
+      (t.adaptive ? "" : "Legacy mode: the price climbs on every send, sold or not. ") +
       "Teases are a separate stream from the catalog PPVs.",
   };
 }
@@ -223,7 +244,9 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
   }
   if (isLoading || !data) return null;
 
-  const until = untilLabel(data.until);
+  // whenLabel, not untilLabel: the state badge carries the quota backoff too, and that
+  // one runs to 72h — a bare "12:31 PM" on a three-day wait reads as this afternoon.
+  const until = whenLabel(data.until);
   const daily = data.cadence.daily ? dailyChip(data.cadence.daily) : null;
   const teaser = data.teaser ? teaserChip(data.teaser) : null;
   const engineName =

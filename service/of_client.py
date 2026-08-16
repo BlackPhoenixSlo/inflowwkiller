@@ -1330,10 +1330,16 @@ class OFClient:
         # Diagnostic — confirms OF receives the previews subset we expect.
         # OF silently ignores previews on free messages, so price=0 + a
         # non-empty previews list is also worth flagging.
+        # `rfTag` is logged beside `userTags` because it is the field that
+        # actually tags this endpoint — without it the log cannot answer "did
+        # the tag go out?", which is the exact question that took a live probe
+        # of OF's stored `releaseForms` to settle on 2026-08-16.
         log_of.info(
-            "send_message chat=%s price=%s mediaFiles=%r previews=%r userTags=%r giphyId=%r",
+            "send_message chat=%s price=%s mediaFiles=%r previews=%r "
+            "userTags=%r rfTag=%r giphyId=%r",
             chat_id, price, body["mediaFiles"], body["previews"],
-            body.get("userTags") or [], body.get("giphyId"),
+            body.get("userTags") or [], body.get("rfTag") or [],
+            body.get("giphyId"),
         )
         return self._post_dropping_auto_cotag(
             f"{API_BASE}/chats/{chat_id}/messages", body, auto_tagged)

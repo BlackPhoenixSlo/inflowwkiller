@@ -942,19 +942,9 @@ function Bubble({
                   · {truncate(msg._failedReason, 80)}
                 </span>
               )}
-              {/* OF's sentence never says WHICH attachment, so translate the
-               *  ids it did give us into a count pointing at the marked tiles.
-               *  Retrying the same bundle can only fail the same way. Gated on
-               *  the media too: ids can only refer to tiles this bubble
-               *  rendered, so with none there is nothing to count against. */}
-              {msg._failedMediaIds?.length && msg.media?.length ? (
-                <span
-                  className="text-err font-medium"
-                  title="OF refused these exact attachments — drop them and re-send; a plain retry sends the same bundle."
-                >
-                  · remove {msg._failedMediaIds.length} of {msg.media.length}
-                </span>
-              ) : null}
+              {/* The "remove N of M" count is NOT here: it belongs to the tile
+               *  row, which is the only place that knows which ids it actually
+               *  rendered and marked. See MediaStrip's `refusedHere`. */}
             </>
           )}
           </div>
@@ -1023,7 +1013,19 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
   const IMAGE_CAP = 3;
   const cap = locked ? LOCKED_CAP : IMAGE_CAP;
   const [expanded, setExpanded] = useState(false);
-  const visible = expanded ? items : items.slice(0, cap);
+  // The tiles OF actually refused, as an INTERSECTION with what this bubble
+  // holds — never `_failedMediaIds` counted on its own. The count below and
+  // the marks on the tiles are both driven from this one list, so they cannot
+  // disagree; deriving the count from `msg.media.length` instead let the
+  // footer claim "remove 1 of 4" over a row where nothing was marked.
+  const refusedHere = items.filter((m) => m.id != null && refusedIds.includes(m.id));
+  // A refused tile past the cap is the one case where the cap defeats its own
+  // purpose: the count names it and "+1" hides it. Open the row for it. This
+  // does not weaken the 40-item rationale above — it is true only on a failed
+  // send whose offender sits past the cap, never in the steady state.
+  const refusedHidden = items.some(
+    (m, i) => i >= cap && m.id != null && refusedIds.includes(m.id));
+  const visible = expanded || refusedHidden ? items : items.slice(0, cap);
   const hiddenCount = items.length - visible.length;
   // Click-to-zoom lightbox. Holds the index into `items` of the tile being
   // viewed full-res (null = closed). visible[i] === items[i] (slice keeps
@@ -1188,8 +1190,25 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
           </button>
         )}
       </div>
+      {/* The count lives HERE, beside the tiles it counts, and reads off the
+       *  same `refusedHere` the marks do. In the footer it was computed from
+       *  `_failedMediaIds.length` over `msg.media.length` — two different sets,
+       *  free to disagree, and they did: an id past the render cap (or an id
+       *  OF names that this bubble never held) produced a confident number
+       *  over an unmarked row, which is the exact "nothing says which" state
+       *  this feature exists to end. */}
+      {refusedHere.length > 0 && (
+        <div
+          className="mt-1 text-[10px] font-medium text-err"
+          title="OF refused these exact attachments — drop them and re-send; a plain retry sends the same bundle."
+        >
+          remove {refusedHere.length} of {items.length}
+        </div>
+      )}
       {/* "show less" sits OUTSIDE the tile row so it keeps its natural button
-       *  height instead of inheriting a tile box. */}
+       *  height instead of inheriting a tile box. Gated on bare `expanded` so
+       *  a row force-opened by a hidden refusal cannot be collapsed back over
+       *  the mark. */}
       {expanded && items.length > cap && (
         <button
           type="button"

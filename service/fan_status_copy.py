@@ -165,36 +165,63 @@ def burst_badge(*, stopped: bool, tier: str, used: int, cap: int,
                  f"a fresh burst.")
 
 
+def _quiet_steps_sentence(ladder: list[float], rung: int, wait: str) -> str:
+    """Where he stands on the cyclic backoff ladder, in words. '' with no ladder.
+
+    Not "rung 4/4". That was two pieces of jargon in four characters: a house word for
+    the step, wrapped around a fraction that reads like a score climbing to a maximum.
+    The ladder does not climb — it WRAPS — so the sentence always ends on the step that
+    comes next, which is the only thing that makes the position legible."""
+    if rung < 0:
+        return ""
+    steps = " → ".join(f"{round(h, 1):g}h" for h in ladder)
+    return (f" This is quiet step {rung + 1} of {len(ladder)}: the steps are {steps} "
+            f"and after the last one they start again at {round(ladder[0], 1):g}h — "
+            f"they never keep growing. His step is {round(ladder[rung], 1):g}h "
+            f"(jittered to {wait}), and the one after it is "
+            f"{round(ladder[(rung + 1) % len(ladder)], 1):g}h.")
+
+
 def daily_quota_badge(q: Any, *, enforced: bool, cad: dict[str, Any] | None = None,
                       free_at: datetime | None = None) -> Badge | None:
     """Item 21c — the daily ceiling. `q` is the `_Quota` the engine itself returned.
 
     Silent unless the hold is actually being SERVED: in shadow mode the verdict is
     computed and recorded but the reply still goes out, and a badge claiming she is
-    paused when she is visibly still replying would be a lie the operator can see."""
+    paused when she is visibly still replying would be a lie the operator can see.
+
+    TWO openings, because the badge carries a number that stops describing the hold that
+    caused it. `q.used` is the CURRENT quota day's count; the hold was earned by what she
+    had spent when she went QUIET (`day_out_n_at_stop`, which never leaves `_quota_gate`).
+    The day tumbles, so it resets under a waiting fan — and the old copy printed the fresh
+    count behind the words "Daily quota reached (0/25)" over a sentence that read "0
+    replies sent to him in the last 24h", a badge contradicting itself in two lines. The
+    fix is to say WHICH number this is, not to imply it caused the hold."""
     if not (q.hold and enforced):
         return None
     ladder = _leash.quota_ladder(cad or {})
     rung = _leash.quota_rung(q.dry_h, ladder) if ladder else -1
-    # "rung 4/4" in the chip, because the number alone reads as a punishment that
-    # escalates forever. It does not: the ladder is cyclic, and naming the position
-    # is what makes the NEXT step legible — 4 of 4 is followed by 1 of 4, not by more.
-    where = f" · rung {rung + 1}/{len(ladder)}" if rung >= 0 else ""
-    # `:g` alone printed SIX significant figures of a jittered float — the rung is
+    # `:g` alone printed SIX significant figures of a jittered float — the step is
     # multiplied by a random ±25%, so a live thread read "She goes quiet for 3.58587h".
     # Round first, then `:g`, so 24.0 still prints as "24" and not "24.0".
-    step = ""
-    if rung >= 0:
-        nxt = ladder[(rung + 1) % len(ladder)]
-        step = (f" The ladder is {' → '.join(f'{round(h, 1):g}h' for h in ladder)} "
-                f"and then back to the first — he is on "
-                f"{round(ladder[rung], 1):g}h (jittered to {round(q.wait_h, 1):g}h), "
-                f"and the step after this one is {round(nxt, 1):g}h.")
-    return Badge("paused", f"Daily quota reached ({q.used}/{q.quota}){where}",
-                 f"{q.used} replies sent to him in the last 24h, and he hasn't "
-                 f"paid in {q.dry_h / 24:.1f} days. The thread goes quiet for "
-                 f"{round(q.wait_h, 1):g}h from the ACCOUNT'S OWN last reply — a "
-                 f"manual message or a mass send does not move it — then talks to "
-                 f"him again.{step} This slows the thread down, it never stops it. "
-                 f"A purchase or a content ask resumes it immediately.",
+    wait = f"{round(q.wait_h, 1):g}h"
+    dry = f"{q.dry_h / 24:.1f}"
+    if q.used < q.quota:
+        label = f"Quiet for {wait} · allowance already reset ({q.used}/{q.quota})"
+        opened = (f"He hit his daily ceiling and is serving the quiet stretch it "
+                  f"earned. His count has already rolled over to {q.used} of "
+                  f"{q.quota} — a new day hands his ALLOWANCE back, never his wait — "
+                  f"so the number reads fresh while the {wait} keeps running. He "
+                  f"hasn't paid in {dry} days.")
+    else:
+        label = f"Quiet for {wait} · daily cap reached ({q.used}/{q.quota})"
+        opened = (f"{q.used} of {q.quota} replies used in the current day, and he "
+                  f"hasn't paid in {dry} days.")
+    return Badge("paused", label,
+                 f"{opened} The thread stays quiet for {wait} counted from the "
+                 f"ACCOUNT'S OWN last reply — a manual message or a mass send does not "
+                 f"move it — then she talks to him again."
+                 f"{_quiet_steps_sentence(ladder, rung, wait)} This slows the thread "
+                 f"down, it never stops it. A purchase or a content ask resumes it "
+                 f"immediately.",
                  _iso(free_at))

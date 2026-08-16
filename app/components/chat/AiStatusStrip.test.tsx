@@ -61,7 +61,7 @@ const RUNWAY: AiStatus = {
 
 /** Fan 7002 — 6 replies against a ration of 3, past the runway, inside the backoff. */
 const HELD: AiStatus = {
-  ...BASE, state: "paused", label: "Daily quota reached (6/3)", detail: "…",
+  ...BASE, state: "paused", label: "Quiet for 3.6h · daily cap reached (6/3)", detail: "…",
   cadence: {
     ...BURST, used: 6,
     daily: {
@@ -118,10 +118,13 @@ describe("AiStatusStrip — daily quota chip", () => {
   it("keeps the counter but does not retype the badge's sentence", async () => {
     render(draw(HELD));
     const el = await chip();
-    expect(el?.textContent).toBe("📅 6/3 today · rung 1/4");
+    expect(el?.textContent).toBe("📅 6/3 replies · step 1 of 4");
     expect(el?.className).toContain("amber");
     // The wait belongs in the title; the state badge beside it already says it aloud.
-    expect(el?.textContent).not.toContain("quiet");
+    expect(el?.textContent).not.toContain("Quiet");
+    // "today" is a calendar word for a window that tumbles — and on a held fan whose
+    // day rolled over it put "0/25 today" next to a hold, which reads as a broken strip.
+    expect(el?.textContent).not.toContain("today");
     // …and it is rounded. `%g` on the jittered rung printed "3.58587h" on a live thread.
     expect(el?.getAttribute("title")).toContain("Quiet for 3.6h");
   });
@@ -141,13 +144,30 @@ describe("AiStatusStrip — daily quota chip", () => {
       },
     }));
     const el = await chip();
-    expect(el?.textContent).toContain("rung 4/4");
-    // The ladder is drawn with HIS rung bracketed, and the next step named — the
+    expect(el?.textContent).toContain("step 4 of 4");
+    // The ladder is drawn with HIS step bracketed, and the next one named — the
     // cycle is the whole point: 4 of 4 is followed by 1 of 4, not by more.
-    expect(el?.getAttribute("title")).toContain("Ladder 4h · 12h · 24h · [72h]");
-    expect(el?.getAttribute("title")).toContain("next step 4h");
+    expect(el?.getAttribute("title")).toContain("Quiet steps: 4h · 12h · 24h · [72h]");
+    expect(el?.getAttribute("title")).toContain("after this one comes 4h");
     // A manual reply does NOT move the clock, and the strip must not imply it does.
     expect(el?.getAttribute("title")).toContain("from the last reply");
+  });
+
+  it("explains a hold sitting next to a counter that already rolled over", async () => {
+    // The live report this replaces: "0/25 today" beside "Daily quota reached (0/25)".
+    // The quota day tumbles, so it resets under a fan mid-backoff — his ALLOWANCE comes
+    // back, his wait does not — and the chip has to say that or it reads as broken.
+    render(draw({
+      ...HELD,
+      cadence: {
+        ...HELD.cadence,
+        daily: { ...HELD.cadence.daily!, used: 0, quota: 25, rung: 3, backoff_hours: 66 },
+      },
+    }));
+    const el = await chip();
+    expect(el?.textContent).toContain("📅 0/25 replies · step 4 of 4");
+    expect(el?.getAttribute("title")).toContain("already rolled over");
+    expect(el?.getAttribute("title")).toContain("never his wait");
   });
 
   it("dates the release, because a 72h hold is not 'this morning'", async () => {
@@ -162,6 +182,16 @@ describe("AiStatusStrip — daily quota chip", () => {
     // Rendered in the viewer's zone, so assert the SHAPE — a weekday must be present,
     // never a bare clock that reads as today.
     expect(el?.textContent).toMatch(/→ (Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d{2}:\d{2}/);
+  });
+
+  it("dates the STATE badge's wake time too — it carries the 72h backoff", async () => {
+    // The badge used `untilLabel`, which prints a bare clock. That is right for the
+    // pauses it was built for (they lift within the hour) and wrong for the quota
+    // hold, which runs to three days: the thread header read "→ 12:31 PM" over a wait
+    // that ended on Tuesday. The chip beside it had been dating its copy since 07-28.
+    render(draw({ ...HELD, until: "2026-07-30T03:54:43Z" }));
+    const badge = await screen.findByText(/daily cap reached/);
+    expect(badge.textContent).toMatch(/→ (Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d{2}:\d{2}/);
   });
 
   it("counts his messages down to the next tease and names the ask", async () => {

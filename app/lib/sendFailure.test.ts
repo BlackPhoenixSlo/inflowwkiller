@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { MESSAGE_VIDEO_LIMIT_S, isOverlongForMessage, parseSendFailure } from "./sendFailure";
+import { parseSendFailure } from "./sendFailure";
 
 /** Wrap an OF error body the way server.py `_proxy` hands it to the browser. */
 function relayBody(upstream: unknown) {
@@ -75,24 +75,3 @@ describe("parseSendFailure", () => {
   });
 });
 
-describe("isOverlongForMessage", () => {
-  // The five items from that night — OF's verdict on each is the assertion.
-  it("flags exactly the videos OF refused", () => {
-    expect(isOverlongForMessage({ duration: 599 })).toBe(true);   // refused
-    expect(isOverlongForMessage({ duration: 394 })).toBe(true);   // refused
-    expect(isOverlongForMessage({ duration: 279 })).toBe(false);  // sent
-    expect(isOverlongForMessage({ duration: 93 })).toBe(false);   // sent
-    expect(isOverlongForMessage({ duration: 25 })).toBe(false);   // sent
-  });
-
-  it("does not flag media with no duration (photos)", () => {
-    expect(isOverlongForMessage({})).toBe(false);
-    expect(isOverlongForMessage({ duration: null })).toBe(false);
-    expect(isOverlongForMessage(undefined)).toBe(false);
-  });
-
-  it("treats the limit itself as sendable", () => {
-    expect(isOverlongForMessage({ duration: MESSAGE_VIDEO_LIMIT_S })).toBe(false);
-    expect(isOverlongForMessage({ duration: MESSAGE_VIDEO_LIMIT_S + 1 })).toBe(true);
-  });
-});

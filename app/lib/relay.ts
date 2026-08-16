@@ -423,7 +423,14 @@ export interface OFUserMini {
 
 /** One co-performer named on a message, as OF stores it. `partnerSource: "tag"`
  *  is the entry a creator tag produces — the wire field that creates it is
- *  `rfTag` (release-form tag), not `userTags`. */
+ *  `rfTag` (release-form tag), not `userTags`.
+ *
+ *  Shape observed live on 2026-08-17 from a message that had a tag stored:
+ *  `{id, name, partnerSource: "tag", type: "user", user: {id, _view}}`. It is
+ *  NOT in the captured `sessions/chunks` bundles — those only show the sender
+ *  half (OF's `{rfTag: picks(type=="user"), rfGuest, rfPartner}` splitter) —
+ *  so grepping the repo will not find `partnerSource`. Every field here is
+ *  optional because only `id` is load-bearing for the bubble's chip. */
 export interface MessageReleaseForm {
   id: number;
   name?: string;
