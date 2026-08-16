@@ -27,9 +27,20 @@ hold no facts at all the label is KEPT and only the name slot gets marked:
     'USA/Spender'             → '_/USA'                   (no facts: demote, drop tier)
 
 That is why there is no --include-lossy flag: nothing is lossy, so nothing needs
-a human to approve the loss. The derived spend tier is the one exception — the
-ledger authors Free/Buyer/Spender/Whale and build_structured_nickname omits them
-by design, so dropping one destroys nothing anybody wrote.
+a human to approve the loss. The derived spend tier is the one exception — nothing
+authors Free/Buyer/Spender/Whale any more (see names.strip_spend_tier) and
+build_structured_nickname never emitted them, so dropping one destroys nothing
+anybody wrote.
+
+The sweep picks a fan up for EITHER of two reasons, and they get different repairs:
+
+    name slot isn't a name   → rebuild from facts, re-append what the rebuild drops
+    name slot is fine, tier  → strip the tier ONLY, leave the rest of the label alone
+    present ('Jim/UK/Free')    ('Jim/UK'), because nothing else about it is wrong
+
+The second reason is the backfill for the tier retirement: ~766 prod fans carry a
+tier in the OF chat header, and the live code paths only heal a fan when he next
+comes through gen_info/apply_profiles. A quiet fan would keep his forever.
 """
 from __future__ import annotations
 
@@ -47,7 +58,8 @@ from automations._common import push_nick_and_notes     # noqa: E402
 from automations.names import (                         # noqa: E402
     _NICK_MAX, _NO_NAME,   # the 70-char cap and the empty-name marker — same two
                            # constants the live push uses; don't re-declare them
-    SPEND_TIERS, build_structured_nickname, is_greetable_name, name_token,
+    SPEND_TIER_WORDS, build_structured_nickname, is_greetable_name, name_token,
+    strip_spend_tier,
 )
 from db.engine import get_session                       # noqa: E402
 from db.models import Fan                               # noqa: E402
@@ -61,9 +73,6 @@ def _segments(label: str) -> list[str]:
     return [p.strip() for p in (label or "").split("/") if p.strip()]
 
 
-_TIER_WORDS = {label.lower() for label, _ in SPEND_TIERS}
-
-
 def _lost(old: str, new: str) -> list[str]:
     """Segments of the OLD label (minus its bad name slot) that the NEW one does
     not carry. Non-empty ⇒ the rewrite would destroy something a human typed.
@@ -74,7 +83,7 @@ def _lost(old: str, new: str) -> list[str]:
     two thirds of the sweep for a word the machine had put there itself."""
     new_blob, segs = new.lower(), _segments(old)
     out = [seg for seg in segs[1:]
-           if seg.lower() not in new_blob and seg.lower() not in _TIER_WORDS]
+           if seg.lower() not in new_blob and seg.lower() not in SPEND_TIER_WORDS]
     # The note can live INSIDE slot 0 — 'Alex- rough sex kink. Gets paid on the
     # 1st' is ONE segment, so the loop above sees nothing to lose and the rebuild
     # would have kept 'Alex' and thrown the rest away. Rescue whatever of that slot
@@ -85,7 +94,7 @@ def _lost(old: str, new: str) -> list[str]:
     if head and "," not in head:
         leftover = head.replace(name_token(head), "", 1).strip(" -,;/")
         if (any(c.isalpha() for c in leftover) and leftover.lower() not in new_blob
-                and leftover.lower() not in _TIER_WORDS):
+                and leftover.lower() not in SPEND_TIER_WORDS):
             out.insert(0, leftover)
     return out
 
@@ -103,7 +112,7 @@ def _repair(f: Fan, cur: str) -> str:
         # ('Spender/Buyer') — it carries no information at all, so the marker ALONE
         # is the honest value. A bare '_' says "we don't know his name"; leaving
         # 'Spender' there says he is called Spender.
-        keep = [s for s in _segments(cur) if s.lower() not in _TIER_WORDS]
+        keep = [s for s in _segments(cur) if s.lower() not in SPEND_TIER_WORDS]
         return "/".join([_NO_NAME] + keep)[:_NICK_MAX]
     return "/".join([new] + _lost(cur, new))[:_NICK_MAX]
 
@@ -130,6 +139,21 @@ async def _candidates(account: str | None) -> list[tuple[Fan, str, str]]:
         # reported 26 perfectly good ones ('jay', 'A', 'RG/Vancouver Island,Canada')
         # as broken. A comma still marks a location slot, which is not a name.
         if "," not in slot0 and is_greetable_name(slot0, here=here):
+            # His NAME is fine — but the label may still carry a retired spend tier
+            # ('DaddyWilko/Free'). That is the second reason to sweep a fan, and the
+            # repair is a STRIP, not a rebuild: a rebuild restructures a label a
+            # human may have curated, and here there is nothing wrong with it except
+            # one machine-authored word. Nothing else about the label is touched.
+            #
+            # The test is "a tier segment is PRESENT", deliberately not "the strip
+            # changed the string". strip_spend_tier also trims each segment, so the
+            # looser test enrolled fans whose only defect was a trailing space
+            # ('Kevin /48/NJ- USA') — a live OF write per fan to fix whitespace
+            # nobody can see. This sweep touches a tier or it leaves him alone.
+            if any(seg.lower() in SPEND_TIER_WORDS for seg in _segments(cur)):
+                stripped = strip_spend_tier(cur)
+                if stripped:
+                    out.append((f, cur, stripped[:_NICK_MAX]))
             continue
         new = _repair(f, cur)
         if new and new != cur:

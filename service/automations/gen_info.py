@@ -58,7 +58,6 @@ from db.models import AccountAiConfig, Fan, FanProfile, Message, ScrapeHistory, 
 import llm_client
 from llm_client import LLMCapExceeded, LLMError
 from ._common import (
-    SPEND_TIERS,
     build_structured_nickname,
     coerce_ids,
     is_greetable_name,
@@ -68,6 +67,7 @@ from ._common import (
     resolve_model,
     should_skip_muted_creator,
 )
+from .names import strip_spend_tier
 
 log = logging.getLogger("of-relay.automation.gen_info")
 
@@ -127,12 +127,14 @@ _SYSTEM_PROMPT = (
     "drop a known fact). Respond with a SINGLE JSON object and nothing else. Use an "
     "empty string (or [] for lists) for anything you cannot determine — never guess, "
     'never write "Unknown" or "??". Keys:\n'
-    '  "nickname": slash-joined tag "Name/City,Country/Age/Job/Bonus" (<=60 chars). '
+    '  "nickname": slash-joined tag "Name/City,Country/Age/Job" (<=60 chars). '
     "The Name MUST be his real first name (from the chat or the KNOWN real name). "
     "NEVER use a number, a fan id, a u<digits> handle, a username, or a PLACE "
     "(country/state/city — those belong in the second section) as the Name — "
     "leave the Name section EMPTY if you don't know it. Leave any unknown section "
-    'EMPTY (no "??", no filler), e.g. "Garrett/Delta,Canada/30/Spender".\n'
+    'EMPTY (no "??", no filler), e.g. "Garrett/Delta,Canada/30/Paramedic". '
+    "NEVER add a spend/status label (Free, Buyer, Spender, Whale, VIP) — his "
+    "spending is not part of his name.\n"
     '  "short_bio": one sentence describing who he is and his spending,\n'
     '  "bullet_points": markdown "- Label: value" lines, MOST USEFUL FIRST with '
     'SHORT labels. Lead with "Recent:" (what is going on in his life lately), then '
@@ -195,11 +197,20 @@ def _strip_html(s: str | None) -> str:
 
 
 def _clean_nickname(s: str | None) -> str:
-    """Drop empty + placeholder ('??') segments, collapse slashes, trim. The model
-    sometimes fills unknown slots with '??' despite the prompt (W2h)."""
+    """Drop empty + placeholder ('??') segments and any derived SPEND TIER, collapse
+    slashes, trim. The model sometimes fills unknown slots with '??' despite the
+    prompt (W2h).
+
+    The tier strip is here rather than at one call site because every path through
+    this module runs through this function, and the one that matters most is the
+    READ: `_known_block` hands the stored nickname back to the model as ground truth
+    to 'refine + keep complete', so a legacy '/Free' would be copied forward into
+    every regeneration for the rest of the fan's life. Stripping on the way in AND
+    on the way out means a fan heals on his next profile pass instead of needing a
+    sweep. See names.strip_spend_tier for why the tier was retired."""
     if not s:
         return ""
-    parts = [p.strip() for p in str(s).split("/")]
+    parts = [p.strip() for p in strip_spend_tier(s).split("/")]
     parts = [p for p in parts if any(ch.isalnum() for ch in p)]   # drop empty/'??'/',' slots
     return _WS_RE.sub(" ", "/".join(parts)).strip()
 
@@ -304,14 +315,11 @@ def _name_hint(c: "_Candidate") -> str:
     return ""
 
 
-# Spend tiers for the nickname's Bonus slot — DERIVED from real spend (cents), not
-# guessed. Whale ≥ $500, Spender ≥ $50, Buyer > $0, else Free. The labels + floors
-# live in names.SPEND_TIERS, which the name guard also reads — one source, so a new
-# tier can never become a fan's name.
-def _spend_tier(cents: int) -> str:
-    return next(label for label, floor in SPEND_TIERS if cents >= floor)
-
-
+# The nickname's spend tier (`_spend_tier`, and the Bonus slot it filled) is gone —
+# see names.strip_spend_tier. `c.spend_cents` is still gathered: _tier_knobs below
+# spends the PROFILING BUDGET by spend tier, which is a live decision made fresh on
+# every pass. That is the difference — a tier is fine to compute, and was only ever
+# harmful once it got frozen into a label a human reads days later.
 def _tier_knobs(lifetime_cents: int, recent_cents: int,
                 subscribed_at: "datetime | None", now: datetime) -> tuple:
     """(fresh_after, volume_cap) for a fan, by spend tier — spend the profiling
@@ -795,13 +803,11 @@ async def _persist(
     hint = _name_hint(c)
     if hint and (not nickname or nickname.split("/")[0].strip().lower() != hint.lower()):
         nickname = _clean_nickname(hint + "/" + nickname)
-    # Bare-name fallback: when we only know the name (one slot, e.g. "Mani"), append
-    # a DERIVED spend tier as the Bonus slot so the nickname carries a useful flag
-    # instead of standing alone ("Mani" → "Mani/Spender"). Spend is the higher of
-    # transactions vs messages (set in _gather_candidates). Rich nicknames the model
-    # already filled out are left untouched.
-    if nickname and len([seg for seg in nickname.split("/") if seg.strip()]) <= 1:
-        nickname = _clean_nickname(nickname + "/" + _spend_tier(c.spend_cents))
+    # A name-only nickname ("Mani") now STAYS name-only. It used to get a derived
+    # spend tier appended as a Bonus slot ("Mani" → "Mani/Spender") so the label
+    # "carried a useful flag" — but the flag was stamped once and never re-derived,
+    # so it aged into a lie in the one place the team reads it. A bare name is a
+    # thin label; a confidently wrong tier is a harmful one.
     original_name = _blank_unknown(data.get("original_name") or data.get("real_name"))
 
     prof_values = dict(
