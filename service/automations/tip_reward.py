@@ -452,6 +452,21 @@ def _folder_media_ids(client, list_id: int) -> list[int]:
     return out
 
 
+def folder_media_pool(client, folder_name: str) -> list[int] | None:
+    """PUBLIC seam: one vault folder's media ids, by NAME. None = no such folder.
+
+    The name → list-id → media-ids read every folder-configured lane shares —
+    the tip tiers and hot teaser here, of_ai_chat's gather-close from outside.
+    Folder NAMES are what the configs store (the UI's VaultFolderPicker shape),
+    so this is the one place the name resolves. Sync client calls — run it via
+    `asyncio.to_thread` off the event loop."""
+    list_id = _resolve_folders(client, [folder_name]).get(
+        str(folder_name).strip().lower())
+    if list_id is None:
+        return None
+    return _folder_media_ids(client, list_id)
+
+
 def _gather_unseen(client, folders: list[str], by_name: dict[str, int],
                    seen: set[int], count: int) -> list[int]:
     """Up to `count` unseen media ids (photos AND videos), scanning the tier's

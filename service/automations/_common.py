@@ -26,7 +26,7 @@ from typing import NamedTuple
 
 import llm_client
 from db.engine import get_session
-from db.models import AccountAiConfig, Fan, Message, SkipList
+from db.models import AccountAiConfig, Fan, Message, SkipList, Transaction
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -2561,7 +2561,20 @@ async def content_payer_fans(account_id: str, fan_ids) -> set[int]:
     simply does not arise — no threshold, no knob.
 
     Same source as `recent_payer_fans` (and for the same reason: it LEADS the
-    ledger by hours), minus the time window."""
+    ledger by hours), minus the time window — PLUS the transactions ledger,
+    because `messages` alone is blind to a purchase whose message row we never
+    ingested. OF's native welcome PPV is the live case: the fan unlocks it
+    seconds after subscribing, before the thread is ever scraped, and OF emits
+    no purchase event that would stamp `is_paid` later — so the buyer exists
+    only in the ledger. Measured 2026-08-16: 822 of 2,035 ledger-known content
+    buyers (40%) were invisible to the messages predicate; one paid a $20
+    welcome PPV and was still `skipped_not_payer` every tick.
+
+    Reading the ledger here does NOT repeat the `lifetime_spend_cents` mistake
+    the docstring above warns about: the rollup is one untyped number, but
+    ledger ROWS carry `kind` — 'ppv_message' / 'ppv_post' / 'tip' are content,
+    'subscription' / 'rebill' are not, cleanly, no dollar threshold involved.
+    Rows whose purchase didn't stand (chargedback / refund_pending) are out."""
     ids = [int(x) for x in fan_ids]
     if not ids:
         return set()
@@ -2590,7 +2603,18 @@ async def content_payer_fans(account_id: str, fan_ids) -> set[int]:
                 ),
             )
         )).all()
-    return {int(r[0]) for r in rows}
+        ledger = (await s.execute(
+            select(Transaction.fan_id).where(
+                Transaction.account_id == str(account_id),
+                Transaction.fan_id.in_(ids),
+                Transaction.kind.in_(("ppv_message", "ppv_post", "tip")),
+                # 'pending' means payout not cleared, not payment not made —
+                # the live welcome-PPV rows sit pending for days. Exclude only
+                # the statuses where the money went back.
+                Transaction.status.notin_(("chargedback", "refund_pending")),
+            )
+        )).all()
+    return {int(r[0]) for r in rows} | {int(r[0]) for r in ledger}
 
 
 # The content-ask tip-ask ships OFF by default (flipped ON→OFF 2026-07-23: the

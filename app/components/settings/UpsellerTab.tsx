@@ -22,6 +22,7 @@ import { Save, Sparkles } from "lucide-react";
 import { relay } from "@/lib/relay";
 import { Button, Card } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
+import { SingleFolderRow, VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
 import { cn } from "@/lib/utils";
 import {
   useAiChatterConfig, useCatalogScripts, useSaveSingles,
@@ -60,6 +61,8 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
   // the auth). Off by default everywhere until pressed here.
   const [shapeBusy, setShapeBusy] = useState(false);
   const [shapeMsg, setShapeMsg] = useState<string | null>(null);
+  // Gather-close PPV: the single-folder picker's open state.
+  const [gcPicker, setGcPicker] = useState(false);
   const setPromptShapeAll = async (enabled: boolean) => {
     const verb = enabled ? "ENABLE" : "disable";
     if (!confirm(`${verb} prompt-shape (regroup + drop-facts + task-line) on EVERY model you own?`)) return;
@@ -426,6 +429,46 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         </div>
       </Card>
 
+      {/* ── gather-close PPV — of_ai_chat's parting set ─────────────────────
+          The folder IS the switch: empty = off, picking one arms it. Server
+          side the send is photos-only, solo-only, un-bought, audited (caption
+          count = attached count), and a refusal never blocks the graduation. */}
+      <Card className="p-4 space-y-3">
+        <h3 className="text-sm font-medium">Gather-close PPV</h3>
+        <div className="text-fg-dim text-xs">
+          When the getting-to-know-him chat finishes with a fan (profile done, or
+          he hit the message cap), send a few pictures as a priced PPV — his last
+          message from that lane, instead of silence. Picking a folder turns it
+          on; clearing it turns it off.
+        </div>
+        <SingleFolderRow
+          folder={cfg.gather_close_folder ?? ""}
+          onPick={() => setGcPicker(true)}
+          onClear={() => set({ gather_close_folder: "" })}
+          emptyText="No folder — gather-close is off."
+        />
+        <div className={cn("grid grid-cols-2 md:grid-cols-4 gap-3 text-sm",
+          cfg.gather_close_folder ? "" : "opacity-50 pointer-events-none")}>
+          <label className="space-y-1">
+            <div className="text-fg-dim text-xs">Price ($)</div>
+            <input type="number" className={`${INPUT} w-full`} min={3} max={200}
+              value={dollars(cfg.gather_close_price_cents ?? 1000)}
+              onChange={(e) => set({
+                gather_close_price_cents:
+                  (parseInt(e.target.value || "0", 10) || 0) * 100,
+              })} />
+          </label>
+          <label className="space-y-1">
+            <div className="text-fg-dim text-xs">Pictures</div>
+            <input type="number" className={`${INPUT} w-full`} min={2} max={10}
+              value={cfg.gather_close_count ?? 3}
+              onChange={(e) => set({
+                gather_close_count: parseInt(e.target.value || "0", 10),
+              })} />
+          </label>
+        </div>
+      </Card>
+
       {/* ── offer pacing ── */}
       <Card className="p-4 space-y-3">
         <h3 className="text-sm font-medium">Offer pacing</h3>
@@ -606,6 +649,20 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
           </span>
         )}
       </div>
+
+      {/* Single-folder picker for the gather-close PPV. */}
+      {gcPicker && (
+        <VaultFolderPicker
+          open
+          accountId={accountId}
+          initialSelected={cfg.gather_close_folder ? [cfg.gather_close_folder] : []}
+          onClose={() => setGcPicker(false)}
+          onConfirm={(folders) => {
+            set({ gather_close_folder: folders[0] ?? "" });
+            setGcPicker(false);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -148,6 +148,13 @@ export interface AiChatterConfig {
    *  Both OFF by default. */
   autoreply_sell_on_ask?: boolean;
   of_ai_chat_sell_on_ask?: boolean;
+  /** Gather-close PPV — of_ai_chat's parting set when the getting-to-know-you
+   *  chat finishes with a fan (profile complete OR the runaway cutoff). THE
+   *  FOLDER IS THE SWITCH: empty = off; picking one arms it. Photos only,
+   *  solo-only, un-bought — priced at the fixed knob (no ladder). */
+  gather_close_folder?: string;
+  gather_close_price_cents?: number;
+  gather_close_count?: number;
   /** The rate card is a BASELINE, not a ceiling (operator ruling 2026-08-11) —
    *  the upseller may quote above it for a fan whose history supports it. This
    *  restores the hard veto: never charge more than the attached content is

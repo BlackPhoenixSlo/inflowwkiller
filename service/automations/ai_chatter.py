@@ -633,6 +633,14 @@ _DEFAULTS: dict = {
     # IS the chat and a man who typed "send me a video" got banter and nothing else.
     "autoreply_sell_on_ask": True,
     "of_ai_chat_sell_on_ask": True,
+    # Gather-close PPV: of_ai_chat's parting set when the gather finishes with a
+    # fan (profile complete OR the runaway cutoff). THE FOLDER IS THE SWITCH —
+    # empty means off, and an operator picking one in the UI is the opt-in. Lives
+    # in THIS blob for the same reason the two keys above do: the sell machinery
+    # reads one config.
+    "gather_close_folder": "",
+    "gather_close_price_cents": 1000,    # $10 — "rung 1" money, fixed, no ladder
+    "gather_close_count": 3,             # a few pictures (validator floors it at 2)
     # ONE LLM CALL PER ANSWER — operator ruling 2026-08-15. The closer's second
     # call was the fact-extract, and it fired for any fan with a single empty
     # profile column, which on a live roster is most of them. Profiling is
