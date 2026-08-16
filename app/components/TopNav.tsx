@@ -16,6 +16,7 @@ import { useEmployee } from "@/contexts/EmployeeContext";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
 import { useTheme } from "@/hooks/useTheme";
+import { readLastOnBlurMode, useBlurMode } from "@/hooks/useBlurMode";
 import { cn } from "@/lib/utils";
 import ScopeSwitcher from "@/components/ScopeSwitcher";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -73,6 +74,8 @@ export default function TopNav() {
   const { chatter, logout: chatterLogout } = useChatter();
   const pathname = usePathname();
   const { theme, toggle } = useTheme();
+  const [blurMode, setBlurMode] = useBlurMode();
+  const blurOn = blurMode !== "off";
 
   // Chatter-only session: hide owner-only nav surfaces (Setup,
   // employee picker chip). The User cookie always wins precedence, so
@@ -141,6 +144,26 @@ export default function TopNav() {
           aria-expanded={mobileNavOpen}
         >
           <span aria-hidden className="text-lg leading-none">≡</span>
+        </button>
+
+        {/* Image-blur quick toggle — lives in the header so it works from
+         *  every surface (popout chat included), not just the ChatList
+         *  gear. Flips between off and the last-used blurred variant;
+         *  the gear checkboxes stay in sync via the useBlurMode events. */}
+        <button
+          type="button"
+          onClick={() => setBlurMode(blurOn ? "off" : readLastOnBlurMode())}
+          className={cn(
+            "w-9 h-9 grid place-items-center rounded-lg hover:bg-bg-elev-1 shrink-0",
+            blurOn ? "text-warn" : "text-fg-dim hover:text-fg",
+          )}
+          title={blurOn ? "Images blurred — click to unblur" : "Blur images"}
+          aria-label={blurOn ? "Unblur images" : "Blur images"}
+          aria-pressed={blurOn}
+        >
+          <span aria-hidden className="text-base leading-none">
+            {blurOn ? "◐" : "○"}
+          </span>
         </button>
 
         <Link href="/" className="font-semibold text-fg tracking-tight shrink-0">
