@@ -7,7 +7,7 @@ A quiet fan keeps a header that says he is called Canada. This sweeps them.
 
     docker compose exec -T -w /app/service relay python fix_nicknames.py      # dry run
     docker compose exec -T -w /app/service relay python fix_nicknames.py --apply
-    ... --account ACCOUNT_ID --limit 50
+    ... --account ACCOUNT_ID --limit 50 --tier-only
 
 DRY RUN BY DEFAULT — `--apply` is the only thing that writes to OF.
 
@@ -117,7 +117,8 @@ def _repair(f: Fan, cur: str) -> str:
     return "/".join([new] + _lost(cur, new))[:_NICK_MAX]
 
 
-async def _candidates(account: str | None) -> list[tuple[Fan, str, str]]:
+async def _candidates(account: str | None, *,
+                      tier_only: bool = False) -> list[tuple[Fan, str, str]]:
     async with get_session() as s:
         q = select(Fan).where(Fan.custom_nickname.is_not(None), Fan.custom_nickname != "")
         if account:
@@ -155,6 +156,13 @@ async def _candidates(account: str | None) -> list[tuple[Fan, str, str]]:
                 if stripped:
                     out.append((f, cur, stripped[:_NICK_MAX]))
             continue
+        # `--tier-only`: the tier retirement is one job and the name-slot rebuild is
+        # another, older one. They share this sweep but not a reason to run, and on
+        # prod the rebuild branch is another 373 fans — 373 live OF writes nobody
+        # asked for. Keeping them separately runnable is what makes either safe to
+        # fire; drop the rebuild candidates here rather than after the push.
+        if tier_only:
+            continue
         new = _repair(f, cur)
         if new and new != cur:
             out.append((f, cur, new))
@@ -166,9 +174,11 @@ async def main() -> int:
     ap.add_argument("--apply", action="store_true", help="actually push to OF")
     ap.add_argument("--account", help="limit to one account id")
     ap.add_argument("--limit", type=int, default=0, help="cap the number pushed")
+    ap.add_argument("--tier-only", action="store_true",
+                    help="ONLY strip retired spend tiers; skip the name-slot rebuild")
     args = ap.parse_args()
 
-    todo = await _candidates(args.account)
+    todo = await _candidates(args.account, tier_only=args.tier_only)
     if args.limit:
         todo = todo[:args.limit]
 
