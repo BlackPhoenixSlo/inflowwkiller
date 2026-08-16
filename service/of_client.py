@@ -1203,6 +1203,23 @@ class OFClient:
                 log_of.exception("co-performer tag resolution failed — sending as-is")
         if explicit or extra:
             body["userTags"] = explicit + extra
+            # `userTags` is NOT what tags a 1:1 chat send. OF web never sends
+            # that field — it appears in zero captured chunks — and its composer
+            # marshals the same ids into the RELEASE-FORM arrays instead:
+            #   {rfTag: picks(type=="user"), rfGuest: …, rfPartner: …}
+            # which is exactly the `partnerSource: "tag"` shape that comes back
+            # on a message's `releaseForms`. Proven live 2026-08-16: two chat
+            # sends carrying `userTags` (one an operator pick, one the auto
+            # co-tag) both returned 200 and both stored `releaseForms: []`,
+            # while `/messages/queue` sends the same day landed their tags. The
+            # ids were valid — both are on the account's tagged-friend list.
+            #
+            # Keyed off the body's own shape rather than a parameter: the chat
+            # send is the only body here that declares `rfTag`, so this reaches
+            # it and cannot touch /messages/queue, /posts or /stories. `userTags`
+            # stays because the queue path demonstrably reads it.
+            if "rfTag" in body:
+                body["rfTag"] = explicit + extra
         return bool(extra)
 
     def _post_dropping_auto_cotag(self, path: str, body: dict, auto_added: bool):
@@ -1234,8 +1251,13 @@ class OFClient:
                 media_cotag.forget_tag_id(getattr(self, "account_id", ""))
             except Exception:
                 log_of.exception("could not invalidate the rejected co-tag id")
-            return self.post_json(
-                path, json_body={k: v for k, v in body.items() if k != "userTags"})
+            # Strip BOTH fields the tag rides in. `rfTag` is emptied rather than
+            # dropped — the rf* arrays are part of the body shape OF requires,
+            # and omitting them is what used to 400 creator-to-creator sends.
+            retry = {k: v for k, v in body.items() if k != "userTags"}
+            if "rfTag" in retry:
+                retry["rfTag"] = []
+            return self.post_json(path, json_body=retry)
 
     # ── Messages: write ─────────────────────────────────────────
 

@@ -807,6 +807,25 @@ function Bubble({
             </span>
           )}
           {msg.media?.length ? <MediaStrip msg={msg} locked={locked} accountId={accountId} fanId={fanId} isOutgoing={isOutgoing || isOptimisticOutgoing} eagerMediaIds={eagerMediaIds} /> : null}
+          {/* Who OF has on record as tagged in this send. Rendered from
+           *  `releaseForms` — what OF STORED — and never from what we asked
+           *  for, because those two disagreed silently for as long as the chat
+           *  body shipped its ids in `userTags`. An operator who tags someone
+           *  needs to see the tag land, not see their own click echoed back. */}
+          {msg.releaseForms?.length ? (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {msg.releaseForms.map((rf) => (
+                <span
+                  key={rf.id}
+                  className="inline-flex items-center gap-0.5 text-[10px] leading-tight px-1.5 py-0.5 rounded-full bg-black/15"
+                  title={`Tagged on OnlyFans — ${rf.name || rf.id} (release form)`}
+                >
+                  <span aria-hidden>🏷</span>
+                  {rf.name || `#${rf.id}`}
+                </span>
+              ))}
+            </div>
+          ) : null}
           {/* What the AI sees in what HE sent. Incoming only — an outbound bubble
            *  is our own send, and a locked PPV has nothing to read. Giphy dms carry
            *  NO media (just a giphyId), and they're exactly what the free title

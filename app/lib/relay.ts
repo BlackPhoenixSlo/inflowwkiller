@@ -421,6 +421,17 @@ export interface OFUserMini {
   isRestricted?: boolean;
 }
 
+/** One co-performer named on a message, as OF stores it. `partnerSource: "tag"`
+ *  is the entry a creator tag produces — the wire field that creates it is
+ *  `rfTag` (release-form tag), not `userTags`. */
+export interface MessageReleaseForm {
+  id: number;
+  name?: string;
+  /** "user" for a creator tag; OF also has "guest" / "link" / "document". */
+  type?: string;
+  partnerSource?: string;
+}
+
 export interface OFMessage {
   id: number | string;       // negative for optimistic
   text: string;
@@ -473,6 +484,13 @@ export interface OFMessage {
    *  set, the message body is a GIF, not vault media. The renderer fetches
    *  the GIF via `https://media.giphy.com/media/<id>/giphy.gif`. */
   giphyId?: string;
+  /** The co-performers named on this send — OF's release-form record, and the
+   *  ONLY place a landed tag shows up. A send whose tag OF ignored comes back
+   *  with this empty, which is the difference between "we tagged them" and "we
+   *  thought we did": until 2026-08-17 the chat body shipped its ids in
+   *  `userTags`, which OF drops on that endpoint, and nothing rendered this
+   *  field, so both halves of the failure were invisible. */
+  releaseForms?: MessageReleaseForm[];
   // Optimistic fields
   _pending?: boolean;
   _failed?: boolean;
