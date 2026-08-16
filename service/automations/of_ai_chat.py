@@ -1463,13 +1463,15 @@ async def _send_gather_close(client, cfg: dict, account_id: str, fan_id: int,
     if not folder:
         return False
     try:
-        from . import pack_sender, tip_reward
+        # `pack_farewell` plans it (its own product), `pack_sender` ships it
+        # (the wire every lane shares).
+        from . import pack_farewell, pack_sender, tip_reward
         pool = await asyncio.to_thread(tip_reward.folder_media_pool, client, folder)
         if pool is None:
             log.info("gather-close folder not found account=%s name=%r",
                      account_id, folder)
             return False
-        d, refused = await pack_sender.plan_farewell_delivery(
+        d, refused = await pack_farewell.plan_farewell_delivery(
             account_id, fan_id, pool,
             price_cents=int(cfg.get("gather_close_price_cents") or 1000),
             count=int(cfg.get("gather_close_count") or 3),

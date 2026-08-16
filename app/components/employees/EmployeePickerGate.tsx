@@ -18,55 +18,41 @@
  *
  * Server-renders nothing (the entire flow needs localStorage + the
  * roster fetch), so we render a quiet placeholder during hydration.
+ *
+ * The roster comes from EmployeeContext and its status from useRoster() —
+ * the same cache entry the context reads, so the grid below renders the
+ * exact array `pick()` draws from. Rendering off a query of its own while
+ * the context held an effect-synced copy is what made a first click throw
+ * "employee N not in roster".
  */
 
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
+import { useRoster } from "@/hooks/useRoster";
 import { relay, RelayError, type Employee } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
-interface EmployeesResponse { employees: Employee[]; }
+/** The picker's view of the roster: humans who can be at the keyboard.
+ *  Chatter-mirror rows (auto-created per chatter login) would impersonate
+ *  that chatter for the session, and disabled rows can't be picked at all.
+ *  The grid and the keyboard shortcut MUST agree on this — hence one fn. */
+function pickable(roster: Employee[]): Employee[] {
+  return roster.filter((e) => e.is_active && !e.chatter_id);
+}
 
 export default function EmployeePickerGate({ children }: { children: React.ReactNode }) {
-  const { current, roster, setRoster, pick, hydrated, pickedId } = useEmployee();
+  const { current, roster, pick, hydrated, pickedId } = useEmployee();
   const { user } = useUser();
   const { chatter } = useChatter();
   const qc = useQueryClient();
+  const { query, pending: rosterPending } = useRoster();
 
-  // Fetch the roster. Refetched on window-focus is off globally; we
-  // explicitly invalidate after create/disable mutations below.
-  const query = useQuery<EmployeesResponse>({
-    queryKey: ["employees", "all"],
-    queryFn: () => relay.get<EmployeesResponse>("/admin/employees?include_disabled=true"),
-    // Chatter-principal mode (chatter && !user) short-circuits below without
-    // ever needing the roster, and chatters are 403'd from /admin/employees —
-    // so skip the fetch entirely unless a User is signed in.
-    enabled: !!user,
-    // The picker is the very first thing rendered; we want a fast spinner,
-    // not a 5-min stale guarantee. Override the global default here.
-    staleTime: 0,
-    retry: (failureCount, err) => {
-      if (failureCount >= 2) return false;
-      const status = err instanceof RelayError ? err.status : 0;
-      return status === 0 || status >= 500;
-    },
-    retryDelay: (attempt) => Math.min(800 * 2 ** attempt, 3000),
-  });
-
-  // Sync the fetched roster into context so other components (top-bar
-  // chip, settings page) can read it without re-fetching.
-  useEffect(() => {
-    if (query.data?.employees) setRoster(query.data.employees);
-  }, [query.data, setRoster]);
-
-  // Keyboard shortcut: 1-9 picks the Nth active employee. Off by default
-  // while a form is focused so it doesn't fire mid-typing. Chatter-mirror
-  // rows are hidden from the picker (see EmployeeList) so the shortcut
-  // list must match the visible grid — filter the same way here.
+  // Keyboard shortcut: 1-9 picks the Nth pickable employee. Off by default
+  // while a form is focused so it doesn't fire mid-typing.
   useEffect(() => {
     if (current) return;
     const handler = (e: KeyboardEvent) => {
@@ -75,8 +61,8 @@ export default function EmployeePickerGate({ children }: { children: React.React
       if (tag === "input" || tag === "textarea") return;
       const n = parseInt(e.key, 10);
       if (Number.isNaN(n) || n < 1 || n > 9) return;
-      const pickable = roster.filter((r) => r.is_active && !r.chatter_id);
-      if (n <= pickable.length) pick(pickable[n - 1].id);
+      const list = pickable(roster);
+      if (n <= list.length) pick(list[n - 1]);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -106,7 +92,7 @@ export default function EmployeePickerGate({ children }: { children: React.React
   if (current) return <>{children}</>;
 
   // Persisted pick exists but `current` isn't resolved yet — wait
-  // quietly only while the roster query is actually in flight, so the
+  // quietly only while the roster is actually still on its way, so the
   // gate doesn't render the picker UI for one frame on every popout
   // open (visible as a "pick creator" flash before the chat appears).
   //
@@ -116,7 +102,7 @@ export default function EmployeePickerGate({ children }: { children: React.React
   // if the roster has rows but pickedId isn't among them (deleted /
   // disabled employee), `current` stays null and we fall through so
   // the user can re-pick.
-  if (pickedId !== null && !current && query.isLoading) {
+  if (pickedId !== null && !current && rosterPending) {
     return <div className="min-h-dvh flex items-center justify-center text-fg-dim">…</div>;
   }
 
@@ -129,7 +115,7 @@ export default function EmployeePickerGate({ children }: { children: React.React
           an honest history. No password — pick again from the top bar to switch.
         </p>
 
-        {query.isLoading && (
+        {rosterPending && (
           <div className="text-fg-dim text-sm py-8 text-center">Loading roster…</div>
         )}
         {query.error && (
@@ -141,7 +127,7 @@ export default function EmployeePickerGate({ children }: { children: React.React
         )}
 
         {query.data && (
-          <EmployeeList employees={query.data.employees} onPick={pick} onCreated={() => qc.invalidateQueries({ queryKey: ["employees"] })} />
+          <EmployeeList employees={roster} onPick={pick} onCreated={() => qc.invalidateQueries({ queryKey: ["employees"] })} />
         )}
       </div>
     </div>
@@ -215,15 +201,12 @@ function EmployeeList({
   onCreated,
 }: {
   employees: Employee[];
-  onPick: (id: number) => void;
+  onPick: (employee: Employee) => void;
   onCreated: () => void;
 }) {
-  // Drop chatter-mirror Employee rows (auto-created per linked chatter
-  // login). The owner picker is "which of my team is at the keyboard";
-  // picking a chatter mirror would impersonate that chatter for the
-  // rest of the session. Mirrors stay in roster context so other flows
-  // (orphan-tip assignment, audit, stats) can still reference them.
-  const active = employees.filter((e) => e.is_active && !e.chatter_id);
+  // Mirrors and disabled rows stay in roster context so other flows
+  // (orphan-tip assignment, audit, stats) can still resolve their names.
+  const active = pickable(employees);
 
   if (active.length === 0) {
     return <CreateFirstEmployee onCreated={onCreated} />;
@@ -236,7 +219,7 @@ function EmployeeList({
           <button
             key={e.id}
             type="button"
-            onClick={() => onPick(e.id)}
+            onClick={() => onPick(e)}
             className={cn(
               "group flex items-center gap-3 px-4 py-3 min-h-12 md:min-h-0 rounded-xl",
               "bg-bg-elev-1 hover:bg-bg-elev-2 border border-border hover:border-border-light",

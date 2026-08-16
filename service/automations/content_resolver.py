@@ -80,7 +80,9 @@ from .content_contract import (  # noqa: F401
     NO_SOLO_MEDIA, UNSUPPORTED_SUBJECT, VERIFY_REJECTED, Contract, Resolution,
     _empty, _STOPWORDS,
 )
-from .content_prompts import _match, _nearest, _verify, read_contract  # noqa: F401
+from .content_prompts import (  # noqa: F401
+    _action_phrase, _match, _nearest, _verify, read_contract,
+)
 
 log = logging.getLogger("of-relay.automation.content_resolver")
 
@@ -377,6 +379,58 @@ async def last_resort(account_id: str, fan_id: int, *, seen: set[int],
         log.warning("last_resort failed account=%s fan=%s", account_id, fan_id,
                     exc_info=True)
         return []
+
+
+async def _descriptions(account_id: str, media_ids: list[int]) -> list[tuple[int, str]]:
+    """Describe text for the ids ACTUALLY BEING SENT, in send order.
+
+    A video's own `video_description` wins over the still `description` — it is
+    the field that carries the ACT ("she is then seen … while he …") where the
+    photo field carries a pose, and a substitute caption is bought on the act.
+    """
+    if not media_ids:
+        return []
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.description,
+                   VaultItem.video_description).where(
+                VaultItem.account_id == str(account_id),
+                VaultItem.removed_at.is_(None),
+                VaultItem.media_id.in_([int(m) for m in media_ids]))
+        )).all()
+    by_id: dict[int, str] = {}
+    for mid, desc, vdesc in rows:
+        blob = " ".join(str(vdesc or desc or "").split())[:_DESC_LEN]
+        if blob:
+            by_id[int(mid)] = blob
+    return [(int(m), by_id[int(m)]) for m in media_ids if int(m) in by_id]
+
+
+async def action_phrase(account_id: str, fan_id: int,
+                        media_ids: list[int]) -> str:
+    """"me riding him on the couch" — the half of a substitute caption that SELLS.
+
+    Operator ruling 2026-08-16. The hedge ("not exactly joi but 🙈") is honest and
+    on its own it is a refusal he has been asked to pay for; this is what he IS
+    getting, named from the vault's own describe pass rather than from his ask.
+
+    NEVER RAISES and never blocks the send. Every failure — no described rows, a
+    capped model, a malformed reply — returns "" and `substitute_clause` falls
+    back to the wording that shipped before this existed. The one thing this must
+    not do is turn a lane whose whole purpose is "an ask never ends in silence"
+    into a new way to end in silence.
+    """
+    try:
+        described = await _descriptions(str(account_id), list(media_ids or []))
+        if not described:
+            return ""
+        model = await resolve_model(str(account_id), "content_resolver")
+        return await _action_phrase(str(account_id), int(fan_id),
+                                    described, model)
+    except Exception:  # noqa: BLE001
+        log.warning("action_phrase failed account=%s fan=%s", account_id, fan_id,
+                    exc_info=True)
+        return ""
 
 
 async def kind_of(account_id: str, media_ids: list[int]) -> dict[int, str]:

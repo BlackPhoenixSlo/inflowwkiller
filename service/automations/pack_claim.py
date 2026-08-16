@@ -141,7 +141,36 @@ def render_clause(category: str, rung: str, kinds: list[str]) -> Claim:
     return Claim(f"{n} {noun}", n)
 
 
-def ask_clause(kinds: list[str], subject: str | None) -> Claim:
+def _his_noun(subject: str | None) -> str:
+    """His word for what he asked for, or "" when he named only the format.
+
+    "3 vids of videos" — his subject IS the media word. Live dry-run against a
+    fan whose whole ask is the format ("do you have vids for purchase").
+    Naming it twice reads as broken, and the count already says it.
+    """
+    noun = " ".join(str(subject or "").split())[:40]
+    return "" if noun.lower().strip() in _MEDIA_NOUNS else noun
+
+
+def needs_action(subject: str | None, substitute: bool) -> bool:
+    """Does this caption need the describe-derived "what she is doing in it"?
+
+    The rule lives HERE because it is a fact about the words, not about the
+    planner: a caption needs the phrase exactly when it would otherwise say
+    nothing about the media.
+
+      • a SUBSTITUTE always needs it — its whole subject clause is a hedge;
+      • a FIT needs it only when his ask named no noun. "7 pics of ass" already
+        says what it is, and paying a model to re-say it is how a caption that
+        has shipped for weeks starts drifting.
+
+    🚨 It gates an LLM CALL, so a False here is money as well as words.
+    """
+    return bool(substitute or not _his_noun(subject))
+
+
+def ask_clause(kinds: list[str], subject: str | None,
+               action: str = "") -> Claim:
     """The VAULT-WIDE claim: a count, the media word, and his own noun.
 
     It has to name the MEDIA. "6 booty" is not English and, worse, is not a
@@ -150,45 +179,87 @@ def ask_clause(kinds: list[str], subject: str | None) -> Claim:
     whether to unlock.
 
     No subject is a legitimate answer here ("show me" names nothing), and the
-    clause simply drops the noun rather than inventing one.
+    clause used to simply drop the noun — which is how a $87 send went out
+    captioned "3 vids" and nothing else (Lucas1, 2026-08-16; he bought it
+    anyway). Operator ruling that day: when his ask named nothing, SAY WHAT IS
+    IN IT, shortly. `action` is that phrase, from the vault's own describe pass
+    via `content_resolver.action_phrase`, and it is used ONLY in the no-noun
+    case — a caption that already names his subject is left byte-identical.
     """
     body, n = _media_phrase(kinds)
-    noun = " ".join(str(subject or "").split())[:40]
-    # "3 vids of videos" — his subject IS the media word. Live dry-run against a
-    # fan whose whole ask is the format ("do you have vids for purchase").
-    # Naming it twice reads as broken, and the count already says it.
-    if noun.lower().strip() in _MEDIA_NOUNS:
-        noun = ""
-    return Claim(f"{body} of {noun}" if noun else body, n)
+    noun = _his_noun(subject)
+    if noun:
+        return Claim(f"{body} of {noun}", n)
+    act = clean_action(action)
+    return Claim(f"{body}, {act}" if act else body, n)
 
 
 # The lead of a SUBSTITUTE claim, and the thing `audit_ask` checks survived to
-# the wire. It is a FRAME, not an apology: operator ruling 2026-08-13, "say I
-# think you will enjoy this, my quirky version of joi". Sold as a shortfall
-# ("i dont have that") a substitute invites him to decline; sold as HER take on
-# it, the same media is a thing only she has.
-_SUBSTITUTE_LEAD = "i think ur gonna enjoy this"
+# the wire.
+#
+# It hedges and it does NOT apologise — operator ruling 2026-08-16, "make a
+# girly wording, I'm not sure this is exactly it, here is the … , hope you will
+# enjoy — reduced by 70-90%". That is the 2026-08-13 frame ("my quirky version
+# of joi") moved one step toward honesty and three steps shorter: he is told up
+# front that this is not the thing, in her voice, in four words, and then he is
+# told what it IS. Sold as a flat shortfall ("i dont have that") a substitute
+# invites him to decline; sold as a hedge plus a real act, the miss is a tease.
+#
+# 🚨 The EMOJI IS NOT PART OF THE CHECKED PREFIX. `is_substitute_claim` matches
+# `_SUBSTITUTE_LEAD` alone, so any path that strips emoji from an outgoing body
+# cannot make the audit refuse a caption that framed itself correctly.
+_SUBSTITUTE_LEAD = "not exactly"
+_SUBSTITUTE_EMOJI = "🙈"
+
+# The action phrase is written by a model and lands in the contract, so it is
+# bounded like one. `_VOICE_BAN` is reused deliberately: a phrase carrying a
+# digit, a price or a media word would state a second claim under the one the
+# audit checks, which is the exact failure `compose_caption` already refuses a
+# voice line for.
+_ACTION_MAX_CHARS = 48
 
 
-def substitute_clause(kinds: list[str], subject: str | None) -> Claim:
+def clean_action(text: str | None) -> str:
+    """A model's "what she is doing in it" phrase, made safe for the contract.
+
+    Returns "" for anything it cannot vouch for — an empty action is a caption
+    that reads exactly as it did before this existed, which is why every check
+    here drops the phrase rather than repairing it. A repaired phrase is still a
+    phrase nobody wrote.
+    """
+    line = " ".join(str(text or "").split()).strip().strip('"').strip()
+    line = line.rstrip(".!").strip().lower()
+    if not line or _VOICE_BAN.search(line):
+        return ""
+    if len(line) > _ACTION_MAX_CHARS:
+        line = line[:_ACTION_MAX_CHARS].rsplit(" ", 1)[0].strip()
+    return line if len(line) >= 3 else ""
+
+
+def substitute_clause(kinds: list[str], subject: str | None,
+                      action: str = "") -> Claim:
     """The claim for media that is NOT what he asked for.
 
     🚨 The one clause that must never promise its subject. `ask_clause` renders
     "4 vids of joi", and `audit_ask` checks count, liveness and company — never
     whether the media matches the noun. So routing substitutes through the
     normal builder ships a lie that passes every existing gate, which is worse
-    than the silence it replaces. The difference is whose thing it is: "my own
-    version of joi" is a frame, "4 vids of joi" is a promise.
+    than the silence it replaces. The difference is which side of "but" his noun
+    falls on: "not exactly joi but …" is a hedge, "4 vids of joi" is a promise.
+
+    `action` is what she is DOING in the media he is about to receive, derived
+    from the vault's own descriptions (`content_resolver.action_phrase`) and
+    sanitised by `clean_action`. It is the "but I have THIS" half — without it a
+    substitute names only what it ISN'T, which is a refusal wearing a price. It
+    is optional on purpose: a capped or erroring model must degrade to the old
+    caption, never to silence.
 
     Same `_media_phrase` as every other clause, so a mixed send says "3 pics +
     1 vid" and the count the audit checks is the count he receives.
     """
     body, n = _media_phrase(kinds)
-    noun = " ".join(str(subject or "").split())[:40]
-    if noun.lower().strip() in _MEDIA_NOUNS:
-        noun = ""
-    frame = f"my own version of {noun}" if noun else "my own take on it"
-    return Claim(f"{_SUBSTITUTE_LEAD}, {frame} — {body}", n)
+    hedge = f"{_SUBSTITUTE_LEAD} {_his_noun(subject) or 'that'} but {_SUBSTITUTE_EMOJI}"
+    return Claim(f"{hedge} {clean_action(action) or 'my own take on it'} — {body}", n)
 
 
 def is_substitute_claim(text: str) -> bool:

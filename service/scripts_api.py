@@ -133,7 +133,7 @@ _INT_KNOBS = {
     "rhythm_stepout_break_msgs": (0, 20),
     # Gather-close PPV (of_ai_chat's parting set). Price is clamped to OF's wire
     # range at the send site too; these bounds keep the stored value sane. Count
-    # floors at 2 = pack_sender.FAREWELL_MIN_ITEMS — a stored 1 would be a knob
+    # floors at 2 = pack_farewell.FAREWELL_MIN_ITEMS — a stored 1 would be a knob
     # position the planner refuses forever (the 2026-07-31 value shape).
     "gather_close_price_cents": (300, 20_000),
     "gather_close_count": (2, 10),

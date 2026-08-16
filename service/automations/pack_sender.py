@@ -37,6 +37,9 @@ Split on 2026-08-11, when this file crossed 1,200 lines:
   * `pack_audit` — the rules that refuse a send whose media does not match its
     caption, plus the shelf read two of them are asked against. *Can it lie?*
     (2026-08-15, when the plan/deliver split pushed this file over 1,000 again.)
+  * `pack_farewell` — of_ai_chat's parting gather-close PPV: its own category,
+    catalog row, price rule and trigger. *A different product.* (2026-08-16.)
+    It imports the spine FROM here and nothing here imports it back.
 This module keeps the product row, the planning, and the wire — decide what to
 send (`plan_*`), then send it (`deliver`). Those halves are apart because the
 closer owes the fan his ANSWER before the priced box that answers it.
@@ -67,7 +70,7 @@ import vault_pack_picker
 from db.engine import get_session
 from db.models import CatalogItem, VaultItem, VaultSend
 
-from . import content_resolver, pack_pricing, upsell
+from . import content_resolver, pack_pricing
 # Re-exported on purpose: `audit_pack` / `audit_ask` / `mirror_warning` are part
 # of this module's surface (the operator UI and the pack tests reach them through
 # it), and the import line is where a reader learns the rules moved out.
@@ -75,8 +78,8 @@ from .pack_audit import (  # noqa: F401
     audit_ask, audit_pack, mirror_warning, shelf_media,
 )
 from .pack_claim import (
-    Claim, ask_clause, compose_caption, product_description, render_clause,
-    substitute_clause,
+    Claim, ask_clause, compose_caption, needs_action, product_description,
+    render_clause, substitute_clause,
 )
 from .pack_pricing import (
     MAX_ITEMS, MIN_ITEMS, RUNG_STICKER_CENTS, DEFAULT_STICKER_CENTS,
@@ -347,9 +350,8 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
     # Previews ride FREE inside the send and are never stamped owned, so they may
     # repeat across sends. `previews ⊆ media` is what the audit's rule 1 wants, so
     # they join the attached set while staying out of the paid count.
-    kinds = await content_resolver.kind_of(account_id, priced.media)
     claim = render_clause(category, rung,
-                          [kinds.get(m, "photo") for m in priced.media])
+                          await _kind_list(account_id, priced.media))
     warn = await mirror_warning(account_id)
     if warn:
         log.info("pack plan account=%s fan=%s: %s", account_id, fan_id, warn)
@@ -417,9 +419,14 @@ class _AskEnding:
     separate arguments is how `plan_ask` came to be a copy of `plan_pack` with
     ten of fourteen steps byte-identical; carrying them as one value is why
     there is now a single planner instead of two.
+
+    There is deliberately no "may describe the media" field: both clauses take
+    the phrase and `pack_claim.needs_action` decides from the SUBJECT whether
+    one is worth fetching, so a fourth flag here would have been `True` in both
+    endings — a constant wearing the costume of a choice.
     """
     min_items: int
-    clause: Callable[[list[str], str | None], Claim]
+    clause: Callable[[list[str], str | None, str], Claim]
     substitute: bool
 
 
@@ -429,6 +436,41 @@ class _AskEnding:
 # under a pack's floor is how this lane goes quiet again.
 _FITS = _AskEnding(MIN_ITEMS, ask_clause, False)
 _SUBSTITUTE = _AskEnding(1, substitute_clause, True)
+
+
+async def _kind_list(account_id: str, media: list[int]) -> list[str]:
+    """The kind of each attached item, in send order — "photo" when unknown.
+
+    Every claim builder is counted BY KIND ("1 pic + 1 vid + 1 voice note"), so
+    this pairing was written out at all three claim sites; a fourth would have
+    copied it again.
+    """
+    kinds = await content_resolver.kind_of(account_id, media)
+    return [kinds.get(m, "photo") for m in media]
+
+
+async def _ask_claim(account_id: str, fan_id: int, media: list[int], *,
+                     subject: str | None, substitute: bool,
+                     clause: Callable[[list[str], str | None, str], Claim]) -> Claim:
+    """The caption for a DECIDED slice — and the one place a model-written
+    phrase is allowed into one.
+
+    Both subject-free lanes render through here: the ask (either ending) and the
+    gather-close farewell. They had the same hole — `ask_clause` with nothing to
+    name ships a bare count, which is how an $87 send went out captioned "3
+    vids" — and a fix applied at one of them would have left the other as the
+    counter-example.
+
+    ⚠️ The phrase is read off the media being SENT, never the resolved pool: the
+    price decides how many of the ranked ids he actually gets, and describing a
+    clip that composition dropped is the same lie as an over-stated count, one
+    field across. `needs_action` is what keeps this from being an LLM call on
+    every priced send.
+    """
+    action = ""
+    if needs_action(subject, substitute):
+        action = await content_resolver.action_phrase(account_id, fan_id, media)
+    return clause(await _kind_list(account_id, media), subject, action)
 
 
 async def _plan_ask_from(account_id: str, fan_id: int,
@@ -452,9 +494,9 @@ async def _plan_ask_from(account_id: str, fan_id: int,
     if priced.refusal is not None:
         return priced.refusal
 
-    kinds = await content_resolver.kind_of(account_id, priced.media)
-    claim = ending.clause([kinds.get(m, "photo") for m in priced.media],
-                          contract.subject)
+    claim = await _ask_claim(account_id, fan_id, priced.media,
+                             subject=contract.subject,
+                             substitute=ending.substitute, clause=ending.clause)
     # ⚠️ No previews. `plan_pack` draws them from the `tease` rung, and a
     # vault-wide ask has no rung to draw from. Attaching an arbitrary vault item
     # as a free preview would give away payoff — audit rule 3, in spirit. The
@@ -799,107 +841,10 @@ async def plan_ask_delivery(account_id: str, fan_id: int,
 
 # ── The gather-close farewell ───────────────────────────────────────
 #
-# of_ai_chat's parting PPV: when the gather finishes with a fan (profile done,
-# or the runaway cutoff), the LAST message he gets is a few pictures, priced —
-# instead of the silence that used to end the lane. The media comes from ONE
-# operator-picked vault folder and the price is a fixed knob, not the ladder:
-# this fires exactly once per fan, at a moment he never asked for anything, so
-# a negotiated quote has nothing to negotiate against. The attribution bucket
-# answers "does the farewell sell" on its own row.
-
-FAREWELL_CATEGORY = "gather_close"
-
-# Below 2 pictures a fixed price buys "a lot of money for few items" — the
-# 2026-07-31 shape. The claim states the exact count either way; this floor is
-# about the value shape, not honesty. A configured count below it is clamped UP
-# (and the config validator holds the knob to ≥2), so the only TOO_THIN refusal
-# left is a genuinely thin POOL.
-FAREWELL_MIN_ITEMS = 2
-
-
-async def ensure_farewell_item(account_id: str) -> CatalogItem:
-    """ONE reusable `CatalogItem` for gather-close sends, per account.
-
-    Same reason as `ensure_ask_item`: `ContentOffer.item_id` is a non-nullable
-    FK, and one row per account keeps "did the farewell sell" answerable.
-    `enabled=False` so it never enters the ordinary manifest.
-    """
-    async with get_session() as s:
-        row = await _singleton_item(s, account_id, "rung:gather-close")
-        if row is None:
-            row = CatalogItem(
-                account_id=str(account_id), script_id=None, kind="image_set",
-                label="gather · parting set", enabled=False,
-                # COUNT-FREE, like every stored description in this module.
-                description_for_ai="a small set of her photos, sent as a "
-                                   "parting gift offer when the getting-to-know"
-                                   "-you chat wraps up",
-                price_cents=1000,
-                tags=json.dumps(["rung:gather-close"]))
-            s.add(row)
-            await s.flush()
-        return row
-
-
-async def plan_farewell_delivery(account_id: str, fan_id: int,
-                                 media_pool: list[int], *,
-                                 price_cents: int = 1000, count: int = 3,
-                                 cfg: dict | None = None
-                                 ) -> tuple[Delivery | None, dict]:
-    """Decide a gather-close send from an operator-picked folder's media.
-
-    `(delivery, refusal)` — exactly one is truthy, like `plan_pack_delivery`.
-
-    PHOTOS ONLY (the feature is "a few pictures"), solo-only, un-bought, tier
-    ranked — `_available`, the same house rules as every other source. The
-    price is the knob, clamped to OF's wire range; the claim is the subject-free
-    `ask_clause` ("3 pics"), so the caption's count is the attached count and
-    `audit_ask` holds it to that.
-
-    ⚠️ Deliberately NOT behind `pack_send_enabled` (`_guard`): that switch arms
-    the ASK lane. This lane's own switch is the folder — an operator who picked
-    one turned it on, and clearing it turns it off. The language guard still
-    applies: the clause is English (see PACK_LANGUAGES).
-    """
-    cfg = cfg or {}
-    empty = PackPlan(str(account_id), int(fan_id), FAREWELL_CATEGORY, "", None,
-                     [], [], 0, Claim("", 0))
-    # `_account_lang` is the key `ai_chatter._load_config` actually stamps on the
-    # blob ("language" is read for parity with `_guard`, which predates it).
-    lang = str(cfg.get("_account_lang") or cfg.get("language")
-               or "en").strip().lower()
-    if lang not in PACK_LANGUAGES:
-        return None, _refusal(replace(empty, refusal=REFUSE_LANGUAGE, detail=lang))
-    if not media_pool:
-        return None, _refusal(replace(empty, refusal=REFUSE_NO_SHELF))
-
-    bought = await _bought_media(account_id, fan_id)
-    avail = await _available(account_id, fan_id,
-                             [m for m in media_pool if m not in bought],
-                             company=False, media_kind="photo")
-    picked = avail[:max(FAREWELL_MIN_ITEMS, int(count or 0) or 3)]
-    if len(picked) < FAREWELL_MIN_ITEMS:
-        return None, _refusal(replace(empty, refusal=REFUSE_TOO_THIN,
-                                      detail=f"{len(picked)} un-bought photos"))
-
-    item = await ensure_farewell_item(account_id)
-    px = max(upsell.OF_PRICE_FLOOR_CENTS,
-             min(int(price_cents or 0) or 1000, upsell.OF_PRICE_MAX_CENTS))
-    kinds = await content_resolver.kind_of(account_id, picked)
-    claim = ask_clause([kinds.get(m, "photo") for m in picked], None)
-    bad = await audit_ask(account_id, picked, claim, False)
-    if bad:
-        log.warning("farewell audit REFUSED account=%s fan=%s: %s",
-                    account_id, fan_id, "; ".join(bad))
-        return None, _refusal(replace(empty, item_id=item.id, price_cents=px,
-                                      claim=claim, refusal=REFUSE_AUDIT,
-                                      detail="; ".join(bad)))
-    plan = PackPlan(str(account_id), int(fan_id), FAREWELL_CATEGORY, "",
-                    item.id, picked, [], px, claim)
-    return Delivery(
-        plan,
-        lambda: audit_ask(account_id, picked, claim, False),
-    ), {}
+# MOVED 2026-08-16 to `pack_farewell.py`: it is a whole product (its own
+# category, catalog row, price rule and trigger) and it shares only the spine
+# above. It imports FROM here; nothing here imports it back, and re-exporting
+# it for convenience would make the pair a cycle.
 
 
 async def plan_on_ask(account_id: str, fan_id: int, *,

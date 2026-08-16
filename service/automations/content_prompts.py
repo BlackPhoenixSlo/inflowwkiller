@@ -376,6 +376,47 @@ async def _nearest(account_id: str, fan_id: int, contract: Contract,
     )
     return _ids_from(res.parsed, pool, limit)
 
+async def _action_phrase(account_id: str, fan_id: int,
+                         described: list[tuple[int, str]], model: str) -> str:
+    """CALL 5 — what is she DOING in the media he is about to get, in her voice.
+
+    Only ever runs on the SUBSTITUTE path, where the caption has no honest noun
+    to name: "not exactly joi but 🙈 …" states what this is not, and without
+    this call the rest of the sentence is "my own take on it" — a refusal
+    wearing a price. Operator ruling 2026-08-16: the fan is told what he IS
+    getting, and the stored describe cannot be that sentence itself. It is
+    clinical, third-person and written for a matcher ("A woman in a pink bra is
+    lying on a couch with a man. Her hand is inserted into her vagina."), so it
+    is condensed here rather than truncated at the caption.
+
+    ⚠️ It is shown the descriptions of the media ACTUALLY BEING SENT, never the
+    pool — a phrase describing an item the composition dropped is the same lie
+    as a count that over-states, one field across.
+
+    Returns "" on anything unusable; `pack_claim.clean_action` is the second
+    gate and the caption degrades to its old wording rather than to silence.
+    """
+    system = (
+        "You write ONE short phrase for a creator's own paid message, in FIRST "
+        "PERSON, describing what she or he is doing in the media below. "
+        "Rules: at most 8 words, lowercase, no name, no number, no price, no "
+        "words like pic/photo/video/set, no emoji, no full stop. Start with "
+        '"me ". If the media show several things, describe the main one. '
+        'Reply as JSON: {"phrase": "me riding him on the couch"}.'
+    )
+    user = "MEDIA DESCRIPTIONS:\n" + "\n".join(text for _, text in described)
+    res = await llm_client.chat(
+        model=model,
+        messages=[{"role": "system", "content": system},
+                  {"role": "user", "content": user}],
+        purpose="content_resolver_action",
+        account_id=str(account_id), fan_id=int(fan_id),
+        response_format={"type": "json_object"}, temperature=0.4,
+    )
+    parsed = res.parsed if isinstance(res.parsed, dict) else {}
+    return str(parsed.get("phrase") or "")
+
+
 async def _verify(account_id: str, fan_id: int, contract: Contract,
                   picks: list[tuple[int, str]], model: str) -> list[int]:
     """CALL 3 — the gate. Keep only what PROVABLY satisfies the contract.
