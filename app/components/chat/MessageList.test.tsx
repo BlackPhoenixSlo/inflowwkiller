@@ -12,7 +12,7 @@
  *     ChatSurface hydrates it from the `of-owner:<acct>` localStorage cache).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, fireEvent } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test-utils";
 import { MessageList } from "@/components/chat/MessageList";
@@ -260,7 +260,7 @@ describe("MessageList refused-attachment marking", () => {
   };
 
   const marks = (c: HTMLElement) =>
-    c.querySelectorAll("div[title^='OF refused this attachment']");
+    c.querySelectorAll("div[title^='This attachment was refused']");
 
   it("counts the refused attachments beside the tiles", () => {
     const { container } = renderWithProviders(
@@ -311,6 +311,101 @@ describe("MessageList refused-attachment marking", () => {
     expect(container.textContent).not.toContain("remove");
     // OF's own sentence still reaches the operator.
     expect(container.textContent).toContain("Something wrong with attached media");
+  });
+
+  it("marks a hidden refusal that arrives AFTER the bubble mounted", () => {
+    // THE LIVE ORDERING, which every other fixture here skips. `sendNow` calls
+    // appendLocal synchronously, so MediaStrip mounts on the PENDING bubble
+    // with no `_failedMediaIds`; `failLocal` then patches the same row in place
+    // — same id, same React key, same instance. A force-open read once at mount
+    // is therefore always read too early, and the feature silently does nothing
+    // on the only path that produces a refusal.
+    const pending = failedSend(4, [], { _failed: false, _pending: true, _failedReason: undefined });
+    const { container, rerender } = renderWithProviders(
+      <MessageList {...baseProps} messages={[pending]} ownerUserId={555} />,
+    );
+    expect(marks(container).length).toBe(0);
+    expect(container.textContent).toContain("+1");
+
+    rerender(
+      <MessageList {...baseProps} messages={[failedSend(4, [3])]} ownerUserId={555} />,
+    );
+    expect(marks(container).length).toBe(1);
+    expect(container.textContent).toContain("remove 1 of 4");
+    expect(container.textContent).not.toContain("+1");
+  });
+
+  it("collapses again once a retry clears the failure", () => {
+    // The other direction: derived-once state would leave the row pinned open
+    // with the marks gone after `retry()` re-appends under the same tempId.
+    const { container, rerender } = renderWithProviders(
+      <MessageList {...baseProps} messages={[failedSend(4, [3])]} ownerUserId={555} />,
+    );
+    expect(marks(container).length).toBe(1);
+
+    const retried = failedSend(4, [], { _failed: false, _pending: true, _failedReason: undefined });
+    rerender(<MessageList {...baseProps} messages={[retried]} ownerUserId={555} />);
+    expect(marks(container).length).toBe(0);
+    expect(container.textContent).toContain("+1");
+  });
+
+  it("a collapse taken BEFORE the failure cannot hide the mark", () => {
+    // The operator peeks at a big bundle and collapses it again while the POST
+    // is still in flight, then the failure lands. A stored click that outranked
+    // the refusal made this render zero marks under "remove 1 of 6" — the third
+    // variant of the same defect, re-entered through the operator's own hand.
+    const pending = failedSend(6, [], { _failed: false, _pending: true, _failedReason: undefined });
+    const { container, rerender } = renderWithProviders(
+      <MessageList {...baseProps} messages={[pending]} ownerUserId={555} />,
+    );
+    fireEvent.click(container.querySelector("button")!);            // "+3"
+    const less = [...container.querySelectorAll("button")]
+      .find((b) => b.textContent?.includes("show less"));
+    if (less) fireEvent.click(less);
+
+    rerender(
+      <MessageList {...baseProps} messages={[failedSend(6, [5])]} ownerUserId={555} />,
+    );
+    expect(marks(container).length).toBe(1);
+    expect(container.textContent).toContain("remove 1 of 6");
+    expect(container.textContent).not.toContain("+3");
+  });
+
+  it("keeps a refused tile in the COLLAPSED set, and still collapses", () => {
+    // The guarantee that replaced three attempts at a force-open flag: the
+    // marked tile is in view because the collapsed slice includes it by
+    // membership, not because a boolean forced the row open. So the row still
+    // behaves like any other — "+N", "show less" — and no click can hide the mark.
+    const { container } = renderWithProviders(
+      <MessageList {...baseProps} messages={[failedSend(6, [5])]} ownerUserId={555} />,
+    );
+    // 3 by position + the refused one pulled forward, 2 still behind the pill.
+    expect(marks(container).length).toBe(1);
+    expect(container.textContent).toContain("+2");
+
+    const pill = [...container.querySelectorAll("button")]
+      .find((b) => b.textContent?.trim() === "+2")!;
+    fireEvent.click(pill);
+    expect(container.textContent).not.toContain("+2");
+    const less = [...container.querySelectorAll("button")]
+      .find((b) => b.textContent?.includes("show less"))!;
+    expect(less).toBeTruthy();
+
+    fireEvent.click(less);
+    // Collapsed again — and the mark survived the round trip.
+    expect(container.textContent).toContain("+2");
+    expect(marks(container).length).toBe(1);
+  });
+
+  it("collapses a huge bundle even when its last item is the refused one", () => {
+    // The case the 3-tile cap exists for. A force-open rendered all 40 with no
+    // control at all, on a bubble that cannot be retried away or dismissed.
+    const { container } = renderWithProviders(
+      <MessageList {...baseProps} messages={[failedSend(40, [39])]} ownerUserId={555} />,
+    );
+    expect(marks(container).length).toBe(1);
+    expect(container.textContent).toContain("+36");
+    expect(container.querySelectorAll("a[href]").length).toBe(4);
   });
 
   it("says nothing extra when the failure is not about media", () => {

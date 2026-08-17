@@ -43,7 +43,10 @@
 export interface SendFailure {
   /** OF's sentence, or the relay's own pre-flight refusal. */
   reason?: string;
-  /** Vault ids OF named in `payload.removeFromInputMediaIds`. */
+  /** The attachments the refusal named — OF's
+   *  `error.payload.removeFromInputMediaIds`, or our own re-sale block's
+   *  `detail.owned_media`. Both are vault ids out of the bundle we just sent,
+   *  so the bubble marks them the same way and does not care which said no. */
   refusedMediaIds?: number[];
 }
 
@@ -52,18 +55,28 @@ export interface SendFailure {
  *  Takes `unknown` because it is fed a RelayError's `body`, which is whatever
  *  the relay answered with; every step is guarded rather than typed. Two
  *  shapes reach here:
- *    • the relay's OWN pre-flight refusal (409 already-owned) — `detail.message`,
- *      no OF round-trip happened and so no ids;
+ *    • the relay's OWN pre-flight refusal (409 already-owned) — `detail.message`
+ *      plus `detail.owned_media`, the ids that block is ABOUT (no OF round-trip
+ *      happened, but the ids are ours and every bit as markable);
  *    • OF's rejection, re-wrapped by `_proxy` as `detail.upstream_body`.
  *  `_proxy` truncates that string at 2000 chars, so a pathologically long OF
  *  error parses to nothing — the operator still gets `HTTP 400` from the
  *  caller's fallback, just no tile markers. */
 export function parseSendFailure(body: unknown): SendFailure {
-  const detail = (body as { detail?: { message?: unknown; upstream_body?: unknown } })?.detail;
+  const detail = (body as {
+    detail?: { message?: unknown; owned_media?: unknown; upstream_body?: unknown };
+  })?.detail;
   // Prefer the relay's own words verbatim; without them the operator sees only
-  // "HTTP 409" for a block we chose to apply ourselves.
+  // "HTTP 409" for a block we chose to apply ourselves. It carries ids too:
+  // `owned_media` (server.py's re-sale block, scoped to the reason by
+  // ownership.py) is drawn from the very `media_files` we just sent, so the
+  // bubble can mark them exactly as it marks OF's. Returning only the sentence
+  // here reproduced the defect this module exists to fix — an authoritative
+  // count over a row with nothing marked — on our own server's refusal.
   const own = detail?.message;
-  if (typeof own === "string" && own) return { reason: own };
+  if (typeof own === "string" && own) {
+    return { reason: own, refusedMediaIds: numericIds(detail?.owned_media) };
+  }
 
   const raw = detail?.upstream_body;
   if (typeof raw !== "string") return {};
@@ -76,12 +89,18 @@ export function parseSendFailure(body: unknown): SendFailure {
   const error = (parsed as {
     error?: { message?: unknown; payload?: { removeFromInputMediaIds?: unknown } };
   })?.error;
-  const ids = error?.payload?.removeFromInputMediaIds;
   return {
     reason: typeof error?.message === "string" ? error.message : undefined,
-    refusedMediaIds: Array.isArray(ids)
-      ? ids.map(Number).filter((n) => Number.isFinite(n) && n > 0)
-      : undefined,
+    refusedMediaIds: numericIds(error?.payload?.removeFromInputMediaIds),
   };
+}
+
+/** Vault ids out of an untrusted array — two refusals name them, in different
+ *  fields, and neither can be trusted to hold clean ints. `undefined` rather
+ *  than `[]` when there is nothing, so the bubble tests presence not length. */
+function numericIds(raw: unknown): number[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const ids = raw.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+  return ids.length ? ids : undefined;
 }
 

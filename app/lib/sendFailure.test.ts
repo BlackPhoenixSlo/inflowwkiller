@@ -52,11 +52,30 @@ describe("parseSendFailure", () => {
     });
   });
 
-  it("prefers the relay's OWN refusal, which never reached OF", () => {
-    // The re-sale block answers 409 { detail: { error, message } } — no OF
-    // round-trip happened, so there is nothing to mark on the bubble.
+  it("prefers the relay's OWN refusal — and marks the ids IT names", () => {
+    // The re-sale block (server.py) answers 409 with the real shape below:
+    // a reason, a sentence, and `owned_media` — the ids that verdict is about,
+    // taken from the media_files we just sent. No OF round-trip happened, but
+    // those ids are ours and every bit as markable, so the bubble rings them
+    // exactly as it rings OF's.
+    const resale = {
+      detail: {
+        error: "owned_photos",
+        message: "3 of 4 photos here are ones this fan already paid for. "
+          + "A priced set needs at least 2 he has not seen.",
+        owned_media: [MEDIA_ID, 3992451982, MEDIA_ID],
+      },
+    };
+    expect(parseSendFailure(resale)).toEqual({
+      reason: resale.detail.message,
+      refusedMediaIds: [MEDIA_ID, 3992451982, MEDIA_ID],
+    });
+  });
+
+  it("still answers with just the sentence when our block names no ids", () => {
     expect(parseSendFailure({ detail: { message: "already owned" } })).toEqual({
       reason: "already owned",
+      refusedMediaIds: undefined,
     });
   });
 

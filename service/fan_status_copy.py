@@ -220,7 +220,7 @@ def daily_quota_badge(q: Any, *, enforced: bool, cad: dict[str, Any] | None = No
     return Badge("paused", label,
                  f"{opened} The thread stays quiet for {wait} counted from the "
                  f"ACCOUNT'S OWN last reply — a manual message or a mass send does not "
-                 f"move it — then she talks to him again."
+                 f"move it — then the thread opens again."
                  f"{_quiet_steps_sentence(ladder, rung, wait)} This slows the thread "
                  f"down, it never stops it. A purchase or a content ask resumes it "
                  f"immediately.",

@@ -91,6 +91,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             previews=previews,
             tagged_users=tagged_users,
             giphy_id=giphy_id,
+            # The flag keys on who COMPOSED, not who fired. A `manual` stamp is
+            # the chat composer's ≤15-min deferral — the same human at the same
+            # tag picker as the immediate send (server.py of_send_message) and
+            # the >15-min OF-queue send, both of which pass False. Leaving the
+            # default True here made those three disagree the moment the co-tag
+            # started landing (`rfTag`): the deferred one named a co-performer
+            # the operator never picked, while the other two did not. Derived
+            # rather than hardcoded so a job enqueued WITHOUT that stamp — an
+            # automation, via automation_rules_api — still gets the auto tag.
+            auto_tag=(purpose != "manual"),
         ),
         send_purpose=purpose,
     )
