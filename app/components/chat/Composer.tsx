@@ -752,7 +752,6 @@ export function Composer({
           </div>
         )}
 
-
         {gifPickerOpen && (
           <GifPickerStrip
             accountId={accountId}

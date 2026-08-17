@@ -183,8 +183,8 @@ function dailyChip(d: NonNullable<AiStatus["cadence"]["daily"]>): Chip | null {
     text: `📅 ${d.used}/${d.quota} replies${where}` + (free ? ` → ${free}` : ""),
     tone: d.held ? "text-amber-400" : "text-fg-dim",
     title:
-      `${d.used} of ${d.quota} replies used in the current day, which opens on a reply ` +
-      `of hers and closes once she has been quiet 12h.${rolled}${dry}${wait}${step}${why} ` +
+      `${d.used} of ${d.quota} replies used in the current day, which opens on the ` +
+      `account's own reply and closes after 12h of its silence.${rolled}${dry}${wait}${step}${why} ` +
       `A purchase or a content ask lifts this immediately.${shadow}`,
   };
 }

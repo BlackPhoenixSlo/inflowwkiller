@@ -1012,24 +1012,44 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
   const LOCKED_CAP = 2;
   const IMAGE_CAP = 3;
   const cap = locked ? LOCKED_CAP : IMAGE_CAP;
-  const [expanded, setExpanded] = useState(false);
   // The tiles OF actually refused, as an INTERSECTION with what this bubble
   // holds — never `_failedMediaIds` counted on its own. The count below and
   // the marks on the tiles are both driven from this one list, so they cannot
   // disagree; deriving the count from `msg.media.length` instead let the
   // footer claim "remove 1 of 4" over a row where nothing was marked.
   const refusedHere = items.filter((m) => m.id != null && refusedIds.includes(m.id));
-  // A refused tile past the cap is the one case where the cap defeats its own
-  // purpose: the count names it and "+1" hides it. Open the row for it. This
-  // does not weaken the 40-item rationale above — it is true only on a failed
-  // send whose offender sits past the cap, never in the steady state.
-  const refusedHidden = items.some(
-    (m, i) => i >= cap && m.id != null && refusedIds.includes(m.id));
-  const visible = expanded || refusedHidden ? items : items.slice(0, cap);
+  // THE COLLAPSED VIEW CARRIES THE REFUSED TILES. Expansion is the operator's
+  // alone again — a plain boolean, default closed — because the question "may a
+  // tile OF named be hidden?" is no longer answered by state at all: a refused
+  // tile is in the collapsed set by construction, so no click order can reach
+  // it. Four earlier attempts all put that decision in a boolean and each fixed
+  // one ordering while breaking another:
+  //   • `expanded || refusedHidden` in `visible` — opened, but left `expanded`
+  //     false, so neither "+N" nor "show less" rendered: pinned with no way back.
+  //   • `useState(refusedHidden)` — read once at mount, and the live ordering
+  //     mounts this strip on the PENDING bubble (appendLocal runs before the
+  //     POST) then patches the row in place. Always read before the failure.
+  //   • `override ?? refusedHidden` — tracked the prop, but nothing cleared the
+  //     override, so one collapse taken mid-flight outranked every later refusal.
+  //   • `refusedHidden || (override ?? false)` + a gated "show less" — no click
+  //     could hide a mark, but the row then pinned open exactly as the first
+  //     attempt did, on a bubble that can be neither retried away nor dismissed.
+  // Slicing by MEMBERSHIP instead of by length dissolves the whole question: the
+  // row collapses normally, "+N" and "show less" behave as they always did, and
+  // the marked tile is simply always in view.
+  const [expanded, setExpanded] = useState(false);
+  // Pairs, not bare media: the collapsed set is no longer a prefix, so the
+  // `visible[i] === items[i]` identity the lightbox relies on is gone. Each
+  // entry carries its ORIGINAL index, which is what setLightboxIdx must store.
+  const indexed = items.map((m, i) => [m, i] as const);
+  const visible = expanded
+    ? indexed
+    : indexed.filter(([m, i]) => i < cap || (m.id != null && refusedIds.includes(m.id)));
   const hiddenCount = items.length - visible.length;
   // Click-to-zoom lightbox. Holds the index into `items` of the tile being
-  // viewed full-res (null = closed). visible[i] === items[i] (slice keeps
-  // order from 0), so a visible tile's index maps straight through.
+  // viewed full-res (null = closed) — taken from the pair above, never from the
+  // map's own position, which no longer matches once a refused tile is pulled
+  // forward into the collapsed set.
   const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
   // Tile geometry (T-GRID): media renders as small, fixed-footprint
   // thumbnails so a bundle never towers over the bubble. Each tile's box
@@ -1045,7 +1065,7 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
   return (
     <div className="mt-2">
       <div className="flex flex-wrap gap-1.5">
-        {visible.map((m, i) => {
+        {visible.map(([m, i]) => {
           const rawThumb = m.files?.thumb?.url || m.files?.source?.url || m.url || null;
           const thumb = proxyImage(rawThumb, accountId);
           const fullRaw = m.files?.source?.url || rawThumb;
@@ -1107,7 +1127,7 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
                   <div className="absolute inset-0 rounded-md border-2 border-err pointer-events-none z-10" />
                   <div
                     className="absolute inset-x-0 bottom-0 bg-err/85 text-white text-[9px] font-bold leading-tight text-center py-0.5 z-10 pointer-events-none"
-                    title="OF refused this attachment — remove it and the rest of the bundle sends"
+                    title="This attachment was refused — remove it and the rest of the bundle sends"
                   >
                     REMOVE
                   </div>
@@ -1199,16 +1219,22 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
        *  this feature exists to end. */}
       {refusedHere.length > 0 && (
         <div
-          className="mt-1 text-[10px] font-medium text-err"
-          title="OF refused these exact attachments — drop them and re-send; a plain retry sends the same bundle."
+          // Carries its OWN background. This sits INSIDE the bubble, and a
+          // failed send's bubble is `bg-accent text-white` — bare `text-err`
+          // measured 1.26:1 there (it was 5.6:1 in the footer it moved from),
+          // i.e. the one number this feature exists to show, unreadable. Same
+          // treatment as the REMOVE bar on the tiles, for the same reason.
+          className="mt-1 inline-block rounded px-1 py-0.5 bg-err/85 text-white text-[10px] font-bold leading-tight"
+          title="These exact attachments were refused — drop them and re-send; a plain retry sends the same bundle."
         >
           remove {refusedHere.length} of {items.length}
         </div>
       )}
       {/* "show less" sits OUTSIDE the tile row so it keeps its natural button
-       *  height instead of inheriting a tile box. Gated on bare `expanded` so
-       *  a row force-opened by a hidden refusal cannot be collapsed back over
-       *  the mark. */}
+       *  height instead of inheriting a tile box. It needs no refusal-aware
+       *  gate: collapsing returns to a set that still CONTAINS every refused
+       *  tile, so there is no longer a state where it could hide a mark — the
+       *  membership slice above is what makes that true. */}
       {expanded && items.length > cap && (
         <button
           type="button"
