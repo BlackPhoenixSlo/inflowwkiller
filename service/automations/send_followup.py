@@ -390,6 +390,22 @@ async def _load_ai_config(account_id: str) -> dict:
             # sites already receive it, and it is resolved off the row this
             # function already holds — no second query. NULL voice → the female
             # bundle → byte-identical to what this engine has always sent.
+            # THE FLAG IS READ AND THE OFFER STILL CANNOT REACH A PROMPT, which
+            # is the point: this engine never renders `customs_offer`, and since
+            # the carve-out moved out of `live_proof` that is the ONLY way the
+            # offer gets into a prompt. It is not a customs surface (operator
+            # ruling 2026-08-18) and no longer inherits one by accident.
+            #
+            # ⚠️ AND THE FLAG STAYS PASSED. Dropping it looked tidy — nothing
+            # here consults it — but it would make this the one engine whose
+            # bundle `sell_customs` CONTRADICTS the account row, while
+            # `deep_convo` and `reply_mass_funnel`, the other two non-selling
+            # engines, both keep the true value via `load_voice_blocks`.
+            # `_voice`'s module header bans that shape: "resolving the voice
+            # without the customs flag is what let `of_ai_chat` ship half a lane,
+            # so the two axes only come as a pair". A hand-built half-resolved bundle
+            # is a trap for whoever later adds a customs-aware block here and
+            # finds the flag silently False on an account that sells.
             "_voice": _voice.blocks(getattr(cfg, "voice", None),
                                     _sell_customs_from_row(cfg)),
         }

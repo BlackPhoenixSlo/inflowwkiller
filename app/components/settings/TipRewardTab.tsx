@@ -337,6 +337,9 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
             <div className="text-[11px] text-fg-dim/70">
               Leave blank (recommended) so the ask goes out without naming a price.
               Set a number only to suggest a specific amount.
+              {" "}If &ldquo;Sell customs&rdquo; is on, this ask is the custom
+              voice-note ask and always names a price: blank means $100, and any
+              amount is held inside the $100&ndash;$200 band a custom is sold at.
             </div>
           </label>
         )}

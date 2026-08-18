@@ -1963,8 +1963,20 @@ def _manifest_block(offerable: dict[int, CatalogItem],
     # It belongs HERE and not only in `_CLOSE_CUSTOM`: that close only renders on
     # the bought-out branch, where `offerable` is empty and a stray marker resolves
     # to nothing anyway. This branch is the one where it can actually bill someone.
+    # ⚠️ THE CUSTOM NEEDS ITS OWN PRICED EXAMPLE **HERE**, and this is the branch
+    # where leaving it out is most dangerous. The only worked money sentence in
+    # this block is the pitch example it renders ABOVE this line — `"tip me $10 and ill
+    # send it 😏"` — which is right for a LISTED piece and off by 10x for a
+    # custom. A rule does not beat an example (see `_customs.price_example`: the
+    # $100-$200 rule was in the prompt and the model still asked for nothing,
+    # because the example beside it named no figure), and an example at the wrong
+    # PRICE is the same failure with a number in it. Two products in one block
+    # means two examples, each at its own price.
     _customs_rule = ("\n- CUSTOMS (a to-order VOICE NOTE): your one off-list offer. "
                      f"{_voice.CUSTOMS_CONDITIONS}"
+                     f" He TIPS for it (\"{_customs.price_example()}\") — that "
+                     "figure, not the one in the pitch example above, which is "
+                     "for a piece already filmed."
                      " No id — never an >>OFFER line for a custom, even if a listed "
                      "piece sounds custom."
                      if sell_customs else "")
@@ -1999,9 +2011,11 @@ def _manifest_block(offerable: dict[int, CatalogItem],
             "name, price, or promise a piece you havent been handed. The ONE "
             f"offer is a paid CUSTOM made for him. {_voice.CUSTOMS_CONDITIONS}\n"
             "- Offer it only when the vibe is warm or he asks — never pushy. If "
-            "he asks to see something, be plain: youll make him one, and the "
-            "price. He TIPS for it (\"tip me and ill record it for you 😏\"), "
-            "never the bare word \"tip\". Otherwise just talk to him."
+            "he asks to see something, be plain: youll make him one, and SAY "
+            "THE DOLLAR FIGURE in that same message — an ask with no number "
+            "gets underpaid, and an underpaid custom buys him nothing. He TIPS "
+            f"for it (\"{_customs.price_example()}\"), never the bare word "
+            "\"tip\". Otherwise just talk to him."
         ))
 
     return _SellSurface(section=_SECTION_BY_ID, intro=_INTRO_BY_ID,

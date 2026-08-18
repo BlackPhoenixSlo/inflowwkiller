@@ -234,12 +234,13 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         )
     else:
         # ⚠️ THE NEVER-SELL RULE AND THE CUSTOMS CARVE-OUT ARE THE SAME PROMPT.
-        # `v.live_proof` below says "ONE THING YOU DO OFFER: a paid CUSTOM"; this
-        # rule said "NEVER offer, mention, or hint at PPV, paid content, pics, or
-        # videos". Both rendered, ~30 lines apart, and which one the model obeyed
-        # was a coin flip per generation — so week one produced either no customs
-        # at all (and the wrong conclusion that customs don't sell) or a violation
-        # of the lane's defining rule, with no way to tell from outside which.
+        # `v.customs_offer` below says "ONE THING YOU DO OFFER: a paid CUSTOM";
+        # this rule said "NEVER offer, mention, or hint at PPV, paid content,
+        # pics, or videos". Both rendered, ~30 lines apart, and which one the
+        # model obeyed was a coin flip per generation — so week one produced
+        # either no customs at all (and the wrong conclusion that customs don't
+        # sell) or a violation of the lane's defining rule, with no way to tell
+        # from outside which.
         #
         # The ban stays absolute for everything Auto Convo has never sold; the
         # sell_customs branch names the single opted-into exception, so the two
@@ -277,7 +278,10 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         f"{directive}\n\n"
         f"{hard_rules}\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
-        f"{v.live_proof}\n\n"
+        # See `_voice._CUSTOMS_CARVE_OUT`: the offer is its own block so that an
+        # engine which renders only the refusal cannot sell. '' unless this
+        # account sells customs and this fan clears the bar.
+        f"{v.live_proof}{v.customs_offer}\n\n"
         f"{BIO_CONSISTENCY_GUARDRAIL}\n\n"
         # The emoji VOCABULARY is a fact about who the creator is, not a style
         # preference — but it ships inside the humanizer, which is opt-in per
@@ -702,7 +706,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             style = random.choice(style_pool)
             # The bundle narrowed to THIS fan: a custom is only mentioned to a man
             # who has proven he pays. Below the bar the permission and its price
-            # band come out of every block that carries them, `live_proof` included.
+            # band come out of every block that carries them — `customs_offer`
+            # and the tip-ask. (`live_proof` used to be one of them; the offer
+            # now has its own block — see `_voice._CUSTOMS_CARVE_OUT`.)
             v = _voice.for_fan(voice_blocks, f)
             tip_ask_block = (build_tip_ask_block(tip_amount, tip_template,
                                                 v.sell_customs)

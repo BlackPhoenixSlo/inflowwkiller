@@ -16,7 +16,7 @@ wrong only if the code is.
     ./venv/bin/python scripts/realism-tags.py --prompt        # the blocks, verbatim
     ./venv/bin/python scripts/realism-tags.py --prompt --voice him --customs
     ./venv/bin/python scripts/realism-tags.py --json          # a full-ON config body
-    ./venv/bin/python scripts/realism-tags.py --curl 123456789  # ready-to-run PUT
+    ./venv/bin/python scripts/realism-tags.py --curl ACCOUNT_ID  # ready-to-run PUT
 
 Read-only. `--curl` PRINTS a command; it never sends one.
 """
@@ -192,8 +192,14 @@ def cmd_prompt(voice: str, customs: bool) -> None:
     block("6. NO NARRATION (always on)", "none", c.NO_NARRATION_RULE)
     block("7. WHO YOU ARE (always on)", "none", c.BIO_CONSISTENCY_GUARDRAIL)
     block("8. STAY ON ONLYFANS (always on)", "none", c.ONPLATFORM_GUARDRAIL)
-    block("9. LIVE PROOF / FACETIME (always on; carve-out is gated)",
-          f"{c.SELL_CUSTOMS_KEY} appends the customs carve-out", v.live_proof)
+    block("9. LIVE PROOF / FACETIME (always on)", "none", v.live_proof)
+    # Its OWN section, not a suffix on 9, because that is exactly the change it
+    # is here to show: the offer left `live_proof` so that an engine rendering
+    # the refusal cannot sell (see `_voice._CUSTOMS_CARVE_OUT`). Only the engines
+    # that render `customs_offer` — of_ai_chat, autoreply — put this in a prompt.
+    block("10. CUSTOMS OFFER (gated; of_ai_chat + autoreply only)",
+          f"{c.SELL_CUSTOMS_KEY} + the fan clearing _customs.SELL_MIN_SPEND_CENTS",
+          v.customs_offer or "(not offered — account opted out, or --customs off)")
 
     print("=" * 72)
     print("POST-GENERATION — applied to the TEXT, not the prompt")

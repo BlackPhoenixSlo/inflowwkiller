@@ -35,10 +35,9 @@ WHAT COUNTS AS AN ORDER
 -----------------------
 A DM tip ≥ $100 (`kind='tip'`) that actually cleared. Not `tip_post` — a $200 tip
 on a post is a man being generous about a photo, not a man ordering a voice note.
-Not a quantity either: the transcript that priced this feature (fan 72033414,
-2026-07-31 — $200 on account 7789837 at 10:51, delivered "heres your custom Alex"
-at 14:47) shows the amount encoding LENGTH, not count. Two customs means two
-separate tips.
+Not a quantity either: the transcript that priced this feature (2026-07-31, a
+male account — $200 tipped at 10:51, one voice note delivered at 14:47) shows
+the amount encoding LENGTH, not count. Two customs means two separate tips.
 
 WHO WE OFFER ONE TO
 -------------------
@@ -65,12 +64,19 @@ MIN_CENTS = 10_000
 # and $400 was carried for a day; it is now $200, because the top half of that
 # band is a number no fan has ever paid.
 #
-# THE LARGEST SINGLE DM TIP IN THE ENTIRE PRODUCTION DATABASE IS $200.00 — four
-# occurrences, across two accounts, over the whole history. Quoting $400 as "the
-# longest one" advertises a rung nobody has ever climbed, and it breached the
-# $200 ceiling this codebase already enforces on every other priced surface
-# (`upsell.OF_PRICE_MAX_CENTS`). Raising it again is a pricing decision, not a
-# typo fix: check `max(amount_cents) where kind='tip'` first.
+# THE LARGEST SINGLE DM TIP IN THE ENTIRE PRODUCTION DATABASE IS $200.00.
+# Re-measured 2026-08-18: **40 occurrences across 7 accounts**, not the "four
+# occurrences, across two accounts" this comment used to claim — that was wrong
+# when written, not overtaken (39 of the 40 predate 2026-08-04). The ceiling it
+# argues for is unchanged and now better evidenced: $200 really is the maximum,
+# and it is a well-populated rung rather than a freak. Note the account with the
+# most $200 tips (26 of them) does NOT sell customs.
+#
+# Quoting $400 as "the longest one" advertises a rung nobody has ever climbed,
+# and it breached the $200 ceiling this codebase already enforces on every other
+# priced surface (`upsell.OF_PRICE_MAX_CENTS`). Raising it again is a pricing
+# decision, not a typo fix: check `max(amount_cents) where kind='tip'` first —
+# and believe the query over this comment.
 #
 # ⚠️ THE FLOOR AND THE ASK ARE ONE POLICY, AND THEY USED TO LIVE IN DIFFERENT
 # HALVES OF THE SYSTEM. `MIN_CENTS` is what makes a tip an ORDER on the WATCH
@@ -93,6 +99,36 @@ MAX_CENTS = 20_000
 # Measured on the four accounts that sell customs: 84 of 1,358 fans clear this
 # (6%). So 94% of prompts get shorter, and the ones that keep the block are the
 # ones where it can actually close.
+#
+# ⚠️ TWO CORRECTIONS, 2026-08-18. (1) **SIX** accounts have `sell_customs: true`,
+# not the four this measurement used, so the 6% above is over the wrong
+# denominator. (Query the flag; do not write the roster down here.)
+#
+# (2) THIS BAR USED TO BE BYPASSED ON 90% OF THE PROMPTS THAT CARRIED THE OFFER,
+# and the fix was structural rather than another gate. It is enforced by
+# `_voice.for_fan`, which only `ai_chatter`, `autoreply` and `of_ai_chat` call —
+# but the carve-out used to ride INSIDE `live_proof`, which `send_followup`,
+# `reply_mass_funnel` and `deep_convo` also render off an ACCOUNT bundle. So
+# 1,869 of the 2,073 customs prompts came from engines that never consulted this
+# bar (`send_followup` gates on its own `_ELIGIBLE_MIN_SPEND_CENTS = 100`, which
+# is **$1, not $100**); on one male account 111 of 128 such fans were below it,
+# and 17 of 19 on a female one. None of the three applied `owed_fan_ids` either, so any of
+# them could pitch a second custom to a man whose first was paid and undelivered.
+#
+# NARROWED — not closed — by giving the offer its own block, see
+# `_voice._CUSTOMS_CARVE_OUT`. What that removed is the INHERITED pitch: an
+# engine can no longer start selling customs merely by rendering the refusal, so
+# adding a non-selling engine is safe by default and the three above are fixed.
+#
+# ⚠️ IT DID NOT MAKE THE BAR STRUCTURAL, AND AN EARLIER VERSION OF THIS COMMENT
+# CLAIMED IT DID. There are THREE surfaces that can sell a custom, not two:
+# `v.customs_offer` (of_ai_chat, autoreply) and `ai_chatter._manifest_block`,
+# which emits `CUSTOMS_CONDITIONS` on both its branches and never touches
+# `customs_offer` at all. All three are gated the same way, by their engine
+# calling `_voice.for_fan` — a TESTED behaviour
+# (`test_voice_lane.case_a_bought_out_vault_reaches_the_live_prompt`, the
+# `acc_bought_out_broke` leg), not a guarantee the type system makes. A fourth
+# SELLING surface still has to remember `for_fan`.
 SELL_MIN_SPEND_CENTS = 10_000
 
 # Only a DM tip. `tip_post`/`tip_stream` are generosity, not an order.
@@ -112,6 +148,61 @@ PRICE_RULE = (
     f"more clips. NEVER below ${MIN_CENTS // 100}: that buys nothing. no "
     "discounts, no freebies, no apologising."
 )
+
+
+def clamp_price(dollars: int | None = None) -> int:
+    """`dollars` forced into the sellable band, in whole dollars.
+
+    BOTH BOUNDS, because a quote outside either end contradicts `PRICE_RULE` in
+    the same block. Under the floor is the expensive direction — `qualifies`
+    refuses to book it and the fan has paid for nothing — but over the ceiling is
+    the same bug wearing a different hat: unclamped, `ask_amount_dollars = 1000`
+    would put "tip me $1000 and ill record it for u" in the same block as "IT
+    COSTS $100-$200" — an EXAMPLE contradicting the RULE beside it, i.e. exactly
+    the failure `price_example` was written to end.
+
+    The band lives here, with `MIN_CENTS`/`MAX_CENTS`, so the sell side cannot
+    drift from the watch side."""
+    return max(MIN_CENTS // 100, min(MAX_CENTS // 100, int(dollars or 0)))
+
+
+def price_example(dollars: int | None = None) -> str:
+    """The worked EXAMPLE the model imitates when it makes the ask, naming
+    `dollars` (default, and floor, `MIN_CENTS`).
+
+    ⚠️ A RULE DOES NOT BEAT AN EXAMPLE, AND THIS FUNCTION IS THE PROOF.
+    `PRICE_RULE` above was already correct and was VERIFIABLY IN THE PROMPT — and
+    the model still asked for no money at all, because the offer block's only
+    example showed a price-free ask ("tip me and ill record it for you"). An
+    example is the most concrete and most copyable line in a block, so the model
+    reproduced its SHAPE and dropped the number the sentence beside it had just
+    given. Live, on a male account 2026-08-18 08:35 (grok_calls #135602): the
+    prompt carried PRICE_RULE at byte 6226 and the price-free example at 6528;
+    the send named no figure, he tipped $20, `qualifies` refused it,
+    `customs_owed_at` stayed NULL, and the next turn told him "gonna make that
+    custom worth every cent for u" — a man charged for a voice note nobody was
+    told to record.
+
+    CLAMPED, not merely defaulted, because the tip-ask lane carries its own
+    configured suggestion (`ask_amount_dollars`) and nothing stopped that being
+    set below the floor. A $20 suggestion on a customs account advertises a voice
+    note `qualifies` will then refuse to book — the same silent underpayment as
+    naming no figure.
+
+    ⚠️ THE CLAMP HERE IS A BACKSTOP, NOT THE ONLY ONE, and saying otherwise would
+    be a lie worth catching. `_common.build_tip_ask_block` calls `clamp_price`
+    itself BEFORE calling this, because the same number is also spoken in its
+    "tip you $N right here" line — so arriving from there this has nothing left to
+    correct. That is fine and deliberate: both go through `clamp_price`, so they
+    cannot disagree, and this call keeps the postcondition "never names a figure
+    outside the band" true of the FUNCTION rather than of its callers. Under- and
+    over-quoting are both silent, so the figure the model COPIES and the figure
+    `qualifies` ACCEPTS stay impossible to edit apart.
+
+    ONE number, not a range: the ceiling lives in `PRICE_RULE`, because an
+    example offering a choice invites the model to hedge and the floor is the
+    half that was being lost."""
+    return f"tip me ${clamp_price(dollars)} and ill record it for u 😏"
 
 
 # ── The ledger. Four questions and two writes, all over `Fan` ────────
@@ -186,7 +277,17 @@ def mark(fan: "Fan | None", tipped_at: datetime | None = None) -> bool:
     scanner over a tip it already marked neither moves the "waiting since" clock
     nor reports a second order. The stamp is the TIP's time, not now, because the
     queue sorts and ages by it — stamping `utcnow()` on every sweep would reset
-    every fan's wait to zero every 15 minutes."""
+    every fan's wait to zero every 15 minutes.
+
+    ⚠️ THAT IDEMPOTENCE ALSO MEANS THE LEDGER CANNOT COUNT, AND IT IS UNDER-
+    REPORTING RIGHT NOW. The module docstring says "Two customs means two
+    separate tips", but one nullable timestamp cannot hold two. Verified on prod
+    2026-08-18: on one account a fan made THREE qualifying tips ($180 on 08-14,
+    $200 on 08-14, $150 on 08-16 — $530 total) and `customs_owed_at` still holds
+    only the first; a second fan there likewise ($100 x3). Both men are
+    owed three voice notes and the operator queue shows one each, and clearing
+    the debt once blanks all three. Counting orders needs its own rows, not a
+    second column."""
     if fan is None or is_owed(fan):
         return False
     fan.customs_owed_at = tipped_at or datetime.utcnow()
