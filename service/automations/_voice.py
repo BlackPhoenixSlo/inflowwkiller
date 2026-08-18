@@ -50,6 +50,13 @@ Resolve ONCE per run and read fields off the bundle:
     ...
     f"{v.painful_texting}\\n\\n{v.live_proof}"
 
+⚠️ IF YOUR ENGINE SELLS CUSTOMS, IT MUST SAY SO BY NAME — render
+`f"{v.live_proof}{v.customs_offer}"`, and narrow the bundle per fan first with
+`for_fan(v, fan)`. `live_proof` is the REFUSAL and nothing else; the offer is a
+separate block precisely so an engine that does not want to sell cannot inherit a
+$100-$200 pitch by rendering the refusal (three did). Two engines render it today,
+`of_ai_chat` and `autoreply`, and both narrow per fan.
+
 The loader lives in `_common`, not here, because it needs the account row and
 this module deliberately does not import the database — see the import block.
 There is no `load_account_voice`: resolving the voice without the customs flag
@@ -219,9 +226,14 @@ _LIVE_PROOF_EXAMPLES = {
 # Those conditions are stated ONCE, here, because three surfaces need them and the
 # first attempt wrote all three by hand:
 #
-#   _live_proof_guardrail  (below)                  — as a REFUSAL rule
+#   _CUSTOMS_CARVE_OUT     (below) → `customs_offer` — as the OFFER itself
 #   _common.build_tip_ask_block                     — as a SELLING rule
 #   ai_chatter._manifest_block                      — as a MANIFEST rule
+#
+# ⚠️ The first entry used to read `_live_proof_guardrail … as a REFUSAL rule`,
+# and that is no longer true in either half: the guardrail does not reference this
+# constant at all, and the carve-out that does is an OFFER, not a refusal. Hiding
+# an offer inside the refusal block is precisely the bug the split below fixed.
 #
 # They drifted immediately. Tightening the ETA ban from "never promise a specific
 # time or day" to "never say WHEN, including how long" landed on two of the three,
@@ -229,10 +241,12 @@ _LIVE_PROOF_EXAMPLES = {
 # reply on the engine that does the actual selling. A safety property restated in
 # three voices is a safety property with no owner.
 #
-# The LEAD-IN differs per surface and should: one is refusing a call, one is
-# pricing a tip, one is bounding a manifest. Everything from "He pays FIRST"
-# onward is policy and is identical by construction. `test_voice_lane` asserts all
-# three rendered surfaces carry it.
+# The LEAD-IN differs per surface and should: one GRANTS the offer, one is
+# pricing a tip, one is bounding a manifest. (The first used to be phrased as
+# "refusing a call", back when the carve-out was spliced onto the end of the
+# live-proof refusal; it is a standalone OFFER now — see `_CUSTOMS_CARVE_OUT`.)
+# Everything from "He pays FIRST" onward is policy and is identical by
+# construction. `test_voice_lane` asserts all three rendered surfaces carry it.
 # ⚠️ THE V1 SCOPE IS PART OF THE POLICY, NOT PART OF THE LEAD-IN.
 #
 # Operator ruling 2026-08-02: "tip ask will be for custom voicenotes at start,
@@ -263,6 +277,23 @@ CUSTOMS_CONDITIONS = (
     + _customs.PRICE_RULE
 )
 
+# ⚠️ THIS USED TO BE SPLICED ONTO THE END OF `live_proof`, AND THAT IS THE BUG
+# `VoiceBlocks.customs_offer` EXISTS TO MAKE UNREPRESENTABLE. `live_proof` is the
+# REFUSAL guardrail — every conversational engine wants it — so hiding a SELLING
+# PERMISSION WITH A PRICE inside it meant an engine could not decline the pitch
+# without also declining the refusal, and could not tell by reading its own code
+# that it was selling at all. Three engines inherited a $100-$200 custom offer
+# they were never built to make: `send_followup` and `reply_mass_funnel` carried
+# it into 1,869 of the 2,073 customs prompts on prod (90%), and `send_followup`
+# DELIVERED three real pitches on one female account — including the 08-09 offer
+# that drew a $30 tip against a $100 floor. `deep_convo` rendered it to fans with
+# ZERO lifetime spend in a prompt that simultaneously says "Don't offer pics or
+# videos".
+#
+# Two separate blocks mean the permission can only reach a prompt that ASKS for
+# it by name. An engine that renders `live_proof` alone cannot sell a custom, by
+# construction rather than by a guard someone has to remember — which is why the
+# opt-out helper this replaced, and its allow-list test, are both gone.
 _CUSTOMS_CARVE_OUT = (
     " ONE THING YOU **DO** OFFER: a paid CUSTOM — a voice note you RECORD LATER "
     "and send here. "
@@ -270,13 +301,12 @@ _CUSTOMS_CARVE_OUT = (
 )
 
 
-def _live_proof_guardrail(voice: str, sell_customs: bool = False) -> str:
+def _live_proof_guardrail(voice: str) -> str:
     return (
         "LIVE PROOF / FACETIME (hard rule): facetime, live/video calls, 'prove "
         "you're real', on-demand selfies — a BLUNT, direct no; never half-agree, "
         "no apology, no coy fumbling. one short flat refusal + one pivot back to "
         f"chatting or teasing, {_LIVE_PROOF_EXAMPLES[voice]}"
-        f"{_CUSTOMS_CARVE_OUT if sell_customs else ''}"
     )
 
 
@@ -789,6 +819,21 @@ class VoiceBlocks:
     def is_male(self) -> bool:
         return self.voice == VOICE_HIM
 
+    @property
+    def customs_offer(self) -> str:
+        """The customs OFFER as its own renderable block — '' unless permitted.
+
+        DERIVED, NOT STORED, so it cannot drift from `sell_customs`. It was a
+        field first, and that made "the flag and its text move together" a matter
+        of constructor discipline plus a line in `for_fan`'s docstring asking the
+        next person to keep it. Derived, the two cannot disagree and there is
+        nothing to keep.
+
+        See `_CUSTOMS_CARVE_OUT` for why this is not part of `live_proof`, and
+        `test_voice_lane.case_the_refusal_block_can_never_carry_the_offer` for the
+        guard that additionally requires any renderer to narrow per fan."""
+        return _CUSTOMS_CARVE_OUT if self.sell_customs else ""
+
 
 def blocks(voice: object, sell_customs: bool = False) -> VoiceBlocks:
     """The bundle for one account (`voice` normalised here, so callers may pass
@@ -803,7 +848,7 @@ def blocks(voice: object, sell_customs: bool = False) -> VoiceBlocks:
     return VoiceBlocks(
         voice=v,
         painful_texting=_painful_texting(v),
-        live_proof=_live_proof_guardrail(v, sell_customs),
+        live_proof=_live_proof_guardrail(v),
         off_deflections=OFF_DEFLECTIONS[v],
         humanizer=_humanizer(v),
         texter_noun=_TEXTER_NOUN[v],
@@ -821,28 +866,22 @@ def blocks(voice: object, sell_customs: bool = False) -> VoiceBlocks:
 
 
 def for_fan(b: VoiceBlocks, fan) -> VoiceBlocks:
-    """`b` narrowed to ONE fan: the account's bundle, with `sell_customs` forced
+    """`b` narrowed to ONE fan: the account's bundle with `sell_customs` forced
     off when this fan is not someone we offer a custom to (`_customs.may_offer`).
+    `customs_offer` follows on its own, being derived from that flag.
 
     It takes the FAN, not a precomputed boolean, so the spend policy is decided in
     one place. Handing each engine `for_fan(b, _customs.may_offer(f))` made three
     call sites responsible for remembering which predicate to pass, and a fourth
     engine could quietly pass a different one.
 
-    WHY THIS IS A BUNDLE REBUILD AND NOT A BOOLEAN AT THE CALL SITE. `sell_customs`
-    is not just a flag the engines read — `live_proof` is DERIVED from it, because
-    the customs carve-out is spliced into the live-proof guardrail (that is where
-    "the answer to a live call is still no, but you DO offer a custom" has to live
-    to make sense). An engine that tested a fan-level boolean before rendering the
-    sell surface, and then rendered `v.live_proof` from the account bundle, would
-    tell the model in one paragraph that it has nothing to offer and in another
-    that it may offer a custom. One call here moves both, and every other field is
-    untouched.
+    The ENGINE-level question — "does this engine sell customs at all?" — needs no
+    helper: an engine that does not want the offer simply does not render
+    `v.customs_offer`. That is the whole reason the carve-out is its own block.
 
     Cheap: pure construction off module constants, no I/O. Returns `b` itself when
     the account does not sell customs at all, so the common path allocates nothing
-    and never even asks the question.
-    """
+    and never even asks the question."""
     if not b.sell_customs or _customs.may_offer(fan):
         return b
     return blocks(b.voice, False)

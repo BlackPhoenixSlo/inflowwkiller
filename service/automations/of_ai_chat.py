@@ -1146,7 +1146,13 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"{nudes_rule}"
         f"{_good_examples(f, asked, have_durable_name)}\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
-        f"{v.live_proof}\n\n"
+        # `customs_offer` is '' unless this account sells customs AND this fan
+        # clears the spend bar (`_voice.for_fan`). It is a SEPARATE block from
+        # the refusal on purpose — an engine that renders only `live_proof`
+        # cannot offer a custom, which is what keeps the three non-selling
+        # engines (send_followup, reply_mass_funnel, deep_convo) out of the
+        # customs business.
+        f"{v.live_proof}{v.customs_offer}\n\n"
         f"{BIO_CONSISTENCY_GUARDRAIL}"
         f"{humanizer}{nonnative}{stickers}\n\n"
         "Your reply is ONLY the message text — no JSON, quotes, or metadata."
@@ -1982,8 +1988,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # The account bundle + tip-ask narrowed to THIS fan: a custom is only
             # offered to a man who has proven he pays (`_customs.may_offer`).
             # Below the bar the customs permission and its price band are stripped
-            # from every block that carries them — including `live_proof`, which
-            # splices the carve-out — so the prompt never mentions customs at all.
+            # from every block that carries them — `customs_offer` and the
+            # tip-ask — so the prompt never mentions customs at all. (`live_proof`
+            # used to carry the offer too; it no longer does. See
+            # `_voice._CUSTOMS_CARVE_OUT`.)
             v = _voice.for_fan(voice_blocks, f)
             tip_ask_block = (
                 build_tip_ask_block(tip_ask_amount, tip_ask_template,

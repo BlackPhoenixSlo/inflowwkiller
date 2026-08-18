@@ -33,7 +33,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 # The per-fan state blob lives in its own leaf module — see fan_state.py for why
 # storage does not belong in here. apply_typo_throttle below is a consumer like
 # any other; this is NOT a re-export, so importers go to the leaf directly.
-from . import _voice
+from . import _customs, _voice
 from .fan_state import fan_state, put_fan_state
 
 log = logging.getLogger("of-relay.automation.common")
@@ -2666,27 +2666,48 @@ def build_tip_ask_block(amount_dollars: int | None = None, template: str = "",
 
     `sell_customs` (account opt-in, default off) turns the generic tip-ask into a
     CUSTOM VOICE NOTE ask — see the block below. Off → byte-identical to the
-    tip-ask that has always shipped."""
-    has_amt = amount_dollars is not None
-    amt = max(1, int(amount_dollars)) if has_amt else 0
+    tip-ask that has always shipped.
+
+    ⚠️ ON THE CUSTOMS BRANCH THE "None → no price" RULE ABOVE DOES NOT APPLY: a
+    custom ALWAYS names a figure, clamped into `_customs`' band, because a custom
+    quoted below the floor is one `qualifies` will refuse to book."""
+    # ⚠️ WHEN THIS IS THE CUSTOM ASK, THE FLOOR OUTRANKS THE CONFIG, and a custom
+    # ALWAYS names a figure. Two roads led to one being asked for at the wrong
+    # price and both end at the clamp: `ask_amount_dollars` defaults to None (the
+    # UI copy actively recommends leaving it blank), which named NO figure at
+    # all; and a configured suggestion can simply be below $100. Either way the
+    # model quotes something `_customs.qualifies` refuses to book, and the fan
+    # pays it believing he ordered a voice note — nothing is marked owed. See
+    # `_customs.price_example` for the live case that proved it.
+    has_amt = sell_customs or amount_dollars is not None
+    amt = (_customs.clamp_price(amount_dollars) if sell_customs
+           else max(1, int(amount_dollars or 0)))
     chat_tip = (f"tip you ${amt} right here" if has_amt
                 else "send you a lil tip right here")
-    example = (f"\"tip me ${amt} n ill send u something 😏\"" if has_amt
-               else "\"tip me n ill send u something 😏\"")
+    # ONE branch for the whole customs variant. The example says "record", not
+    # "send", because `tail` promises the note "comes a little later, not this
+    # second" and "ill send u something" is the sentence that contradicts it —
+    # so the two vary together and are chosen together.
+    if sell_customs:
+        # Operator ruling 2026-08-02: the tip-ask IS the custom ask, v1 = VOICE
+        # NOTE only (clips/calls out of scope). The fence is
+        # `_voice.CUSTOMS_CONDITIONS`, shared verbatim with `customs_offer` and
+        # the ai_chatter manifest; it must be here because "goes out once he
+        # tips" reads as *instant* and a custom is not.
+        example = _customs.price_example(amt)
+        tail = ("\n\nWHAT HE'S TIPPING FOR: a CUSTOM VOICE NOTE recorded FOR HIM "
+                "after he tips — make clear it comes a little later, not this "
+                f"second. {_voice.CUSTOMS_CONDITIONS}")
+    else:
+        example = (f"tip me ${amt} n ill send u something 😏" if has_amt
+                   else "tip me n ill send u something 😏")
+        tail = ""
     block = (
         "HE JUST ASKED TO SEE CONTENT — answer the ask. ONE short teasing line "
         f"(never needy or pushy) telling him to {chat_tip}, or tip under a post "
         "he likes and you'll spoil him back. NEVER the bare word \"tip\" — say it "
-        f"like {example}. attach nothing, name no piece — it goes out once he tips."
-        # Customs (account opt-in, DEFAULT OFF) — operator ruling 2026-08-02: the
-        # tip-ask IS the custom ask, v1 = VOICE NOTE only (clips/calls out of
-        # scope). The fence is `_voice.CUSTOMS_CONDITIONS` (shared verbatim with
-        # the refusal rule + ai_chatter manifest); it must be here because "goes
-        # out once he tips" reads as *instant* and a custom is not.
-        + ("\n\nWHAT HE'S TIPPING FOR: a CUSTOM VOICE NOTE recorded FOR HIM "
-           "after he tips — make clear it comes a little later, not this second. "
-           f"{_voice.CUSTOMS_CONDITIONS}"
-           if sell_customs else "")
+        f"like \"{example}\". attach nothing, name no piece — it goes out once he "
+        "tips." + tail
     )
     tmpl = (template or "").strip()
     if tmpl:
