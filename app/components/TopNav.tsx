@@ -17,6 +17,7 @@ import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
 import { useTheme } from "@/hooks/useTheme";
 import { readLastOnBlurMode, useBlurMode } from "@/hooks/useBlurMode";
+import { useScrollStrip } from "@/hooks/useScrollStrip";
 import { cn } from "@/lib/utils";
 import ScopeSwitcher from "@/components/ScopeSwitcher";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -76,6 +77,7 @@ export default function TopNav() {
   const { theme, toggle } = useTheme();
   const [blurMode, setBlurMode] = useBlurMode();
   const blurOn = blurMode !== "off";
+  const { stripRef, activeRef } = useScrollStrip<HTMLAnchorElement>(pathname);
 
   // Chatter-only session: hide owner-only nav surfaces (Setup,
   // employee picker chip). The User cookie always wins precedence, so
@@ -170,24 +172,36 @@ export default function TopNav() {
           Fastt
         </Link>
 
-        <nav className="hidden lg:flex items-center gap-1">
-          {visibleLinks.map((l) => (
-            <Link
-              key={l.href}
-              href={l.href}
-              className={cn(
-                "px-3 py-1.5 rounded-lg text-sm transition-colors whitespace-nowrap",
-                pathname === l.href
-                  ? "bg-bg-elev-1 text-fg"
-                  : "text-fg-dim hover:text-fg hover:bg-bg-elev-1/50",
-              )}
-            >
-              {l.label}
-            </Link>
-          ))}
+        {/* Only the link strip absorbs the overflow: it owns the free
+         *  space (flex-1 + min-w-0) and scrolls sideways inside itself.
+         *  Without this an extra link pushes the whole right-hand
+         *  cluster past the viewport and the PAGE scrolls left-to-right
+         *  instead. Scrollbar hidden — wheel/trackpad/keyboard drive it. */}
+        <nav
+          ref={stripRef}
+          className="hidden lg:flex items-center gap-1 flex-1 min-w-0 overflow-x-auto overscroll-x-contain no-scrollbar"
+        >
+          {visibleLinks.map((l) => {
+            const active = pathname === l.href;
+            return (
+              <Link
+                key={l.href}
+                href={l.href}
+                ref={active ? activeRef : undefined}
+                className={cn(
+                  "px-3 py-1.5 rounded-lg text-sm transition-colors whitespace-nowrap shrink-0",
+                  active
+                    ? "bg-bg-elev-1 text-fg"
+                    : "text-fg-dim hover:text-fg hover:bg-bg-elev-1/50",
+                )}
+              >
+                {l.label}
+              </Link>
+            );
+          })}
         </nav>
 
-        <div className="ml-auto flex items-center gap-1.5 lg:gap-3">
+        <div className="ml-auto flex items-center gap-1.5 lg:gap-3 lg:shrink-0">
           {/* Compose dropdown — opens either New post or New mass message. */}
           <div className="relative shrink-0" ref={composeRef}>
             <button
