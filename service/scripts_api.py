@@ -37,10 +37,13 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import llm_client
 import vault_ai_config
 from auth import assert_account_owned
+# The one copy of "a settings tab's Enabled owns this engine's rule row" — see
+# its docstring for why five config endpoints used to hand-roll their own.
+from automation_rules_api import ensure_kind_rule
 from db.engine import get_session
 from jsonsafe import truthy
 from db.models import (
-    CATALOG_IS_SINGLE, AccountAiConfig, AutomationRule, CatalogItem,
+    CATALOG_IS_SINGLE, AccountAiConfig, CatalogItem,
     ContentOffer, Fan, Message, created_at_text, parse_ts,
 )
 from automations import _ghost, _voice, rhythm, script_packs, starter_catalog
@@ -755,24 +758,24 @@ async def put_ai_chatter_config(body: _ConfigBody = Body(...)) -> dict[str, Any]
             .values(account_id=body.account_id, utc_offset=0, **values)
             .on_conflict_do_update(index_elements=["account_id"], set_=values)
         )
-    if clean.get("enabled"):
-        # Go-live safety: an enabled AI Seller with NO sweep rule is a silent
-        # dead bot in backup mode (only W7 wakes would ever fire it). Ensure
-        # the fallback rule exists once — never duplicated, and an owner who
-        # later disables the rule on purpose is respected.
+    # "Enabled" is the WHOLE of on: this blob AND the `automation_rules` row that
+    # runs the engine, which used to be a second checkbox on the tab that nobody
+    # could tell apart from this one. `ensure_kind_rule` owns what that means.
+    #
+    # ⚠️ Only when the key was actually SENT. Every caller that merges a patch
+    # over the stored config (the tab, prod-config.sh) carries it — but an
+    # account that has NEVER saved has no `enabled` key at all, and reading that
+    # absence as "off" would park a running rule on the first unrelated save.
+    #
+    # Nothing but the switch is passed: the cadence, payload and name are the
+    # operator's, tuned in the rules editor, and a config save must not stamp on
+    # them. A brand-new row gets the cadence the editor would have offered.
+    if "enabled" in clean:          # `_validate_cfg` keeps the key iff it was sent
         async with get_session() as s:
-            existing = (await s.execute(
-                select(AutomationRule.id).where(
-                    AutomationRule.account_id == body.account_id,
-                    AutomationRule.kind == "ai_chatter").limit(1))).first()
-            if existing is None:
-                s.add(AutomationRule(
-                    account_id=body.account_id, name="AI Seller sweep",
-                    kind="ai_chatter",
-                    trigger_json=json.dumps({"every_seconds": 60}),
-                    steps_json="{}", is_enabled=True,
-                    created_at=datetime.utcnow()))
-                log.info("ai_chatter_sweep_rule_created account=%s", body.account_id)
+            action = await ensure_kind_rule(
+                s, body.account_id, "ai_chatter", enable=clean["enabled"])
+        log.info("ai_chatter_rule_sync account=%s action=%s enabled=%s",
+                 body.account_id, action, clean["enabled"])
     log.info("ai_chatter_config_saved account=%s tz=%s cfg=%s",
              body.account_id, tz, clean)
     async with get_session() as s:

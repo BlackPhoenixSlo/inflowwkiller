@@ -177,6 +177,23 @@ export function useUpdateRule(accountId: string | null) {
   });
 }
 
+/** Turn a KIND on/off for the account — one request, whatever the account's rule
+ *  rows happen to look like. The client used to decide this itself (create vs.
+ *  wake vs. park-them-all, and the cadence a new row gets), which meant two
+ *  copies of one policy either side of the wire and N requests to park N rows.
+ *  The server owns it now: `automation_rules_api.ensure_kind_rule`. */
+export function useSwitchKind(accountId: string | null) {
+  const qc = useQueryClient();
+  return useMutation<
+    { action: string }, Error, { kind: string; enable: boolean }
+  >({
+    mutationFn: ({ kind, enable }) =>
+      relay.post("/admin/automation-rules/switch",
+        { account_id: accountId, kind, enable }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
+  });
+}
+
 export function useDeleteRule(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, number>({
