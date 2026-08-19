@@ -1,9 +1,11 @@
 """service/ppv_library_config_api.py — read/write account_ai_config.ppv_library_config_json.
 
 The "PPV Library" tab persists a per-account store of premade PPVs through these
-owner-gated routes. On save it ALSO syncs the automation rules: one `ppv_send`
-AutomationRule per enabled PPV, cadence `every_seconds = 604800 / sends_per_week`.
-The rule materializer is the scheduler — there is no rotator.
+owner-gated routes. On save it ALSO syncs the automation rules: ONE `ppv_send`
+AutomationRule for the whole account (the hourly rotator tick, no ppv_id in its
+steps). `ppv_send._pick_due_ppv` decides which enabled PPV each tick belongs to
+— a week ÷ sends_per_week apart per PPV — so the per-PPV ticks in this tab are
+the only per-PPV switch, and the rules page shows one row, not one per PPV.
 
   GET /admin/ppv-library-config?account_id=  → {config, defaults, pools, matrix}
   PUT /admin/ppv-library-config              → upsert the JSON + sync rules
@@ -51,9 +53,12 @@ _MAX_PREVIEWS = 10
 _MAX_CAPTION_TEXTS = 20
 _CAPTION_MAX = 1500     # long multi-paragraph PPV copy (the "screenshot" look) fits
 _NAME_MAX = 60
-_WEEK_SECONDS = 7 * 24 * 60 * 60
-_MIN_EVERY_S = 3600                 # never faster than hourly per PPV
-_MAX_EVERY_S = 30 * 24 * 60 * 60    # the rules-engine ceiling
+_ROTATOR_NAME = "PPV sends"
+# The single rule's tick. The rotator inside ppv_send decides which PPV (if any)
+# each tick belongs to, so this is just "how often we look": per-PPV gaps floor
+# at 12h and the default ppv_caps gap is 12h, so hourly keeps a due PPV's real
+# send within an hour of its slot.
+_ROTATOR_TICK_S = 3600
 
 
 def _int_list(raw: Any, cap: int) -> list[int]:
@@ -205,15 +210,15 @@ def _validate(cfg: dict) -> dict:
     return out
 
 
-def _every_seconds(sends_per_week: int) -> int:
-    return max(_MIN_EVERY_S, min(round(_WEEK_SECONDS / max(1, sends_per_week)), _MAX_EVERY_S))
-
-
 async def _sync_rules(s, account_id: str, cfg: dict) -> dict[str, int]:
-    """One `ppv_send` rule per PPV. Match existing rules by the ppv_id baked into
-    steps_json (so a rename never orphans a rule). Enabled rule iff master-enabled
-    AND the PPV is enabled; removed PPVs' rules are disabled (not deleted — keeps
-    any in-flight job's FK intact)."""
+    """ONE `ppv_send` rule per account — the rotator tick. `ppv_send.run` with no
+    ppv_id in the payload picks which enabled PPV is due (a week ÷ sends_per_week
+    apart each), so the per-PPV ticks in the Library tab are the only per-PPV
+    switch: untick them all (or the master) and the rule goes dark. Legacy
+    per-PPV rules (steps carry a ppv_id) are disabled, never deleted — an
+    in-flight job's FK still points at them. Arc-owned entries never count
+    toward arming the rule: they are fired once by vault_arc's own one-shot, and
+    the rotator refuses to pick them."""
     master = bool(cfg.get("enabled"))
     qh = cfg.get("quiet_hours")
     quiet_json = json.dumps(qh) if isinstance(qh, list) and len(qh) == 2 else None
@@ -221,53 +226,81 @@ async def _sync_rules(s, account_id: str, cfg: dict) -> dict[str, int]:
         select(AutomationRule).where(
             AutomationRule.account_id == account_id,
             AutomationRule.kind == "ppv_send",
-        )
+        ).order_by(AutomationRule.id)
     )).scalars().all()
-    by_ppv: dict[str, AutomationRule] = {}
+
+    rotator: AutomationRule | None = None
+    stats = {"created": 0, "updated": 0, "disabled": 0}
     for r in existing:
         try:
             pid = str((json.loads(r.steps_json or "{}") or {}).get("ppv_id") or "")
         except Exception:
             pid = ""
-        if pid:
-            by_ppv[pid] = r
-
-    stats = {"created": 0, "updated": 0, "disabled": 0}
-    desired_ids: set[str] = set()
-    for p in cfg.get("ppvs") or []:
-        pid = p["id"]
-        # An arc-owned entry is fired ONCE by the scheduled job `vault_arc` booked
-        # for its day. Minting a cadence rule for it here would turn a single story
-        # beat into a weekly blast that outlives the arc — and it would happen on
-        # the operator merely opening the PPV Library and pressing Save. Claim the
-        # id so the orphan sweep below leaves it alone, then skip it.
-        if p.get("arc_owned"):
-            desired_ids.add(pid)
+        # The lowest-id no-ppv_id rule is THE rotator (deterministic across
+        # re-syncs); everything else — old per-PPV rules and any duplicate a
+        # concurrent save minted — goes quiet.
+        if not pid and rotator is None:
+            rotator = r
             continue
-        desired_ids.add(pid)
-        trigger = json.dumps({"every_seconds": _every_seconds(p["sends_per_week"])})
-        steps = json.dumps({"account_id": account_id, "ppv_id": pid})
-        enable = master and p.get("enabled", True)
-        name = f"PPV: {p.get('name') or pid}"[:_NAME_MAX]
-        r = by_ppv.get(pid)
-        if r is not None:
-            r.trigger_json = trigger
-            r.steps_json = steps
-            r.name = name
-            r.is_enabled = enable
-            r.quiet_hours_json = quiet_json
-            stats["updated"] += 1
-        else:
-            s.add(AutomationRule(
-                account_id=account_id, name=name, kind="ppv_send",
-                trigger_json=trigger, steps_json=steps, is_enabled=enable,
-                quiet_hours_json=quiet_json))
-            stats["created"] += 1
-    for pid, r in by_ppv.items():
-        if pid not in desired_ids and r.is_enabled:
+        if r.is_enabled:
             r.is_enabled = False
             stats["disabled"] += 1
+
+    ppvs = [p for p in (cfg.get("ppvs") or [])
+            if isinstance(p, dict) and not p.get("arc_owned")]
+    if rotator is None and not ppvs:
+        return stats            # nothing to schedule and nothing to repair
+    enable = master and any(p.get("enabled", True) for p in ppvs)
+    trigger = json.dumps({"every_seconds": _ROTATOR_TICK_S})
+    steps = json.dumps({"account_id": account_id})
+    if rotator is not None:
+        rotator.trigger_json = trigger
+        rotator.steps_json = steps
+        rotator.name = _ROTATOR_NAME
+        rotator.is_enabled = enable
+        rotator.quiet_hours_json = quiet_json
+        stats["updated"] += 1
+    else:
+        s.add(AutomationRule(
+            account_id=account_id, name=_ROTATOR_NAME, kind="ppv_send",
+            trigger_json=trigger, steps_json=steps, is_enabled=enable,
+            quiet_hours_json=quiet_json))
+        stats["created"] += 1
     return stats
+
+
+async def resync_all_rules() -> dict[str, Any]:
+    """Re-run `_sync_rules` for every account with a stored library config.
+
+    Rides the boot-time heal section in `server._start_event_pumps` (after
+    db_init, before the automation supervisor claims jobs) — that is what
+    migrated the old per-PPV rules to the single rotator on the first deploy,
+    and it stays as a self-heal: idempotent, one small transaction per account,
+    so a hand-edited or drifted rule set is repaired on the next boot. A broken
+    blob skips that account only. No expiry.
+    """
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(AccountAiConfig.account_id,
+                   AccountAiConfig.ppv_library_config_json)
+            .where(AccountAiConfig.ppv_library_config_json.is_not(None)))).all()
+    out: dict[str, Any] = {"accounts": 0, "created": 0, "updated": 0,
+                           "disabled": 0, "skipped": []}
+    for aid, blob in rows:
+        try:
+            # The stored blob already went through _validate on save; _sync_rules
+            # reads only enabled/quiet_hours/ppvs[*].{id,enabled,arc_owned}.
+            cfg = json.loads(blob) or {}
+        except Exception:
+            out["skipped"].append(aid)
+            continue
+        async with get_session() as s:
+            stats = await _sync_rules(s, aid, cfg)
+        out["accounts"] += 1
+        for k in ("created", "updated", "disabled"):
+            out[k] += stats[k]
+    log.info("ppv_rules_resync %s", out)
+    return out
 
 
 # The band derivation reads what HUMANS actually charged for each piece of media.

@@ -4,10 +4,12 @@
  * PPVLibraryTab — Automations → "💸 PPV Library".
  *
  * Build ~20 premade PPVs once. Each = vault media + a caption pool + a base price
- * + free-teaser picks + "sends per week". On Save the backend upserts one `ppv_send`
- * rule per enabled PPV (cadence = a week ÷ sends-per-week); when a rule fires,
- * `ppv_send` fans the SAME media out to spend×recency fan segments at a per-segment
- * price (base × matrix multiplier), rotating the preview + caption per send.
+ * + free-teaser picks + "sends per week". On Save the backend upserts ONE `ppv_send`
+ * rule for the whole account; each hourly tick, the backend rotator picks whichever
+ * enabled PPV is due again (a week ÷ its sends-per-week since its last send) — so
+ * the per-PPV ✓ ticks here are the only per-PPV switch. A firing send fans the SAME
+ * media out to spend×recency fan segments at a per-segment price (base × matrix
+ * multiplier), rotating the preview + caption per send.
  *
  * Writes account_ai_config.ppv_library_config_json via /admin/ppv-library-config.
  */
@@ -299,8 +301,8 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   };
 
   // Commit the ticked bundles. Re-running REPLACES a previous suggestion rather
-  // than duplicating it: ids are derived from the slot, and `_sync_rules`
-  // matches each PPV to its AutomationRule by that id.
+  // than duplicating it: ids are derived from the slot, and the send ledger +
+  // rotator track each PPV by that id.
   const addSuggested = () => {
     if (!suggested) return;
     const take = suggested.ppvs.filter((p) => picked.has(p.id));

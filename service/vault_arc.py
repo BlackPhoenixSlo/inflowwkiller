@@ -25,10 +25,12 @@ there is no recurring cadence to leak — when the row runs, that drop is over.
 WHY THE LIBRARY ENTRIES ARE FLAGGED
 -----------------------------------
 A priced DM day needs a `ppv_library_config_json` entry for `ppv_send` to load.
-Those entries are marked `arc_owned` and `ppv_library_config_api._sync_rules`
-skips them: without that flag, the operator opening the PPV Library and pressing
-Save would mint a RECURRING `ppv_send` rule per arc day, quietly converting a
-one-shot story beat into a weekly blast forever.
+Those entries are marked `arc_owned`, and both halves of the recurring machinery
+refuse them: `ppv_library_config_api._sync_rules` never counts them toward
+arming the account's single rotator rule, and `ppv_send._pick_due_ppv` never
+hands them a tick. Without the flag, the operator opening the PPV Library and
+pressing Save would quietly convert a one-shot story beat into a weekly blast
+forever.
 
 Suggest-only is not weakened, it is spent deliberately: nothing here runs without
 `approve()`, and `approve()` is only reachable from an explicit operator confirm.

@@ -420,11 +420,11 @@ def to_config_ppvs(plan: dict[str, Any]) -> list[dict[str, Any]]:
 
     Three fields the proposal does not otherwise carry, each one load-bearing:
 
-      `id`      REQUIRED by `_validate_ppv` (422 without it), and
-                `ppv_library_config_api._sync_rules` matches each PPV to its
-                AutomationRule BY this id. So it is derived from the slot key
-                and is STABLE across re-proposals: re-running updates a row
-                instead of orphaning its rule and creating a duplicate.
+      `id`      REQUIRED by `_validate_ppv` (422 without it), and it is the key
+                the send ledger and the rotator track each PPV by. So it is
+                derived from the slot key and is STABLE across re-proposals:
+                re-running updates a row instead of creating a duplicate that
+                would re-enter rotation as "never sent".
       `enabled` **must be False.** It defaults to TRUE in `_validate_ppv`, so
                 saving seven proposals as-is would arm ~13 sends/week the moment
                 the operator pressed Save. A proposal is a draft; arming it is a
