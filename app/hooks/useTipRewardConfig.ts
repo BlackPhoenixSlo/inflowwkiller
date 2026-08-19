@@ -64,6 +64,10 @@ export interface TipRewardConfig {
   teaser_convo_enabled?: boolean;
   teaser_convo_after_fan_msgs?: number; // his messages between rungs
   teaser_convo_count?: number; // vault items per tease
+  // "Videos too" for THIS ladder (backend default OFF — its own flag, not
+  // videos_in_rewards). On, clips ride the rungs and each eats several image slots
+  // of the ask by length + explicitness, so a $10 rung can't ship a $60 clip.
+  teaser_convo_videos?: boolean;
   teaser_convo_rungs?: { folder: string; price_cents: number }[];
   // Adaptive climb (backend default ON): the rung climbs only when the LAST teaser
   // actually sold; on a no-buy the ask softens to 65–73% and the rung holds.
