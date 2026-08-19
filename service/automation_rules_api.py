@@ -47,6 +47,10 @@ router = APIRouter()
 # Cap the high end at 30 days — beyond that it's effectively "off, but enabled".
 _MIN_EVERY_S = 30
 _MAX_EVERY_S = 30 * 24 * 60 * 60
+# Only reachable for a kind with no catalog entry below — the same number the
+# editor falls back to, so a rule born from a settings tab and one built by hand
+# get the same cadence.
+_FALLBACK_EVERY_S = 300
 
 
 # ── Kind catalog ──────────────────────────────────────────────────────
@@ -710,6 +714,83 @@ class RulePatch(BaseModel):
     is_enabled: bool | None = None
 
 
+# ── The rule behind a settings tab ────────────────────────────────────
+
+async def ensure_kind_rule(
+    s, account_id: str, kind: str, *, enable: bool,
+    name: str | None = None, every_seconds: int | None = None,
+    steps: dict[str, Any] | None = None,
+) -> str:
+    """Find-or-create the account's rule for `kind` and set its switch.
+
+    A settings tab's "Enabled" box writes that engine's CONFIG blob; what makes
+    the engine tick is a row in this table, and the two used to be separate
+    controls in separate panels — so a fully-configured engine could read
+    "Enabled" on its own tab and never run. Every config endpoint that grew a
+    fix for that hand-rolled its own find-or-create (four of them say "mirrors
+    nudge_config_api._ensure_rule" in the docstring). This is that policy, once,
+    in the module that owns the table.
+
+    `enable=False` parks EVERY row of the kind: with two rows, parking one would
+    leave the engine sending under a box that reads off. `enable=True` wakes the
+    running-or-first row, or creates one when the account has none — never a
+    second ticker for the same kind.
+
+    `name` / `every_seconds` / `steps` are written when given and left ALONE when
+    not. A caller that owns the schedule (nudge, make_right) passes it on every
+    save; one whose cadence the operator tunes in the rules editor (ai_chatter)
+    passes nothing and keeps it. Defaults on CREATE come from the same catalog
+    the editor offers, so a new row is what picking the kind by hand would give.
+
+    Queries `kind_family` — a pre-rename row still carries its retired name, and
+    matching only the canonical one would silently create a duplicate beside it.
+    Callers own the transaction; nothing here commits.
+
+    Returns "created" | "updated" | "parked" | "unchanged" (for the log line).
+    """
+    kind = canonical_kind(kind)
+    rules = list((await s.execute(
+        select(AutomationRule).where(
+            AutomationRule.account_id == str(account_id),
+            AutomationRule.kind.in_(kind_family(kind)),
+        ).order_by(AutomationRule.id)
+    )).scalars())
+
+    if not enable:
+        running = [r for r in rules if r.is_enabled]
+        for r in running:
+            r.is_enabled = False
+        return "parked" if running else "unchanged"
+
+    meta = _CATALOG.get(kind) or {}
+    if not rules:
+        s.add(AutomationRule(
+            account_id=str(account_id), kind=kind,
+            name=(name or meta.get("label") or kind),
+            trigger_json=json.dumps({"every_seconds": int(
+                every_seconds if every_seconds is not None
+                else meta.get("cadence_default_s") or _FALLBACK_EVERY_S)}),
+            steps_json=json.dumps(steps or {}),
+            is_enabled=True))
+        return "created"
+
+    rule = next((r for r in rules if r.is_enabled), rules[0])
+    changed = not rule.is_enabled
+    rule.is_enabled = True
+    if name and rule.name != name:
+        rule.name = name
+        changed = True
+    if every_seconds is not None:
+        trigger = json.dumps({"every_seconds": int(every_seconds)})
+        changed = changed or rule.trigger_json != trigger
+        rule.trigger_json = trigger
+    if steps is not None:
+        payload = json.dumps(steps)
+        changed = changed or rule.steps_json != payload
+        rule.steps_json = payload
+    return "updated" if changed else "unchanged"
+
+
 # ── Routes ────────────────────────────────────────────────────────────
 
 @router.get("/admin/automation-kinds")
@@ -728,6 +809,34 @@ async def list_rules(account_id: str | None = Query(None)) -> dict[str, Any]:
         q = q.order_by(AutomationRule.kind, AutomationRule.id)
         rules = (await s.execute(q)).scalars().all()
         return {"rules": [await _serialize(s, r) for r in rules]}
+
+
+class KindSwitch(BaseModel):
+    account_id: str
+    kind: str
+    enable: bool
+
+
+@router.post("/admin/automation-rules/switch")
+async def switch_kind(body: KindSwitch = Body(...)) -> dict[str, Any]:
+    """Turn an automation KIND on or off for an account, in one write.
+
+    The switch a settings tab shows. Its callers do not want to know whether the
+    account already has a row, how many, or what cadence a new one gets — and a
+    client that DID know parked two rules with two requests, so a failure between
+    them left the account half-off. `ensure_kind_rule` is that decision, made once
+    and applied inside a single transaction.
+    """
+    assert_account_owned(body.account_id)
+    kind = canonical_kind(body.kind)
+    if not is_registered(kind):
+        raise HTTPException(422, f"unknown automation kind {body.kind!r}")
+    async with get_session() as s:
+        action = await ensure_kind_rule(s, body.account_id, kind, enable=body.enable)
+    log.info("automation_kind_switch account=%s kind=%s enable=%s action=%s",
+             body.account_id, kind, body.enable, action)
+    return {"account_id": body.account_id, "kind": kind,
+            "enable": body.enable, "action": action}
 
 
 @router.post("/admin/automation-rules")

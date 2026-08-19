@@ -1240,6 +1240,12 @@ export function useSellerConfig(accountId: string | null) {
     // operator thought they had just cleared.
     out.rhythm_ghost_cycle = base.rhythm_ghost_cycle ?? null;
     out.rhythm_sleep_source = base.rhythm_sleep_source ?? "default";
+    // `enabled` is authoritative for a second reason: the save endpoint syncs the
+    // account's ai_chatter automation RULE from it, and it only acts on a key the
+    // payload actually carries. Sparse would drop `false` (it IS the default), so
+    // unticking the box would store "off" and leave the rule ticking — the exact
+    // split the one-checkbox change exists to close.
+    out.enabled = !!base.enabled;
     out.script_pack_overrides = packOverrides;
     return out as AiChatterConfig;
   };

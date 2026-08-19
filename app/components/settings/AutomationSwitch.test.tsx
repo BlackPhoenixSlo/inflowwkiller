@@ -22,7 +22,7 @@ vi.mock("@/lib/relay", async (importOriginal) => {
 });
 
 import {
-  AutomationSwitch, AutomationSwitchCard,
+  AutomationRuleBadge, AutomationSwitchCard,
 } from "@/components/settings/AutomationSwitch";
 import { relay } from "@/lib/relay";
 
@@ -77,47 +77,42 @@ beforeEach(() => {
 afterEach(() => { cleanup(); });
 
 describe("AutomationSwitchCard", () => {
-  it("creates the rule at the catalogued cadence when the account has none", async () => {
-    serve([]);
-    mount();
-    await screen.findByText("not set up yet");
-    const box = screen.getByRole("checkbox");
-    expect((box as HTMLInputElement).checked).toBe(false);
+  // Create-vs-wake-vs-park-them-all is the SERVER's decision now (one write, one
+  // transaction — `ensure_kind_rule`, pinned by test_automation_rules_api). What
+  // is left to pin here is that the box asks for the switch and nothing else: the
+  // client used to hold its own copy of that policy, and two copies drift.
+  it("asks the server for the switch — whatever the account's rules look like",
+    async () => {
+      const shapes: Record<string, unknown>[][] = [
+        [],                                                     // no rule at all
+        [rule({ is_enabled: false })],                           // one parked
+        [rule({ id: 7, is_enabled: true }),                      // two running
+         rule({ id: 9, is_enabled: true })],
+      ];
+      for (const rows of shapes) {
+        client = new QueryClient({
+          defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+        });
+        relayPost.mockClear();
+        relayPatch.mockClear();
+        serve(rows);
+        mount();
 
-    await userEvent.click(box);
-    await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
-    const [path, body] = relayPost.mock.calls[0] as [string, Record<string, unknown>];
-    expect(path).toBe("/admin/automation-rules");
-    expect(body).toMatchObject({
-      account_id: ACCT, kind: KIND, every_seconds: 60, is_enabled: true, payload: {},
+        const box = await screen.findByRole("checkbox") as HTMLInputElement;
+        const on = rows.some((r) => Boolean(r.is_enabled));
+        await waitFor(() => expect(box.disabled).toBe(false));
+        await waitFor(() => expect(box.checked).toBe(on), { timeout: 2000 });
+
+        await userEvent.click(box);
+        await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
+        expect(relayPost.mock.calls[0][0]).toBe("/admin/automation-rules/switch");
+        expect(relayPost.mock.calls[0][1]).toEqual(
+          { account_id: ACCT, kind: KIND, enable: !on });
+        // No rule ids from the client: it does not know which row, or how many.
+        expect(relayPatch).not.toHaveBeenCalled();
+        cleanup();
+      }
     });
-  });
-
-  it("wakes the existing parked rule instead of adding a second ticker", async () => {
-    serve([rule({ is_enabled: false })]);
-    mount();
-    await screen.findByText("rule is off");
-
-    await userEvent.click(screen.getByRole("checkbox"));
-    await waitFor(() => expect(relayPatch).toHaveBeenCalledTimes(1));
-    expect(relayPatch.mock.calls[0][0]).toBe("/admin/automation-rules/7");
-    expect(relayPatch.mock.calls[0][1]).toEqual({ is_enabled: true });
-    // A second row of the same kind would just double the sweep.
-    expect(relayPost).not.toHaveBeenCalled();
-  });
-
-  it("off parks EVERY enabled rule of the kind, not just the first", async () => {
-    serve([rule({ id: 7, is_enabled: true }), rule({ id: 9, is_enabled: true })]);
-    mount();
-    await waitFor(() =>
-      expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(true));
-
-    await userEvent.click(screen.getByRole("checkbox"));
-    await waitFor(() => expect(relayPatch).toHaveBeenCalledTimes(2));
-    const ids = relayPatch.mock.calls.map((c) => c[0]);
-    expect(ids).toEqual(["/admin/automation-rules/7", "/admin/automation-rules/9"]);
-    expect(relayPatch.mock.calls.every((c) => c[1].is_enabled === false)).toBe(true);
-  });
 
   it("reads a rule as ON and shows its cadence", async () => {
     serve([rule({ is_enabled: true, every_seconds: 300 })]);
@@ -164,7 +159,7 @@ describe("AutomationSwitchCard", () => {
     const box = screen.getByRole("checkbox") as HTMLInputElement;
     await waitFor(() => expect(box.disabled).toBe(true));
     await userEvent.click(box);
-    expect(relayPatch).not.toHaveBeenCalled();
+    expect(relayPost).not.toHaveBeenCalled();
     // …and it must not claim the account has no rule while it is still asking.
     expect(screen.queryByText(/Ticking the box creates/)).toBeNull();
 
@@ -185,30 +180,31 @@ describe("AutomationSwitchCard", () => {
 });
 
 /**
- * The header pill is the same hook in a one-line dress — but it is the copy that
- * actually ships in the AI Chatter tab header, so the wiring gets its own check
- * rather than riding on the card's.
+ * The header badge is the same hook with the checkbox taken away: the AI Chatter
+ * tab's own "Enabled" box writes the rule now (put_ai_chatter_config), so what
+ * ships beside it is a status light. Pinned because a light that can be CLICKED
+ * is the duplicate-control bug coming back.
  */
-describe("AutomationSwitch (header pill)", () => {
-  it("reflects the running rule and parks it on click", async () => {
+describe("AutomationRuleBadge (header status light)", () => {
+  it("shows the running rule's cadence and offers nothing to click", async () => {
     serve([rule({ is_enabled: true, every_seconds: 300 })]);
-    render(<AutomationSwitch accountId={ACCT} kind={KIND} />, { wrapper });
+    render(<AutomationRuleBadge accountId={ACCT} kind={KIND} />, { wrapper });
 
     await screen.findByText("on · every 5 min");
-    const box = screen.getByRole("checkbox") as HTMLInputElement;
-    await waitFor(() => expect(box.checked).toBe(true));
-
-    await userEvent.click(box);
-    await waitFor(() => expect(relayPatch).toHaveBeenCalledTimes(1));
-    expect(relayPatch.mock.calls[0][1]).toEqual({ is_enabled: false });
+    expect(screen.queryByRole("checkbox")).toBeNull();
   });
 
-  it("stays inert with no account picked", async () => {
-    serve([]);
-    render(<AutomationSwitch accountId={null} kind={KIND} />, { wrapper });
-    const box = screen.getByRole("checkbox") as HTMLInputElement;
-    expect(box.disabled).toBe(true);
-    await userEvent.click(box);
+  it("names a rule that exists but is parked", async () => {
+    serve([rule({ is_enabled: false })]);
+    render(<AutomationRuleBadge accountId={ACCT} kind={KIND} />, { wrapper });
+    await screen.findByText("rule is off");
+  });
+
+  it("writes nothing, ever", async () => {
+    serve([rule({ is_enabled: true })]);
+    render(<AutomationRuleBadge accountId={ACCT} kind={KIND} />, { wrapper });
+    await screen.findByText(/^on ·/);
+    expect(relayPatch).not.toHaveBeenCalled();
     expect(relayPost).not.toHaveBeenCalled();
   });
 });

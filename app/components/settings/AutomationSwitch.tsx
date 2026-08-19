@@ -1,17 +1,16 @@
 "use client";
 
 /**
- * AutomationSwitch — turn an automation KIND on for an account from the tab that
- * configures it, instead of hunting for it in the Automation rules list.
+ * The `automation_rules` row behind a settings tab, in the two shapes a tab needs.
  *
- * A settings tab's own "Enabled" box only writes that engine's CONFIG blob. What
- * makes the engine actually tick is an `automation_rules` row, and that row is
- * born in a different panel — so an account can have every box on this tab ticked
- * and still send nothing, because no rule ever ran it. The info-gather chatter
- * (welcome_chatter_for_info) has no tab of its own at all: the rules list was the
- * ONLY place it could be switched on.
+ * A tab's "Enabled" box writes that engine's CONFIG blob. What makes the engine
+ * actually tick is a rule row, and that row was born in a different panel — so an
+ * account could have every box on a tab ticked and still send nothing, because no
+ * rule ever ran it.
  *
- * This is that row, surfaced where the settings live:
+ * `AutomationSwitchCard` — the row AS the switch, for a kind whose tab has no
+ * config flag of its own to hang it on (welcome_chatter_for_info has no tab at
+ * all; the rules list was the ONLY place it could be started):
  *
  *   on  → enable the kind's first rule, or CREATE one (catalog cadence, empty
  *         payload — the automation's own defaults, same as the rules editor)
@@ -19,6 +18,12 @@
  *
  * ⚠️ Unlike the config checkboxes around it this writes IMMEDIATELY — it edits a
  * different store, and there is no Save button on this tab that would carry it.
+ *
+ * `AutomationRuleBadge` — the row as a STATUS LIGHT, for a tab whose own Enabled
+ * box already owns it. The AI Chatter tab carried a second checkbox here, next to
+ * its Enabled box and indistinguishable from it; its save endpoint syncs the rule
+ * now (`automation_rules_api.ensure_kind_rule`), so one box is the whole of on and
+ * all that is left to show is whether the row is ticking.
  */
 
 import { useMemo } from "react";
@@ -28,7 +33,7 @@ import { Badge } from "@/components/ui/primitives";
 import { fmtAgo, fmtEvery } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
-  useAutomationKinds, useAutomationRules, useCreateRule, useUpdateRule,
+  useAutomationKinds, useAutomationRules, useSwitchKind,
   type AutomationRule,
 } from "@/hooks/useAutomations";
 
@@ -37,7 +42,11 @@ import {
  *  `rule`/`on`/`loading` and drifting. */
 type RuleState = "loading" | "running" | "parked" | "absent";
 
-interface AutomationSwitchState {
+/** What the rule row IS. Split from the switch below so a surface that only
+ *  reports (the AI Chatter header badge) does not carry two mutations and a
+ *  `toggle` it can never call — the component's read-only contract is the
+ *  hook's too. */
+interface RuleView {
   /** Every rule of this kind on the account (legacy-named rows serialize under
    *  the canonical kind, so a pre-0062 DB matches here too — no duplicates). */
   rules: AutomationRule[];
@@ -50,6 +59,17 @@ interface AutomationSwitchState {
    *  of a rule that exists: a `daily_at` rule has no interval, and printing this
    *  number for it would name a cadence the rule does not run on. */
   newRuleCadence: number;
+  /** "Not answering for this account yet" — every write is held until it clears.
+   *  `isPlaceholderData` is the load-bearing half: the rules query keeps the
+   *  PREVIOUS account's rows on screen while the new one loads, so a switch
+   *  clicked in that window would have flipped a rule belonging to the account
+   *  the operator just left. The kind catalog is in here too — without it a
+   *  created rule silently lands on the fallback cadence instead of the kind's
+   *  own. */
+  settling: boolean;
+}
+
+interface AutomationSwitchState extends RuleView {
   busy: boolean;
   /** Cosmetic only — `toggle` enforces the same condition itself, so the write
    *  cannot happen even if a caller forgets to pass this to its input. */
@@ -58,13 +78,9 @@ interface AutomationSwitchState {
   toggle: (next: boolean) => void;
 }
 
-function useAutomationSwitch(
-  accountId: string | null, kind: string,
-): AutomationSwitchState {
+function useRuleView(accountId: string | null, kind: string): RuleView {
   const rulesQ = useAutomationRules(accountId);
   const kindsQ = useAutomationKinds();
-  const createM = useCreateRule(accountId);
-  const updateM = useUpdateRule(accountId);
 
   const rules = useMemo(
     () => (rulesQ.data ?? []).filter((r) => r.kind === kind),
@@ -76,91 +92,77 @@ function useAutomationSwitch(
   );
   const running = rules.find((r) => r.is_enabled) ?? null;
   const rule = running ?? rules[0] ?? null;
-
-  // "Not answering for this account yet." `isPlaceholderData` is the load-bearing
-  // half: the rules query keeps the PREVIOUS account's rows on screen while the new
-  // one loads, so a switch clicked in that window would have flipped a rule
-  // belonging to the account the operator just left. The kind catalog is in here
-  // too — without it a created rule silently lands on the 300s fallback cadence
-  // instead of the kind's own.
   const settling = rulesQ.isLoading || rulesQ.isPlaceholderData || kindsQ.isLoading;
 
+  return {
+    rules, rule, settling,
+    state: settling ? "loading" : running ? "running" : rule ? "parked" : "absent",
+    kindLabel: meta?.label || kind,
+    // 300s is the rules editor's own fallback for an uncatalogued kind.
+    newRuleCadence: meta?.cadence_default_s ?? 300,
+  };
+}
+
+function useAutomationSwitch(
+  accountId: string | null, kind: string,
+): AutomationSwitchState {
+  const view = useRuleView(accountId, kind);
+  const switchM = useSwitchKind(accountId);
+
+  // One request, whatever the rows look like: create the first, wake the parked
+  // one, park every enabled one. That decision is the SERVER's — the same call
+  // the AI Chatter tab's Save makes — so the two switches on this tab cannot
+  // drift, and parking two rules can no longer half-fail between two requests.
+  //
+  // Still gated on `settling`: the rules query keeps the PREVIOUS account's rows
+  // on screen while the new one loads, and a click in that window would switch
+  // the account the operator just left.
   const toggle = (next: boolean) => {
-    if (!accountId || settling) return;
-    // `mutate`, not `mutateAsync`: these writes are independent, so there is
-    // nothing to sequence and no promise to own — react-query already holds the
-    // pending/error state the UI reads below.
-    if (!next) {
-      // Off disables ALL of them: with two rules of one kind, parking just the
-      // first would draw an unchecked box while the engine kept sending.
-      rules.filter((r) => r.is_enabled)
-        .forEach((r) => updateM.mutate({ id: r.id, is_enabled: false }));
-    } else if (rule) {
-      // On wakes the EXISTING rule (keeping its cadence, payload and quiet hours);
-      // a second row of the same kind would just double the tick.
-      updateM.mutate({ id: rule.id, is_enabled: true });
-    } else {
-      createM.mutate({
-        account_id: accountId, kind,
-        name: meta?.label || kind,
-        // 300s is the rules editor's own fallback for an uncatalogued kind.
-        every_seconds: meta?.cadence_default_s ?? 300,
-        payload: {},                 // empty = the automation's shipped defaults
-        is_enabled: true,
-      });
-    }
+    if (!accountId || view.settling) return;
+    switchM.mutate({ kind, enable: next });
   };
 
   return {
-    rules, rule,
-    state: settling ? "loading" : running ? "running" : rule ? "parked" : "absent",
-    kindLabel: meta?.label || kind,
-    newRuleCadence: meta?.cadence_default_s ?? 300,
-    busy: createM.isPending || updateM.isPending,
-    disabled: !accountId || settling || createM.isPending || updateM.isPending,
-    error: createM.error ?? updateM.error,
+    ...view,
+    busy: switchM.isPending,
+    disabled: !accountId || view.settling || switchM.isPending,
+    error: switchM.error,
     toggle,
   };
 }
 
-/** The one badge both surfaces render, so "on" never says two different things. */
-function RuleStateBadge({ sw }: { sw: AutomationSwitchState }) {
-  if (sw.busy) return <Loader2 size={13} className="animate-spin text-fg-dim" />;
-  if (sw.state === "loading") return null;
-  if (sw.state === "running") {
-    return <Badge color="ok">on · {fmtEvery(sw.rule?.every_seconds)}</Badge>;
+/** The one badge both surfaces render, so "on" never says two different things.
+ *  `busy` is the switch's spinner; the read-only badge has nothing to wait for. */
+function RuleStateBadge({ view, busy = false }: { view: RuleView; busy?: boolean }) {
+  if (busy) return <Loader2 size={13} className="animate-spin text-fg-dim" />;
+  if (view.state === "loading") return null;
+  if (view.state === "running") {
+    return <Badge color="ok">on · {fmtEvery(view.rule?.every_seconds)}</Badge>;
   }
   return (
-    <Badge color={sw.state === "parked" ? "warn" : "muted"}>
-      {sw.state === "parked" ? "rule is off" : "not set up yet"}
+    <Badge color={view.state === "parked" ? "warn" : "muted"}>
+      {view.state === "parked" ? "rule is off" : "not set up yet"}
     </Badge>
   );
 }
 
-/** Compact header pill — "is this engine actually scheduled?" next to the tab's
- *  own config checkbox, which only ever answered "is it configured on?". */
-export function AutomationSwitch({
-  accountId, kind, label = "Automation", className,
+/** Read-only status light for a kind's rule, for a tab that already OWNS the
+ *  switch. The AI Chatter header carried a second checkbox for this row, sitting
+ *  a few pixels from its own "Enabled" box and indistinguishable from it; the
+ *  save endpoint now syncs the rule from `enabled`, so one box is the whole of
+ *  on and what is left to show is whether the row is actually ticking. */
+export function AutomationRuleBadge({
+  accountId, kind, className,
 }: {
   accountId: string | null;
   kind: string;
-  label?: string;
   className?: string;
 }) {
-  const sw = useAutomationSwitch(accountId, kind);
+  const view = useRuleView(accountId, kind);
   return (
-    <span className={cn("flex items-center gap-2", className)}>
-      <label className="flex items-center gap-2 text-sm cursor-pointer"
-        title={`The ${sw.kindLabel} automation rule. Saves immediately.`}>
-        <input type="checkbox" checked={sw.state === "running"}
-          disabled={sw.disabled} onChange={(e) => sw.toggle(e.target.checked)} />
-        {label}
-      </label>
-      <RuleStateBadge sw={sw} />
-      {sw.error && (
-        <span className="text-[11px] text-err max-w-48 truncate"
-          title={sw.error.message}>{sw.error.message || "failed"}</span>
-      )}
+    <span className={cn("flex items-center", className)}
+      title={`The ${view.kindLabel} automation rule — the row the executor ticks.`}>
+      <RuleStateBadge view={view} />
     </span>
   );
 }
@@ -205,7 +207,7 @@ export function AutomationSwitchCard({
         <span className="flex-1">
           <span className="flex items-center gap-2 flex-wrap">
             <span className="font-medium">{title}</span>
-            <RuleStateBadge sw={sw} />
+            <RuleStateBadge view={sw} busy={sw.busy} />
           </span>
           <span className="block text-fg-dim text-xs">{children}</span>
         </span>

@@ -110,6 +110,25 @@ describe("useSellerConfig save gating", () => {
     expect(body).not.toHaveProperty("timezone");
   });
 
+  it("still sends `enabled` when it is switched OFF", async () => {
+    // Sparse drops any key equal to its default, and `false` IS the default — so
+    // this key used to vanish from the payload the moment you unticked the box.
+    // The save endpoint syncs the automation RULE from it and only acts on a key
+    // it actually receives, so a dropped `false` stored "off" and left the engine
+    // ticking: the split the one-checkbox change exists to close.
+    relayGet.mockResolvedValue(CONFIG_RESPONSE);
+    const { result } = renderHook(() => useSellerConfig("123456789"), { wrapper });
+
+    await waitFor(() => expect(result.current.configLoaded).toBe(true));
+    await act(async () => { result.current.saveCfg({ enabled: false }); await flush(); });
+
+    await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(1));
+    const body = relayPut.mock.calls[0][1] as Record<string, unknown>;
+    const cfg = body.config as Record<string, unknown>;
+    expect(cfg).toHaveProperty("enabled");
+    expect(cfg.enabled).toBe(false);
+  });
+
   it("carries the server-resolved starter pack through, and never invents one", async () => {
     const rows = [{ kind: "video", label: "Post-gym", description_for_ai: "…",
       media_ids: [], preview_media_ids: [], price_cents: 800, tip_unlock_cents: 800,
