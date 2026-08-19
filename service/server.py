@@ -815,6 +815,13 @@ async def _start_event_pumps() -> None:
     except Exception:
         log.exception("arc tease heal failed — armed pre-fix arcs may skip their teases")
 
+    try:
+        import ppv_library_config_api
+        await ppv_library_config_api.resync_all_rules()
+    except Exception:
+        log.exception("ppv rules resync failed — stale per-PPV ppv_send rules stay "
+                      "live until that account's next Library save")
+
     # TEST-MODE GUARD — db init above already ran (prod-critical at startup);
     # everything BELOW is the spawn/network section (persist worker, WS pumps,
     # pump-supervisor, live_rev network refresh, evictors, tx-ingest,

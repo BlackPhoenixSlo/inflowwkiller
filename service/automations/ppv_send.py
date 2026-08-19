@@ -8,11 +8,14 @@ Where it fits:
   • Operator builds ~20 PPVs in the "PPV Library" tab (ppv_library_config_api),
     each = vault media ids + a caption-pool key + a base price + preview options
     + sends_per_week + resend_monthly.
-  • On save the config API upserts ONE `ppv_send` AutomationRule per enabled PPV,
-    cadence `every_seconds = 604800 / sends_per_week`. The existing rule
-    materializer is the scheduler — there is no rotator here.
-  • When a rule fires, the job payload names one PPV (`{account_id, ppv_id}`).
-    THIS module reads that PPV from the config blob and does the send.
+  • On save the config API upserts ONE `ppv_send` AutomationRule for the whole
+    account — the hourly rotator tick (`{account_id}`, no ppv_id). Which PPV a
+    tick belongs to is decided HERE (`_pick_due_ppv`): each enabled PPV is due
+    again `604800 / sends_per_week` seconds after its last delivered send, the
+    most-starved due PPV wins the tick.
+  • A payload that DOES name a PPV (`{account_id, ppv_id}`) skips rotation and
+    sends exactly that one — the cap-defer one-shots, monthly resends, vault_arc
+    drops and test drives all still work that way.
 
 Per run it:
   1. reads the PPV from `account_ai_config.ppv_library_config_json`,
@@ -44,7 +47,8 @@ Idempotency / duplicate-fire protection:
 
 Payload shape::
 
-    {"account_id": "123456789", "ppv_id": "ppv_a3f9",
+    {"account_id": "123456789",
+     "ppv_id": "ppv_a3f9",           # optional — absent = rotate (the rule tick)
      "is_resend": false,            # true = the +30d monthly repeat (fresh preview)
      "dry_run": false,              # plan only — no send, no enqueue
      "force_ids": [123],            # test-scope: restrict the audience, BYPASSES the caps
@@ -1232,6 +1236,18 @@ def _cap_release(caps: dict, last: datetime | None, now: datetime):
     return (release is not None, release, which)
 
 
+async def _cap_gate(cfg: dict, account_id: str, now: datetime):
+    """The account-wide even-spread cap, as one question: (capped, release_at,
+    which_cap), (False, None, None) when caps are off or the slot is clear. A
+    blob with no ppv_caps key carries the house default (2/14/60 → 12h gap) via
+    the _DEFAULTS merge; an explicitly saved all-zero caps dict is the
+    operator's off switch and makes the any() False."""
+    caps = cfg.get("ppv_caps") or {}
+    if not any((caps.get(k) or 0) for k, _ in _CAP_WINDOWS):
+        return False, None, None
+    return _cap_release(caps, await _last_ppv_send(account_id, now - _CAP_LOOKBACK), now)
+
+
 async def _defer_capped(account_id: str, ppv_id: str, release_at: datetime, now: datetime,
                         *, is_resend: bool = False):
     """Re-enqueue a one-shot ppv_send for this ppv at the cap-free time, UNLESS one is
@@ -1289,25 +1305,133 @@ async def segment_preview(account_id: str, base_price_cents: int,
     return {"total_fans": len(fan_rows), "cells": plan}
 
 
-def _load_ppv(cfg_json: str | None, ppv_id: str) -> tuple[dict, dict] | tuple[None, dict]:
+def _load_cfg(cfg_json: str | None) -> dict:
     cfg = dict(_DEFAULTS)
     if cfg_json:
         try:
             cfg.update(json.loads(cfg_json) or {})
         except Exception:
             pass
+    return cfg
+
+
+def _load_ppv(cfg_json: str | None, ppv_id: str) -> tuple[dict, dict] | tuple[None, dict]:
+    cfg = _load_cfg(cfg_json)
     for p in cfg.get("ppvs") or []:
         if isinstance(p, dict) and str(p.get("id")) == str(ppv_id):
             return p, cfg
     return None, cfg
 
 
+def _clean_media_ids(ppv: dict) -> list[int]:
+    return [int(x) for x in (ppv.get("media_ids") or []) if str(x).strip()]
+
+
+def _unsendable_reason(cfg: dict, ppv: dict) -> str | None:
+    """Why this library entry cannot send right now — None means it can. THE
+    definition of sendability, shared by run()'s gates and the rotator's
+    candidate filter, so the two can never drift: a rotator that admitted an
+    entry run() then refuses would burn that tick for the whole account.
+    Reason strings are the historical ones (they are the run-row diagnostics).
+
+    S8: a vault-AI-sourced draft (id `vai-…`) is a sendable offer ONLY once
+    explicitly armed — the adapter is the single arm gate (library master ON +
+    this entry `enabled`). An approved+exported-but-un-armed draft
+    (enabled=False) is invisible here; approval alone never sends
+    (correction #2). Non-vault-AI PPVs fall through to the generic gates.
+    """
+    if (vault_ai_to_chatter.is_vault_ai_offer(ppv)
+            and vault_ai_to_chatter.pickable_offer(cfg, ppv.get("id")) is None):
+        return "not_armed"
+    if not cfg.get("enabled") or not ppv.get("enabled", True):
+        return "disabled"
+    try:
+        if int(ppv.get("base_price_cents") or 0) <= 0:
+            return "no_base_price"
+    except (TypeError, ValueError):
+        return "no_base_price"
+    if not _clean_media_ids(ppv):
+        return "no_media"
+    return None
+
+
+# ── the rotator behind the account's single `ppv_send` rule ─────────────────
+# sends_per_week is a per-PPV MINIMUM GAP (a week ÷ N), not a proportional
+# share: the account-wide ppv_caps even-spread above still owns total volume,
+# rotation only decides WHICH enabled PPV the next clear slot belongs to.
+_WEEK_S = 7 * 86_400
+# The widest possible per-PPV gap is a full week (sends_per_week floors at 1),
+# plus a day of slack so a send sitting right on that boundary still reads as
+# "sent a week ago" rather than "never sent" (which would jump the queue).
+_ROTATION_LOOKBACK = timedelta(seconds=_WEEK_S + 86_400)
+
+# Process-local last-picked stamps, {account_id: {ppv_id: picked_at}}. Exists
+# for the PPV that is due but DELIVERS nothing — audience exhausted (every fan
+# already owns it, live on the second account) or every cell erroring. Such a run writes no
+# `mass_runs` row, so on delivery time alone it would stay "most starved" and
+# monopolize every future tick while deliverable siblings starve. Stamping the
+# pick pushes it behind the other due PPVs until each has had a turn. A
+# restart forgets the stamps and costs at most one repeated pick.
+_LAST_PICKED: dict[str, dict[str, datetime]] = {}
+
+
+def _ppv_gap_seconds(sends_per_week) -> int:
+    try:
+        spw = int(sends_per_week or 1)
+    except (TypeError, ValueError):
+        spw = 1
+    return _WEEK_S // max(1, min(spw, 14))
+
+
+async def _pick_due_ppv(account_id: str, cfg: dict, now: datetime) -> dict | None:
+    """Which library PPV does this rule tick belong to? None = nobody is due.
+    Pure read — the caller stamps `_LAST_PICKED` when it actually takes the turn.
+
+    Candidates are the entries `_unsendable_reason` clears (the same predicate
+    run()'s own gates use, so a tick is never spent on a PPV run() would
+    immediately skip) minus the arc-owned ones — those fire once via
+    vault_arc's own one-shot, never on a cadence. A candidate is due again when
+    its own gap (a week ÷ sends_per_week) has passed since its newest DELIVERED
+    send in the `mass_runs` ledger (the same `$.ref` rows the dup-fire gate
+    reads). Never-delivered counts as most starved; ties fall to library order.
+    """
+    cands = [p for p in (cfg.get("ppvs") or [])
+             if isinstance(p, dict) and not p.get("arc_owned")
+             and _unsendable_reason(cfg, p) is None]
+    if not cands:
+        return None
+
+    ref = func.json_extract(MassRun.audience_filter, "$.ref")
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(ref, func.max(MassRun.started_at)).where(
+                MassRun.account_id == str(account_id),
+                MassRun.automation_kind == "ppv_send",
+                MassRun.status == "ok",
+                MassRun.started_at >= now - _ROTATION_LOOKBACK,
+            ).group_by(ref))).all()
+    last_sent = {str(r): t for r, t in rows if r}
+
+    picked = _LAST_PICKED.get(str(account_id)) or {}
+    due: list[tuple[datetime, int, dict]] = []
+    for idx, p in enumerate(cands):
+        pid = str(p.get("id"))
+        sent = last_sent.get(pid)
+        if sent is not None and now < sent + timedelta(
+                seconds=_ppv_gap_seconds(p.get("sends_per_week"))):
+            continue
+        anchor = max(sent or datetime.min, picked.get(pid) or datetime.min)
+        due.append((anchor, idx, p))
+    if not due:
+        return None
+    due.sort(key=lambda t: (t[0], t[1]))
+    return due[0][2]
+
+
 @register("ppv_send")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     payload = payload or {}
     ppv_id = payload.get("ppv_id")
-    if not ppv_id:
-        return {"status": "skipped", "reason": "no_ppv_id"}
     is_resend = bool(payload.get("is_resend"))
     dry_run = bool(payload.get("dry_run"))
     force_ids = {int(x) for x in (payload.get("force_ids") or [])}
@@ -1323,9 +1447,35 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     async with get_session() as s:
         cfg_row = await s.get(AccountAiConfig, account_id)
-    ppv, cfg = _load_ppv(cfg_row.ppv_library_config_json if cfg_row else None, ppv_id)
-    if ppv is None:
-        return {"status": "skipped", "reason": "ppv_not_found"}
+
+    if ppv_id:
+        ppv, cfg = _load_ppv(cfg_row.ppv_library_config_json if cfg_row else None,
+                             ppv_id)
+        if ppv is None:
+            return {"status": "skipped", "reason": "ppv_not_found"}
+    else:
+        # No PPV named — the account's single rule ticked. Rotate.
+        cfg = _load_cfg(cfg_row.ppv_library_config_json if cfg_row else None)
+        if not cfg.get("enabled"):
+            return {"status": "skipped", "reason": "disabled"}
+        # Account-wide cap FIRST: when the even-spread says "not yet", picking a
+        # PPV now would only burn its rotation turn. And no defer one-shot here
+        # either — this rule ticks hourly, so the rule itself is the retry (the
+        # defer machinery below stays what it always was: the explicit-ppv
+        # paths' way of keeping their slot).
+        if not dry_run and not force_ids:
+            capped, release_at, which = await _cap_gate(cfg, account_id, now)
+            if capped:
+                return {"status": "skipped", "reason": f"capped_{which}",
+                        "retry_at": release_at.isoformat() + "Z"}
+        ppv = await _pick_due_ppv(account_id, cfg, now)
+        if ppv is None:
+            return {"status": "skipped", "reason": "none_due"}
+        ppv_id = str(ppv.get("id"))
+        # Take the turn — see _LAST_PICKED. dry_run only peeks: a diagnostic
+        # tick must not push the picked PPV to the back of live rotation.
+        if not dry_run:
+            _LAST_PICKED.setdefault(str(account_id), {})[ppv_id] = now
     # Account language for the DEFAULT caption pools (a PPV's own caption_texts still
     # win, in whatever language they were authored). cfg_row is already loaded above.
     from automations import _language
@@ -1333,16 +1483,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Same row, same read — the caption pool set is a second axis on this config,
     # exactly like the language above it. NULL/unknown → her, byte-identically.
     account_voice = _voice.norm_voice(getattr(cfg_row, "voice", None))
-    # S8: a vault-AI-sourced draft (id `vai-…`) is a sendable offer ONLY once
-    # explicitly armed — the adapter is the single arm gate (library master ON +
-    # this entry `enabled`). An approved+exported-but-un-armed draft (enabled=False)
-    # is invisible here; approval alone never sends (correction #2). Non-vault-AI
-    # PPVs are untouched and fall through to the generic gate below.
-    if (vault_ai_to_chatter.is_vault_ai_offer(ppv)
-            and vault_ai_to_chatter.pickable_offer(cfg, ppv_id) is None):
-        return {"status": "skipped", "reason": "not_armed"}
-    if not cfg.get("enabled") or not ppv.get("enabled", True):
-        return {"status": "skipped", "reason": "disabled"}
+    # Cheap fail-fast gates (armed / enabled / priced / has media) before the fan
+    # scan — the same predicate the rotator filters candidates by, so a rotated
+    # pick passes these by construction and only an explicit-ppv payload can trip
+    # them.
+    skip = _unsendable_reason(cfg, ppv)
+    if skip:
+        return {"status": "skipped", "reason": skip}
 
     # "Send to everyone": after the per-tier sends to KNOWN fans, fire ONE
     # default-price broadcast to the house audience (fans + following, OF-resolved,
@@ -1357,17 +1504,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     except (TypeError, ValueError):
         pause_hours = 0
 
-    # Cheap fail-fast checks before the fan scan.
     base_cents = int(ppv.get("base_price_cents") or 0)
-    if base_cents <= 0:
-        return {"status": "skipped", "reason": "no_base_price"}
     # Operator price limits — every COMPUTED price (per-cell, broadcast, feed)
     # is clamped into these; the authored base_price_cents is never rewritten.
     bounds = price_bounds(cfg)
     bcast_cents = max(bounds[0], min(base_cents, bounds[1]))
-    media_ids = [int(x) for x in (ppv.get("media_ids") or []) if str(x).strip()]
-    if not media_ids:
-        return {"status": "skipped", "reason": "no_media"}
+    media_ids = _clean_media_ids(ppv)     # non-empty — _unsendable_reason gated it
     media_set = set(media_ids)
     # OF `previews` are the attached media shown FREE as the teaser, so each preview
     # id MUST be one of media_files — anything else → OF 400 "Wrong preview". Keep
@@ -1378,15 +1520,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     # ── per-account cap: even-spread the day/week/month limit (one send every
     #    window/N, re-scheduling a too-soon send to its slot).
-    # A blob with no ppv_caps key carries the house default (2/14/60 → 12h gap)
-    # via the _DEFAULTS merge; an explicit all-zero save is the operator's off
-    # switch and makes every any() below False.
-    # (force_ids = an explicit live-test scope, bypasses the cap.)
-    caps = cfg.get("ppv_caps") or {}
-    if not dry_run and not force_ids and any((caps.get(k) or 0) for k in
-                                             ("per_day", "per_week", "per_month")):
-        capped, release_at, which = _cap_release(
-            caps, await _last_ppv_send(account_id, now - _CAP_LOOKBACK), now)
+    # (force_ids = an explicit live-test scope, bypasses the cap. A rotated pick
+    # re-asks a question its tick already answered — cheap, and it keeps this
+    # path self-contained for the one-shot payloads that arrive here directly.)
+    if not dry_run and not force_ids:
+        capped, release_at, which = await _cap_gate(cfg, account_id, now)
         if capped:
             job_id = await _defer_capped(account_id, ppv_id, release_at, now,
                                          is_resend=is_resend)
