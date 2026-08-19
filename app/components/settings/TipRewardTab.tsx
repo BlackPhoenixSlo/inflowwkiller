@@ -104,6 +104,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   const [cvEnabled, setCvEnabled] = useState(false);
   const [cvAfter, setCvAfter] = useState(20);
   const [cvCount, setCvCount] = useState(1);
+  const [cvVideos, setCvVideos] = useState(false); // backend default OFF → photos only
   const [cvAdaptive, setCvAdaptive] = useState(true); // backend default ON
   const [cvBaitBuyers, setCvBaitBuyers] = useState(true); // backend default ON
 
@@ -153,6 +154,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setCvEnabled(!!eff.teaser_convo_enabled);
     setCvAfter(eff.teaser_convo_after_fan_msgs ?? 20);
     setCvCount(eff.teaser_convo_count ?? 1);
+    setCvVideos(!!eff.teaser_convo_videos); // default OFF → rungs stay photos-only
     setCvAdaptive(eff.teaser_convo_adaptive !== false); // unset → backend default ON
     // `!== false`, not `!!` — this flag defaults ON server-side (same idiom as
     // cvAdaptive above); `!!` would render an unset account as opted OUT and then
@@ -254,6 +256,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       teaser_convo_enabled: cvEnabled,
       teaser_convo_after_fan_msgs: cvAfter,
       teaser_convo_count: cvCount,
+      teaser_convo_videos: cvVideos,
       teaser_convo_adaptive: cvAdaptive,
       teaser_convo_bait_for_buyers: cvBaitBuyers,
       teaser_convo_rungs: cvRungs.map((r) => ({
@@ -385,27 +388,17 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
 
               {/* Videos too — a clip is billed by its length, never smuggled in
                   as one photo-slot. */}
-              <label className="flex items-start gap-3 cursor-pointer pt-1">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 mt-0.5 accent-[var(--accent)]"
-                  checked={videosInRewards}
-                  onChange={(e) => {
-                    markDirty();
-                    setVideosInRewards(e.target.checked);
-                  }}
-                />
-                <span className="space-y-0.5">
-                  <span className="block text-sm">Videos too</span>
-                  <span className="block text-[11px] text-fg-dim/80 leading-relaxed">
-                    Off: rewards send <b>photos only</b> — clips in the folders are
-                    skipped. On: clips can ride, and each counts as several image
-                    slots by its length and explicitness ($5–10 per 10 seconds), so
-                    a ${dollarsPerImage * 5} tip can&apos;t walk off with a long
-                    video worth more than the tip.
-                  </span>
-                </span>
-              </label>
+              <CheckField
+                label="Videos too"
+                checked={videosInRewards}
+                onChange={(v) => { markDirty(); setVideosInRewards(v); }}
+              >
+                Off: rewards send <b>photos only</b> — clips in the folders are
+                skipped. On: clips can ride, and each counts as several image
+                slots by its length and explicitness ($5–10 per 10 seconds), so
+                a ${dollarsPerImage * 5} tip can&apos;t walk off with a long
+                video worth more than the tip.
+              </CheckField>
             </div>
 
             {/* Caption */}
@@ -427,50 +420,30 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
             </label>
 
             {/* Always reward — override the open-offer standdown */}
-            <label className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                className="h-4 w-4 mt-0.5 accent-[var(--accent)]"
-                checked={alwaysReward}
-                onChange={(e) => {
-                  markDirty();
-                  setAlwaysReward(e.target.checked);
-                }}
-              />
-              <span className="space-y-0.5">
-                <span className="block text-sm">Always reward, even mid-sale</span>
-                <span className="block text-[11px] text-fg-dim/80 leading-relaxed">
-                  By default, when the AI has an open paid (PPV) offer with a fan, a tip
-                  is treated as payment toward that offer and the reward stands down so
-                  the fan doesn&apos;t get free media on top of what they paid for. Turn
-                  this on to <b>always</b> send the reward anyway — the paid offer is
-                  still credited, the fan just also gets the thank-you media.
-                </span>
-              </span>
-            </label>
+            <CheckField
+              label="Always reward, even mid-sale"
+              checked={alwaysReward}
+              onChange={(v) => { markDirty(); setAlwaysReward(v); }}
+            >
+              By default, when the AI has an open paid (PPV) offer with a fan, a tip
+              is treated as payment toward that offer and the reward stands down so
+              the fan doesn&apos;t get free media on top of what they paid for. Turn
+              this on to <b>always</b> send the reward anyway — the paid offer is
+              still credited, the fan just also gets the thank-you media.
+            </CheckField>
 
             {/* Context matcher — swap bundle slots for what he asked for */}
-            <label className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                className="h-4 w-4 mt-0.5 accent-[var(--accent)]"
-                checked={ctxPickEnabled}
-                onChange={(e) => {
-                  markDirty();
-                  setCtxPickEnabled(e.target.checked);
-                }}
-              />
-              <span className="space-y-0.5">
-                <span className="block text-sm">Match the reward to what he asked for</span>
-                <span className="block text-[11px] text-fg-dim/80 leading-relaxed">
-                  Reads the last 20 messages of the thread and swaps up to 3 of the
-                  reward photos for vault photos whose AI descriptions match what the
-                  fan asked to see or was promised (needs the Vault AI describe pass).
-                  If nothing clearly matches, the reward falls back to the folders
-                  below unchanged.
-                </span>
-              </span>
-            </label>
+            <CheckField
+              label="Match the reward to what he asked for"
+              checked={ctxPickEnabled}
+              onChange={(v) => { markDirty(); setCtxPickEnabled(v); }}
+            >
+              Reads the last 20 messages of the thread and swaps up to 3 of the
+              reward photos for vault photos whose AI descriptions match what the
+              fan asked to see or was promised (needs the Vault AI describe pass).
+              If nothing clearly matches, the reward falls back to the folders
+              below unchanged.
+            </CheckField>
 
             {/* Tiers */}
             <div className="space-y-2">
@@ -811,6 +784,14 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
                 {maxImages} — so a ${dollarsPerImage * 3} tease sends 3. &ldquo;Pics
                 per tease&rdquo; above only applies when no tier folders are
                 configured and the pull falls back to the rung&apos;s own folder.
+                {cvVideos && (
+                  <>
+                    {" "}
+                    With <b>Videos too</b> on, both numbers are a <b>slot</b> budget:
+                    a clip spends several of them, so a rung falling back to &ldquo;Pics
+                    per tease&rdquo; needs that raised to fit more than the shortest clip.
+                  </>
+                )}
               </p>
               {!enabled && (
                 <BundleSizingFields
@@ -823,57 +804,54 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
               )}
             </div>
 
+            {/* Clips on the ladder. Its OWN checkbox, not the reward's "Videos too"
+                above: the rung folders and the tip folders are different content for
+                different people. Same slot arithmetic, sized off the ASK. */}
+            <CheckField
+              label="Videos too"
+              checked={cvVideos}
+              onChange={(v) => { markDirty(); setCvVideos(v); }}
+            >
+              Off: teases send <b>photos only</b> — clips in the rung folders are
+              skipped. On: clips ride, and each eats several image slots by its
+              length and explicitness ($5–10 per 10 seconds) — so a big rung can
+              carry <b>several</b> clips while a ${dollarsPerImage * 2} one can&apos;t
+              hand over a $60 video. A clip worth more than the ask is skipped
+              whole, never cut. Separate from the &ldquo;Videos too&rdquo; box up in{" "}
+              <b>Reward tippers</b> — this one only touches the rungs below.
+            </CheckField>
+
             {/* Adaptive climb — the price only escalates on an actual sale. */}
-            <label className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                className="h-4 w-4 mt-0.5 accent-[var(--accent)]"
-                checked={cvAdaptive}
-                onChange={(e) => {
-                  markDirty();
-                  setCvAdaptive(e.target.checked);
-                }}
-              />
-              <span className="space-y-0.5">
-                <span className="block text-sm">Climb only when he buys (recommended)</span>
-                <span className="block text-[11px] text-fg-dim/80 leading-relaxed">
-                  The next rung fires only after he <b>unlocked</b> the last tease; if he
-                  didn&apos;t, the next ask <b>drops to 65–73%</b> of the price he saw and
-                  the rung holds. Off = the old behavior: the price climbs one rung on
-                  every send whether he bought or not — a chatty fan who never buys still
-                  gets walked up to the top rung.
-                </span>
-              </span>
-            </label>
+            <CheckField
+              label="Climb only when he buys (recommended)"
+              checked={cvAdaptive}
+              onChange={(v) => { markDirty(); setCvAdaptive(v); }}
+            >
+              The next rung fires only after he <b>unlocked</b> the last tease; if he
+              didn&apos;t, the next ask <b>drops to 65–73%</b> of the price he saw and
+              the rung holds. Off = the old behavior: the price climbs one rung on
+              every send whether he bought or not — a chatty fan who never buys still
+              gets walked up to the top rung.
+            </CheckField>
 
             {/* The free BAIT leg for a man who has already paid. Without it his ask
                 reaches the set price and STAYS there — one number, over and over,
                 until the unbought brake stops him. */}
             {cvAdaptive && (
-              <label className="flex items-start gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 mt-0.5 accent-[var(--accent)]"
-                  checked={cvBaitBuyers}
-                  onChange={(e) => {
-                    markDirty();
-                    setCvBaitBuyers(e.target.checked);
-                  }}
-                />
-                <span className="space-y-0.5">
-                  <span className="block text-sm">Free tease between asks for past buyers</span>
-                  <span className="block text-[11px] text-fg-dim/80 leading-relaxed">
-                    Once a fan who <b>has bought before</b> stops unlocking, his ask sinks
-                    to the rung&apos;s set price and then has nowhere left to go — so he
-                    sees that same price every time. On, the ladder alternates{" "}
-                    <b>set price → free → set price</b>, sending {minImages} pics from the
-                    free folder in between. The price itself never drops; only the free
-                    leg goes under it. ⚠️ A free tease isn&apos;t a refused ask, so it
-                    doesn&apos;t count toward the unbought brake — he still gets asked for
-                    money the same number of times, with extra sends in between.
-                  </span>
-                </span>
-              </label>
+              <CheckField
+                label="Free tease between asks for past buyers"
+                checked={cvBaitBuyers}
+                onChange={(v) => { markDirty(); setCvBaitBuyers(v); }}
+              >
+                Once a fan who <b>has bought before</b> stops unlocking, his ask sinks
+                to the rung&apos;s set price and then has nowhere left to go — so he
+                sees that same price every time. On, the ladder alternates{" "}
+                <b>set price → free → set price</b>, sending {minImages} pics from the
+                free folder in between. The price itself never drops; only the free
+                leg goes under it. ⚠️ A free tease isn&apos;t a refused ask, so it
+                doesn&apos;t count toward the unbought brake — he still gets asked for
+                money the same number of times, with extra sends in between.
+              </CheckField>
             )}
 
             <div className="space-y-2">
@@ -1206,6 +1184,35 @@ function BundleSizingFields({
     </div>
   );
 }
+
+/** A checkbox with a title and an explanatory hint — the tab's one opt-in shape.
+ *  Six of these had been hand-rolled with the same label/input/span scaffold. */
+function CheckField({
+  label, checked, onChange, children,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  children: React.ReactNode;   // the hint prose, so callers keep their <b>/${}
+}) {
+  return (
+    <label className="flex items-start gap-3 cursor-pointer">
+      <input
+        type="checkbox"
+        className="h-4 w-4 mt-0.5 accent-[var(--accent)]"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="space-y-0.5">
+        <span className="block text-sm">{label}</span>
+        <span className="block text-[11px] text-fg-dim/80 leading-relaxed">
+          {children}
+        </span>
+      </span>
+    </label>
+  );
+}
+
 
 function NumField({
   label, hint, value, onChange, min = 0, max = 100000, step = 1, suffix,

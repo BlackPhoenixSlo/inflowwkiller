@@ -199,6 +199,12 @@ def _validate(cfg: dict) -> dict:
     # here, so the checkbox saved nothing. Named now.
     if "teaser_convo_adaptive" in cfg:
         out["teaser_convo_adaptive"] = bool(cfg["teaser_convo_adaptive"])
+    # "Videos too" for the LADDER — its own flag, separate from `videos_in_rewards`
+    # (different folders, different people). OFF (default) = photos-only rungs; ON
+    # admits clips and each costs several photo-slots of the ask. Named here or the
+    # checkbox dies on the next save, exactly like the adaptive one above did.
+    if "teaser_convo_videos" in cfg:
+        out["teaser_convo_videos"] = bool(cfg["teaser_convo_videos"])
     if "teaser_convo_rungs" in cfg:
         rungs = cfg["teaser_convo_rungs"]
         if not isinstance(rungs, (list, tuple)):

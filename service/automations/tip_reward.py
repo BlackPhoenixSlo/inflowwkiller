@@ -12,6 +12,13 @@ keep their historical `*_image*` names for back-compat. DRM-only videos can't be
 previewed in the browser but ARE valid vault attachments, so once clips are
 allowed they're included like any other item.
 
+The convo teaser LADDER carries its own twin of that switch — `teaser_convo_videos`
+(same tab, the "Escalating teases" section, also default OFF) — because the two
+lanes pull from different folders for different people: clips in a $120 rung are
+not a reason for clips in a $5 thank-you. It bills against the same `_SlotCost`,
+sized off the rung's ask instead of the tip. The hot-thread teaser lane stays
+ungated (one clip, one slot) — it has no such checkbox yet.
+
 The reward rule (all knobs in account_ai_config.tip_reward_config_json):
   • COUNT  = clamp(min_images, tip_dollars // dollars_per_image, max_images).
              At the $5/item default a $25 tip → 5 media items ($/5); a $3 tip
@@ -183,6 +190,14 @@ _DEFAULTS: dict = {
     "teaser_convo_enabled": False,
     "teaser_convo_after_fan_msgs": 20,     # HIS messages between rungs
     "teaser_convo_count": 1,               # vault items per tease (legacy single-folder)
+    # "Videos too" for the LADDER — its OWN switch, deliberately not the tip reward's
+    # `videos_in_rewards`: the two lanes pull from different folders for different
+    # people, and an operator who wants clips in a $120 rung does not thereby want
+    # them in a $5 thank-you. OFF (default) keeps every rung PHOTOS-ONLY; ON admits
+    # clips and turns the tease's count into a SLOT budget (`_SlotCost`, the same
+    # pack_pricing rate card the tip reward bills against), so a $10 rung can never
+    # ship a $60 clip while several short ones still fit inside the ask.
+    "teaser_convo_videos": False,
     "teaser_convo_rungs": [
         {"folder": "", "price_cents": 0},       # rung 0 — free tease
         {"folder": "", "price_cents": 1000},    # $10
@@ -364,7 +379,7 @@ async def image_describe_flags(account_id: str) -> tuple[bool, str, str]:
 def _cents_per_slot(cfg: dict) -> int:
     """ONE derivation of the "$ per image" knob, in cents. It is the number that
     ties the tip's slot budget (`_media_count`), the bundle sizing
-    (`_bundle_sizing`) and the video slot-coster (`_SlotCoster`) together — three
+    (`_bundle_sizing`) and the video slot cost (`_SlotCost`) together — three
     inline copies had already grown two different (dead — `_load_config` always
     merges the default) fallbacks, and the day those disagree for real, the
     budget and the cost stop meaning the same thing."""
@@ -375,7 +390,7 @@ def _media_count(tip_cents: int, cfg: dict) -> int:
     """clamp(min_images, tip_dollars // dollars_per_image, max_images). The config
     keys keep their `*_image*` names for back-compat. With `videos_in_rewards` on
     this number is a SLOT budget rather than an item count: a photo is one slot, a
-    clip is whatever the rate card says it is worth in photos (`_SlotCoster`),
+    clip is whatever the rate card says it is worth in photos (`_SlotCost`),
     and the bundle can only get SMALLER in items — never larger."""
     per = _cents_per_slot(cfg)
     lo = max(0, int(cfg.get("min_images") or 0))
@@ -497,14 +512,47 @@ def folder_media_pool(client, folder_name: str) -> list[int] | None:
     return [mid for mid, _t, _d in _folder_media_items(client, list_id)]
 
 
-class _SlotCoster:
-    """Prices an item in photo-slots for `_gather_unseen`'s budget. Built by
-    `_video_slot_cost` (which does the ONE mirror read); after that it is pure,
-    so an instance can cross into `asyncio.to_thread`.
+class _SlotCost:
+    """HOW A LANE BILLS ONE MEDIA ITEM against its pull budget: the item's price in
+    photo-slots, or None for "may never ride". ONE value carries the whole policy,
+    so a pull takes a single `cost` — eligibility and price cannot disagree, and
+    there is no combination of them left to get wrong.
 
-    A clip's cost is ceil(rate-card value / dollars_per_image): 60s of sfw at the
-    $5/item default is 3000¢/500¢ = 6 slots, explicit footage twice that. The
-    tier and (preferably) the duration come from the vault mirror; a clip the
+    The three shapes, all `_SlotCost`:
+      • `_PER_ITEM`     — everything is one slot, clips included. The unbudgeted
+                          lanes: the hot teaser, and the $0 image-reply freebie
+                          where nothing was paid for a clip's length to overflow.
+      • `_PHOTOS_ONLY`  — clips are ineligible; a "Videos too" checkbox left off.
+      • `_video_slot_cost(...)` — clips ride, each billed off the rate card.
+    `_PER_ITEM` is the base class itself: the plain count every pull used before
+    any of this existed, and still the default."""
+
+    def __call__(self, mid: int, mtype: str, duration: int) -> int | None:
+        return 1
+
+    def slots_of(self, ids: list[int]) -> int:
+        """Slots a picked list consumed — how `_pull_stages` measures a shortfall
+        without re-reading anything."""
+        return len(ids)
+
+
+class _PhotosOnly(_SlotCost):
+    """Images only (a "Videos too" checkbox left off): video and gif are refused at
+    the folder scan. A blank type still passes as a photo, as it always has (older
+    payloads / test fakes)."""
+
+    def __call__(self, mid: int, mtype: str, duration: int) -> int | None:
+        return None if mtype in MOVING_KINDS else 1
+
+
+class _VideoSlotCost(_SlotCost):
+    """Clips priced by the rate card ("Videos too" on). A clip costs
+    ceil(rate-card value / dollars_per_image): 60s of sfw at the $5/item default is
+    3000¢/500¢ = 6 slots, explicit footage twice that. Built by `_video_slot_cost`
+    (which does the ONE mirror read); pure and memoizing afterwards, so an instance
+    can cross into `asyncio.to_thread`.
+
+    The tier and (preferably) the duration come from the vault mirror; a clip the
     mirror has never seen — or one the describe pass hasn't tiered — bills at the
     SFW base off the OF payload's own duration, so missing data can only ever
     UNDER-charge, never inflate a clip out of the bundle."""
@@ -534,16 +582,26 @@ class _SlotCoster:
         return got
 
     def slots_of(self, ids: list[int]) -> int:
-        """Slots a picked list consumed. Every picked id was priced on the way in
-        (`_gather_unseen` costs an item before taking it), so the memo has it —
-        this is how `_pull_stages` measures a shortfall without a second read."""
+        # Every picked id was priced on the way in (`_gather_unseen` costs an item
+        # before taking it), so the memo has it — no second read, and a KeyError
+        # here would mean someone counted ids this cost never priced.
         return sum(self._memo[int(m)] for m in ids)
 
 
-async def _video_slot_cost(account_id: str, cfg: dict) -> _SlotCoster:
-    """Build the coster: ONE account-wide select over the vault mirror's moving
-    items. Account-wide because the folder ids aren't known until the sync scan
-    runs (and vaults are hundreds of rows, not thousands)."""
+# The two stateless policies are shared singletons; only the rate-card one holds
+# per-account data (and a memo), so only it is built per use.
+_PER_ITEM = _SlotCost()
+_PHOTOS_ONLY = _PhotosOnly()
+
+
+async def _video_slot_cost(account_id: str, cents_per_slot: int) -> _VideoSlotCost:
+    """Build the rate-card cost: ONE account-wide select over the vault mirror's
+    moving items. Account-wide because the folder ids aren't known until the sync
+    scan runs (and vaults are hundreds of rows, not thousands).
+
+    Takes the RATE, not the config: the teaser ladder reaches this holding a
+    `BundleSizing` rather than a cfg dict, and both callers must bill at the one
+    `_cents_per_slot` number rather than re-deriving it."""
     async with get_session() as s:
         rows = (await s.execute(
             select(VaultItem.media_id, VaultItem.duration_seconds,
@@ -551,27 +609,21 @@ async def _video_slot_cost(account_id: str, cfg: dict) -> _SlotCoster:
                 VaultItem.account_id == str(account_id),
                 VaultItem.kind.in_(MOVING_KINDS))
         )).all()
-    return _SlotCoster({int(m): (d, t) for m, d, t in rows}, _cents_per_slot(cfg))
-
-
-def _slots(ids: list[int], slot_cost: _SlotCoster | None) -> int:
-    """Slots a picked list consumed — the item count unless a coster priced them."""
-    return len(ids) if slot_cost is None else slot_cost.slots_of(ids)
+    return _VideoSlotCost({int(m): (d, t) for m, d, t in rows}, int(cents_per_slot))
 
 
 def _gather_unseen(client, folders: list[str], by_name: dict[str, int],
-                   seen: set[int], count: int, *, videos: bool = True,
-                   slot_cost: _SlotCoster | None = None) -> list[int]:
+                   seen: set[int], count: int, *,
+                   cost: _SlotCost = _PER_ITEM) -> list[int]:
     """Up to `count` SLOTS of unseen media ids, scanning the tier's folders in
     order and de-duplicating across them (an id can live in two folders).
 
-    `videos=False` — the tip tab's images-only default — drops moving items
-    (video/gif) at the scan; a blank type still passes as a photo, as it always
-    has. With a `slot_cost` coster (`videos_in_rewards` ON), `count` is a SLOT
-    budget rather than an item count: an item that would overflow the budget is
+    `cost` is the lane's billing policy (see `_SlotCost`): it decides both what an
+    item is worth and whether it may ride at all. Under the default every item
+    costs one slot, so `count` is the plain item count it always was. Under the
+    rate-card cost `count` is a SLOT budget: an item that would overflow it is
     SKIPPED and the scan continues, because a cheaper item further down may still
-    fit — the budget is a ceiling, never trimmed after the fact. Without a coster
-    every item costs one slot, which is exactly the old item-count behaviour."""
+    fit — the budget is a ceiling, never trimmed after the fact."""
     picked: list[int] = []
     taken: set[int] = set()
     total = 0
@@ -583,10 +635,8 @@ def _gather_unseen(client, folders: list[str], by_name: dict[str, int],
         for mid, mtype, duration in _folder_media_items(client, list_id):
             if mid in seen or mid in taken:
                 continue
-            if not videos and mtype in MOVING_KINDS:
-                continue
-            c = 1 if slot_cost is None else slot_cost(mid, mtype, duration)
-            if total + c > count:
+            c = cost(mid, mtype, duration)
+            if c is None or total + c > count:
                 continue
             picked.append(mid)
             taken.add(mid)
@@ -708,7 +758,7 @@ async def _run_image_reply(account_id: str, payload: dict, cfg: dict, *,
     # with the flag on, one clip is one freebie, as it always was.
     media_ids = await asyncio.to_thread(
         _gather_unseen, client, folders, by_name, seen, count,
-        videos=bool(cfg.get("videos_in_rewards")))
+        cost=_PER_ITEM if cfg.get("videos_in_rewards") else _PHOTOS_ONLY)
     if not media_ids:
         # Fan has seen everything in the tier — nothing fresh to send back. Don't
         # stamp the cooldown (we sent nothing); the next image can try again.
@@ -822,7 +872,9 @@ def _bundle_sizing(cfg: dict) -> tip_ladder.BundleSizing:
 
 
 def _rung_count(tcfg: dict, rung: dict) -> int:
-    """Photos for a SINGLE-FOLDER rung pull (no tiers to compose from).
+    """Photos for a SINGLE-FOLDER rung pull (no tiers to compose from) — SLOTS once
+    "Videos too" is on for the ladder, so a rung whose folder is all clips needs this
+    number (or the tab's Minimum) raised to fit more than the shortest one.
 
     Per-rung `count` wins ($10→1, $30→3, $50→5), else the ladder-wide
     `teaser_convo_count` — but never below the tab's Minimum images. Both the
@@ -844,17 +896,17 @@ def _pull_stages(client, stages: list[tuple[list[str], int]],
                  seen: set[int], *,
                  repeat_ok: frozenset[int] | set[int] = frozenset(),
                  never_repeat: frozenset[int] | set[int] = frozenset(),
-                 videos: bool = True, slot_cost: _SlotCoster | None = None,
+                 cost: _SlotCost = _PER_ITEM,
                  ) -> tuple[list[list[int]], list[int]]:
     """THE one folder-bundle composer: ordered stage pulls with cross-stage dedup
     + shortfall backfill. Each (folder_names, count) stage pulls up to `count`
     unseen items from its folders; a short stage does not shrink the bundle —
     the total shortfall is backfilled from ALL stages' folders at the end.
 
-    `videos`/`slot_cost` ride through to `_gather_unseen`. Under a coster every
-    count here is a SLOT budget, and the shortfall is measured in slots too
-    (`_slots`) — an item-counted shortfall would over-fill: a stage that spent
-    its 5 slots on a 3-slot clip plus 2 photos is FULL, not 2 short.
+    `cost` rides through to `_gather_unseen`. Under the rate-card cost every count
+    here is a SLOT budget, and the shortfall is measured in slots too
+    (`cost.slots_of`) — an item-counted shortfall would over-fill: a stage that
+    spent its 5 slots on a 3-slot clip plus 2 photos is FULL, not 2 short.
 
     `repeat_ok` names stage INDICES whose folders hold tease/filler content
     (operator ruling 07-23: filler may repeat, and a filler shortfall must
@@ -878,28 +930,27 @@ def _pull_stages(client, stages: list[tuple[list[str], int]],
         ids: list[int] = []
         if n > 0 and folders:
             by_name = _resolve_folders(client, folders)
-            ids = _gather_unseen(client, folders, by_name, taken, n,
-                                 videos=videos, slot_cost=slot_cost)
+            ids = _gather_unseen(client, folders, by_name, taken, n, cost=cost)
             taken.update(ids)
             bundle.update(ids)
         picked.append(ids)
     want = sum(max(0, n) for _, n in stages)
-    short = want - sum(_slots(p, slot_cost) for p in picked)
+    short = want - sum(cost.slots_of(p) for p in picked)
     extras: list[int] = []
     if short > 0:
         all_folders = [f for folders, _ in stages for f in folders]
         if all_folders:
             by_name = _resolve_folders(client, all_folders)
             extras = _gather_unseen(client, all_folders, by_name, taken, short,
-                                    videos=videos, slot_cost=slot_cost)
+                                    cost=cost)
             bundle.update(extras)
-    short -= _slots(extras, slot_cost)
+    short -= cost.slots_of(extras)
     if short > 0 and repeat_ok:
         # Repeats may only restore the repeat_ok stages' OWN share — a payoff
         # shortfall keeps shrinking the bundle rather than becoming filler.
         repeat_want = sum(max(0, n) for i, (_, n) in enumerate(stages)
                           if i in repeat_ok)
-        repeat_have = sum(_slots(picked[i], slot_cost) for i in repeat_ok
+        repeat_have = sum(cost.slots_of(picked[i]) for i in repeat_ok
                           if i < len(picked))
         short = min(short, max(0, repeat_want - repeat_have))
         r_folders = [f for i, (folders, _) in enumerate(stages)
@@ -908,21 +959,26 @@ def _pull_stages(client, stages: list[tuple[list[str], int]],
             by_name = _resolve_folders(client, r_folders)
             extras = extras + _gather_unseen(
                 client, r_folders, by_name,
-                set(bundle) | set(never_repeat), short,
-                videos=videos, slot_cost=slot_cost)
+                set(bundle) | set(never_repeat), short, cost=cost)
     return picked, extras
 
 
 def _compose_bundle_ids(client, plan, seen: set[int],
                         premium_folders: list[str], normal_folders: list[str],
-                        free_folders: list[str]) -> tuple[list[int], dict]:
+                        free_folders: list[str], *,
+                        cost: _SlotCost = _PER_ITEM) -> tuple[list[int], dict]:
     """Teaser adapter over _pull_stages: pull the plan's premium/normal/free photo
     ids from their tier folders (dedup + backfill live in _pull_stages) and keep
     the breakdown/weight shape the teaser callers report. Sync — call via
-    to_thread."""
+    to_thread.
+
+    `cost` rides straight through (see `_gather_unseen`): under the rate-card cost
+    each stage's plan number is a SLOT budget, so one clip can consume a whole
+    stage. The breakdown stays an ITEM count — it is what the caller logs, and
+    "3 premium" reads truer than "3 slots of premium"."""
     (prem, norm, free), extras = _pull_stages(
         client, [(premium_folders, plan.premium), (normal_folders, plan.normal),
-                 (free_folders, plan.free)], seen,
+                 (free_folders, plan.free)], seen, cost=cost,
         repeat_ok={2})  # the free tier is tease filler — may repeat, never blocks
     out = prem + norm + free + extras
     weight = len(prem) * tip_ladder.WEIGHT_PREMIUM + len(norm) * tip_ladder.WEIGHT_STANDARD
@@ -1101,6 +1157,7 @@ async def convo_teaser_config(account_id: str) -> dict | None:
     cfg = await _load_config(account_id)
     if not cfg.get("teaser_convo_enabled"):
         return None
+    videos = bool(cfg.get("teaser_convo_videos"))
     rungs = []
     for r in (cfg.get("teaser_convo_rungs") or []):
         if not isinstance(r, dict):
@@ -1145,6 +1202,11 @@ async def convo_teaser_config(account_id: str) -> dict | None:
         "bundle_premium_folders": _tier_folders(cfg, "premium"),
         "bundle_normal_folders": _tier_folders(cfg, "basic") + _tier_folders(cfg, "mid"),
         "bundle_free_folders": [f for f in [str(cfg.get("hot_teaser_free_folder") or "").strip()] if f],
+        # Clips ride the rungs (and cost slots off the ask) — the flag only, NOT a
+        # built coster: `/ai-status` calls this config on every strip poll and never
+        # pulls media, and the coster is a whole vault read. `pick_convo_teaser` builds
+        # it when it is about to spend it.
+        "videos": videos,
     }
 
 
@@ -1323,6 +1385,9 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
     LEGACY (tcfg['adaptive'] falsy): picks the CURRENT rung's single folder + price;
     climbs one rung every send. Byte-for-byte the old behavior.
 
+    Both paths obey tcfg['videos'] ("Videos too" for this ladder): off = photos only,
+    on = clips ride and cost slots off the ask (see `cost` below).
+
     ADAPTIVE (tcfg['adaptive'] on): the ladder ($0/$10/$40/$80/$120/$160/$200)
     moves on WHAT HAPPENED to the last teaser — climb one rung if it SOLD (or was a
     free tease he received), else JITTER: usually a cut to 40–60% of the last ask
@@ -1367,6 +1432,20 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
     if max_unbought > 0 and not last_sold and unbought >= max_unbought:
         return None
 
+    # Clips. OFF (the default, and what a tcfg built without the key means) drops
+    # video/gif at every folder scan below — the ladder is photos-only. ON admits them
+    # and turns each pull's `count` into a SLOT budget: the coster charges a clip what
+    # the rate card says it is worth in photos, so several short clips ride a big rung
+    # while one that costs more than the ask is SKIPPED — the budget is a ceiling,
+    # never trimmed after the fact.
+    #
+    # Built HERE, below the threshold and breaker returns, because it is a whole-vault
+    # read and this function is called for every fan in the run — most of whom are not
+    # being teased this turn. Async (and pure afterwards) so it can cross into the
+    # to_thread scans below.
+    cost = (await _video_slot_cost(account_id, tcfg["sizing"].cents_per_photo)
+            if tcfg.get("videos") else _PHOTOS_ONLY)
+
     rung = int(state.get("rung") or 0)
     if not tcfg.get("adaptive"):
         idx = max(0, min(rung, len(rungs) - 1))
@@ -1378,7 +1457,8 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
         count = _rung_count(tcfg, r)
         by_name = await asyncio.to_thread(_resolve_folders, client, [folder])
         seen = await _seen_media(account_id, fan_id)
-        media_ids = await asyncio.to_thread(_gather_unseen, client, [folder], by_name, seen, count)
+        media_ids = await asyncio.to_thread(
+            _gather_unseen, client, [folder], by_name, seen, count, cost=cost)
         if not media_ids:
             return None
         return {"media_ids": media_ids, "price_cents": int(price_cents),
@@ -1425,7 +1505,7 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
         _compose_bundle_ids, client, plan, seen,
         list(tcfg.get("bundle_premium_folders") or []),
         list(tcfg.get("bundle_normal_folders") or []),
-        list(tcfg.get("bundle_free_folders") or []))
+        list(tcfg.get("bundle_free_folders") or []), cost=cost)
     if not media_ids:
         # No tier folders configured (or all exhausted). Adaptive is the house
         # default now, and an account whose media lives in the per-rung folders
@@ -1438,7 +1518,7 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
         count = _rung_count(tcfg, r)
         by_name = await asyncio.to_thread(_resolve_folders, client, [folder])
         media_ids = await asyncio.to_thread(
-            _gather_unseen, client, [folder], by_name, seen, count)
+            _gather_unseen, client, [folder], by_name, seen, count, cost=cost)
         if not media_ids:
             return None
         return {"media_ids": media_ids, "price_cents": int(price),
@@ -1521,8 +1601,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # becomes a slot budget, so a clip is charged its rate-card worth in
     # photo-slots and a $25 tip can never walk off with a $30 video. OFF (the
     # default) strips clips at the scan and never pays the mirror read.
-    videos = bool(cfg.get("videos_in_rewards"))
-    slot_cost = await _video_slot_cost(account_id, cfg) if videos else None
+    cost = (await _video_slot_cost(account_id, _cents_per_slot(cfg))
+            if cfg.get("videos_in_rewards") else _PHOTOS_ONLY)
 
     # ── Bundle plan (2026-07-23): tip$/5 items total. A tease warm-up share
     # comes from the free-tease folder (2 of 5), the rest ("normal" slots) from
@@ -1548,8 +1628,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         set(seen) | set(matched),
         # Tease warm-up is filler — may repeat, never blocks the bundle; but
         # never re-pick a photo the matcher already reserved for the payoff.
-        repeat_ok={0}, never_repeat=set(matched),
-        videos=videos, slot_cost=slot_cost)
+        repeat_ok={0}, never_repeat=set(matched), cost=cost)
     # Escalating order: tease warm-up → tier shots (+ any backfill) → the
     # matched-to-his-ask photos land last (the payoff).
     media_ids = tease_ids + normal_ids + extras + matched
