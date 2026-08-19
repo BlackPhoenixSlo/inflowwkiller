@@ -53,9 +53,15 @@ template on any LLM failure; V1's canned third line is retired). The restyle is
 ONE cached LLM call per slot line shared across fans; a fan who already texted us
 gets a fresh per-fan call (see _restyle_cache). An operator-written `question`
 (payload) rides as an optional THIRD bubble, sent word-for-word — never restyled,
-never near an LLM. Each bubble is held for its human
-typing time with the live "...is typing" indicator
-(webhook_config_json.typing_wpm / typing_indicator — same knobs as welcome_chatter_for_info).
+never near an LLM. An operator-picked `gif_id` rides as an optional FOURTH
+bubble — a send carrying a top-level `giphyId` beside EMPTY text (the verified
+wire shape, same as ai_chatter's cat stickers), so it is composed apart from the
+text but sent as part of the SAME burst: one failure policy for all four.
+
+Each text bubble is held for its human typing time with the live "...is typing"
+indicator (webhook_config_json.typing_wpm / typing_indicator — same knobs as
+welcome_chatter_for_info); the GIF is picked rather than typed, so it gets a flat
+beat and no indicator.
 
 Payload knobs (all optional): `limit` (notifications fetched), `max_welcomes`
 (per-run batch cap), `model` (LLM override), `dry_run` (generate but don't send),
@@ -65,7 +71,8 @@ True; False sends the verbatim template line, zero LLM cost), `time_only`
 (bubble 2 drops the activity and says ONLY the day/time-of-day/location —
 "it's Thursday afternoon in US"; default False), `question` (an operator-written
 question appended VERBATIM as a third bubble — no restyle, no LLM; blank/absent
-= off), `test_fan` (+ `test_name`) to force one hardcoded recipient.
+= off), `gif_id` (a giphy id sent as a fourth, text-less bubble; blank/absent =
+off), `test_fan` (+ `test_name`) to force one hardcoded recipient.
 
 Returns a stats dict → automation_runs.stats_json.
 """
@@ -112,6 +119,9 @@ _GUARD_DEFAULT_H = 12.0        # cross-automation contact-guard window (payload 
 # send, so this constant is the only thing pacing him — one brake, one number,
 # and it is the one somebody chose.
 _WELCOME_REST_S = 150          # 2.5 min — long enough not to talk over the welcome
+# Beat before bubble 4. A GIF is PICKED, not typed, so it gets a flat pause and no
+# "...is typing" frame — typing_delay_seconds would price it as if she typed it.
+_GIF_HOLD_S = 3.0
 
 # First-letter → alliterative adjective for the stutter greeting. e.g. S → "Sexy
 # Sofie". Drives every welcome now that the nameless riff is deterministic too.
@@ -720,6 +730,7 @@ async def preview_compose(
     model: str | None = None, restyle: bool = False, slot: str | None = None,
     config: dict | None = None, ignore_pin: bool = False,
     time_only: bool = False, question: str | None = None,
+    gif_id: str | None = None,
 ) -> dict:
     """Compose the welcome a real run WOULD produce for one fan — the text + the
     chosen time-of-day image id — WITHOUT sending and WITHOUT writing send-state.
@@ -829,10 +840,20 @@ async def preview_compose(
     if strip_emoji_on:
         bubbles = [strip_emojis(b) for b in bubbles]
     bubbles = [b for b in bubbles if b.strip()]
+    # Bubble 4 is returned SEPARATELY, never appended to `bubbles`: it carries no
+    # text, and the panel renders it as an image. Folding it in would put a bare
+    # giphy id through apply_word_restriction and into the joined `text`.
+    #
+    # It IS echoed rather than left to the panel, even though nothing here reads
+    # it, so that one preview response is one whole send shape. The panel renders
+    # the block from this dict alone; reading the GIF from live form state instead
+    # would let a stale composition sit beside a GIF the operator swapped after
+    # pressing Preview — the burst on screen would be one nobody ever composed.
     return {"text": "\n\n".join(bubbles), "bubbles": bubbles,
             "image": _slot_image_id(cfg, hour),
             "name": name, "slot": _slot_key(hour),
-            "restyled": restyled, "cap_hit": cap_hit, "pinned": pinned}
+            "restyled": restyled, "cap_hit": cap_hit, "pinned": pinned,
+            "gif_id": (gif_id or "").strip() or None}
 
 
 # ── The automation ───────────────────────────────────────────────────
@@ -869,6 +890,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # default would retroactively append it to every rule saved before the knob
     # existed.
     question = str(payload.get("question") or "").strip()
+    # Bubble 4 (optional): the giphy id the operator picked in the Brain panel,
+    # sent as its own text-less bubble. Blank/absent = off, and stamped at save by
+    # the panel — never defaulted here, for the same reason as `question` above.
+    gif_id = str(payload.get("gif_id") or "").strip()
 
     client = await asyncio.to_thread(ax._make_client, account_id)
 
@@ -993,6 +1018,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     restyled = 0          # fresh LLM restyles this run
     restyled_cached = 0   # bubbles served from the per-slot restyle cache
     pinned_used = 0       # bubbles served from an operator-pinned slot line (no LLM)
+    gifs_sent = 0         # bubble-4 GIFs that landed
     restyle_capped = False  # cap tripped mid-run → stop attempting restyles
 
     # Fans who already texted us get a FRESH per-fan restyle (never the cached
@@ -1114,22 +1140,48 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # pacing as welcome_chatter_for_info, so the welcome lands like a person texting,
             # not a bot blast.
             media_ids = [bot_media_id] if bot_media_id is not None else []
+
+            # The burst as ONE plan: every text bubble, then the GIF. Bubble 4 is
+            # a (text="", giphy_id=…) send — OF carries a GIF as a top-level
+            # `giphyId` beside EMPTY text — which is why it joins HERE and not
+            # `bubbles`: the composition above would have word-restricted it,
+            # emoji-stripped it, then dropped it as blank.
+            #
+            # Riding the same loop is what keeps ONE burst policy for four bubbles:
+            # bubble 0 failing is fatal, any later failure stops the burst, and
+            # every landed send is persisted the same way. Sending the GIF after
+            # the loop instead fired it even when the burst had already been
+            # abandoned — a fan whose question bubble failed got a lone greeting
+            # and then an unexplained animation.
+            #
+            # `bubbles` is non-empty here (guarded above), so the GIF is never
+            # index 0: a GIF cannot ship as a welcome on its own.
+            plan: list[tuple[str, str | None]] = [(b, None) for b in bubbles]
+            if gif_id:
+                plan.append(("", gif_id))
+
             landed = 0
-            for idx, part in enumerate(bubbles):
-                await hold_with_typing(account_id, fan_id,
-                                       typing_delay_seconds(part, typing_wpm),
-                                       typing_indicator=typing_on)
-                media = media_ids if idx == 0 else []
+            for idx, (part, gid) in enumerate(plan):
+                # A GIF is PICKED, not typed: no typing time and no "...is typing"
+                # frame, just the beat between bubbles.
+                await hold_with_typing(
+                    account_id, fan_id,
+                    _GIF_HOLD_S if gid else typing_delay_seconds(part, typing_wpm),
+                    typing_indicator=typing_on and not gid)
                 try:
-                    # A refused ATTACHMENT degrades to text-only rather than
-                    # losing the greeting. Otherwise one dead vault id blocks
-                    # EVERY welcome on the account: a failed bubble-0 leaves the
-                    # welcome_sent claim unwritten, so the next sweep regenerates
-                    # and re-fails, forever.
-                    outcome = await send_dropping_bad_media(
-                        client, fan_id, part, media, log=log,
-                        send_purpose="gated")
-                    result = outcome.result
+                    if gid:
+                        result = await asyncio.to_thread(
+                            lambda g=gid: client.send_message(fan_id, "", giphy_id=g))
+                    else:
+                        # A refused ATTACHMENT degrades to text-only rather than
+                        # losing the greeting. Otherwise one dead vault id blocks
+                        # EVERY welcome on the account: a failed bubble-0 leaves the
+                        # welcome_sent claim unwritten, so the next sweep regenerates
+                        # and re-fails, forever.
+                        outcome = await send_dropping_bad_media(
+                            client, fan_id, part, media_ids if idx == 0 else [],
+                            log=log, send_purpose="gated")
+                        result = outcome.result
                 except Exception as e:
                     if idx == 0:
                         errors += 1
@@ -1149,7 +1201,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                     idx + 1, account_id, fan_id, exc_info=True)
                     break
                 landed += 1
-                if idx == 0 and outcome.media_landed:
+                # A landed send is either the GIF or a text bubble, and only a text
+                # bubble can carry the time-of-day image — so `outcome` is read only
+                # in the branch that defines it.
+                if gid:
+                    gifs_sent += 1
+                elif idx == 0 and outcome.media_landed:
                     image_attached += 1
                 # Existing optimistic send path: persist each landed bubble
                 # (Automation employee). The WS pump skips outbound, so this is the
@@ -1162,6 +1219,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         message_id=int(msg_id),
                         sent_by_employee_id=None,  # → system Automation employee
                         automation_kind="welcome",  # matches grok_calls.purpose
+                        # `part` is "" for the GIF bubble, which is exactly the
+                        # body a GIF-only row wants: its content is the giphyId.
                         body=str(result.get("text") or part),
                         price_cents=0,
                         created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
@@ -1206,6 +1265,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "restyled": restyled,
         "restyled_cached": restyled_cached,
         "pinned_used": pinned_used,
+        "gifs_sent": gifs_sent,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
         "skipped_existing": skipped_existing,

@@ -133,6 +133,7 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "with_image", "type": "bool", "default": True, "hint": "attach the time-of-day welcome image"},
             {"key": "time_only", "type": "bool", "default": True, "hint": "2nd bubble says only the day/time + location (no activity)"},
             {"key": "question", "type": "str", "default": "what's yours?", "hint": "3rd bubble: this exact question, sent word-for-word (blank = off)"},
+            {"key": "gif_id", "type": "str", "hint": "4th bubble: giphy id of a GIF sent after the question (blank = off)"},
             {"key": "model", "type": "str", "hint": "LLM override"},
             {"key": "dry_run", "type": "bool", "hint": "generate but don't send"},
         ],

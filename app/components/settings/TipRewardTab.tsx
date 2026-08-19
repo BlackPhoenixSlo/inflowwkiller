@@ -21,10 +21,10 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Gift, FolderOpen, MessageCircle, Image as ImageIcon, Flame, HandCoins, Eye } from "lucide-react";
+import { Gift, MessageCircle, Image as ImageIcon, Flame, HandCoins, Eye } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/primitives";
-import { SingleFolderRow, VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
+import { MultiFolderRow, SingleFolderRow, VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { MediaThumb } from "@/components/settings/sellerShared";
 import { VaultPicker } from "@/components/chat/VaultPicker";
@@ -108,8 +108,8 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   const [cvAdaptive, setCvAdaptive] = useState(true); // backend default ON
   const [cvBaitBuyers, setCvBaitBuyers] = useState(true); // backend default ON
 
-  const [cvRungs, setCvRungs] = useState<{ folder: string; price: number }[]>([]);
-  const [cvPicker, setCvPicker] = useState<number | null>(null); // which rung's folder
+  const [cvRungs, setCvRungs] = useState<{ folders: string[]; price: number }[]>([]);
+  const [cvPicker, setCvPicker] = useState<number | null>(null); // which rung's folders
 
   // Item 42 — tip-request follow-up (nested tip_request config).
   const [trEnabled, setTrEnabled] = useState(false);
@@ -162,7 +162,9 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setCvBaitBuyers(eff.teaser_convo_bait_for_buyers !== false);
     setCvRungs(
       (eff.teaser_convo_rungs ?? []).map((r) => ({
-        folder: r.folder ?? "",
+        // `folders` is the stored shape; `folder` is the single string it grew out
+        // of — widened here, written back as a list on the next save.
+        folders: r.folders ?? (r.folder ? [r.folder] : []),
         price: Math.max(0, Math.round((r.price_cents ?? 0) / 100)),
       })),
     );
@@ -207,13 +209,13 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setTiers((ts) => ts.filter((_, j) => j !== i));
   };
 
-  const setCvRung = (i: number, patch: Partial<{ folder: string; price: number }>) => {
+  const setCvRung = (i: number, patch: Partial<{ folders: string[]; price: number }>) => {
     markDirty();
     setCvRungs((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   };
   const addCvRung = () => {
     markDirty();
-    setCvRungs((rs) => [...rs, { folder: "", price: 0 }]);
+    setCvRungs((rs) => [...rs, { folders: [], price: 0 }]);
   };
   const removeCvRung = (i: number) => {
     markDirty();
@@ -260,7 +262,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       teaser_convo_adaptive: cvAdaptive,
       teaser_convo_bait_for_buyers: cvBaitBuyers,
       teaser_convo_rungs: cvRungs.map((r) => ({
-        folder: r.folder.trim(),
+        folders: r.folders.map((f) => f.trim()).filter(Boolean),
         price_cents: Math.max(0, Math.round(r.price * 100)),
       })),
       // Item 42 — tip-request follow-up. [] = no pool (stays disabled). The
@@ -492,36 +494,13 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
                         ✕
                       </button>
                     </div>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {t.folders.length === 0 && (
-                        <span className="text-[11px] text-fg-dim italic">No folders yet.</span>
-                      )}
-                      {t.folders.map((nm) => (
-                        <span
-                          key={nm}
-                          className="inline-flex items-center gap-1 text-xs bg-bg-elev-1 border border-border rounded-full px-2 py-0.5"
-                        >
-                          {nm}
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setTier(i, { folders: t.folders.filter((f) => f !== nm) })
-                            }
-                            className="text-fg-dim hover:text-err leading-none"
-                            title="Remove folder"
-                          >
-                            ×
-                          </button>
-                        </span>
-                      ))}
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => setPickerTier(i)}
-                      >
-                        <FolderOpen size={13} /> Pick from vault
-                      </Button>
-                    </div>
+                    <MultiFolderRow
+                      folders={t.folders}
+                      onPick={() => setPickerTier(i)}
+                      onRemove={(nm) =>
+                        setTier(i, { folders: t.folders.filter((f) => f !== nm) })
+                      }
+                    />
                   </div>
                 ))}
               </div>
@@ -701,12 +680,14 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
                 the heat that makes the sale land. Hard-capped so a freeloader can’t
                 drain the folder.
               </p>
-              <FolderRow
-                label="Free folder"
-                folder={htFreeFolder}
-                onPick={() => setHtPicker("free")}
-                onClear={() => { markDirty(); setHtFreeFolder(""); }}
-              />
+              <FolderField label="Free folder">
+                <SingleFolderRow
+                  folder={htFreeFolder}
+                  onPick={() => setHtPicker("free")}
+                  onClear={() => { markDirty(); setHtFreeFolder(""); }}
+                  emptyText="No folder yet."
+                />
+              </FolderField>
               <NumField
                 label="Free cap per fan" hint="most free teasers one $0 fan ever gets"
                 value={htFreeMax} min={0} max={1000}
@@ -721,12 +702,14 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
                 A fan who has paid before gets a locked tease PPV in the hot moment
                 instead of a freebie.
               </p>
-              <FolderRow
-                label="Paid folder"
-                folder={htPaidFolder}
-                onPick={() => setHtPicker("paid")}
-                onClear={() => { markDirty(); setHtPaidFolder(""); }}
-              />
+              <FolderField label="Paid folder">
+                <SingleFolderRow
+                  folder={htPaidFolder}
+                  onPick={() => setHtPicker("paid")}
+                  onClear={() => { markDirty(); setHtPaidFolder(""); }}
+                  emptyText="No folder yet."
+                />
+              </FolderField>
               <NumField
                 label="PPV price" hint="price of the locked tease" suffix="$"
                 value={htPrice} min={0} max={1000}
@@ -858,7 +841,10 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
               <div className="text-xs font-medium text-fg">Rungs (climb in order)</div>
               <p className="text-[11px] text-fg-dim/80 leading-relaxed">
                 Rung 1 fires first, then rung 2 the next time, and so on — holding at the
-                last one. Price 0 = a free tease. A rung with no folder is skipped.
+                last one. Price 0 = a free tease. A rung with no folders is skipped.
+                Pick <b>several</b> folders for a rung and they are scanned in order —
+                the first is used up before the next is touched, so a rung lasts longer
+                without changing what he sees first.
               </p>
               <div className="space-y-2">
                 {cvRungs.map((r, i) => (
@@ -889,12 +875,16 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
                         ✕
                       </button>
                     </div>
-                    <FolderRow
-                      label="Folder"
-                      folder={r.folder}
-                      onPick={() => setCvPicker(i)}
-                      onClear={() => setCvRung(i, { folder: "" })}
-                    />
+                    <FolderField label="Folders">
+                      <MultiFolderRow
+                        folders={r.folders}
+                        onPick={() => setCvPicker(i)}
+                        onRemove={(nm) =>
+                          setCvRung(i, { folders: r.folders.filter((f) => f !== nm) })
+                        }
+                        emptyText="No folders — this rung is skipped."
+                      />
+                    </FolderField>
                   </div>
                 ))}
               </div>
@@ -1060,41 +1050,32 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
         />
       )}
 
-      {/* Single-folder picker for a convo-ladder rung. */}
+      {/* Multi-folder picker for a convo-ladder rung — "Use 3 folders" means three. */}
       {cvPicker !== null && (
         <VaultFolderPicker
           open
           accountId={accountId}
-          initialSelected={cvRungs[cvPicker]?.folder ? [cvRungs[cvPicker].folder] : []}
+          initialSelected={cvRungs[cvPicker]?.folders ?? []}
           onClose={() => setCvPicker(null)}
-          onConfirm={(folders) => setCvRung(cvPicker, { folder: folders[0] ?? "" })}
+          onConfirm={(folders) => setCvRung(cvPicker, { folders })}
         />
       )}
     </Card>
   );
 }
 
-/** One vault folder as a removable chip + a "Pick from vault" button. The
- *  hot-teaser branches each hold a SINGLE folder, unlike the multi-folder tiers. */
-function FolderRow({
-  label, folder, onPick, onClear,
-}: {
-  label: string;
-  folder: string;
-  onPick: () => void;
-  onClear: () => void;
-}) {
+/** A labelled folder slot: the label column, then whichever row shape the slot
+ *  wears — SingleFolderRow for the hot-teaser branches (one folder each),
+ *  MultiFolderRow for a ladder rung. */
+function FolderField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <span className="text-xs text-fg-dim w-20 shrink-0">{label}</span>
-      <SingleFolderRow folder={folder} onPick={onPick} onClear={onClear}
-        emptyText="No folder yet." />
+      {children}
     </div>
   );
 }
 
-/** A bordered feature section with a title, optional subtitle, an on/off switch
- *  in the header, and a body that the caller only renders when the switch is on. */
 function Section({
   icon, title, subtitle, toggle, children,
 }: {

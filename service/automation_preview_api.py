@@ -50,6 +50,12 @@ class _PreviewBody(BaseModel):
     # word-for-word as the 3rd bubble — carried from the form so the preview shows
     # the full burst before the rule is saved.
     question: str | None = None
+    # Mirror of the rule's `gif_id` knob: the picked GIF shown as bubble 4 before
+    # the rule is saved. Unlike `time_only`/`question` it changes nothing the
+    # server composes — it is echoed back so the preview response carries the
+    # WHOLE send shape and the panel renders every bubble from one snapshot. See
+    # preview_compose's return for why that beats rendering it from form state.
+    gif_id: str | None = None
 
 
 @router.post("/admin/automation-preview")
@@ -66,6 +72,7 @@ async def automation_preview(body: _PreviewBody = Body(...)) -> dict[str, Any]:
                 model=body.model, restyle=body.restyle, slot=body.slot,
                 config=body.config, ignore_pin=body.ignore_pin,
                 time_only=body.time_only, question=body.question,
+                gif_id=body.gif_id,
             )
         except LLMCapExceeded:
             # Belt-and-braces: preview_compose already degrades a capped restyle to

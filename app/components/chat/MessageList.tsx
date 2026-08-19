@@ -22,6 +22,7 @@ import { createPortal } from "react-dom";
 
 import { describeLoadError, proxyImage, type OFMedia, type OFMessage } from "@/lib/relay";
 import { cn } from "@/lib/utils";
+import { giphyUrl } from "@/lib/ofMedia";
 import { blurImageClass, useBlurMode } from "@/hooks/useBlurMode";
 import { useCompactMedia } from "@/hooks/useCompactMedia";
 import { useTranslateMode } from "@/hooks/useTranslateMode";
@@ -843,7 +844,7 @@ function Bubble({
           ) : null}
           {msg.giphyId ? (
             <a
-              href={`https://media.giphy.com/media/${msg.giphyId}/giphy.gif`}
+              href={giphyUrl(msg.giphyId)}
               target="_blank"
               rel="noreferrer"
               className={cn(
@@ -853,7 +854,7 @@ function Bubble({
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={`https://media.giphy.com/media/${msg.giphyId}/giphy.gif`}
+                src={giphyUrl(msg.giphyId)}
                 alt="GIF"
                 loading="lazy"
                 className="w-full h-auto object-cover"
