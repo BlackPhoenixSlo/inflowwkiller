@@ -41,7 +41,7 @@ const UNIT_S: Record<Unit, number> = { seconds: 1, minutes: 60, hours: 3600 };
  *  opt-ins (mirrors STYLE_AUTOMATIONS on the backend). The toggles read/write the
  *  account's style_config_json, keyed by kind — the SAME source the Auto Convo
  *  tab edits, so the two surfaces stay in sync. */
-const STYLE_KINDS = ["of_ai_chat", "autoreply", "deep_convo", "ai_chatter"] as const;
+const STYLE_KINDS = ["of_ai_chat", "autoreply", "ai_chatter"] as const;
 const isStyleKind = (k: string): k is (typeof STYLE_KINDS)[number] =>
   (STYLE_KINDS as readonly string[]).includes(k);
 

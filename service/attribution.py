@@ -294,7 +294,7 @@ async def write_outbound_attribution(
     """Write the outbound `messages` row.
 
     `automation_kind`: which automation sent this row (`of_ai_chat`,
-    `send_welcome`, `deep_convo`, `followup`, `autoreply`, `send_mass_message`,
+    `send_welcome`, `followup`, `autoreply`, `send_mass_message`,
     `reply_mass_funnel`, `nudge_online`, …). NULL for human / relay sends. This
     is the per-automation breakdown of the otherwise-flat `sent_by_employee_id`
     Automation sentinel — the Messages tab and the per-automation stats panel

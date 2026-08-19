@@ -404,7 +404,12 @@ class Fan(Base):
     is_muted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=False)
     joined_date: Mapped[str | None] = mapped_column(String)
 
-    # ── deep_convo state machine (4-step engagement drill) ───
+    # ── DEAD COLUMNS: the retired deep_convo drill's state machine ───
+    # The engine was removed (2026-08); NOTHING reads or writes these any more.
+    # They stay declared because dropping a SQLite column rewrites the whole
+    # table, and table-level surgery on the live WAL DB has corrupted prod twice
+    # (2026-07-22, 2026-08-09). Removing them is its own deploy with its own
+    # backup — never fold it into a code change.
     deep_convo_state: Mapped[str] = mapped_column(String, nullable=False, default="missing")
     deep_convo_skip_level: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     deep_convo_skip_remaining: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -469,8 +474,9 @@ class Message(Base):
     mass_run_id: Mapped[int | None] = mapped_column(Integer)  # FK declared via table_args
     funnel_step: Mapped[int | None] = mapped_column(Integer)
     # Which automation sent this outbound row (of_ai_chat, send_welcome,
-    # deep_convo, followup, autoreply, send_mass_message, reply_mass_funnel,
-    # nudge_online, mass_nudge, online_blast). NULL = human send or a legacy
+    # followup, autoreply, send_mass_message, reply_mass_funnel,
+    # nudge_online, mass_nudge, online_blast; old rows can carry retired
+    # kinds). NULL = human send or a legacy
     # pre-0032 row. Distinct from sent_by_employee_id, which lumps every
     # automation under the single system "Automation" sentinel employee.
     automation_kind: Mapped[str | None] = mapped_column(String)
@@ -1480,9 +1486,9 @@ class AccountAiConfig(Base):
     # OFF. Separate column to avoid the nudge/webhook shallow-merge collision.
     autoreply_config_json: Mapped[str | None] = mapped_column(Text)
     # Per-automation opt-in for the "human texting style" package (short/casual
-    # girl voice + 3-bubble splitting + casualized lowercase Q/Tease). JSON
-    # {"of_ai_chat": bool, "autoreply": bool, "deep_convo": bool}. Absent/NULL or
-    # a missing key → OFF for that automation (CURRENT behavior, byte-for-byte).
+    # girl voice + 3-bubble splitting). JSON
+    # {"of_ai_chat": bool, "autoreply": bool, "ai_chatter": bool}. Absent/NULL or
+    # a missing key → the per-automation default (see _common._STYLE_DEFAULT_ON).
     # Own column to avoid the nudge/webhook shallow-merge collision.
     style_config_json: Mapped[str | None] = mapped_column(Text)
     # tip_reward (P4): per-account config for the "send vault images when a fan
@@ -1924,7 +1930,7 @@ class NudgeState(Base):
         never nudged (seed the index from the fan id).
 
     Nudge is fully async: it NEVER sets fans.automation_paused_until (the shared
-    cooldown), so of_ai_chat/deep_convo are never frozen by a nudge — it gates
+    cooldown), so the chat engines are never frozen by a nudge — it gates
     only on its own cap here.
     """
     __tablename__ = "nudge_state"
@@ -1959,7 +1965,7 @@ class AutoreplyState(Base):
       • last_nudge_at — enforces min_gap_minutes between nudges in a spell.
 
     Like nudge_online, autoreply NEVER sets fans.automation_paused_until (it gates
-    on its own cap), so of_ai_chat/deep_convo are never frozen by it.
+    on its own cap), so the chat engines are never frozen by it.
     """
     __tablename__ = "autoreply_state"
 

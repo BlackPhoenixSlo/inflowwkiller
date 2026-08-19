@@ -604,12 +604,17 @@ async def session_middleware(request: Request, call_next):
                         is_admin = bool(getattr(row, "is_admin", False))
                         if is_admin:
                             # Master role: the account_ids snapshot becomes the
-                            # FULL account set, sourced from the registry — the
-                            # SAME source the isolation middleware and
-                            # _resolve_account_id check against, NOT this DB —
-                            # so a registry-only account can never 403 the
-                            # master. Recomputed each request, so a freshly
-                            # captured account appears without re-login.
+                            # FULL account set — the registry (the SAME source
+                            # the isolation middleware and _resolve_account_id
+                            # check against) UNIONED with every account any
+                            # user owns in user_accounts. Each source holds
+                            # accounts the other lacks: replacing with the
+                            # registry alone made the master WEAKER than a
+                            # regular owner for a DB-only account (retired, no
+                            # captured session) — a rules DELETE 403'd the live
+                            # master on 2026-08-19. Recomputed each request, so
+                            # a freshly captured account appears without
+                            # re-login.
                             # Deferred import mirrors the `chatters` pattern to
                             # keep auth.py free of a hard registry dependency.
                             # `account_ids()` and not `list_accounts()`: we want
@@ -618,7 +623,12 @@ async def session_middleware(request: Request, call_next):
                             # request the master makes, which is descriptors
                             # spent in the middleware on data we discard.
                             import accounts as _registry
-                            account_ids = _registry.account_ids()
+                            all_owned = (await s.execute(
+                                select(UserAccount.account_id).distinct()
+                            )).all()
+                            account_ids = _registry.account_ids() | frozenset(
+                                str(r[0]) for r in all_owned
+                            )
                         # Only bump last_seen_at once per ~5 min to avoid
                         # write amplification — a chat session fires
                         # hundreds of requests/min.
@@ -660,12 +670,18 @@ async def session_middleware(request: Request, call_next):
                                         imp_account_ids = frozenset(r[0] for r in imp_acct_rows)
                                         imp_is_admin = bool(getattr(imp_row, "is_admin", False))
                                         if imp_is_admin:
-                                            # Impersonating a master = the full
-                                            # registry set (read-only — mutation
-                                            # is blocked below for any
+                                            # Impersonating a master = the same
+                                            # registry ∪ user_accounts union as
+                                            # a real master (read-only —
+                                            # mutation is blocked below for any
                                             # impersonation).
                                             import accounts as _registry
-                                            imp_account_ids = _registry.account_ids()
+                                            imp_all = (await s.execute(
+                                                select(UserAccount.account_id).distinct()
+                                            )).all()
+                                            imp_account_ids = _registry.account_ids() | frozenset(
+                                                str(r[0]) for r in imp_all
+                                            )
                                         _request_user.set(AuthedUser(
                                             imp_row.id, imp_row.username,
                                             imp_account_ids, imp_is_admin,

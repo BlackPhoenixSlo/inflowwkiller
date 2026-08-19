@@ -635,7 +635,7 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
     # in its payload. Combined with the JSON parse below, this is what stops another
     # fan's job showing up on his strip. (tip_reward IS fan-scoped — on_inbound_tip.)
     _FAN_KINDS = ("ai_chatter", "of_ai_chat", "send_welcome", "send_followup",
-                  "deep_convo", "autoreply", "gen_info", "tip_reward")
+                  "autoreply", "gen_info", "tip_reward")
 
     def _has_fan(p: dict, fid: int) -> bool:
         # EVERY coercion is guarded — a hand-inserted / legacy payload with a string id

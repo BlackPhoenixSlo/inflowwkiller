@@ -2,10 +2,9 @@
 _openers.py — which gen_info opener to use next, and what has been used already.
 
 `gen_info` mines each fan's chat into three deep questions (`fan_profiles.q1..q3`)
-and three flirty teases (`tease1..tease3`). Today `deep_convo` is the only thing
-that reads the questions, and it has sent 60 messages in its life. The plan
-(library/CHAT_LANE_CONSOLIDATION.md) retires it and makes those openers a PHASE of
-the ordinary chat engines instead:
+and three flirty teases (`tease1..tease3`). The 4-step drill that once read the
+questions (60 messages in its life) is retired (library/CHAT_LANE_CONSOLIDATION.md);
+those openers are a PHASE of the ordinary chat engines instead:
 
     gather  → the existing bio-gap interrogation (unchanged)
     deepen  → one profile opener per ordinary reply turn, questions before teases
@@ -73,17 +72,16 @@ it was never marked delivered and could be handed back days later as a deliberat
 opener. Prod sent tease1 three times in one evening with all six slots already
 marked used.
 
-⚠️ The pool has other senders that this module does NOT meter, so "used" means
+⚠️ The pool has another sender that this module does NOT meter, so "used" means
 "used by the chat engines", not "never sent to this fan":
 
   • `reengage_buyers.compose_opener` picks a tease with `rng.choice` for the
-    re-engagement bubble (reengage_buyers.py ~90);
-  • `deep_convo` sends its tease verbatim as a message body (deep_convo.py ~765).
+    re-engagement bubble (reengage_buyers.py ~90).
 
-Neither reads or writes the used-set, so a line either one sends can still arrive
-later as a `need_block` opener. Closing that means routing them through
-`record_used` too — worth doing, and deliberately not done here: both have their
-own send paths, and deep_convo is being retired (library/CHAT_LANE_CONSOLIDATION.md).
+It neither reads nor writes the used-set, so a line it sends can still arrive
+later as a `need_block` opener. Closing that means routing it through
+`record_used` too — worth doing, and deliberately not done here: it has its
+own send path.
 
 The menu is gone rather than filtered. Filtering it (only unused lines, capped per
 day) would have kept two paths that must agree about one pool, and two paths that

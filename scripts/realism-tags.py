@@ -34,7 +34,7 @@ from automations import _voice                # noqa: E402
 from automations import cat_stickers          # noqa: E402
 from automations._pins import PINS_ENABLED_KEY, PINS_WRITE_KEY  # noqa: E402
 
-AUTOMATIONS = c.STYLE_AUTOMATIONS   # of_ai_chat, autoreply, deep_convo, ai_chatter
+AUTOMATIONS = c.STYLE_AUTOMATIONS   # of_ai_chat, autoreply, ai_chatter
 
 
 # ── The catalog ──────────────────────────────────────────────────────

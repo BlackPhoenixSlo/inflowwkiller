@@ -928,7 +928,7 @@ async def _sync_of_nickname(
     """Re-assert the structured OF nickname (Name/City,Country/Age/Job) after a
     profile regen, using the SAME canonical builder the senders use so OF gets the
     identical format. This is the periodic self-heal: of_ai_chat pushes the name
-    each gather tick, but once a fan is handed off to deep_convo the name is only
+    each gather tick, but once a fan graduates the name is only
     asserted once — any later enrichment (or an external edit on onlyfans.com that
     clears it back to the bare profile name) would otherwise never reach OF. We
     re-push on every regen of a STRUCTURED nickname (≥2 segments) so drift is
@@ -1066,8 +1066,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     refill_ids = coerce_ids(payload.get("refill_ids"))
     limit = int(payload.get("limit") or _DEFAULT_FAN_LIMIT)
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
-    # Localize the fan-facing openers (Q/Tease) to the account language — deep_convo /
-    # reengage send them verbatim. Facts stay as stated; appended at the END so the
+    # Localize the fan-facing openers (Q/Tease) to the account language —
+    # reengage sends them verbatim. Facts stay as stated; appended at the END so the
     # stable prompt prefix (and its cache) is untouched. "" for en.
     from . import _language
     system_prompt = _SYSTEM_PROMPT + _language.qtease_directive(

@@ -27,10 +27,8 @@ messages/fans rows exist), so A08 is pure DB work:
        a re-run doesn't re-spend Grok on the whole sheet.
     3. FLAG every old fan (idempotent, own session): insert a `skip_list` row
        `(account_id, fan_id, reason="old_fan_pre_ai")` so of_ai_chat never opens
-       them, and set `fans.deep_convo_state="done"` (belt-and-suspenders — the
-       skip_list row is what actually stops the AI; deep_convo done mirrors the
-       legacy `deep_convo={"state":"done"}`). The fans upsert carries identity-safe
-       defaults so a sheet id that was never chatted still gets a row.
+       them — the skip_list row is what stops the AI. The fans upsert carries
+       identity-safe defaults so a sheet id that was never chatted still gets a row.
     4. Unless `flag_only` (the spec's `--no-scrape`): compose A02 then A03 over the
        batch — `gen_info.run(force_ids=…)` to generate/refresh the profile, then
        `apply_profiles.run(force_ids=…)` to materialise nickname + sticky note into
@@ -158,13 +156,13 @@ async def _already_onboarded(account_id: str, ids: set[int]) -> set[int]:
 # ── Flagging (own session; sequential upserts — no parallel execute) ──
 
 async def _flag_fans(account_id: str, ids: set[int], now: datetime) -> int:
-    """Mark every old fan skip-listed + deep_convo done, idempotently.
+    """Mark every old fan skip-listed, idempotently.
 
     One session, sequential awaits (the SQLAlchemy parallel-session footgun only
     bites concurrent execute() on a SHARED session — a loop of awaits is safe).
-    skip_list uses do_nothing so a pre-existing row (any reason) is preserved; the
-    fans upsert carries identity-safe defaults so a never-chatted sheet id still
-    gets a row that of_ai_chat will skip.
+    Both upserts use do_nothing: a pre-existing skip row (any reason) is
+    preserved, and the fans insert only ensures a never-chatted sheet id still
+    gets a row that of_ai_chat will skip — an existing fan is left untouched.
     """
     flagged = 0
     async with get_session() as s:
@@ -178,14 +176,8 @@ async def _flag_fans(account_id: str, ids: set[int], now: datetime) -> int:
             await s.execute(
                 sqlite_insert(Fan)
                 .values(account_id=str(account_id), fan_id=int(fid),
-                        deep_convo_state="done", deep_convo_updated_at=now,
                         updated_at=now)
-                .on_conflict_do_update(
-                    index_elements=["account_id", "fan_id"],
-                    set_={"deep_convo_state": "done",
-                          "deep_convo_updated_at": now,
-                          "updated_at": now},
-                )
+                .on_conflict_do_nothing(index_elements=["account_id", "fan_id"])
             )
             flagged += 1
     return flagged
@@ -242,7 +234,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     now = datetime.utcnow()
     # Always (re)flag the full set — flagging is idempotent and cheap, and it
-    # repairs a fan whose skip_list row was cleared or whose deep_convo drifted.
+    # repairs a fan whose skip_list row was cleared.
     flagged = await _flag_fans(account_id, old_ids, now)
 
     gen_stats: dict | None = None

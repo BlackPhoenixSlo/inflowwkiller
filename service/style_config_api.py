@@ -4,7 +4,7 @@ The "human texting style" package (short/casual girl voice + 3-bubble splitting 
 casualized lowercase Q/Tease) is opt-in PER AUTOMATION. This JSON holds the three
 checkboxes the Settings "Auto Convo" tab persists:
 
-    {"of_ai_chat": bool, "autoreply": bool, "deep_convo": bool}
+    {"of_ai_chat": bool, "autoreply": bool, "ai_chatter": bool}
 
   GET /admin/style-config?account_id=  → {config, defaults}
   PUT /admin/style-config              → upsert the JSON, returns {config}

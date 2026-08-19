@@ -175,7 +175,7 @@ async def quarantine_if_undeliverable(client, account_id, fan_id, *, log=log) ->
     quarantine the fan so we stop calling the model for them:
 
       * account deleted / 'User not found'  → skip_list ('unreachable') + a pause.
-        of_ai_chat/send_followup/deep_convo honour skip_list; the pause covers the
+        of_ai_chat/send_followup honour skip_list; the pause covers the
         pause-only senders (autoreply).
       * sub lapsed (`subscribedOn` falsy)    → record subscription_status='expired'
         + pause 1 WEEK (re-checks then, in case they re-subscribe).
@@ -209,10 +209,10 @@ async def quarantine_if_undeliverable(client, account_id, fan_id, *, log=log) ->
 async def _skip_and_rest(account_id, fan_id, now) -> None:
     """Skip-list AND pause-a-week a fan that's gone for good. Both gates so every
     sender (skip_list-aware OR pause-only) leaves the fan alone. An existing row
-    is UPGRADED to 'unreachable' — a fan can already carry 'info' (the deep_convo
-    handoff marker, which deep_convo deliberately lets through) or 'too_long';
-    keeping that reason would mask the terminal one and deep_convo would keep
-    selecting the fan."""
+    is UPGRADED to 'unreachable' — a fan can already carry 'info' or 'too_long'
+    (graduation reasons, which ai_chatter deliberately lets through); keeping
+    that reason would mask the terminal one and ai_chatter would keep selecting
+    the fan."""
     async with get_session() as s:
         await s.execute(
             sqlite_insert(SkipList)
@@ -250,7 +250,7 @@ async def _skip_and_rest(account_id, fan_id, now) -> None:
 #       row is what lets the roster badge / inbox counts exclude them (the thin
 #       skip_users=all /chats rows carry no isRestricted flag to key off).
 # Senders that already gate on FULL skip_list membership (of_ai_chat,
-# send_followup, deep_convo[≠info], ai_chatter[≠graduation]) honour all three
+# send_followup, ai_chatter[≠graduation]) honour all three
 # for free; the senders that DON'T (autoreply, tip_reward, send_welcome) and the
 # list-broadcasts (mass_nudge, online_blast) load `load_hard_skip_ids` and
 # exclude these explicitly.
@@ -420,7 +420,7 @@ async def _load_skip_ids(account_id, reasons: frozenset) -> set[int]:
 async def mark_muted_creator_skip(account_id, fan_id, *, now=None) -> None:
     """Durably skip-list a muted creator. Upserts reason='muted_creator' so the
     block is a HARD stop everywhere (it deliberately wins over a softer existing
-    reason such as 'info', which deep_convo would otherwise let through) — but
+    reason such as 'info', which ai_chatter would otherwise let through) — but
     never over 'of_restricted': that one is strictly stronger (it also drives
     the unread-count exclusion) and the scrape must not demote it on the next
     mute reconcile."""
@@ -571,16 +571,16 @@ DEFAULT_MODEL = "deepseek-v4-flash"
 # CURRENT prompt + 2-bubble cap byte-for-byte. When ON, the automation appends
 # STYLE_HUMANIZER to its system prompt, adds STYLE_3LINE to its style dice, and
 # raises its bubble cap to STYLE_MAX_BUBBLES. gated wholly on style_config_json
-# {"of_ai_chat":bool,"autoreply":bool,"deep_convo":bool,"ai_chatter":bool}.
+# {"of_ai_chat":bool,"autoreply":bool,"ai_chatter":bool}.
 STYLE_MAX_BUBBLES = 6   # a real texter can fire off a burst of quick texts in a row
-STYLE_AUTOMATIONS = ("of_ai_chat", "autoreply", "deep_convo", "ai_chatter")
+STYLE_AUTOMATIONS = ("of_ai_chat", "autoreply", "ai_chatter")
 
 # The engines that actually CALL _persona.verify_self_consistency. Deliberately
 # NOT STYLE_AUTOMATIONS: the style layers above are prompt-level and every engine
 # applies them, but the pre-send check is a code path an engine either has or does
-# not. Keying its flags off the wider tuple minted `consistency_autoreply` and
-# `consistency_deep_convo` — settable, persisted, and read by nothing, which is
-# the same shape as the hot-lead trinity flag deleted in dc2c3b8.
+# not. Keying its flags off the wider tuple minted consistency flags for engines
+# without the call (e.g. `consistency_autoreply`) — settable, persisted, and read
+# by nothing, which is the same shape as the hot-lead trinity flag deleted in dc2c3b8.
 #
 # Widen this ONLY in the commit that adds the call, never ahead of it. The
 # invariant is asserted by test_consistency_check.case_no_inert_flags.
@@ -621,7 +621,7 @@ PAINFUL_TEXTING = _voice.HER.painful_texting
 # info ("Content referring to off-platform meetings between creators and fans").
 # A fan pushing for a meetup/number used to drift the model into agreeing —
 # this block forbids that outright while still allowing flirty fantasy. Inject
-# into every conversational system prompt (autoreply / of_ai_chat / deep_convo).
+# into every conversational system prompt (autoreply / of_ai_chat / ai_chatter).
 ONPLATFORM_GUARDRAIL = (
     "STAY ON ONLYFANS (hard rule, even if HE asks): never swap numbers/emails/"
     "socials, never plan to meet irl — flirty fantasy fine, actual invites never. "
@@ -690,7 +690,6 @@ def nonempty(v) -> bool:
 # LLM tell, so when the account opts in we remove emojis IN CODE at the send
 # chokepoint. Targets the emoji unicode blocks only — NOT general punctuation, so
 # an em-dash "—" or apostrophe survives. Collapses any double space left behind.
-# (Promoted from deep_convo, which has always been emoji-free.)
 _EMOJI_STRIP_RE = re.compile(
     "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002190-\U000021FF"
     "\U00002B00-\U00002BFF\U0000FE00-\U0000FE0F\U0001F1E6-\U0001F1FF‍♀♂]+"
@@ -998,7 +997,7 @@ def is_filming_refusal(text: str | None) -> bool:
 # text style flags as option and ENABLED BY DEFAULT". So the absent-key default is
 # now PER-AUTOMATION rather than a flat False:
 #   • ai_chatter          → ON  when the operator has written NO explicit key
-#   • every other sender  → OFF (of_ai_chat / autoreply / deep_convo UNCHANGED)
+#   • every other sender  → OFF (of_ai_chat / autoreply UNCHANGED)
 # An EXPLICIT stored value (True OR False) is ALWAYS honoured verbatim — a human who
 # unticked ai_chatter keeps it off; only the ABSENT-key case consults this map. This
 # is the whole tri-state: {explicit-true, explicit-false, absent→per-automation}.
@@ -1238,31 +1237,10 @@ async def load_typo_flags(account_id: str) -> dict[str, bool]:
     return {k: _resolve_style_flag(stored, k, typo_flag_key(k)) for k in STYLE_AUTOMATIONS}
 
 
-# Casualize a scripted Q/Tease at SEND time (deep_convo) when the style flag is
-# on — lowercase + a few safe word-boundary swaps so the proper-case gen_info
-# line ("Bet you can handle more than just a sunrise run, jack.") blends with the
-# lowercase voice ("bet u can handle more than just a sunrise run, jack"). Purely
-# cosmetic + reversible: nothing stored in fan_profiles changes.
-_CASUAL_SWAPS = (
-    (re.compile(r"\byou're\b", re.I), "ur"),
-    (re.compile(r"\byour\b", re.I), "ur"),
-    (re.compile(r"\byou\b", re.I), "u"),
-)
-
-
-def casualize_qtease(text: str) -> str:
-    if not text:
-        return text
-    s = text.lower()
-    for rx, rep in _CASUAL_SWAPS:
-        s = rx.sub(rep, s)
-    return s.rstrip(".").strip()
-
-
 # ── "Non-native English" style layer (opt-in, deterministic) ──────────
 # A non-native speaker misspells the SAME word the SAME way EVERY time — a
 # consistent fingerprint, NOT a random thumb-slip (humanize_typos). So this layer is
-# applied ALWAYS when the flag is on (like casualize_qtease), never rate-gated. And
+# applied ALWAYS when the flag is on, never rate-gated. And
 # it MUST be code-level: prompt-only misspellings are ignored / "fixed" by the model.
 #
 # Entries are REAL observed misspellings, not invented — expand from real captures.
@@ -1984,7 +1962,7 @@ def build_facts_note(facts: dict, max_len: int = _FACTS_NOTE_MAX,
 
 # ── R2: the APP-ONLY rich note ───────────────────────────────────────
 # The OF note is capped at 200 (build_facts_note above, pushed by apply_profiles /
-# of_ai_chat / deep_convo). Our UI can show much more. build_rich_note is a SEPARATE,
+# of_ai_chat). Our UI can show much more. build_rich_note is a SEPARATE,
 # app-only projection that reads the STORED gen_info bullet_points (the rich text that
 # actually carries the "Important:" section — the push_to_sheets rebuild drops it) plus
 # the short_bio, and caps by the fan's spend tier (higher spend ⇒ longer). It is NEVER
@@ -2276,9 +2254,10 @@ _OFF_PATTERNS = (
     ("rendezvous", _OFF_RENDEZVOUS_RE),
 )
 
-# Warm, on-voice redirects back to the chat. Emojis are fine — deep_convo strips
-# them in _send; everywhere else they read normally. Re-exported from `_voice`
-# (female lane); the male set lives beside it there.
+# Warm, on-voice redirects back to the chat. Emojis are fine — an account that
+# opts into the emoji strip loses them at the send chokepoint; everywhere else
+# they read normally. Re-exported from `_voice` (female lane); the male set
+# lives beside it there.
 _OFF_DEFLECTIONS = _voice.HER.off_deflections
 
 

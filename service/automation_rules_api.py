@@ -149,22 +149,6 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "dry_run", "type": "bool", "hint": "generate but don't send"},
         ],
     },
-    "deep_convo": {
-        "label": "Deep-convo drill", "recurring": True, "surface": "rules",
-        "cadence_default_s": 120,
-        "summary": "Run the 4-message engagement drill on profile-complete fans.",
-        "example": "every 120s · limit 100 · max_sends 10",
-        "knobs": [
-            {"key": "limit", "type": "int", "min": 1, "hint": "candidate sweep ceiling"},
-            {"key": "max_sends", "type": "int", "min": 1, "hint": "send-transitions per tick"},
-            {"key": "max_spend_cents", "type": "int", "min": 0,
-             "hint": "skip fans above this lifetime spend in cents (default 20000 = $200)"},
-            {"key": "model", "type": "str", "hint": "LLM override"},
-            {"key": "dry_run", "type": "bool", "hint": "advance/send nothing"},
-            {"key": "force_ids", "type": "ids", "hint": "[fan_id,…] manual targets (bypasses gates)"},
-            {"key": "only_fan_ids", "type": "ids", "hint": "[fan_id,…] scope the drill to these fans (gates still apply)"},
-        ],
-    },
     "gen_info": {
         "label": "Generate fan profiles", "recurring": True, "surface": "rules",
         "cadence_default_s": 86400,

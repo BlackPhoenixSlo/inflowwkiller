@@ -172,9 +172,9 @@ def parse_marker(raw: str) -> tuple[str, str | None]:
     # mid-conversation. Silence is better than the wrong reaction.
     #
     # Only the two chat engines call this, so only they turn a bare `*love*` into
-    # a gif. In autoreply / deep_convo the same body reaches
+    # a gif. In autoreply the same body reaches
     # `_markers.strip_narration` unparsed and is simply dropped. That asymmetry is
-    # deliberate — those lanes have no sticker send path to reach.
+    # deliberate — that lane has no sticker send path to reach.
     if bare := bare_star_span(clean):
         tag = bare.lower().replace(" ", "_")
         if tag in _CATALOG:

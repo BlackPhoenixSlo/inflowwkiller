@@ -884,10 +884,10 @@ class Day:
         """Account-constant, SYSTEM side — one value for every fan of the account.
 
         `voice` is REQUIRED, unlike on `day_block` beneath it. A lane parameter with a
-        default is how a male account gets rendered as a woman (`scripts_api.simulate`,
-        `deep_convo._send`), and this method exists only to be called from the two
-        engines — both of which have the lane in hand. `test_voice_lane` flagged the
-        defaulted version the moment it appeared."""
+        default is how a male account gets rendered as a woman (`scripts_api.simulate`
+        shipped that bug), and this method exists only to be called from the two
+        chat engines — both of which have the lane in hand. `test_voice_lane` flagged
+        the defaulted version the moment it appeared."""
         return day_block(self.log, self.hour, voice)
 
     def user_block(self, f: Fan | None, last_inbound: str) -> str:

@@ -286,9 +286,9 @@ CUSTOMS_CONDITIONS = (
 # they were never built to make: `send_followup` and `reply_mass_funnel` carried
 # it into 1,869 of the 2,073 customs prompts on prod (90%), and `send_followup`
 # DELIVERED three real pitches on one female account — including the 08-09 offer
-# that drew a $30 tip against a $100 floor. `deep_convo` rendered it to fans with
-# ZERO lifetime spend in a prompt that simultaneously says "Don't offer pics or
-# videos".
+# that drew a $30 tip against a $100 floor. A since-retired engine rendered it to
+# fans with ZERO lifetime spend in a prompt that simultaneously says "Don't offer
+# pics or videos".
 #
 # Two separate blocks mean the permission can only reach a prompt that ASKS for
 # it by name. An engine that renders `live_proof` alone cannot sell a custom, by
@@ -751,26 +751,6 @@ SELL_CAPTION_EXAMPLE = {
 }
 
 
-# ── Self-description inside a prompt ─────────────────────────────────
-# `deep_convo` states the creator's own nature twice — "you are 100% human,
-# girly, warm" in the system turn and "a casual, GIRLY reply (do girl things…)"
-# in the user turn. That is not a stray pronoun: it is an instruction to BE a
-# woman, given twice, in the engine's two most load-bearing sentences. A male
-# account running it produced a man told to do girl things.
-#
-# Kept as two separate constants because the two sentences do different jobs —
-# one describes what he IS, the other what the reply should DO — and collapsing
-# them was how the second one got missed on the first pass.
-HUMAN_SELF = {
-    VOICE_HER: "girly, warm",
-    VOICE_HIM: "dry, direct, unbothered",
-}
-REPLY_REGISTER = {
-    VOICE_HER: "GIRLY reply (do girl things and the occasional little typo)",
-    VOICE_HIM: "reply in HIS register — blunt, unhurried, the occasional little typo",
-}
-
-
 # ── The bundle ───────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -808,9 +788,6 @@ class VoiceBlocks:
     nudge_lines: tuple[str, ...]
     # The emoji set as a STANDALONE rule, for engines with no humanizer. "" for her.
     emoji_vocab: str
-    # What the creator IS, and what a reply should BE — deep_convo states both.
-    human_self: str
-    reply_register: str
     # The one worked example the sell-caption prompt shows the model.
     sell_caption_example: str
     sell_customs: bool = False
@@ -858,8 +835,6 @@ def blocks(voice: object, sell_customs: bool = False) -> VoiceBlocks:
         aftercare=AFTERCARE_FALLBACK[v],
         nudge_lines=NUDGE_LINES[v],
         emoji_vocab=EMOJI_VOCAB_RULE[v],
-        human_self=HUMAN_SELF[v],
-        reply_register=REPLY_REGISTER[v],
         sell_caption_example=SELL_CAPTION_EXAMPLE[v],
         sell_customs=bool(sell_customs),
     )

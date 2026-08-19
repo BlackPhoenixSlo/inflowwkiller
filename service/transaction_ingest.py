@@ -1479,7 +1479,7 @@ async def start_fast_poll() -> None:
 # (see project_offer_stuck_ambiguous_linker_and_fast_poll). They run around the
 # clock, so their purchase detection cannot wait for someone to open the app.
 _SELLING_KINDS = ("ai_chatter", "of_ai_chat", "ppv_send", "tip_request",
-                  "reengage_buyers", "deep_convo")
+                  "reengage_buyers")
 
 
 async def _fast_poll_account_ids() -> set[str]:
@@ -1625,7 +1625,7 @@ async def start_supervisor() -> None:
             # (automation_executor never consults one) and read that number to
             # decide real money questions: ai_chatter's whale gate
             # (max_lifetime_spend_cents), the proven-spend floor, the tip-ladder
-            # base, deep_convo's high-spender skip, of_ai_chat's hand-to-human
+            # base, of_ai_chat's hand-to-human
             # gate. Gating the producer on "is a human watching" while the
             # consumers never stop meant that with every dashboard closed, a fan
             # who had already blown past the whale cap still read as $0 and the

@@ -75,7 +75,6 @@ const PURPOSE_LABEL: Record<string, string> = {
   of_ai_chat: "Get to know fans (info-gather)",
   send_welcome: "Welcomes",
   send_followup: "Follow-ups",
-  deep_convo: "Deep convo",
   reply_mass_funnel: "Mass-funnel replies",
 };
 

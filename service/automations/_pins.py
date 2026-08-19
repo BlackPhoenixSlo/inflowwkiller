@@ -3,8 +3,8 @@ _pins.py — which of a fan's OWN messages the model gets to re-read later.
 
 🚫 UNWIRED 2026-08-15 (operator ruling) — READ THIS BEFORE THE REST
 ------------------------------------------------------------------
-NOTHING READS A PIN INTO A PROMPT ANY MORE. `ai_chatter`, `of_ai_chat`,
-`autoreply` and `deep_convo` no longer import this module at all; all five
+NOTHING READS A PIN INTO A PROMPT ANY MORE. `ai_chatter`, `of_ai_chat` and
+`autoreply` no longer import this module at all; all five
 `pins_block(f)` call sites and both `consider(...)` sites are gone. Everything
 below still describes the design accurately, and the code still works — it simply
 has no chat caller.
