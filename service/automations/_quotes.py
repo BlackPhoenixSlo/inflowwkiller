@@ -55,7 +55,7 @@ _LABEL = "A"
 
 
 def _strip_html(s: str | None) -> str:
-    """Local copy — house pattern (of_ai_chat, gen_info, transaction_ingest, …)."""
+    """Local copy — house pattern (welcome_chatter_for_info, gen_info, transaction_ingest, …)."""
     if not s:
         return ""
     if "<" not in s:

@@ -185,7 +185,7 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
         </label>
         <p className="text-xs text-fg-dim">
           {typingWpm > 0
-            ? `Each reply bubble lands after the time it'd take to type it at ${typingWpm} wpm (a 10-word line ≈ ${Math.round((10 / typingWpm) * 60)}s). Applies to AI chat, Auto Convo and deep convo.`
+            ? `Each reply bubble lands after the time it'd take to type it at ${typingWpm} wpm (a 10-word line ≈ ${Math.round((10 / typingWpm) * 60)}s). Applies to Info-gather and Auto Convo.`
             : "0 = bubbles send instantly (no typing delay)."}
         </p>
       </div>
@@ -206,7 +206,7 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
         <p className="text-xs text-fg-dim">
           {typingIndicator
             ? typingWpm > 0
-              ? "While each bubble is “being typed”, the fan sees OnlyFans’ real typing indicator (re-sent every ~2.5s). Applies to AI chat, Auto Convo, deep convo and funnels."
+              ? "While each bubble is “being typed”, the fan sees OnlyFans’ real typing indicator (re-sent every ~2.5s). Applies to Info-gather, Auto Convo and funnels."
               : "Needs a typing speed above 0 — with no typing delay there’s no window to show the indicator."
             : "Off — replies arrive after the typing delay with no visible typing bubble."}
         </p>

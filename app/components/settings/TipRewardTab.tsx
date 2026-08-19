@@ -69,6 +69,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   const [dollarsPerImage, setDollarsPerImage] = useState(10);
   const [minImages, setMinImages] = useState(1);
   const [maxImages, setMaxImages] = useState(5);
+  const [videosInRewards, setVideosInRewards] = useState(false); // backend default OFF
   const [windowHours, setWindowHours] = useState(72);
   const [caption, setCaption] = useState("");
   const [tiers, setTiers] = useState<TierForm[]>([]);
@@ -125,6 +126,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setDollarsPerImage(eff.dollars_per_image ?? 5);
     setMinImages(eff.min_images ?? 2);
     setMaxImages(eff.max_images ?? 12);
+    setVideosInRewards(!!eff.videos_in_rewards); // default OFF → images only
     setWindowHours(eff.window_hours ?? 72);
     setCaption(eff.caption ?? "");
     setTiers(tiersToForm(eff.tiers));
@@ -225,6 +227,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       dollars_per_image: dollarsPerImage,
       min_images: minImages,
       max_images: maxImages,
+      videos_in_rewards: videosInRewards,
       window_hours: windowHours,
       caption: caption.trim(),
       // ASK side — null amount means "ask for a tip without naming a price".
@@ -350,7 +353,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       <Section
         icon={<Gift size={15} />}
         title="Reward tippers with vault media"
-        subtitle={`Send free photos & videos the fan hasn’t seen yet — about one item per $${dollarsPerImage} tipped (capped). Bigger tippers can be routed to nicer folders.`}
+        subtitle={`Send free vault media the fan hasn’t seen yet — about one item per $${dollarsPerImage} tipped (capped). Bigger tippers can be routed to nicer folders.`}
         toggle={
           <Toggle
             checked={enabled}
@@ -379,6 +382,30 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
                 {dollarsPerImage * 3} tease sends 3, never fewer than {minImages} or
                 more than {maxImages}.
               </p>
+
+              {/* Videos too — a clip is billed by its length, never smuggled in
+                  as one photo-slot. */}
+              <label className="flex items-start gap-3 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 mt-0.5 accent-[var(--accent)]"
+                  checked={videosInRewards}
+                  onChange={(e) => {
+                    markDirty();
+                    setVideosInRewards(e.target.checked);
+                  }}
+                />
+                <span className="space-y-0.5">
+                  <span className="block text-sm">Videos too</span>
+                  <span className="block text-[11px] text-fg-dim/80 leading-relaxed">
+                    Off: rewards send <b>photos only</b> — clips in the folders are
+                    skipped. On: clips can ride, and each counts as several image
+                    slots by its length and explicitness ($5–10 per 10 seconds), so
+                    a ${dollarsPerImage * 5} tip can&apos;t walk off with a long
+                    video worth more than the tip.
+                  </span>
+                </span>
+              </label>
             </div>
 
             {/* Caption */}
@@ -642,7 +669,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       <Section
         icon={<Flame size={15} />}
         title="Let the AI closer take over when a fan sends a pic"
-        subtitle="A fan sending a photo is a hot moment — kick the AI Seller (closer) for that fan right away to convert it into a sale, even in intent-only mode."
+        subtitle="A fan sending a photo is a hot moment — kick the AI Seller for that fan right away to convert it into a sale."
         toggle={
           <Toggle
             checked={imageCloserEnabled}

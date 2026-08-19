@@ -5,7 +5,7 @@
 the 6 time-of-day activities + their per-slot vault images,
 location/utc_offset (for the "it's <weekday> <tod> here" line), the daily spend
 cap, and the LLM model (global + optional per-purpose override). gen_info /
-send_welcome / send_followup / of_ai_chat all resolve it at run time, so this is
+send_welcome / send_followup / welcome_chatter_for_info all resolve it at run time, so this is
 the one screen that fills the brain a fresh account starts without.
 
   GET /admin/account-config?account_id=  → {config, slots, model_options, purposes}
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, NamedTuple
 
@@ -30,6 +31,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import audience_include
 import llm_client
+import media_cotag
 from auth import assert_account_owned
 from automations import rhythm  # tz_offset_for — the ONE clock resolver
 from automations._persona import PERSONA_FACT_FIELDS, PERSONA_FACTS_OPERATOR_ONLY
@@ -51,7 +53,7 @@ TIME_SLOTS: tuple[str, ...] = (
 )
 # Purposes that support a per-purpose model override (model_by_purpose).
 PURPOSES: tuple[str, ...] = (
-    "gen_info", "of_ai_chat", "send_welcome", "send_followup",
+    "gen_info", "welcome_chatter_for_info", "send_welcome", "send_followup",
 )
 # Languages the account can be set to. The code is the routing/guard key; the label is
 # for the editor dropdown. Sourced from the language layer so there's one list.
@@ -164,6 +166,12 @@ def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
             getattr(row, "audience_mode", None) if row else None),
         "audience_list_id": getattr(row, "audience_list_id", None) if row else None,
         "audience_auto_add": bool(getattr(row, "audience_auto_add", None)) if row else False,
+        # Co-performer tagging (media_cotag). NULL ≡ OFF for the video rule
+        # (most creators are solo — it's a collab-account opt-in); NULL
+        # username ≡ "use the global handle" (the UI shows it as the
+        # placeholder rather than a value).
+        "cotag_tag_videos": bool(getattr(row, "cotag_tag_videos", None)) if row else False,
+        "cotag_username": getattr(row, "cotag_username", None) if row else None,
     }
 
 
@@ -275,6 +283,9 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         # lane relabels "Why she started OF" one Save too late — after the operator
         # has already filled the box under the wrong prompt.
         "persona_fact_fields_by_voice": canon,
+        # What a NULL cotag_username resolves to (env → built-in) — the editor's
+        # placeholder, so the default the box shows is the default that runs.
+        "cotag_default_username": media_cotag.handle(),
         # Include-only audience status (mirror health, ledger, outside queue).
         "audience": audience,
     }
@@ -507,6 +518,24 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
         except (TypeError, ValueError):
             raise HTTPException(422, f"time_images.{slot} must be a media id")
 
+    # Co-performer tag settings (media_cotag). Sparse like the audience columns:
+    # each key joins the upsert only when SENT, so an older client or a
+    # pre-cotag settings-transfer import can't clear them while saving
+    # something else.
+    cotag_video_sent = "cotag_tag_videos" in cfg
+    cotag_user_sent = "cotag_username" in cfg
+    cotag_username: str | None = None
+    if cotag_user_sent:
+        # Folded by the module that owns the concept, so what this stores is
+        # byte-identical to what media_cotag's readers would fold it to anyway.
+        u = media_cotag.fold_handle(
+            _clean_text(cfg.get("cotag_username"), "cotag_username"))
+        if u and not re.fullmatch(r"[a-z0-9._-]+", u):
+            raise HTTPException(
+                422, "cotag_username must be an OnlyFans handle "
+                     "(letters, numbers, . _ -)")
+        cotag_username = u or None
+
     now = datetime.utcnow()
     # Empty JSON maps store as NULL ("unset") so the senders' `if col:` checks
     # fall back to their legacy pickers instead of an empty-dict no-op.
@@ -538,6 +567,12 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
         vals["audience_list_id"] = aud.list_id
     if aud.auto_sent:
         vals["audience_auto_add"] = True if aud.auto else None
+    # Cotag columns, same sent-only rule. NULL ≡ OFF keeps the checkbox column
+    # sparse — True is the only stored opt-in.
+    if cotag_video_sent:
+        vals["cotag_tag_videos"] = True if bool(cfg.get("cotag_tag_videos")) else None
+    if cotag_user_sent:
+        vals["cotag_username"] = cotag_username
     # nudge_config_json is intentionally absent → preserved on existing rows.
     set_ = {k: v for k, v in vals.items() if k != "account_id"}
     async with get_session() as s:
@@ -547,6 +582,14 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
             .on_conflict_do_update(index_elements=["account_id"], set_=set_)
         )
         row = await s.get(AccountAiConfig, body.account_id)
+
+    # media_cotag caches its Brain read for 60s and the resolved tag id for 1h —
+    # a saved username/video rule must apply on the very next send, not after
+    # the TTLs drain. Narrow on purpose: the panel sends these keys on EVERY
+    # save, so a global reset here would cost every other account a fresh
+    # tagged-friend lookup each time anyone edits a persona.
+    if cotag_video_sent or cotag_user_sent:
+        media_cotag.forget_account_cfg(body.account_id)
 
     # Enable flow: turning the audience on (or repointing the folder) find-or-
     # creates the audience_sync rule and enqueues an IMMEDIATE first sync — the

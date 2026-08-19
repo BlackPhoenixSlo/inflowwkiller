@@ -65,7 +65,9 @@ from db.models import (
 )
 from of_client import OFAPIError, OFClient
 import client_pool  # the relay's one OFClient pool (fd discipline lives there)
-from automation_registry import register, get_automation, load_automation_plugins
+from automation_registry import (register, get_automation, canonical_kind,
+                                 kind_family, load_automation_plugins,
+                                 failed_plugins)
 # The ONE creator-clock resolver (quiet hours). `automations/__init__` is a
 # docstring and rhythm imports nothing of ours, so this cannot cycle back through
 # the plugins that import THIS module.
@@ -81,7 +83,7 @@ _TICK_INTERVAL_S = 30          # supervisor cadence (sleep-at-end like tx-ingest
 _MAX_CONCURRENT_RUNS = 4       # concurrent REAL-TIME / sender runs (own lane)
 # Separate lane for long account-wide BULK sweeps (scrape_chats etc.). Proven
 # live: the W7 startup seed fired 4 scrape_chats at once, they filled all the run
-# slots for ~2 min, and a real-time of_ai_chat reply was starved ~40s. Bulk kinds
+# slots for ~2 min, and a real-time welcome_chatter_for_info reply was starved ~40s. Bulk kinds
 # now use their OWN small semaphore so they can NEVER consume a sender's slot —
 # real-time replies stay fast even mid-scrape. Senders keep _run_sem; bulk gets
 # _bulk_sem. Independent → at most RUNS+BULK concurrent (fine: per-account OF
@@ -118,7 +120,7 @@ _SESSION_PROBE_INTERVAL_S = 600
 _KIND_PRIORITY: dict[str, int] = {
     "send_welcome": 1,
     "ai_chatter": 2,      # the chatter+seller — outranks the gather loop it replaces
-    "of_ai_chat": 3,
+    "welcome_chatter_for_info": 3,
     "send_followup": 4,
     "reply_mass_funnel": 5,
     "send_mass_message": 6,
@@ -127,12 +129,15 @@ _DEFAULT_PRIORITY = 50
 
 # Rule ids already warned about for carrying an unregistered kind — the skip in
 # _materialize_due_rules() fires every tick, the warning only once per process.
-_UNKNOWN_RULE_WARNED: set[int] = set()
+# Keyed (rule_id, kind) — not bare id — so a rule EDITED to a different
+# unknown kind (or a reused SQLite rowid) warns again instead of staying mute.
+_UNKNOWN_RULE_WARNED: set[tuple[int, str]] = set()
 
 
 def kind_priority(kind: str) -> int:
-    """Dispatch rank for an automation kind — lower runs first. See _KIND_PRIORITY."""
-    return _KIND_PRIORITY.get(kind, _DEFAULT_PRIORITY)
+    """Dispatch rank for an automation kind — lower runs first. See _KIND_PRIORITY.
+    Legacy names rank as their live kind (a pre-rename rule row keeps its slot)."""
+    return _KIND_PRIORITY.get(canonical_kind(kind), _DEFAULT_PRIORITY)
 
 
 # ── W7 supervisor wake ───────────────────────────────────────────────
@@ -160,7 +165,7 @@ def wake_supervisor() -> None:
 # and stall every real-time webhook dispatch for minutes. Instead each run is
 # spawned as a tracked background task bounded by a SHARED semaphore + an
 # in-flight (account,kind) guard, and the loop keeps ticking/waking. A slow run
-# on one account can no longer freeze a real-time of_ai_chat reply on another.
+# on one account can no longer freeze a real-time welcome_chatter_for_info reply on another.
 _run_sem: asyncio.Semaphore | None = None
 _bulk_sem: asyncio.Semaphore | None = None
 _inflight_pairs: set[tuple[str, str]] = set()
@@ -191,7 +196,7 @@ _PAGE_SLEEP_S = 0.3            # inter-page / inter-chat politeness gap (matches
 
 # Per-(account, kind) lock: stops a slow run from stacking with the next tick.
 # Same idea as tx-ingest's per-account tick lock, scoped to the automation kind
-# (scrape and of_ai_chat for one account can run concurrently; two scrapes can't).
+# (scrape and welcome_chatter_for_info for one account can run concurrently; two scrapes can't).
 _run_locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
@@ -350,7 +355,7 @@ async def _sweep_expired_leases() -> int:
 # that holds ACROSS ticks — it survives even after the lease has expired/cleared.
 # NOTE (per-fan, not per-kind): the rest is shared across automations, so whichever
 # sender fired LAST sets it and the SHORTEST cooldown governs cross-automation
-# re-touch (of_ai_chat's 45s can let another kind re-touch sooner than 30 min).
+# re-touch (welcome_chatter_for_info's 45s can let another kind re-touch sooner than 30 min).
 # Known + accepted — not a bug; WAVE 7's priority dispatch is where per-kind fan
 # ownership lands.
 
@@ -536,7 +541,7 @@ async def enqueue_job(
     async with get_session() as s:
         job = ScheduledJob(
             account_id=account_id,
-            kind=kind,
+            kind=canonical_kind(kind),  # new rows never mint a retired token
             payload_json=json.dumps(payload or {}, default=str),
             run_at=run_at or datetime.utcnow(),
             status="pending",
@@ -551,7 +556,12 @@ async def enqueue_job(
 async def _claim_due_job(account_id: str, kind: str) -> _ClaimedJob | None:
     """Claim the earliest due pending job for (account, kind): flip it to
     'running' and bump attempts in one transaction so a concurrent tick can't
-    grab the same row. Returns a detached (id, payload) tuple or None."""
+    grab the same row. Returns a detached (id, payload) tuple or None.
+
+    Queries by kind_family: a pre-rename job row (migration 0062 not yet run)
+    still claims under its kind's live name — without this, run_once (which
+    canonicalizes at entry) would never claim it and the row would re-dispatch
+    an UNBOUND default-payload run every tick."""
     now = datetime.utcnow()
     async with get_session() as s:
         row = (
@@ -559,7 +569,7 @@ async def _claim_due_job(account_id: str, kind: str) -> _ClaimedJob | None:
                 select(ScheduledJob)
                 .where(
                     ScheduledJob.account_id == account_id,
-                    ScheduledJob.kind == kind,
+                    ScheduledJob.kind.in_(kind_family(kind)),
                     ScheduledJob.status == "pending",
                     ScheduledJob.run_at <= now,
                 )
@@ -730,15 +740,33 @@ async def _materialize_due_rules() -> int:
             # engine's leftover rule must go inert, not noisy. Checked against
             # the runner REGISTRY (the same source run_once dispatches from),
             # never a hand-kept kind list, so it stays true by construction.
+            #
+            # UNLESS the kind's module FAILED TO IMPORT this process: that is a
+            # sending engine that vanished, not a retirement, and it must stay
+            # LOUD — fall through, let the job materialize, and run_once writes
+            # a status=error run row every tick where the ops surfaces show it.
+            # (Kinds are module basenames by convention; a failed module's
+            # secondary kinds still go quiet here — acceptable, the primary
+            # kind raises the alarm for the whole module.)
             if get_automation(rule.kind) is None:
-                if rule.id not in _UNKNOWN_RULE_WARNED:
-                    _UNKNOWN_RULE_WARNED.add(rule.id)
-                    log.warning(
-                        "automation_rule_unknown_kind rule_id=%s account=%s kind=%s"
-                        " — rule skipped (no registered runner)",
-                        rule.id, rule.account_id, rule.kind,
-                    )
-                continue
+                failed = rule.kind in failed_plugins()
+                if (rule.id, rule.kind) not in _UNKNOWN_RULE_WARNED:
+                    _UNKNOWN_RULE_WARNED.add((rule.id, rule.kind))
+                    if failed:
+                        log.error(
+                            "automation_rule_kind_import_failed rule_id=%s account=%s"
+                            " kind=%s — plugin crashed on import; materializing so"
+                            " the error runs stay visible",
+                            rule.id, rule.account_id, rule.kind,
+                        )
+                    else:
+                        log.warning(
+                            "automation_rule_unknown_kind rule_id=%s account=%s kind=%s"
+                            " — rule skipped (no registered runner)",
+                            rule.id, rule.account_id, rule.kind,
+                        )
+                if not failed:
+                    continue
             try:
                 trigger = json.loads(rule.trigger_json or "{}")
             except Exception:
@@ -762,7 +790,11 @@ async def _materialize_due_rules() -> int:
                     select(ScheduledJob.id)
                     .where(
                         ScheduledJob.account_id == rule.account_id,
-                        ScheduledJob.kind == rule.kind,
+                        # kind_family, matching what this loop MINTS (canonical)
+                        # and what a pre-0062 row may still carry (legacy) — a
+                        # legacy rule must see the canonical job it created
+                        # last tick, or a backlog stacks a duplicate per tick.
+                        ScheduledJob.kind.in_(kind_family(rule.kind)),
                         ScheduledJob.status.in_(("pending", "running")),
                         ScheduledJob.run_at <= now,
                     )
@@ -801,7 +833,9 @@ async def _materialize_due_rules() -> int:
                         .select_from(AutomationRun)
                         .where(
                             AutomationRun.account_id == rule.account_id,
-                            AutomationRun.kind == rule.kind,
+                            # run rows are written canonical (run_once), so a
+                            # legacy-kind rule must count under the live name
+                            AutomationRun.kind == canonical_kind(rule.kind),
                         )
                     )
                 ).scalar_one()
@@ -856,7 +890,10 @@ async def _materialize_due_rules() -> int:
             s.add(
                 ScheduledJob(
                     account_id=rule.account_id,
-                    kind=rule.kind,
+                    # Canonical even for a legacy-kind rule row: new job rows
+                    # never mint a retired token, so only the rule row itself
+                    # is left for migration 0062 to rename.
+                    kind=canonical_kind(rule.kind),
                     payload_json=rule.steps_json or "{}",
                     run_at=now,
                     status="pending",
@@ -1521,11 +1558,32 @@ async def run_once(
     `automation_runs` row; a bound job is marked done/error/requeued.
     """
     load_automation_plugins()  # ensure P4 plugin modules under service/automations/ self-registered
+    # Canonical from here down: the run row, the (account, kind) locks and the
+    # stats vocabulary all speak the live name even when the caller (a legacy
+    # rule/job row migration 0062 hasn't rewritten) still says the old one.
+    kind = canonical_kind(kind)
     fn = get_automation(kind)
     if fn is None:
+        # Truthful per-tick artifact: a plugin that CRASHED on import is not a
+        # retired kind, and the run row is what the ops surfaces show.
+        err = (f"automation plugin failed to import: {kind}"
+               if kind in failed_plugins()
+               else f"unknown automation kind: {kind}")
         log.warning("automation_unknown_kind account=%s kind=%s", account_id, kind)
         run_id = await _open_run(account_id, kind)
-        await _finalize_run(run_id, "error", None, f"unknown automation kind: {kind}")
+        await _finalize_run(run_id, "error", None, err)
+        # CONSUME the bound job (error, no retry): a leftover pending job for a
+        # retired kind would otherwise re-dispatch this exact branch every 30s
+        # tick, forever — error-run noise plus automation_runs bloat. Loudness
+        # for a FAILED-IMPORT kind is unharmed: its rule keeps materializing a
+        # fresh job each tick (see _materialize_due_rules), so each tick still
+        # errors once, visibly, while a truly retired kind errors once and
+        # goes quiet.
+        if payload is None and job_id is None:
+            claimed = await _claim_due_job(account_id, kind)
+            job_id = claimed.id if claimed is not None else None
+        if job_id is not None:
+            await _mark_job(job_id, "error", err)
         return {"status": "error", "reason": "unknown_kind", "run_id": run_id}
 
     # Don't stack a second run of the same (account, kind) over a slow one.

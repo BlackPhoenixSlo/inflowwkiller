@@ -4,7 +4,7 @@ The "human texting style" package (short/casual girl voice + 3-bubble splitting 
 casualized lowercase Q/Tease) is opt-in PER AUTOMATION. This JSON holds the three
 checkboxes the Settings "Auto Convo" tab persists:
 
-    {"of_ai_chat": bool, "autoreply": bool, "ai_chatter": bool}
+    {"welcome_chatter_for_info": bool, "autoreply": bool, "ai_chatter": bool}
 
   GET /admin/style-config?account_id=  → {config, defaults}
   PUT /admin/style-config              → upsert the JSON, returns {config}
@@ -30,7 +30,8 @@ from automations._common import (
     STYLE_AUTOMATIONS, STYLE_CONSISTENCY_KEYS, typo_flag_key, nonnative_flag_key, spacing_flag_key,
     FACTGROUND_KEY, PAINFUL_TEXTING_KEY, SELL_CUSTOMS_KEY, CAT_STICKERS_KEY,
     CAT_STICKER_SKIP_PCT_KEY,
-    CAT_STICKER_SOLO_PCT_KEY, CAT_STICKER_GAP_MIN_KEY)
+    CAT_STICKER_SOLO_PCT_KEY, CAT_STICKER_GAP_MIN_KEY,
+    _parse_style_config)
 from automations._pins import PINS_ENABLED_KEY, PINS_WRITE_KEY
 from automations._daylog import DAY_LOG_DEFAULT, DAY_LOG_ENABLED_KEY
 
@@ -76,7 +77,7 @@ def _defaults() -> dict[str, Any]:
     # above it costs a second LLM call per reply it fires on, so `load_consistency_flags`
     # requires an explicit True. Reporting a default of False here matches that exactly.
     out.update({k: False for k in STYLE_CONSISTENCY_KEYS})
-    # Auto Convo (of_ai_chat) rich-profile grounding — DEFAULT ON (see load_factground_flag).
+    # Auto Convo (welcome_chatter_for_info) rich-profile grounding — DEFAULT ON (see load_factground_flag).
     out[FACTGROUND_KEY] = True
     # Account-wide brevity/emotion framing — DEFAULT ON (see load_painful_texting_flag).
     out[PAINFUL_TEXTING_KEY] = True
@@ -180,12 +181,9 @@ async def get_style_config(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     async with get_session() as s:
         row = await s.get(AccountAiConfig, account_id)
-    stored: dict = {}
-    if row is not None and row.style_config_json:
-        try:
-            stored = json.loads(row.style_config_json) or {}
-        except Exception:
-            stored = {}
+    # THE parse chokepoint (legacy-key normalization lives in it) — a raw
+    # json.loads here would show a pre-rename blob's flags as absent.
+    stored = _parse_style_config(row.style_config_json) if row is not None else {}
     return {"account_id": account_id, "config": _resolved_view(stored),
             "defaults": _defaults()}
 
@@ -204,12 +202,10 @@ async def put_style_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
         # Convo tab and the rule editor) never wipe each other's flags — a caller
         # may send just the one automation's two keys.
         row = await s.get(AccountAiConfig, body.account_id)
-        stored: dict = {}
-        if row is not None and row.style_config_json:
-            try:
-                stored = json.loads(row.style_config_json) or {}
-            except Exception:
-                stored = {}
+        # Parse through the chokepoint: a pre-rename blob's legacy keys are
+        # normalized to the new names HERE, before _persist's known-key filter
+        # — a raw json.loads would let the first save silently destroy them.
+        stored = _parse_style_config(row.style_config_json) if row is not None else {}
         # Persist only explicitly-present keys (merged over what was already explicit),
         # so an untouched ai_chatter realism flag stays ABSENT → default-ON at load time.
         clean = _persist({**stored, **(body.config or {})})

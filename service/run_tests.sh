@@ -3,7 +3,7 @@
 #
 #   ./service/run_tests.sh            # run EVERY tests/test_*.py
 #   ./service/run_tests.sh style      # run only the style/split/non-native suites
-#   ./service/run_tests.sh of_ai_chat autoreply   # run named suites (with or without test_ prefix)
+#   ./service/run_tests.sh welcome_chatter_for_info autoreply   # run named suites (with or without test_ prefix)
 #
 # Exit code is non-zero if any suite fails.
 set -u
@@ -23,7 +23,7 @@ fi
 [ -n "${VENV:-}" ] && [ -x "$VENV/bin/python" ] && PY="$VENV/bin/python"
 
 # The suites touched by the bubble-split / non-native / pacing work.
-STYLE_SUITES=(of_ai_chat autoreply humanize_typos ask_pacing nonnative_style send_followup send_welcome)
+STYLE_SUITES=(welcome_chatter_for_info autoreply humanize_typos ask_pacing nonnative_style send_followup send_welcome)
 
 if [ "${1:-}" = "style" ]; then
   SUITES=("${STYLE_SUITES[@]/#/tests/test_}"); SUITES=("${SUITES[@]/%/.py}")

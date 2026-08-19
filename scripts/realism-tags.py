@@ -34,7 +34,7 @@ from automations import _voice                # noqa: E402
 from automations import cat_stickers          # noqa: E402
 from automations._pins import PINS_ENABLED_KEY, PINS_WRITE_KEY  # noqa: E402
 
-AUTOMATIONS = c.STYLE_AUTOMATIONS   # of_ai_chat, autoreply, ai_chatter
+AUTOMATIONS = c.STYLE_AUTOMATIONS   # welcome_chatter_for_info, autoreply, ai_chatter
 
 
 # ── The catalog ──────────────────────────────────────────────────────
@@ -196,8 +196,8 @@ def cmd_prompt(voice: str, customs: bool) -> None:
     # Its OWN section, not a suffix on 9, because that is exactly the change it
     # is here to show: the offer left `live_proof` so that an engine rendering
     # the refusal cannot sell (see `_voice._CUSTOMS_CARVE_OUT`). Only the engines
-    # that render `customs_offer` — of_ai_chat, autoreply — put this in a prompt.
-    block("10. CUSTOMS OFFER (gated; of_ai_chat + autoreply only)",
+    # that render `customs_offer` — welcome_chatter_for_info, autoreply — put this in a prompt.
+    block("10. CUSTOMS OFFER (gated; welcome_chatter_for_info + autoreply only)",
           f"{c.SELL_CUSTOMS_KEY} + the fan clearing _customs.SELL_MIN_SPEND_CENTS",
           v.customs_offer or "(not offered — account opted out, or --customs off)")
 

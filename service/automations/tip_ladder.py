@@ -1,19 +1,16 @@
-"""service/automations/tip_ladder.py — pure pricing/bundle math for tips.
+"""service/automations/tip_ladder.py — pure bundle math for tips/PPVs.
 
-Two independent primitives, both PURE (no DB, no I/O) so they unit-test without
-a harness. The callers (ai_chatter's hot-lead Trinity, tip_reward's hot_teaser,
-tip_request) own their own config + per-fan state and pass the knobs in.
+PURE (no DB, no I/O) so it unit-tests without a harness. The callers
+(tip_reward's hot_teaser, tip_request) own their own config + per-fan state
+and pass the knobs in.
 
-1. next_tip_ask — the adaptive tip-ask AMOUNT. It moves BOTH ways so a tip ask
-   reads like a real girl, not a fixed menu: it ESCALATES when he tips and
-   SOFTENS (a 40–60% haircut) when he doesn't bite. It never asks below his
-   biggest-ever tip (a proven $50 tipper is never asked less), and rounds to a
-   human-looking figure ($15/$20/$35, not $17.40).
+bundle_plan — how many vault photos ride a tip/PPV at a given PRICE, so value
+scales with the ask: `BundleSizing` in, a per-tier `BundlePlan` out. Paired
+with bundle_weight, which scores a bundle by folder tier (free 0 / standard 1
+/ premium 3) — the "premium photos are worth more" knob the operator asked for.
 
-2. bundle_plan — how many vault photos ride a tip/PPV at a given PRICE, so value
-   scales with the ask: `BundleSizing` in, a per-tier `BundlePlan` out. Paired
-   with bundle_weight, which scores a bundle by folder tier (free 0 / standard 1
-   / premium 3) — the "premium photos are worth more" knob the operator asked for.
+(The adaptive tip-ASK primitive that used to live here went with ai_chatter's
+tip lane — 2026-08-19 ppv-only ruling.)
 """
 from __future__ import annotations
 
@@ -25,67 +22,6 @@ from typing import NamedTuple
 WEIGHT_FREE = 0
 WEIGHT_STANDARD = 1
 WEIGHT_PREMIUM = 3
-
-# Price tier thresholds (cents) for the photo-count floors.
-_OVER_30_CENTS = 3_000
-_OVER_50_CENTS = 5_000
-
-
-def _human_round_cents(cents: int) -> int:
-    """Round a raw amount to a natural tip figure. Tips read as round numbers —
-    $15, $20, $35 — never $17.40. Nearest $5 at/above $20, nearest $1 below,
-    floored at $1 so a haircut never lands at $0."""
-    dollars = cents / 100.0
-    if dollars >= 20:
-        return int(round(dollars / 5.0) * 5) * 100
-    return max(1, int(round(dollars))) * 100
-
-
-def next_tip_ask(
-    *,
-    last_ask_cents: int,
-    biggest_tip_cents: int,
-    paid_last: bool,
-    base_cents: int,
-    step_mult: float = 1.5,
-    cut_lo: float = 0.40,
-    cut_hi: float = 0.60,
-    floor_cents: int = 500,
-    cap_cents: int = 20_000,
-    rand: float = 0.5,
-) -> int:
-    """The next tip-ask amount in cents.
-
-      • First ask (last_ask ≤ 0): open at max(base, biggest tip) — a proven
-        tipper opens where he already spends, a fresh fan at the base.
-      • paid_last=True (he tipped the last ask): ESCALATE — climb by step_mult
-        off the higher of his last ask and his biggest tip.
-      • paid_last=False (no bite): SOFTEN — keep only `rand`∈[cut_lo,cut_hi] of
-        the last ask (a 40–60% haircut). A softened ask still honours the floor,
-        but is NOT re-floored up to his biggest tip: meeting him halfway is the
-        whole point.
-
-    Everything is human-rounded and clamped to [floor, cap]. Pure: `rand` (a
-    value in [0,1]) is the only nondeterminism, injected so tests are exact."""
-    last = max(0, int(last_ask_cents or 0))
-    biggest = max(0, int(biggest_tip_cents or 0))
-    base = max(0, int(base_cents or 0))
-
-    if last <= 0:
-        raw = max(base, biggest)
-    elif paid_last:
-        # Climb off the higher of his last ask and his proven biggest tip.
-        raw = int(round(max(last, biggest) * float(step_mult)))
-    else:
-        lo, hi = (cut_lo, cut_hi) if cut_lo <= cut_hi else (cut_hi, cut_lo)
-        frac = lo + (hi - lo) * max(0.0, min(1.0, float(rand)))
-        raw = int(round(last * frac))
-
-    raw = max(int(floor_cents), min(int(cap_cents), raw))
-    out = _human_round_cents(raw)
-    # Re-clamp: human rounding can nudge a floor/cap value just outside the band.
-    return max(int(floor_cents), min(int(cap_cents), out))
-
 
 class BundlePlan(NamedTuple):
     """A price-scaled photo bundle, composed by folder tier.

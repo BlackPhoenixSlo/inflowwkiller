@@ -42,7 +42,7 @@ is to measure it in production instead: the roster runs small accounts for exact
 this case, and the shadow week could only ever have been collected by turning the
 prompt block on anyway — so this arms and the same two log lines become the numbers.
 
-Live in `ai_chatter` and `autoreply`. **`of_ai_chat` is still regex-only** — it was
+Live in `ai_chatter` and `autoreply`. **`welcome_chatter_for_info` is still regex-only** — it was
 not part of the ruling, and it is one import plus three lines when it should be.
 """
 from __future__ import annotations

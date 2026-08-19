@@ -11,28 +11,21 @@ Next `/admin/:path*` rewrite — no next.config.ts change):
                                                   starter_singles, slot_help}
   PUT  /admin/ai-chatter-config                 → validate + upsert the JSON
                                                   (+ optional `timezone` column)
-  GET  /admin/scripts?account_id=               → scripts(+items+stats) + singles
-  POST /admin/scripts                           → create/rename a script
-  DELETE /admin/scripts/{script_id}?account_id= → delete (items cascade)
-  PUT  /admin/scripts/{script_id}/items         → REPLACE the script's items
+  GET  /admin/catalog/singles?account_id=       → the singles payload (+stats)
   PUT  /admin/catalog/singles                   → REPLACE the singles
-  POST /admin/scripts/import-folder             → live vault read → append items
-  POST /admin/scripts/paste-import              → Notion-style table → items
-  POST /admin/scripts/simulate                  → dry prompt+LLM, returns the
+  POST /admin/catalog/singles/simulate          → dry prompt+LLM, returns the
                                                   bubbles + parsed offer
-  GET  /admin/ai-chatter/sessions?account_id=   → progress pins + open offers
+  GET  /admin/ai-chatter/sessions?account_id=   → open offers
   POST /admin/ai-chatter/offers/{id}/cancel     → chatter kill switch
 
-Items are saved wholesale per collection (the editor owns the full ordered
-list) — position is the array index. `description_for_ai` is the pitch
-contract: what the fan actually sees, present tense.
+Items are saved wholesale (the editor owns the full singles list).
+`description_for_ai` is the pitch contract: what the fan actually sees,
+present tense.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import re
 from datetime import datetime
 from typing import Any
 
@@ -41,14 +34,13 @@ from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-import automation_executor as ax
 import llm_client
 import vault_ai_config
 from auth import assert_account_owned
 from db.engine import get_session
 from jsonsafe import truthy
 from db.models import (
-    AccountAiConfig, AutomationRule, CatalogItem, CatalogProgress, CatalogScript,
+    CATALOG_IS_SINGLE, AccountAiConfig, AutomationRule, CatalogItem,
     ContentOffer, Fan, Message, created_at_text, parse_ts,
 )
 from automations import _ghost, _voice, rhythm, script_packs, starter_catalog
@@ -62,7 +54,7 @@ from automations.ai_chatter import (
     _build_messages, _load_catalog, _load_persona, _manifest_block,
     _offerable_for_fan, _parse_offer_marker, _turn_kind,
 )
-from automations.of_ai_chat import split_for_bubbles
+from automations.welcome_chatter_for_info import split_for_bubbles
 
 log = logging.getLogger("of-relay.scripts_api")
 
@@ -92,11 +84,6 @@ _INT_KNOBS = {
     # Upsell "after a buy" knobs.
     "stop_after_unpaid_rungs": (1, 5),
     "spend_velocity_cap_7d_cents": (0, 100_000_000),
-    # Tip ladder: the opening ask, the never-go-below floor, and the ceiling on
-    # an escalated ask. Floor/cap are the guard rails the ×step walk runs between.
-    "tip_ladder_base_cents": (100, 100_000),
-    "tip_ladder_floor_cents": (100, 100_000),
-    "tip_ladder_cap_cents": (100, 1_000_000),
     # Flat ratchet on the proven-spend floor: +100 ⇒ every sale lifts his floor $1,
     # so a fan who keeps buying is never re-asked the same price. Pairs with
     # proven_spend_floor_mult in _FLOAT_KNOBS.
@@ -131,7 +118,7 @@ _INT_KNOBS = {
     "rhythm_stepout_max_minutes": (1, 24 * 60),
     # 0 = no early exit; she stays gone for the full draw. A real configuration.
     "rhythm_stepout_break_msgs": (0, 20),
-    # Gather-close PPV (of_ai_chat's parting set). Price is clamped to OF's wire
+    # Gather-close PPV (welcome_chatter_for_info's parting set). Price is clamped to OF's wire
     # range at the send site too; these bounds keep the stored value sane. Count
     # floors at 2 = pack_farewell.FAREWELL_MIN_ITEMS — a stored 1 would be a knob
     # position the planner refuses forever (the 2026-07-31 value shape).
@@ -144,11 +131,6 @@ _INT_KNOBS = {
 _FLOAT_KNOBS = {
     "escalation_mult": (1.0, 10.0),
     "max_ask_history_mult": (1.0, 20.0),
-    # Tip ladder escalation: ×step after each tip he pays, and the cut band that
-    # decides how far the next ask backs off when he doesn't.
-    "tip_ladder_step": (1.0, 5.0),
-    "tip_ladder_cut_lo": (0.0, 1.0),
-    "tip_ladder_cut_hi": (0.0, 1.0),
     # Proven-spend floor: never ask below his biggest single paid × this.
     "proven_spend_floor_mult": (0.0, 2.0),
     # Discounts. Capped well under 1.0 — a 100%-off "sale" is a giveaway, not a nudge.
@@ -177,7 +159,6 @@ _FLOAT_KNOBS = {
     "rhythm_stepout_break_gap_s": (0.0, 3600.0),
 }
 _MODES = ("backup", "always")
-_OFFER_MODES = ("tip", "ppv", "both")
 # Where her sleep window comes from with no explicit override — the house night, or
 # her own outbound histogram. See ai_chatter._DEFAULTS["rhythm_sleep_source"].
 _SLEEP_SOURCES = ("default", "derived")
@@ -337,8 +318,6 @@ def _validate_cfg(cfg: dict) -> dict:
     out: dict[str, Any] = {}
     if "enabled" in cfg:
         out["enabled"] = bool(cfg["enabled"])
-    if "intent_only" in cfg:
-        out["intent_only"] = bool(cfg["intent_only"])
     if "engage_old_fans" in cfg:
         out["engage_old_fans"] = bool(cfg["engage_old_fans"])
     # The payer floor (ships ON — see ai_chatter._DEFAULTS). Listed here because this
@@ -407,7 +386,7 @@ def _validate_cfg(cfg: dict) -> dict:
         out["pack_send_enabled"] = truthy(cfg["pack_send_enabled"])
     if "pack_on_ask_enabled" in cfg:
         out["pack_on_ask_enabled"] = truthy(cfg["pack_on_ask_enabled"])
-    # Gather-close PPV: the vault folder of_ai_chat's parting set is drawn from.
+    # Gather-close PPV: the vault folder welcome_chatter_for_info's parting set is drawn from.
     # The FOLDER IS THE SWITCH (empty = off), so this string must be named here —
     # the validator DROPS unnamed keys, and a picker whose choice never lands is
     # the exact silent-eaten-key bug this map has shipped twice. Its two numeric
@@ -425,8 +404,8 @@ def _validate_cfg(cfg: dict) -> dict:
     # `truthy` for the same money reason as the two above.
     if "autoreply_sell_on_ask" in cfg:
         out["autoreply_sell_on_ask"] = truthy(cfg["autoreply_sell_on_ask"])
-    if "of_ai_chat_sell_on_ask" in cfg:
-        out["of_ai_chat_sell_on_ask"] = truthy(cfg["of_ai_chat_sell_on_ask"])
+    if "welcome_chatter_for_info_sell_on_ask" in cfg:
+        out["welcome_chatter_for_info_sell_on_ask"] = truthy(cfg["welcome_chatter_for_info_sell_on_ask"])
     # One LLM call per answer in the closer (ships ON — see ai_chatter._DEFAULTS).
     # Named here or the validator drops it silently, like every other key.
     if "closer_extract_claims_only" in cfg:
@@ -504,10 +483,8 @@ def _validate_cfg(cfg: dict) -> dict:
         out["gift_enabled"] = bool(cfg["gift_enabled"])
     if "filming_stall_enabled" in cfg:
         out["filming_stall_enabled"] = bool(cfg["filming_stall_enabled"])
-    # Tip ladder + proven-spend floor. Both ship OFF; the numeric knobs for each
-    # ride in _INT_KNOBS / _FLOAT_KNOBS below.
-    if "tip_ladder_enabled" in cfg:
-        out["tip_ladder_enabled"] = bool(cfg["tip_ladder_enabled"])
+    # Proven-spend floor. Ships OFF; the numeric knobs ride in
+    # _INT_KNOBS / _FLOAT_KNOBS below.
     if "proven_spend_floor_enabled" in cfg:
         out["proven_spend_floor_enabled"] = bool(cfg["proven_spend_floor_enabled"])
     # Daily quota (item 21c). `daily_quota_enabled` computes it; `daily_quota_enforce`
@@ -541,10 +518,6 @@ def _validate_cfg(cfg: dict) -> dict:
         if cfg["mode"] not in _MODES:
             raise HTTPException(422, f"mode must be one of {_MODES}")
         out["mode"] = cfg["mode"]
-    if "offer_mode" in cfg and cfg["offer_mode"] is not None:
-        if cfg["offer_mode"] not in _OFFER_MODES:
-            raise HTTPException(422, f"offer_mode must be one of {_OFFER_MODES}")
-        out["offer_mode"] = cfg["offer_mode"]
     for k, (lo, hi) in _INT_KNOBS.items():
         if k in cfg and cfg[k] is not None:
             try:
@@ -1029,12 +1002,11 @@ async def cancel_vault_ppv_arc(account_id: str = Body(..., embed=True)) -> dict[
     return await vault_arc.cancel(account_id)
 
 
-# ── Catalog read (scripts + singles + per-item conversion stats) ─────────────
+# ── Catalog read (singles + per-item conversion stats) ───────────────────────
 
 def _item_out(it: CatalogItem, stats: dict[int, dict]) -> dict:
     return {
-        "id": int(it.id), "script_id": it.script_id, "position": it.position,
-        "kind": it.kind, "label": it.label,
+        "id": int(it.id), "kind": it.kind, "label": it.label,
         "description_for_ai": it.description_for_ai,
         "media_ids": json.loads(it.media_ids or "[]"),
         "preview_media_ids": json.loads(it.preview_media_ids or "[]"),
@@ -1046,16 +1018,16 @@ def _item_out(it: CatalogItem, stats: dict[int, dict]) -> dict:
     }
 
 
-@router.get("/admin/scripts")
-async def list_scripts(account_id: str = Query(...)) -> dict[str, Any]:
+@router.get("/admin/catalog/singles")
+async def list_singles(account_id: str = Query(...)) -> dict[str, Any]:
+    """The singles payload. Legacy script items (`script_id NOT NULL`) are not
+    listed — they are inert data, filtered off the shelf at offer time too."""
     assert_account_owned(account_id)
     async with get_session() as s:
-        scripts = (await s.execute(
-            select(CatalogScript).where(CatalogScript.account_id == account_id)
-            .order_by(CatalogScript.id))).scalars().all()
         items = (await s.execute(
-            select(CatalogItem).where(CatalogItem.account_id == account_id)
-            .order_by(CatalogItem.script_id, CatalogItem.position, CatalogItem.id)
+            select(CatalogItem).where(CatalogItem.account_id == account_id,
+                                      CATALOG_IS_SINGLE)
+            .order_by(CatalogItem.id)
         )).scalars().all()
         offer_rows = (await s.execute(
             select(ContentOffer.item_id, ContentOffer.status,
@@ -1070,68 +1042,11 @@ async def list_scripts(account_id: str = Query(...)) -> dict[str, Any]:
             d["delivered"] += int(n)
     return {
         "account_id": account_id,
-        "scripts": [{
-            "id": int(sc.id), "name": sc.name, "theme": sc.theme,
-            "status": sc.status,
-            "items": [_item_out(it, stats) for it in items
-                      if it.script_id == sc.id],
-        } for sc in scripts],
-        "singles": [_item_out(it, stats) for it in items if it.script_id is None],
+        "singles": [_item_out(it, stats) for it in items],
     }
 
 
-# ── Script create/update/delete ──────────────────────────────────────────────
-
-class _ScriptBody(BaseModel):
-    account_id: str
-    id: int | None = None
-    name: str
-    theme: str | None = None
-    status: str = "draft"
-
-
-@router.post("/admin/scripts")
-async def upsert_script(body: _ScriptBody = Body(...)) -> dict[str, Any]:
-    assert_account_owned(body.account_id)
-    if body.status not in ("draft", "enabled", "disabled"):
-        raise HTTPException(422, "status must be draft|enabled|disabled")
-    name = body.name.strip()[:80]
-    if not name:
-        raise HTTPException(422, "name required")
-    now = datetime.utcnow()
-    async with get_session() as s:
-        if body.id is not None:
-            sc = await s.get(CatalogScript, int(body.id))
-            if sc is None or sc.account_id != body.account_id:
-                raise HTTPException(404, "script not found")
-            sc.name, sc.theme, sc.status = name, (body.theme or "")[:_TXT], body.status
-            sc.updated_at = now
-            sid = int(sc.id)
-        else:
-            sc = CatalogScript(account_id=body.account_id, name=name,
-                               theme=(body.theme or "")[:_TXT],
-                               status=body.status, created_at=now, updated_at=now)
-            s.add(sc)
-            await s.flush()
-            sid = int(sc.id)
-    return {"id": sid, "status": "ok"}
-
-
-@router.delete("/admin/scripts/{script_id}")
-async def delete_script(script_id: int, account_id: str = Query(...)) -> dict[str, Any]:
-    assert_account_owned(account_id)
-    async with get_session() as s:
-        sc = await s.get(CatalogScript, int(script_id))
-        if sc is None or sc.account_id != account_id:
-            raise HTTPException(404, "script not found")
-        await s.execute(sa_delete(CatalogItem).where(
-            CatalogItem.account_id == account_id,
-            CatalogItem.script_id == int(script_id)))
-        await s.delete(sc)
-    return {"status": "ok"}
-
-
-# ── Items (wholesale replace per collection) ─────────────────────────────────
+# ── Items (wholesale replace) ────────────────────────────────────────────────
 
 def _validate_item(raw: Any) -> dict:
     if not isinstance(raw, dict):
@@ -1167,7 +1082,11 @@ def _validate_item(raw: Any) -> dict:
         "description_for_ai": str(raw.get("description_for_ai") or "").strip()[:_TXT] or None,
         "media_ids": json.dumps(media), "preview_media_ids": json.dumps(previews),
         "duration_sec": dur, "price_cents": _cents("price_cents"),
-        "tip_unlock_cents": _cents("tip_unlock_cents"),
+        # Accepted-and-zeroed: PPV is the only lane (2026-08-19), nothing reads
+        # a single's tip price, and a knob that saves fine and does nothing
+        # lies to the next operator. Legacy script rows keep theirs — this
+        # editor never touches them.
+        "tip_unlock_cents": 0,
         "is_free_teaser": bool(raw.get("is_free_teaser")),
         "tags": json.dumps([str(t)[:40] for t in (raw.get("tags") or [])][:12]),
         "enabled": bool(raw.get("enabled", True)),
@@ -1179,40 +1098,24 @@ class _ItemsBody(BaseModel):
     items: list[dict]
 
 
-async def _replace_items(account_id: str, script_id: int | None,
-                         items: list[dict]) -> int:
-    if len(items) > _MAX_ITEMS:
-        raise HTTPException(422, f"too many items (max {_MAX_ITEMS})")
-    clean = [_validate_item(it) for it in items]
-    now = datetime.utcnow()
-    async with get_session() as s:
-        cond = (CatalogItem.account_id == account_id,
-                CatalogItem.script_id == script_id if script_id is not None
-                else CatalogItem.script_id.is_(None))
-        await s.execute(sa_delete(CatalogItem).where(*cond))
-        for i, it in enumerate(clean):
-            s.add(CatalogItem(account_id=account_id, script_id=script_id,
-                              position=i if script_id is not None else None,
-                              created_at=now, updated_at=now, **it))
-    return len(clean)
-
-
-@router.put("/admin/scripts/{script_id}/items")
-async def put_script_items(script_id: int, body: _ItemsBody = Body(...)) -> dict:
-    assert_account_owned(body.account_id)
-    async with get_session() as s:
-        sc = await s.get(CatalogScript, int(script_id))
-        if sc is None or sc.account_id != body.account_id:
-            raise HTTPException(404, "script not found")
-    n = await _replace_items(body.account_id, int(script_id), body.items)
-    return {"status": "ok", "items": n}
-
-
 @router.put("/admin/catalog/singles")
 async def put_singles(body: _ItemsBody = Body(...)) -> dict:
+    """REPLACE the singles wholesale. The delete is scoped to singles — legacy
+    script rows are inert data this editor never touches (deleting one would
+    CASCADE its content_offers away)."""
     assert_account_owned(body.account_id)
-    n = await _replace_items(body.account_id, None, body.items)
-    return {"status": "ok", "items": n}
+    if len(body.items) > _MAX_ITEMS:
+        raise HTTPException(422, f"too many items (max {_MAX_ITEMS})")
+    clean = [_validate_item(it) for it in body.items]
+    now = datetime.utcnow()
+    async with get_session() as s:
+        await s.execute(sa_delete(CatalogItem).where(
+            CatalogItem.account_id == body.account_id,
+            CATALOG_IS_SINGLE))
+        for it in clean:
+            s.add(CatalogItem(account_id=body.account_id,
+                              created_at=now, updated_at=now, **it))
+    return {"status": "ok", "items": len(clean)}
 
 
 @router.get("/admin/catalog/singles/suggest")
@@ -1328,163 +1231,29 @@ async def suggest_singles_texts(account_id: str = Query(...)) -> dict[str, Any]:
     return await vault_catalog_seed.suggest_texts(account_id)
 
 
-# ── Imports ──────────────────────────────────────────────────────────────────
-
-class _FolderImportBody(BaseModel):
-    account_id: str
-    script_id: int
-    folder: str
-
-
-@router.post("/admin/scripts/import-folder")
-async def import_folder(body: _FolderImportBody = Body(...)) -> dict[str, Any]:
-    """Append one item per media in a vault folder (oldest→newest, the Drive
-    numbering convention) with media bound and a placeholder description."""
-    assert_account_owned(body.account_id)
-    async with get_session() as s:
-        sc = await s.get(CatalogScript, int(body.script_id))
-        if sc is None or sc.account_id != body.account_id:
-            raise HTTPException(404, "script not found")
-        start = (await s.execute(
-            select(func.max(CatalogItem.position)).where(
-                CatalogItem.account_id == body.account_id,
-                CatalogItem.script_id == int(body.script_id)))
-        ).scalar_one_or_none()
-    start = (int(start) + 1) if start is not None else 0
-
-    client = await asyncio.to_thread(ax._make_client, body.account_id)
-
-    def _folder_media() -> list[dict]:
-        lists = client.vault_lists(view="main", limit=100)
-        folders = lists.get("list") if isinstance(lists, dict) else lists
-        list_id = None
-        for f in (folders or []):
-            if (isinstance(f, dict) and
-                    str(f.get("name", "")).strip().lower() == body.folder.strip().lower()):
-                list_id = int(f["id"])
-                break
-        if list_id is None:
-            raise HTTPException(404, f"vault folder not found: {body.folder!r}")
-        media = client.vault_media(list_id=list_id, type="all", limit=100)
-        items = media.get("list") if isinstance(media, dict) else media
-        out = [m for m in (items or []) if isinstance(m, dict) and m.get("id")]
-        return list(reversed(out))  # vault is recent-first → oldest-first
-
-    media_items = await asyncio.to_thread(_folder_media)
-    now = datetime.utcnow()
-    async with get_session() as s:
-        for i, m in enumerate(media_items):
-            mtype = str(m.get("type") or "").lower()
-            s.add(CatalogItem(
-                account_id=body.account_id, script_id=int(body.script_id),
-                position=start + i,
-                kind="video" if mtype == "video" else "image",
-                label=f"#{start + i + 1}", description_for_ai=None,
-                media_ids=json.dumps([int(m["id"])]),
-                preview_media_ids="[]",
-                duration_sec=int(m.get("duration") or 0) or None,
-                price_cents=0, tip_unlock_cents=0, is_free_teaser=False,
-                tags="[]", enabled=True, created_at=now, updated_at=now))
-    return {"status": "ok", "imported": len(media_items), "from_position": start}
-
-
-class _PasteImportBody(BaseModel):
-    account_id: str
-    script_id: int
-    table: str
-
-
-_DUR_RE = re.compile(r"(?:(\d+)\s*min)?\s*(?:(\d+)\s*sec)?", re.I)
-
-
-def _parse_duration(s: str) -> int | None:
-    s = (s or "").strip()
-    if not s or "image" in s.lower():
-        return None
-    m = _DUR_RE.search(s)
-    if not m or (m.group(1) is None and m.group(2) is None):
-        return None
-    return int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
-
-
-@router.post("/admin/scripts/paste-import")
-async def paste_import(body: _PasteImportBody = Body(...)) -> dict[str, Any]:
-    """Parse the agency Notion table (Label | No | Video | Duration) into items
-    (text-first — bind media after via the editor/folder import). Tolerant: any
-    pipe-separated row with a description column."""
-    assert_account_owned(body.account_id)
-    async with get_session() as s:
-        sc = await s.get(CatalogScript, int(body.script_id))
-        if sc is None or sc.account_id != body.account_id:
-            raise HTTPException(404, "script not found")
-        start = (await s.execute(
-            select(func.max(CatalogItem.position)).where(
-                CatalogItem.account_id == body.account_id,
-                CatalogItem.script_id == int(body.script_id)))
-        ).scalar_one_or_none()
-    start = (int(start) + 1) if start is not None else 0
-
-    rows: list[dict] = []
-    for line in (body.table or "").splitlines():
-        if "|" not in line:
-            continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 3:
-            continue
-        label, _no, desc = cells[0], cells[1], cells[2]
-        dur = _parse_duration(cells[3] if len(cells) > 3 else "")
-        low = (label + desc).lower()
-        if not desc or "label" in low and "video" in low:  # header row
-            continue
-        if set("".join(cells)) <= {"-", " ", ":"}:          # separator row
-            continue
-        is_image = dur is None and "image" in (cells[3] if len(cells) > 3 else "").lower()
-        rows.append({"label": label[:80] or None, "desc": desc[:_TXT],
-                     "dur": dur, "kind": "image" if is_image else "video"})
-    if not rows:
-        raise HTTPException(422, "no item rows found in the pasted table")
-
-    now = datetime.utcnow()
-    async with get_session() as s:
-        for i, r in enumerate(rows):
-            s.add(CatalogItem(
-                account_id=body.account_id, script_id=int(body.script_id),
-                position=start + i, kind=r["kind"], label=r["label"],
-                description_for_ai=r["desc"], media_ids="[]",
-                preview_media_ids="[]", duration_sec=r["dur"],
-                price_cents=0, tip_unlock_cents=0, is_free_teaser=False,
-                tags="[]", enabled=True, created_at=now, updated_at=now))
-    return {"status": "ok", "imported": len(rows), "from_position": start}
-
-
-# ── Simulate (dry prompt + LLM — catches a bad script before any fan) ────────
+# ── Simulate (dry prompt + LLM — catches a bad single before any fan) ────────
 
 class _SimulateBody(BaseModel):
     account_id: str
     fan_says: str = "ngl im kinda in the mood.. u got anything for me? 🥵"
 
 
-@router.post("/admin/scripts/simulate")
+@router.post("/admin/catalog/singles/simulate")
 async def simulate(body: _SimulateBody = Body(...)) -> dict[str, Any]:
     assert_account_owned(body.account_id)
-    from automations.ai_chatter import _Cand, _load_config  # local: avoid cycles
-    cfg = await _load_config(body.account_id)
+    from automations.ai_chatter import _Cand  # local: avoid cycles
     # The DRY RUN has to be built the way the live turn is, or it stops being a dry
     # run and becomes a different prompt that happens to return text. The live path
     # resolves this bundle and passes `v=` (ai_chatter's `_build_messages(... v=
     # voice_blocks)`); leaving it to the `_voice.HER` default previewed a male
     # account in a woman's voice — the one thing an operator opens Test it to check.
     v = await load_voice_blocks(body.account_id)
-    scripts, items = await _load_catalog(body.account_id)
-    offerable = await _offerable_for_fan(body.account_id, 0,
-                                         str(cfg.get("offer_mode") or "both"),
-                                         scripts, items)
+    items = await _load_catalog(body.account_id)
+    offerable = await _offerable_for_fan(body.account_id, 0, items)
     # The live turn builds this surface for EVERY account now — customs included,
     # which is the case with no catalogue at all — so the preview must not gate on
     # `offerable` or it silently shows a bought-out account the no-offers prompt.
-    sell = _manifest_block(offerable, scripts,
-                           str(cfg.get("offer_mode") or "both"),
-                           sell_customs=v.sell_customs)
+    sell = _manifest_block(offerable, sell_customs=v.sell_customs)
     persona = await _load_persona(body.account_id)
     c = _Cand(0)
     c.messages = [("in", body.fan_says.strip()[:400])]
@@ -1548,23 +1317,18 @@ async def _resolve_sim_model(account_id: str) -> str:
     return await resolve_model(account_id, "ai_chatter", None)
 
 
-# ── Monitor: sessions (progress pins) + open offers + kill switch ────────────
+# ── Monitor: open offers + kill switch ───────────────────────────────────────
 
 @router.get("/admin/ai-chatter/sessions")
 async def sessions(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     async with get_session() as s:
-        prog = (await s.execute(
-            select(CatalogProgress, CatalogScript.name)
-            .join(CatalogScript, CatalogScript.id == CatalogProgress.script_id)
-            .where(CatalogProgress.account_id == account_id)
-            .order_by(CatalogProgress.updated_at.desc()).limit(200))).all()
         offers = (await s.execute(
             select(ContentOffer, CatalogItem.label)
             .join(CatalogItem, CatalogItem.id == ContentOffer.item_id)
             .where(ContentOffer.account_id == account_id)
             .order_by(ContentOffer.offered_at.desc()).limit(200))).all()
-        fan_ids = {int(p.fan_id) for p, _ in prog} | {int(o.fan_id) for o, _ in offers}
+        fan_ids = {int(o.fan_id) for o, _ in offers}
         names: dict[int, str] = {}
         if fan_ids:
             for fid, nick, disp in (await s.execute(
@@ -1573,11 +1337,6 @@ async def sessions(account_id: str = Query(...)) -> dict[str, Any]:
                            Fan.fan_id.in_(fan_ids)))).all():
                 names[int(fid)] = (nick or disp or "").split("/")[0]
     return {
-        "progress": [{
-            "fan_id": int(p.fan_id), "fan_name": names.get(int(p.fan_id), ""),
-            "script": script_name, "position": int(p.position),
-            "status": p.status, "updated_at": p.updated_at.isoformat() if p.updated_at else None,
-        } for p, script_name in prog],
         "offers": [{
             "id": int(o.id), "fan_id": int(o.fan_id),
             "fan_name": names.get(int(o.fan_id), ""),

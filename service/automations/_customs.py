@@ -17,7 +17,7 @@ sees the queue on /customs.
 NOT WORK. The reasoning was sound — the operator lives in the OnlyFans app, where
 a nickname renders next to the fan's name, so a marker there is seen without
 anyone deciding to go and look. The problem is that `custom_nickname` has four
-other writers. `of_ai_chat._maybe_push_nickname`, reached from ai_chatter on EVERY
+other writers. `welcome_chatter_for_info._maybe_push_nickname`, reached from ai_chatter on EVERY
 tick, rebuilds the name from structured facts via `names.build_structured_nickname`
 — which knows nothing about any marker and therefore drops it, then pushes the
 shortened name to OnlyFans AND upserts it back into our own row. ai_chatter runs
@@ -33,11 +33,16 @@ A column has no other writers, so none of that is expressible.
 
 WHAT COUNTS AS AN ORDER
 -----------------------
-A DM tip ≥ $100 (`kind='tip'`) that actually cleared. Not `tip_post` — a $200 tip
+A BURST of DM tips (`kind='tip'`, ≤ `BURST_MINUTES` apart) totalling ≥ $50
+(`MIN_CENTS`) that actually cleared — fans stack tips to reach a price, so
+$30+$30 is one $60 order, and `orders_per_fan` below is the ONE function that
+decides. The QUOTED band stays $100-$200 (`ASK_MIN_CENTS`); the watch just also
+catches the lowball the chatter never asked for. Not `tip_post` — a $200 tip
 on a post is a man being generous about a photo, not a man ordering a voice note.
 Not a quantity either: the transcript that priced this feature (2026-07-31, a
 male account — $200 tipped at 10:51, one voice note delivered at 14:47) shows
-the amount encoding LENGTH, not count. Two customs means two separate tips.
+the amount encoding LENGTH, not count — one burst is one custom, however many
+rows it took him to pay it.
 
 WHO WE OFFER ONE TO
 -------------------
@@ -47,7 +52,7 @@ Only a fan who has proven he pays — see `may_offer`. Operator ruling 2026-08-0
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # annotation only — this module stays import-light at runtime
@@ -55,10 +60,26 @@ if TYPE_CHECKING:  # annotation only — this module stays import-light at runti
 
 log = logging.getLogger("of-relay.automation.customs")
 
-# The floor. Both $100 and $200 appear on the live male accounts (7 and 8 times
-# respectively); the transcript shows $100 is the opener the chatter counters,
-# but it does get accepted, so it is an order.
-MIN_CENTS = 10_000
+# The WATCH floor: the smallest DM tip that counts as a custom ORDER. Operator
+# ruling 2026-08-19: track $50 and above. Fans lowball under the quoted opener —
+# the burst data in `customs_api` is full of $80/$54/$50 halves — and a tip the
+# watch ignores is a man who paid and is silently never delivered. This is the
+# TRACKING floor only; the figure the model QUOTES is `ASK_MIN_CENTS` below.
+MIN_CENTS = 5_000
+
+# The floor of the band the chatter may QUOTE. Both $100 and $200 appear on the
+# live male accounts (7 and 8 times respectively); the transcript shows $100 is
+# the opener the chatter counters, but it does get accepted, so it is the ask.
+# ⚠️ MUST stay >= `MIN_CENTS`: every figure the model may name has to pass
+# `orders_per_fan`, or a fan pays the quoted price and is never marked (the
+# 2026-08-18 bug in `price_example` below).
+ASK_MIN_CENTS = 10_000
+
+# Enforced at import, not only in a test suite — a violating edit fails the
+# process, not the next test run. (The per-account `min_cents` override can
+# still breach this at runtime; customs_watch warns loudly when it does.)
+assert ASK_MIN_CENTS >= MIN_CENTS, \
+    "a quotable price the watch refuses to book is a paid, unmarked custom"
 
 # The CEILING the chatter may quote. Operator ruling 2026-08-04 said "100-400",
 # and $400 was carried for a day; it is now $200, because the top half of that
@@ -78,20 +99,24 @@ MIN_CENTS = 10_000
 # decision, not a typo fix: check `max(amount_cents) where kind='tip'` first —
 # and believe the query over this comment.
 #
-# ⚠️ THE FLOOR AND THE ASK ARE ONE POLICY, AND THEY USED TO LIVE IN DIFFERENT
-# HALVES OF THE SYSTEM. `MIN_CENTS` is what makes a tip an ORDER on the WATCH
-# side; nothing on the SELL side named a figure at all, so the model picked one.
-# A model that asks for $30 gets paid $30, `qualifies` says no, nothing is
-# marked, and the fan waits for a voice note nobody was ever told to record.
-# Silent, and it costs the fan money — so the band ships with the permission for
-# the same reason the fence does.
+# ⚠️ THE FLOOR AND THE ASK USED TO LIVE IN DIFFERENT HALVES OF THE SYSTEM.
+# `MIN_CENTS` is what makes a tip an ORDER on the WATCH side; nothing on the
+# SELL side named a figure at all, so the model picked one. A model that asks
+# for $30 gets paid $30, `orders_per_fan` says no, nothing is marked, and the fan
+# waits for a voice note nobody was ever told to record. Silent, and it costs
+# the fan money — so the band ships with the permission for the same reason the
+# fence does. The floors are TWO constants now (the watch also tracks lowballs
+# the chatter never quoted), but the invariant survives the split: the whole
+# quoted band `ASK_MIN_CENTS`..`MAX_CENTS` sits at or above `MIN_CENTS`, so
+# every figure the model may name still books an order.
 MAX_CENTS = 20_000
 
 # The lifetime spend a fan must have BEFORE the customs block enters his prompt
 # at all — operator ruling 2026-08-05: *"we can do customs only to [fans who]
 # actually pay … we don't offer for everything to anyone"*.
 #
-# It is deliberately the same figure as `MIN_CENTS`: the qualification to be
+# It is deliberately `ASK_MIN_CENTS` itself — assigned, not restated, so the
+# two cannot be edited apart: the qualification to be
 # ASKED for $100 is having already spent $100. A man who has never paid that much
 # in total is not a man who is about to tip it in one go, and putting the block in
 # his prompt only makes the prompt longer and the reply vaguer.
@@ -106,7 +131,7 @@ MAX_CENTS = 20_000
 #
 # (2) THIS BAR USED TO BE BYPASSED ON 90% OF THE PROMPTS THAT CARRIED THE OFFER,
 # and the fix was structural rather than another gate. It is enforced by
-# `_voice.for_fan`, which only `ai_chatter`, `autoreply` and `of_ai_chat` call —
+# `_voice.for_fan`, which only `ai_chatter`, `autoreply` and `welcome_chatter_for_info` call —
 # but the carve-out used to ride INSIDE `live_proof`, which the non-selling
 # engines (`send_followup`, `reply_mass_funnel`) also render off an ACCOUNT bundle. So
 # 1,869 of the 2,073 customs prompts came from engines that never consulted this
@@ -122,30 +147,89 @@ MAX_CENTS = 20_000
 #
 # ⚠️ IT DID NOT MAKE THE BAR STRUCTURAL, AND AN EARLIER VERSION OF THIS COMMENT
 # CLAIMED IT DID. There are THREE surfaces that can sell a custom, not two:
-# `v.customs_offer` (of_ai_chat, autoreply) and `ai_chatter._manifest_block`,
+# `v.customs_offer` (welcome_chatter_for_info, autoreply) and `ai_chatter._manifest_block`,
 # which emits `CUSTOMS_CONDITIONS` on both its branches and never touches
 # `customs_offer` at all. All three are gated the same way, by their engine
 # calling `_voice.for_fan` — a TESTED behaviour
 # (`test_voice_lane.case_a_bought_out_vault_reaches_the_live_prompt`, the
 # `acc_bought_out_broke` leg), not a guarantee the type system makes. A fourth
 # SELLING surface still has to remember `for_fan`.
-SELL_MIN_SPEND_CENTS = 10_000
+SELL_MIN_SPEND_CENTS = ASK_MIN_CENTS
 
 # Only a DM tip. `tip_post`/`tip_stream` are generosity, not an order.
 ORDER_KINDS = ("tip",)
 
 
+def resolve_floor(min_cents) -> int:
+    """The cents floor an account treats as an ORDER: the rule's `min_cents`
+    override, else the global `MIN_CENTS`. THE one spelling of that rule —
+    the watch, the live tip hook and the /customs queue (via `orders_per_fan`)
+    all resolve through it, so they can never disagree about what counts.
+
+    Why the floor is PER ACCOUNT at all: what a $100 DM tip MEANS is an
+    account-level fact, not a global one — on the male accounts it demonstrably
+    is an order (fan 14673050 said so in as many words), while the female
+    accounts took 5 of them last month that were almost certainly generosity.
+    One constant cannot be right for both, and getting it wrong in the generous
+    direction stops the bot selling to a good fan until a human notices."""
+    return MIN_CENTS if min_cents is None else max(1, int(min_cents))
+
+
+# Fans STACK tips to reach a price. Live example (Amia / 142006425): $200 and
+# $100 twenty-five seconds apart, then $150 twenty minutes later — one $450
+# order, three rows. Same pattern on 80511815 ($200+$100, 26s apart) and
+# 21843747 ($200+$100, 13s).
+BURST_MINUTES = 30
+
+
+def orders_per_fan(rows, min_cents: int | None = None) -> dict[tuple, tuple]:
+    """(account, fan) → (total_cents, anchor_at, anchor_msg_id) for the fan's most
+    recent ORDER, from rows ordered occurred_at DESC as
+    (account_id, fan_id, amount_cents, occurred_at, message_id).
+
+    An ORDER is a BURST of tips, not one tip — see BURST_MINUTES above.
+
+    ⚠️ THE FLOOR IS TESTED ON THE TOTAL, AND THAT IS THE WHOLE POINT. The first
+    version filtered each transaction against the floor in SQL and summed what
+    survived, which reintroduced the same understatement one layer down: prod is
+    full of $200+$80, $200+$50, $150+$80, $100+$54 — the sub-floor half was
+    dropped before the sum, so a $280 order displayed as $200. It also made
+    $60+$60 invisible entirely, and $120 is a real order.
+
+    So the caller passes EVERY tip in the window and this decides. The floor is a
+    question about the ORDER; asking it of each transaction is asking the wrong
+    thing about the wrong noun. This is THE definition of "order" — the watch
+    (customs_watch.run) marks off it and the /customs queue displays off it, so
+    the two can never disagree about whether a fan bought one."""
+    floor = resolve_floor(min_cents)
+    bursts: dict[tuple, tuple] = {}
+    for acct, fid, cents, at, msg_id in rows:
+        if fid is None or at is None:
+            continue
+        key = (acct, int(fid))
+        cents = int(cents or 0)
+        if key not in bursts:         # first wins — the rows arrive newest-first
+            bursts[key] = (cents, at, msg_id)
+            continue
+        total, anchor_at, anchor_msg = bursts[key]
+        # Still inside the burst the anchor belongs to? Add it on. Anything older
+        # is a PREVIOUS order and is not this row's business.
+        if (anchor_at - at) <= timedelta(minutes=BURST_MINUTES):
+            bursts[key] = (total + cents, anchor_at, anchor_msg)
+    return {k: v for k, v in bursts.items() if v[0] >= floor}
+
+
 # The price sentence spliced onto `_voice.CUSTOMS_CONDITIONS`, so every surface
-# that may OFFER a custom also names what it costs. Built from the two constants
-# above rather than written out, so the figure the model quotes and the figure
-# `qualifies` accepts cannot be edited apart.
+# that may OFFER a custom also names what it costs. Built from the constants
+# above rather than written out, so the band the model quotes cannot drift below
+# the floor `orders_per_fan` accepts.
 #
 # The amount is the LENGTH, not the quantity — see the module docstring: the
 # transcript that priced this feature shows $200 buying ONE longer piece, not two
 # shorter ones. Leading space: it joins the end of a sentence.
 PRICE_RULE = (
-    f" IT COSTS ${MIN_CENTS // 100}-${MAX_CENTS // 100} — more $ = LONGER, not "
-    f"more clips. NEVER below ${MIN_CENTS // 100}: that buys nothing. no "
+    f" IT COSTS ${ASK_MIN_CENTS // 100}-${MAX_CENTS // 100} — more $ = LONGER, not "
+    f"more clips. NEVER below ${ASK_MIN_CENTS // 100}: that buys nothing. no "
     "discounts, no freebies, no apologising."
 )
 
@@ -154,21 +238,21 @@ def clamp_price(dollars: int | None = None) -> int:
     """`dollars` forced into the sellable band, in whole dollars.
 
     BOTH BOUNDS, because a quote outside either end contradicts `PRICE_RULE` in
-    the same block. Under the floor is the expensive direction — `qualifies`
+    the same block. Under the floor is the expensive direction — `orders_per_fan`
     refuses to book it and the fan has paid for nothing — but over the ceiling is
     the same bug wearing a different hat: unclamped, `ask_amount_dollars = 1000`
     would put "tip me $1000 and ill record it for u" in the same block as "IT
     COSTS $100-$200" — an EXAMPLE contradicting the RULE beside it, i.e. exactly
     the failure `price_example` was written to end.
 
-    The band lives here, with `MIN_CENTS`/`MAX_CENTS`, so the sell side cannot
-    drift from the watch side."""
-    return max(MIN_CENTS // 100, min(MAX_CENTS // 100, int(dollars or 0)))
+    The band lives here, with `ASK_MIN_CENTS`/`MAX_CENTS`, so the sell side
+    cannot drift from the watch side."""
+    return max(ASK_MIN_CENTS // 100, min(MAX_CENTS // 100, int(dollars or 0)))
 
 
 def price_example(dollars: int | None = None) -> str:
     """The worked EXAMPLE the model imitates when it makes the ask, naming
-    `dollars` (default, and floor, `MIN_CENTS`).
+    `dollars` (default, and floor, `ASK_MIN_CENTS`).
 
     ⚠️ A RULE DOES NOT BEAT AN EXAMPLE, AND THIS FUNCTION IS THE PROOF.
     `PRICE_RULE` above was already correct and was VERIFIABLY IN THE PROMPT — and
@@ -178,7 +262,7 @@ def price_example(dollars: int | None = None) -> str:
     reproduced its SHAPE and dropped the number the sentence beside it had just
     given. Live, on a male account 2026-08-18 08:35 (grok_calls #135602): the
     prompt carried PRICE_RULE at byte 6226 and the price-free example at 6528;
-    the send named no figure, he tipped $20, `qualifies` refused it,
+    the send named no figure, he tipped $20, `orders_per_fan` refused it,
     `customs_owed_at` stayed NULL, and the next turn told him "gonna make that
     custom worth every cent for u" — a man charged for a voice note nobody was
     told to record.
@@ -186,7 +270,7 @@ def price_example(dollars: int | None = None) -> str:
     CLAMPED, not merely defaulted, because the tip-ask lane carries its own
     configured suggestion (`ask_amount_dollars`) and nothing stopped that being
     set below the floor. A $20 suggestion on a customs account advertises a voice
-    note `qualifies` will then refuse to book — the same silent underpayment as
+    note `orders_per_fan` will then refuse to book — the same silent underpayment as
     naming no figure.
 
     ⚠️ THE CLAMP HERE IS A BACKSTOP, NOT THE ONLY ONE, and saying otherwise would
@@ -197,7 +281,7 @@ def price_example(dollars: int | None = None) -> str:
     cannot disagree, and this call keeps the postcondition "never names a figure
     outside the band" true of the FUNCTION rather than of its callers. Under- and
     over-quoting are both silent, so the figure the model COPIES and the figure
-    `qualifies` ACCEPTS stay impossible to edit apart.
+    `orders_per_fan` ACCEPTS stay impossible to edit apart.
 
     ONE number, not a range: the ceiling lives in `PRICE_RULE`, because an
     example offering a choice invites the model to hedge and the floor is the
@@ -231,7 +315,7 @@ async def owed_fan_ids(account_id) -> set[int]:
     """Every fan on this account with an outstanding custom — the SEND-SIDE brake.
 
     ⚠️ `is_owed` ABOVE ONLY EVER BOUND THE THREE ENGINES THAT HOLD A `Fan` ROW —
-    `ai_chatter`, `of_ai_chat`, `autoreply`. Those are the engines that TALK. The
+    `ai_chatter`, `welcome_chatter_for_info`, `autoreply`. Those are the engines that TALK. The
     engines that SELL on their own schedule (`ppv_send`, `tip_request`,
     `mass_nudge`, `reengage_buyers`) never load a Fan before choosing an audience;
     they build an EXCLUDE SET and subtract it. So the brake that stops the chat
@@ -311,7 +395,7 @@ def clear(fan: "Fan | None", cleared_at: datetime | None = None) -> bool:
 def may_offer(fan: "Fan | None") -> bool:
     """Is this a fan we OFFER a custom to at all? (`SELL_MIN_SPEND_CENTS`.)
 
-    Separate from `qualifies`, which asks whether money already received was an
+    Separate from `orders_per_fan`, which asks whether money already received was an
     ORDER. This one gates the prompt: below the bar the customs block never
     renders, so the model cannot pitch what the fan was never going to buy.
 
@@ -323,20 +407,9 @@ def may_offer(fan: "Fan | None") -> bool:
     return int(fan.lifetime_spend_cents or 0) >= SELL_MIN_SPEND_CENTS
 
 
-def qualifies(kind: str, amount_cents: int,
-              min_cents: int | None = None) -> bool:
-    """Is this transaction an order for a custom?
-
-    `min_cents` overrides the floor PER ACCOUNT, carried on the automation rule's
-    `trigger_json`. What a $100 DM tip MEANS is an account-level fact, not a
-    global one: on the male accounts it demonstrably is an order (fan 14673050
-    said so in as many words), while the female accounts took 5 of them last
-    month that were almost certainly generosity. One constant cannot be right for
-    both, and getting it wrong in the generous direction stops the bot selling to
-    a good fan until a human notices."""
-    floor = MIN_CENTS if min_cents is None else max(1, int(min_cents))
-    return (str(kind or "") in ORDER_KINDS
-            and int(amount_cents or 0) >= floor)
+# (`qualifies`, the old single-transaction order test, is gone: the ORDER is a
+# burst, and `orders_per_fan` above is the one function that books it. The
+# per-account-floor rationale lives on `resolve_floor`.)
 
 
 # ── Delivery ─────────────────────────────────────────────────────────

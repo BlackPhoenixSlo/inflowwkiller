@@ -7,11 +7,11 @@ text" and "we start splitting it into bubbles" —
     guard_offplatform  →  verify_self_consistency  →  guard again, if it
                                                       rewrote  →  strip_emojis
 
-Four engines (ai_chatter, of_ai_chat, autoreply, and a since-retired drill) each
+Four engines (ai_chatter, welcome_chatter_for_info, autoreply, and a since-retired drill) each
 hand-copied that sequence, and it drifted, because "did someone remember to paste
 this line" is not a mechanism. Measured before this module existed:
 
-  guard                    ai_chatter  of_ai_chat  autoreply
+  guard                    ai_chatter  welcome_chatter_for_info  autoreply
   guard_offplatform            ✓           ✓           ✓
   verify_self_consistency      ✓           ✓           ✗
   strip_emojis                 ✗        gated       gated
@@ -25,7 +25,7 @@ Extracting it is what made the ai_chatter cell READABLE as a bug rather than as 
 absence — 7 of 12 live accounts had the toggle on, so the operator had asked for no
 emojis and the engine answering most of the messages was still sending them. Today:
 
-  guard                    ai_chatter  of_ai_chat  autoreply
+  guard                    ai_chatter  welcome_chatter_for_info  autoreply
   guard_offplatform            ✓           ✓           ✓
   verify_self_consistency      ✓           ✓           ✗
   strip_emojis               gated       gated       gated

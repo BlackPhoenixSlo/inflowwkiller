@@ -55,7 +55,7 @@ gets a fresh per-fan call (see _restyle_cache). An operator-written `question`
 (payload) rides as an optional THIRD bubble, sent word-for-word — never restyled,
 never near an LLM. Each bubble is held for its human
 typing time with the live "...is typing" indicator
-(webhook_config_json.typing_wpm / typing_indicator — same knobs as of_ai_chat).
+(webhook_config_json.typing_wpm / typing_indicator — same knobs as welcome_chatter_for_info).
 
 Payload knobs (all optional): `limit` (notifications fetched), `max_welcomes`
 (per-run batch cap), `model` (LLM override), `dry_run` (generate but don't send),
@@ -1111,7 +1111,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
             # The burst: image on bubble 1 only; each bubble held for its human
             # typing time first (live "...is typing" frames when enabled) — same
-            # pacing as of_ai_chat, so the welcome lands like a person texting,
+            # pacing as welcome_chatter_for_info, so the welcome lands like a person texting,
             # not a bot blast.
             media_ids = [bot_media_id] if bot_media_id is not None else []
             landed = 0

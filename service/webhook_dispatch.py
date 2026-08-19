@@ -6,7 +6,7 @@ forget) right after it persists an INBOUND DM. We:
 
   1. gate on a per-account flag (default OFF) + a global env kill-switch,
   2. pick the owning automation (a fan mid-funnel → reply_mass_funnel, else the
-     generic of_ai_chat sweep),
+     generic welcome_chatter_for_info sweep),
   3. if the fan is on a per-fan cooldown (a human is handling them, or the bot
      just replied — W3's shared guard), DEFER the reply to the moment that
      cooldown ends rather than dropping it to the slow periodic sweep,
@@ -14,7 +14,7 @@ forget) right after it persists an INBOUND DM. We:
 
 We do NOT send here and we do NOT rewrite the senders: we enqueue + wake the
 EXISTING sweep, which finds the just-replied fan via its normal "fan spoke last"
-gate (of_ai_chat.py: `c.last_dir == "in"`). W3's fan-lease + cooldown already
+gate (welcome_chatter_for_info.py: `c.last_dir == "in"`). W3's fan-lease + cooldown already
 prevent double-sends, so kicking the sweep early is safe.
 
 Design notes:
@@ -43,6 +43,7 @@ from db.models import (
     SkipList,
 )
 import automation_executor as ax
+from automation_registry import kind_family
 from of_shapes import giphy_dm_id, has_video
 
 log = logging.getLogger("of-relay.webhook_dispatch")
@@ -262,7 +263,7 @@ async def _fan_in_resolution(account_id: str, fan_id: int) -> bool:
 async def _fan_mid_funnel(account_id: str, fan_id: int) -> bool:
     """True iff this fan has a pending funnel_state row under one of this
     account's mass runs — i.e. reply_mass_funnel owns the fan through a
-    multi-step flow and of_ai_chat must not interleave it (Wave-3 overlap)."""
+    multi-step flow and welcome_chatter_for_info must not interleave it (Wave-3 overlap)."""
     async with get_session() as s:
         row = (
             await s.execute(
@@ -282,16 +283,16 @@ async def _fan_mid_funnel(account_id: str, fan_id: int) -> bool:
 async def _classify_kind(account_id: str, fan_id: int) -> str | None:
     """Pick the automation that OWNS this fan's current stage — or None when no
     automation should reply (a human owns the chat). Routing to the wrong sweep
-    is pure waste: of_ai_chat skips ANY skip-listed fan, so waking it for a fan
+    is pure waste: welcome_chatter_for_info skips ANY skip-listed fan, so waking it for a fan
     it will refuse does nothing AND the fan gets no reply. Stages:
 
       • funnel      — pending funnel_state       → reply_mass_funnel
       • terminal    — any skip_list row ('info' graduation, spent/too_long,
                       hard blocks, …) → None
-      • ai_chat     — still gathering (not skip-listed) → of_ai_chat
+      • ai_chat     — still gathering (not skip-listed) → welcome_chatter_for_info
 
     The skip_list is the ONE stage marker, mirroring the automations' OWN gates
-    (of_ai_chat _load_stop_lists / _graduate), so we never wake an automation
+    (welcome_chatter_for_info _load_stop_lists / _graduate), so we never wake an automation
     that would just skip this fan. A graduated fan ('info') is only chatted by
     ai_chatter where that engine is enabled — its gate above owns the fan before
     this read is reached.
@@ -305,9 +306,9 @@ async def _classify_kind(account_id: str, fan_id: int) -> str | None:
         return "reply_mass_funnel"
 
     # PPVscriptAI: when ai_chatter is enabled it owns every fan under its spend
-    # gate (it replaces of_ai_chat for them — one bot voice per fan); a fan
+    # gate (it replaces welcome_chatter_for_info for them — one bot voice per fan); a fan
     # at/over the gate is a whale → human territory, no automation reply.
-    # Lazy import to avoid a module cycle (ai_chatter imports of_ai_chat).
+    # Lazy import to avoid a module cycle (ai_chatter imports welcome_chatter_for_info).
     try:
         from automations.ai_chatter import gate_for as _ai_gate_for
         ai_gate = await _ai_gate_for(account_id)
@@ -330,7 +331,7 @@ async def _classify_kind(account_id: str, fan_id: int) -> str | None:
     if skip is not None:  # skip-listed (any reason) → no automation replies
         return None
 
-    return "of_ai_chat"  # not skip-listed → still in the of_ai_chat stage
+    return "welcome_chatter_for_info"  # not skip-listed → still in the welcome_chatter_for_info stage
 
 
 async def _fan_paused_until(account_id: str, fan_id: int) -> datetime | None:
@@ -363,7 +364,9 @@ async def _has_imminent_pending_job(
             await s.execute(
                 select(ScheduledJob.payload_json).where(
                     ScheduledJob.account_id == str(account_id),
-                    ScheduledJob.kind == kind,
+                    # kind_family: a pre-rename pending job must still dedup —
+                    # this guard is what stands between a fan and a double send.
+                    ScheduledJob.kind.in_(kind_family(kind)),
                     ScheduledJob.status == "pending",
                     ScheduledJob.run_at <= soon,
                 )
@@ -567,10 +570,10 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int,
       • image_reply_enabled  → enqueue ONE free vault item from the tip folder's
         'under $10' (basic) tier — the tip_reward `image_reply` mode, per-fan
         throttled (also dedups webhook replays of the same image).
-      • image_closer_enabled → kick the ai_chatter CLOSER for this fan NOW, flagging
-        the image as buying intent so closer (intent_only) mode engages it (the
-        photo carries no text the intent regexes can match). Requires ai_chatter
-        enabled — the closer IS ai_chatter; with it off this flag is inert.
+      • image_closer_enabled → kick ai_chatter for this fan NOW, flagging the
+        image as buying intent (`intent_fan_ids` — it drives the cadence gate's
+        pic tier; the photo carries no text the intent regexes can match).
+        Requires ai_chatter enabled; with it off this flag is inert.
 
     Gated SEPARATELY from the reply (W7) and tip hooks: an image reply / closer
     pivot should fire even on a fan no chat sweep would answer. Never raises.

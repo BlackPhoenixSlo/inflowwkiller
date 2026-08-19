@@ -46,7 +46,7 @@ if _HERE not in sys.path:
 # The REAL validators. A grader that re-implements a rule tests the re-implementation;
 # importing them means "compliant" means the same thing here as in production.
 from automations.ai_chatter import _DELIVERY_TALK_RE, _unbacked_talk  # noqa: E402
-from automations.of_ai_chat import _looks_like_echo  # noqa: E402
+from automations.welcome_chatter_for_info import _looks_like_echo  # noqa: E402
 # The arms call the SHIPPED transform, never a copy of it — otherwise the
 # replay measures something production does not run.
 from automations import _prompt_shape as PS  # noqa: E402

@@ -3,9 +3,11 @@
 /**
  * /customs — the owed-customs queue.
  *
- * A fan tips $100-$200 and gets back a VOICE NOTE made for him — audio, only
- * ever audio. Fulfilment is MANUAL, so this page is the work list: who paid, how
- * much, how long ago, and a button that says it went out.
+ * A fan tips for a custom and gets back a VOICE NOTE made for him — audio,
+ * only ever audio. Orders are TRACKED from $50 (stacked tips count as one
+ * order); the price the chatter QUOTES stays in the $100-$200 band.
+ * Fulfilment is MANUAL, so this page is the work list: who paid, how much,
+ * how long ago, and a button that says it went out.
  *
  * WHY IT LIVES AT /customs AND NOT /admin/customs
  * Next file-system routes win over rewrites, so a page at /admin/customs would

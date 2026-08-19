@@ -5,7 +5,7 @@
  *
  * The "sell harder" tuning layer over the SAME seller the 🤖 AI Chatter tab runs
  * (one engine, one catalog). This tab does NOT hold the content — the live library
- * (Scripts + Singles + Simulate + Monitor) lives on the AI Chatter tab, because the
+ * (Singles + Simulate + Monitor) lives on the AI Chatter tab, because the
  * base chatter sells from it too. Here:
  *   • Enable Upseller — one click writes the recommended "sell hard + take over" set.
  *   • Takeover, the gate, smart pricing, the price ladder knobs, after-a-buy behaviors.
@@ -25,7 +25,7 @@ import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { SingleFolderRow, VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
 import { cn } from "@/lib/utils";
 import {
-  useAiChatterConfig, useCatalogScripts, useSaveSingles,
+  useAiChatterConfig, useCatalogSingles, useSaveSingles,
   type AiChatterConfig,
 } from "@/hooks/useCatalog";
 import {
@@ -52,7 +52,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
   const cfgQ = useAiChatterConfig(accountId);
   const { cfg, set, saveCfg, saveCfgM, configLoaded, shippedPack, packText, setPackText,
     starterSingles, slotHelp } = useSellerConfig(accountId);
-  const scriptsQ = useCatalogScripts(accountId);
+  const scriptsQ = useCatalogSingles(accountId);
   const saveSinglesM = useSaveSingles(accountId);
 
   // Prompt-shape (arm G) — the ONE bulk toggle across every model you own. It hits
@@ -135,8 +135,8 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         </div>
 
         <p className="text-xs text-fg-dim">
-          Same seller as <b>🤖 AI Chatter</b>, turned up. Your content library (Scripts,
-          Singles, Simulate, Monitor) lives on that tab — this one is the sell-harder
+          Same seller as <b>🤖 AI Chatter</b>, turned up. Your content library (Singles,
+          Simulate, Monitor) lives on that tab — this one is the sell-harder
           tuning + the prewritten pitch lines.
         </p>
 
@@ -409,11 +409,11 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
           </label>
           <label className="flex items-start gap-2 cursor-pointer">
             <input type="checkbox" className="mt-0.5"
-              checked={!!cfg.of_ai_chat_sell_on_ask}
+              checked={!!cfg.welcome_chatter_for_info_sell_on_ask}
               disabled={!cfg.pack_on_ask_enabled}
-              onChange={(e) => set({ of_ai_chat_sell_on_ask: e.target.checked })} />
+              onChange={(e) => set({ welcome_chatter_for_info_sell_on_ask: e.target.checked })} />
             <span className="text-sm">
-              <span className="font-medium">OF AI Chat may sell it</span>
+              <span className="font-medium">Info-gather may sell it</span>
               <span className="text-[11px] text-fg-dim"> · on by default</span>
               <span className="block max-md:hidden text-fg-dim text-xs">
                 The getting-to-know-him lane. Its answer to <i>&quot;can i see
@@ -429,7 +429,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         </div>
       </Card>
 
-      {/* ── gather-close PPV — of_ai_chat's parting set ─────────────────────
+      {/* ── gather-close PPV — welcome_chatter_for_info's parting set ─────────────────────
           The folder IS the switch: empty = off, picking one arms it. Server
           side the send is photos-only, solo-only, un-bought, audited (caption
           count = attached count), and a refusal never blocks the graduation. */}
@@ -473,17 +473,6 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
       <Card className="p-4 space-y-3">
         <h3 className="text-sm font-medium">Offer pacing</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-          <label className="space-y-1">
-            <div className="text-fg-dim text-xs">Offer mode</div>
-            {/* Default flipped both→ppv (2026-07-23): a "both" message (priced
-                + tip-ask) let a fan pay twice for one promise. */}
-            <select className={`${INPUT} w-full`} value={cfg.offer_mode ?? "ppv"}
-              onChange={(e) => set({ offer_mode: e.target.value as AiChatterConfig["offer_mode"] })}>
-              <option value="ppv">PPV only (default)</option>
-              <option value="tip">tip only</option>
-              <option value="both">tip or PPV</option>
-            </select>
-          </label>
           <label className="space-y-1">
             <div className="text-fg-dim text-xs">Max offers / fan / day</div>
             <input type="number" className={`${INPUT} w-full`} min={0}

@@ -31,7 +31,7 @@ import {
 
 /** The "human texting style" opt-in — one checkbox per automation. */
 const STYLE_AUTOMATIONS: { key: keyof StyleConfig; label: string; hint: string }[] = [
-  { key: "of_ai_chat", label: "Info-gather", hint: "the get-to-know-you reply loop" },
+  { key: "welcome_chatter_for_info", label: "Info-gather", hint: "the get-to-know-you reply loop" },
   { key: "autoreply", label: "Auto Convo", hint: "the keep-warm re-engagement above" },
 ];
 
@@ -40,7 +40,7 @@ const STYLE_AUTOMATIONS: { key: keyof StyleConfig; label: string; hint: string }
  *  its cell stays empty rather than offering a box that would save fine and then
  *  do nothing. (ai_chatter is the other one; its toggle lives on the Chatter tab,
  *  where the rest of that engine's settings are.) */
-const CONSISTENCY_AUTOMATIONS = new Set<keyof StyleConfig>(["of_ai_chat"]);
+const CONSISTENCY_AUTOMATIONS = new Set<keyof StyleConfig>(["welcome_chatter_for_info"]);
 
 function StyleSection({ accountId }: { accountId: string | null }) {
   const cfgQ = useStyleConfig(accountId);
@@ -90,10 +90,10 @@ function StyleSection({ accountId }: { accountId: string | null }) {
       </label>
       <label className="flex items-start gap-2.5 cursor-pointer rounded-lg border border-border bg-bg-elev-1 px-3 py-2.5">
         <input type="checkbox" className="h-4 w-4 mt-0.5 accent-[var(--accent)] cursor-pointer"
-          checked={form.factground_of_ai_chat ?? true}
-          onChange={(e) => set({ factground_of_ai_chat: e.target.checked })} />
+          checked={form.factground_welcome_chatter_for_info ?? true}
+          onChange={(e) => set({ factground_welcome_chatter_for_info: e.target.checked })} />
         <span className="space-y-0.5">
-          <span className="block text-sm">Fact-grounding (Auto Convo)</span>
+          <span className="block text-sm">Fact-grounding (Info-gather)</span>
           <span className="block text-[11px] text-fg-dim/70">
             Feeds the info-gather reply his gen_info profile — bio and notes — plus a
             nudge to work in one specific detail, so a reply lands as “they remember me”
@@ -112,7 +112,7 @@ function StyleSection({ accountId }: { accountId: string | null }) {
             Frames every chat reply the way this account&apos;s own voice does — a real
             person half-glued to a phone: write the fewest words that still land — short lines that punch the feeling, spend more
             only to stir him up or answer what he actually said, never a dead one-word
-            filler. Applies to Auto Convo, AI Chatter, keep-warm and deep convo. On by
+            filler. Applies to Auto Convo, AI Chatter and keep-warm. On by
             default; untick to A/B it off.
           </span>
         </span>
@@ -121,7 +121,7 @@ function StyleSection({ accountId }: { accountId: string | null }) {
           exist yet. Default OFF and it must stay that way — see
           _common.load_sell_customs_flag. It is deliberately NOT tied to the tip-ask
           toggle: ticking this opens customs conversationally in Auto Convo,
-          of_ai_chat AND the AI Chatter manifest, whether or not the tip-ask is on. */}
+          welcome_chatter_for_info AND the AI Chatter manifest, whether or not the tip-ask is on. */}
       <label className="flex items-start gap-2.5 cursor-pointer rounded-lg border border-border bg-bg-elev-1 px-3 py-2.5">
         <input type="checkbox" className="h-4 w-4 mt-0.5 accent-[var(--accent)] cursor-pointer"
           checked={form.sell_customs ?? false}

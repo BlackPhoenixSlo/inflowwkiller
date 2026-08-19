@@ -33,6 +33,17 @@ Config (env, read live so a restart is not needed to change the handle):
   OF_COTAG_USER_ID   numeric OF user id, skips the per-account lookup entirely.
                      Set this only if the SAME id is taggable from every
                      account — it is not validated against the friend list.
+
+Per-account overrides (the Brain panel → account_ai_config, read live through
+the same sync engine, 60s cache):
+  cotag_tag_videos   NULL ≡ OFF (most creators are solo — their videos really
+                     are just them). Ticked ON, any send attaching a vault
+                     VIDEO tags even when the describe verdict says solo:
+                     video describes are cut from stills and miss the POV
+                     partner — Lucas1/Lucas2 clips shipped untagged exactly
+                     this way, so the collab accounts turn this on.
+  cotag_username     handle to tag on THIS account, no '@'. NULL → the env →
+                     the built-in default.
 """
 from __future__ import annotations
 
@@ -46,6 +57,15 @@ log = logging.getLogger("of-relay.media_cotag")
 
 DEFAULT_HANDLE = "jakabasej"
 
+
+def fold_handle(raw: Any) -> str:
+    """A username the way OF stores it: trimmed, no `@`, case-folded.
+
+    The ONE definition — the env reader, the Brain-column reader and the config
+    API's save path all fold through here, so "what counts as the same handle"
+    cannot drift between the writer and the readers."""
+    return str(raw or "").strip().lstrip("@").lower()
+
 # How long a per-item solo verdict is trusted. Describe data changes only when
 # a re-describe sweep runs, so this is about bounding staleness, not freshness.
 _VERDICT_TTL_S = 600.0
@@ -56,11 +76,20 @@ _ID_HIT_TTL_S = 3600.0
 _ID_MISS_TTL_S = 300.0
 # Bound the verdict cache so a long-lived relay can't grow it without limit.
 _VERDICT_CACHE_MAX = 20_000
+# The Brain overrides move when an operator hits Save; the save path also drops
+# the caches, so this TTL only covers a second relay worker / a raw DB edit.
+_CFG_TTL_S = 60.0
 
-# (account_id, media_id) -> (stamped_at, needs_cotag)
-_verdicts: dict[tuple[str, int], tuple[float, bool]] = {}
-# account_id -> (stamped_at, user_id_or_None)
-_ids: dict[str, tuple[float, int | None]] = {}
+# (account_id, media_id) -> (stamped_at, (multi_person, is_video)).
+# The two flags stay separate so flipping the Brain's video rule takes effect on
+# the next config read, not after every item verdict expires.
+_verdicts: dict[tuple[str, int], tuple[float, tuple[bool, bool]]] = {}
+# account_id -> (stamped_at, user_id_or_None, handle_it_resolves).  The handle
+# rides along so a Brain username change invalidates the cached id instead of
+# serving the OLD person for the rest of the TTL.
+_ids: dict[str, tuple[float, int | None, str]] = {}
+# account_id -> (stamped_at, (always_tag_videos, username_override_or_None))
+_acct_cfg: dict[str, tuple[float, tuple[bool, str | None]]] = {}
 
 _engine = None
 
@@ -72,10 +101,51 @@ def enabled() -> bool:
         "0", "false", "no", "off", "")
 
 
-def handle() -> str:
-    """The username to tag, normalised the way OF stores it (no `@`, folded)."""
+def _account_cfg(account_id: str) -> tuple[bool, str | None]:
+    """This account's Brain overrides: (always tag videos, username or None).
+
+    No row / NULL columns / a lookup that fails → (False, None): the video rule
+    is an OPT-IN for collab accounts, so every failure path lands on the
+    shipped default — most creators are solo and their videos really are just
+    them. (The describe-verdict spine keeps its own "unknown ⇒ tag" doctrine;
+    this knob only adds tags on top of it.)
+    """
+    now = time.monotonic()
+    cached = _acct_cfg.get(account_id)
+    if cached and now - cached[0] < _CFG_TTL_S:
+        return cached[1]
+    always, username = False, None
+    try:
+        from sqlalchemy import text
+
+        with _sync_engine().connect() as conn:
+            row = conn.execute(text(
+                "SELECT cotag_tag_videos, cotag_username FROM account_ai_config "
+                "WHERE account_id = :a"), {"a": account_id}).first()
+        if row is not None:
+            always = bool(row[0])
+            username = fold_handle(row[1]) or None
+    except Exception:
+        log.exception(
+            "cotag: brain config lookup failed (account=%s) — using the "
+            "defaults (video rule off, global handle)", account_id)
+    _acct_cfg[account_id] = (now, (always, username))
+    return always, username
+
+
+def handle(account_id: Any = None) -> str:
+    """The username to tag, normalised the way OF stores it (no `@`, folded).
+
+    Per-account Brain override first, then the env, then the built-in default.
+    A blanked env still means "nobody to tag" when no override is set. Takes
+    the account id in whatever shape the caller holds (str, int, None, "") —
+    falsy means "no account context, global answer"."""
+    if account_id:
+        _always, override = _account_cfg(str(account_id))
+        if override:
+            return override
     raw = os.environ.get("OF_COTAG_USERNAME")
-    return (raw if raw is not None else DEFAULT_HANDLE).strip().lstrip("@").lower()
+    return fold_handle(raw if raw is not None else DEFAULT_HANDLE)
 
 
 def _pinned_id() -> int | None:
@@ -160,43 +230,53 @@ def _sync_engine():
     return _engine
 
 
-def _describe_rows(account_id: str, media_ids: Iterable[int]) -> dict[int, str | None]:
+def _describe_rows(account_id: str,
+                   media_ids: Iterable[int]) -> dict[int, tuple[str | None, str | None]]:
+    """media_id -> (ai_fields_json, kind) for the vault rows we hold."""
     from sqlalchemy import bindparam, text
 
     stmt = text(
-        "SELECT media_id, ai_fields_json FROM vault_items "
+        "SELECT media_id, ai_fields_json, kind FROM vault_items "
         "WHERE account_id = :account_id AND media_id IN :ids"
     ).bindparams(bindparam("ids", expanding=True))
     with _sync_engine().connect() as conn:
         rows = conn.execute(stmt, {"account_id": str(account_id),
                                    "ids": list(media_ids)})
-        return {int(r[0]): r[1] for r in rows}
+        return {int(r[0]): (r[1], r[2]) for r in rows}
 
 
-def _remember(key: tuple[str, int], verdict: bool) -> None:
+def _remember(key: tuple[str, int], flags: tuple[bool, bool]) -> None:
     if len(_verdicts) >= _VERDICT_CACHE_MAX:
         _verdicts.clear()
-    _verdicts[key] = (time.monotonic(), verdict)
+    _verdicts[key] = (time.monotonic(), flags)
 
 
 def needs_cotag(account_id: str, media_files: Any) -> bool:
     """Does this attachment set need the co-performer tag?
 
     True when ANY attached item is not provably solo — one two-person clip in a
-    five-item bundle still shows a second person.
+    five-item bundle still shows a second person — or, on an account whose
+    Brain opted IN to the video rule, when any item is a VIDEO at all: video
+    describes are cut from stills and miss the POV partner, which is how
+    solo-described Lucas clips went out untagged.
     """
     ids = _numeric_ids(media_files)
     if ids is None:
         return True
     if not ids:
         return False
+    always_videos, _ = _account_cfg(str(account_id))
+
+    def _needs(flags: tuple[bool, bool]) -> bool:
+        multi, video = flags
+        return multi or (always_videos and video)
 
     now = time.monotonic()
     stale: list[int] = []
     for mid in ids:
         cached = _verdicts.get((str(account_id), mid))
         if cached and now - cached[0] < _VERDICT_TTL_S:
-            if cached[1]:
+            if _needs(cached[1]):
                 return True
         else:
             stale.append(mid)
@@ -217,9 +297,11 @@ def needs_cotag(account_id: str, media_files: Any) -> bool:
     for mid in stale:
         # `.get` missing → None → no describe data → multi-person. An item we
         # have never collected is exactly the item nobody has ever looked at.
-        one = _multi_person(rows.get(mid))
-        _remember((str(account_id), mid), one)
-        verdict = verdict or one
+        row = rows.get(mid)
+        flags = (_multi_person(row[0] if row else None),
+                 row is not None and str(row[1] or "").strip().lower() == "video")
+        _remember((str(account_id), mid), flags)
+        verdict = verdict or _needs(flags)
     return verdict
 
 
@@ -237,7 +319,8 @@ def lookup_tag_id(client, want: str | None = None) -> int | None:
     real resolver fails. Unlike `tag_user_id` it neither caches nor honours the
     `OF_COTAG_USER_ID` pin: a probe wants the truth from OF, not our shortcut.
     """
-    want = handle() if want is None else want
+    if want is None:
+        want = handle(getattr(client, "account_id", None))
     resp = client.tagged_friend_users(search=want, limit=20)
     items = (resp or {}).get("items") or []
     for item in items:
@@ -261,13 +344,15 @@ def tag_user_id(client) -> int | None:
         return pinned
 
     account_id = str(getattr(client, "account_id", "") or "")
-    want = handle()
+    want = handle(account_id)
     if not want:
         return None
 
     now = time.monotonic()
     cached = _ids.get(account_id)
-    if cached:
+    # A cached id is only good for the handle it resolved — a Brain username
+    # change must re-resolve, not keep tagging the OLD person for an hour.
+    if cached and cached[2] == want:
         ttl = _ID_HIT_TTL_S if cached[1] is not None else _ID_MISS_TTL_S
         if now - cached[0] < ttl:
             return cached[1]
@@ -279,7 +364,7 @@ def tag_user_id(client) -> int | None:
         # Not cached: a network blip should not silence the tag for an hour.
         return None
 
-    _ids[account_id] = (now, found)
+    _ids[account_id] = (now, found, want)
     if found is None:
         log.error(
             "cotag: @%s is NOT in account %s's tagged-friend list — OF would 400 "
@@ -333,7 +418,7 @@ def story_mention(account_id: str, media_ids: Any) -> str | None:
     # A blanked OF_COTAG_USERNAME means "nobody to tag" on BOTH paths — the
     # userTags side already resolves it to no id, and falling back to the
     # built-in default here would resurrect a handle the operator cleared.
-    want = handle()
+    want = handle(account_id)
     return f"@{want}" if want else None
 
 
@@ -349,8 +434,25 @@ def forget_tag_id(account_id: str) -> None:
     _ids.pop(str(account_id or ""), None)
 
 
+def forget_account_cfg(account_id: str) -> None:
+    """Drop ONE account's cached Brain overrides and resolved id — the Brain
+    save path calls this so a new username/video rule applies on the very next
+    send instead of after the TTLs drain.
+
+    Deliberately narrow: a brain save must not cost every OTHER account a fresh
+    tagged-friend lookup, and the per-item verdict flags don't depend on config
+    at all (that separation is why flipping the video rule is just a config
+    re-read). The id entry is dropped too — not because the resolver needs it
+    (a changed handle already re-resolves via the `want` check), but as the
+    operator's "I just accepted the tag request, re-ask now" lever."""
+    _acct_cfg.pop(str(account_id or ""), None)
+    _ids.pop(str(account_id or ""), None)
+
+
 def reset_caches() -> None:
-    """Drop every cached verdict and id. For tests and for an operator who has
-    just accepted a tag request and does not want to wait out the TTL."""
+    """Drop every cached verdict, id and Brain override. For tests and for an
+    operator who has just accepted a tag request and does not want to wait out
+    the TTL."""
     _verdicts.clear()
     _ids.clear()
+    _acct_cfg.clear()

@@ -53,7 +53,7 @@ Concurrency / sessions: each DB write uses its OWN AsyncSession — never one
 shared across branches (the SQLAlchemy parallel-session footgun). The daily-spend
 cap is serialized inside llm_client's atomic reserve, so this automation does NOT
 need the executor's account_spend_lock. The per-fan lease is the anti-double-send
-guard, mirroring of_ai_chat / send_welcome.
+guard, mirroring welcome_chatter_for_info / send_welcome.
 
 Scheduling: self-registers via `@register("reply_mass_funnel")` on import. To run
 it on the spec's 2-minute cadence, insert an `automation_rules` row with
@@ -309,7 +309,7 @@ def _presend_problems(is_ppv: bool, texts: list[str], media: list[int]) -> list[
 async def _last_funnel_out_at(account_id: str, fan_id: int, mass_run_id: int) -> datetime | None:
     """Timestamp of the latest outbound message belonging to THIS funnel run
     (the broadcast row, then each step we sent — all tagged mass_run_id). Scoping
-    to the run isolates the funnel from of_ai_chat/send_welcome noise."""
+    to the run isolates the funnel from welcome_chatter_for_info/send_welcome noise."""
     async with get_session() as s:
         ts = (await s.execute(
             select(func.max(Message.created_at)).where(

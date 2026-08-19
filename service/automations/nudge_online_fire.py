@@ -14,7 +14,7 @@ schedule the fan again):
      write the outbound attribution row → bump NudgeState → release the lease.
 
 Unlike send_welcome, this NEVER calls start_fan_cooldown: nudge is fully async
-and must not freeze of_ai_chat (decision #5). The lease is held only across the
+and must not freeze welcome_chatter_for_info (decision #5). The lease is held only across the
 send and released immediately after.
 """
 from __future__ import annotations

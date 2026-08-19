@@ -21,7 +21,7 @@ A new identical message sent hours later is a DIFFERENT burst (the user's
 
 Safety filters:
   • only `automation_kind IS NULL` rows — per-fan automations (welcome,
-    of_ai_chat, …) carry a kind and personalize their text, so they're never
+    welcome_chatter_for_info, …) carry a kind and personalize their text, so they're never
     swept up here.
   • only bursts with ≥ `min_recipients` distinct fans become a MassRun;
     smaller clusters stay as individual rows.

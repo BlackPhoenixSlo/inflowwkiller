@@ -1,4 +1,4 @@
-"""service/automations/pack_farewell.py — of_ai_chat's parting PPV.
+"""service/automations/pack_farewell.py — welcome_chatter_for_info's parting PPV.
 
 When the gather finishes with a fan (profile done, or the runaway cutoff), the
 LAST message he gets is a few pictures, priced — instead of the silence that
@@ -18,7 +18,7 @@ lane shares (`_available`, `_bought_media`, `_ask_claim`, the audit, the wire).
 
 ⚠️ The dependency runs ONE WAY, `pack_farewell` → `pack_sender`, and it must stay
 that way: `pack_sender` re-exporting this would make the pair a cycle. The single
-caller (`of_ai_chat`) imports this module directly.
+caller (`welcome_chatter_for_info`) imports this module directly.
 """
 from __future__ import annotations
 

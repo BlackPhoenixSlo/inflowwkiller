@@ -26,7 +26,7 @@ messages/fans rows exist), so A08 is pure DB work:
        `old_fan_pre_ai`) unless `reprocess` is set — the cheap idempotency gate so
        a re-run doesn't re-spend Grok on the whole sheet.
     3. FLAG every old fan (idempotent, own session): insert a `skip_list` row
-       `(account_id, fan_id, reason="old_fan_pre_ai")` so of_ai_chat never opens
+       `(account_id, fan_id, reason="old_fan_pre_ai")` so welcome_chatter_for_info never opens
        them — the skip_list row is what stops the AI. The fans upsert carries
        identity-safe defaults so a sheet id that was never chatted still gets a row.
     4. Unless `flag_only` (the spec's `--no-scrape`): compose A02 then A03 over the
@@ -38,8 +38,8 @@ messages/fans rows exist), so A08 is pure DB work:
        applied OR added to skip_list".
 
 The legacy `data/ai_chat_skip_<model>.txt` mirror is intentionally dropped: in
-this arch the `skip_list` table is the single source of truth that of_ai_chat
-reads (of_ai_chat.py `_load_stop_lists`), so the txt file would be write-only.
+this arch the `skip_list` table is the single source of truth that welcome_chatter_for_info
+reads (welcome_chatter_for_info.py `_load_stop_lists`), so the txt file would be write-only.
 
 Cross-model note: the legacy `flag_fan()` flagged the same id under every model in
 models.json. Here automations run per `account_id` (the executor dispatches one
@@ -162,7 +162,7 @@ async def _flag_fans(account_id: str, ids: set[int], now: datetime) -> int:
     bites concurrent execute() on a SHARED session — a loop of awaits is safe).
     Both upserts use do_nothing: a pre-existing skip row (any reason) is
     preserved, and the fans insert only ensures a never-chatted sheet id still
-    gets a row that of_ai_chat will skip — an existing fan is left untouched.
+    gets a row that welcome_chatter_for_info will skip — an existing fan is left untouched.
     """
     flagged = 0
     async with get_session() as s:

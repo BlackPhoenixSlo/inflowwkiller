@@ -153,7 +153,7 @@ describe("replyStateOf — a bot reply doesn't discharge the thread", () => {
   );
 
   it("keeps the dot lit when the last message came from an automation", () => {
-    const st = replyStateOf(aiSent, null, ACCOUNT, lastOutboundOf(attrib(300, "of_ai_chat")));
+    const st = replyStateOf(aiSent, null, ACCOUNT, lastOutboundOf(attrib(300, "welcome_chatter_for_info")));
     expect(st).toMatchObject({ outbound: true, byBot: true, seen: true });
   });
 
@@ -169,7 +169,7 @@ describe("replyStateOf — a bot reply doesn't discharge the thread", () => {
       detailWith({ id: 301, text: "ok", from: ME, at: "2026-07-12T09:41:00Z" }, 300),
       null,
       ACCOUNT,
-      lastOutboundOf(attrib(300, "of_ai_chat")),
+      lastOutboundOf(attrib(300, "welcome_chatter_for_info")),
     );
     expect(st?.byBot).toBe(false);
   });
@@ -183,7 +183,7 @@ describe("replyStateOf — a bot reply doesn't discharge the thread", () => {
       lastMessage: { id: 300, text: "ok", fromUser: { id: ME }, createdAt: "2026-07-12T09:45:00Z" },
       lastReadMessageId: 300,
     });
-    const st = replyStateOf(detail, optimistic, ACCOUNT, lastOutboundOf(attrib(300, "of_ai_chat")));
+    const st = replyStateOf(detail, optimistic, ACCOUNT, lastOutboundOf(attrib(300, "welcome_chatter_for_info")));
     // The stale optimistic id collides with the AI's real id — without the
     // `stale` guard this would keep the AI's dot on the chatter's own reply.
     expect(st).toMatchObject({ text: "ok", outbound: true, byBot: false, seen: false, stale: true });

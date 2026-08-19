@@ -357,7 +357,7 @@ def _choose_idx(st, fan_id: int, pool_len: int, repeat_mode: str) -> int:
 
 
 # qa content_mode (P2): ask about a fan fact. KNOWN facts first (warm small-talk
-# off something we already know), else gather a MISSING one (of_ai_chat style),
+# off something we already know), else gather a MISSING one (welcome_chatter_for_info style),
 # else the caller falls back to tease. Each ask is tracked in fans.questions_asked
 # so we don't nag the same thing twice. Templates use only supported placeholders.
 _QA_KNOWN = [
@@ -436,7 +436,7 @@ def _try_qa(fan, name: str, voice: str = "her") -> tuple[str, str] | None:
 
 async def _record_question(account_id: str, fan_id: int, qa_key: str) -> None:
     """Append a qa_key to fans.questions_asked (no-nag tracker, shared with
-    of_ai_chat). Upsert so a fan with no row yet is handled."""
+    welcome_chatter_for_info). Upsert so a fan with no row yet is handled."""
     async with get_session() as s:
         fan = await s.get(Fan, (str(account_id), int(fan_id)))
         cur: list = []

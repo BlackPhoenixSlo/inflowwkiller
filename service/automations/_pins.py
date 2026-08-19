@@ -3,7 +3,7 @@ _pins.py — which of a fan's OWN messages the model gets to re-read later.
 
 🚫 UNWIRED 2026-08-15 (operator ruling) — READ THIS BEFORE THE REST
 ------------------------------------------------------------------
-NOTHING READS A PIN INTO A PROMPT ANY MORE. `ai_chatter`, `of_ai_chat` and
+NOTHING READS A PIN INTO A PROMPT ANY MORE. `ai_chatter`, `welcome_chatter_for_info` and
 `autoreply` no longer import this module at all; all five
 `pins_block(f)` call sites and both `consider(...)` sites are gone. Everything
 below still describes the design accurately, and the code still works — it simply
@@ -279,7 +279,7 @@ def _clean(text: str | None) -> str:
     """Message body → the text we STORE and SHOW THE MODEL. Strips OF's
     ProseMirror tags and collapses whitespace. Case is left alone.
 
-    Its own step rather than a reach into `of_ai_chat._strip_html`: that module
+    Its own step rather than a reach into `welcome_chatter_for_info._strip_html`: that module
     imports THIS one, and a leaf that imports its caller is a cycle waiting for
     the next import to close it. Whitespace collapsing matters independently —
     without it a phrase split across a newline slips every multi-word pattern,

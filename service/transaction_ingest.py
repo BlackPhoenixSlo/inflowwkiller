@@ -1478,7 +1478,7 @@ async def start_fast_poll() -> None:
 # re-read fastpath is capped at 20 messages, so the ingest IS the signal
 # (see project_offer_stuck_ambiguous_linker_and_fast_poll). They run around the
 # clock, so their purchase detection cannot wait for someone to open the app.
-_SELLING_KINDS = ("ai_chatter", "of_ai_chat", "ppv_send", "tip_request",
+_SELLING_KINDS = ("ai_chatter", "welcome_chatter_for_info", "ppv_send", "tip_request",
                   "reengage_buyers")
 
 
@@ -1519,7 +1519,7 @@ async def _online_account_ids() -> set[str]:
         all and the graded vault's owner was offline, so neither account's ledger was
         ever scanned — no `transactions` rows, an empty PPV chart on every one
         of their fans, and `fans.lifetime_spend_cents` frozen at 0 (which also
-        starves the of_ai_chat "hand payers to humans" gate). Ownership is NOT
+        starves the welcome_chatter_for_info "hand payers to humans" gate). Ownership is NOT
         the right lever for "should this run": a live, connected account must
         be ingested regardless of who is listed as its owner.
       • owners (users.last_seen_at) → user_accounts.account_id
@@ -1625,7 +1625,7 @@ async def start_supervisor() -> None:
             # (automation_executor never consults one) and read that number to
             # decide real money questions: ai_chatter's whale gate
             # (max_lifetime_spend_cents), the proven-spend floor, the tip-ladder
-            # base, of_ai_chat's hand-to-human
+            # base, welcome_chatter_for_info's hand-to-human
             # gate. Gating the producer on "is a human watching" while the
             # consumers never stop meant that with every dashboard closed, a fan
             # who had already blown past the whale cap still read as $0 and the
