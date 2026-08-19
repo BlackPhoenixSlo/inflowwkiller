@@ -40,6 +40,41 @@ export function fmtDuration(sec: number | null | undefined): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+/** Automation cadence: seconds → "every 5 min" / "every 2 h" / "every 90 s".
+ *  `null` / 0 → "—", which is what a rule on a `daily_at` trigger (no interval at
+ *  all) renders as — the schedule then lives in `trigger.daily_at`, so inventing
+ *  an interval here would print a cadence the rule does not run on.
+ *
+ *  Was private to AutomationsPanel until a second automation surface needed it. */
+export function fmtEvery(secs: number | null | undefined): string {
+  if (!secs || secs <= 0) return "—";
+  if (secs % 3600 === 0) return `every ${secs / 3600} h`;
+  if (secs % 60 === 0) return `every ${secs / 60} min`;
+  return `every ${secs} s`;
+}
+
+/** Past ISO timestamp → "12s ago" / "5 min ago" / "3 h ago" / "2 d ago".
+ *  Absent / unparseable → `null` (render nothing); a FUTURE stamp → "soon".
+ *
+ *  The third copy of this was being written when it moved here — AutomationsPanel
+ *  and ReadyMadePanel each carried a byte-identical private `timeAgo`. Same story
+ *  as `fmtDuration` above. (The `${h}h ago` family in MoneyRail / NotificationBell
+ *  / IngestHealthBanner is a DIFFERENT wording with a 30-day cutoff — deliberately
+ *  left alone rather than silently restyled.) */
+export function fmtAgo(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return null;
+  const secs = Math.round((Date.now() - then) / 1000);
+  if (secs < 0) return "soon";
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs} h ago`;
+  return `${Math.round(hrs / 24)} d ago`;
+}
+
 export function fmtDateShort(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }

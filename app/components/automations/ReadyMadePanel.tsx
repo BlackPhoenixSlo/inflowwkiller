@@ -24,7 +24,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge, Button, Card, Input } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
-import { fmtDateTime } from "@/lib/format";
+import { fmtAgo, fmtDateTime } from "@/lib/format";
 import { relay } from "@/lib/relay";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -79,20 +79,6 @@ const UNIT_S: Record<Unit, number> = { minutes: 60, hours: 3600 };
 function splitInterval(secs: number): { value: number; unit: Unit } {
   if (secs > 0 && secs % 3600 === 0) return { value: secs / 3600, unit: "hours" };
   return { value: Math.max(1, Math.round(secs / 60)), unit: "minutes" };
-}
-
-function timeAgo(iso: string | null): string | null {
-  if (!iso) return null;
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return null;
-  const secs = Math.round((Date.now() - then) / 1000);
-  if (secs < 0) return "soon";
-  if (secs < 60) return `${secs}s ago`;
-  const mins = Math.round(secs / 60);
-  if (mins < 60) return `${mins} min ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs} h ago`;
-  return `${Math.round(hrs / 24)} d ago`;
 }
 
 /** "in 2 h" / "in 30 min" for an upcoming due time (or null if past/missing). */
@@ -315,7 +301,7 @@ export default function ReadyMadePanel() {
         ) : (
           <ul className="divide-y divide-border">
             {rules.map((r) => {
-              const ago = timeAgo(r.last_run?.started_at ?? null);
+              const ago = fmtAgo(r.last_run?.started_at ?? null);
               const due = timeUntil(r.next_due_at);
               return (
                 <li key={r.id} className="py-2.5 space-y-1.5">
@@ -475,7 +461,7 @@ function PreviousRuns({
   return (
     <ul className="ml-7 space-y-0.5">
       {mine.map((run) => {
-        const ago = timeAgo(run.started_at);
+        const ago = fmtAgo(run.started_at);
         const extra = runSummary(run);
         return (
           <li key={run.id} className="text-[11px] text-fg-dim flex flex-wrap items-center gap-1.5">

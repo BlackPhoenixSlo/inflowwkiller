@@ -199,13 +199,13 @@ _DEFAULTS: dict = {
     # ship a $60 clip while several short ones still fit inside the ask.
     "teaser_convo_videos": False,
     "teaser_convo_rungs": [
-        {"folder": "", "price_cents": 0},       # rung 0 — free tease
-        {"folder": "", "price_cents": 1000},    # $10
-        {"folder": "", "price_cents": 4000},    # $40
-        {"folder": "", "price_cents": 8000},    # $80
-        {"folder": "", "price_cents": 12000},   # $120
-        {"folder": "", "price_cents": 16000},   # $160
-        {"folder": "", "price_cents": 20000},   # $200
+        {"folders": [], "price_cents": 0},       # rung 0 — free tease
+        {"folders": [], "price_cents": 1000},    # $10
+        {"folders": [], "price_cents": 4000},    # $40
+        {"folders": [], "price_cents": 8000},    # $80
+        {"folders": [], "price_cents": 12000},   # $120
+        {"folders": [], "price_cents": 16000},   # $160
+        {"folders": [], "price_cents": 20000},   # $200
     ],
     # ── ADAPTIVE convo teaser (DEFAULT ON since a live incident where legacy
     # climb-every-send walked an unbought fan $40→$80→$120→$160→$200 overnight,
@@ -462,6 +462,51 @@ def _resolve_folders(client, folder_names: list[str]) -> dict[str, int]:
         if isinstance(f, dict) and f.get("id") is not None:
             by_name.setdefault(str(f.get("name", "")).strip().lower(), int(f["id"]))
     return by_name
+
+
+def folder_list(v, *, max_len: int | None = None) -> list[str]:
+    """PUBLIC seam: THE config→folder-names coercion, for every slot that holds
+    folders — on BOTH sides of the wire. `tip_reward_config_api` validates saves
+    through it too, so "what a folder slot means" has one definition and a save can
+    never store a shape the read rejects.
+
+    A slot may be stored as a list (the shape the tab writes now) or as the single
+    string it was before — `""` → `[]`, `"tease10"` → `["tease10"]`. Reading through
+    here is why multi-folder needed NO migration: an account whose rungs still hold
+    a bare string keeps working, and the first save from the tab widens it.
+
+    Names are stripped, blanks dropped, and duplicates removed case-insensitively
+    (order preserved) — a folder listed twice must not make the scan read it twice,
+    and `_resolve_folders` is first-wins on name collisions anyway.
+
+    `max_len` (the write side's per-name cap) truncates BEFORE the dedupe, which is
+    why it belongs here and not in the caller: cut afterwards, two names that differ
+    only past the cap would land as one name twice.
+
+    🚨 NEVER `str()` a stored list to get here. The repr `"['a','b']"` matches no
+    folder in the vault, which reads downstream as "no media" — a silently DEAD
+    lane rather than an error."""
+    raw = [v] if isinstance(v, str) else list(v or [])
+    out: list[str] = []
+    seen: set[str] = set()
+    for nm in raw:
+        nm = str(nm or "").strip()
+        if max_len:
+            nm = nm[:max_len]
+        key = nm.lower()
+        if nm and key not in seen:
+            seen.add(key)
+            out.append(nm)
+    return out
+
+
+def rung_folder_slot(rung: dict):
+    """PUBLIC seam: the RAW value of a rung's folder slot — the `folders` key when the
+    rung has it, else the single `folder` string it used to be. Both the validator
+    that WRITES a rung and the engine that READS one go through here, so they can
+    never disagree about which key wins (`folders: []` alongside a stale `folder`
+    means the operator cleared the rung, not that the old string is back)."""
+    return rung.get("folders") if "folders" in rung else rung.get("folder")
 
 
 def _folder_media_items(client, list_id: int) -> list[tuple[int, str, int]]:
@@ -884,6 +929,32 @@ def _rung_count(tcfg: dict, rung: dict) -> int:
                int(rung.get("count") or 0) or int(tcfg.get("count") or 1))
 
 
+async def _pull_rung(client, *, tcfg: dict, rung: dict, seen: set[int],
+                     cost: _SlotCost) -> tuple[list[str], list[int]]:
+    """A rung's OWN folders → up to its count of unseen media. Returns
+    `(folders, media_ids)`; empty ids means the rung is dead (no folders, or the
+    fan has seen everything they hold) and the caller sends nothing.
+
+    Both ladder paths pull exactly this way — the legacy climb, and the adaptive
+    no-tiers fallback — and they had grown two copies of it, which is how the
+    videos flag reached one of them a change later than the other.
+
+    Folders are scanned IN ORDER and deduped across each other (`_gather_unseen`),
+    so listing a second folder deepens a rung rather than replacing it: the first
+    is exhausted before the next is touched.
+
+    `rung` is a NORMALISED tcfg rung — `convo_teaser_config` already ran the stored
+    slot through `rung_folder_slot`/`folder_list` — which is why this reads
+    `folders` plainly instead of coercing again."""
+    folders = list(rung.get("folders") or [])
+    if not folders:
+        return [], []
+    by_name = await asyncio.to_thread(_resolve_folders, client, folders)
+    ids = await asyncio.to_thread(_gather_unseen, client, folders, by_name, seen,
+                                  _rung_count(tcfg, rung), cost=cost)
+    return folders, ids
+
+
 def _tier_folders(cfg: dict, tier_name: str) -> list[str]:
     """The non-empty folder names for the named tier in the `tiers` config."""
     for t in cfg.get("tiers") or []:
@@ -991,10 +1062,14 @@ async def pick_hot_teaser(client, account_id: str, fan_id: int, *,
                           now: datetime | None = None) -> dict | None:
     """Pure SELECTION for ai_chatter's hot-thread teaser — resolves the spend branch,
     the per-fan cooldown/free-cap, and the unseen vault items. Returns
-    {media_ids, price_cents, is_free, folder} or None (throttled / capped / no folder /
-    nothing unseen left). Sends NOTHING and writes NOTHING: ai_chatter attaches the
-    media to its reply and calls `record_hot_teaser` only once the send confirms — so a
-    dropped/failed reply never burns the cooldown or the fan's free allowance."""
+    {media_ids, price_cents, is_free, folders} or None (throttled / capped / no
+    folder / nothing unseen left). `folders` names WHERE the media came from — empty
+    when the bundle was composed from the tier folders rather than pulled from one.
+    It is a record/diagnostic field; nothing branches on it.
+
+    Sends NOTHING and writes NOTHING: ai_chatter attaches the media to its reply and
+    calls `record_hot_teaser` only once the send confirms — so a dropped/failed reply
+    never burns the cooldown or the fan's free allowance."""
     now = now or datetime.utcnow()
     async with get_session() as s:
         fan = await s.get(Fan, (str(account_id), int(fan_id)))
@@ -1041,7 +1116,7 @@ async def pick_hot_teaser(client, account_id: str, fan_id: int, *,
         if not media_ids:
             return None
         return {"media_ids": media_ids, "price_cents": int(price_cents),
-                "is_free": False, "folder": "composed", "bundle": breakdown}
+                "is_free": False, "folders": [], "bundle": breakdown}
 
     # Otherwise a single-folder pull. Count is the legacy fixed value, or the
     # bundle TOTAL when scaling is on (the free branch has no tiers to compose).
@@ -1058,7 +1133,7 @@ async def pick_hot_teaser(client, account_id: str, fan_id: int, *,
     if not media_ids:
         return None
     return {"media_ids": media_ids, "price_cents": int(price_cents),
-            "is_free": is_free, "folder": folder}
+            "is_free": is_free, "folders": [folder]}
 
 
 async def record_hot_teaser(account_id: str, fan_id: int, *, media_ids: list[int],
@@ -1152,8 +1227,8 @@ def teaser_last_at(state: dict) -> datetime | None:
 
 async def convo_teaser_config(account_id: str) -> dict | None:
     """The conversational-ladder knobs iff enabled, else None — one config read for
-    ai_chatter's per-run setup. Each rung is {folder, price_cents}; a rung with no
-    folder is a dead step (skipped at selection)."""
+    ai_chatter's per-run setup. Each rung is {folders, price_cents, count}; a rung
+    with no folders is a dead step (skipped at selection)."""
     cfg = await _load_config(account_id)
     if not cfg.get("teaser_convo_enabled"):
         return None
@@ -1164,7 +1239,9 @@ async def convo_teaser_config(account_id: str) -> dict | None:
             continue
         # Per-rung image `count` (e.g. $10→1, $30→3, $50→5). 0/absent → fall back to
         # the ladder-wide teaser_convo_count.
-        rungs.append({"folder": str(r.get("folder") or "").strip(),
+        # `folders` (a list) is the stored shape; `folder` is the single-string one
+        # it grew out of. `folder_list` takes either, so no account needed migrating.
+        rungs.append({"folders": folder_list(rung_folder_slot(r)),
                       "price_cents": max(0, int(r.get("price_cents") or 0)),
                       "count": max(0, int(r.get("count") or 0))})
     return {
@@ -1404,8 +1481,10 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
     against her own teaser message, and `max_paid_cents` is his payment history.
     `rand` is injectable for deterministic tests.
 
-    Returns {media_ids, price_cents, is_free, folder, rung, next_rung, convo:True
-    (+softened/bundle in adaptive)} or None."""
+    Returns {media_ids, price_cents, is_free, folders, rung, next_rung, convo:True
+    (+softened/bundle in adaptive)} or None. `folders` is the same record field the
+    hot teaser returns: the rung's own folders, or empty when the bundle came from
+    the tier folders instead."""
     rungs = tcfg.get("rungs") or []
     if not rungs or msgs_since_last < int(tcfg.get("after") or 0):
         return None
@@ -1450,19 +1529,14 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
     if not tcfg.get("adaptive"):
         idx = max(0, min(rung, len(rungs) - 1))
         r = rungs[idx]
-        folder = str(r.get("folder") or "").strip()
         price_cents = max(0, int(r.get("price_cents") or 0))
-        if not folder:
-            return None
-        count = _rung_count(tcfg, r)
-        by_name = await asyncio.to_thread(_resolve_folders, client, [folder])
         seen = await _seen_media(account_id, fan_id)
-        media_ids = await asyncio.to_thread(
-            _gather_unseen, client, [folder], by_name, seen, count, cost=cost)
+        folders, media_ids = await _pull_rung(client, tcfg=tcfg, rung=r, seen=seen,
+                                              cost=cost)
         if not media_ids:
             return None
         return {"media_ids": media_ids, "price_cents": int(price_cents),
-                "is_free": price_cents == 0, "folder": folder, "rung": idx,
+                "is_free": price_cents == 0, "folders": folders, "rung": idx,
                 "next_rung": min(idx + 1, len(rungs) - 1), "convo": True}
 
     # ── ADAPTIVE: buy-aware climb / jitter, price-scaled weighted bundle ──
@@ -1512,21 +1586,16 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
         # must not go silent — pull from the rung's own folder instead; only
         # the PHOTO SOURCE falls back, the price stays adaptive.
         r = rungs[new_idx] if isinstance(rungs[new_idx], dict) else {}
-        folder = str(r.get("folder") or "").strip()
-        if not folder:
-            return None
-        count = _rung_count(tcfg, r)
-        by_name = await asyncio.to_thread(_resolve_folders, client, [folder])
-        media_ids = await asyncio.to_thread(
-            _gather_unseen, client, [folder], by_name, seen, count, cost=cost)
+        folders, media_ids = await _pull_rung(client, tcfg=tcfg, rung=r, seen=seen,
+                                              cost=cost)
         if not media_ids:
             return None
         return {"media_ids": media_ids, "price_cents": int(price),
-                "is_free": price <= 0, "folder": folder, "rung": new_idx,
+                "is_free": price <= 0, "folders": folders, "rung": new_idx,
                 "next_rung": new_idx, "convo": True, "softened": softened,
                 "unbought": next_unbought}
     return {"media_ids": media_ids, "price_cents": int(price),
-            "is_free": price <= 0, "folder": "composed", "rung": new_idx,
+            "is_free": price <= 0, "folders": [], "rung": new_idx,
             "next_rung": new_idx, "convo": True, "softened": softened,
             "bundle": breakdown, "unbought": next_unbought}
 

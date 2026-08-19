@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Badge, Button, Card } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
+import { fmtAgo, fmtEvery } from "@/lib/format";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import {
   useAutomationKinds,
@@ -28,27 +29,6 @@ import ReadyMadePanel from "@/components/automations/ReadyMadePanel";
 import BrainPanel from "@/components/automations/BrainPanel";
 import AutomationRunsCard from "@/components/stats/AutomationRunsCard";
 import SettingsTransfer from "@/components/settings/SettingsTransfer";
-
-function timeAgo(iso: string | null): string | null {
-  if (!iso) return null;
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return null;
-  const secs = Math.round((Date.now() - then) / 1000);
-  if (secs < 0) return "soon";
-  if (secs < 60) return `${secs}s ago`;
-  const mins = Math.round(secs / 60);
-  if (mins < 60) return `${mins} min ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs} h ago`;
-  return `${Math.round(hrs / 24)} d ago`;
-}
-
-function fmtEvery(secs: number | null): string {
-  if (!secs || secs <= 0) return "—";
-  if (secs % 3600 === 0) return `every ${secs / 3600} h`;
-  if (secs % 60 === 0) return `every ${secs / 60} min`;
-  return `every ${secs} s`;
-}
 
 function StatusBadge({ status }: { status: string }) {
   const color =
@@ -214,7 +194,7 @@ export default function AutomationsPanel() {
           ) : (
             <ul className="divide-y divide-border">
               {rules.map((r) => {
-                const ago = timeAgo(r.last_run?.started_at ?? null);
+                const ago = fmtAgo(r.last_run?.started_at ?? null);
                 return (
                   <li key={r.id} className="py-2.5 space-y-1">
                     <div className="flex flex-wrap items-center gap-3">

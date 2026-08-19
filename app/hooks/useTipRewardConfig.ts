@@ -68,7 +68,10 @@ export interface TipRewardConfig {
   // videos_in_rewards). On, clips ride the rungs and each eats several image slots
   // of the ask by length + explicitness, so a $10 rung can't ship a $60 clip.
   teaser_convo_videos?: boolean;
-  teaser_convo_rungs?: { folder: string; price_cents: number }[];
+  // A rung pulls from FOLDERS (scanned in order, deduped across each other).
+  // `folder` is the single string the slot used to be: still read (server and tab
+  // both widen it), never written back.
+  teaser_convo_rungs?: { folders?: string[]; folder?: string; price_cents: number }[];
   // Adaptive climb (backend default ON): the rung climbs only when the LAST teaser
   // actually sold; on a no-buy the ask softens to 65–73% and the rung holds.
   // false → legacy climb-one-rung-every-send regardless of buying.

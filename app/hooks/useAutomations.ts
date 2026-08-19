@@ -206,6 +206,9 @@ export interface AutomationPreviewResult {
   /** send_welcome only: this slot has an operator-pinned line — bubble 2 is that
    *  exact line (what will ship), not a fresh roll. */
   pinned?: boolean;
+  /** send_welcome only: the picked GIF's giphy id, echoed back. Its own field and
+   *  NOT a `bubbles` entry — bubble 4 carries no text, so it renders as an image. */
+  gif_id?: string | null;
 }
 
 export function useAutomationPreview() {
@@ -230,6 +233,8 @@ export function useAutomationPreview() {
       time_only?: boolean;
       /** send_welcome: operator question appended word-for-word as the 3rd bubble. */
       question?: string | null;
+      /** send_welcome: giphy id of the GIF sent as the 4th bubble; null = none. */
+      gif_id?: string | null;
     }
   >({
     mutationFn: (vars) => relay.post("/admin/automation-preview", vars),

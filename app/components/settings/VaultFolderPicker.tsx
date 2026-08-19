@@ -321,6 +321,45 @@ function MediaTile({ media, accountId }: { media: VaultMedia; accountId: string 
  *  field body for configs that hold a SINGLE folder name (tip-reward hot-teaser
  *  branches, make_right's PPV pivot, …). Callers own the label and the picker
  *  mount; this owns only the chip/button row so the markup has one home. */
+/** Several vault folders as removable chips + a "Pick from vault" button — the
+ *  shape every multi-folder slot wears (tip-reward tiers, convo-ladder rungs).
+ *  Folders are scanned IN ORDER by the engine, so the chip order is meaningful:
+ *  the first is exhausted before the next is touched. */
+export function MultiFolderRow({ folders, onPick, onRemove, emptyText = "No folders yet." }: {
+  folders: string[];
+  onPick: () => void;
+  onRemove: (name: string) => void;
+  emptyText?: string;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {folders.length === 0 && (
+        <span className="text-[11px] text-fg-dim italic">{emptyText}</span>
+      )}
+      {folders.map((nm) => (
+        <span
+          key={nm}
+          className="inline-flex items-center gap-1 text-xs bg-bg-elev-1 border border-border rounded-full px-2 py-0.5"
+        >
+          {nm}
+          <button
+            type="button"
+            title="Remove folder"
+            className="text-fg-dim hover:text-err leading-none"
+            onClick={() => onRemove(nm)}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      <Button size="sm" variant="secondary" onClick={onPick}>
+        <FolderOpen size={13} /> Pick from vault
+      </Button>
+    </div>
+  );
+}
+
+
 export function SingleFolderRow({ folder, onPick, onClear, emptyText = "No folder." }: {
   folder: string;
   onPick: () => void;

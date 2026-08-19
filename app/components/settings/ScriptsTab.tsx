@@ -20,6 +20,9 @@ import { Bot, Play, Plus, Save, X } from "lucide-react";
 
 import { Badge, Button, Card } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
+import {
+  AutomationSwitch, AutomationSwitchCard,
+} from "@/components/settings/AutomationSwitch";
 import { MediaCacheProvider } from "@/hooks/useMediaCache";
 import {
   useAiChatterConfig, useAiChatterSessions, useCancelOffer, useCatalogSingles,
@@ -245,6 +248,13 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           <h3 className="text-sm font-medium">AI Chatter — how it talks &amp; who it talks to</h3>
           <div className="flex-1" />
           <EditRawJsonButton surface="ai-chatter-config" accountId={accountId} />
+          {/* Two halves of "on", and only the right-hand one used to be here.
+              `enabled` is the CONFIG flag (Save config carries it); the switch is
+              the automation_rules row that actually ticks the engine, and it saves
+              on click. That row lived only in the rules list, so a fully-configured
+              chatter could sit here reading "Enabled" and never run. BOTH must be
+              on before a message goes out. */}
+          <AutomationSwitch accountId={accountId} kind="ai_chatter" label="Automation" />
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={!!cfg.enabled}
               onChange={(e) => set({ enabled: e.target.checked })} />
@@ -257,6 +267,19 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           your content library) live in the <b>💰 AI Upseller</b> tab. This tab is
           just its conversation behavior.
         </p>
+
+        {/* ── the chatter that had nowhere else to live ──
+            The info-gather engine has no tab of its own: building a rule by hand in
+            the Automation rules list was the ONLY way to start it, and it is what
+            works everyone the payer floor below hands off. (This tab's OWN rule is
+            the "Automation" box in the header — one control, not two.) */}
+        <AutomationSwitchCard accountId={accountId} kind="welcome_chatter_for_info"
+          title="Get to know fans (AI info-gather) — the warm-up chatter">
+          Opens and continues conversations to learn about a fan and build his
+          profile, one gentle question at a time (it feeds Generate fan profiles).
+          It never sells — it is what talks to everyone <b>below</b> the payer line
+          set here, until they buy something and this tab&apos;s seller takes over.
+        </AutomationSwitchCard>
 
         {/* ── payer floor ── */}
         <div className="rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-2 text-sm">

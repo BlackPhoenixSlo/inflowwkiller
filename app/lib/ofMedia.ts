@@ -70,3 +70,14 @@ export function stillUrl(media: OFMedia | null | undefined): string | null {
 export function hasDescribableStill(media: OFMedia[] | undefined): boolean {
   return (media ?? []).some((m) => stillUrl(m) !== null);
 }
+
+/** Renderable URL for a GIF the OF wire format carries as a bare `giphyId`.
+ *
+ *  A GIF is the one attachment OF does NOT put in `media[]`: it rides as a
+ *  top-level `giphyId` beside empty text, so `stillUrl` above has nothing to
+ *  resolve and every surface that shows one has to rebuild this URL. Three did,
+ *  by hand, in two files. One id → one URL belongs here with the rest of the
+ *  OF-shape knowledge. */
+export function giphyUrl(giphyId: string): string {
+  return `https://media.giphy.com/media/${giphyId}/giphy.gif`;
+}

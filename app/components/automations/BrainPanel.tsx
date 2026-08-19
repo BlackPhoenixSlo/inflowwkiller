@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Button, Card, Input } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { cn } from "@/lib/utils";
+import { giphyUrl } from "@/lib/ofMedia";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import {
   useAccountConfig,
@@ -32,6 +33,7 @@ import {
   type AutomationPreviewResult,
 } from "@/hooks/useAutomations";
 import { VaultPicker } from "@/components/chat/VaultPicker";
+import { WelcomeGifField } from "@/components/automations/WelcomeGifField";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
 import AudienceSection from "@/components/automations/AudienceSection";
@@ -181,6 +183,9 @@ export default function BrainPanel() {
   // Bubble 3 = the operator's own question, sent WORD-FOR-WORD (no AI touch-up).
   // Lives on the rule's payload.question; "" = off (no third bubble).
   const [welcomeQuestion, setWelcomeQuestion] = useState(WELCOME_QUESTION_DEFAULT);
+  // Bubble 4 = a GIF, sent as its own text-less bubble. Lives on the rule's
+  // payload.gif_id; "" = off (no fourth bubble). Only the id is stored.
+  const [welcomeGifId, setWelcomeGifId] = useState("");
   const [welcomeMsg, setWelcomeMsg] = useState<string | null>(null);
   const [previewFan, setPreviewFan] = useState("");
   const [preview, setPreview] = useState<AutomationPreviewResult | null>(null);
@@ -231,11 +236,15 @@ export default function BrainPanel() {
       // An explicit "" is the operator's own clear and stays cleared.
       const q = welcomeRule.payload?.question;
       setWelcomeQuestion(typeof q === "string" ? q : WELCOME_QUESTION_DEFAULT);
+      // No default here: a GIF is a deliberate pick, never something a rule should
+      // acquire by being re-saved.
+      setWelcomeGifId(String(welcomeRule.payload?.gif_id ?? ""));
     } else {
       setWelcomeEnabled(false);
       setWelcomeMinutes(WELCOME_DEFAULT_EVERY_S / 60);
       setWelcomeTimeOnly(true);
       setWelcomeQuestion(WELCOME_QUESTION_DEFAULT);
+      setWelcomeGifId("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [welcomeRule?.id, welcomeRule?.is_enabled, welcomeRule?.every_seconds,
@@ -395,6 +404,9 @@ export default function BrainPanel() {
             ...(welcomeRule.payload ?? {}),
             time_only: welcomeTimeOnly,
             question: welcomeQuestion.trim(),
+            // Always written (even "") for the same reason as `question`: the
+            // merge means omitting it could never CLEAR a GIF once picked.
+            gif_id: welcomeGifId,
           },
         });
       } else {
@@ -404,7 +416,8 @@ export default function BrainPanel() {
           name: "Welcome new subscribers",
           every_seconds,
           is_enabled: welcomeEnabled,
-          payload: { time_only: welcomeTimeOnly, question: welcomeQuestion.trim() },
+          payload: { time_only: welcomeTimeOnly, question: welcomeQuestion.trim(),
+                     gif_id: welcomeGifId },
         });
       }
       setWelcomeMsg("Saved.");
@@ -488,6 +501,8 @@ export default function BrainPanel() {
         time_only: welcomeTimeOnly,
         // Same story for the 3rd-bubble question: form state until Save.
         question: welcomeQuestion.trim() || null,
+        // ...and the 4th-bubble GIF, so the preview shows the full burst.
+        gif_id: welcomeGifId || null,
       });
       setPreview(res);
     } catch (e) {
@@ -1074,6 +1089,18 @@ export default function BrainPanel() {
               />
             </label>
 
+            {/* Bubble 4 — a GIF on its own. OF carries a GIF as a top-level
+                giphyId beside EMPTY text, so it is never a caption on bubble 3:
+                it is its own send. */}
+            <WelcomeGifField
+              accountId={accountId}
+              gifId={welcomeGifId}
+              onChange={(id) => {
+                setWelcomeGifId(id);
+                setWelcomeMsg(null);
+              }}
+            />
+
             {/* Live preview — composes the welcome text + image WITHOUT sending.
                 With "AI restyle" on it runs the REAL restyle so you see the exact
                 line that ships; Regenerate rerolls a fresh sample. */}
@@ -1208,17 +1235,28 @@ export default function BrainPanel() {
                           {b}
                         </p>
                       ))}
+                      {preview.gif_id && (
+                        <p className="rounded-md bg-bg-elev-2 px-2 py-1">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={giphyUrl(preview.gif_id)}
+                            alt="the GIF this welcome ends on"
+                            className="h-24 w-auto rounded"
+                          />
+                        </p>
+                      )}
                       {preview.bubbles.length > 1 && (
                         <div className="text-[10px] text-fg-dim">
-                          {`${preview.bubbles.length} bubbles · typing pauses between · ` +
+                          {`${preview.bubbles.length + (preview.gif_id ? 1 : 0)} bubbles · typing pauses between · ` +
                             (preview.pinned
                               ? "2nd line is your pinned line (sends as-is)"
                               : preview.restyled
                               ? "2nd line is the AI-restyled line that ships (↻ Regenerate for another, or Keep this line to lock it in)"
                               : "2nd line is the plain template (turn on AI restyle to preview the shipped line)") +
                             (preview.bubbles.length > 2
-                              ? " · last is your question, word-for-word"
-                              : "")}
+                              ? " · then your question, word-for-word"
+                              : "") +
+                            (preview.gif_id ? " · then the GIF, on its own" : "")}
                         </div>
                       )}
                     </div>

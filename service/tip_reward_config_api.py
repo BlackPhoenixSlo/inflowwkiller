@@ -23,7 +23,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import AccountAiConfig
-from automations.tip_reward import _DEFAULTS
+from automations.tip_reward import _DEFAULTS, folder_list, rung_folder_slot
 
 log = logging.getLogger("of-relay.tip_reward_config_api")
 
@@ -71,6 +71,10 @@ _FLOAT_KNOBS = {
 _MAX_TEASER_RUNGS = 10
 _MAX_TIERS = 10
 _MAX_FOLDERS_PER_TIER = 25
+# Folders one rung may pull from. Lower than a tier's 25: a rung is one step of a
+# ladder, and the scan is exhaust-first, so the tail of a long list never gets read.
+_MAX_FOLDERS_PER_RUNG = 10
+_FOLDER_NAME_MAX = 40
 _CAPTION_MAX = 500
 _ASK_TEMPLATE_MAX = 300
 
@@ -129,6 +133,20 @@ def _validate_tip_request(t: Any) -> dict:
     return out
 
 
+def _folder_names(v: Any, *, field: str, cap: int) -> list[str]:
+    """A folder slot's names as they get STORED. The engine's `folder_list` owns what
+    a folder slot means — it accepts the list the tab sends or the single string these
+    slots used to hold, strips, truncates, drops blanks and dedupes. All this adds is
+    the two rules that belong to the write side: a wrong TYPE is a 422 (the read side
+    can only shrug at one), and a slot holds at most `cap` folders.
+
+    🚨 What must never happen here is `str(a_list)` — the repr `"['a','b']"` matches
+    no vault folder, so the lane goes silently DEAD rather than erroring."""
+    if v is not None and not isinstance(v, (str, list, tuple)):
+        raise HTTPException(422, f"{field} must be a list of folder names")
+    return folder_list(v, max_len=_FOLDER_NAME_MAX)[:cap]
+
+
 def _validate_tier(t: Any) -> dict:
     if not isinstance(t, dict):
         raise HTTPException(422, "each tier must be an object")
@@ -137,16 +155,8 @@ def _validate_tier(t: Any) -> dict:
         min_basis = max(0, int(t.get("min_basis_cents") or 0))
     except (TypeError, ValueError):
         raise HTTPException(422, "tier min_basis_cents must be a number")
-    raw_folders = t.get("folders") or []
-    if not isinstance(raw_folders, (list, tuple)):
-        raise HTTPException(422, "tier folders must be a list")
-    folders: list[str] = []
-    for f in raw_folders:
-        nm = str(f or "").strip()
-        if nm and nm not in folders:
-            folders.append(nm)
-        if len(folders) >= _MAX_FOLDERS_PER_TIER:
-            break
+    folders = _folder_names(t.get("folders"), field="tier folders",
+                            cap=_MAX_FOLDERS_PER_TIER)
     return {"name": name, "min_basis_cents": min_basis, "folders": folders}
 
 
@@ -217,8 +227,15 @@ def _validate(cfg: dict) -> dict:
                 price = max(0, min(int(r.get("price_cents") or 0), 100_000))
             except (TypeError, ValueError):
                 raise HTTPException(422, "teaser rung price_cents must be a number")
-            clean_rungs.append({"folder": str(r.get("folder") or "").strip()[:40],
-                                "price_cents": price})
+            # A rung holds FOLDERS now (scanned in order, deduped across each
+            # other). `folder` — the single string it used to be — is still read so
+            # an older client's save is widened rather than dropped; only the list
+            # is ever written back, and the engine coerces either shape.
+            clean_rungs.append({
+                "folders": _folder_names(rung_folder_slot(r),
+                                         field="teaser rung folders",
+                                         cap=_MAX_FOLDERS_PER_RUNG),
+                "price_cents": price})
         out["teaser_convo_rungs"] = clean_rungs
     # The content-ask tip-ask toggle (ASK side). Independent of `enabled` (the
     # delivery side) — the ask can be on while reward delivery is off, or vice versa.
