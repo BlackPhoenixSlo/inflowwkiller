@@ -19,7 +19,7 @@ Three load-bearing behaviours (the sanity-pass fixes):
      handled; the overflow's last_seen is deliberately left STALE so they
      re-qualify next tick (touch last_seen only for online MINUS overflow).
   3. Fully async — nudge NEVER sets the shared fans.automation_paused_until
-     cooldown; it gates only on its own NudgeState cap, so of_ai_chat/deep_convo
+     cooldown; it gates only on its own NudgeState cap, so the chat engines
      are never frozen by a nudge. The fan_lease is taken only at fire.
 
 This module also owns the shared config / gate / compose helpers that the

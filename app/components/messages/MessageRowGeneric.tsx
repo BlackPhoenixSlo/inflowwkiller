@@ -33,7 +33,7 @@ interface Props {
 const AUTOMATION_LABELS: Record<string, string> = {
   of_ai_chat: "Info-gather",
   welcome: "Welcome",
-  deep_convo: "Deep Convo",
+  deep_convo: "Deep Convo", // retired engine — legacy label so old rows still render
   followup: "Follow-up",
   autoreply: "Auto-reply",
   reply_mass_funnel: "Funnel reply",

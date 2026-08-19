@@ -51,7 +51,7 @@ TIME_SLOTS: tuple[str, ...] = (
 )
 # Purposes that support a per-purpose model override (model_by_purpose).
 PURPOSES: tuple[str, ...] = (
-    "gen_info", "of_ai_chat", "send_welcome", "send_followup", "deep_convo",
+    "gen_info", "of_ai_chat", "send_welcome", "send_followup",
 )
 # Languages the account can be set to. The code is the routing/guard key; the label is
 # for the editor dropdown. Sourced from the language layer so there's one list.

@@ -8,7 +8,7 @@ and it does NOT sell. After the window it's too stale → send_followup's drip o
 it (26h+).
 
 How it stays out of the other senders' way (timing, not trigger):
-  • of_ai_chat / deep_convo answer their fans within SECONDS (webhook) — so by
+  • of_ai_chat / ai_chatter answer their fans within SECONDS (webhook) — so by
     silence_min those fans aren't waiting. Auto Convo only catches fans no one
     covered in time (graduated / team-owned / AI not enabled for them).
   • send_followup re-engages much later (26h+).
@@ -27,7 +27,7 @@ Eligibility (ALL must hold; every knob is per-account in autoreply_config_json):
      and re-checked at send time that he's STILL waiting (AutoreplyState).
 
 Like nudge_online, this NEVER sets fans.automation_paused_until (it gates on its
-own AutoreplyState), so of_ai_chat/deep_convo are never frozen by it. Self-
+own AutoreplyState), so the chat engines are never frozen by it. Self-
 registers via @register("autoreply"); schedule with an automation_rules row
 (kind="autoreply", trigger_json={"every_seconds": N}).
 """
@@ -315,7 +315,7 @@ async def _candidates(account_id: str, cfg: dict, now: datetime) -> list[tuple[F
     and stop after `silence_max` (too stale → send_followup's drip owns it).
 
     Read from the MESSAGES table (source of truth — Fan.last_message_* lag scrape).
-    of_ai_chat/deep_convo answer their fans within seconds, so by silence_min those
+    of_ai_chat/ai_chatter answer their fans within seconds, so by silence_min those
     aren't waiting; Auto Convo only catches fans no one covered in time. Also gated
     on info-complete + low spend + established + not blacklisted/human-handled."""
     sil_min = int(cfg["silence_min_minutes"])
@@ -652,7 +652,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             continue
 
         # Everything from here holds the lease — a try/finally guarantees it's
-        # released on every non-send path (like of_ai_chat/ai_chatter/deep_convo)
+        # released on every non-send path (like of_ai_chat/ai_chatter)
         # so a future raise can never leak it for the full TTL. autoreply NEVER
         # sets a cooldown (it must not freeze the other senders): on a confirmed
         # send it KEEPS the lease to expire by TTL (no sibling double-messages

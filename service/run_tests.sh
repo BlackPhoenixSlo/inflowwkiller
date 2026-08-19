@@ -23,7 +23,7 @@ fi
 [ -n "${VENV:-}" ] && [ -x "$VENV/bin/python" ] && PY="$VENV/bin/python"
 
 # The suites touched by the bubble-split / non-native / pacing work.
-STYLE_SUITES=(of_ai_chat autoreply deep_convo humanize_typos ask_pacing nonnative_style send_followup send_welcome)
+STYLE_SUITES=(of_ai_chat autoreply humanize_typos ask_pacing nonnative_style send_followup send_welcome)
 
 if [ "${1:-}" = "style" ]; then
   SUITES=("${STYLE_SUITES[@]/#/tests/test_}"); SUITES=("${SUITES[@]/%/.py}")

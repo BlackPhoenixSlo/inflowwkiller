@@ -123,7 +123,7 @@ log = logging.getLogger("of-relay.automation.of_ai_chat")
 # ── Knobs (ported from 05_of_ai_chat.md) ─────────────────────────────
 _PURPOSE = "of_ai_chat"          # also the account_ai_config.model_by_purpose key
 _MAX_FAN_MESSAGES = 10           # runaway-conversation cutoff (spec MAX_FAN_MESSAGES)
-_MAX_TURNS = 30                  # hard per-fan reply cap → hand off to deep_convo.
+_MAX_TURNS = 30                  # hard per-fan reply cap → graduate the fan.
                                  # _MAX_FAN_MESSAGES counts the FAN's messages; this
                                  # counts OUR confirmed replies (turn_counter), so a
                                  # fan who chats forever without revealing the bio
@@ -1149,8 +1149,8 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         # `customs_offer` is '' unless this account sells customs AND this fan
         # clears the spend bar (`_voice.for_fan`). It is a SEPARATE block from
         # the refusal on purpose — an engine that renders only `live_proof`
-        # cannot offer a custom, which is what keeps the three non-selling
-        # engines (send_followup, reply_mass_funnel, deep_convo) out of the
+        # cannot offer a custom, which is what keeps the non-selling
+        # engines (send_followup, reply_mass_funnel) out of the
         # customs business.
         f"{v.live_proof}{v.customs_offer}\n\n"
         f"{BIO_CONSISTENCY_GUARDRAIL}"
@@ -1207,7 +1207,7 @@ async def _skip_and_collect(account_id: str, fan_id: int, reason: str) -> None:
     """Cut a fan out of the AI chat AND enqueue a FINAL gen_info regen, so the facts
     we extracted inline each turn are turned into a fresh profile/nickname/note before
     a human takes over (`spent` → paying fan) or the convo is abandoned (`too_long`).
-    Mirrors the info-complete handoff's gen_info enqueue (_handoff_to_deep_convo): the
+    Mirrors the graduation's gen_info enqueue (_graduate): the
     early-exit cutoffs used to skip-list only, leaving the structured profile stale."""
     await _add_to_skip_list(account_id, fan_id, reason)
     await ax.enqueue_job(account_id, "gen_info", payload={"force_ids": [int(fan_id)]})
@@ -1406,31 +1406,14 @@ async def _extract_and_fill(account_id: str, fan_id: int, f: Fan,
 
 async def _graduate(client, account_id: str, fan_id: int, f: Fan) -> None:
     """of_ai_chat is finished with this fan: the gather completed AND every gen_info
-    opener has been used. Skip-list him ('info' — kept because ai_chatter and the
-    dispatcher already read it as "left the gather loop"), regenerate the profile a
+    opener has been used. Skip-list him ('info' — the graduation marker: ai_chatter
+    and the dispatcher read it as "left the gather loop"), regenerate the profile a
     last time, and push the final nickname + note.
 
-    `deep_convo_state` is stamped terminal too. deep_convo deliberately lets 'info'
-    through — that reason WAS its intake — so without this it would pick up a fan
-    of_ai_chat has already taken through the openers and drill him a second time in
-    a second voice. That column is the one marker it hard-skips on.
-
-    This replaces the old handoff, which chained a delayed deep_convo job, a
-    supervisor wake and a backoff reset to move the fan into another automation.
-    The openers now happen here, so there is nothing to hand over."""
-    now = datetime.utcnow()
+    The openers happen here, so there is nothing to hand over — after this row
+    only ai_chatter (where enabled) chats the fan; every other engine honours
+    the skip."""
     await _add_to_skip_list(account_id, fan_id, "info")
-    async with get_session() as s:
-        await s.execute(
-            sqlite_insert(Fan)
-            .values(account_id=str(account_id), fan_id=int(fan_id),
-                    deep_convo_state="done", deep_convo_updated_at=now,
-                    updated_at=now)
-            .on_conflict_do_update(
-                index_elements=["account_id", "fan_id"],
-                set_={"deep_convo_state": "done", "deep_convo_updated_at": now,
-                      "updated_at": now}),
-        )
     await ax.enqueue_job(account_id, "gen_info", payload={"force_ids": [int(fan_id)]})
     try:
         await push_nick_and_notes(
@@ -2131,7 +2114,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # drop never bumps via the confirmed-send path, so its turn_counter
             # would stay 0 forever and the _MAX_TURNS cap could never fire. Bumping
             # here makes the cap count attempts, so a fan we keep failing to send to
-            # still hits 30 and graduates to deep_convo instead of looping for ever.
+            # still hits 30 and graduates instead of looping for ever.
             if not dry_run:
                 await _bump_attempt(account_id, fan_id, now)
             # (the account-wide emoji strip ran in finalize_draft above — still
@@ -2285,7 +2268,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # PRIORITY still-needed topic (what the model actually fixates on), not
             # the poke-later-reordered front — that's what makes a still-empty core
             # fact escalate to ":2" and DROP after two asks (never a 3rd time), so a
-            # dodgy fan graduates to deep_convo with a self-generated nickname.
+            # dodgy fan graduates with a self-generated nickname.
             # A gif-only reply asked nothing — don't burn the topic's ask slot
             # (":2" caps at two asks; a kitten gif must not count as one).
             target = _primary_ask_target(presented) if parts else None

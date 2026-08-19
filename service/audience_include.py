@@ -509,7 +509,6 @@ AUDIENCE_SENDER_CLASSIFICATION: dict[str, str] = {
     # gated at the candidate seam (per-fan automations, before LLM spend)
     "ai_chatter": "gated",          # pre-seller_owned_fans; `always` can't resurrect
     "of_ai_chat": "gated",          # same snapshot as ai_chatter
-    "deep_convo": "gated",
     "autoreply": "gated",           # operator decision O1: gate (3/3)
     "send_followup": "gated",
     "reengage_buyers": "gated",

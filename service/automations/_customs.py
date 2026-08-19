@@ -107,8 +107,8 @@ MAX_CENTS = 20_000
 # (2) THIS BAR USED TO BE BYPASSED ON 90% OF THE PROMPTS THAT CARRIED THE OFFER,
 # and the fix was structural rather than another gate. It is enforced by
 # `_voice.for_fan`, which only `ai_chatter`, `autoreply` and `of_ai_chat` call —
-# but the carve-out used to ride INSIDE `live_proof`, which `send_followup`,
-# `reply_mass_funnel` and `deep_convo` also render off an ACCOUNT bundle. So
+# but the carve-out used to ride INSIDE `live_proof`, which the non-selling
+# engines (`send_followup`, `reply_mass_funnel`) also render off an ACCOUNT bundle. So
 # 1,869 of the 2,073 customs prompts came from engines that never consulted this
 # bar (`send_followup` gates on its own `_ELIGIBLE_MIN_SPEND_CENTS = 100`, which
 # is **$1, not $100**); on one male account 111 of 128 such fans were below it,

@@ -7,14 +7,14 @@ text" and "we start splitting it into bubbles" —
     guard_offplatform  →  verify_self_consistency  →  guard again, if it
                                                       rewrote  →  strip_emojis
 
-Four engines (ai_chatter, of_ai_chat, autoreply, deep_convo) each hand-copied that
-sequence, and it drifted, because "did someone remember to paste this line" is not
-a mechanism. Measured before this module existed:
+Four engines (ai_chatter, of_ai_chat, autoreply, and a since-retired drill) each
+hand-copied that sequence, and it drifted, because "did someone remember to paste
+this line" is not a mechanism. Measured before this module existed:
 
-  guard                    ai_chatter  of_ai_chat  autoreply  deep_convo
-  guard_offplatform            ✓           ✓           ✓          ✓
-  verify_self_consistency      ✓           ✓           ✗          ✗
-  strip_emojis                 ✗        gated       gated    UNGATED
+  guard                    ai_chatter  of_ai_chat  autoreply
+  guard_offplatform            ✓           ✓           ✓
+  verify_self_consistency      ✓           ✓           ✗
+  strip_emojis                 ✗        gated       gated
 
 `strip_emojis` is an ACCOUNT-WIDE operator setting, and it had three different
 meanings depending on which engine happened to answer. That is the bug this module
@@ -25,19 +25,17 @@ Extracting it is what made the ai_chatter cell READABLE as a bug rather than as 
 absence — 7 of 12 live accounts had the toggle on, so the operator had asked for no
 emojis and the engine answering most of the messages was still sending them. Today:
 
-  guard                    ai_chatter  of_ai_chat  autoreply  deep_convo
-  guard_offplatform            ✓           ✓           ✓          ✓
-  verify_self_consistency      ✓           ✓           ✗          ✗
-  strip_emojis               gated       gated       gated    ALWAYS
+  guard                    ai_chatter  of_ai_chat  autoreply
+  guard_offplatform            ✓           ✓           ✓
+  verify_self_consistency      ✓           ✓           ✗
+  strip_emojis               gated       gated       gated
 
-deep_convo's cell is the one remaining divergence and it is deliberate: that engine
-is emoji-free by mandate, independent of the account setting. It is declared at its
-call site and pinned by test_outbound.case_every_engine_declares_its_guard_set.
+Each engine's membership is declared at its call site and pinned by
+test_outbound.case_every_engine_declares_its_guard_set.
 
 WHAT THIS DELIBERATELY DOES NOT OWN: everything after the split — bubble
 splitting, `apply_word_restriction`, the non-native layers. Those look duplicated
-but are NOT: deep_convo applies non-native then word-restriction to the whole text
-BEFORE splitting, autoreply splits first and applies word-restriction per bubble,
+but are NOT: autoreply splits first and applies word-restriction per bubble,
 and ai_chatter has nine exits with different clipping. Forcing one order on them
 would change what goes out on the wire, which is a behaviour change wearing a
 refactor's clothes. If those are to converge it needs its own change, with its own

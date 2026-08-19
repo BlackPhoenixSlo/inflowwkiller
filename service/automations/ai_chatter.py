@@ -36,7 +36,7 @@ Trigger modes (`mode` in ai_chatter_config_json):
   • "always" (default) — reply when eligible, like of_ai_chat today.
 
 Unlike of_ai_chat there are NO graduation cutoffs: no max-message skip, no
-deep_convo handoff (ai_chatter IS the post-gather voice — one bot voice per
+handoff (ai_chatter IS the post-gather voice — one bot voice per
 fan). Once the question list empties the prompt flips from info-gather to plain
 banter (and, M3, selling).
 
@@ -253,7 +253,7 @@ def seller_owned_fans(candidates: set[int], *, intent: set[int] | None,
 
     THE one copy of that question, for the same reason `skip_reason_blocks` above
     is: `run()`'s candidate loop asks it to decide a skip, and `engaged_subset`
-    asks it to tell of_ai_chat / deep_convo whom to cover. Those two answers are a
+    asks it to tell of_ai_chat whom to cover. Those two answers are a
     PARTITION — every fan lands on exactly one side — so a second hand-rolled copy
     does not merely drift, it either puts two bot voices in one thread or leaves a
     fan with none.
@@ -953,7 +953,7 @@ async def owns_whole_account(account_id: str) -> bool:
 
 async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
     """Of `fan_ids`, the ones ai_chatter currently OWNS — i.e. will (or may) answer
-    THIS tick. of_ai_chat and deep_convo consult this so they cover exactly the
+    THIS tick. of_ai_chat consults this so it covers exactly the
     fans ai_chatter leaves alone: no second bot voice on the same fan, and no fan
     left silent either.
 
@@ -961,13 +961,13 @@ async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
     over `fan_ids`: the two narrowings and the one override, resolved for this tick.
 
       • intent_only (CLOSER) narrows to a content-ask or sexual escalation in his
-        latest inbound — pure chatter is left to of_ai_chat / deep_convo / the team,
+        latest inbound — pure chatter is left to of_ai_chat / the team,
         matching the closer's own "pure chatter is left to Auto Convo" rule in run().
       • payers_only (the PAYER FLOOR, default ON) narrows to men who have bought
         content. NOTE this means full-chatter mode does NOT imply "everyone".
       • `_always_answered_fans` overrides both — a live sale, and the engaged
-        old-fan roster (nobody else may chat those; of_ai_chat and deep_convo both
-        hard-skip that reason), so this set must claim them or they go silent.
+        old-fan roster (nobody else may chat those; of_ai_chat
+        hard-skips that reason), so this set must claim them or they go silent.
 
     Both narrowings mirror run()'s own gates, and the FLOOR is literally the same
     call, so ownership here cannot diverge from who the seller actually answers.
@@ -5881,7 +5881,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     # ── Include-only audience: intersect HERE, before every ownership/spend
     # snapshot. `seller_owned_fans`' `always` set is built FROM by_fan, so a
-    # fenced fan can never be resurrected by it; the of_ai_chat/deep_convo
+    # fenced fan can never be resurrected by it; the of_ai_chat
     # partition reads `engaged_subset(by_fan-derived sets)` and shrinks with it.
     # force_ids is operator-explicit manual targeting — exempt, like the manual
     # stamp (the exemption register names it).
@@ -6276,10 +6276,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # is left to the team / Auto Convo. A caller-flagged intent fan (e.g. one
         # who just sent us a PHOTO) counts as intent even with no text signal.
         # An ENGAGED OLD FAN is exempt: engage_old_fans means "the AI works the
-        # pre-AI roster", and in closer mode nobody else can — of_ai_chat and
-        # deep_convo hard-skip `old_fan_pre_ai` (and process_old_fans marked them
-        # deep_convo 'done'), so gating them on buying intent would leave them
-        # silent forever. ai_chatter is also the only bot with NO graduation
+        # pre-AI roster", and in closer mode nobody else can — of_ai_chat
+        # hard-skips `old_fan_pre_ai`, so gating them on buying intent would leave
+        # them silent forever. ai_chatter is also the only bot with NO graduation
         # cutoff, so it can just keep the convo going. engaged_subset() mirrors
         # this exemption, so no second bot voice lands on them either.
         if intent_only and fan_id not in old_fan_ids \

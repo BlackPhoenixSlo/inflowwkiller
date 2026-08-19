@@ -33,12 +33,11 @@ import {
 const STYLE_AUTOMATIONS: { key: keyof StyleConfig; label: string; hint: string }[] = [
   { key: "of_ai_chat", label: "Info-gather", hint: "the get-to-know-you reply loop" },
   { key: "autoreply", label: "Auto Convo", hint: "the keep-warm re-engagement above" },
-  { key: "deep_convo", label: "Deep Convo", hint: "the deepening drill (also casualizes the Q & tease)" },
 ];
 
 /** Engines that actually RUN the pre-send consistency check — mirrors
- *  `_common.CONSISTENCY_AUTOMATIONS`. Auto Convo and Deep Convo do not call it, so
- *  their cell stays empty rather than offering a box that would save fine and then
+ *  `_common.CONSISTENCY_AUTOMATIONS`. Auto Convo does not call it, so
+ *  its cell stays empty rather than offering a box that would save fine and then
  *  do nothing. (ai_chatter is the other one; its toggle lives on the Chatter tab,
  *  where the rest of that engine's settings are.) */
 const CONSISTENCY_AUTOMATIONS = new Set<keyof StyleConfig>(["of_ai_chat"]);

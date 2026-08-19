@@ -20,7 +20,6 @@ const BG_CTX: RelayContext = { priority: "background" };
 export interface StyleConfig {
   of_ai_chat?: boolean;
   autoreply?: boolean;
-  deep_convo?: boolean;
   ai_chatter?: boolean;
   // account-wide (not per-automation): strip every emoji at send time
   strip_emojis?: boolean;
@@ -50,22 +49,19 @@ export interface StyleConfig {
   // independent thumb-typo injector toggle, per automation
   typos_of_ai_chat?: boolean;
   typos_autoreply?: boolean;
-  typos_deep_convo?: boolean;
   typos_ai_chatter?: boolean;
   // independent non-native English layer toggle, per automation
   nonnative_of_ai_chat?: boolean;
   nonnative_autoreply?: boolean;
-  nonnative_deep_convo?: boolean;
   nonnative_ai_chatter?: boolean;
   /** Space before "?" — "you like it ?". Part of the non-native register but its
    *  own key, so it can be turned off without losing the rest of the layer.
    *  Same tri-state default as its parent (ai_chatter ON, others OFF). */
   nonnative_spacing_of_ai_chat?: boolean;
   nonnative_spacing_autoreply?: boolean;
-  nonnative_spacing_deep_convo?: boolean;
   nonnative_spacing_ai_chatter?: boolean;
   // PHASE 2 pre-send self-consistency check. ONLY these two engines call it, so
-  // there is deliberately no consistency_autoreply / consistency_deep_convo — a
+  // there is deliberately no consistency_autoreply — a
   // flag nothing reads is a checkbox that lies. Costs a second LLM call on the
   // replies it fires for, so unlike the layers above it defaults OFF, never
   // tri-state.

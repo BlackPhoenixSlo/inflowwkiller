@@ -24,7 +24,7 @@ Design notes:
     ({"enabled": bool}); absent/NULL → OFF. The global kill-switch is the env
     var W7_WEBHOOK_DISPATCH_DISABLED (set to 1/true to disable everywhere).
   • Memory: the live detector must NEVER run on jaka (its inbound is stranger/
-    promo spam). The default-OFF gate enforces that — enable Lexi first.
+    promo spam). The default-OFF gate enforces that — enable Ava first.
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ import os
 import random
 from datetime import datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from db.engine import get_session
 from db.models import (
@@ -44,16 +44,6 @@ from db.models import (
 )
 import automation_executor as ax
 from of_shapes import giphy_dm_id, has_video
-
-# deep_convo's terminal state — once a fan reaches it, no automation replies
-# (a human owns the chat). Lazy value so a constant rename in deep_convo can't
-# silently drift; falls back to the literal if the import ever fails.
-def _deep_convo_done_state() -> str:
-    try:
-        from automations.deep_convo import _S_DONE
-        return _S_DONE
-    except Exception:
-        return "done"
 
 log = logging.getLogger("of-relay.webhook_dispatch")
 
@@ -293,16 +283,18 @@ async def _classify_kind(account_id: str, fan_id: int) -> str | None:
     """Pick the automation that OWNS this fan's current stage — or None when no
     automation should reply (a human owns the chat). Routing to the wrong sweep
     is pure waste: of_ai_chat skips ANY skip-listed fan, so waking it for a fan
-    already handed to deep_convo does nothing AND the fan gets no reply. Stages:
+    it will refuse does nothing AND the fan gets no reply. Stages:
 
-      • funnel      — pending funnel_state            → reply_mass_funnel
-      • deep_convo  — handed off (skip reason 'info'), not done → deep_convo
-      • terminal    — deep_convo 'done', or spent/too_long/other skip → None
+      • funnel      — pending funnel_state       → reply_mass_funnel
+      • terminal    — any skip_list row ('info' graduation, spent/too_long,
+                      hard blocks, …) → None
       • ai_chat     — still gathering (not skip-listed) → of_ai_chat
 
-    The fan-stage markers mirror the automations' OWN gates (of_ai_chat.py
-    _load_stop_lists / _handoff_to_deep_convo; deep_convo.py deep_convo_state),
-    so we never wake an automation that would just skip this fan.
+    The skip_list is the ONE stage marker, mirroring the automations' OWN gates
+    (of_ai_chat _load_stop_lists / _graduate), so we never wake an automation
+    that would just skip this fan. A graduated fan ('info') is only chatted by
+    ai_chatter where that engine is enabled — its gate above owns the fan before
+    this read is reached.
     """
     # A fan mid make-right exchange owns his replies until it closes — advance the
     # apology→free→…→PPV resolution rather than waking the normal chatter.
@@ -313,8 +305,8 @@ async def _classify_kind(account_id: str, fan_id: int) -> str | None:
         return "reply_mass_funnel"
 
     # PPVscriptAI: when ai_chatter is enabled it owns every fan under its spend
-    # gate (it replaces of_ai_chat/deep_convo for them — one bot voice per fan);
-    # a fan at/over the gate is a whale → human territory, no automation reply.
+    # gate (it replaces of_ai_chat for them — one bot voice per fan); a fan
+    # at/over the gate is a whale → human territory, no automation reply.
     # Lazy import to avoid a module cycle (ai_chatter imports of_ai_chat).
     try:
         from automations.ai_chatter import gate_for as _ai_gate_for
@@ -325,16 +317,7 @@ async def _classify_kind(account_id: str, fan_id: int) -> str | None:
         spend = await _fan_lifetime_spend_cents(account_id, fan_id)
         return "ai_chatter" if spend < ai_gate else None
 
-    # One read for both markers: the fan's deep_convo_state + its skip_list row.
     async with get_session() as s:
-        dstate = (
-            await s.execute(
-                select(Fan.deep_convo_state).where(
-                    Fan.account_id == str(account_id),
-                    Fan.fan_id == int(fan_id),
-                )
-            )
-        ).scalar_one_or_none()
         skip = (
             await s.execute(
                 select(SkipList.reason).where(
@@ -344,13 +327,10 @@ async def _classify_kind(account_id: str, fan_id: int) -> str | None:
             )
         ).first()
 
-    if dstate == _deep_convo_done_state():
-        return None  # deep_convo finished → human owns the chat, don't dispatch
+    if skip is not None:  # skip-listed (any reason) → no automation replies
+        return None
 
-    if skip is not None:  # fan is skip-listed → of_ai_chat will never act
-        return "deep_convo" if (skip[0] == "info") else None  # 'info' = handed off
-
-    return "of_ai_chat"  # not skip-listed, not done → still in the of_ai_chat stage
+    return "of_ai_chat"  # not skip-listed → still in the of_ai_chat stage
 
 
 async def _fan_paused_until(account_id: str, fan_id: int) -> datetime | None:
@@ -367,18 +347,6 @@ async def _fan_paused_until(account_id: str, fan_id: int) -> datetime | None:
             )
         ).scalar_one_or_none()
     return until
-
-
-async def _clear_deep_convo_backoff(account_id: str, fan_id: int) -> None:
-    """Zero a fan's deep_convo backoff — they just messaged, so deep_convo must
-    answer now, not skip them because the sweep escalated their backoff while they
-    were (briefly) quiet between the question and this reply."""
-    async with get_session() as s:
-        await s.execute(
-            update(Fan)
-            .where(Fan.account_id == str(account_id), Fan.fan_id == int(fan_id))
-            .values(deep_convo_skip_level=0, deep_convo_skip_remaining=0)
-        )
 
 
 async def _has_imminent_pending_job(
@@ -423,7 +391,7 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> N
             return
         kind = await _classify_kind(account_id, fan_id)
         if kind is None:
-            # Terminal stage (deep_convo done, or spent/too_long): no automation
+            # Terminal stage (skip-listed, or a whale over the gate): no automation
             # should reply — a human owns this fan. Don't wake a sweep for nothing.
             log.debug("w7_skip_terminal account=%s fan=%s", account_id, fan_id)
             return
@@ -448,8 +416,8 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> N
         # per-fan cooldown (W3's shared cross-tick guard, 45-90s for chat). Rather
         # than DROP this reply to the slow periodic sweep — fans usually reply
         # within ~30s, INSIDE the cooldown, so they'd always wait out the next
-        # sweep — we DEFER the reply to the moment the cooldown ends. of_ai_chat /
-        # deep_convo re-check the cooldown at run time, so if a human keeps the
+        # sweep — we DEFER the reply to the moment the cooldown ends. The chat
+        # engines re-check the cooldown at run time, so if a human keeps the
         # fan paused the deferred job simply skips: deferring is safe either way.
         # A cooldown beyond _MAX_DEFER_S (the 30-min welcome/followup rest) is too
         # long to park a chat reply — let the periodic sweep catch that rare case.
@@ -472,16 +440,8 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> N
             ax.wake_supervisor()  # still wake so the already-pending job drains
             return
 
-        # The fan just MESSAGED — they're engaged. deep_convo's periodic sweep
-        # escalates a mid-drill fan's backoff every tick they haven't replied yet,
-        # and that backoff then SUPPRESSES this webhook-triggered reply (the fan
-        # waits out the slow sweep instead of getting an instant answer). A fresh
-        # inbound means "act now", so clear the deep_convo backoff before dispatch.
-        if kind == "deep_convo":
-            await _clear_deep_convo_backoff(account_id, fan_id)
-
         # Fan-scope the run so it reacts to ONLY this fan (no full-account sweep):
-        # reply_mass_funnel takes `test_fan`; of_ai_chat / deep_convo take
+        # reply_mass_funnel takes `test_fan`; the chat engines take
         # `only_fan_ids` (gates still apply — see each automation's run()).
         payload = (
             {"test_fan": int(fan_id)} if kind == "reply_mass_funnel"

@@ -119,12 +119,15 @@ _KIND_PRIORITY: dict[str, int] = {
     "send_welcome": 1,
     "ai_chatter": 2,      # the chatter+seller — outranks the gather loop it replaces
     "of_ai_chat": 3,
-    "deep_convo": 4,
-    "send_followup": 5,
-    "reply_mass_funnel": 6,
-    "send_mass_message": 7,
+    "send_followup": 4,
+    "reply_mass_funnel": 5,
+    "send_mass_message": 6,
 }
 _DEFAULT_PRIORITY = 50
+
+# Rule ids already warned about for carrying an unregistered kind — the skip in
+# _materialize_due_rules() fires every tick, the warning only once per process.
+_UNKNOWN_RULE_WARNED: set[int] = set()
 
 
 def kind_priority(kind: str) -> int:
@@ -710,6 +713,7 @@ async def _materialize_due_rules() -> int:
     `trigger_json` of `{"every_seconds": N}`, enqueues only when the rule's last
     run is older than N AND no pending job for (account, kind) already exists.
     A malformed rule is logged + skipped, never fatal. Returns jobs enqueued."""
+    load_automation_plugins()  # runners self-register on import; idempotent
     now = datetime.utcnow()
     enqueued = 0
     offsets: dict[str, int | None] = {}   # account_id → creator-local MINUTES (quiet hours)
@@ -721,6 +725,20 @@ async def _materialize_due_rules() -> int:
         ).scalars().all()
 
         for rule in rules:
+            # A rule whose kind has no registered runner can only manufacture an
+            # unknown-kind ERROR run every tick (run_once refuses it) — a retired
+            # engine's leftover rule must go inert, not noisy. Checked against
+            # the runner REGISTRY (the same source run_once dispatches from),
+            # never a hand-kept kind list, so it stays true by construction.
+            if get_automation(rule.kind) is None:
+                if rule.id not in _UNKNOWN_RULE_WARNED:
+                    _UNKNOWN_RULE_WARNED.add(rule.id)
+                    log.warning(
+                        "automation_rule_unknown_kind rule_id=%s account=%s kind=%s"
+                        " — rule skipped (no registered runner)",
+                        rule.id, rule.account_id, rule.kind,
+                    )
+                continue
             try:
                 trigger = json.loads(rule.trigger_json or "{}")
             except Exception:

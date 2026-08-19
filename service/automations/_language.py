@@ -97,8 +97,8 @@ def output_language_directive(lang: str) -> str:
 
 def qtease_directive(lang: str) -> str:
     """The instruction appended to gen_info's prompt so the fan-facing openers it
-    generates (Q1-3, Tease1-3) come out in the fan's language — deep_convo / reengage
-    send those VERBATIM, so they'd otherwise ship English on a Spanish account. The
+    generates (Q1-3, Tease1-3) come out in the fan's language — reengage
+    sends those VERBATIM, so they'd otherwise ship English on a Spanish account. The
     extracted FACTS stay as the fan stated them; only the openers are localized. '' for en."""
     code = norm_lang(lang)
     if not code or code == "en":

@@ -399,8 +399,8 @@ async def _load_ai_config(account_id: str) -> dict:
             # ⚠️ AND THE FLAG STAYS PASSED. Dropping it looked tidy — nothing
             # here consults it — but it would make this the one engine whose
             # bundle `sell_customs` CONTRADICTS the account row, while
-            # `deep_convo` and `reply_mass_funnel`, the other two non-selling
-            # engines, both keep the true value via `load_voice_blocks`.
+            # `reply_mass_funnel`, the other non-selling
+            # engine, keeps the true value via `load_voice_blocks`.
             # `_voice`'s module header bans that shape: "resolving the voice
             # without the customs flag is what let `of_ai_chat` ship half a lane,
             # so the two axes only come as a pair". A hand-built half-resolved bundle

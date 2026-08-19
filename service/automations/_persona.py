@@ -450,8 +450,8 @@ def compose_persona(cfg, *, fallback: str) -> str:
     her pinned location, then the structured canon.
 
     ONE composer because there used to be three, and they had already diverged:
-    deep_convo folded the location line into the persona string (threading a
-    param through _generate/_generate_leadin was awkward) while of_ai_chat,
+    a since-retired engine folded the location line into the persona string
+    (threading a param through its generate calls was awkward) while of_ai_chat,
     ai_chatter and autoreply each carried a `location` builder param, a
     `location_block` local, a `_load_location()` call and an argument at the call
     site. Same concept, two mechanisms, and nothing stopping a fourth engine
