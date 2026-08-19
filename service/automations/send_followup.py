@@ -402,7 +402,7 @@ async def _load_ai_config(account_id: str) -> dict:
             # `reply_mass_funnel`, the other non-selling
             # engine, keeps the true value via `load_voice_blocks`.
             # `_voice`'s module header bans that shape: "resolving the voice
-            # without the customs flag is what let `of_ai_chat` ship half a lane,
+            # without the customs flag is what let `welcome_chatter_for_info` ship half a lane,
             # so the two axes only come as a pair". A hand-built half-resolved bundle
             # is a trap for whoever later adds a customs-aware block here and
             # finds the flag silently False on an account that sells.
@@ -421,7 +421,7 @@ async def _load_blacklist() -> set[int]:
 
 async def _load_skip_list(account_id: str) -> set[int]:
     """Per-account skip_list — fans we've stopped auto-messaging (incl. ones OF
-    rejected as unreachable). send_followup must honor it like of_ai_chat does,
+    rejected as unreachable). send_followup must honor it like welcome_chatter_for_info does,
     or it re-tries deleted/expired fans every cycle."""
     async with get_session() as s:
         rows = (await s.execute(

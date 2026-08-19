@@ -9,8 +9,6 @@ const BG_CTX: RelayContext = { priority: "background" };
  *  fan actually SEES, present tense; the LLM may only claim what's written. */
 export interface CatalogItemT {
   id?: number;
-  script_id?: number | null;
-  position?: number | null;
   kind: "video" | "image" | "image_set";
   label?: string | null;
   description_for_ai?: string | null;
@@ -25,17 +23,9 @@ export interface CatalogItemT {
   stats?: { offers: number; delivered: number };
 }
 
-export interface CatalogScriptT {
-  id: number;
-  name: string;
-  theme?: string | null;
-  status: "draft" | "enabled" | "disabled";
-  items: CatalogItemT[];
-}
-
-export interface ScriptsResponse {
+/** The singles payload. Served from GET /admin/catalog/singles. */
+export interface SinglesResponse {
   account_id: string;
-  scripts: CatalogScriptT[];
   singles: CatalogItemT[];
 }
 
@@ -58,9 +48,6 @@ export interface GhostStage {
 export interface AiChatterConfig {
   enabled?: boolean;
   mode?: "backup" | "always";
-  /** Closer mode: only reply to a fan who shows buying intent (or has an open
-   *  offer); leave pure chit-chat to the team / Auto Convo. */
-  intent_only?: boolean;
   /** Also engage fans flagged `old_fan_pre_ai` (onboarded before the AI) —
    *  mostly pure convo, with an info question ~every old_fan_question_every replies. */
   engage_old_fans?: boolean;
@@ -69,7 +56,6 @@ export interface AiChatterConfig {
   old_fan_question_every?: number;
   sla_minutes?: number;
   max_lifetime_spend_cents?: number;
-  offer_mode?: "tip" | "ppv" | "both";
   max_offers_per_fan_per_day?: number;
   min_fan_msgs_between_offers?: number;
   /** Closer pivots tease→offer when the fan leans in / gets physical
@@ -147,8 +133,8 @@ export interface AiChatterConfig {
    *  because the shelf flags, the offer caps and the gate they depend on do.
    *  Both OFF by default. */
   autoreply_sell_on_ask?: boolean;
-  of_ai_chat_sell_on_ask?: boolean;
-  /** Gather-close PPV — of_ai_chat's parting set when the getting-to-know-you
+  welcome_chatter_for_info_sell_on_ask?: boolean;
+  /** Gather-close PPV — welcome_chatter_for_info's parting set when the getting-to-know-you
    *  chat finishes with a fan (profile complete OR the runaway cutoff). THE
    *  FOLDER IS THE SWITCH: empty = off; picking one arms it. Photos only,
    *  solo-only, un-bought — priced at the fixed knob (no ladder). */
@@ -290,15 +276,6 @@ export interface SaveAiChatterConfigVars {
   timezone?: string | null;
 }
 
-export interface SessionRow {
-  fan_id: number;
-  fan_name: string;
-  script: string;
-  position: number;
-  status: string;
-  updated_at: string | null;
-}
-
 export interface OfferRow {
   id: number;
   fan_id: number;
@@ -355,41 +332,13 @@ export function useSaveAiChatterConfig(accountId: string | null) {
   });
 }
 
-export function useCatalogScripts(accountId: string | null) {
-  return useQuery<ScriptsResponse>({
+export function useCatalogSingles(accountId: string | null) {
+  return useQuery<SinglesResponse>({
     queryKey: [KEY, "scripts", accountId],
     enabled: !!accountId,
-    queryFn: () => relay.get(`/admin/scripts?account_id=${aid(accountId)}`, BG_CTX),
+    queryFn: () => relay.get(`/admin/catalog/singles?account_id=${aid(accountId)}`, BG_CTX),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
-  });
-}
-
-export function useUpsertScript(accountId: string | null) {
-  const qc = useQueryClient();
-  return useMutation<{ id: number }, Error,
-    { id?: number; name: string; theme?: string; status?: string }>({
-    mutationFn: (body) =>
-      relay.post(`/admin/scripts`, { account_id: accountId, ...body }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, "scripts", accountId] }),
-  });
-}
-
-export function useDeleteScript(accountId: string | null) {
-  const qc = useQueryClient();
-  return useMutation<unknown, Error, number>({
-    mutationFn: (scriptId) =>
-      relay.delete(`/admin/scripts/${scriptId}?account_id=${aid(accountId)}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, "scripts", accountId] }),
-  });
-}
-
-export function useSaveScriptItems(accountId: string | null) {
-  const qc = useQueryClient();
-  return useMutation<unknown, Error, { scriptId: number; items: CatalogItemT[] }>({
-    mutationFn: ({ scriptId, items }) =>
-      relay.put(`/admin/scripts/${scriptId}/items`, { account_id: accountId, items }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, "scripts", accountId] }),
   });
 }
 
@@ -398,28 +347,6 @@ export function useSaveSingles(accountId: string | null) {
   return useMutation<unknown, Error, CatalogItemT[]>({
     mutationFn: (items) =>
       relay.put(`/admin/catalog/singles`, { account_id: accountId, items }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, "scripts", accountId] }),
-  });
-}
-
-export function useImportFolder(accountId: string | null) {
-  const qc = useQueryClient();
-  return useMutation<{ imported: number }, Error,
-    { scriptId: number; folder: string }>({
-    mutationFn: ({ scriptId, folder }) =>
-      relay.post(`/admin/scripts/import-folder`,
-        { account_id: accountId, script_id: scriptId, folder }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, "scripts", accountId] }),
-  });
-}
-
-export function usePasteImport(accountId: string | null) {
-  const qc = useQueryClient();
-  return useMutation<{ imported: number }, Error,
-    { scriptId: number; table: string }>({
-    mutationFn: ({ scriptId, table }) =>
-      relay.post(`/admin/scripts/paste-import`,
-        { account_id: accountId, script_id: scriptId, table }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, "scripts", accountId] }),
   });
 }
@@ -508,13 +435,13 @@ export interface DraftRowT {
 export function useSimulate(accountId: string | null) {
   return useMutation<SimulateResponse, Error, string>({
     mutationFn: (fanSays) =>
-      relay.post(`/admin/scripts/simulate`,
+      relay.post(`/admin/catalog/singles/simulate`,
         { account_id: accountId, fan_says: fanSays }),
   });
 }
 
 export function useAiChatterSessions(accountId: string | null) {
-  return useQuery<{ progress: SessionRow[]; offers: OfferRow[] }>({
+  return useQuery<{ offers: OfferRow[] }>({
     queryKey: [KEY, "sessions", accountId],
     enabled: !!accountId,
     queryFn: () =>

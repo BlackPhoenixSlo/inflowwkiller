@@ -291,7 +291,7 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
       )}
 
       {data.graduated === "spent" && (
-        <span className="text-fg-dim" title="of_ai_chat handed him to the upseller once he paid.">
+        <span className="text-fg-dim" title="The info-gather chatter handed him to the upseller once he paid.">
           🤝 payer
         </span>
       )}

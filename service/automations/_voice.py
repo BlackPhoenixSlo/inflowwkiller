@@ -8,7 +8,7 @@ re-exports the female ones so nothing else had to move.
 WHY A LANE AND NOT A PERSONA EDIT
 ---------------------------------
 The persona box is prose, prepended to a system prompt that then states the
-creator's identity as a RULE a few lines below it — `of_ai_chat`/`ai_chatter`
+creator's identity as a RULE a few lines below it — `welcome_chatter_for_info`/`ai_chatter`
 say "a real 22yo girl" outright, and `_persona`'s canon block says "THESE ARE
 THE FACTS ABOUT YOU ... you must never say anything that contradicts them" over
 labels reading "Why she started OF". A model handed prose-context and a rule
@@ -55,12 +55,12 @@ Resolve ONCE per run and read fields off the bundle:
 `for_fan(v, fan)`. `live_proof` is the REFUSAL and nothing else; the offer is a
 separate block precisely so an engine that does not want to sell cannot inherit a
 $100-$200 pitch by rendering the refusal (three did). Two engines render it today,
-`of_ai_chat` and `autoreply`, and both narrow per fan.
+`welcome_chatter_for_info` and `autoreply`, and both narrow per fan.
 
 The loader lives in `_common`, not here, because it needs the account row and
 this module deliberately does not import the database — see the import block.
 There is no `load_account_voice`: resolving the voice without the customs flag
-is what let `of_ai_chat` ship half a lane, so the two axes only come as a pair.
+is what let `welcome_chatter_for_info` ship half a lane, so the two axes only come as a pair.
 
 Not `_voice.painful_texting(CONST, voice)` at each site. `PAINFUL_TEXTING` and
 `LIVE_PROOF_GUARDRAIL` are interpolated raw at ~11 places across six engines;
@@ -256,7 +256,7 @@ _LIVE_PROOF_EXAMPLES = {
 # That ruling first landed in the tip-ask lead-in only — "Only offer a voice note
 # — not a video, not a call" — while the refusal carve-out and the ai_chatter
 # manifest both still said "a voice note or short clip". So an opted-in
-# `of_ai_chat` prompt carried BOTH rules at once, and `ai_chatter` — the engine
+# `welcome_chatter_for_info` prompt carried BOTH rules at once, and `ai_chatter` — the engine
 # that closes the sale — permitted short clips with no voice-note-only clause
 # anywhere in its prompt. Exactly the failure the shared constant below was
 # created to end, repeated in the half of the string that had not been shared yet.

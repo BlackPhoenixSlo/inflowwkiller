@@ -59,6 +59,17 @@ export interface BrainConfig {
   audience_auto_add: boolean;
   /** Transient: rides one PUT to allow direct-to-enforce (logged server-side). */
   audience_enforce_override?: boolean;
+  /**
+   * Co-performer tagging (media_cotag). Always served by GET; optional here so
+   * mocked partials type-check. `cotag_tag_videos` (default false — most
+   * creators are solo) is the collab-account opt-in: true tags EVERY send that
+   * attaches a video even when the AI describe read it as solo, because video
+   * describes miss the POV partner. Server semantics: absent key = unchanged,
+   * so an old client can't clear them while saving something else.
+   */
+  cotag_tag_videos?: boolean;
+  /** Handle to tag, no '@'. null = the global default (see cotag_default_username). */
+  cotag_username?: string | null;
 }
 
 /** Audience status block served beside the config (mirror health + ledger). */
@@ -117,6 +128,9 @@ export interface AccountConfigResp {
   languages: LanguageOption[]; // language codes + labels for the dropdown
   /** Creator-canon fields, ordered by how often fans ask. Single source of truth. */
   persona_fact_fields: PersonaFactField[];
+  /** What a null cotag_username resolves to (env → built-in "jakabasej") — the
+   *  editor's placeholder, so the default the box shows is the default that runs. */
+  cotag_default_username?: string;
   /** Include-only audience status (mirror health, ledger, outside queue). */
   audience?: AudienceStatus;
 }

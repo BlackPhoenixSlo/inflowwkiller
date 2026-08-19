@@ -16,7 +16,7 @@ qualifying tip landed. NULL means nothing is owed. The operator sees the queue o
 
 ⚠️ THIS MODULE USED TO WRITE A " Custom" SUFFIX ONTO `fans.custom_nickname` AND
 PUSH IT TO ONLYFANS, AND IT NEVER ONCE SURVIVED. `custom_nickname` has four other
-writers; `of_ai_chat._maybe_push_nickname` — reached from ai_chatter on EVERY tick
+writers; `welcome_chatter_for_info._maybe_push_nickname` — reached from ai_chatter on EVERY tick
 — rebuilds the name from structured facts and drops anything that is not a
 structured fact, then writes the shortened name to OF and back into our row.
 ai_chatter runs every 60s and this runs every 900s, so the marker was erased about
@@ -44,8 +44,8 @@ THREE THINGS THIS DELIBERATELY DOES NOT DO
    detector hid it in testing because a seeded voice note made the re-mark path
    unreachable.
 2. It does not count quantity. $200 is not two customs; the live transcript that
-   priced this feature shows the amount encoding LENGTH, and two customs means
-   two separate tips.
+   priced this feature shows the amount encoding LENGTH. Stacked tips inside one
+   burst window are ONE order (`_customs.orders_per_fan` decides), not several.
 3. It does not touch OnlyFans at all. It reads our transactions and writes our
    column; the operator's surface is /customs. That is what makes it impossible
    for a nickname pipeline to undo it.
@@ -148,12 +148,10 @@ async def watch_flags(account_id: str) -> tuple[bool, dict]:
 
 def order_floor(payload: dict | None) -> int:
     """The cents floor this account treats as an ORDER, off the rule payload.
-
-    One expression of "read the per-account floor", shared by `run` and by the
-    live dispatcher in `webhook_dispatch.on_inbound_tip` — the two paths that must
-    never disagree about what counts."""
-    min_cents = (payload or {}).get("min_cents")
-    return _customs.MIN_CENTS if min_cents is None else max(1, int(min_cents))
+    Shared by `run` and by the live dispatcher in
+    `webhook_dispatch.on_inbound_tip` — the two paths that must never disagree
+    about what counts. The floor RULE itself lives in `_customs.resolve_floor`."""
+    return _customs.resolve_floor((payload or {}).get("min_cents"))
 
 
 # ⚠️ THE LIVE TIP DISPATCHER IS NOT HERE, AND THAT IS ON PURPOSE.
@@ -173,26 +171,35 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     dry_run = bool(payload.get("dry_run"))
     # Per-account floor, off the rule's steps_json (which the scheduler hands us
     # AS this payload — an older comment here said trigger_json, which is where
-    # `every_seconds` lives, not the floor). See `_customs.qualifies`.
-    #
-    # ONE derivation, used by BOTH readers below — the SQL prefilter and the
-    # per-row `qualifies`. `run` used to keep its own copy of this two-liner
-    # beside the helper it had just extracted, so the same rule was spelled twice
-    # in one function: the query fetched rows at one floor while `qualifies`
-    # re-judged them at another. They happened to agree, which is the only kind of
-    # duplication that survives — right up until one of them is edited.
+    # `every_seconds` lives, not the floor). One spelling: `_customs.resolve_floor`.
     floor = order_floor(payload)
     only = coerce_ids(payload.get("only_fan_ids"))
     since = datetime.utcnow() - timedelta(hours=lookback_h)
 
-    stats = {"tips_seen": 0, "marked": 0, "cleared": 0, "already_marked": 0,
+    # A floor above the quote band's own minimum means the chatter can name a
+    # price this watch refuses to book — the fan pays it and is never marked
+    # (the 2026-08-18 bug, reachable by editing one knob). Loud, every run,
+    # because the misconfiguration is silent everywhere else.
+    if floor > _customs.ASK_MIN_CENTS:
+        log.warning(
+            "customs_watch_floor_above_ask account=%s min_cents=%s ask_min=%s "
+            "— a quoted $%d custom would go unmarked; lower min_cents or "
+            "raise the ask band",
+            account_id, floor, _customs.ASK_MIN_CENTS,
+            _customs.ASK_MIN_CENTS // 100)
+
+    stats = {"tips_scanned": 0, "marked": 0, "cleared": 0, "already_marked": 0,
              "skipped_delivered": 0, "already_settled": 0,
              "errors": 0, "dry_run": dry_run, "min_cents": floor}
 
-    # ── 1. Qualifying tips in the window
+    # ── 1. Settled order-kind tips in the window — EVERY size. The floor is a
+    # question about the ORDER (a burst of tips), not each transaction, so the
+    # sub-floor halves fans stack ($30+$30, $200+$50) must reach
+    # `_customs.orders_per_fan` — the same definition the /customs queue
+    # displays — instead of dying in a SQL prefilter.
     async with get_session() as s:
         q = (select(Transaction.fan_id, Transaction.amount_cents,
-                    Transaction.occurred_at, Transaction.kind)
+                    Transaction.occurred_at)
              .where(Transaction.account_id == str(account_id),
                     Transaction.kind.in_(_customs.ORDER_KINDS),
                     # MONEY THAT ACTUALLY ARRIVED. Without this a refunded or
@@ -203,25 +210,22 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # 'pending' counts: it is money in flight, and treating it as
                     # an order is the safe direction — the fan believes he ordered.
                     Transaction.status.in_(_SETTLED_STATUSES),
-                    Transaction.amount_cents >= floor,
                     Transaction.occurred_at >= since)
              .order_by(Transaction.occurred_at.desc())
              .limit(limit))
         tips = [r for r in (await s.execute(q)).all() if r[0] is not None]
 
-    by_fan: dict[int, datetime] = {}
-    for fan_id, cents, at, kind in tips:
-        if only and int(fan_id) not in only:
-            continue
-        if not _customs.qualifies(kind, cents, floor):
-            continue
-        stats["tips_seen"] += 1
-        # Keep the NEWEST qualifying tip per fan: delivery is judged from it, so
-        # a second order placed before the first shipped extends the wait rather
-        # than being cleared by the first delivery.
-        prev = by_fan.get(int(fan_id))
-        if prev is None or at > prev:
-            by_fan[int(fan_id)] = at
+    rows = [(str(account_id), int(fan_id), cents, at, None)
+            for fan_id, cents, at in tips
+            if not (only and int(fan_id) not in only)]
+    stats["tips_scanned"] = len(rows)
+    # The anchor is the NEWEST tip of the fan's newest qualifying burst:
+    # delivery is judged from it, so a second order placed before the first
+    # shipped extends the wait rather than being cleared by the first delivery.
+    by_fan: dict[int, datetime] = {
+        fan_id: anchor_at
+        for (_acct, fan_id), (_total, anchor_at, _msg)
+        in _customs.orders_per_fan(rows, floor).items()}
 
     for fan_id, tipped_at in by_fan.items():
         try:

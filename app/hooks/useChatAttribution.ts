@@ -20,7 +20,7 @@ import { relay } from "@/lib/relay";
 export interface AttributionEntry {
   employee_id: number | null;
   display_name: string | null;
-  // Which automation sent it ("of_ai_chat", "autoreply", "welcome", …). When
+  // Which automation sent it ("welcome_chatter_for_info", "autoreply", "welcome", …). When
   // present, the bubble label shows the specific automation name instead of the
   // flat "Automation" sentinel that every bot send's display_name resolves to.
   automation_kind: string | null;

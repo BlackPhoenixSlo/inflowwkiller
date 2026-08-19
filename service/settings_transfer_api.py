@@ -38,15 +38,15 @@ from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from auth import assert_account_owned
-from automation_registry import load_automation_plugins, registered_kinds
+from automation_registry import canonical_kind, is_registered
 from automations._common import STYLE_CONSISTENCY_KEYS
 from db.engine import get_session
 from db.models import (
+    CATALOG_IS_SINGLE,
     Account,
     AccountAiConfig,
     AutomationRule,
     CatalogItem,
-    CatalogScript,
     FunnelAccountMedia,
     MassMessageFunnel,
     Prompt,
@@ -65,11 +65,15 @@ EXPORT_VERSION = 1
 # server keeps importing v1 files through this set + per-version adapters.
 SUPPORTED_IMPORT_VERSIONS = {1}
 
+# "catalog_scripts" was a section until 2026-08-19 (ordered-script ladders were
+# removed). Old export files still carrying it import fine: the section rides
+# the generic unknown-section path (reported as "unknown section
+# 'catalog_scripts' ignored" — deliberate, an old file is not a corrupt one),
+# and its script-bound catalog items are skipped with their own warning.
 SECTIONS = (
     "account_ai_config",
     "automation_rules",
     "funnel_account_media",
-    "catalog_scripts",
     "catalog_items",
     "saved_replies",
     "prompts",
@@ -90,7 +94,10 @@ CONFIG_SCALAR_COLS = ("persona", "welcome_rules", "utc_offset", "timezone", "loc
                       # restore; a CLONE strips the list id and forces the mode
                       # off (_sanitize_config_clone) — a local lists.id on
                       # another account is a cross-account bug.
-                      "audience_mode", "audience_list_id", "audience_auto_add")
+                      "audience_mode", "audience_list_id", "audience_auto_add",
+                      # Co-performer tag settings (media_cotag). Safe to clone:
+                      # the handle is agency identity, not account-local state.
+                      "cotag_tag_videos", "cotag_username")
 CONFIG_JSON_COLS = ("persona_facts_json",
                     # TODAY's generated day. Exported so a RESTORE of the same
                     # account comes back whole, and dropped on CLONE — see
@@ -139,11 +146,8 @@ _LIST_SPLIT_KEYS = frozenset({"user_lists", "excluded_user_lists"})
 _DIGITS_RE = re.compile(r"^\d+$")
 
 
-def _known_kinds() -> set[str]:
-    # scrape_chats registers via automation_executor (not a plugin file), and
-    # live data has a scrape_chats rule — it must not import as "unknown".
-    load_automation_plugins()
-    return set(registered_kinds()) | {"scrape_chats"}
+# Kind validity is automation_registry.is_registered — the ONE predicate
+# (canonicalizes legacy names, knows scrape_chats by fiat). No local set.
 
 
 def _loads(raw: Any, fallback: Any) -> Any:
@@ -174,7 +178,9 @@ async def _collect_export(s, account_id: str) -> dict:
         .order_by(AutomationRule.id)
     )).scalars().all()
     rules_out = [{
-        "name": r.name, "kind": r.kind,
+        # Canonical on export too — a file written from an unmigrated DB
+        # should not carry a retired token forward.
+        "name": r.name, "kind": canonical_kind(r.kind),
         "trigger_json": _loads(r.trigger_json, r.trigger_json),
         "steps_json": _loads(r.steps_json, r.steps_json),
         "is_enabled": bool(r.is_enabled),
@@ -194,19 +200,15 @@ async def _collect_export(s, account_id: str) -> dict:
         "steps_media_json": _loads(fam.steps_media_json, {}) or {},
     } for fam, fname in fam_rows]
 
-    scripts = (await s.execute(
-        select(CatalogScript).where(CatalogScript.account_id == account_id)
-        .order_by(CatalogScript.id)
-    )).scalars().all()
-    scripts_out = [{"id": c.id, "name": c.name, "theme": c.theme, "status": c.status}
-                   for c in scripts]
-
+    # Singles only — legacy script items (`script_id NOT NULL`) are inert data
+    # the seller never offers, so they don't travel either.
     items = (await s.execute(
-        select(CatalogItem).where(CatalogItem.account_id == account_id)
+        select(CatalogItem).where(CatalogItem.account_id == account_id,
+                                  CATALOG_IS_SINGLE)
         .order_by(CatalogItem.id)
     )).scalars().all()
     items_out = [{
-        "id": i.id, "script_id": i.script_id, "position": i.position, "kind": i.kind,
+        "id": i.id, "kind": i.kind,
         "label": i.label, "description_for_ai": i.description_for_ai,
         "media_ids": _loads(i.media_ids, []) or [],
         "preview_media_ids": _loads(i.preview_media_ids, []) or [],
@@ -267,7 +269,6 @@ async def _collect_export(s, account_id: str) -> dict:
             "account_ai_config": cfg_out,
             "automation_rules": rules_out,
             "funnel_account_media": fam_out,
-            "catalog_scripts": scripts_out,
             "catalog_items": items_out,
             "saved_replies": replies_out,
             "prompts": prompts_out,
@@ -346,7 +347,7 @@ class _Report:
         self.rule_counts = {"imported": 0, "updated": 0, "disabled_missing": 0,
                             "skipped_ppv_send": 0, "unknown_disabled": 0}
         self.config_flags_forced_off: dict[str, Any] = {}
-        self.created_rows: dict[str, list] = {"catalog_scripts": [], "catalog_items": [],
+        self.created_rows: dict[str, list] = {"catalog_items": [],
                                               "saved_replies": [], "prompts": []}
         self.surplus_rows: list[dict] = []
         self.deleted_rows: list[dict] = []
@@ -692,7 +693,9 @@ async def post_settings_import(body: _ImportBody = Body(...)) -> dict[str, Any]:
 
         rules_in: list[dict] = []
         for idx, r in enumerate(sections["automation_rules"]):
-            kind = str(r.get("kind") or "")
+            # Canonical at the import boundary: an export written before a
+            # kind rename imports as the live kind, never a fresh legacy row.
+            kind = canonical_kind(str(r.get("kind") or ""))
             if kind == "ppv_send":
                 # Derived — regenerated from ppv_library_config_json by _sync_rules.
                 rep.rule_counts["skipped_ppv_send"] += 1
@@ -712,7 +715,7 @@ async def post_settings_import(body: _ImportBody = Body(...)) -> dict[str, Any]:
                     entry["remediation"] = "repick_audience"
                 elif had_media:
                     entry["remediation"] = "relink_media"
-            if kind not in _known_kinds():
+            if not is_registered(kind):
                 entry["remediation"] = "review"
                 rep.rule_counts["unknown_disabled"] += 1
                 enabled = False
@@ -807,7 +810,10 @@ async def post_settings_import(body: _ImportBody = Body(...)) -> dict[str, Any]:
         )).scalars().all()
         by_kind: dict[str, list[AutomationRule]] = {}
         for er in existing_rules:
-            by_kind.setdefault(er.kind, []).append(er)
+            # Canonical key: import entries are canonicalized above, so a
+            # target's legacy-kind rule must pool under the live name or the
+            # import inserts a duplicate and disables the original.
+            by_kind.setdefault(canonical_kind(er.kind), []).append(er)
         matched_ids: set[int] = set()
 
         def _dumps_maybe(v: Any) -> str | None:
@@ -880,58 +886,27 @@ async def post_settings_import(body: _ImportBody = Body(...)) -> dict[str, Any]:
                               ppv_for_sync if ppv_for_sync is not None
                               else {"enabled": False, "ppvs": []})
 
-        # ── (e) catalog: scripts upsert by name; items id-preserving upserts.
-        # NEVER delete items — ContentOffer.item_id is ondelete=CASCADE.
-        existing_scripts = (await s.execute(
-            select(CatalogScript).where(CatalogScript.account_id == target)
-        )).scalars().all()
-        script_by_name = {cs.name: cs for cs in existing_scripts}
-        script_map: dict[int, int] = {}
-        for row in sections["catalog_scripts"]:
-            name = str(row.get("name") or "").strip()
-            if not name:
-                continue
-            cs = script_by_name.get(name)
-            if cs is None:
-                cs = CatalogScript(account_id=target, name=name,
-                                   theme=row.get("theme"),
-                                   status=str(row.get("status") or "draft"))
-                s.add(cs)
-                await s.flush()
-                script_by_name[name] = cs
-                rep.created_rows["catalog_scripts"].append(cs.id)
-            else:
-                cs.theme = row.get("theme")
-                cs.status = str(row.get("status") or cs.status)
-            if row.get("id") is not None:
-                script_map[int(row["id"])] = cs.id
-        matched_script_ids = {cs.id for cs in script_by_name.values()}
-        for cs in existing_scripts:
-            if cs.name not in {str(r.get("name") or "").strip() for r in sections["catalog_scripts"]}:
-                rep.surplus_rows.append({"entity": "catalog_scripts", "target_id": cs.id,
-                                         "identifying_fields": {"name": cs.name},
-                                         "reason": "unmatched_existing"})
-
+        # ── (e) catalog: SINGLES id-preserving upserts. Ordered-script ladders
+        # were removed 2026-08-19 — a legacy document's script-bound items are
+        # skipped with a warning, never recreated. NEVER delete items —
+        # ContentOffer.item_id is ondelete=CASCADE.
         existing_items = (await s.execute(
-            select(CatalogItem).where(CatalogItem.account_id == target)
+            select(CatalogItem).where(CatalogItem.account_id == target,
+                                      CATALOG_IS_SINGLE)
             .order_by(CatalogItem.id)
         )).scalars().all()
-        items_pool: dict[int | None, list[CatalogItem]] = {}
-        for it in existing_items:
-            items_pool.setdefault(it.script_id, []).append(it)
         used_item_ids: set[int] = set()
         for row in sections["catalog_items"]:
-            old_sid = row.get("script_id")
-            new_sid = script_map.get(int(old_sid)) if old_sid is not None else None
-            if old_sid is not None and new_sid is None:
-                rep.warnings.append(f"catalog item '{row.get('label')}' references a script "
-                                    "not present in the document — imported as a single")
-            pool = [it for it in items_pool.get(new_sid, []) if it.id not in used_item_ids]
+            if row.get("script_id") is not None:
+                rep.warnings.append(
+                    f"catalog item '{row.get('label')}' belongs to an ordered "
+                    "script — script ladders were removed; row skipped")
+                continue
+            pool = [it for it in existing_items if it.id not in used_item_ids]
             label = row.get("label")
             same_label = [it for it in pool if it.label == label]
             target_item = same_label[0] if len(same_label) == 1 else (pool[0] if pool else None)
             fields = dict(
-                script_id=new_sid, position=row.get("position"),
                 kind=str(row.get("kind") or "video"), label=label,
                 description_for_ai=row.get("description_for_ai"),
                 media_ids=json.dumps(row.get("media_ids") or []),
@@ -956,10 +931,9 @@ async def post_settings_import(body: _ImportBody = Body(...)) -> dict[str, Any]:
         for it in existing_items:
             if it.id not in used_item_ids:
                 rep.surplus_rows.append({"entity": "catalog_items", "target_id": it.id,
-                                         "identifying_fields": {"label": it.label,
-                                                                "script_id": it.script_id},
+                                         "identifying_fields": {"label": it.label},
                                          "reason": "unmatched_existing"})
-        rep.sections_applied += ["catalog_scripts", "catalog_items"]
+        rep.sections_applied += ["catalog_items"]
 
         # ── (f) saved replies: script_id passes through VERBATIM (free-text
         # template-group name, NOT a catalog FK). Title → positional → insert.

@@ -2,22 +2,24 @@
 service/automations/ai_chatter.py — Automation: ai_chatter (PPVscriptAI M2).
 
 The freestyle AI chatter+seller for fans UNDER the spend gate. It REPLACES
-of_ai_chat for an account once enabled (of_ai_chat.run short-circuits when
+welcome_chatter_for_info for an account once enabled (welcome_chatter_for_info.run short-circuits when
 `is_enabled` here is true), inheriting the info-gather duty — the girly voice,
 the ONE-missing-fact question habit, the inline fact fill, the gen_info
 refresh-if-stale hook — and (M3) adds selling from the content catalog
-(catalog_scripts / catalog_items, offers in content_offers).
+(catalog_items singles, offers in content_offers). PPV is the only offer lane
+(2026-08-19 ruling — tip/both and the ordered-script ladders were removed
+structurally; legacy rows keep delivering, see _resolve_open_offers).
 
 Who it talks to (code-side gates, never prompt-side):
-  • fan spoke last (the "You:" sidebar skip — same as of_ai_chat). A BROADCAST
+  • fan spoke last (the "You:" sidebar skip — same as welcome_chatter_for_info). A BROADCAST
     (ppv_send / funnel / mass_nudge, or an untagged OF-app blast) does NOT count
     as us speaking: she still answers a message a blast landed on top of,
   • lifetime_spend_cents < max_lifetime_spend_cents (default $1000) — fans at or
     over the gate are WHALES: pure human-chatter territory, never touched,
   • he has BOUGHT CONTENT (`payers_only`, default ON) — a tip or a PPV unlock, and
-    never a subscription. Below the floor he is of_ai_chat's to work; exempt are a
+    never a subscription. Below the floor he is welcome_chatter_for_info's to work; exempt are a
     live sale and the engaged old-fan roster, whom nobody else covers,
-  • blacklist / skip_list respected, EXCEPT of_ai_chat's graduation reasons
+  • blacklist / skip_list respected, EXCEPT welcome_chatter_for_info's graduation reasons
     ("spent"/"too_long"/"info") — those mean "graduated from the gather loop",
     which is exactly the population ai_chatter exists for,
   • promo-spam guard ($0 spend + source=creator_we_follow) — the jaka problem,
@@ -33,9 +35,9 @@ Trigger modes (`mode` in ai_chatter_config_json):
     enqueues a fan-scoped job delayed by the SLA; the periodic rule is the
     fallback sweep. At fire time the gate re-checks — if a human answered
     meanwhile, the fan is simply no longer "fan spoke last".
-  • "always" (default) — reply when eligible, like of_ai_chat today.
+  • "always" (default) — reply when eligible, like welcome_chatter_for_info today.
 
-Unlike of_ai_chat there are NO graduation cutoffs: no max-message skip, no
+Unlike welcome_chatter_for_info there are NO graduation cutoffs: no max-message skip, no
 handoff (ai_chatter IS the post-gather voice — one bot voice per
 fan). Once the question list empties the prompt flips from info-gather to plain
 banter (and, M3, selling).
@@ -45,7 +47,7 @@ Ships DISABLED. Payload knobs: dry_run, only_fan_ids (W7 fan-scope, gates still
 apply), force_ids (bypass gates — manual targeting), max_replies, model,
 history_tail.
 
-Reuse: the carefully-tuned texting machinery is IMPORTED from of_ai_chat
+Reuse: the carefully-tuned texting machinery is IMPORTED from welcome_chatter_for_info
 (bubble splitting, echo/lead-reaction dedupe, fact extract+fill, question
 tracker, nickname push, profile refresh) so the voice stays byte-compatible.
 Only the prompt builder is forked — it adds the M3 sell-block seam.
@@ -70,10 +72,10 @@ import automation_executor as ax  # _make_client / lease / cooldown seams
 import llm_client                  # call .chat at runtime so tests can patch it
 import ownership                   # the one home for owned-media semantics
 from attribution import write_outbound_attribution
-from automation_registry import register
+from automation_registry import LEGACY_KINDS, register
 from db.engine import get_session
 from db.models import (
-    AccountAiConfig, Blacklist, CatalogItem, CatalogProgress, CatalogScript,
+    CATALOG_IS_SINGLE, AccountAiConfig, Blacklist, CatalogItem,
     ContentOffer, Fan, FanProfile, LadderQuote, LadderState, Message, PendingOffer,
     QuotaAudit, RhythmState, ScheduledJob, SkipList, Transaction, VaultSend,
     created_at_text, parse_ts,
@@ -81,7 +83,7 @@ from db.models import (
 from llm_client import LLMCapExceeded
 from . import _daylog  # what SHE did today — the creator-side twin of recent_events
 from . import (_ghost, _stepout, cat_stickers, pacing, rhythm, script_packs,
-               tip_ladder, upsell)
+               upsell)
 # The reply-volume leash — both gates, the spend rules that lift them, and the
 # verdict ledger. Re-exported under these names because `fans.py` (the status
 # endpoint) and the tests reach for them as `ai_chatter.X`, and because reading the
@@ -146,8 +148,8 @@ from ._common import (
 )
 from .fan_state import fan_state, set_fan_state
 # Deliberate sibling reuse — keeps the texting voice byte-compatible with
-# of_ai_chat instead of forking 500 lines of tuned style machinery.
-from .of_ai_chat import (
+# welcome_chatter_for_info instead of forking 500 lines of tuned style machinery.
+from .welcome_chatter_for_info import (
     _BREATHER_VARIANTS, _EXTRACT_HISTORY_TAIL, _HISTORY_TAIL, _MSG_CLIP,
     _NOID_PAUSE, _REPLY_MAX_CHARS, _REPLY_TEMPERATURE, _STYLE_VARIANTS,
     _bump_attempt, _clock_line, _dedupe_lead_reaction, _extract_and_fill,
@@ -178,7 +180,7 @@ _MAX_FORCED_ASKS_PER_TICK = 3
 # hers, which silently un-caps the cadence counter (it would read an offer as someone
 # else's message and let her keep talking past the burst limit).
 _OUR_KINDS = frozenset({_PURPOSE, _KIND_UPSELL})
-_REPLY_COOLDOWN_S = 10           # live chat — same short rest as of_ai_chat
+_REPLY_COOLDOWN_S = 10           # live chat — same short rest as welcome_chatter_for_info
 # 🙋 Per-fan memory of "he has asked who she is" — the sticky half of the gate in
 # run() that decides whether her canon rides the prompt. Its own namespace under the
 # same `fans.custom_fields` boundary the day-log ledger uses, so per-fan memory has
@@ -210,7 +212,7 @@ _DRAFT_MAX_AGE = timedelta(minutes=30)
 # regenerating is always safe because it is exactly the pre-2026-08-15 behaviour.
 _DRAFT_HANDLED = frozenset({"sent", "send_failed"})
 
-# of_ai_chat's graduation skip reasons — they mean "left the gather loop", NOT
+# welcome_chatter_for_info's graduation skip reasons — they mean "left the gather loop", NOT
 # "never message". ai_chatter exists precisely for these fans, so it ignores
 # them while respecting every other skip (unreachable, old_fan_pre_ai, manual).
 _GRADUATION_SKIPS = frozenset({"spent", "too_long", "info"})
@@ -236,7 +238,7 @@ def skip_reason_blocks(reason: str | None, *, engage_old_fans: bool) -> bool:
     debugging a silent thread was shown a wrong reason AND denied the right one.
 
     Two exemptions, and they are not the same kind of thing:
-      • `_GRADUATION_SKIPS` — of_ai_chat's "left MY gather loop" markers. ai_chatter
+      • `_GRADUATION_SKIPS` — welcome_chatter_for_info's "left MY gather loop" markers. ai_chatter
         exists precisely for these fans, so they never blocked it.
       • `_OLD_FAN_SKIP` — a real skip that the operator can lift per account.
     Everything else (unreachable, manual_restrict, muted_creator, of_restricted) blocks.
@@ -246,35 +248,31 @@ def skip_reason_blocks(reason: str | None, *, engage_old_fans: bool) -> bool:
     return not (reason == _OLD_FAN_SKIP and engage_old_fans)
 
 
-def seller_owned_fans(candidates: set[int], *, intent: set[int] | None,
+def seller_owned_fans(candidates: set[int], *,
                       payers_only: bool, content_payers: set[int],
                       always: set[int]) -> set[int]:
     """Of `candidates`, the fans the SELLER owns.
 
     THE one copy of that question, for the same reason `skip_reason_blocks` above
     is: `run()`'s candidate loop asks it to decide a skip, and `engaged_subset`
-    asks it to tell of_ai_chat whom to cover. Those two answers are a
+    asks it to tell welcome_chatter_for_info whom to cover. Those two answers are a
     PARTITION — every fan lands on exactly one side — so a second hand-rolled copy
     does not merely drift, it either puts two bot voices in one thread or leaves a
     fan with none.
 
-    Two NARROWINGS and one OVERRIDE, which is the whole model:
-      intent          — closer mode only: his newest inbound shows buying intent.
-                        None in full-chatter mode (no narrowing).
+    One NARROWING and one OVERRIDE, which is the whole model:
       payers_only /
       content_payers  — the payer floor: he has bought a tip or a PPV unlock
                         (`content_payer_fans`). A SUBSCRIPTION IS NOT A PURCHASE.
-      always          — OVERRIDES both: a live sale (open offer, recent payer,
+      always          — OVERRIDES it: a live sale (open offer, recent payer,
                         OPEN/HOT ladder) and the engaged old-fan roster, whom no
                         other engine will chat at all. A man mid-sale who has not
                         paid yet is still ours to walk to a close.
 
     `always` is intersected with `candidates` and NOT with the narrowed set — an
-    exempt fan is exempt precisely because he failed a narrowing. Getting that
-    backwards silently un-exempts every old fan without buying intent."""
+    exempt fan is exempt precisely because he failed the narrowing. Getting that
+    backwards silently un-exempts every old fan below the floor."""
     owned = set(candidates)
-    if intent is not None:
-        owned &= intent
     if payers_only:
         owned &= content_payers
     return owned | (always & candidates)
@@ -289,17 +287,11 @@ _DEFAULTS: dict = {
                                          # runs "always" anyway — shipping "backup"
                                          # only meant a freshly-enabled account sat
                                          # behind an SLA hold nobody asked for.
-    "intent_only": False,                # closer mode: only engage a fan whose
-                                         # latest message shows buying intent
-                                         # (_CONTENT_ASK_RE) or who has an open
-                                         # offer. Pure chit-chat is left to the
-                                         # team / Auto Convo. Zero LLM cost for
-                                         # the fans it skips.
     "sla_minutes": 10,                   # backup: how slow is "slow"
     "max_lifetime_spend_cents": 100_000, # the whale gate ($1000)
     # The PAYER FLOOR — the whale gate's mirror at the bottom. The seller answers
     # only men who have bought CONTENT (a tip or a PPV unlock); everyone else is
-    # of_ai_chat's to work and profile until he buys something. Ships ON: 56% of
+    # welcome_chatter_for_info's to work and profile until he buys something. Ships ON: 56% of
     # all chat calls were going to fans who had never paid a cent, and the men who
     # convert are not converted by this engine — measured on prod 2026-08-15, first
     # purchases originate 84% human / 12% mass blast / 4% ai_chatter, and neither
@@ -312,32 +304,9 @@ _DEFAULTS: dict = {
     # and PPVs start at $3, so no dollar line separates them, and the $12 one that
     # looks right admits 314 subscribers while rejecting 539 real buyers.
     "payers_only": True,
-    "offer_mode": "ppv",                 # M3: "tip" | "ppv" | "both". Default
-                                         # flipped both→ppv 2026-07-23: a "both"
-                                         # message (priced + tip-ask) let a fan
-                                         # pay twice for one promise — a live
-                                         # incident paid the unlock AND the tip.
-                                         # tip/both remain selectable per-account
-                                         # in the Upseller tab for operators who
-                                         # want the tip-unlock lane.
-    # Tip ladder (workstream 3): TIP-ONLY offers get an INDEPENDENT adaptive ask
-    # (escalate when he unlocked his last tip, soften 40–60% when he didn't,
-    # floored at his biggest-ever tip) instead of riding the PPV quote. Needs
-    # smart_pricing_enabled on (that's what builds the quote it overrides).
-    # Ships DARK: default off, zero behavior change until an account opts in.
-    "tip_ladder_enabled": False,
-    "tip_ladder_base_cents": 1000,       # opening ask for a fan with no tip history
-    "tip_ladder_step": 2.0,              # escalation ×2 after he tips (10→20→40→80…)
-    # No-bite haircut keeps ~65–73% of the last ask (a gentle step DOWN, not a
-    # collapse): $120 → ~$78–88, so he's re-offered lower but still premium. The
-    # image bundle follows the softened price (price/$10 → ~9 photos at $88).
-    "tip_ladder_cut_lo": 0.65,
-    "tip_ladder_cut_hi": 0.73,
-    "tip_ladder_floor_cents": 500,       # never ask below this ($5)
-    # Cap: the account's PPV-library MAX, hard-limited to $200 (OF wire max). The
-    # effective cap is computed per-run from the library bounds; this static value
-    # is only the fallback when no library is configured.
-    "tip_ladder_cap_cents": 20000,
+    # PPV is the ONLY offer lane (2026-08-19 ruling). The old offer-mode
+    # knob ("tip"|"ppv"|"both") and its tip-ask machinery were removed
+    # structurally; a stored offer-mode key in an account config is ignored.
     # Proven-spend price floor (workstream 3): a fan who already PAID
     # $X is never re-offered a cheaper item — the ladder climbs to the next tier
     # (a $50 buyer gets the $60 video, not the $24 set re-run at cold-open lows).
@@ -532,7 +501,7 @@ _DEFAULTS: dict = {
     "session_gap_minutes": 60,           # gap that starts a fresh burst for the caps
     # Item 17 — post-purchase talk window: keep chatting a just-paid fan this long
     # after his last money event; past it with no NEW spend, hand off (stop + cool
-    # off → in closer mode of_ai_chat/Auto Convo keeps him warm).
+    # off → welcome_chatter_for_info/Auto Convo keeps him warm).
     "post_purchase_minutes": 30,
     "offer_expiry_minutes": 120,         # a pending offer older than this w/o a buy
                                          # drops to the no_signal (short-leash) tier
@@ -599,16 +568,16 @@ _DEFAULTS: dict = {
     # everything they depend on lives here: the shelf flags above, the offer caps,
     # the qualification gate. Two engines reading two copies of a cap is two caps.
     #
-    # 🚨 of_ai_chat SELLS BY DEFAULT — operator ruling 2026-08-15, and it exists to
+    # 🚨 welcome_chatter_for_info SELLS BY DEFAULT — operator ruling 2026-08-15, and it exists to
     # close a loop `payers_only` opened. That floor ships ON and `seller_owned_fans`
     # lifts only an active sale or the engaged-old-fan roster, so AN EXPLICIT ASK IS
     # NOT A LIFT: a man who has never bought and types "send me a video" is
-    # `skipped_not_payer`, handed to of_ai_chat — which is precisely the engine that
+    # `skipped_not_payer`, handed to welcome_chatter_for_info — which is precisely the engine that
     # "keeps chatting and profiling him until he buys something". With this off he
     # could never buy through chat at all, because the one surface left to him could
     # not sell. That is ~8,881 of 10,381 prod fans (2026-08-15).
     #
-    # ⚠️ of_ai_chat's own prompt still says "don't offer pics or videos yet". That
+    # ⚠️ welcome_chatter_for_info's own prompt still says "don't offer pics or videos yet". That
     # is not a contradiction: the lane does not go through the prompt. It sends the
     # pack itself, out of band, and `continue`s — the model never writes the offer
     # and never sees that it happened.
@@ -627,13 +596,13 @@ _DEFAULTS: dict = {
     # finer — not the payer floor, not `engaged_subset`. Its `content_ask` local is
     # `(not ai_chatter_owns) and …`, so on an account with the closer ON this flag
     # changes nothing at all, including for the fans `payers_only` skips. Those men
-    # are of_ai_chat's, and `of_ai_chat_sell_on_ask` above is what answers them.
+    # are welcome_chatter_for_info's, and `welcome_chatter_for_info_sell_on_ask` above is what answers them.
     #
     # This one is for the accounts with NO closer (7 of 21 live), where Auto Convo
     # IS the chat and a man who typed "send me a video" got banter and nothing else.
     "autoreply_sell_on_ask": True,
-    "of_ai_chat_sell_on_ask": True,
-    # Gather-close PPV: of_ai_chat's parting set when the gather finishes with a
+    "welcome_chatter_for_info_sell_on_ask": True,
+    # Gather-close PPV: welcome_chatter_for_info's parting set when the gather finishes with a
     # fan (profile complete OR the runaway cutoff). THE FOLDER IS THE SWITCH —
     # empty means off, and an operator picking one in the UI is the opt-in. Lives
     # in THIS blob for the same reason the two keys above do: the sell machinery
@@ -644,14 +613,14 @@ _DEFAULTS: dict = {
     # ONE LLM CALL PER ANSWER — operator ruling 2026-08-15. The closer's second
     # call was the fact-extract, and it fired for any fan with a single empty
     # profile column, which on a live roster is most of them. Profiling is
-    # of_ai_chat's job (it exists to chat him and fill those columns) and
+    # welcome_chatter_for_info's job (it exists to chat him and fill those columns) and
     # gen_info's; the closer duplicating it bought a full-prompt call per reply.
     #
     # ⚠️ This does NOT disable the extract. It narrows it to TIER B — the ~5% of
     # turns where SHE said something about herself — because `her_claims` and the
     # two body-focus flags have no other writer anywhere in the service, and
     # `content_resolver.profile_terms` prices substitute PPVs off those flags.
-    # See `of_ai_chat._extract_and_fill`'s `claims_only`.
+    # See `welcome_chatter_for_info._extract_and_fill`'s `claims_only`.
     "closer_extract_claims_only": True,
     # 🙋 HER CANON RIDES THE PROMPT ONLY WHEN HE ASKS ABOUT HER — operator ruling
     # 2026-08-15. Her PROSE persona is unconditional (it is who she is on every
@@ -747,7 +716,7 @@ _DEFAULTS: dict = {
     "smart_pricing_enabled": False,
     # Hard takeover: once a fan is in an ACTIVE sale (open offer / just paid / an
     # OPEN|HOT ladder), the seller drives his thread regardless of the base chatter
-    # mode — it bypasses the backup-SLA hold and the closer no-intent skip so a
+    # mode — it bypasses the backup-SLA hold so a
     # sale is never dropped mid-flow. Inert unless the gate is on (guarded below),
     # so a default account — gate off — behaves exactly as today. The hand-back is
     # the existing COOLDOWN → COMPANION transition (returns him to normal chat).
@@ -773,7 +742,7 @@ _DEFAULTS: dict = {
     # 30-60s (7.8 vs 16.5) and 1-2m (9.0 vs 14.4). Set 0 to disable.
     "rhythm_reply_bonus_s": 10.0,
     # After a silence this long, her reply comes back as ONE bubble however much it
-    # weighs (of_ai_chat.split_for_bubbles(force_single=True)). A human returns
+    # weighs (welcome_chatter_for_info.split_for_bubbles(force_single=True)). A human returns
     # single-bubble ~64% of the time at EVERY gap length; ours falls from 31.9% at
     # <2min to 14.7% at 30min-2h, so the longer we were quiet the more we said on
     # arrival. 0 disables. Content is never dropped — the bubbles are merged, not cut.
@@ -900,6 +869,14 @@ async def _load_config(account_id: str) -> dict:
     if raw:
         try:
             stored = json.loads(raw) or {}
+            # Legacy keys (automation_registry.LEGACY_KINDS): map a pre-rename
+            # '<old>_sell_on_ask' BEFORE the merge, or the new key's default
+            # (True) beats an operator's explicit stored False and the gather
+            # engine starts selling. No-ops once LEGACY_KINDS empties.
+            for _legacy, _live in LEGACY_KINDS.items():
+                old_k, new_k = f"{_legacy}_sell_on_ask", f"{_live}_sell_on_ask"
+                if new_k not in stored and old_k in stored:
+                    stored[new_k] = stored[old_k]
             merged.update({k: v for k, v in stored.items() if v is not None})
         except Exception:
             log.warning("bad ai_chatter_config account=%s", account_id, exc_info=True)
@@ -918,7 +895,7 @@ async def _load_config(account_id: str) -> dict:
 
 
 async def is_enabled(account_id: str) -> bool:
-    """Cheap gate for of_ai_chat's hand-over check + the W7 dispatcher."""
+    """Cheap gate for welcome_chatter_for_info's hand-over check + the W7 dispatcher."""
     cfg = await _load_config(account_id)
     return bool(cfg.get("enabled"))
 
@@ -934,42 +911,39 @@ async def gate_for(account_id: str) -> int | None:
 
 
 async def owns_whole_account(account_id: str) -> bool:
-    """True when ai_chatter answers EVERY fan it sees, so a gather engine (of_ai_chat)
+    """True when ai_chatter answers EVERY fan it sees, so a gather engine (welcome_chatter_for_info)
     must stand down for the account entirely rather than cover a remainder.
 
     The account-level twin of `engaged_subset`, and it lives HERE, beside it, on
     purpose: "does it own everyone" and "which ones does it own" are one rule, and
-    of_ai_chat cannot answer the first by ANDing accessors without silently
+    welcome_chatter_for_info cannot answer the first by ANDing accessors without silently
     re-deriving the second. It ships as its own function because it is asked BEFORE
     the candidate gather — `engaged_subset` needs fan_ids that do not exist yet.
 
-    Any mode that narrows the roster (closer, or the payer floor) makes this False.
+    The one roster narrowing left (the payer floor) makes this False.
     One config read, not one per flag: `_load_config` hits the DB every call."""
     cfg = await _load_config(account_id)
     if not cfg.get("enabled"):
         return False                     # owns nobody, so it replaces nobody
-    return not (cfg.get("intent_only") or cfg.get("payers_only"))
+    return not cfg.get("payers_only")
 
 
 async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
     """Of `fan_ids`, the ones ai_chatter currently OWNS — i.e. will (or may) answer
-    THIS tick. of_ai_chat consults this so it covers exactly the
+    THIS tick. welcome_chatter_for_info consults this so it covers exactly the
     fans ai_chatter leaves alone: no second bot voice on the same fan, and no fan
     left silent either.
 
     Disabled → the empty set (owns nobody). Otherwise it is `seller_owned_fans`
-    over `fan_ids`: the two narrowings and the one override, resolved for this tick.
+    over `fan_ids`: the one narrowing and the one override, resolved for this tick.
 
-      • intent_only (CLOSER) narrows to a content-ask or sexual escalation in his
-        latest inbound — pure chatter is left to of_ai_chat / the team,
-        matching the closer's own "pure chatter is left to Auto Convo" rule in run().
       • payers_only (the PAYER FLOOR, default ON) narrows to men who have bought
-        content. NOTE this means full-chatter mode does NOT imply "everyone".
-      • `_always_answered_fans` overrides both — a live sale, and the engaged
-        old-fan roster (nobody else may chat those; of_ai_chat
+        content. NOTE this means an enabled seller does NOT imply "everyone".
+      • `_always_answered_fans` overrides it — a live sale, and the engaged
+        old-fan roster (nobody else may chat those; welcome_chatter_for_info
         hard-skips that reason), so this set must claim them or they go silent.
 
-    Both narrowings mirror run()'s own gates, and the FLOOR is literally the same
+    The narrowing mirrors run()'s own gate, and the FLOOR is literally the same
     call, so ownership here cannot diverge from who the seller actually answers.
     `owns_whole_account` is the account-level twin, asked before the gather.
     autoreply skips exactly this set as hot leads."""
@@ -978,19 +952,16 @@ async def engaged_subset(account_id: str, fan_ids: set[int]) -> set[int]:
     cfg = await _load_config(account_id)
     if not cfg.get("enabled"):
         return set()
-    intent_only = bool(cfg.get("intent_only"))
     payers_only = bool(cfg.get("payers_only"))
     # Owns everyone → say so without touching the DB. `always` is a subset of
     # `fan_ids`, so every query below would only rebuild `fan_ids`.
-    if not intent_only and not payers_only:
+    if not payers_only:
         return set(fan_ids)
 
     return seller_owned_fans(
         set(fan_ids),
-        intent=(await _intent_fans(account_id, fan_ids, cfg) if intent_only else None),
         payers_only=payers_only,
-        content_payers=(await content_payer_fans(account_id, fan_ids)
-                        if payers_only else set()),
+        content_payers=await content_payer_fans(account_id, fan_ids),
         always=await _always_answered_fans(account_id, fan_ids, cfg))
 
 
@@ -1021,27 +992,6 @@ async def _always_answered_fans(account_id: str, fan_ids: set[int],
             )).all()
         always |= {int(r[0]) for r in rows}
     return always
-
-
-async def _intent_fans(account_id: str, fan_ids: set[int], cfg: dict) -> set[int]:
-    """Fans whose NEWEST inbound shows buying intent — a content-ask or a sexual
-    escalation. The closer's `base`: whom it would answer before any floor."""
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(Message.fan_id, Message.body)
-            .where(Message.account_id == str(account_id),
-                   Message.fan_id.in_(fan_ids),
-                   Message.direction == "in",
-                   Message.is_unsent.is_(False))
-            .order_by(Message.fan_id, Message.created_at, Message.message_id)
-        )).all()
-    last_in: dict[int, str] = {}
-    for fid, body in rows:
-        last_in[int(fid)] = body or ""   # rows asc → last write per fan = newest inbound
-    gate_lang = cfg.get("_account_lang", "en")
-    return {fid for fid, body in last_in.items()
-            if (_language.is_content_ask(_strip_html(body), gate_lang)
-                or _language.is_escalation(_strip_html(body), gate_lang))}
 
 
 # ── Candidate gathering (own pass — needs timing + human-send metadata) ──────
@@ -1607,7 +1557,7 @@ _FASTPATH_READ_LIMIT = 20
 # content AND the manifest is live, the info-gather goal must yield to the
 # pitch — otherwise the model keeps interviewing ("what got u into trail
 # running?") while he's begging to buy. Code-side, not model judgment. Hoisted
-# into _common (CONTENT_ASK_RE) so of_ai_chat/autoreply share the same detector
+# into _common (CONTENT_ASK_RE) so welcome_chatter_for_info/autoreply share the same detector
 # for their tip-ask branch; kept under the old name here (and re-exported to
 # scripts_api) for back-compat.
 _CONTENT_ASK_RE = CONTENT_ASK_RE
@@ -1666,56 +1616,44 @@ async def _drop_owned(account_id: str, fan_id: int,
             offerable.pop(iid, None)
 
 
-def _effective_mode(item: CatalogItem, cfg_mode: str) -> str | None:
-    """Intersect the account's offer_mode with the item's terms. None = not
-    sellable (a free teaser is deliverable regardless — see is_free_teaser)."""
-    tip_ok = int(item.tip_unlock_cents or 0) > 0 and cfg_mode in ("tip", "both")
-    # Default-ppv world: an item configured tip-only (tip_unlock set, price 0)
-    # must stay sellable on a ppv-mode account — its tip_unlock amount stands in
-    # as the price floor; smart pricing owns the actual quote either way.
-    ppv_ok = (int(item.price_cents or 0) > 0
-              or int(item.tip_unlock_cents or 0) > 0) and cfg_mode in ("ppv", "both")
-    if tip_ok and ppv_ok:
-        return "both"
-    if tip_ok:
-        return "tip"
-    if ppv_ok:
-        return "ppv"
-    return None
+def _sellable(item: CatalogItem) -> bool:
+    """PPV is the only offer lane: sellable means a real price on the row.
+    A tip-only item (tip_unlock set, price 0) is UNOFFERABLE — kept as data,
+    never pitched (2026-08-19 ruling). A free teaser is deliverable regardless
+    — see is_free_teaser."""
+    return int(item.price_cents or 0) > 0
 
 
-def _terms_str(item: CatalogItem, mode: str | None,
-               quoted_cents: int | None = None) -> str:
+def _terms_str(item: CatalogItem, quoted_cents: int | None = None) -> str:
     """`quoted_cents` (smart pricing) REPLACES the catalog's static price for this
     fan. It has to reach the prompt, not just the send: a manifest that says $12
     while the attach charges $19 puts the model's own pitch text at odds with the
     locked box the fan is looking at."""
     if item.is_free_teaser:
         return "FREE — just send it when the moment fits"
-    tip_c = int(quoted_cents or item.tip_unlock_cents or 0)
     ppv_c = int(quoted_cents or item.price_cents or 0)
-    tip = f"tip ${tip_c // 100}"
-    ppv = f"${ppv_c // 100} to unlock"
-    return {"both": f"{tip} or {ppv}", "tip": tip, "ppv": ppv}.get(mode or "", "")
+    return f"${ppv_c // 100} to unlock"
 
 
-async def _load_catalog(account_id: str) -> tuple[dict[int, CatalogScript], list[CatalogItem]]:
-    """Enabled scripts + enabled, deliverable items (must have media bound).
+async def _load_catalog(account_id: str) -> list[CatalogItem]:
+    """Enabled, deliverable, SELLABLE singles (must have media bound). This IS
+    the shelf: everything downstream (`run()`'s sell branch, `_offerable_for_fan`,
+    the post-buy rung, simulate) trusts that a loaded item is either a free
+    teaser or priced — so "the shelf is empty" and "she has nothing priced to
+    pitch" stay the same fact. SINGLES-ONLY is the offer-time filter the
+    2026-08-19 ruling asked for: legacy script items (`script_id NOT NULL`) and
+    tip-only rows stay in the table — and their open offers still deliver via
+    `_get_item` — but nothing loads them onto the shelf again.
     Detached rows — read-only reference data for the whole run."""
     async with get_session() as s:
-        scripts = {int(sc.id): sc for sc in (await s.execute(
-            select(CatalogScript).where(CatalogScript.account_id == str(account_id),
-                                        CatalogScript.status == "enabled")
-        )).scalars().all()}
         items = (await s.execute(
             select(CatalogItem).where(CatalogItem.account_id == str(account_id),
-                                      CatalogItem.enabled.is_(True))
+                                      CatalogItem.enabled.is_(True),
+                                      CATALOG_IS_SINGLE)
         )).scalars().all()
         s.expunge_all()
-    usable = [it for it in items
-              if (it.script_id is None or int(it.script_id) in scripts)
-              and _item_media(it)]
-    return scripts, usable
+    return [it for it in items
+            if _item_media(it) and (it.is_free_teaser or _sellable(it))]
 
 
 async def _seen_media(account_id: str, fan_id: int) -> set[int]:
@@ -1745,13 +1683,9 @@ async def _open_offers(account_id: str, fan_id: int | None = None) -> list[Conte
     return rows
 
 
-async def _offerable_for_fan(account_id: str, fan_id: int, cfg_mode: str,
-                             scripts: dict[int, CatalogScript],
+async def _offerable_for_fan(account_id: str, fan_id: int,
                              items: list[CatalogItem]) -> dict[int, CatalogItem]:
-    """What this fan may be offered RIGHT NOW: unseen singles + the NEXT item of
-    a script (position pinning preserves the escalation without a state
-    machine). One active script at a time: once a progress row is active, other
-    scripts' openers drop out of the manifest.
+    """What this fan may be offered RIGHT NOW: unseen singles he may still buy.
 
     Dedup is BOUGHT-or-SEEN only (see `_owned_or_seen_media`): a piece he merely
     received as a free teaser/preview is NOT filtered out — it can be re-offered as
@@ -1759,7 +1693,7 @@ async def _offerable_for_fan(account_id: str, fan_id: int, cfg_mode: str,
     owning an item's free-preview tease frames never kills the item — the
     operator's 07-23 ruling is that filler may repeat; only the payoff (videos +
     non-preview images) must be media the fan was never sold."""
-    # No catalogue ⇒ nothing to filter, and the three per-fan reads below would
+    # No catalogue ⇒ nothing to filter, and the two per-fan reads below would
     # each go to the database to produce {}. This lives HERE rather than in the
     # caller's branch condition on purpose: `run()` deliberately has no catalogue
     # precondition on selling (a custom needs no rows), so the emptiness check
@@ -1769,30 +1703,10 @@ async def _offerable_for_fan(account_id: str, fan_id: int, cfg_mode: str,
         return {}
     seen = await _owned_or_seen_media(account_id, fan_id)
     hero = await _hero_media_map(account_id, items)
-    async with get_session() as s:
-        prog_rows = (await s.execute(
-            select(CatalogProgress).where(
-                CatalogProgress.account_id == str(account_id),
-                CatalogProgress.fan_id == int(fan_id))
-        )).scalars().all()
-        s.expunge_all()
-    progress = {int(p.script_id): p for p in prog_rows}
-    pinned = [p for p in prog_rows if p.status in ("active", "stalled")]
 
     out: dict[int, CatalogItem] = {}
     for it in items:
-        if it.script_id is not None:
-            p = progress.get(int(it.script_id))
-            if p is not None and p.status == "done":
-                continue
-            if pinned and (p is None or p.status not in ("active", "stalled")):
-                continue  # pinned to the script(s) already in progress
-            pos = int(p.position) if p is not None else 0
-            if int(it.position or 0) != pos:
-                continue
         if any(m in seen for m in hero[int(it.id)]):
-            continue
-        if not it.is_free_teaser and _effective_mode(it, cfg_mode) is None:
             continue
         out[int(it.id)] = it
     return out
@@ -1914,21 +1828,17 @@ _INTRO_PENDING = ("he's still sitting on an offer you already made — see "
 
 
 def _manifest_block(offerable: dict[int, CatalogItem],
-                    scripts: dict[int, CatalogScript], cfg_mode: str,
                     quotes: dict[int, upsell.Quote] | None = None,
                     sell_customs: bool = False) -> _SellSurface:
     lines = []
     for iid, it in sorted(offerable.items()):
-        mode = _effective_mode(it, cfg_mode)
         dur = ""
         if it.duration_sec:
             dur = f" {int(it.duration_sec) // 60}:{int(it.duration_sec) % 60:02d}"
-        sc = scripts.get(int(it.script_id)) if it.script_id is not None else None
-        theme = f" (part of your '{sc.name}' set: {(sc.theme or '')[:120]})" if sc else ""
         q = (quotes or {}).get(int(iid))
         lines.append(f"- [id {iid}] {it.kind}{dur} — {it.label or 'untitled'}: "
                      f"{(it.description_for_ai or '').strip()} — "
-                     f"{_terms_str(it, mode, q.price_cents if q else None)}{theme}")
+                     f"{_terms_str(it, q.price_cents if q else None)}")
     # "never customs" is CONDITIONAL. The ban exists because the catalog is the
     # only thing that provably exists, so a promised custom was a promise with no
     # delivery owner. An account that has opted in (`_common.SELL_CUSTOMS_KEY`)
@@ -1965,8 +1875,8 @@ def _manifest_block(offerable: dict[int, CatalogItem],
     # to nothing anyway. This branch is the one where it can actually bill someone.
     # ⚠️ THE CUSTOM NEEDS ITS OWN PRICED EXAMPLE **HERE**, and this is the branch
     # where leaving it out is most dangerous. The only worked money sentence in
-    # this block is the pitch example it renders ABOVE this line — `"tip me $10 and ill
-    # send it 😏"` — which is right for a LISTED piece and off by 10x for a
+    # this block is the pitch example it renders ABOVE this line — `"its $10 to
+    # unlock babe 😏"` — which is right for a LISTED piece and off by 10x for a
     # custom. A rule does not beat an example (see `_customs.price_example`: the
     # $100-$200 rule was in the prompt and the model still asked for nothing,
     # because the example beside it named no figure), and an example at the wrong
@@ -2025,7 +1935,7 @@ def _manifest_block(offerable: dict[int, CatalogItem],
         "describe a piece using ONLY its description):\n" + "\n".join(lines) + "\n\n"
         "SELLING RULES:\n"
         "- Pitch ONLY when the vibe is warm or he's asking for content — at most "
-        "ONE piece, woven in naturally (\"tip me $10 and ill send it 😏\"), never "
+        "ONE piece, woven in naturally (\"its $10 to unlock babe 😏\"), never "
         "pushy. When he asks or is turned on, dont stall or be coy: tease the "
         "best fit from its description and name the price NOW. A FREE piece is a "
         "spontaneous treat when he's sweet.\n"
@@ -2045,6 +1955,9 @@ def _pending_block(offer: ContentOffer, item: CatalogItem | None) -> _SellSurfac
     desc = (item.description_for_ai or "").strip() if item else ""
     label = (item.label if item else None) or "it"
     terms = []
+    # LEGACY ROWS ONLY — nothing has created a "tip"/"both" offer since the
+    # 2026-08-19 ppv-only ruling; these branches render the open rows that
+    # predate it so their pending surface stays truthful until they resolve.
     if offer.mode in ("tip", "both") and offer.tip_unlock_cents:
         terms.append(f"tip ${int(offer.tip_unlock_cents) // 100}")
     if offer.mode in ("ppv", "both") and offer.price_cents:
@@ -2178,7 +2091,6 @@ async def _last_unpaid_teaser(account_id: str, fan_id: int) -> dict | None:
 
 def _second_offer_block(pending: ContentOffer, pend_item: CatalogItem | None,
                         offerable: dict[int, CatalogItem],
-                        scripts: dict[int, CatalogScript], cfg_mode: str,
                         quotes: dict[int, upsell.Quote] | None,
                         sell_customs: bool = False) -> _SellSurface:
     """He has ONE unpaid PPV on the table and you may send a SECOND (and FINAL) one:
@@ -2190,7 +2102,7 @@ def _second_offer_block(pending: ContentOffer, pend_item: CatalogItem | None,
     narrower choice of piece."""
     plabel = (pend_item.label if pend_item else None) or "it"
     pprice = int(pending.price_cents or pending.tip_unlock_cents or 0) // 100
-    base = _manifest_block(offerable, scripts, cfg_mode, quotes=quotes or None,
+    base = _manifest_block(offerable, quotes=quotes or None,
                            sell_customs=sell_customs)
     return dataclasses.replace(base, block=(
         base.block
@@ -2255,14 +2167,19 @@ async def _record_offer(account_id: str, fan_id: int, item: CatalogItem,
     was never on the wire."""
     now = datetime.utcnow()
     price_c = int(quoted_cents if quoted_cents else (item.price_cents or 0))
-    tip_c = int(quoted_cents if quoted_cents else (item.tip_unlock_cents or 0))
     async with get_session() as s:
         s.add(ContentOffer(
             account_id=str(account_id), fan_id=int(fan_id), item_id=int(item.id),
-            script_id=int(item.script_id) if item.script_id is not None else None,
+            # Always None since the 2026-08-19 singles-only ruling; the column
+            # stays for the legacy script-offer rows already in the table.
+            script_id=None,
             mode=mode,
             price_cents=price_c if int(item.price_cents or 0) else 0,
-            tip_unlock_cents=tip_c if int(item.tip_unlock_cents or 0) else 0,
+            # Always 0 since the ppv-only ruling: every reader of this column
+            # gates on the legacy "tip"/"both" row modes first, so copying an
+            # item's leftover tip_unlock onto a new row would be write-only
+            # data that only misleads the sessions view.
+            tip_unlock_cents=0,
             offer_message_id=int(offer_message_id) if offer_message_id else None,
             status=status, resolved_by=resolved_by,
             delivery_message_id=int(delivery_message_id) if delivery_message_id else None,
@@ -2298,50 +2215,6 @@ async def _mark_media_purchased(account_id: str, fan_id: int, media: list[int]) 
     silent no-op."""
     await ownership.stamp_media_owned(
         account_id, fan_id, [int(m) for m in media], source="offer_delivery")
-
-
-async def _ensure_progress(account_id: str, fan_id: int, item: CatalogItem) -> None:
-    """First offer/delivery on a script pins the fan to it (active at the item's
-    position). Idempotent."""
-    if item.script_id is None:
-        return
-    now = datetime.utcnow()
-    async with get_session() as s:
-        await s.execute(
-            sqlite_insert(CatalogProgress)
-            .values(account_id=str(account_id), fan_id=int(fan_id),
-                    script_id=int(item.script_id),
-                    position=int(item.position or 0), status="active",
-                    started_at=now, updated_at=now)
-            .on_conflict_do_nothing(
-                index_elements=["account_id", "fan_id", "script_id"])
-        )
-
-
-async def _advance_progress(account_id: str, fan_id: int, item: CatalogItem) -> None:
-    """Item delivered → the fan's pin moves to the next position; past the last
-    enabled item the script is done (once per fan, forever)."""
-    if item.script_id is None or item.position is None:
-        return
-    next_pos = int(item.position) + 1
-    now = datetime.utcnow()
-    async with get_session() as s:
-        max_pos = (await s.execute(
-            select(func.max(CatalogItem.position)).where(
-                CatalogItem.account_id == str(account_id),
-                CatalogItem.script_id == int(item.script_id),
-                CatalogItem.enabled.is_(True))
-        )).scalar_one_or_none()
-        status = "done" if (max_pos is None or next_pos > int(max_pos)) else "active"
-        await s.execute(
-            sqlite_insert(CatalogProgress)
-            .values(account_id=str(account_id), fan_id=int(fan_id),
-                    script_id=int(item.script_id), position=next_pos,
-                    status=status, started_at=now, updated_at=now)
-            .on_conflict_do_update(
-                index_elements=["account_id", "fan_id", "script_id"],
-                set_={"position": next_pos, "status": status, "updated_at": now})
-        )
 
 
 async def _resolve_offer(offer_id: int, *, status: str, resolved_by: str | None,
@@ -2722,8 +2595,9 @@ async def _maybe_discount_resend(client, account_id: str, cfg: dict,
     fan_id = int(offer.fan_id)
     if not offer.offered_at or offer.offered_at > now - timedelta(minutes=upsell.RESEND_AFTER_M):
         return False
-    # PPV-only: a tip ask has no locked message to pull, so there is nothing to
-    # double-buy — and re-asking a fan who ignored the first ask is begging.
+    # Only a PPV-carrying offer has a locked message to unsend-and-reprice; a
+    # LEGACY tip-only row (mode "tip", pre-2026-08-19 — nothing creates one now)
+    # has nothing to pull, and re-asking a fan who ignored a tip ask is begging.
     if offer.mode not in ("ppv", "both") or not offer.offer_message_id:
         return False
     ladders = await _load_ladders(account_id, [fan_id])
@@ -2896,10 +2770,12 @@ async def _resolve_open_offers(account_id: str, client, cfg: dict,
                                only_fan_ids: set[int] | None = None) -> dict:
     """The unlock watcher — runs every tick BEFORE candidate filtering (a fan
     doesn't have to speak to unlock). Three signals, in cost order: tips since
-    offered_at (transactions table, real-time via the tip hook), the ledger
-    convergence flipping messages.is_paid (≤10 min), and a targeted OF re-read
-    for a recently-active fan (the bought-then-replied fast path). Also expires
-    offers past the stall TTL.
+    offered_at (transactions table, real-time via the tip hook — LEGACY ROWS
+    ONLY: it can fire only on the "tip"/"both" offers that predate the
+    2026-08-19 ppv-only ruling, which must keep resolving until they clear),
+    the ledger convergence flipping messages.is_paid (≤10 min), and a targeted
+    OF re-read for a recently-active fan (the bought-then-replied fast path).
+    Also expires offers past the stall TTL.
 
     With the gate on it is ALSO where the ladder turns: a PAID rung flips the fan
     HOT (post-purchase re-offer conversion decays 66.7% <5min → 45.0% >24h, so the
@@ -2975,6 +2851,8 @@ async def _resolve_open_offers(account_id: str, client, cfg: dict,
                                                 int(offer.offer_message_id)):
                     paid_by = "ppv_fastpath"
         tips = 0
+        # LEGACY ROWS ONLY (see docstring): mode "tip"/"both" stopped being
+        # creatable on 2026-08-19; this arm exists so the open rows resolve.
         if paid_by is None and offer.mode in ("tip", "both") and offer.offered_at:
             tips = await _tip_sum_since(account_id, fan_id, offer.offered_at)
             if tips != int(offer.tips_accum_cents or 0) and not dry_run:
@@ -3017,7 +2895,6 @@ async def _resolve_open_offers(account_id: str, client, cfg: dict,
             # resolves 'delivered' above), and OUTSIDE the gate_on block below (gate-off
             # accounts need dedup too). This is what stops a ladder reset re-selling the item.
             await _mark_media_purchased(account_id, fan_id, _item_media(item))
-            await _advance_progress(account_id, fan_id, item)
             stats["unlocked_tip" if paid_by == "tip" else "unlocked_ppv"] += 1
             if gate_on:
                 # He PAID. This is the moment worth money: once a fan has bought once
@@ -3082,7 +2959,10 @@ async def _resolve_open_offers(account_id: str, client, cfg: dict,
 
 async def has_open_tip_offer(account_id: str, fan_id: int) -> bool:
     """For the tip hook: should ai_chatter claim this fan's tip (suppressing the
-    generic tip_reward)? True iff enabled AND an open tip-capable offer exists."""
+    generic tip_reward)? True iff enabled AND an open tip-capable offer exists.
+    LEGACY ROWS ONLY: nothing creates "tip"/"both" offers since the 2026-08-19
+    ppv-only ruling, so this can only be True while a pre-ruling row is still
+    open — it decays to constant False as those rows resolve or expire."""
     if not await is_enabled(account_id):
         return False
     for o in await _open_offers(account_id, fan_id):
@@ -3092,7 +2972,7 @@ async def has_open_tip_offer(account_id: str, fan_id: int) -> bool:
 
 
 async def _maybe_bootstrap_profile(account_id: str, fan_id: int) -> bool:
-    """Item 22 — cold-start notes. `_maybe_refresh_profile` (shared with of_ai_chat)
+    """Item 22 — cold-start notes. `_maybe_refresh_profile` (shared with welcome_chatter_for_info)
     only enqueues gen_info once a fan crosses gen_info's staleness gate
     (`_MIN_NEW_MSGS = 8` new inbound). A fan who chats only a handful of times
     therefore NEVER gets a profile — so no notes ever get pushed (the "Jordan never
@@ -3501,13 +3381,11 @@ async def _fire_post_buy_rung(client, account_id: str, cfg: dict, fan_id: int,
     fan_spoke_last=True — the PURCHASE substitutes for fan_spoke_last AND NOTHING ELSE.
     Prices off the band via smart pricing when on, else the catalog. Sends ONE priced
     attach after the §3.6 45s+ pacing floor. Returns 1 if a rung went out, else 0."""
-    scripts, catalog_items = await _load_catalog(account_id)
+    catalog_items = await _load_catalog(account_id)
     if not catalog_items or not await _offer_caps_ok(
             account_id, fan_id, {**cfg, "min_fan_msgs_between_offers": 0}):
         return 0
-    offerable = await _offerable_for_fan(account_id, fan_id,
-                                         str(cfg.get("offer_mode") or "ppv"),
-                                         scripts, catalog_items)
+    offerable = await _offerable_for_fan(account_id, fan_id, catalog_items)
     await _drop_owned(account_id, fan_id, offerable)
     if not offerable:
         return 0
@@ -3549,9 +3427,6 @@ async def _fire_post_buy_rung(client, account_id: str, cfg: dict, fan_id: int,
                    key=lambda it: int(it.price_cents or 0), default=None)
         if item is None:
             return 0
-    mode_eff = _effective_mode(item, str(cfg.get("offer_mode") or "ppv"))
-    if mode_eff not in ("ppv", "both"):
-        return 0                       # tip-only post-buy rung not fired here
     media = _item_media(item)
     px = int(quote.price_cents) if quote is not None else int(item.price_cents or 0)
     px = max(upsell.OF_PRICE_FLOOR_CENTS, min(px, upsell.OF_PRICE_MAX_CENTS))
@@ -3587,8 +3462,7 @@ async def _fire_post_buy_rung(client, account_id: str, cfg: dict, fan_id: int,
         body=str(result.get("text") or line), price_cents=px,
         created_at=ax._parse_iso(result.get("createdAt")) or now, emit_live=True)
     await _record_vault_sends(account_id, fan_id, media, int(msg_id), px)
-    await _ensure_progress(account_id, fan_id, item)
-    await _record_offer(account_id, fan_id, item, mode_eff, int(msg_id),
+    await _record_offer(account_id, fan_id, item, "ppv", int(msg_id),
                         quoted_cents=px)
     if quote is not None:
         await _record_quote(account_id, fan_id, item, quote, rung_index=rung_index,
@@ -3662,7 +3536,7 @@ async def _run_aftercare(account_id: str, payload: dict, cfg: dict) -> dict:
         if (bool(cfg.get("gift_enabled")) and not regret_active
                 and await _session_paid_rungs(account_id, fan_id, now) >= 2):
             seen = await _seen_media(account_id, fan_id)
-            _scripts, items = await _load_catalog(account_id)
+            items = await _load_catalog(account_id)
             for it in items:
                 media = _item_media(it)
                 if (media and not any(m in seen for m in media)
@@ -4252,52 +4126,6 @@ async def _fan_ladder_state(account_id: str, fan_id: int, f: Fan | None,
                            has_ever_paid=ever)
 
 
-async def _next_tip_ask_cents(account_id: str, fan_id: int,
-                              item: CatalogItem, cfg: dict,
-                              cap_cents: int | None = None) -> int:
-    """The adaptive tip-ask amount (cents) for a TIP-mode offer to this fan.
-
-    Escalates when he UNLOCKED his last tip offer (status 'delivered'), softens
-    40–60% when he didn't, floored at his biggest-ever tip. Reads prior tip
-    offers + the tip ledger — no new per-fan state column. Consistency is the
-    whole point: the caller writes this ONE value onto the item's quote, so the
-    manifest the model sees, the recorded tip threshold, and the unlock watcher
-    all agree (a mismatch would show the fan one price and unlock at another).
-
-    `cap_cents` (the account's PPV-library max, ≤ $200) overrides the static
-    config cap when the caller has the library bounds — so a tip never climbs
-    above what the account actually sells (the graded vault tops out at $100)."""
-    base = int(item.tip_unlock_cents or 0) or int(cfg.get("tip_ladder_base_cents") or 1000)
-    cap = int(cap_cents if cap_cents else (cfg.get("tip_ladder_cap_cents") or 20000))
-    cap = min(cap, upsell.OF_PRICE_MAX_CENTS)
-    async with get_session() as s:
-        last = (await s.execute(
-            select(ContentOffer.tip_unlock_cents, ContentOffer.status)
-            .where(ContentOffer.account_id == str(account_id),
-                   ContentOffer.fan_id == int(fan_id),
-                   ContentOffer.mode.in_(("tip", "both")),
-                   ContentOffer.tip_unlock_cents > 0)
-            .order_by(ContentOffer.offered_at.desc(), ContentOffer.id.desc())
-            .limit(1))).first()
-        biggest = (await s.execute(
-            select(func.max(Transaction.amount_cents)).where(
-                Transaction.account_id == str(account_id),
-                Transaction.fan_id == int(fan_id),
-                Transaction.kind.in_(_TIP_KINDS),
-                Transaction.status.in_(("cleared", "pending"))))).scalar_one_or_none()
-    last_ask = int(last[0]) if last else 0
-    paid_last = bool(last and last[1] == "delivered")
-    return tip_ladder.next_tip_ask(
-        last_ask_cents=last_ask, biggest_tip_cents=int(biggest or 0),
-        paid_last=paid_last, base_cents=base,
-        step_mult=float(cfg.get("tip_ladder_step") or 1.5),
-        cut_lo=float(cfg.get("tip_ladder_cut_lo") or 0.40),
-        cut_hi=float(cfg.get("tip_ladder_cut_hi") or 0.60),
-        floor_cents=int(cfg.get("tip_ladder_floor_cents") or 500),
-        cap_cents=cap,
-        rand=random.random())
-
-
 async def _buyer_facts(account_id: str, fan_id: int) -> list[str]:
     """His spend history as buyer CONTEXT for the shared prompt — so BOTH the
     chatter and the seller (one engine) know what he has already bought AND
@@ -4671,7 +4499,7 @@ def _pack_line(slot: str, cfg: dict, fan_id: int, *, name: str | None = None,
         voice=cfg.get("_account_voice", _voice.VOICE_HER))
 
 
-# ── Prompt (forked from of_ai_chat._build_messages — adds the sell seam) ─────
+# ── Prompt (forked from welcome_chatter_for_info._build_messages — adds the sell seam) ─────
 
 # ── WHICH BEAT OWNS THIS TURN ────────────────────────────────────────
 #
@@ -4884,11 +4712,11 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     # account with no day log produces a byte-identical prompt.
                     day: "_daylog.Day" = _daylog.NO_DAY,
                     ) -> tuple[list[dict], list[str]]:
-    """Compose the (system, user) pair — of_ai_chat's girly info-gather prompt
+    """Compose the (system, user) pair — welcome_chatter_for_info's girly info-gather prompt
     with one structural difference: `sell`. `_NO_SELL` (M2) → the no-offers line
     stays, byte-equal behavior. A live surface (M3) → the offer rules replace it.
     The ask/breather dice, the facts block, and the style variants are copied
-    verbatim so the voice can't drift from of_ai_chat's.
+    verbatim so the voice can't drift from welcome_chatter_for_info's.
 
     NOTHING HERE KNOWS WHAT IS BEING SOLD. The three directives below pick the
     MOMENT (he asked / he's leaning in / the thread is hot) and splice
@@ -4990,7 +4818,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         for d, b, mid in lines
     )
 
-    # Ask/breather smoothing — verbatim port of of_ai_chat's dice.
+    # Ask/breather smoothing — verbatim port of welcome_chatter_for_info's dice.
     fan_run: list[str] = []
     for d, b in reversed(history):
         if d == "in" and b:
@@ -5231,7 +5059,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     elif opener is not None:
         # The gather is done, so this turn works in one gen_info opener — a question
         # mined from something he actually said — instead of the generic banter
-        # below. Unlike of_ai_chat, ai_chatter never graduates a fan: when the pool
+        # below. Unlike welcome_chatter_for_info, ai_chatter never graduates a fan: when the pool
         # runs dry run() queues a refill and carries on.
         need_block = _openers.need_block(opener)
     elif not question_lines:
@@ -5295,7 +5123,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     stickers = f"\n\n{_sticker_block}" if _sticker_block else ""
 
     # M3 seam: with no catalog in play the no-offers rule applies (chat-only,
-    # current of_ai_chat behavior); with one, a short pointer goes in the intro
+    # current welcome_chatter_for_info behavior); with one, a short pointer goes in the intro
     # and the FULL sell block lands as its own section near the end of the
     # prompt (high salience — inlining 20 manifest lines mid-sentence buried it).
     has_sell = sell.live
@@ -5313,7 +5141,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     sell_section = f"\n\n{sell.block.strip()}\n\n" if has_sell else "\n\n"
 
     # The prompt clock ("" when the account has no tz configured → byte-equal
-    # prompt) — same block as of_ai_chat. "what time is it where you are?" is
+    # prompt) — same block as welcome_chatter_for_info. "what time is it where you are?" is
     # the classic bot trap, and a model with no clock invents one.
     clock_block = (
         f"RIGHT NOW for you it is {clock} — never claim a different time of "
@@ -5402,9 +5230,9 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         + _customs.prompt_block(custom_owed, v.voice)
     )
     # TIER B — what she has ALREADY told THIS fan. USER message (per-fan, never
-    # prefix-cached) — same placement and reasoning as of_ai_chat's. ai_chatter
+    # prefix-cached) — same placement and reasoning as welcome_chatter_for_info's. ai_chatter
     # matters most here: it has NO turn cap, so the 383- and 966-turn threads that
-    # produced the contradictions all live in this engine, not of_ai_chat's
+    # produced the contradictions all live in this engine, not welcome_chatter_for_info's
     # (_MAX_TURNS=30 / _MAX_FAN_MESSAGES=10 / $1 spend gate).
     claims_block = fan_claims_block(f)
     # 🙋 HER CANON, ONLY WHEN HE ASKED. In the USER message, not the system: it is
@@ -5424,7 +5252,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # halves are per-fan, so both belong in the user message, and the system block
     # above is the account-constant half.
     day_user = day.user_block(f, c.last_in_text or "")
-    # same placement and reasoning as of_ai_chat's.
+    # same placement and reasoning as welcome_chatter_for_info's.
     user = (
         f"What you know about him:\n{facts_block}{personal_block}\n\n"
         f"{bio_block}"
@@ -5690,9 +5518,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     only_fan_ids = coerce_ids(payload.get("only_fan_ids"))
     # Fans flagged as buying-intent by the caller (e.g. the inbound-image hook: a
     # fan sending US a photo IS a buying signal, but it carries no text the intent
-    # regexes can match). In closer (intent_only) mode these engage like an explicit
-    # content-ask — every other gate (spend, cooldown, lease, fan-spoke-last) still
-    # applies. Empty by default → no behavior change for normal sweeps.
+    # regexes can match). Drives the cadence gate's `pic` tier — every other gate
+    # (spend, cooldown, lease, fan-spoke-last) still applies. Empty by default →
+    # no behavior change for normal sweeps.
     intent_fan_ids = coerce_ids(payload.get("intent_fan_ids"))
     history_tail = int(payload.get("history_tail") or _HISTORY_TAIL)
 
@@ -5881,7 +5709,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     # ── Include-only audience: intersect HERE, before every ownership/spend
     # snapshot. `seller_owned_fans`' `always` set is built FROM by_fan, so a
-    # fenced fan can never be resurrected by it; the of_ai_chat
+    # fenced fan can never be resurrected by it; the welcome_chatter_for_info
     # partition reads `engaged_subset(by_fan-derived sets)` and shrinks with it.
     # force_ids is operator-explicit manual targeting — exempt, like the manual
     # stamp (the exemption register names it).
@@ -5896,8 +5724,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     # ── M3 offer layer: resolve unlocks FIRST (a fan doesn't have to speak to
     # buy), then load the catalog + the open-offer map the prompts read.
-    cfg_offer_mode = str(cfg.get("offer_mode") or "ppv")
-    intent_only = bool(cfg.get("intent_only"))
     pivot_on_escalation = bool(cfg.get("pivot_on_escalation"))
     reply_ctx_on = bool(cfg.get("reply_context_enabled"))
     # Arm G. All three off by default ⇒ `reshape` returns its inputs and the
@@ -5943,26 +5769,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     describe_on, _describe_seed, _describe_scope = \
         await _tip_reward.image_describe_flags(account_id)
     # 🚫 THE PROMPT DOES NOT SELL — ONE GATE, HERE, at the shelf. Everything the
-    # catalogue reaches in this sweep is downstream of these two names (`catalog_items`
-    # decides whether a sell block is built; `scripts` only ever rides into
-    # `_offerable_for_fan` beside it), so emptying the shelf is what "she has nothing
-    # priced to pitch" means — and every branch below then reads exactly as it did
-    # before the flag existed, instead of each re-asking whether selling is on.
+    # catalogue reaches in this sweep is downstream of this one name (`catalog_items`
+    # decides whether a sell block is built), so emptying the shelf is what "she has
+    # nothing priced to pitch" means — and every branch below then reads exactly as it
+    # did before the flag existed, instead of each re-asking whether selling is on.
     # An empty shelf is a state those branches have always handled: it is what an
     # account that never built a catalogue has.
     #
     # ⚠️ SCOPE IS THE PROMPT. `_fire_post_buy_rung` loads its own catalogue and is
     # untouched — a post-buy rung is a priced attach sent out of band on a purchase,
     # not a pitch the model writes, so it is not what this ruling is about.
-    scripts, catalog_items = (
-        await _load_catalog(account_id) if prompt_sells else ({}, []))
+    catalog_items = await _load_catalog(account_id) if prompt_sells else []
     offer_stats = await _resolve_open_offers(account_id, client, cfg,
                                              dry_run=dry_run,
                                              only_fan_ids=only_fan_ids or None)
     open_by_fan = {int(o.fan_id): o for o in await _open_offers(account_id)}
-    # Recent payers (tip/PPV unlock in the last RECENT_PAYER_HOURS) count as
-    # intent in closer mode — the seller rides a just-paid hot moment even if the
-    # latest line isn't an explicit buy-ask. autoreply skips this exact set, so a
+    # Recent payers (tip/PPV unlock in the last RECENT_PAYER_HOURS) are a live
+    # sale — the seller rides a just-paid hot moment even if the latest line
+    # isn't an explicit buy-ask. autoreply skips this exact set, so a
     # hot lead is never demoted to never-sell keep-warm. Mirrors engaged_subset.
     recent_payers = await recent_payer_fans(account_id, list(by_fan.keys()))
     # The payer floor's roster — men who have ever bought CONTENT. One batched query,
@@ -6033,7 +5857,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     # Hard takeover (upsell_takes_over): a fan in an ACTIVE sale is driven by the
     # seller regardless of the base chatter mode — he bypasses the backup-SLA hold
-    # and the closer no-intent skip so a sale is never dropped mid-flow. "Active"
+    # so a sale is never dropped mid-flow. "Active"
     # = an open pending offer, a just-paid hot moment, or an OPEN|HOT ladder. Inert
     # unless the gate is on (no seller ⇒ nothing to take over). Hand-back is the
     # existing COOLDOWN → COMPANION transition, untouched.
@@ -6049,14 +5873,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     # ── The PAYER FLOOR, resolved ONCE for the whole sweep (`seller_owned_fans`).
     # Same call `engaged_subset` makes, so the fans this loop keeps and the fans
-    # of_ai_chat yields are one partition rather than two hand-rolled opinions.
+    # welcome_chatter_for_info yields are one partition rather than two hand-rolled opinions.
     # `always` is built from the structures already loaded above, so it costs no
     # extra query; when the floor is off the whole thing is `set(by_fan)`.
-    # `intent=None`: the closer's intent narrowing is a SEPARATE, later gate in the
-    # send loop (it needs the per-candidate body), so this pass applies only the
-    # floor. `engaged_subset` folds both because it answers for a whole tick.
     seller_fans = seller_owned_fans(
-        set(by_fan), intent=None, payers_only=payers_only,
+        set(by_fan), payers_only=payers_only,
         content_payers=content_payers,
         always={fid for fid in by_fan if _in_active_sale(fid)} | old_fan_ids)
 
@@ -6070,7 +5891,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_spam = 0        # promo-spam: $0 + creator_we_follow
     skipped_muted_creator = 0  # muted creator we follow — HARD skip (durable)
     skipped_whale = 0       # at/over the spend gate → human territory
-    skipped_not_payer = 0   # payer floor: never bought content → of_ai_chat's
+    skipped_not_payer = 0   # payer floor: never bought content → welcome_chatter_for_info's
     skipped_sla_fresh = 0   # backup mode: inbound younger than the SLA
     skipped_manual = 0      # a human chatted too recently (cautious resume)
     skipped_ghost = 0       # ghost cycle: she is dark on this fan for whole days
@@ -6147,7 +5968,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if f is not None and f.automation_paused_until and f.automation_paused_until > now:
             skipped_listed += 1
             continue
-        # Muted creator we follow — HARD skip even when forced (mirrors of_ai_chat;
+        # Muted creator we follow — HARD skip even when forced (mirrors welcome_chatter_for_info;
         # the scrape also writes a durable skip_list('muted_creator')).
         if should_skip_muted_creator(f):
             skipped_muted_creator += 1
@@ -6161,7 +5982,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     skipped_whale += 1
                     continue
             # The PAYER FLOOR — the whale gate's mirror at the bottom. He has never
-            # bought content, so he is of_ai_chat's to work and profile until he does.
+            # bought content, so he is welcome_chatter_for_info's to work and profile until he does.
             if fan_id not in seller_fans:
                 skipped_not_payer += 1
                 continue
@@ -6195,7 +6016,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         candidates.append(c)
 
     # Longest-waiting fan first — backup mode is an SLA queue, not a popularity
-    # contest (of_ai_chat sorts by volume; here fairness wins).
+    # contest (welcome_chatter_for_info sorts by volume; here fairness wins).
     candidates.sort(key=lambda x: (x.last_in_at or now, x.fan_id))
 
     sent = 0
@@ -6211,7 +6032,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     unbacked_stripped = 0    # price-talk bubbles dropped (no offer behind them)
     skipped_locked = 0
     skipped_cooldown = 0
-    skipped_no_intent = 0   # intent_only: fan is just chatting, no buying signal
     skipped_cadence = 0     # cadence: burst cap hit / post-purchase window lapsed
     quota_held = 0          # item 21c: daily quota spent, inside the backoff. COUNTED
                             # even in shadow mode — that is the whole point of shadow
@@ -6270,26 +6090,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                      account_id, max_replies)
             break
         fan_id = c.fan_id
-        # Closer mode: stay silent unless the fan's latest message shows buying
-        # intent, or he already has an open offer we're walking. Checked BEFORE
-        # the cooldown/lease/LLM work so skipped fans cost nothing. Pure chatter
-        # is left to the team / Auto Convo. A caller-flagged intent fan (e.g. one
-        # who just sent us a PHOTO) counts as intent even with no text signal.
-        # An ENGAGED OLD FAN is exempt: engage_old_fans means "the AI works the
-        # pre-AI roster", and in closer mode nobody else can — of_ai_chat
-        # hard-skips `old_fan_pre_ai`, so gating them on buying intent would leave
-        # them silent forever. ai_chatter is also the only bot with NO graduation
-        # cutoff, so it can just keep the convo going. engaged_subset() mirrors
-        # this exemption, so no second bot voice lands on them either.
-        if intent_only and fan_id not in old_fan_ids \
-                and open_by_fan.get(fan_id) is None \
-                and fan_id not in recent_payers \
-                and fan_id not in intent_fan_ids \
-                and not (takeover and _in_active_sale(fan_id)) \
-                and not _CONTENT_ASK_RE.search(c.last_body or "") \
-                and not ESCALATION_RE.search(c.last_body or ""):
-            skipped_no_intent += 1
-            continue
         # Cadence controller (items 10/17/21): continue-vs-stop for this fan, decided
         # BEFORE any cooldown/lease/LLM cost. A stop is a silent skip THIS tick — the
         # fan reopens on a real buying signal (tier upgrade) or after a session-gap
@@ -6920,7 +6720,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             elif ((catalog_items or v.sell_customs)
                     and await _offer_caps_ok(account_id, fan_id, caps_cfg)):
                 offerable = await _offerable_for_fan(account_id, fan_id,
-                                                     cfg_offer_mode, scripts,
                                                      catalog_items)
                 # §6.2 — rolling 7-day spend brake. Past the account's cap he is not
                 # silenced, he stops being CHARGED: downgrade to COMPANION for the
@@ -7062,22 +6861,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         quotes[int(pending.item_id)] = dataclasses.replace(
                             quotes[int(pending.item_id)],
                             price_cents=int(disc), clamped_by="discount")
-                # Tip ladder (workstream 3): for TIP-ONLY items, replace the PPV
-                # quote with the INDEPENDENT adaptive tip ask. Overriding the
-                # quote (not just the record) keeps the manifest the model asks
-                # from, ask_cents, and the recorded tip threshold all in lockstep.
-                if cfg.get("tip_ladder_enabled") and pricing_on and offerable:
-                    for iid, it in list(offerable.items()):
-                        if it.is_free_teaser or iid not in quotes:
-                            continue
-                        if _effective_mode(it, cfg_offer_mode) != "tip":
-                            continue
-                        # Cap the tip climb at the account's PPV-library MAX (≤$200).
-                        tip_cap = min(int(lib_bounds[1] or upsell.OF_PRICE_MAX_CENTS),
-                                      upsell.OF_PRICE_MAX_CENTS)
-                        amt = await _next_tip_ask_cents(account_id, fan_id, it, cfg,
-                                                        cap_cents=tip_cap)
-                        quotes[iid] = dataclasses.replace(quotes[iid], price_cents=int(amt))
                 # `offerable` is the CATALOGUE. Gating the whole manifest on it
                 # meant the customs carve-out — the one thing sellable when the
                 # vault is bought out — only rendered for accounts that still had
@@ -7092,10 +6875,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     if second_offer and offerable:
                         sell = _second_offer_block(
                             pending, await _get_item(int(pending.item_id)),
-                            offerable, scripts, cfg_offer_mode, quotes or None,
+                            offerable, quotes or None,
                             sell_customs=v.sell_customs)
                     else:
-                        sell = _manifest_block(offerable, scripts, cfg_offer_mode,
+                        sell = _manifest_block(offerable,
                                                quotes=quotes or None,
                                                sell_customs=v.sell_customs)
 
@@ -7510,8 +7293,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     log.info("ai_chatter FORCED ask (%s; model wrote no marker) "
                              "account=%s fan=%s item=%s",
                              _trigger, account_id, fan_id, offer_item.id)
-            offer_mode_eff = (_effective_mode(offer_item, cfg_offer_mode)
-                              if offer_item is not None else None)
             # The shared send chokepoint — off-platform guard, then PHASE 2. See
             # _outbound for why the sequence lives there and not inline. ai_chatter
             # matters most for PHASE 2: it has NO turn cap, so the 383- and
@@ -7650,9 +7431,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                           if _tcfg.get("adaptive") else None)
                 if _t_chk:
                     _t_sold = await _teaser_sold(account_id, fan_id, _t_chk)
-                # Has he EVER paid? The soften floor is the $3 wire minimum until he
-                # has and the rung's SET price after (tip_reward.convo_teaser_floors).
-                # Only queried when the ladder can actually soften.
+                # Has he EVER paid? The decay floor is static for everyone now; the
+                # fact only gates the free BAIT leg (tip_reward.convo_teaser_floors).
+                # Only queried when the ladder can actually jitter.
                 _t_max_paid = ((await _paid_ppv_facts(account_id, fan_id))[0]
                                if _tcfg.get("adaptive") else 0)
                 try:
@@ -7818,26 +7599,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # free teaser) → the catalog's static price, exactly as before.
             quote = quotes.get(int(offer_item.id)) if offer_item is not None else None
             ask_cents = int(quote.price_cents) if quote is not None else 0
-            # A TIP ask must be a WHOLE DOLLAR. A PPV's price rides in the locked box,
-            # so its cents tail is harmless (and is the point — a uniform .99 on every
-            # send is a perfect bot fingerprint). But a tip has no box: we TELL him the
-            # number, and the unlock watcher then requires `tips >= tip_unlock_cents`.
-            # Quote him $59.69, and the only sane thing he can type is a $59 tip — which
-            # is 5900 < 5969, so the offer NEVER unlocks. He would have paid and received
-            # nothing. The ask he is told and the threshold he must clear must be ONE
-            # number, so tip quotes are floored to the dollar here, at the source.
-            if ask_cents and offer_mode_eff == "tip":
-                ask_cents = max(1, ask_cents // 100) * 100
-            # Deterministic terms floor: a tip-unlock offer with no $ amount in
-            # the pitch leaves the fan with no way to know the terms (a PPV's
-            # locked box shows its price; a tip ask doesn't). Append the ask.
-            if (offer_item is not None and not offer_item.is_free_teaser
-                    and offer_mode_eff == "tip"
-                    and not re.search(r"\$\s*\d", " ".join(parts))):
-                tip_cents = ask_cents or int(offer_item.tip_unlock_cents or 0)
-                parts = parts[:max_bubbles - 1] if len(parts) >= max_bubbles else parts
-                parts.append(apply_word_restriction(
-                    f"tip ${tip_cents // 100} and its yours 😏"))
             name_protect = [n for n in (f.real_name, f.generated_nickname,
                                         f.of_display_name) if n]
             if nonnative_on:
@@ -8042,14 +7803,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             for idx, part in enumerate(parts):
                 # The LAST bubble carries the offer attach: free media for a
                 # teaser; locked media + free pitch text (locked_text=False —
-                # the OF gotcha) + free previews for a PPV-capable offer.
-                # Tip-only offers send plain text; media goes out on unlock.
+                # the OF gotcha) + free previews for a PPV offer.
                 kwargs: dict = {}
                 if offer_item is not None and idx == len(parts) - 1:
                     media = _item_media(offer_item)
                     if offer_item.is_free_teaser:
                         kwargs = {"media_files": media, "price": 0}
-                    elif offer_mode_eff in ("ppv", "both"):
+                    else:
                         # ask_cents (the ladder's quote) wins over the catalog's
                         # static price when smart pricing is on — and it is the SAME
                         # number the manifest showed the model, so the pitch text and
@@ -8120,7 +7880,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # exactly as before (byte-identical). This replaces any instant attach.
                 if (rhythm_on and offer_item is not None and idx == len(parts) - 1
                         and not offer_item.is_free_teaser
-                        and offer_mode_eff in ("ppv", "both") and kwargs.get("price")):
+                        and kwargs.get("price")):
                     drop = rhythm.ppv_drop_delay(
                         random.Random(f"drop:{account_id}:{fan_id}:{part[:24]}"),
                         stalled=filming_stall)
@@ -8360,7 +8120,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # ladder POSITION.
                 if kind == _TURN_ESCALATION:
                     offers_made_on_escalation += 1
-                await _ensure_progress(account_id, fan_id, offer_item)
                 if offer_item.is_free_teaser:
                     await _record_vault_sends(account_id, fan_id,
                                               _item_media(offer_item),
@@ -8369,15 +8128,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                         offer_msg_id, status="delivered",
                                         resolved_by="free",
                                         delivery_message_id=offer_msg_id)
-                    await _advance_progress(account_id, fan_id, offer_item)
                     teasers_sent += 1
                 else:
-                    if offer_mode_eff in ("ppv", "both"):
-                        await _record_vault_sends(
-                            account_id, fan_id, _item_media(offer_item), offer_msg_id,
-                            ask_cents or int(offer_item.price_cents or 0))
+                    await _record_vault_sends(
+                        account_id, fan_id, _item_media(offer_item), offer_msg_id,
+                        ask_cents or int(offer_item.price_cents or 0))
                     await _record_offer(account_id, fan_id, offer_item,
-                                        offer_mode_eff or "tip", offer_msg_id,
+                                        "ppv", offer_msg_id,
                                         quoted_cents=ask_cents or None)
                     offers_made += 1
                     if gate_on:
@@ -8429,7 +8186,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                       exc_info=True)
                 log.info("ai_chatter offer account=%s fan=%s item=%s mode=%s msg=%s",
                          account_id, fan_id, offer_item.id,
-                         "free" if offer_item.is_free_teaser else offer_mode_eff,
+                         "free" if offer_item.is_free_teaser else "ppv",
                          offer_msg_id)
             # Hot-thread teaser landed (mutually exclusive with offer_item): VaultSend
             # rows so the unseen filter never re-attaches these, and the per-fan cooldown
@@ -8528,7 +8285,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "stepout_blocked": stepout_blocked,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
-        "skipped_no_intent": skipped_no_intent,
         "skipped_cadence": skipped_cadence,
         # Item 21c. `quota_enforced` False ⇒ these fans were counted, not held: the
         # replies still went out. Flip daily_quota_enforce once the numbers look right.

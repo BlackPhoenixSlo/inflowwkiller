@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 from typing import NamedTuple
 
 import llm_client
+from automation_registry import LEGACY_KINDS
 from db.engine import get_session
 from db.models import AccountAiConfig, Fan, Message, SkipList, Transaction
 from sqlalchemy import and_, func, or_, select
@@ -175,7 +176,7 @@ async def quarantine_if_undeliverable(client, account_id, fan_id, *, log=log) ->
     quarantine the fan so we stop calling the model for them:
 
       * account deleted / 'User not found'  → skip_list ('unreachable') + a pause.
-        of_ai_chat/send_followup honour skip_list; the pause covers the
+        welcome_chatter_for_info/send_followup honour skip_list; the pause covers the
         pause-only senders (autoreply).
       * sub lapsed (`subscribedOn` falsy)    → record subscription_status='expired'
         + pause 1 WEEK (re-checks then, in case they re-subscribe).
@@ -237,7 +238,7 @@ async def _skip_and_rest(account_id, fan_id, now) -> None:
 
 # ── Muted-creator + manual "restrict from automations" skip-listing ─────────
 # Two DURABLE skip_list reasons that mean "no automation may ever message this
-# fan" — a HARD block honoured by EVERY sender (unlike the of_ai_chat promo-spam
+# fan" — a HARD block honoured by EVERY sender (unlike the welcome_chatter_for_info promo-spam
 # guard, which is reversible and only covers the gather opener):
 #   • 'muted_creator'   — auto: the fan is a creator we follow (subscribedBy) AND
 #       we've muted their chat on OF (isMutedNotifications). Mutual-promo spam.
@@ -249,7 +250,7 @@ async def _skip_and_rest(account_id, fan_id, now) -> None:
 #       to us, so automations must never message them either — and the durable
 #       row is what lets the roster badge / inbox counts exclude them (the thin
 #       skip_users=all /chats rows carry no isRestricted flag to key off).
-# Senders that already gate on FULL skip_list membership (of_ai_chat,
+# Senders that already gate on FULL skip_list membership (welcome_chatter_for_info,
 # send_followup, ai_chatter[≠graduation]) honour all three
 # for free; the senders that DON'T (autoreply, tip_reward, send_welcome) and the
 # list-broadcasts (mass_nudge, online_blast) load `load_hard_skip_ids` and
@@ -278,7 +279,7 @@ OPERATOR_STOP_REASONS = frozenset(
 
 
 # ── Self-healing fans.source classification ─────────────────────────────────
-# `fans.source` is what tells the muted-creator auto-skip AND the of_ai_chat /
+# `fans.source` is what tells the muted-creator auto-skip AND the welcome_chatter_for_info /
 # gen_info / ai_chatter promo-spam guards that a chat is a peer-creator
 # (`creator_we_follow`) rather than a real fan. It is derived from OF's
 # relationship flags (`subscribedOn` → us=their creator → 'fan';
@@ -571,9 +572,9 @@ DEFAULT_MODEL = "deepseek-v4-flash"
 # CURRENT prompt + 2-bubble cap byte-for-byte. When ON, the automation appends
 # STYLE_HUMANIZER to its system prompt, adds STYLE_3LINE to its style dice, and
 # raises its bubble cap to STYLE_MAX_BUBBLES. gated wholly on style_config_json
-# {"of_ai_chat":bool,"autoreply":bool,"ai_chatter":bool}.
+# {"welcome_chatter_for_info":bool,"autoreply":bool,"ai_chatter":bool}.
 STYLE_MAX_BUBBLES = 6   # a real texter can fire off a burst of quick texts in a row
-STYLE_AUTOMATIONS = ("of_ai_chat", "autoreply", "ai_chatter")
+STYLE_AUTOMATIONS = ("welcome_chatter_for_info", "autoreply", "ai_chatter")
 
 # The engines that actually CALL _persona.verify_self_consistency. Deliberately
 # NOT STYLE_AUTOMATIONS: the style layers above are prompt-level and every engine
@@ -584,7 +585,7 @@ STYLE_AUTOMATIONS = ("of_ai_chat", "autoreply", "ai_chatter")
 #
 # Widen this ONLY in the commit that adds the call, never ahead of it. The
 # invariant is asserted by test_consistency_check.case_no_inert_flags.
-CONSISTENCY_AUTOMATIONS = ("of_ai_chat", "ai_chatter")
+CONSISTENCY_AUTOMATIONS = ("welcome_chatter_for_info", "ai_chatter")
 
 # The "not-AI" block — the tells that make automated chat read like a person.
 # Re-exported from `_voice` (female lane), same as PAINFUL_TEXTING above. Two
@@ -621,7 +622,7 @@ PAINFUL_TEXTING = _voice.HER.painful_texting
 # info ("Content referring to off-platform meetings between creators and fans").
 # A fan pushing for a meetup/number used to drift the model into agreeing —
 # this block forbids that outright while still allowing flirty fantasy. Inject
-# into every conversational system prompt (autoreply / of_ai_chat / ai_chatter).
+# into every conversational system prompt (autoreply / welcome_chatter_for_info / ai_chatter).
 ONPLATFORM_GUARDRAIL = (
     "STAY ON ONLYFANS (hard rule, even if HE asks): never swap numbers/emails/"
     "socials, never plan to meet irl — flirty fantasy fine, actual invites never. "
@@ -656,7 +657,7 @@ LIVE_PROOF_GUARDRAIL = _voice.HER.live_proof
 # The prompt half of the narration rule; `_markers.strip_narration` is the
 # deterministic floor under it. ONE definition because both chat engines state it
 # and a house rule the two of them word differently is a house rule in name only —
-# these two prompts have already drifted once (of_ai_chat carries a nudes rule
+# these two prompts have already drifted once (welcome_chatter_for_info carries a nudes rule
 # ai_chatter doesn't). Kept next to the other guardrails, which is where every
 # engine already looks for shared prompt text.
 NO_NARRATION_RULE = (
@@ -671,9 +672,9 @@ BIO_CONSISTENCY_GUARDRAIL = (
 )
 
 # ── Canonical "does this column carry signal" predicate ───────────────
-# Promoted here from of_ai_chat (its 50 call sites keep working via a re-export)
+# Promoted here from welcome_chatter_for_info (its 50 call sites keep working via a re-export)
 # so the shared layer owns it: it is a general predicate over nullable text/JSON
-# columns, not an of_ai_chat concept, and _persona needs it too. Adding a second
+# columns, not an welcome_chatter_for_info concept, and _persona needs it too. Adding a second
 # near-identical helper instead of promoting this one was the original mistake.
 def nonempty(v) -> bool:
     """True when a column carries real signal (not '', not '[]'/'{}')."""
@@ -736,9 +737,9 @@ def strip_inverted_punct(s: str) -> str:
 def is_substantive_msg(text: str | None) -> bool:
     """True if an inbound carries real conversational content — at least one
     alphanumeric char once emoji are stripped. Pure reactions ('😍', '🔥🔥', '...')
-    are NOT a real message turn: they must not burn a slot toward of_ai_chat's
+    are NOT a real message turn: they must not burn a slot toward welcome_chatter_for_info's
     runaway cap (_MAX_FAN_MESSAGES) nor inflate gen_info's message_count_at_gen
-    (the profile-staleness baseline). of_ai_chat AND gen_info both call this so the
+    (the profile-staleness baseline). welcome_chatter_for_info AND gen_info both call this so the
     cap-count and the staleness baseline use ONE convention. Pass HTML-STRIPPED
     text (the '<p>' tags are alnum and would falsely read as content)."""
     return bool(text) and any(ch.isalnum() for ch in _EMOJI_STRIP_RE.sub("", text))
@@ -749,7 +750,7 @@ def is_substantive_msg(text: str | None) -> bool:
 # offer engine must not read it as one. Measured: 14,755 of 86,051 real inbounds
 # (17.1%) are low-information but pass is_substantive_msg. Hence a SECOND, stricter
 # predicate rather than an edit to the first: tightening is_substantive_msg would
-# silently change of_ai_chat's runaway cap and gen_info's staleness baseline.
+# silently change welcome_chatter_for_info's runaway cap and gen_info's staleness baseline.
 _LOW_INFO_TOKENS = frozenset({
     "k", "kk", "ok", "okay", "lol", "lmao", "haha", "hi", "hey", "yo", "u", "yes",
     "no", "sure", "nice", "cool", "thanks", "ty", "thx", "yeah", "yep", "ya", "hmm",
@@ -997,7 +998,7 @@ def is_filming_refusal(text: str | None) -> bool:
 # text style flags as option and ENABLED BY DEFAULT". So the absent-key default is
 # now PER-AUTOMATION rather than a flat False:
 #   • ai_chatter          → ON  when the operator has written NO explicit key
-#   • every other sender  → OFF (of_ai_chat / autoreply UNCHANGED)
+#   • every other sender  → OFF (welcome_chatter_for_info / autoreply UNCHANGED)
 # An EXPLICIT stored value (True OR False) is ALWAYS honoured verbatim — a human who
 # unticked ai_chatter keeps it off; only the ABSENT-key case consults this map. This
 # is the whole tri-state: {explicit-true, explicit-false, absent→per-automation}.
@@ -1021,14 +1022,29 @@ def _style_default(automation: str) -> bool:
 
 
 def _parse_style_config(raw) -> dict:
-    """Parse a style_config_json blob to a dict, tolerating NULL / garbage → {}."""
+    """Parse a style_config_json blob to a dict, tolerating NULL / garbage → {}.
+
+    Legacy keys: a blob written before a kind rename (automation_registry.
+    LEGACY_KINDS) still keys that automation's flags by the old name
+    ('of_ai_chat', 'typos_of_ai_chat', …). Normalized here — the one parse
+    chokepoint every flag reader goes through — so a stale blob keeps its
+    meaning; an explicit new-name key wins over a leftover legacy one. The
+    block no-ops (and can go) once LEGACY_KINDS empties."""
     if not raw:
         return {}
     try:
         stored = json.loads(raw)
     except Exception:
         return {}
-    return stored if isinstance(stored, dict) else {}
+    if not isinstance(stored, dict):
+        return {}
+    for legacy, live in LEGACY_KINDS.items():
+        for old_key in [k for k in stored
+                        if k == legacy or k.endswith("_" + legacy)]:
+            new_key = old_key[: -len(legacy)] + live
+            legacy_val = stored.pop(old_key)
+            stored.setdefault(new_key, legacy_val)
+    return stored
 
 
 def _resolve_style_flag(stored: dict, automation: str, key: str) -> bool:
@@ -1134,7 +1150,7 @@ async def load_voice_blocks(account_id: str) -> "_voice.VoiceBlocks":
     That is the whole point: the two axes used to be two separate awaits
     (`load_account_voice` + `load_sell_customs_flag`), which cost two round-trips
     to the same row and — far worse — let an engine resolve one and forget the
-    other. `of_ai_chat` did exactly that: it loaded `sell_customs` and never
+    other. `welcome_chatter_for_info` did exactly that: it loaded `sell_customs` and never
     loaded `voice`, so a male account got a customs tip-ask wrapped in a female
     texting frame, female refusal examples and female canned deflections, with
     nothing anywhere reporting the half-state.
@@ -1458,8 +1474,8 @@ async def load_nonnative_flags(account_id: str) -> dict[str, bool]:
     return {k: _resolve_style_flag(stored, k, nonnative_flag_key(k)) for k in STYLE_AUTOMATIONS}
 
 
-# ── "Fact-grounding" personalization layer (Auto Convo / of_ai_chat) ──
-# When on, of_ai_chat's reply prompt is fed gen_info's rich profile — the short_bio +
+# ── "Fact-grounding" personalization layer (Auto Convo / welcome_chatter_for_info) ──
+# When on, welcome_chatter_for_info's reply prompt is fed gen_info's rich profile — the short_bio +
 # bullet notes — plus a "work in ONE specific detail" nudge, the same personalization
 # ai_chatter already carries. Makes a bubble land as "she remembers me" instead of
 # generic. DEFAULT ON: a fan with no profile on file yet is unaffected (the block only
@@ -1468,7 +1484,7 @@ async def load_nonnative_flags(account_id: str) -> dict[str, bool]:
 # NOT the teases: those reach the model only through `_openers.need_block`, which
 # paces them and marks them used. This layer once carried them too, as a menu — see
 # ONE CHANNEL in _openers.py for why one metered door beats two unmetered ones.
-FACTGROUND_KEY = "factground_of_ai_chat"
+FACTGROUND_KEY = "factground_welcome_chatter_for_info"
 # Account-wide toggle key (style_config_json) for the PAINFUL_TEXTING framing block.
 PAINFUL_TEXTING_KEY = "painful_texting"
 # Account-wide toggle key (style_config_json): may this creator sell CUSTOMS —
@@ -1488,19 +1504,15 @@ CAT_STICKER_GAP_MIN_KEY = "cat_sticker_gap_min"    # per-fan minutes between sti
 
 
 async def load_factground_flag(account_id: str) -> bool:
-    """Read account_ai_config.style_config_json → the 'factground_of_ai_chat' bool for
+    """Read account_ai_config.style_config_json → the 'factground_welcome_chatter_for_info' bool for
     Auto Convo's rich-profile personalization. Absent/NULL/parse-error → True (default
     ON); only an EXPLICIT stored False turns it off."""
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, str(account_id))
     raw = getattr(cfg, "style_config_json", None) if cfg else None
-    if not raw:
-        return True
-    try:
-        stored = json.loads(raw) or {}
-    except Exception:
-        return True
-    return bool(stored.get(FACTGROUND_KEY, True))
+    # Through the parse chokepoint: FACTGROUND_KEY was renamed 2026-08-19, and
+    # only _parse_style_config maps a legacy blob's explicit False to it.
+    return bool(_parse_style_config(raw).get(FACTGROUND_KEY, True))
 
 
 # ── "Hard" thumb-typo injector (opt-in, deterministic) ────────────────
@@ -1891,7 +1903,16 @@ async def resolve_model(account_id: str, purpose: str, override: str | None = No
     if cfg is not None:
         if cfg.model_by_purpose:
             try:
-                chosen = (json.loads(cfg.model_by_purpose) or {}).get(purpose)
+                by_purpose = json.loads(cfg.model_by_purpose) or {}
+                chosen = by_purpose.get(purpose)
+                # Legacy keys: a blob written before a kind rename (see
+                # automation_registry.LEGACY_KINDS) still keys the override by
+                # the old name. No-ops once LEGACY_KINDS empties.
+                if chosen is None:
+                    for legacy, live in LEGACY_KINDS.items():
+                        if purpose == live:
+                            chosen = by_purpose.get(legacy)
+                            break
             except Exception:
                 chosen = None
                 log.warning("bad_model_by_purpose account=%s purpose=%s", account_id, purpose)
@@ -1962,7 +1983,7 @@ def build_facts_note(facts: dict, max_len: int = _FACTS_NOTE_MAX,
 
 # ── R2: the APP-ONLY rich note ───────────────────────────────────────
 # The OF note is capped at 200 (build_facts_note above, pushed by apply_profiles /
-# of_ai_chat). Our UI can show much more. build_rich_note is a SEPARATE,
+# welcome_chatter_for_info). Our UI can show much more. build_rich_note is a SEPARATE,
 # app-only projection that reads the STORED gen_info bullet_points (the rich text that
 # actually carries the "Important:" section — the push_to_sheets rebuild drops it) plus
 # the short_bio, and caps by the fan's spend tier (higher spend ⇒ longer). It is NEVER
@@ -2293,7 +2314,7 @@ def guard_offplatform(text: str, rng,
 
 # ── "Fan asked to see content via text" → natural tip-ask ─────────────
 # When a fan asks to SEE content in a plain text ("can i see some content??",
-# "show me more", "what u got"), the info-gather / keep-warm senders (of_ai_chat,
+# "show me more", "what u got"), the info-gather / keep-warm senders (welcome_chatter_for_info,
 # autoreply) don't sell PPV — but answering with banter ignores a buying signal,
 # and the old never-sell fallback literally blurted the bare word "tip". So those
 # senders swap in a natural, in-voice tip-ask ("tip me $X and i'll send u something
@@ -2389,7 +2410,7 @@ def is_content_ask(text: str | None) -> bool:
 # horny ("can i spank it", "wanna play", "so hard") is a HOT moment the SELLER
 # (ai_chatter) should ride, even though it's not an explicit "show me content"
 # ask. Kept SEPARATE from CONTENT_ASK_RE on purpose: CONTENT_ASK_RE also drives
-# of_ai_chat's and autoreply's tip-ask, and we do NOT want the opener pitching
+# welcome_chatter_for_info's and autoreply's tip-ask, and we do NOT want the opener pitching
 # mid-gather — only the closer's intent gate consults this.
 ESCALATION_RE = re.compile(
     r"(spank|choke|"
@@ -2521,7 +2542,7 @@ async def recent_payer_fans(account_id: str, fan_ids,
 
 async def content_payer_fans(account_id: str, fan_ids) -> set[int]:
     """Subset of `fan_ids` who have ever paid for CONTENT — a tip, or a PPV unlock.
-    THE definition of "he is a customer", shared by of_ai_chat's hand-off and
+    THE definition of "he is a customer", shared by welcome_chatter_for_info's hand-off and
     ai_chatter's payer floor so the two can never disagree about who owns a fan.
 
     A SUBSCRIPTION IS NOT A PURCHASE, and that is the whole point of reading
@@ -2641,7 +2662,7 @@ def build_tip_ask_block(amount_dollars: int | None = None, template: str = "",
     `amount_dollars` is set she SUGGESTS that figure; when None she asks for a tip
     WITHOUT naming a price (no static number). An optional `template` (with an
     optional {amount} placeholder) seeds the phrasing; the model still says it in
-    voice. Shared by of_ai_chat + autoreply so it reads identically.
+    voice. Shared by welcome_chatter_for_info + autoreply so it reads identically.
 
     `sell_customs` (account opt-in, default off) turns the generic tip-ask into a
     CUSTOM VOICE NOTE ask — see the block below. Off → byte-identical to the
@@ -2649,13 +2670,13 @@ def build_tip_ask_block(amount_dollars: int | None = None, template: str = "",
 
     ⚠️ ON THE CUSTOMS BRANCH THE "None → no price" RULE ABOVE DOES NOT APPLY: a
     custom ALWAYS names a figure, clamped into `_customs`' band, because a custom
-    quoted below the floor is one `qualifies` will refuse to book."""
+    quoted below the floor is one `orders_per_fan` will refuse to book."""
     # ⚠️ WHEN THIS IS THE CUSTOM ASK, THE FLOOR OUTRANKS THE CONFIG, and a custom
     # ALWAYS names a figure. Two roads led to one being asked for at the wrong
     # price and both end at the clamp: `ask_amount_dollars` defaults to None (the
     # UI copy actively recommends leaving it blank), which named NO figure at
     # all; and a configured suggestion can simply be below $100. Either way the
-    # model quotes something `_customs.qualifies` refuses to book, and the fan
+    # model quotes something `_customs.orders_per_fan` refuses to book, and the fan
     # pays it believing he ordered a voice note — nothing is marked owed. See
     # `_customs.price_example` for the live case that proved it.
     has_amt = sell_customs or amount_dollars is not None

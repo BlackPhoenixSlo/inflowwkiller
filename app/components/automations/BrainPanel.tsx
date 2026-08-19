@@ -6,7 +6,7 @@
  * the 6 time-of-day activities + their per-slot vault images, location/utc_offset,
  * the daily spend cap, and the LLM model (global + per-purpose override).
  *
- * gen_info / send_welcome / send_followup / of_ai_chat resolve this at run time,
+ * gen_info / send_welcome / send_followup / welcome_chatter_for_info resolve this at run time,
  * so it's the screen that fills the brain a fresh account starts without. Reuses
  * the account picker pattern from AutomationsPanel and the VaultPicker image
  * slots from the Nudge tab.
@@ -72,7 +72,7 @@ const SLOT_LABEL: Record<string, string> = {
 // API's PURPOSES). Unknown/future purposes fall back to their raw key.
 const PURPOSE_LABEL: Record<string, string> = {
   gen_info: "Fan profiles",
-  of_ai_chat: "Get to know fans (info-gather)",
+  welcome_chatter_for_info: "Get to know fans (info-gather)",
   send_welcome: "Welcomes",
   send_followup: "Follow-ups",
   reply_mass_funnel: "Mass-funnel replies",
@@ -112,7 +112,12 @@ function defaultsWithImages(defaults: BrainConfig, current: BrainConfig): BrainC
            persona_facts: current.persona_facts ?? {},
            audience_mode: current.audience_mode ?? "off",
            audience_of_list_id: current.audience_of_list_id ?? null,
-           audience_auto_add: current.audience_auto_add ?? false };
+           audience_auto_add: current.audience_auto_add ?? false,
+           // Co-performer tag settings are compliance/identity (who is in the
+           // videos, which handle carries the release form), not brain text —
+           // a reset must not silently untag a collab account's video sends.
+           cotag_tag_videos: current.cotag_tag_videos ?? false,
+           cotag_username: current.cotag_username ?? null };
 }
 
 const textareaCls =
@@ -294,6 +299,9 @@ export default function BrainPanel() {
   const modelOptions = cfgQ.data?.model_options ?? [];
   const purposes = cfgQ.data?.purposes ?? [];
   const languages = cfgQ.data?.languages ?? [{ code: "en", label: "English" }];
+  // What an empty "Username to tag" box resolves to — served by the API so the
+  // placeholder shown is the default that actually runs.
+  const cotagDefault = cfgQ.data?.cotag_default_username ?? "jakabasej";
   // Resolve the SAVED slot image ids (and the two preview image ids) back to
   // VaultMedia so the slots/preview render real thumbnails on load — mediaCache
   // only ever holds images the operator just picked this session. The lookup
@@ -921,6 +929,48 @@ export default function BrainPanel() {
                 );
               })}
             </div>
+          </div>
+
+          {/* Co-performer tag — media_cotag's per-account knobs (saved with Save brain) */}
+          <div className="space-y-2 border-t border-border pt-3">
+            <span className="text-[11px] uppercase tracking-wide text-fg-dim">
+              Co-performer tag
+            </span>
+            <p className="text-[11px] text-fg-dim">
+              Automated sends @-tag the co-performer (OF’s release-form rule) whenever
+              the attached media isn’t provably solo. These knobs are this account’s
+              overrides; the tag only lands once the tagged account has accepted this
+              account’s tag request.
+            </p>
+            <label
+              className="flex items-start gap-2 text-sm text-fg"
+              title="For accounts whose videos feature a co-performer. The AI describe for a video is cut from stills, so a POV clip often reads as solo when the co-performer is plainly in it. With this on, every send that attaches a video carries the tag regardless of the describe verdict. Off (the default — most creators are solo), videos follow the describe verdict like photos do."
+            >
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={form.cotag_tag_videos ?? false}
+                onChange={(e) => set("cotag_tag_videos", e.target.checked)}
+              />
+              <span>
+                Always tag videos
+                <span className="block text-[11px] text-fg-dim">
+                  For collab accounts: tag every video send, even ones the AI describe
+                  read as solo. Photos still follow the describe verdict.
+                </span>
+              </span>
+            </label>
+            <label className="block space-y-1 max-w-xs">
+              <span className="text-[11px] text-fg-dim">Username to tag</span>
+              <Input
+                value={form.cotag_username ?? ""}
+                onChange={(e) => set("cotag_username", e.target.value)}
+                placeholder={`@${cotagDefault} (default)`}
+              />
+              <span className="block text-[11px] text-fg-dim">
+                Leave empty to use the default, @{cotagDefault}.
+              </span>
+            </label>
           </div>
 
           {/* Audience — include-only automation fence (saved with Save brain) */}

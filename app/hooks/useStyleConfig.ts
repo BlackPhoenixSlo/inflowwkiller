@@ -18,20 +18,20 @@ const KEY = "style-config";
 const BG_CTX: RelayContext = { priority: "background" };
 
 export interface StyleConfig {
-  of_ai_chat?: boolean;
+  welcome_chatter_for_info?: boolean;
   autoreply?: boolean;
   ai_chatter?: boolean;
   // account-wide (not per-automation): strip every emoji at send time
   strip_emojis?: boolean;
-  // Auto Convo (of_ai_chat) rich-profile grounding — default ON
-  factground_of_ai_chat?: boolean;
+  // Info-gather (welcome_chatter_for_info) rich-profile grounding — default ON
+  factground_welcome_chatter_for_info?: boolean;
   // account-wide brevity/emotion framing ("painful texting") — default ON
   painful_texting?: boolean;
   // May this creator sell CUSTOMS — a paid voice note recorded to order and
   // delivered here later? DEFAULT **OFF**, unlike every other flag on this type,
   // because it governs what the bot may PROMISE a fan who has already paid.
   // Independent of the tip-ask toggle: on its own it opens customs in Auto Convo,
-  // of_ai_chat and the AI Chatter manifest. Fulfilment is manual — nothing in the
+  // welcome_chatter_for_info and the AI Chatter manifest. Fulfilment is manual — nothing in the
   // product records the owed recording.
   sell_customs?: boolean;
   // cat-sticker reaction pack (AI Chatter ends some replies with a cat gif) — default ON
@@ -47,17 +47,17 @@ export interface StyleConfig {
   cat_sticker_solo_pct?: number;
   cat_sticker_gap_min?: number;
   // independent thumb-typo injector toggle, per automation
-  typos_of_ai_chat?: boolean;
+  typos_welcome_chatter_for_info?: boolean;
   typos_autoreply?: boolean;
   typos_ai_chatter?: boolean;
   // independent non-native English layer toggle, per automation
-  nonnative_of_ai_chat?: boolean;
+  nonnative_welcome_chatter_for_info?: boolean;
   nonnative_autoreply?: boolean;
   nonnative_ai_chatter?: boolean;
   /** Space before "?" — "you like it ?". Part of the non-native register but its
    *  own key, so it can be turned off without losing the rest of the layer.
    *  Same tri-state default as its parent (ai_chatter ON, others OFF). */
-  nonnative_spacing_of_ai_chat?: boolean;
+  nonnative_spacing_welcome_chatter_for_info?: boolean;
   nonnative_spacing_autoreply?: boolean;
   nonnative_spacing_ai_chatter?: boolean;
   // PHASE 2 pre-send self-consistency check. ONLY these two engines call it, so
@@ -65,7 +65,7 @@ export interface StyleConfig {
   // flag nothing reads is a checkbox that lies. Costs a second LLM call on the
   // replies it fires for, so unlike the layers above it defaults OFF, never
   // tri-state.
-  consistency_of_ai_chat?: boolean;
+  consistency_welcome_chatter_for_info?: boolean;
   consistency_ai_chatter?: boolean;
 }
 

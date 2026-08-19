@@ -10,7 +10,7 @@ those openers are a PHASE of the ordinary chat engines instead:
     deepen  → one profile opener per ordinary reply turn, questions before teases
     done    → plain banter
 
-Both engines are on it: `of_ai_chat` runs the deepen phase with `one_pass=True` and
+Both engines are on it: `welcome_chatter_for_info` runs the deepen phase with `one_pass=True` and
 graduates the fan when it returns None; `ai_chatter` runs it open-ended and just
 falls back to banter, because it calls `_maybe_refresh_profile` after every reply
 regardless — a spent pool restocks itself with no trigger of its own (see `next_for`).
@@ -64,7 +64,7 @@ stops applying when the date rolls, so nothing has to reset it.
 ONE CHANNEL (within these two engines)
 --------------------------------------
 `need_block` is the only way a q/tease line reaches the model from `ai_chatter` or
-`of_ai_chat`. Both prompt builders used to also read `profile.tease1..3` straight
+`welcome_chatter_for_info`. Both prompt builders used to also read `profile.tease1..3` straight
 off the row and hand all three over as "lines the team wrote for him — reword them,
 don't paste them verbatim": a menu, offered on every turn, outside the ration and —
 the part that actually bit — outside `record_used`, so a line the model lifted from
@@ -100,7 +100,7 @@ The engines use nothing else — not `fan_state`, not `STATE_KEY`, not the resol
     await record_used(account_id, fan_id, fan, profile, slot, *, today="")
 
 `next_for` returning None means "no opener to offer" — it does not say what to do
-about it, because the two engines differ: of_ai_chat graduates the fan, ai_chatter
+about it, because the two engines differ: welcome_chatter_for_info graduates the fan, ai_chatter
 falls back to banter. `one_pass` is the one thing that cannot be derived from the
 pool, so it is a parameter rather than a guess (see `next_for`).
 
@@ -353,7 +353,7 @@ def next_for(fan, profile, *, one_pass: bool = False,
       • OFF (ai_chatter) — keep offering as long as there is anything unused. It
         has no graduation cutoffs; cycling through each fresh gen_info batch is
         exactly what it wants.
-      • ON (of_ai_chat) — stop once one of EACH class has been delivered, ever.
+      • ON (welcome_chatter_for_info) — stop once one of EACH class has been delivered, ever.
         The starter lane has to hand the fan on, and "stop when the pool is dry"
         cannot do it: `_maybe_refresh_profile` runs after every successful reply,
         so gen_info restocks continuously and the pool never empties. Caught live —
@@ -362,7 +362,7 @@ def next_for(fan, profile, *, one_pass: bool = False,
     `today` is a `local_day` stamp and applies THE DAILY RATION; `""` skips it.
 
     None means nothing to offer. What to do about that is the caller's policy:
-    of_ai_chat graduates the fan, ai_chatter carries on with plain banter.
+    welcome_chatter_for_info graduates the fan, ai_chatter carries on with plain banter.
 
     The two arguments do not compose, so `one_pass` DROPS `today` rather than
     documenting that they must not be combined. A ration None is temporary — there

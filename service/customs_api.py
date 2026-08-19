@@ -47,49 +47,12 @@ log = logging.getLogger("of-relay.customs_api")
 router = APIRouter()
 
 
-# Fans STACK tips to reach a price. Live example (Amia / 142006425): $200 and
-# $100 twenty-five seconds apart, then $150 twenty minutes later — one $450
-# order, three rows. Showing only the newest told the operator "$150" for work
-# worth three times that, which is exactly the number they decide on. Same
-# pattern on 80511815 ($200+$100, 26s apart) and 21843747 ($200+$100, 13s).
-_BURST_MINUTES = 30
-
-
-def _orders_per_fan(rows, min_cents: int | None = None) -> dict[tuple, tuple]:
-    """(account, fan) → (total_cents, anchor_at, anchor_msg_id) for the fan's most
-    recent ORDER, from rows ordered occurred_at DESC as
-    (account_id, fan_id, amount_cents, occurred_at, message_id).
-
-    An ORDER is a BURST of tips, not one tip. Fans stack to reach a price, and
-    they do it constantly — Amia/142006425 sent $200 and $100 twenty-five seconds
-    apart then $150 twenty minutes later, one $450 order across three rows.
-
-    ⚠️ THE FLOOR IS TESTED ON THE TOTAL, AND THAT IS THE WHOLE POINT. The first
-    version filtered each transaction against the floor in SQL and summed what
-    survived, which reintroduced the same understatement one layer down: prod is
-    full of $200+$80, $200+$50, $150+$80, $100+$54 — the sub-floor half was
-    dropped before the sum, so a $280 order displayed as $200. It also made
-    $60+$60 invisible entirely, and $120 is a real order.
-
-    So the caller passes EVERY tip in the window and this decides. The floor is a
-    question about the ORDER; asking it of each transaction is asking the wrong
-    thing about the wrong noun."""
-    floor = _customs.MIN_CENTS if min_cents is None else max(1, int(min_cents))
-    bursts: dict[tuple, tuple] = {}
-    for acct, fid, cents, at, msg_id in rows:
-        if fid is None or at is None:
-            continue
-        key = (acct, int(fid))
-        cents = int(cents or 0)
-        if key not in bursts:         # first wins — the rows arrive newest-first
-            bursts[key] = (cents, at, msg_id)
-            continue
-        total, anchor_at, anchor_msg = bursts[key]
-        # Still inside the burst the anchor belongs to? Add it on. Anything older
-        # is a PREVIOUS order and is not this row's business.
-        if (anchor_at - at) <= timedelta(minutes=_BURST_MINUTES):
-            bursts[key] = (total + cents, anchor_at, anchor_msg)
-    return {k: v for k, v in bursts.items() if v[0] >= floor}
+# "What is an ORDER" (a burst of stacked tips, floor tested on the TOTAL) is
+# `_customs.orders_per_fan` — the same burst definition customs_watch marks
+# off. The FLOOR can still differ: this queue judges at the global MIN_CENTS
+# while the watch honors the rule's per-account `min_cents`, so on an account
+# with an override the review list may show bursts the watch deliberately
+# does not book (marked: False rows — a human decides).
 
 
 def _chat_href(account_id: str, fan_id: int, msg_id) -> str:
@@ -134,12 +97,12 @@ async def list_customs(account_id: str | None = Query(None)) -> dict[str, Any]:
                    Transaction.amount_cents, Transaction.occurred_at,
                    Transaction.message_id)
             .where(Transaction.kind.in_(_customs.ORDER_KINDS),
-                   # NO floor here — see _orders_per_fan: a sub-floor tip
+                   # NO floor here — see _customs.orders_per_fan: a sub-floor tip
                    # stacked onto a qualifying one is part of the same order.
                    Transaction.account_id.in_({k[0] for k in keys}))
             .order_by(Transaction.occurred_at.desc())
         )).all()
-        newest = {k: v for k, v in _orders_per_fan(tips).items() if k in keys}
+        newest = {k: v for k, v in _customs.orders_per_fan(tips).items() if k in keys}
 
         names = {a: (n or a) for a, n in (await s.execute(
             select(Account.id, Account.nickname)
@@ -196,7 +159,7 @@ async def _unmarked(allowed: list[str] | None,
                     Transaction.amount_cents, Transaction.occurred_at,
                     Transaction.message_id)
              .where(Transaction.kind.in_(_customs.ORDER_KINDS),
-                    # NO floor — _orders_per_fan tests the burst TOTAL.
+                    # NO floor — _customs.orders_per_fan tests the burst TOTAL.
                     Transaction.occurred_at >= since,
                     Transaction.fan_id.is_not(None))
              .order_by(Transaction.occurred_at.desc()))
@@ -218,7 +181,7 @@ async def _unmarked(allowed: list[str] | None,
         )).all()}
 
     out = []
-    for key, (cents, at, msg_id) in _orders_per_fan(tips).items():
+    for key, (cents, at, msg_id) in _customs.orders_per_fan(tips).items():
         if key not in keys:
             continue
         acct, fid = key
@@ -329,7 +292,7 @@ async def customs_context(
                          if parsed.tzinfo is not None else parsed)
         if anchor_at is None:
             # His newest tip, floor-free. The floor is a question about an
-            # ORDER TOTAL now (see _orders_per_fan), so a $60+$60 order has a row
+            # ORDER TOTAL now (see _customs.orders_per_fan), so a $60+$60 order has a row
             # in the queue but no single tip that clears it — asking for one here
             # would return no anchor for a fan the queue is actively showing.
             # Picking the anchor and judging significance are different jobs.

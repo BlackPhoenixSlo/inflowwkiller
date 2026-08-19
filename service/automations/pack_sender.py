@@ -37,7 +37,7 @@ Split on 2026-08-11, when this file crossed 1,200 lines:
   * `pack_audit` — the rules that refuse a send whose media does not match its
     caption, plus the shelf read two of them are asked against. *Can it lie?*
     (2026-08-15, when the plan/deliver split pushed this file over 1,000 again.)
-  * `pack_farewell` — of_ai_chat's parting gather-close PPV: its own category,
+  * `pack_farewell` — welcome_chatter_for_info's parting gather-close PPV: its own category,
     catalog row, price rule and trigger. *A different product.* (2026-08-16.)
     It imports the spine FROM here and nothing here imports it back.
 This module keeps the product row, the planning, and the wire — decide what to
@@ -68,7 +68,7 @@ from sqlalchemy import select
 
 import vault_pack_picker
 from db.engine import get_session
-from db.models import CatalogItem, VaultItem, VaultSend
+from db.models import CATALOG_IS_SINGLE, CatalogItem, VaultItem, VaultSend
 
 from . import content_resolver, pack_pricing
 # Re-exported on purpose: `audit_pack` / `audit_ask` / `mirror_warning` are part
@@ -190,7 +190,7 @@ async def _singleton_item(s, account_id: str, tag: str) -> CatalogItem | None:
     return (await s.execute(
         select(CatalogItem).where(
             CatalogItem.account_id == str(account_id),
-            CatalogItem.script_id.is_(None),
+            CATALOG_IS_SINGLE,
             CatalogItem.tags.like(f"%{tag}%"))
     )).scalars().first()
 

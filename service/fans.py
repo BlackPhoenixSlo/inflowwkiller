@@ -522,7 +522,7 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
         companion_until=_future(lad.companion_until if lad is not None else None),
         post_buy_until=_future(lad.cooldown_until if lad is not None else None))
 
-    # The engine that owns this fan. A payer of_ai_chat graduated ('spent') belongs to
+    # The engine that owns this fan. A payer welcome_chatter_for_info graduated ('spent') belongs to
     # the upseller — that's precisely the fan it exists for.
     engine = "ai_chatter"
     if not engine_on:
@@ -634,7 +634,7 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
     # ids, mass sends) is never "this fan's next action" even if his id appears somewhere
     # in its payload. Combined with the JSON parse below, this is what stops another
     # fan's job showing up on his strip. (tip_reward IS fan-scoped — on_inbound_tip.)
-    _FAN_KINDS = ("ai_chatter", "of_ai_chat", "send_welcome", "send_followup",
+    _FAN_KINDS = ("ai_chatter", "welcome_chatter_for_info", "send_welcome", "send_followup",
                   "autoreply", "gen_info", "tip_reward")
 
     def _has_fan(p: dict, fid: int) -> bool:

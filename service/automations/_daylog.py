@@ -651,7 +651,7 @@ def _user_prompt(persona: str, seed_acts: dict, weekday: str, date: str) -> str:
 
 
 # One in-process lock per account. The executor runs one job per (account, kind) per
-# tick, but ai_chatter and of_ai_chat are DIFFERENT kinds and can both hit a cold
+# tick, but ai_chatter and welcome_chatter_for_info are DIFFERENT kinds and can both hit a cold
 # cache in the same tick — that is two generations and two different days for one
 # creator, which is worse than none. The DB re-read inside the lock is what makes
 # the second caller adopt the first's day instead of writing over it.
@@ -766,7 +766,7 @@ async def ensure_day_log(account_id: str, cfg_row, model: str, purpose: str,
     off), and every renderer in this module maps {} to "", so the caller needs no
     branch and an account without a day log keeps a byte-identical prompt.
 
-    SINGLE-FLIGHT. `ai_chatter` and `of_ai_chat` are different job kinds, so the
+    SINGLE-FLIGHT. `ai_chatter` and `welcome_chatter_for_info` are different job kinds, so the
     executor's one-job-per-(account,kind) rule does NOT stop them both meeting a
     cold cache in the same tick. Without the lock that is two generations and two
     different days for one creator — a worse failure than having no day at all,

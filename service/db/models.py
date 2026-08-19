@@ -246,7 +246,7 @@ class Action(Base):
 
 class Fan(Base):
     """One row per (account, fan). Wide table by design — every field the
-    automation pack reads is here so gen_info / followup / of_ai_chat all
+    automation pack reads is here so gen_info / followup / welcome_chatter_for_info all
     have a single source. Heavy columns (raw_json) get their own rows in
     sibling tables when they grow."""
     __tablename__ = "fans"
@@ -314,7 +314,7 @@ class Fan(Base):
     # ── Automation pause (human override) ────────────────────
     automation_paused_until: Mapped[datetime | None] = mapped_column(DateTime)
 
-    # ── of_ai_chat info-gathering: topics we've already asked (V1 QuestionsAsked)
+    # ── welcome_chatter_for_info info-gathering: topics we've already asked (V1 QuestionsAsked)
     # JSON list of keys (age/location/hobbies/…); a topic here is never re-asked,
     # so the bot gathers progressively without nagging. NULL == "[]". ──────────
     questions_asked: Mapped[str | None] = mapped_column(Text)
@@ -353,7 +353,7 @@ class Fan(Base):
     #
     # ⚠️ IT USED TO BE A " Custom" SUFFIX ON `custom_nickname`, AND THAT COULD NOT
     # WORK. `custom_nickname` has four other writers, and one of them —
-    # `of_ai_chat._maybe_push_nickname`, reached from ai_chatter on EVERY tick —
+    # `welcome_chatter_for_info._maybe_push_nickname`, reached from ai_chatter on EVERY tick —
     # rebuilds the name from structured facts via `names.build_structured_nickname`,
     # which knows nothing about the marker and therefore drops it. ai_chatter runs
     # every 60s; customs_watch every 900s. So the ledger was erased roughly a minute
@@ -473,7 +473,7 @@ class Message(Base):
 
     mass_run_id: Mapped[int | None] = mapped_column(Integer)  # FK declared via table_args
     funnel_step: Mapped[int | None] = mapped_column(Integer)
-    # Which automation sent this outbound row (of_ai_chat, send_welcome,
+    # Which automation sent this outbound row (welcome_chatter_for_info, send_welcome,
     # followup, autoreply, send_mass_message, reply_mass_funnel,
     # nudge_online, mass_nudge, online_blast; old rows can carry retired
     # kinds). NULL = human send or a legacy
@@ -1463,7 +1463,7 @@ class AccountAiConfig(Base):
     # (grok-4-1-fast-non-reasoning), preserving current behavior. See 19 §4.
     model: Mapped[str | None] = mapped_column(String)
     # Optional per-purpose override, JSON e.g. {"gen_info":"deepseek-v4-flash",
-    # "of_ai_chat":"grok-4-1-fast-non-reasoning"}. NULL → use `model` for all.
+    # "welcome_chatter_for_info":"grok-4-1-fast-non-reasoning"}. NULL → use `model` for all.
     model_by_purpose: Mapped[str | None] = mapped_column(Text)
     # nudge_online (P4): per-account config for the "message a fan when they come
     # online" automation — JSON {enabled, content_mode, repeat_mode, delay_minutes,
@@ -1487,7 +1487,7 @@ class AccountAiConfig(Base):
     autoreply_config_json: Mapped[str | None] = mapped_column(Text)
     # Per-automation opt-in for the "human texting style" package (short/casual
     # girl voice + 3-bubble splitting). JSON
-    # {"of_ai_chat": bool, "autoreply": bool, "ai_chatter": bool}. Absent/NULL or
+    # {"welcome_chatter_for_info": bool, "autoreply": bool, "ai_chatter": bool}. Absent/NULL or
     # a missing key → the per-automation default (see _common._STYLE_DEFAULT_ON).
     # Own column to avoid the nudge/webhook shallow-merge collision.
     style_config_json: Mapped[str | None] = mapped_column(Text)
@@ -1499,10 +1499,10 @@ class AccountAiConfig(Base):
     # avoid the nudge/webhook shallow-merge collision.
     tip_reward_config_json: Mapped[str | None] = mapped_column(Text)
     # ai_chatter (PPVscriptAI): per-account config for the freestyle selling
-    # chatter that REPLACES of_ai_chat for fans under the spend gate. JSON
+    # chatter that REPLACES welcome_chatter_for_info for fans under the spend gate. JSON
     # {enabled, mode: "backup"|"always", sla_minutes, max_lifetime_spend_cents,
-    # offer_mode: "tip"|"ppv"|"both", max_offers_per_fan_per_day,
-    # min_fan_msgs_between_offers, max_fans_per_tick, stall_ttl_hours,
+    # max_offers_per_fan_per_day, min_fan_msgs_between_offers,
+    # max_fans_per_tick, stall_ttl_hours,
     # resume_after_manual_hours}. Absent/NULL → ai_chatter's built-in defaults
     # (DISABLED — ships off until a creator enables it). Own column to avoid
     # the nudge/webhook shallow-merge collision.
@@ -1545,6 +1545,20 @@ class AccountAiConfig(Base):
     # Auto-add newly subscribed fans to the include folder (roster-diff pull;
     # the mixed notifications feed is only a latency fast-path). NULL ≡ off.
     audience_auto_add: Mapped[bool | None] = mapped_column(Boolean)
+    # Co-performer tagging (media_cotag) — the Brain's per-account overrides for
+    # the global env knobs. Both nullable so init_db's ADD-COLUMN catch-up lands
+    # them on prod with no backfill.
+    #
+    # NULL ≡ OFF: most creators are solo, and their videos really are just them.
+    # True = the operator ticked "Always tag videos" on a COLLAB account: every
+    # send attaching a vault VIDEO then carries the co-performer tag even when
+    # the describe verdict reads it as solo — video describes are cut from
+    # stills and miss the POV partner, which is how Lucas1/Lucas2 clips shipped
+    # untagged. The describe-verdict decision itself is never weakened by this.
+    cotag_tag_videos: Mapped[bool | None] = mapped_column(Boolean)
+    # The handle to tag, stored without the '@' (media_cotag folds it the way OF
+    # stores usernames). NULL → OF_COTAG_USERNAME → the built-in 'jakabasej'.
+    cotag_username: Mapped[str | None] = mapped_column(String)
     updated_at: Mapped[datetime] = _ts_now()
 
 
@@ -1696,10 +1710,11 @@ class FunnelResponder(Base):
 
 
 class CatalogScript(Base):
-    """An ordered 'sexting sequence' — a themed series of catalog items that
-    ai_chatter sells one piece at a time (escalation order = item position).
-    Singles (one-off clips / photo sets) are catalog_items with script_id NULL.
-    `theme` is shown to the LLM (setting/outfit/arc), never to fans."""
+    """LEGACY (retired 2026-08-19): an ordered 'sexting sequence' — a themed
+    series of catalog items sold one piece at a time. Script ladders were
+    removed (singles sold 18, scripts 0/21); nothing writes or reads these rows
+    anymore. The table stays mapped because prod rows exist and deleting them
+    would CASCADE into catalog_items → content_offers (offer history)."""
     __tablename__ = "catalog_scripts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -1720,8 +1735,10 @@ class CatalogScript(Base):
 
 class CatalogItem(Base):
     """One sellable unit: a video, an image, or an image set (N media sold as one
-    bundle). Belongs to a script (script_id + position = escalation order) or
-    stands alone (script_id NULL = a single, e.g. a bed-dance clip).
+    bundle). SINGLES (`script_id IS NULL`) are the whole catalog since the
+    2026-08-19 script-ladder removal; rows with `script_id` set are legacy data
+    — never offered again, kept because their open offers must still deliver
+    and deleting them cascades into content_offers.
 
     `description_for_ai` is the contract: what the fan actually SEES, 1-2
     sentences, present tense. The LLM may only tease/claim what's written here —
@@ -1732,10 +1749,13 @@ class CatalogItem(Base):
     account_id: Mapped[str] = mapped_column(
         String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
     )
+    # LEGACY pair (retired 2026-08-19 with the script ladders): both default
+    # NULL, nothing writes anything else, and `position` has no reader. Kept
+    # for the legacy script rows; see CATALOG_IS_SINGLE below.
     script_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("catalog_scripts.id", ondelete="CASCADE")
     )
-    position: Mapped[int | None] = mapped_column(Integer)  # order within script
+    position: Mapped[int | None] = mapped_column(Integer)
     kind: Mapped[str] = mapped_column(String, nullable=False, default="video")
     label: Mapped[str | None] = mapped_column(String)      # e.g. "BOOB TEASE"
     description_for_ai: Mapped[str | None] = mapped_column(Text)
@@ -1748,8 +1768,10 @@ class CatalogItem(Base):
     # spiral (seller ingesting its own asks) can be watched/frozen; NULL until quoted.
     band_lo: Mapped[int | None] = mapped_column(Integer)
     band_hi: Mapped[int | None] = mapped_column(Integer)
-    # Unlock terms. 0 disables that mode for this item; is_free_teaser items are
-    # sent free to build momentum (initiation pics, item 1).
+    # Unlock terms. PPV is the only lane (2026-08-19): price_cents > 0 makes an
+    # item sellable; is_free_teaser items are sent free to build momentum
+    # (initiation pics, item 1). tip_unlock_cents is LEGACY data — nothing
+    # offers on it anymore; it survives for the pre-ruling rows.
     price_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tip_unlock_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_free_teaser: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -1763,13 +1785,18 @@ class CatalogItem(Base):
     )
 
 
+# The one canonical singles predicate (2026-08-19 ruling): every catalog READ —
+# the seller's shelf, the editor, the settings transfer, the gap report — scopes
+# with this exact clause so legacy script rows never resurface. Writers need
+# nothing: `script_id`/`position` default NULL, so a plain CatalogItem(...) is a
+# single by construction.
+CATALOG_IS_SINGLE = CatalogItem.script_id.is_(None)
+
+
 class CatalogProgress(Base):
-    """Per-(account, fan, script) position pin. NOT a chat state machine —
-    ai_chatter freestyles the conversation; this row only constrains WHAT it may
-    offer next (escalation order) and enforces once-per-fan-per-script. `position`
-    is the index of the NEXT item to offer. status: active|stalled|abandoned|done.
-    A stalled row past the TTL goes abandoned and the fan returns to the normal
-    pool (and becomes a 'we never finished 😏' followup hook)."""
+    """LEGACY (retired 2026-08-19 with the script ladders): per-(account, fan,
+    script) position pin. Nothing writes or reads these rows anymore; the table
+    stays mapped because prod rows exist."""
     __tablename__ = "catalog_progress"
 
     account_id: Mapped[str] = mapped_column(String, primary_key=True)

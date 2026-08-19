@@ -47,7 +47,7 @@ export interface PaidMessageRow {
   /** Denormalized "mass-<who>" attribution tag stamped on mass rows at send
    *  time (e.g. "mass-kingsley1"). "" / null for non-mass or automation sends. */
   sender_name?: string | null;
-  /** Which automation sent this (of_ai_chat, welcome, send_mass_message, …).
+  /** Which automation sent this (welcome_chatter_for_info, welcome, send_mass_message, …).
    *  null = human send or a legacy pre-0032 row. */
   automation_kind?: string | null;
   /** True when this row is a COLLAPSED mass broadcast (one row standing in for

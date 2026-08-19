@@ -24,10 +24,13 @@ export interface TipRewardConfig {
   dollars_per_image?: number;
   min_images?: number;
   max_images?: number;
+  /** Videos too: off (default) = reward pulls are images-only; on = clips ride,
+   *  each billed several image-slots by length/explicitness ($5–10 per 10s). */
+  videos_in_rewards?: boolean;
   caption?: string;
   window_hours?: number;
   tiers?: TipRewardTier[];
-  // ASK side of the loop (read by of_ai_chat/autoreply): when a fan asks to see
+  // ASK side of the loop (read by welcome_chatter_for_info/autoreply): when a fan asks to see
   // content, ask them to tip. On by default; amount null = ask with no set price.
   ask_enabled?: boolean;
   ask_amount_dollars?: number | null;

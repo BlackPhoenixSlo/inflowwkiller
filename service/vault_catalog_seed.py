@@ -845,13 +845,13 @@ async def apply_seed(account_id: str, plan: dict[str, Any], *,
             prev = [row["media_id"] for row in entry.get("previews") or []]
             ids += [m for m in prev if m not in ids]
             s.add(CatalogItem(
-                account_id=account_id, script_id=None, position=None,
+                account_id=account_id,
                 kind=r.kind, label=r.label, description_for_ai=r.caption,
                 media_ids=json.dumps(ids),
                 preview_media_ids=json.dumps(prev),
                 duration_sec=(max((row["duration"] or 0) for row in entry["items"])
                               if entry["items"] else None),
-                price_cents=px, tip_unlock_cents=px,
+                price_cents=px,
                 is_free_teaser=False, tags="[]", enabled=True,
                 created_at=now, updated_at=now))
         await s.commit()

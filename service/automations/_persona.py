@@ -374,7 +374,7 @@ def persona_claims_block(raw, *, age_claimed: str | None = None,
     model demonstrably ignores — it asked a $691 fan his job with `occupation`
     populated AND injected. The imperative clock line is the one that held."""
     rows = parse_persona_claims(raw)
-    # The three scalars are an OPERATOR OVERRIDE, not a second copy. of_ai_chat
+    # The three scalars are an OPERATOR OVERRIDE, not a second copy. welcome_chatter_for_info
     # mirrors extracted claims into them (they are serialized by fans.py and
     # PATCH-editable, which is where the correction UI comes from), so a set
     # scalar WINS over every list row on its topic and that row is not printed.
@@ -451,7 +451,7 @@ def compose_persona(cfg, *, fallback: str) -> str:
 
     ONE composer because there used to be three, and they had already diverged:
     a since-retired engine folded the location line into the persona string
-    (threading a param through its generate calls was awkward) while of_ai_chat,
+    (threading a param through its generate calls was awkward) while welcome_chatter_for_info,
     ai_chatter and autoreply each carried a `location` builder param, a
     `location_block` local, a `_load_location()` call and an argument at the call
     site. Same concept, two mechanisms, and nothing stopping a fourth engine

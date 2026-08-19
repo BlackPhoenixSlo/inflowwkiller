@@ -33,7 +33,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from auth import assert_account_owned, clamp_account_filter
-from automation_registry import load_automation_plugins, registered_kinds
+from automation_registry import (canonical_kind, is_registered, kind_family,
+                                 load_automation_plugins, registered_kinds)
+from automations import _customs
 from db.engine import get_session
 from db.models import AutomationRule, AutomationRun, ScheduledJob
 
@@ -62,7 +64,7 @@ _MAX_EVERY_S = 30 * 24 * 60 * 60
 # registry) with no knobs
 # (so their payload falls back to the raw-JSON escape hatch).
 _CATALOG: dict[str, dict[str, Any]] = {
-    "of_ai_chat": {
+    "welcome_chatter_for_info": {
         "label": "Get to know fans (AI info-gather)", "recurring": True, "surface": "rules",
         "cadence_default_s": 60,
         "summary": "Opens and continues conversations to learn about a fan and "
@@ -177,17 +179,26 @@ _CATALOG: dict[str, dict[str, Any]] = {
         "cadence_default_s": 900,
         "summary": ("Tag fans who tipped for a custom and haven't got it yet, and "
                     "stop the AI selling to them until it ships."),
-        "example": "every 15 min · min_cents 10000 · lookback 72h",
+        "example": f"every 15 min · min_cents {_customs.MIN_CENTS} · lookback 72h",
         "knobs": [
-            # THE knob. What a $100 DM tip MEANS is per-account: on the male
+            # THE knob. What a big DM tip MEANS is per-account: on the male
             # accounts it is an order, on the female ones it was generosity five
             # times last month. Set it too low and the bot stops selling to a
-            # generous fan until a human notices.
-            {"key": "min_cents", "type": "int", "min": 1, "default": 10000,
-             "hint": "cents — a DM tip at least this big counts as a custom order ($100 = 10000)"},
+            # generous fan until a human notices. The default is the engine's
+            # own fallback floor, imported so the two cannot be edited apart.
+            {"key": "min_cents", "type": "int", "min": 1, "default": _customs.MIN_CENTS,
+             "hint": ("cents — a tip BURST totalling at least this counts as a custom "
+                      f"order (${_customs.MIN_CENTS // 100} = {_customs.MIN_CENTS}). "
+                      f"On an account that SELLS customs keep it ≤ {_customs.ASK_MIN_CENTS} "
+                      f"(${_customs.ASK_MIN_CENTS // 100}, the bottom of the quoted band) "
+                      "or a fan can pay the quoted price and never be marked — the "
+                      "watch warns every run while that holds")},
             {"key": "lookback_hours", "type": "int", "min": 1, "default": 72,
              "hint": "how far back to scan for tips; keep short so switching on doesn't mark old ones"},
-            {"key": "limit", "type": "int", "min": 1, "hint": "tips scanned per tick"},
+            {"key": "limit", "type": "int", "min": 1,
+             "hint": ("tips scanned per tick — EVERY settled DM tip counts "
+                      "(sub-floor burst halves too), so a tip-heavy account "
+                      "covers fewer hours per tick than the number suggests")},
             {"key": "only_fan_ids", "type": "ids", "hint": "[fan_id,…] restrict to these fans"},
             {"key": "dry_run", "type": "bool", "hint": "report what it would mark, write nothing"},
         ],
@@ -413,14 +424,8 @@ def _kind_catalog() -> list[dict[str, Any]]:
     return out
 
 
-_KNOWN_KINDS: set[str] | None = None
-
-
-def _is_known_kind(kind: str) -> bool:
-    global _KNOWN_KINDS
-    load_automation_plugins()
-    _KNOWN_KINDS = set(registered_kinds())
-    return kind in _KNOWN_KINDS
+# Kind validity is automation_registry.is_registered — the ONE predicate
+# (canonicalizes legacy names, knows scrape_chats). No local copy.
 
 
 # ── Validation helpers ────────────────────────────────────────────────
@@ -619,13 +624,14 @@ async def _has_pending_job(s, account_id: str, kind: str) -> bool:
     (e.g. auto_stories' delete-later cleanup, which shares the `unsend_messages`
     kind) are excluded so a recurring rule's badge isn't falsely flagged
     "queued" by an unrelated cleanup scheduled hours out — mirrors the
-    materialize guard in automation_executor._materialize_due_rules."""
+    materialize guard in automation_executor._materialize_due_rules, including
+    its kind_family match (a pre-rename pending job still counts as queued)."""
     row = (
         await s.execute(
             select(ScheduledJob.id)
             .where(
                 ScheduledJob.account_id == account_id,
-                ScheduledJob.kind == kind,
+                ScheduledJob.kind.in_(kind_family(kind)),
                 ScheduledJob.status.in_(("pending", "running")),
                 ScheduledJob.run_at <= datetime.utcnow(),
             )
@@ -636,9 +642,15 @@ async def _has_pending_job(s, account_id: str, kind: str) -> bool:
 
 
 async def _serialize(s, rule: AutomationRule) -> dict[str, Any]:
-    """One rule + live status (last run, next-due estimate, pending job)."""
+    """One rule + live status (last run, next-due estimate, pending job).
+
+    A legacy-kind row (migration 0062 not yet run on its DB) serializes under
+    its CANONICAL name: runs and jobs are written canonical now, so querying
+    status by the stored token would show a live rule as never-ran — and the
+    UI's kind catalog only knows live names."""
+    kind = canonical_kind(rule.kind)
     every = _every_seconds_of(rule)
-    last = await _last_run(s, rule.account_id, rule.kind)
+    last = await _last_run(s, rule.account_id, kind)
     next_due: str | None = None
     if rule.is_enabled and every:
         base = last.started_at if last else datetime.utcnow()
@@ -647,7 +659,13 @@ async def _serialize(s, rule: AutomationRule) -> dict[str, Any]:
         "id": rule.id,
         "account_id": rule.account_id,
         "name": rule.name,
-        "kind": rule.kind,
+        "kind": kind,
+        # False = no runner: the rule is INERT however `is_enabled` reads (a
+        # retired engine's leftover, or a plugin that failed to load). THE
+        # kind-validity predicate — same one create/enqueue validate with, so
+        # a creatable kind can never badge as unregistered. API-ready; no UI
+        # consumer reads it yet.
+        "kind_registered": is_registered(kind),
         "is_enabled": rule.is_enabled,
         "every_seconds": every,
         "trigger": _trigger_of(rule),
@@ -662,7 +680,7 @@ async def _serialize(s, rule: AutomationRule) -> dict[str, Any]:
             "stats": _safe_json(last.stats_json),
         },
         "next_due_at": next_due,
-        "has_pending_job": await _has_pending_job(s, rule.account_id, rule.kind),
+        "has_pending_job": await _has_pending_job(s, rule.account_id, kind),
     }
 
 
@@ -714,19 +732,22 @@ async def list_rules(account_id: str | None = Query(None)) -> dict[str, Any]:
 @router.post("/admin/automation-rules")
 async def create_rule(body: RuleCreate = Body(...)) -> dict[str, Any]:
     assert_account_owned(body.account_id)
-    if not _is_known_kind(body.kind):
+    # Canonical at the write boundary: a caller still sending a retired kind
+    # name gets the live rule, never a fresh legacy row.
+    kind = canonical_kind(body.kind)
+    if not is_registered(kind):
         raise HTTPException(422, f"unknown automation kind {body.kind!r}")
     trigger = (_validate_trigger(body.trigger) if body.trigger is not None
                else {"every_seconds": _validate_every(body.every_seconds)})
-    payload = _validate_payload_for_kind(body.kind, body.payload)
+    payload = _validate_payload_for_kind(kind, body.payload)
     quiet = _validate_quiet_hours(body.quiet_hours)
-    name = (body.name or "").strip() or body.kind
+    name = (body.name or "").strip() or kind
 
     async with get_session() as s:
         rule = AutomationRule(
             account_id=body.account_id,
             name=name,
-            kind=body.kind,
+            kind=kind,
             trigger_json=json.dumps(trigger),
             steps_json=json.dumps(payload),
             quiet_hours_json=json.dumps(quiet) if quiet else None,
@@ -762,7 +783,8 @@ async def update_rule(rule_id: int, body: RulePatch = Body(...)) -> dict[str, An
         elif body.every_seconds is not None:
             rule.trigger_json = json.dumps({"every_seconds": _validate_every(body.every_seconds)})
         if body.payload is not None:
-            rule.steps_json = json.dumps(_validate_payload_for_kind(rule.kind, body.payload))
+            rule.steps_json = json.dumps(
+                _validate_payload_for_kind(canonical_kind(rule.kind), body.payload))
         if body.quiet_hours is not None:   # [0,0] clears, [s,e] sets
             quiet = _validate_quiet_hours(body.quiet_hours)
             rule.quiet_hours_json = json.dumps(quiet) if quiet else None
@@ -793,7 +815,9 @@ async def run_now(rule_id: int) -> dict[str, Any]:
 
     async with get_session() as s:
         rule = await _load_owned(s, rule_id)
-        account_id, kind = rule.account_id, rule.kind
+        # Canonical, matching _serialize — a legacy rule must not LIST as the
+        # live kind and then answer run-now with the retired token.
+        account_id, kind = rule.account_id, canonical_kind(rule.kind)
         payload = _payload_of(rule)
 
     job_id = await enqueue_job(account_id, kind, payload=payload, rule_id=rule_id)
@@ -821,9 +845,10 @@ async def enqueue_one_shot(
     drains and runs in ~5ms instead of waiting up to a 30s poll tick.
     `run_at` schedules it for the future; omitted = immediate."""
     assert_account_owned(body.account_id)
-    if not _is_known_kind(body.kind):
+    kind = canonical_kind(body.kind)
+    if not is_registered(kind):
         raise HTTPException(422, f"unknown automation kind {body.kind!r}")
-    payload = _validate_payload_for_kind(body.kind, body.payload)
+    payload = _validate_payload_for_kind(kind, body.payload)
     # Attribute the job to the acting employee when the picker piped a header.
     employee_id: int | None = None
     try:
@@ -834,7 +859,7 @@ async def enqueue_one_shot(
 
     from automation_executor import enqueue_job, wake_supervisor  # local: avoid load cycle
     job_id = await enqueue_job(
-        body.account_id, body.kind,
+        body.account_id, kind,
         payload=payload, run_at=body.run_at,
         created_by_employee_id=employee_id,
     )
@@ -843,5 +868,5 @@ async def enqueue_one_shot(
     if body.run_at is None:
         wake_supervisor()
     log.info("automation_enqueue_one_shot job=%s account=%s kind=%s by_emp=%s",
-             job_id, body.account_id, body.kind, employee_id)
-    return {"enqueued_job_id": job_id, "account_id": body.account_id, "kind": body.kind}
+             job_id, body.account_id, kind, employee_id)
+    return {"enqueued_job_id": job_id, "account_id": body.account_id, "kind": kind}

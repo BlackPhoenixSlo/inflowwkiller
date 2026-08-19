@@ -351,7 +351,7 @@ async def per_automation(
       • llm_calls / tokens_in / tokens_out / cost — LLM spend, from
                          `grok_calls.purpose`
 
-    The three scans key on the SAME automation token (e.g. `of_ai_chat`,
+    The three scans key on the SAME automation token (e.g. `welcome_chatter_for_info`,
     `welcome`, `send_mass_message`) — `messages.automation_kind` and
     `grok_calls.purpose` share a vocabulary by design (see the senders). So a
     mass broadcaster shows sends + revenue with $0 LLM spend, while `gen_info`
@@ -498,6 +498,8 @@ async def automation_runs(
     async with get_session() as s:
         q = select(AutomationRun)
         if kind:
+            # Deliberately raw: the param filters rows displayed VERBATIM, so a
+            # caller matching a legacy token sees exactly the rows carrying it.
             q = q.where(AutomationRun.kind == kind)
         if account_ids is not None:
             q = q.where(AutomationRun.account_id.in_(account_ids))

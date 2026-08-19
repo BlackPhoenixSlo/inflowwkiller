@@ -2,7 +2,7 @@
 
 The read-time guards stopped her SAYING the wrong name immediately, but the label
 the team reads in the OF chat header is only rewritten when a fan next comes
-through of_ai_chat (`_maybe_push_nickname`) or gen_info (`_sync_of_nickname`).
+through welcome_chatter_for_info (`_maybe_push_nickname`) or gen_info (`_sync_of_nickname`).
 A quiet fan keeps a header that says he is called Canada. This sweeps them.
 
     docker compose exec -T -w /app/service relay python fix_nicknames.py      # dry run

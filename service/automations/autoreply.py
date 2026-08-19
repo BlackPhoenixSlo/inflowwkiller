@@ -8,7 +8,7 @@ and it does NOT sell. After the window it's too stale → send_followup's drip o
 it (26h+).
 
 How it stays out of the other senders' way (timing, not trigger):
-  • of_ai_chat / ai_chatter answer their fans within SECONDS (webhook) — so by
+  • welcome_chatter_for_info / ai_chatter answer their fans within SECONDS (webhook) — so by
     silence_min those fans aren't waiting. Auto Convo only catches fans no one
     covered in time (graduated / team-owned / AI not enabled for them).
   • send_followup re-engages much later (26h+).
@@ -76,7 +76,7 @@ from ._common import (
     skip_unreachable_fan, typing_delay_seconds,
 )
 from automations._outbound import finalize_draft
-from .of_ai_chat import (_is_info_complete, _strip_html,
+from .welcome_chatter_for_info import (_is_info_complete, _strip_html,
                          split_for_bubbles, _dedupe_lead_reaction,
                          _clock_line, _load_clock_tz)
 
@@ -265,7 +265,7 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
         )
 
     # The prompt clock ("" when the account has no tz configured → byte-equal
-    # prompt) — same block as of_ai_chat. A model with no clock invents one.
+    # prompt) — same block as welcome_chatter_for_info. A model with no clock invents one.
     clock_block = (
         f"RIGHT NOW for you it is {clock} — never claim a different time of "
         "day.\n\n" if clock else "")
@@ -315,7 +315,7 @@ async def _candidates(account_id: str, cfg: dict, now: datetime) -> list[tuple[F
     and stop after `silence_max` (too stale → send_followup's drip owns it).
 
     Read from the MESSAGES table (source of truth — Fan.last_message_* lag scrape).
-    of_ai_chat/ai_chatter answer their fans within seconds, so by silence_min those
+    welcome_chatter_for_info/ai_chatter answer their fans within seconds, so by silence_min those
     aren't waiting; Auto Convo only catches fans no one covered in time. Also gated
     on info-complete + low spend + established + not blacklisted/human-handled."""
     sil_min = int(cfg["silence_min_minutes"])
@@ -429,7 +429,7 @@ async def _history(account_id: str, fan_id: int, tail: int) -> list[tuple[str, s
 
 async def _fan_still_waiting(account_id: str, fan_id: int, inbound_at) -> bool:
     """Re-validate just before sending: the fan must STILL be waiting — no reply
-    (outbound) landed since his last inbound. If the team or of_ai_chat answered
+    (outbound) landed since his last inbound. If the team or welcome_chatter_for_info answered
     in the meantime, stand down (don't double-message). Reads the messages table
     (the truth), not Fan.last_message_sent_at (which lags scrape)."""
     async with get_session() as s:
@@ -633,7 +633,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             continue
 
         # Re-validate right before sending: he must STILL be waiting (no reply
-        # landed since his message — else the team/of_ai_chat got it first).
+        # landed since his message — else the team/welcome_chatter_for_info got it first).
         if not await _fan_still_waiting(account_id, fid, inbound_at):
             skipped_raced += 1
             continue
@@ -642,7 +642,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # moved up here from below the LLM call for two reasons that point the same
         # way: it is the cross-engine mutex `sell_lane` requires, and a reply drawn
         # before we hold it is a reply we may throw away — on a selling turn we
-        # would pay for a generation the sale replaces. of_ai_chat and ai_chatter
+        # would pay for a generation the sale replaces. welcome_chatter_for_info and ai_chatter
         # have always taken it in this order; autoreply was the odd one out.
         if await ax.fan_on_cooldown(account_id, fid):
             skipped_cooldown += 1
@@ -652,7 +652,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             continue
 
         # Everything from here holds the lease — a try/finally guarantees it's
-        # released on every non-send path (like of_ai_chat/ai_chatter)
+        # released on every non-send path (like welcome_chatter_for_info/ai_chatter)
         # so a future raise can never leak it for the full TTL. autoreply NEVER
         # sets a cooldown (it must not freeze the other senders): on a confirmed
         # send it KEEPS the lease to expire by TTL (no sibling double-messages

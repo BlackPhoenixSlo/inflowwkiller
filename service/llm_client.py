@@ -699,7 +699,7 @@ async def chat(
     Args:
         model:           a key of MODELS (e.g. "grok-4-1-fast-non-reasoning").
         messages:        OpenAI chat messages (already variable-substituted).
-        purpose:         attribution tag (gen_info / welcome / of_ai_chat_reply / …).
+        purpose:         attribution tag (gen_info / welcome / welcome_chatter_for_info_reply / …).
         account_id:      per-account cap + audit attribution.
         fan_id:          optional fan attribution.
         response_format: e.g. {"type": "json_object"} for structured output.

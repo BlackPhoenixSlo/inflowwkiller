@@ -33,6 +33,35 @@ log = logging.getLogger("of-relay.automation.registry")
 Automation = Callable[..., Awaitable[dict]]
 _REGISTRY: dict[str, Automation] = {}
 
+# Retired kind → its live replacement. THE one home for kind renames: dispatch
+# (get_automation), the executor's priority + job claim, the rules/transfer
+# APIs' validation, and _common's config-key fallbacks all resolve through
+# this map, so prod rows/blobs still carrying the old token keep working
+# until the rename migration rewrites them — and deleting the entry (after
+# that migration has run on prod) retires every shim at once.
+LEGACY_KINDS: dict[str, str] = {
+    "of_ai_chat": "welcome_chatter_for_info",  # renamed 2026-08-19 (0062)
+}
+
+
+def canonical_kind(kind: str) -> str:
+    """Resolve a (possibly retired) kind name to its live registry name."""
+    return LEGACY_KINDS.get(kind, kind)
+
+
+def legacy_names(kind: str) -> tuple[str, ...]:
+    """The retired names that resolve to `kind` (usually empty)."""
+    return tuple(old for old, new in LEGACY_KINDS.items() if new == kind)
+
+
+def kind_family(kind: str) -> tuple[str, ...]:
+    """The live name plus every retired alias — the full token set a stored
+    job/run row may carry for this kind until the rename migration rewrites
+    it. For QUERYING rows (job claim/dedupe/badges); writes always mint
+    `canonical_kind` only."""
+    live = canonical_kind(kind)
+    return (live,) + legacy_names(live)
+
 
 def register(kind: str) -> Callable[[Automation], Automation]:
     """Decorator: register an automation coroutine under `kind`.
@@ -53,11 +82,35 @@ def register(kind: str) -> Callable[[Automation], Automation]:
 
 
 def get_automation(kind: str) -> Automation | None:
-    return _REGISTRY.get(kind)
+    return _REGISTRY.get(canonical_kind(kind))
 
 
 def registered_kinds() -> list[str]:
+    """The LIVE kinds only — legacy names resolve via get_automation but are
+    never listed, so the rules-editor catalog can't offer a retired token."""
     return sorted(_REGISTRY)
+
+
+def is_registered(kind: str) -> bool:
+    """THE kind-validity predicate (legacy names count as their live kind).
+
+    `scrape_chats` is known BY FIAT: it registers from automation_executor's
+    own import, not a plugin file, so a process that never imports the heavy
+    executor (the rules/transfer APIs) must still validate it."""
+    load_automation_plugins()
+    return canonical_kind(kind) in _REGISTRY or kind == "scrape_chats"
+
+
+# Module basenames whose import RAISED in load_automation_plugins(). "This
+# engine failed to load" and "this engine was retired" both look like an
+# unregistered kind; the executor must treat them opposite ways (loud vs
+# inert), and this set is what tells them apart.
+_FAILED_PLUGINS: set[str] = set()
+
+
+def failed_plugins() -> frozenset[str]:
+    """Basenames of automation modules that crashed on import this process."""
+    return frozenset(_FAILED_PLUGINS)
 
 
 _PLUGINS_LOADED = False
@@ -85,4 +138,5 @@ def load_automation_plugins() -> None:
             importlib.import_module(mod.name)
             log.info("automation_plugin_loaded module=%s", mod.name)
         except Exception:
+            _FAILED_PLUGINS.add(mod.name.rsplit(".", 1)[-1])
             log.warning("automation_plugin_import_failed module=%s", mod.name, exc_info=True)

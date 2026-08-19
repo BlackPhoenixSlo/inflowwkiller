@@ -33,45 +33,38 @@ import { PersonaClaims } from "./PersonaClaims";
 import { type PickedTemplate } from "./TemplatePicker";
 import { useAiChatterSessions, useCancelOffer } from "@/hooks/useCatalog";
 
-/** 🎬 chip: this fan is mid-script / has an open AI-seller offer. The contract
- *  between the bot and human chatters — see it, and kill the offer to take
- *  over cleanly. Renders nothing when the fan isn't in any AI-seller flow. */
+/** 🎬 chip: this fan has an open AI-seller offer. The contract between the bot
+ *  and human chatters — see it, and kill the offer to take over cleanly.
+ *  Renders nothing when the fan isn't in any AI-seller flow. (The tip/both
+ *  mode branches render LEGACY open rows — new offers are always ppv.) */
 function AiSellerChip({ accountId, fanId }: { accountId: string; fanId: number }) {
   const sessionsQ = useAiChatterSessions(accountId);
   const cancelM = useCancelOffer(accountId);
-  const pin = (sessionsQ.data?.progress ?? []).find(
-    (p) => p.fan_id === fanId && p.status !== "done",
-  );
   const offer = (sessionsQ.data?.offers ?? []).find(
     (o) => o.fan_id === fanId && o.status === "open",
   );
-  if (!pin && !offer) return null;
+  if (!offer) return null;
   return (
     <div className="mt-1 inline-flex flex-wrap md:flex-nowrap items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-400">
       <span>🎬</span>
-      {pin && <span>{pin.script} · item {pin.position} · {pin.status}</span>}
-      {offer && (
-        <span>
-          {pin ? "· " : ""}waiting on{" "}
-          {offer.mode === "both"
-            ? `$${Math.round((offer.tip_unlock_cents || offer.price_cents) / 100)} unlock/tip`
-            : offer.mode === "tip"
-              ? `$${Math.round(offer.tip_unlock_cents / 100)} tip`
-              : `$${Math.round(offer.price_cents / 100)} unlock`}
-          {offer.tips_accum_cents > 0 &&
-            ` (${Math.round(offer.tips_accum_cents / 100)} in)`}
-        </span>
-      )}
-      {offer && (
-        <button
-          type="button"
-          title="Cancel the AI offer and take over"
-          className="shrink-0 md:shrink grid md:block place-items-center w-9 h-9 md:w-auto md:h-auto -my-2 md:my-0 text-base md:text-[10px] text-amber-400/70 hover:text-red-400"
-          onClick={() => cancelM.mutate(offer.id)}
-        >
-          ×
-        </button>
-      )}
+      <span>
+        waiting on{" "}
+        {offer.mode === "both"
+          ? `$${Math.round((offer.tip_unlock_cents || offer.price_cents) / 100)} unlock/tip`
+          : offer.mode === "tip"
+            ? `$${Math.round(offer.tip_unlock_cents / 100)} tip`
+            : `$${Math.round(offer.price_cents / 100)} unlock`}
+        {offer.tips_accum_cents > 0 &&
+          ` (${Math.round(offer.tips_accum_cents / 100)} in)`}
+      </span>
+      <button
+        type="button"
+        title="Cancel the AI offer and take over"
+        className="shrink-0 md:shrink grid md:block place-items-center w-9 h-9 md:w-auto md:h-auto -my-2 md:my-0 text-base md:text-[10px] text-amber-400/70 hover:text-red-400"
+        onClick={() => cancelM.mutate(offer.id)}
+      >
+        ×
+      </button>
     </div>
   );
 }

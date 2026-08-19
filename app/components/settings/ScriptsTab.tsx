@@ -3,9 +3,12 @@
 /**
  * ScriptsTab — Automations → "🤖 AI Chatter".
  *
+ * (The file name is historical — the ordered-script ladders it was named for
+ * were removed 2026-08-19; singles are the whole catalog.)
+ *
  * The base seller + conversation surface for the `ai_chatter` automation: WHO it
- * talks to, HOW it paces itself, AND the content library (Scripts, Singles,
- * Simulate, Monitor) — because the base chatter sells from that catalog too. The
+ * talks to, HOW it paces itself, AND the content library (Singles, Simulate,
+ * Monitor) — because the base chatter sells from that catalog too. The
  * "sell harder" TUNING (the gate, smart pricing, price ladder, after-a-buy) lives in
  * the "💰 AI Upseller" tab (UpsellerTab). Both edit the same ai_chatter_config_json
  * via `useSellerConfig`, which posts the FULL sparse config so neither tab clobbers
@@ -19,13 +22,12 @@ import { Badge, Button, Card } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { MediaCacheProvider } from "@/hooks/useMediaCache";
 import {
-  useAiChatterConfig, useAiChatterSessions, useCancelOffer, useCatalogScripts,
+  useAiChatterConfig, useAiChatterSessions, useCancelOffer, useCatalogSingles,
   useGenerateLines, useSaveSingles, useSimulate, useSuggestSingles, useSuggestTexts,
-  useUpsertScript,
   type CatalogItemT, type TextSuggestionT,
 } from "@/hooks/useCatalog";
 import {
-  ConfigLoadError, INPUT, ItemsTable, NEW_ITEM, RhythmSection, ScriptCard, dollars,
+  ConfigLoadError, INPUT, ItemsTable, NEW_ITEM, RhythmSection, dollars,
   useSellerConfig, useSellerStyle,
 } from "@/components/settings/sellerShared";
 import ReengageBuyersTab from "@/components/settings/ReengageBuyersTab";
@@ -38,8 +40,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
   const style = useSellerStyle(accountId);
 
   // Content library — the base chatter sells from this catalog (Upseller just tunes how).
-  const scriptsQ = useCatalogScripts(accountId);
-  const upsertM = useUpsertScript(accountId);
+  const scriptsQ = useCatalogSingles(accountId);
   const saveSinglesM = useSaveSingles(accountId);
   const suggestM = useSuggestSingles(accountId);
   const simulateM = useSimulate(accountId);
@@ -175,7 +176,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
       ...rows.map((p) => ({
         ...NEW_ITEM, kind: p.kind, label: p.label,
         description_for_ai: p.description_for_ai,
-        price_cents: p.price_cents, tip_unlock_cents: p.price_cents,
+        price_cents: p.price_cents,
       })),
     ]);
     setSuggested([]);
@@ -256,36 +257,6 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           your content library) live in the <b>💰 AI Upseller</b> tab. This tab is
           just its conversation behavior.
         </p>
-
-        {/* ── engagement ── */}
-        <div className="rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-2 text-sm">
-          <div className="text-fg-dim text-xs">Engagement</div>
-          <label className="flex items-start gap-2 cursor-pointer">
-            <input type="radio" name="ai-chatter-engagement" className="mt-0.5"
-              checked={!cfg.intent_only}
-              onChange={() => set({ intent_only: false })} />
-            <span>
-              <span className="font-medium">Full chatter</span>
-              <span className="block text-fg-dim text-xs">
-                Reply to everyone. (The Upseller only pitches when a fan shows buying intent.)
-              </span>
-            </span>
-          </label>
-          <label className="flex items-start gap-2 cursor-pointer">
-            <input type="radio" name="ai-chatter-engagement" className="mt-0.5"
-              checked={!!cfg.intent_only}
-              onChange={() => set({ intent_only: true })} />
-            <span>
-              <span className="font-medium">Closer only</span>
-              <span className="block text-fg-dim text-xs">
-                Stay silent unless the fan shows buying intent (or already has an open
-                offer). Pure chit-chat goes to Auto Convo + your team. Skipped fans cost
-                no AI calls. <b>The Upseller still takes over any fan mid-sale</b> even in
-                this mode.
-              </span>
-            </span>
-          </label>
-        </div>
 
         {/* ── payer floor ── */}
         <div className="rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-2 text-sm">
@@ -611,20 +582,6 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
 
       {/* ── content library — the seller works from this whether or not the Upseller
           is on. Tune HOW it sells (pricing, escalation) on the 💰 AI Upseller tab. ── */}
-      <div className="flex items-center gap-2">
-        <h3 className="text-sm font-medium">Scripts (ordered sexting ladders)</h3>
-        <span className="text-xs text-fg-dim">walks in order, ignoring requests</span>
-        <div className="flex-1" />
-        <Button size="sm" variant="ghost"
-          onClick={() => upsertM.mutate({ name: `script_${(scriptsQ.data?.scripts.length ?? 0) + 1}` })}>
-          <Plus size={14} className="mr-1" /> New script
-        </Button>
-      </div>
-      {(scriptsQ.data?.scripts ?? []).map((sc) => (
-        <ScriptCard key={sc.id} accountId={accountId} sc={sc} />
-      ))}
-
-      {/* ── singles ── */}
       <Card className="p-4 space-y-3">
         <div className="flex items-baseline gap-2">
           <h3 className="text-sm font-medium">Singles (standalone pieces)</h3>
@@ -768,7 +725,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           <div className="space-y-2">
             {!simulateM.data.manifest_present && (
               <div className="text-xs text-amber-400">
-                ⚠ no sellable items reached the prompt (script enabled? items have media + prices?)
+                ⚠ no sellable items reached the prompt (do the singles have media + a PPV price?)
               </div>
             )}
             <div className="space-y-1">
@@ -784,7 +741,7 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
                 would offer: {simulateM.data.offer.label ?? simulateM.data.offer.item_id}
                 {simulateM.data.offer.is_free_teaser
                   ? " (free teaser)"
-                  : ` — tip $${dollars(simulateM.data.offer.tip_unlock_cents)} / ppv $${dollars(simulateM.data.offer.price_cents)}`}
+                  : ` — ppv $${dollars(simulateM.data.offer.price_cents)}`}
               </Badge>
             )}
           </div>
@@ -796,24 +753,11 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
         <h3 className="text-sm font-medium">
           Live monitor {openOffers.length > 0 && `— ${openOffers.length} open offer(s)`}
         </h3>
-        <div className="grid md:grid-cols-2 gap-4">
-          <div>
-            <div className="text-xs text-fg-dim mb-1">Script pins</div>
-            {(sessionsQ.data?.progress ?? []).length === 0 && (
+        <div>
+          <div className="text-xs text-fg-dim mb-1">Offers</div>
+            {(sessionsQ.data?.offers ?? []).length === 0 && (
               <div className="text-xs text-fg-dim">none yet</div>
             )}
-            {(sessionsQ.data?.progress ?? []).map((p) => (
-              <div key={`${p.fan_id}-${p.script}`} className="text-sm py-0.5">
-                <span className="text-fg-dim">{p.fan_name || p.fan_id}</span>{" "}
-                🎬 {p.script} · item {p.position} ·{" "}
-                <Badge className={p.status === "active"
-                  ? "bg-green-500/15 text-green-400"
-                  : "bg-fg-dim/10 text-fg-dim"}>{p.status}</Badge>
-              </div>
-            ))}
-          </div>
-          <div>
-            <div className="text-xs text-fg-dim mb-1">Offers</div>
             {(sessionsQ.data?.offers ?? []).slice(0, 20).map((o) => (
               <div key={o.id} className="text-sm py-0.5 flex items-center gap-2">
                 <span className="text-fg-dim">{o.fan_name || o.fan_id}</span>
@@ -834,7 +778,6 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
                 )}
               </div>
             ))}
-          </div>
         </div>
       </Card>
 

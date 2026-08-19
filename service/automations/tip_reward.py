@@ -4,10 +4,13 @@ Trigger: real-time, off the inbound tip event. `event_transcoder` records the ti
 then `webhook_dispatch.on_inbound_tip` enqueues ONE fan-scoped `tip_reward` job
 carrying {fan_id, tip_message_id, tip_cents}. The periodic executor drains it.
 
-The reward is photos AND videos (whatever lives in the tier's folders) — the config
-keys keep their historical `*_image*` names for back-compat, but "image" here means
-"a vault media item, photo or video". DRM-only videos can't be previewed in the
-browser but ARE valid vault attachments, so they're included like any other item.
+The reward is photos by default; `videos_in_rewards` (a Tip Reward tab checkbox,
+default OFF) admits clips too. With it ON a clip is not smuggled in as one
+photo-slot: it consumes slots per the pack_pricing rate card ($5–10 per 10s by
+explicitness), so a $25 tip can never walk off with a $30 video. The config keys
+keep their historical `*_image*` names for back-compat. DRM-only videos can't be
+previewed in the browser but ARE valid vault attachments, so once clips are
+allowed they're included like any other item.
 
 The reward rule (all knobs in account_ai_config.tip_reward_config_json):
   • COUNT  = clamp(min_images, tip_dollars // dollars_per_image, max_images).
@@ -33,7 +36,7 @@ seen every image in the tier's folders) and still blocks re-processing.
 
 Deliberately does NOT take the W3 fan lease or set the post-send cooldown: a tip
 reward is a direct response to a fan action and should fire even if another
-automation (e.g. an of_ai_chat reply) is messaging the same fan this moment.
+automation (e.g. an welcome_chatter_for_info reply) is messaging the same fan this moment.
 
 Ships DISABLED with empty folders — a creator enables it and fills folder names.
 """
@@ -52,6 +55,9 @@ from automations._common import (
     load_operator_stop_ids, should_skip_muted_creator,
 )
 from automations.fan_state import fan_state, put_fan_state
+# ONE definition of "a vid" — the same tuple the pack caption counts by and
+# pack_pricing prices by, so the images-only filter and the rate card agree.
+from automations.pack_claim import MOVING_KINDS
 import random
 from db.engine import get_session
 from automations import tip_ladder
@@ -60,7 +66,8 @@ from automations.tip_context import pick_context_media
 # definition, imported rather than re-declared. `upsell` is a pure policy module
 # (no DB, no client), so this cannot cycle back into tip_reward.
 from automations.upsell import OF_PRICE_FLOOR_CENTS
-from db.models import AccountAiConfig, Fan, TipRewardLog, Transaction, VaultSend
+from db.models import (AccountAiConfig, Fan, TipRewardLog, Transaction, VaultItem,
+                       VaultSend)
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -84,6 +91,17 @@ _DEFAULTS: dict = {
                                # stingy as a thank-you; two is a real reward)
     "max_images": 12,          # cap so a whale tip can't drain a folder in one shot
                                # (12 = the bundle hard cap; $60 → the full 12)
+    # ── Videos in rewards (operator checkbox, 2026-08-19) ────────────────────
+    # OFF (default): the tip-reward and image-reply pulls are IMAGES ONLY — moving
+    # items (video/gif) are dropped at the folder scan, which visibly shrinks a
+    # bundle whose folder holds clips. ON: clips ride too, and in the TIP bundle a
+    # clip consumes ceil(rate-card value / dollars_per_image) photo-slots
+    # (pack_pricing.item_value_cents: $5/$7/$10 per 10s by explicitness; an
+    # unmirrored or undescribed clip bills at the sfw base — never over-charge) so
+    # a $25 tip can never buy a $30 video. The TEASER lanes are deliberately NOT
+    # gated by this flag: their price is the ladder's, not a per-item sum, and
+    # they have always attached whatever the folder holds.
+    "videos_in_rewards": False,
     "caption": "",             # optional thank-you text ('' → media-only message)
     "window_hours": 72,        # rolling window for the cumulative tier basis
     # ── Context-aware picking (2026-07-23, the off-promise reward incident) ──
@@ -98,7 +116,7 @@ _DEFAULTS: dict = {
     "context_pick_enabled": True,
     "context_pick_max": 3,         # at most this many matched swaps per reward
     "context_pick_messages": 20,   # thread messages the matcher reads
-    # The ASK side of the loop (read by of_ai_chat/autoreply, not tip_reward itself):
+    # The ASK side of the loop (read by welcome_chatter_for_info/autoreply, not tip_reward itself):
     # when a fan asks to SEE content via text, those senders ask him to tip. ON by
     # default; ask_amount_dollars=None → she asks naturally WITHOUT naming a price
     # (set a number to suggest one). One config home for the whole tip loop.
@@ -178,45 +196,41 @@ _DEFAULTS: dict = {
     # climb-every-send walked an unbought fan $40→$80→$120→$160→$200 overnight,
     # with the fan complaining about the price in-thread) ─────────────────────
     # The ladder climbs ONLY when the teaser she sent actually SELLS (her own
-    # teaser unlock — NEVER an ai_chatter catalog buy), and on a no-buy it
-    # SOFTENS the ask to 65–73% of the last price (floored at 0 → down to a
-    # free tease), holding the rung. Photos come from a price-scaled WEIGHTED
-    # BUNDLE (bundle_plan → the same premium/normal/free tiers the hot teaser
-    # uses); when no tier folders are configured it falls back to the rung's own
-    # folder. An explicit stored `false` restores legacy climb-every-send.
+    # teaser unlock — NEVER an ai_chatter catalog buy). On a no-buy the ask
+    # JITTERS: usually a cut to 40–60% of the last price, and one roll in four a
+    # RAISE of 40–60% (capped at the ladder top), holding the rung. Photos come
+    # from a price-scaled WEIGHTED BUNDLE (bundle_plan → the same
+    # premium/normal/free tiers the hot teaser uses); when no tier folders are
+    # configured it falls back to the rung's own folder. An explicit stored
+    # `false` restores legacy climb-every-send.
     "teaser_convo_adaptive": True,
-    "teaser_convo_cut_lo": 0.65,           # no-buy soften keeps 65–73% of last ask
-    "teaser_convo_cut_hi": 0.73,
-    "teaser_convo_floor_cents": 0,         # STATIC soften floor, ACQUISITION lane only
-    # ── ACQUIRE-then-ESCALATE floor (operator policy, 2026-08-01) ────────────────
-    # The soften floor is a function of ONE fact: has he ever paid?
-    #
-    #   NEVER PAID  → floor = the $3 wire minimum. Priority one is the FIRST yes, and
-    #                 $3 is the cheapest yes that exists. The ask decays to $3 and then
-    #                 oscillates $3 ↔ free bait, which is the acquisition mechanic.
-    #   HAS PAID    → floor = the price the operator SET on the rung. He has proven he
-    #                 pays; the set price is the price, and only the ≤20% haggle cut
-    #                 (teaser_discount_pct) may go under it. There is no descent back
-    #                 toward free — a proven buyer who stalls is answered by STOPPING
-    #                 the asks (teaser_convo_max_unbought), not by cutting the price.
-    #
-    # This replaces `floor_pct × max_paid` (0.38), which produced the inverse: a fan
-    # whose only purchase was a $3 acquisition tease got a floor of $1.14 — BELOW the
-    # wire minimum — so his buy moved the visible price not at all. Measured
-    # 2026-08-01 on Isabelle: three fans stored last_price 1, 1 and 114 cents.
-    "teaser_convo_floor_pct_of_max_paid": 0.38,   # DEPRECATED — no longer read.
+    "teaser_convo_cut_lo": 0.40,           # no-buy cut keeps 40–60% of last ask
+    "teaser_convo_cut_hi": 0.60,
+    # ── FLUCTUATE-DOWN pricing (operator ruling 2026-08-19; supersedes the 08-01
+    # acquire-then-escalate floor FOR THIS LANE — the catalog lane keeps it) ──────
+    # A stalled ask decays for EVERYONE, proven buyer or not. The floor is ONE
+    # static number (default $10); at the floor the ladder mostly alternates floor ↔
+    # free bait, much as the $3 acquisition mechanic did (the bounce can also fire
+    # there and lift the ask back off the floor). The set-price
+    # floor it replaces produced the worst shape the corpus measures: a proven
+    # buyer parked on a top rung takes the IDENTICAL priced ask every breaker
+    # cycle indefinitely — repeat-same-price is the lowest-converting reply to a
+    # refusal there is, and the identical bundle rides every one of them.
+    # The RAISE leg is the anti-pattern guard: a monotone decay teaches a watching
+    # fan that ignoring her makes the next ask cheaper, so one no-buy roll in four
+    # goes UP instead — the trend is down, the path is not a slide.
+    "teaser_convo_floor_cents": 1000,      # STATIC decay floor, everyone
+    "teaser_convo_raise_chance": 0.25,     # P(a no-buy ask RAISES instead of cutting)
+    "teaser_convo_raise_lo": 1.4,          # a raise multiplies the last ask by
+    "teaser_convo_raise_hi": 1.6,          #   1.4–1.6, capped at the top rung's price
     # ── The free BAIT leg for a PROVEN buyer (operator ask, 2026-08-08) ──────────
-    # "Has paid → floor is the set price" above makes that price a FIXED POINT: at the
-    # floor the only move left is `bait_floor`, and for a proven buyer that IS the
-    # floor, so the identical ask repeats until the circuit breaker stops it. Measured
-    # on prod: fan 453746631 ($1,129 lifetime) took SIX consecutive $144.00 locks, and
-    # would have taken three more every 48h forever.
-    #
-    # ON: a proven buyer's bait_floor drops to $0 too, so once his ask reaches the
-    # floor the ladder alternates set price ↔ free (2 photos from the free folder,
-    # `hot_teaser_free_folder`, which `_compose_bundle_ids` may repeat) instead of
-    # repeating one number. He still never DECAYS below the set price — the only
-    # thing under it is free.
+    # At the floor the only move left is `bait_floor`. ON: a proven buyer's
+    # bait_floor is $0 like everyone else's, so the bottom of his ladder alternates
+    # floor ↔ free (2 photos from the free folder, `hot_teaser_free_folder`, which
+    # `_compose_bundle_ids` may repeat) instead of repeating one number. OFF: his
+    # bait_floor equals the floor, and the identical ask repeats until the circuit
+    # breaker stops it — the shape that produced six consecutive identical
+    # top-rung locks on one prod fan, with three more due every 48h indefinitely.
     #
     # ⚠️ A free leg is not a failed ask, so it does NOT advance `unbought` (see
     # pick_convo_teaser). The breaker therefore still stops him after the same number
@@ -244,10 +258,9 @@ _DEFAULTS: dict = {
     #
     # This is the brake whose absence produced the worst behaviour in the system:
     # measured 2026-08-01 on Isabelle, fan 374095202 received EIGHTY-FIVE consecutive
-    # $3.00 locked messages across three days and unlocked none of them. The old
-    # answer to a non-buyer was to cut the price, which is why it never stopped — the
-    # ladder always had one more cheaper ask to send. Under the acquire-then-escalate
-    # floor there IS no cheaper ask, so the ladder must be able to stop instead.
+    # $3.00 locked messages across three days and unlocked none of them. Under
+    # fluctuate-down (08-19) there is almost always a cheaper ask to send again, so
+    # this breaker is the ONLY thing that guarantees a wall of ignored asks ends.
     # 0 disables the brake (the old unbounded behaviour) — not recommended.
     "teaser_convo_max_unbought": 3,
     "teaser_convo_unbought_reset_h": 48,
@@ -348,11 +361,23 @@ async def image_describe_flags(account_id: str) -> tuple[bool, str, str]:
             str(cfg.get("image_describe_prompt") or ""), scope)
 
 
+def _cents_per_slot(cfg: dict) -> int:
+    """ONE derivation of the "$ per image" knob, in cents. It is the number that
+    ties the tip's slot budget (`_media_count`), the bundle sizing
+    (`_bundle_sizing`) and the video slot-coster (`_SlotCoster`) together — three
+    inline copies had already grown two different (dead — `_load_config` always
+    merges the default) fallbacks, and the day those disagree for real, the
+    budget and the cost stop meaning the same thing."""
+    return max(1, int(cfg.get("dollars_per_image") or 5)) * 100
+
+
 def _media_count(tip_cents: int, cfg: dict) -> int:
     """clamp(min_images, tip_dollars // dollars_per_image, max_images). The config
-    keys keep their `*_image*` names for back-compat; the count governs photos AND
-    videos alike (one media item per `dollars_per_image`)."""
-    per = max(1, int(cfg.get("dollars_per_image") or 10)) * 100   # → cents/item
+    keys keep their `*_image*` names for back-compat. With `videos_in_rewards` on
+    this number is a SLOT budget rather than an item count: a photo is one slot, a
+    clip is whatever the rate card says it is worth in photos (`_SlotCoster`),
+    and the bundle can only get SMALLER in items — never larger."""
+    per = _cents_per_slot(cfg)
     lo = max(0, int(cfg.get("min_images") or 0))
     hi = max(lo, int(cfg.get("max_images") or lo or 1))
     return max(lo, min(hi, int(tip_cents) // per))
@@ -424,11 +449,14 @@ def _resolve_folders(client, folder_names: list[str]) -> dict[str, int]:
     return by_name
 
 
-def _folder_media_ids(client, list_id: int) -> list[int]:
-    """Ordered media ids in one vault folder (recent-first), PHOTOS AND VIDEOS (plus
-    gifs). `type="all"` so a tip reward can hand out a clip as readily as a photo;
-    audio is filtered out. DRM-only videos are kept — they can't be previewed but
-    ARE sendable as a vault attachment. Best-effort (empty on error)."""
+def _folder_media_items(client, list_id: int) -> list[tuple[int, str, int]]:
+    """Ordered `(media_id, type, duration_seconds)` in one vault folder
+    (recent-first), PHOTOS AND VIDEOS (plus gifs). `type="all"` so a reward can
+    hand out a clip as readily as a photo; audio is filtered out. DRM-only videos
+    are kept — they can't be previewed but ARE sendable as a vault attachment.
+    Type and duration ride along because the OF payload already carries them
+    (zero extra calls): the images-only filter and the video slot-coster both
+    read them downstream. Best-effort (empty on error)."""
     try:
         media = client.vault_media(list_id=int(list_id), type="all",
                                    limit=_VAULT_SCAN_LIMIT)
@@ -436,7 +464,7 @@ def _folder_media_ids(client, list_id: int) -> list[int]:
         log.debug("tip_reward vault_media failed folder=%s", list_id, exc_info=True)
         return []
     items = media.get("list") if isinstance(media, dict) else media
-    out: list[int] = []
+    out: list[tuple[int, str, int]] = []
     for it in (items or []):
         if not isinstance(it, dict) or it.get("id") is None:
             continue
@@ -445,8 +473,10 @@ def _folder_media_ids(client, list_id: int) -> list[int]:
         mtype = str(it.get("type") or "").strip().lower()
         if mtype and mtype not in _REWARD_MEDIA_TYPES:
             continue
+        dur = it.get("duration")
         try:
-            out.append(int(it["id"]))
+            out.append((int(it["id"]), mtype,
+                        int(dur) if isinstance(dur, (int, float)) and dur else 0))
         except (TypeError, ValueError):
             continue
     return out
@@ -456,7 +486,7 @@ def folder_media_pool(client, folder_name: str) -> list[int] | None:
     """PUBLIC seam: one vault folder's media ids, by NAME. None = no such folder.
 
     The name → list-id → media-ids read every folder-configured lane shares —
-    the tip tiers and hot teaser here, of_ai_chat's gather-close from outside.
+    the tip tiers and hot teaser here, welcome_chatter_for_info's gather-close from outside.
     Folder NAMES are what the configs store (the UI's VaultFolderPicker shape),
     so this is the one place the name resolves. Sync client calls — run it via
     `asyncio.to_thread` off the event loop."""
@@ -464,27 +494,104 @@ def folder_media_pool(client, folder_name: str) -> list[int] | None:
         str(folder_name).strip().lower())
     if list_id is None:
         return None
-    return _folder_media_ids(client, list_id)
+    return [mid for mid, _t, _d in _folder_media_items(client, list_id)]
+
+
+class _SlotCoster:
+    """Prices an item in photo-slots for `_gather_unseen`'s budget. Built by
+    `_video_slot_cost` (which does the ONE mirror read); after that it is pure,
+    so an instance can cross into `asyncio.to_thread`.
+
+    A clip's cost is ceil(rate-card value / dollars_per_image): 60s of sfw at the
+    $5/item default is 3000¢/500¢ = 6 slots, explicit footage twice that. The
+    tier and (preferably) the duration come from the vault mirror; a clip the
+    mirror has never seen — or one the describe pass hasn't tiered — bills at the
+    SFW base off the OF payload's own duration, so missing data can only ever
+    UNDER-charge, never inflate a clip out of the bundle."""
+
+    def __init__(self, mirror: dict[int, tuple[int | None, str | None]],
+                 cents_per_slot: int) -> None:
+        self._mirror = mirror
+        self._per = cents_per_slot
+        self._memo: dict[int, int] = {}
+
+    def __call__(self, mid: int, mtype: str, duration: int) -> int:
+        mid = int(mid)
+        got = self._memo.get(mid)
+        if got is None:
+            if mtype in MOVING_KINDS:
+                from automations import pack_pricing  # local: its import chain
+                # drags the whole vault stack (content_resolver →
+                # vault_pack_picker/vault_scripts) — pay for it on the first
+                # videos-ON reward, not at module import.
+                dur, tier = self._mirror.get(mid, (None, None))
+                value = pack_pricing.item_value_cents(
+                    mtype, int(dur or duration or 0), str(tier or "sfw"))
+                got = max(1, -(-value // self._per))     # ceil division
+            else:
+                got = 1                                  # a photo is one slot
+            self._memo[mid] = got
+        return got
+
+    def slots_of(self, ids: list[int]) -> int:
+        """Slots a picked list consumed. Every picked id was priced on the way in
+        (`_gather_unseen` costs an item before taking it), so the memo has it —
+        this is how `_pull_stages` measures a shortfall without a second read."""
+        return sum(self._memo[int(m)] for m in ids)
+
+
+async def _video_slot_cost(account_id: str, cfg: dict) -> _SlotCoster:
+    """Build the coster: ONE account-wide select over the vault mirror's moving
+    items. Account-wide because the folder ids aren't known until the sync scan
+    runs (and vaults are hundreds of rows, not thousands)."""
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.duration_seconds,
+                   VaultItem.explicitness_tier).where(
+                VaultItem.account_id == str(account_id),
+                VaultItem.kind.in_(MOVING_KINDS))
+        )).all()
+    return _SlotCoster({int(m): (d, t) for m, d, t in rows}, _cents_per_slot(cfg))
+
+
+def _slots(ids: list[int], slot_cost: _SlotCoster | None) -> int:
+    """Slots a picked list consumed — the item count unless a coster priced them."""
+    return len(ids) if slot_cost is None else slot_cost.slots_of(ids)
 
 
 def _gather_unseen(client, folders: list[str], by_name: dict[str, int],
-                   seen: set[int], count: int) -> list[int]:
-    """Up to `count` unseen media ids (photos AND videos), scanning the tier's
-    folders in order and de-duplicating across them (an id can live in two
-    folders)."""
+                   seen: set[int], count: int, *, videos: bool = True,
+                   slot_cost: _SlotCoster | None = None) -> list[int]:
+    """Up to `count` SLOTS of unseen media ids, scanning the tier's folders in
+    order and de-duplicating across them (an id can live in two folders).
+
+    `videos=False` — the tip tab's images-only default — drops moving items
+    (video/gif) at the scan; a blank type still passes as a photo, as it always
+    has. With a `slot_cost` coster (`videos_in_rewards` ON), `count` is a SLOT
+    budget rather than an item count: an item that would overflow the budget is
+    SKIPPED and the scan continues, because a cheaper item further down may still
+    fit — the budget is a ceiling, never trimmed after the fact. Without a coster
+    every item costs one slot, which is exactly the old item-count behaviour."""
     picked: list[int] = []
     taken: set[int] = set()
+    total = 0
     for nm in folders:
         list_id = by_name.get(str(nm).strip().lower())
         if list_id is None:
             log.info("tip_reward folder not found name=%r", nm)
             continue
-        for mid in _folder_media_ids(client, list_id):
+        for mid, mtype, duration in _folder_media_items(client, list_id):
             if mid in seen or mid in taken:
+                continue
+            if not videos and mtype in MOVING_KINDS:
+                continue
+            c = 1 if slot_cost is None else slot_cost(mid, mtype, duration)
+            if total + c > count:
                 continue
             picked.append(mid)
             taken.add(mid)
-            if len(picked) >= count:
+            total += c
+            if total >= count:
                 return picked
     return picked
 
@@ -596,7 +703,12 @@ async def _run_image_reply(account_id: str, payload: dict, cfg: dict, *,
     client = await asyncio.to_thread(ax._make_client, account_id)
     by_name = await asyncio.to_thread(_resolve_folders, client, folders)
     seen = await _seen_media(account_id, fan_id)
-    media_ids = await asyncio.to_thread(_gather_unseen, client, folders, by_name, seen, count)
+    # The images-only checkbox governs this freebie too, but the SLOT budget does
+    # not: nothing was paid, so there is no price for a clip's length to overflow —
+    # with the flag on, one clip is one freebie, as it always was.
+    media_ids = await asyncio.to_thread(
+        _gather_unseen, client, folders, by_name, seen, count,
+        videos=bool(cfg.get("videos_in_rewards")))
     if not media_ids:
         # Fan has seen everything in the tier — nothing fresh to send back. Don't
         # stamp the cooldown (we sent nothing); the next image can try again.
@@ -702,7 +814,7 @@ def _bundle_sizing(cfg: dict) -> tip_ladder.BundleSizing:
     paid floor it is bait for; 0 means no free tease, on every caller."""
     lo = max(0, int(cfg.get("min_images") or 0))
     return tip_ladder.BundleSizing(
-        cents_per_photo=max(1, int(cfg.get("dollars_per_image") or 5)) * 100,
+        cents_per_photo=_cents_per_slot(cfg),
         min_photos=max(1, lo),
         max_photos=max(1, int(cfg.get("max_images") or 1), lo),
         free_photos=lo,
@@ -732,11 +844,17 @@ def _pull_stages(client, stages: list[tuple[list[str], int]],
                  seen: set[int], *,
                  repeat_ok: frozenset[int] | set[int] = frozenset(),
                  never_repeat: frozenset[int] | set[int] = frozenset(),
+                 videos: bool = True, slot_cost: _SlotCoster | None = None,
                  ) -> tuple[list[list[int]], list[int]]:
     """THE one folder-bundle composer: ordered stage pulls with cross-stage dedup
     + shortfall backfill. Each (folder_names, count) stage pulls up to `count`
     unseen items from its folders; a short stage does not shrink the bundle —
     the total shortfall is backfilled from ALL stages' folders at the end.
+
+    `videos`/`slot_cost` ride through to `_gather_unseen`. Under a coster every
+    count here is a SLOT budget, and the shortfall is measured in slots too
+    (`_slots`) — an item-counted shortfall would over-fill: a stage that spent
+    its 5 slots on a 3-slot clip plus 2 photos is FULL, not 2 short.
 
     `repeat_ok` names stage INDICES whose folders hold tease/filler content
     (operator ruling 07-23: filler may repeat, and a filler shortfall must
@@ -760,26 +878,29 @@ def _pull_stages(client, stages: list[tuple[list[str], int]],
         ids: list[int] = []
         if n > 0 and folders:
             by_name = _resolve_folders(client, folders)
-            ids = _gather_unseen(client, folders, by_name, taken, n)
+            ids = _gather_unseen(client, folders, by_name, taken, n,
+                                 videos=videos, slot_cost=slot_cost)
             taken.update(ids)
             bundle.update(ids)
         picked.append(ids)
     want = sum(max(0, n) for _, n in stages)
-    short = want - sum(len(p) for p in picked)
+    short = want - sum(_slots(p, slot_cost) for p in picked)
     extras: list[int] = []
     if short > 0:
         all_folders = [f for folders, _ in stages for f in folders]
         if all_folders:
             by_name = _resolve_folders(client, all_folders)
-            extras = _gather_unseen(client, all_folders, by_name, taken, short)
+            extras = _gather_unseen(client, all_folders, by_name, taken, short,
+                                    videos=videos, slot_cost=slot_cost)
             bundle.update(extras)
-    short -= len(extras)
+    short -= _slots(extras, slot_cost)
     if short > 0 and repeat_ok:
         # Repeats may only restore the repeat_ok stages' OWN share — a payoff
         # shortfall keeps shrinking the bundle rather than becoming filler.
         repeat_want = sum(max(0, n) for i, (_, n) in enumerate(stages)
                           if i in repeat_ok)
-        repeat_have = sum(len(picked[i]) for i in repeat_ok if i < len(picked))
+        repeat_have = sum(_slots(picked[i], slot_cost) for i in repeat_ok
+                          if i < len(picked))
         short = min(short, max(0, repeat_want - repeat_have))
         r_folders = [f for i, (folders, _) in enumerate(stages)
                      if i in repeat_ok for f in folders]
@@ -787,7 +908,8 @@ def _pull_stages(client, stages: list[tuple[list[str], int]],
             by_name = _resolve_folders(client, r_folders)
             extras = extras + _gather_unseen(
                 client, r_folders, by_name,
-                set(bundle) | set(never_repeat), short)
+                set(bundle) | set(never_repeat), short,
+                videos=videos, slot_cost=slot_cost)
     return picked, extras
 
 
@@ -936,8 +1058,8 @@ def teaser_sale_check_msg(state: dict) -> int | None:
     and a $0 message can never be unlocked, so on the turn after a bait the obvious
     read (`last_msg`) asks a question whose answer is always False — and the PRICED ask
     underneath it silently stops being watched. That ask is still open and still
-    unlockable: he can pay for it hours later, and with `teaser_convo_bait_for_buyers`
-    on it is a proven buyer's SET price, not a $3 acquisition tease. Missing it would
+    unlockable: he can pay for it hours later, and it can carry any rung price on the
+    ladder, not just a floor tease. Missing it would
     keep his unbought streak climbing toward the circuit breaker after he had paid.
 
     So: last_price > 0 → her last teaser; otherwise `last_paid_msg`, the last one that
@@ -995,18 +1117,22 @@ async def convo_teaser_config(account_id: str) -> dict | None:
         # Operator override: run the ladder past the companion/bot-accused/broke
         # brakes (manual stops still apply upstream). See _DEFAULTS for the risk.
         "ignore_brakes": bool(cfg.get("teaser_convo_ignore_brakes")),
-        # Adaptive (buy-aware climb / soften) + the weighted-bundle knobs it shares
+        # Adaptive (buy-aware climb / jitter) + the weighted-bundle knobs it shares
         # with the hot teaser. All inert unless teaser_convo_adaptive is on.
+        # DIRECT key access for the numeric knobs (like the breaker pair below):
+        # `_load_config` merges _DEFAULTS, so the keys always exist, and an explicit
+        # stored 0 (raise_chance off-switch, floor_cents → $3 wire floor) must
+        # survive — a `.get(...) or DEFAULT` would silently eat it.
         "adaptive": bool(cfg.get("teaser_convo_adaptive")),
-        "cut_lo": float(cfg.get("teaser_convo_cut_lo") or 0.65),
-        "cut_hi": float(cfg.get("teaser_convo_cut_hi") or 0.73),
-        "floor_cents": max(0, int(cfg.get("teaser_convo_floor_cents") or 0)),
-        # Does a PROVEN buyer get the free bait leg too (set price ↔ free) instead of
+        "cut_lo": float(cfg["teaser_convo_cut_lo"]),
+        "cut_hi": float(cfg["teaser_convo_cut_hi"]),
+        "floor_cents": max(0, int(cfg["teaser_convo_floor_cents"])),
+        "raise_chance": max(0.0, min(1.0, float(cfg["teaser_convo_raise_chance"]))),
+        "raise_lo": float(cfg["teaser_convo_raise_lo"]),
+        "raise_hi": float(cfg["teaser_convo_raise_hi"]),
+        # Does a PROVEN buyer get the free bait leg too (floor ↔ free) instead of
         # holding on one repeated number? See _DEFAULTS for the volume caveat.
         "bait_for_buyers": bool(cfg.get("teaser_convo_bait_for_buyers")),
-        # Proven-spend soften floor: floor = floor_pct × his highest single PPV paid
-        # (computed per-run from max_single_paid by the caller). See _DEFAULTS.
-        "floor_pct": max(0.0, float(cfg.get("teaser_convo_floor_pct_of_max_paid") or 0.0)),
         # Escalation ×step off a SOFTENED/floor buy (never off the rung list). See _DEFAULTS.
         "climb_step": max(1.0, float(cfg.get("teaser_convo_climb_step") or 2.0)),
         # Circuit breaker on consecutive unbought priced teasers. See _DEFAULTS.
@@ -1022,31 +1148,52 @@ async def convo_teaser_config(account_id: str) -> dict | None:
     }
 
 
-def convo_teaser_floors(tcfg: dict, *, max_paid_cents: int,
-                        rung_price_cents: int) -> tuple[int, int]:
+def _jitter_band(tcfg: dict) -> tuple[float, float, float, float, float]:
+    """(cut_lo, cut_hi, chance, raise_lo, raise_hi) — the no-buy jitter model,
+    normalized ONCE (bands sorted, chance clamped). Both the sender's roll and the
+    forecast's band ends come from here, so a default can never drift between them."""
+    lo = float(tcfg.get("cut_lo") or 0.40)
+    hi = float(tcfg.get("cut_hi") or 0.60)
+    if lo > hi:
+        lo, hi = hi, lo
+    chance = max(0.0, min(1.0, float(tcfg.get("raise_chance") or 0.0)))
+    r_lo = float(tcfg.get("raise_lo") or 1.4)
+    r_hi = float(tcfg.get("raise_hi") or 1.6)
+    if r_lo > r_hi:
+        r_lo, r_hi = r_hi, r_lo
+    return lo, hi, chance, r_lo, r_hi
+
+
+def _jitter_frac(band: tuple[float, float, float, float, float], rv: float) -> float:
+    """ONE roll → the no-buy multiplier. `rv` below `chance` lands in the raise band
+    (the bounce); the rest of the interval maps across the cut band. A single number
+    deciding both the leg and the spot keeps the injectable-`rand` test seam intact."""
+    lo, hi, chance, r_lo, r_hi = band
+    rv = max(0.0, min(1.0, rv))
+    if rv < chance:
+        return r_lo + (r_hi - r_lo) * (rv / chance)
+    span = (rv - chance) / (1.0 - chance) if chance < 1.0 else 0.0
+    return lo + (hi - lo) * span
+
+
+def convo_teaser_floors(tcfg: dict, *, max_paid_cents: int) -> tuple[int, int]:
     """`(floor, bait_floor)` — the bottom of his ladder, and the bottom of the free
     BAIT leg. ONE resolution, used by both the sender and the forecast so the drawer
     can never quote a floor the engine would not honour.
 
-    Both fall out of the single fact the house policy turns on: HAS HE EVER PAID?
+    The floor is ONE static number for everyone (`floor_cents`, default $10) —
+    fluctuate-down pricing (operator ruling 2026-08-19, see _DEFAULTS): a stalled ask
+    decays whether he has paid or not, and at the floor the ladder alternates
+    floor ↔ free. This supersedes the 08-01 set-price floor for THIS lane only; a
+    proven buyer's history still shapes the CATALOG lane (`upsell.next_price`).
 
-      never paid → floor is the $3 wire minimum (or a higher static `floor_cents`) and
-                   bait_floor is $0, so the ladder alternates floor ↔ free. Getting the
-                   first yes is the whole job and $3 is the cheapest yes on offer.
-      has paid   → the floor is the price the operator SET on this rung. He has proven
-                   he pays, so the set price is the price and there is no walk back down
-                   toward free; only the ≤20% haggle cut goes under it. His stalling is
-                   answered by the unbought circuit breaker, not by cutting the price.
+    What still turns on HAS HE EVER PAID is the bait leg: a never-buyer always
+    alternates floor ↔ free (the acquisition mechanic), a proven buyer only when
+    `teaser_convo_bait_for_buyers` is on — off, his bait_floor equals the floor and
+    the number repeats until the breaker trips.
 
-    His BAIT floor is the one thing `teaser_convo_bait_for_buyers` moves. On (the
-    shipped default) it is $0 like everyone else's, so his ask alternates set price ↔
-    free. Off, it equals his floor, so the ladder has nowhere left to go and repeats
-    the set price until the breaker trips. Note what did NOT change either way: the
-    floor. He never decays to a cheaper ASK — the only thing below the set price is
-    free.
-
-    Returning both from one call is the point: they are two views of one fact, and when
-    the sender and the forecast each derived them separately they could disagree.
+    Returning both from one call is the point: they are two views of one policy, and
+    when the sender and the forecast each derived them separately they could disagree.
 
     NEVER below `OF_PRICE_FLOOR_CENTS`. That is not defensive decoration — the floor
     used to be `0.38 × max_paid`, which for a $3 buyer is $1.14, a price OF will not
@@ -1054,10 +1201,10 @@ def convo_teaser_floors(tcfg: dict, *, max_paid_cents: int,
     state drifted to numbers the fan never saw (1¢ on two prod fans) and
     `round(1 × 0.7) == 1` made the decay a FIXED POINT that could never reach the
     floor↔free oscillation. A floor the wire can't honour is not a floor."""
+    floor = max(OF_PRICE_FLOOR_CENTS, int(tcfg.get("floor_cents") or 0))
     if int(max_paid_cents or 0) > 0:
-        proven = max(OF_PRICE_FLOOR_CENTS, int(rung_price_cents or 0))
-        return proven, (0 if tcfg.get("bait_for_buyers") else proven)
-    return max(OF_PRICE_FLOOR_CENTS, int(tcfg.get("floor_cents") or 0)), 0
+        return floor, (0 if tcfg.get("bait_for_buyers") else floor)
+    return floor, 0
 
 
 def _next_convo_teaser_price(*, idx: int, prices: list[int], last_px: int,
@@ -1076,12 +1223,15 @@ def _next_convo_teaser_price(*, idx: int, prices: list[int], last_px: int,
                                 he already refused
       • full-price sale / the
         opening free tease     → climb the configured ladder one rung
-      • no buy                → soften ×frac down to the floor, then to `bait_floor`.
-                                $0 ⇒ the ladder alternates floor ↔ free bait; a
-                                `bait_floor` equal to the floor ⇒ he holds on one
-                                number instead. Which one a PROVEN buyer gets is
-                                `teaser_convo_bait_for_buyers`; a fan who has never
-                                bought always alternates (the acquisition mechanic).
+      • no buy                → jitter ×frac. Usually frac < 1 (a cut toward the
+                                floor, then to `bait_floor`: $0 ⇒ the ladder
+                                alternates floor ↔ free bait; a `bait_floor` equal
+                                to the floor ⇒ he holds on one number. Which one a
+                                PROVEN buyer gets is `teaser_convo_bait_for_buyers`;
+                                a never-buyer always alternates). One roll in
+                                `raise_chance` the caller hands a frac > 1 — the
+                                BOUNCE — and the ask goes UP instead, capped at the
+                                ladder top so a lucky streak can't leave the ladder.
     """
     if last_px <= 0 and idx == 0 and not last_sold and not last_was_free:
         return 0, prices[0], False               # first ever
@@ -1092,7 +1242,12 @@ def _next_convo_teaser_price(*, idx: int, prices: list[int], last_px: int,
     if last_sold or (last_was_free and idx == 0):  # full-price sale / opening free → climb
         new_idx = min(idx + 1, len(prices) - 1)
         return new_idx, prices[new_idx], False
-    cand = int(round(last_px * frac))            # no buy → soften toward the floors
+    # No buy → jitter (a cut, or the bounce), landing on WHOLE DOLLARS — a $20.91
+    # lock reads like a bot (the retired tip ladder's human-rounding lesson, kept
+    # minimal). The climb branches above stay exact: they escalate off what he PAID.
+    cand = int((last_px * frac + 50) // 100) * 100
+    if frac > 1.0 and prices and max(prices) > 0:
+        cand = min(cand, max(prices))            # a raise never exceeds the ladder top
     if cand >= floor:        price = cand        # still above the floor → decay
     elif last_px > floor:    price = floor       # first dip below → land ON floor
     elif last_px == floor:   price = bait_floor  # at the floor → bait ($0, or hold)
@@ -1110,11 +1265,11 @@ def convo_teaser_forecast(*, tcfg: dict, state: dict, msgs_since: int,
     OF folder resolution and a `VaultSend` dedup read, and a status endpoint must
     not pay that (nor warm caches) just to render a countdown.
 
-    The soften cut is jittered (`cut_lo`..`cut_hi`), so on a decay the next ask is a
-    RANGE, not a number. Both ends are evaluated: `cents` is the low end and
-    `cents_max` the high one, equal whenever the outcome doesn't depend on the roll —
-    which is most of the time, because the floor and free-bait branches are fixed
-    prices. Reporting one jittered sample as "the" next ask would be a number the
+    The no-buy move is jittered — a cut (`cut_lo`..`cut_hi`) or, one roll in
+    `raise_chance`, a bounce UP (`raise_lo`..`raise_hi`) — so on a stall the next ask
+    is a RANGE, not a number. Every band end is evaluated: `cents` is the lowest
+    outcome and `cents_max` the highest, equal whenever the outcome doesn't depend on
+    the roll. Reporting one jittered sample as "the" next ask would be a number the
     operator could watch the engine contradict.
     """
     rungs = tcfg.get("rungs") or []
@@ -1140,19 +1295,16 @@ def convo_teaser_forecast(*, tcfg: dict, state: dict, msgs_since: int,
         return out
 
     last_px = max(0, int(state.get("last_price") or 0))
-    floor, bait_floor = convo_teaser_floors(tcfg, max_paid_cents=max_paid_cents,
-                                            rung_price_cents=prices[idx])
-    lo = float(tcfg.get("cut_lo") or 0.65)
-    hi = float(tcfg.get("cut_hi") or 0.73)
-    if lo > hi:
-        lo, hi = hi, lo
+    floor, bait_floor = convo_teaser_floors(tcfg, max_paid_cents=max_paid_cents)
+    lo, hi, chance, r_lo, r_hi = _jitter_band(tcfg)
+    fracs = (lo, hi) + ((r_lo, r_hi) if chance > 0 else ())
     step = float(tcfg.get("climb_step") or 2.0)
     ends = [
         _next_convo_teaser_price(
             idx=idx, prices=prices, last_px=last_px, last_sold=last_sold,
             last_was_free=bool(state.get("last_free")), floor=floor,
             bait_floor=bait_floor, step=step, frac=f)
-        for f in (lo, hi)
+        for f in fracs
     ]
     out["cents"] = min(e[1] for e in ends)
     out["cents_max"] = max(e[1] for e in ends)
@@ -1173,8 +1325,9 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
 
     ADAPTIVE (tcfg['adaptive'] on): the ladder ($0/$10/$40/$80/$120/$160/$200)
     moves on WHAT HAPPENED to the last teaser — climb one rung if it SOLD (or was a
-    free tease he received), else SOFTEN to 65–73% of the last ask down to the floors
-    `convo_teaser_floors` resolves, holding the rung. Photos come from a price-scaled
+    free tease he received), else JITTER: usually a cut to 40–60% of the last ask
+    down to the floor `convo_teaser_floors` resolves, one roll in four a raise of
+    40–60% capped at the ladder top, holding the rung. Photos come from a price-scaled
     WEIGHTED BUNDLE (bundle_plan → premium/normal/free tier folders), free rung → a
     free taste.
 
@@ -1201,8 +1354,9 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
     # This gate has to exist BEFORE the pricing, not inside it. The old design's only
     # answer to a non-buyer was a cheaper ask, so there was always one more thing to
     # send and the loop had no exit — 85 consecutive ignored locks to one prod fan.
-    # Under the acquire-then-escalate floor there IS no cheaper ask to fall to, so
-    # without a stop condition the engine would simply repeat the floor forever.
+    # Fluctuate-down (08-19) reintroduces the ever-cheaper ask, so this stop is the
+    # one guarantee the wall ends; at the floor the engine would otherwise alternate
+    # floor ↔ free forever.
     unbought = int(state.get("unbought") or 0)
     reset_h = int(tcfg["unbought_reset_h"])
     last_at = teaser_last_at(state)
@@ -1231,21 +1385,16 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
                 "is_free": price_cents == 0, "folder": folder, "rung": idx,
                 "next_rung": min(idx + 1, len(rungs) - 1), "convo": True}
 
-    # ── ADAPTIVE: buy-aware climb / soften, price-scaled weighted bundle ──
-    # Resolve the scalars the PURE pricing policy needs, then delegate. The floors are
-    # the $3 wire minimum ↔ free while he has never paid, and the rung's SET price for
-    # both once he has (`convo_teaser_floors`); frac is the jittered soften cut.
+    # ── ADAPTIVE: buy-aware climb / jitter, price-scaled weighted bundle ──
+    # Resolve the scalars the PURE pricing policy needs, then delegate. The floor is
+    # the static `floor_cents` (default $10) for everyone (`convo_teaser_floors`);
+    # frac is the jittered no-buy move (`_jitter_frac` — a cut, or the bounce).
     idx = max(0, min(rung, len(rungs) - 1))
     prices = [max(0, int((r or {}).get("price_cents") or 0)) for r in rungs]
     last_px = max(0, int(state.get("last_price") or 0))
-    floor, bait_floor = convo_teaser_floors(tcfg, max_paid_cents=max_paid_cents,
-                                            rung_price_cents=prices[idx])
-    lo = float(tcfg.get("cut_lo") or 0.65)
-    hi = float(tcfg.get("cut_hi") or 0.73)
-    if lo > hi:
-        lo, hi = hi, lo
-    rv = random.random() if rand is None else float(rand)
-    frac = lo + (hi - lo) * max(0.0, min(1.0, rv))
+    floor, bait_floor = convo_teaser_floors(tcfg, max_paid_cents=max_paid_cents)
+    frac = _jitter_frac(_jitter_band(tcfg),
+                        random.random() if rand is None else float(rand))
     new_idx, price, softened = _next_convo_teaser_price(
         idx=idx, prices=prices, last_px=last_px, last_sold=last_sold,
         last_was_free=bool(state.get("last_free")), floor=floor,
@@ -1368,6 +1517,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     client = await asyncio.to_thread(ax._make_client, account_id)
     seen = await _seen_media(account_id, fan_id)
 
+    # Videos ride only with the checkbox on, and only WITH a coster: `count`
+    # becomes a slot budget, so a clip is charged its rate-card worth in
+    # photo-slots and a $25 tip can never walk off with a $30 video. OFF (the
+    # default) strips clips at the scan and never pays the mirror read.
+    videos = bool(cfg.get("videos_in_rewards"))
+    slot_cost = await _video_slot_cost(account_id, cfg) if videos else None
+
     # ── Bundle plan (2026-07-23): tip$/5 items total. A tease warm-up share
     # comes from the free-tease folder (2 of 5), the rest ("normal" slots) from
     # the basis tier's folders — and when the context matcher is on, up to
@@ -1392,7 +1548,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         set(seen) | set(matched),
         # Tease warm-up is filler — may repeat, never blocks the bundle; but
         # never re-pick a photo the matcher already reserved for the payoff.
-        repeat_ok={0}, never_repeat=set(matched))
+        repeat_ok={0}, never_repeat=set(matched),
+        videos=videos, slot_cost=slot_cost)
     # Escalating order: tease warm-up → tier shots (+ any backfill) → the
     # matched-to-his-ask photos land last (the payoff).
     media_ids = tease_ids + normal_ids + extras + matched

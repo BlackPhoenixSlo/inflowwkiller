@@ -15,11 +15,10 @@
  * unchanged on save.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { BookOpen, ChevronDown, FolderOpen, Image as ImageIcon, Plus, Save, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { BookOpen, ChevronDown, Image as ImageIcon, Save, Trash2 } from "lucide-react";
 
-import { Badge, Button, Card, Textarea } from "@/components/ui/primitives";
-import { VaultFolderPicker } from "@/components/settings/VaultFolderPicker";
+import { Button, Card, Textarea } from "@/components/ui/primitives";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { MediaPreviewModal } from "@/components/settings/MediaPreviewModal";
 import { useMediaCache } from "@/hooks/useMediaCache";
@@ -30,9 +29,9 @@ import { cn } from "@/lib/utils";
 import { utcLabel, zoneLabel } from "@/lib/creatorClock";
 import { useSaveStyleConfig, useStyleConfig } from "@/hooks/useStyleConfig";
 import {
-  useAiChatterConfig, useDeleteScript, useImportFolder, usePasteImport,
-  useSaveAiChatterConfig, useSaveScriptItems, useUpsertScript,
-  type AiChatterConfig, type CatalogItemT, type CatalogScriptT, type GhostStage,
+  useAiChatterConfig,
+  useSaveAiChatterConfig,
+  type AiChatterConfig, type CatalogItemT, type GhostStage,
   type PaceBand,
 } from "@/hooks/useCatalog";
 
@@ -248,11 +247,6 @@ function ItemRow({ it, accountId, onChange, onRemove, onPickMedia, onPreview }: 
       </td>
       <td className={TD}>
         <input type="number" className={`${INPUT} w-16`} min={0}
-          value={dollars(it.tip_unlock_cents)}
-          onChange={(e) => onChange({ tip_unlock_cents: (parseInt(e.target.value || "0", 10) || 0) * 100 })} />
-      </td>
-      <td className={TD}>
-        <input type="number" className={`${INPUT} w-16`} min={0}
           value={dollars(it.price_cents)}
           onChange={(e) => onChange({ price_cents: (parseInt(e.target.value || "0", 10) || 0) * 100 })} />
       </td>
@@ -293,7 +287,7 @@ export function ItemsTable({ items, setItems, accountId }: {
             <th className={TH}>kind</th><th className={TH}>label</th>
             <th className={TH}>what the fan sees</th><th className={TH}>media</th>
             <th className={TH}>previews</th>
-            <th className={TH}>tip $</th><th className={TH}>ppv $</th>
+            <th className={TH}>ppv $</th>
             <th className={TH}>free</th><th className={TH}>sold</th><th className={TH} />
           </tr>
         </thead>
@@ -330,123 +324,6 @@ export function ItemsTable({ items, setItems, accountId }: {
           onClose={() => setPreview(null)} />
       )}
     </>
-  );
-}
-
-/* ── one script editor card ────────────────────────────────────────── */
-
-export function ScriptCard({ accountId, sc }: { accountId: string; sc: CatalogScriptT }) {
-  const upsertM = useUpsertScript(accountId);
-  const deleteM = useDeleteScript(accountId);
-  const saveItemsM = useSaveScriptItems(accountId);
-  const importM = useImportFolder(accountId);
-  const pasteM = usePasteImport(accountId);
-
-  const [name, setName] = useState(sc.name);
-  const [theme, setTheme] = useState(sc.theme ?? "");
-  const [status, setStatus] = useState(sc.status);
-  const [items, setItems] = useState<CatalogItemT[]>(sc.items);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [pasteOpen, setPasteOpen] = useState(false);
-  const [pasteText, setPasteText] = useState("");
-
-  const lastMeta = useRef({ name: sc.name, theme: sc.theme ?? "", status: sc.status });
-  const itemsKey = JSON.stringify(sc.items);
-  const lastItemsKey = useRef(itemsKey);
-  useEffect(() => {
-    if (itemsKey !== lastItemsKey.current) {
-      setItems(sc.items);
-      lastItemsKey.current = itemsKey;
-    }
-  }, [itemsKey, sc.items]);
-  useEffect(() => {
-    const next = { name: sc.name, theme: sc.theme ?? "", status: sc.status };
-    if (next.name !== lastMeta.current.name) setName(next.name);
-    if (next.theme !== lastMeta.current.theme) setTheme(next.theme);
-    if (next.status !== lastMeta.current.status) setStatus(next.status);
-    lastMeta.current = next;
-  }, [sc.name, sc.theme, sc.status]);
-
-  const missingDesc = items.filter((i) => !(i.description_for_ai ?? "").trim()).length;
-  const missingMedia = items.filter((i) => i.media_ids.length === 0).length;
-
-  return (
-    <Card className="p-4 space-y-3">
-      <div className="flex items-center gap-2 flex-wrap">
-        <input className={`${INPUT} font-medium w-48`} value={name}
-          onChange={(e) => setName(e.target.value)} />
-        <select className={INPUT} value={status}
-          onChange={(e) => setStatus(e.target.value as CatalogScriptT["status"])}>
-          <option value="draft">draft</option>
-          <option value="enabled">enabled (sellable)</option>
-          <option value="disabled">disabled</option>
-        </select>
-        <Button size="sm" variant="ghost"
-          onClick={() => upsertM.mutate({ id: sc.id, name, theme, status })}>
-          <Save size={14} className="mr-1" /> Save script
-        </Button>
-        <div className="flex-1" />
-        <Button size="sm" variant="ghost" onClick={() => setPickerOpen(true)}>
-          <FolderOpen size={14} className="mr-1" /> Import folder
-        </Button>
-        <Button size="sm" variant="ghost" onClick={() => setPasteOpen((v) => !v)}>
-          Paste table
-        </Button>
-        <Button size="sm" variant="ghost"
-          className="text-red-400"
-          onClick={() => { if (confirm(`Delete script "${sc.name}" and its items?`)) deleteM.mutate(sc.id); }}>
-          <Trash2 size={14} />
-        </Button>
-      </div>
-
-      <Textarea rows={2} value={theme} className="w-full text-sm"
-        placeholder="Theme (shown to the AI, never fans): setting, outfit, arc…"
-        onChange={(e) => setTheme(e.target.value)} />
-
-      {pasteOpen && (
-        <div className="space-y-2 border border-border rounded-lg p-2">
-          <Textarea rows={6} value={pasteText} className="w-full text-xs font-mono"
-            placeholder={"Paste the Notion table:\n| Label | No | Video | Duration |\n| 1st [ASS TEASE] | 3 | Mirror selfie video… | 1 min |"}
-            onChange={(e) => setPasteText(e.target.value)} />
-          <Button size="sm" disabled={!pasteText.trim() || pasteM.isPending}
-            onClick={() => pasteM.mutate({ scriptId: sc.id, table: pasteText },
-              { onSuccess: () => { setPasteText(""); setPasteOpen(false); } })}>
-            Import rows
-          </Button>
-        </div>
-      )}
-
-      <ItemsTable items={items} setItems={setItems} accountId={accountId} />
-
-      <div className="flex items-center gap-2 flex-wrap">
-        <Button size="sm" variant="ghost"
-          onClick={() => setItems([...items, { ...NEW_ITEM }])}>
-          <Plus size={14} className="mr-1" /> Add item
-        </Button>
-        <Button size="sm" disabled={saveItemsM.isPending}
-          onClick={() => saveItemsM.mutate({ scriptId: sc.id, items })}>
-          <Save size={14} className="mr-1" /> Save items ({items.length})
-        </Button>
-        {missingDesc > 0 && (
-          <Badge className="bg-amber-500/15 text-amber-400">
-            ⚠ {missingDesc} without description
-          </Badge>
-        )}
-        {missingMedia > 0 && (
-          <Badge className="bg-amber-500/15 text-amber-400">
-            ⚠ {missingMedia} without media
-          </Badge>
-        )}
-        {saveItemsM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
-      </div>
-
-      <VaultFolderPicker open={pickerOpen} onClose={() => setPickerOpen(false)}
-        accountId={accountId} initialSelected={[]}
-        onConfirm={(names) => {
-          setPickerOpen(false);
-          if (names[0]) importM.mutate({ scriptId: sc.id, folder: names[0] });
-        }} />
-    </Card>
   );
 }
 
@@ -1254,19 +1131,17 @@ export function GuideCard() {
                 to <B>pick from the vault</B>. <span className="text-amber-400">No media = not offerable.</span></li>
               <li className={LI}><B>Previews</B> — tap thumbnails to mark which media go out <B>unlocked</B>
                 as the free teaser on a PPV.</li>
-              <li className={LI}><B>Tip $ / PPV $</B> — the two ways to sell it.</li>
+              <li className={LI}><B>PPV $</B> — the price to unlock. <span className="text-amber-400">PPV is the
+                only way the bot sells</span> — a row with no PPV price is never offered.</li>
               <li className={LI}><B>Free</B> — the whole piece goes out free (no paywall).</li>
             </ul>
           </div>
 
           <div className="space-y-1.5">
-            <h4 className={H}>Scripts vs Singles — how the bot chooses what to offer</h4>
+            <h4 className={H}>How the bot chooses what to offer</h4>
             <ul className="list-disc pl-5 space-y-1">
-              <li className={LI}><B>Singles</B> = a flat pool. Every unseen single is available at once, and the AI
+              <li className={LI}><B>Singles</B> are a flat pool. Every unseen single is available at once, and the AI
                 picks the <B>best-fitting one by its description</B>. Flexible, no fixed order.</li>
-              <li className={LI}><B>Scripts</B> = an <B>ordered ladder</B>. The bot offers items in position order
-                (#1 → #2 → #3) and each unlock advances to the next. One script per fan at a time. Use it for a
-                planned escalation — the price climbs by unlocking pricier items, not by begging on one.</li>
             </ul>
             <p className={P}>Already-sent pieces drop out automatically — the bot never re-offers the same media.</p>
           </div>
@@ -1275,7 +1150,7 @@ export function GuideCard() {
             <h4 className={H}>Always test in Simulate first</h4>
             <p className={P}>
               The <B>Simulate</B> box runs the real prompt + AI against a fake fan line and shows the exact bubbles
-              and the offer it would make — <B>nothing is sent</B>. Catch a bad script or a missing price here, never
+              and the offer it would make — <B>nothing is sent</B>. Catch a bad caption or a missing price here, never
               on a paying fan.
             </p>
           </div>

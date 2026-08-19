@@ -35,7 +35,7 @@ _INT_KNOBS = {
     "min_images": (0, 50),
     "max_images": (1, 50),
     "window_hours": (1, 8760),
-    # The content-ask tip-ask amount (read by of_ai_chat/autoreply — the ASK side
+    # The content-ask tip-ask amount (read by welcome_chatter_for_info/autoreply — the ASK side
     # of the loop). Kept here so the whole tip loop has one config surface.
     "ask_amount_dollars": (1, 10_000),
     # Inbound-image reply knobs (Flag 1 — a fan sends US a photo).
@@ -51,9 +51,22 @@ _INT_KNOBS = {
     # Conversational teaser ladder (the rungs list is validated separately below).
     "teaser_convo_after_fan_msgs": (1, 1000),
     "teaser_convo_count": (1, 50),
+    # The adaptive ladder's static decay floor. 0 is meaningful (the $3 wire
+    # minimum takes over at runtime), so the loop below must store it.
+    "teaser_convo_floor_cents": (0, 100_000),
     # Context-aware picking (matched-to-his-ask swaps in the reward bundle).
     "context_pick_max": (0, 10),
     "context_pick_messages": (1, 100),
+}
+# Adaptive-ladder jitter knobs (floats). Same contract as _INT_KNOBS: a knob must
+# be named here or the tab save destroys any stored override — the drop-hole that
+# kept `teaser_convo_adaptive` a dead checkbox until 2026-08-19.
+_FLOAT_KNOBS = {
+    "teaser_convo_cut_lo": (0.05, 0.95),
+    "teaser_convo_cut_hi": (0.05, 0.95),
+    "teaser_convo_raise_chance": (0.0, 1.0),   # 0 = the bounce's off switch
+    "teaser_convo_raise_lo": (1.0, 3.0),
+    "teaser_convo_raise_hi": (1.0, 3.0),
 }
 _MAX_TEASER_RUNGS = 10
 _MAX_TIERS = 10
@@ -147,6 +160,11 @@ def _validate(cfg: dict) -> dict:
     # open for the fan (overrides the standdown; the offer is still credited).
     if "always_reward" in cfg:
         out["always_reward"] = bool(cfg["always_reward"])
+    # "Videos too" — OFF (default) keeps reward pulls images-only; ON admits clips
+    # and prices each by the pack_pricing rate card so a clip consumes several
+    # photo-slots of the tip. Named here or the checkbox dies on the next save.
+    if "videos_in_rewards" in cfg:
+        out["videos_in_rewards"] = bool(cfg["videos_in_rewards"])
     # Inbound-image buying-signal handler (a fan sends US a photo). Two independent
     # flags, both default OFF, both independent of the tip `enabled` master switch.
     if "image_reply_enabled" in cfg:
@@ -172,11 +190,15 @@ def _validate(cfg: dict) -> dict:
     # Conversational teaser ladder — enable flag + the rungs list ({folder, price_cents}).
     if "teaser_convo_enabled" in cfg:
         out["teaser_convo_enabled"] = bool(cfg["teaser_convo_enabled"])
-    # Does a PROVEN buyer get the free bait leg (set price ↔ free) instead of holding
+    # Does a PROVEN buyer get the free bait leg (floor ↔ free) instead of holding
     # on one repeated number? Per-account BECAUSE it changes what every past buyer on
     # the account receives next — a code default would flip them all on one deploy.
     if "teaser_convo_bait_for_buyers" in cfg:
         out["teaser_convo_bait_for_buyers"] = bool(cfg["teaser_convo_bait_for_buyers"])
+    # "Climb only when he buys" — the tab has always sent this flag; it had no branch
+    # here, so the checkbox saved nothing. Named now.
+    if "teaser_convo_adaptive" in cfg:
+        out["teaser_convo_adaptive"] = bool(cfg["teaser_convo_adaptive"])
     if "teaser_convo_rungs" in cfg:
         rungs = cfg["teaser_convo_rungs"]
         if not isinstance(rungs, (list, tuple)):
@@ -200,12 +222,13 @@ def _validate(cfg: dict) -> dict:
     # Default TRUE in the automation; an explicit false here turns it off.
     if "context_pick_enabled" in cfg:
         out["context_pick_enabled"] = bool(cfg["context_pick_enabled"])
-    for k, (lo, hi) in _INT_KNOBS.items():
-        if k in cfg and cfg[k] is not None:
-            try:
-                out[k] = max(lo, min(int(cfg[k]), hi))
-            except (TypeError, ValueError):
-                raise HTTPException(422, f"{k} must be a number")
+    for knobs, cast in ((_INT_KNOBS, int), (_FLOAT_KNOBS, float)):
+        for k, (lo, hi) in knobs.items():
+            if k in cfg and cfg[k] is not None:
+                try:
+                    out[k] = max(lo, min(cast(cfg[k]), hi))
+                except (TypeError, ValueError):
+                    raise HTTPException(422, f"{k} must be a number")
     if "caption" in cfg:
         out["caption"] = str(cfg["caption"] or "")[:_CAPTION_MAX]
     if "image_reply_caption" in cfg:

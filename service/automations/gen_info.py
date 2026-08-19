@@ -341,7 +341,7 @@ def profile_is_stale(prev_count: int | None, last_gen_at: datetime | None,
                      fresh_after: timedelta = _CADENCE_MIDDLE[0],
                      volume_cap: int = _CADENCE_MIDDLE[1],
                      class_spent: bool = False) -> bool:
-    """Should this fan's profile be regenerated? Shared with of_ai_chat's
+    """Should this fan's profile be regenerated? Shared with welcome_chatter_for_info's
     refresh-if-stale hook. `fresh_after`/`volume_cap` come from _tier_knobs (the
     caller classifies the fan's spend tier); they default to the MIDDLE tier.
 
@@ -353,7 +353,7 @@ def profile_is_stale(prev_count: int | None, last_gen_at: datetime | None,
 
     `lines_empty` is the one EXEMPTION from the gate: when a whole Q- or Tease-class
     has been consumed (all three slots null) AND there's any new inbound message,
-    refill the openers now — of_ai_chat needs openers to talk, so that functional
+    refill the openers now — welcome_chatter_for_info needs openers to talk, so that functional
     refill isn't held to the >= _MIN_NEW_MSGS freshness gate.
 
     `class_spent` (from `_openers.class_spent`) is the NON-destructive twin of that
@@ -390,7 +390,7 @@ async def fan_cadence_knobs(s, account_id: str, fan_id: int, now: datetime,
     """(fresh_after, volume_cap) for one fan, classified from the DB on an open
     session `s` — the per-fan analogue of the batch tier computation the sweep does
     inline. Reads lifetime spend + subscribed_at off the fans row and sums CLEARED
-    spend in the last _RECENT_SPEND_WINDOW. Used by of_ai_chat's refresh hook."""
+    spend in the last _RECENT_SPEND_WINDOW. Used by welcome_chatter_for_info's refresh hook."""
     fan_id = int(fan_id)
     if lifetime_spend_cents is None:
         frow = (await s.execute(
@@ -500,9 +500,9 @@ async def _gather_candidates(
                 c = counts[fan_id] = _Candidate(int(fan_id))
             c.total_msg_n += 1
             text = _strip_html(body)[:_MSG_CLIP]
-            # Count only substantive inbound (matches of_ai_chat): emoji-only
+            # Count only substantive inbound (matches welcome_chatter_for_info): emoji-only
             # reactions don't inflate fan_msg_n, so message_count_at_gen and the
-            # of_ai_chat staleness baseline stay on ONE scale (no suppressed/false
+            # welcome_chatter_for_info staleness baseline stay on ONE scale (no suppressed/false
             # refreshes for emoji-heavy fans).
             if direction == "in" and is_substantive_msg(text):
                 c.fan_msg_n += 1
@@ -594,7 +594,7 @@ async def _gather_candidates(
         c.subscribed_at = subdates.get(fan_id)
         c.known = info
         forced = fan_id in force_ids
-        # Promo-spam guard (shares of_ai_chat's rule): don't waste an LLM profile
+        # Promo-spam guard (shares welcome_chatter_for_info's rule): don't waste an LLM profile
         # on peer creators who blast the inbox. Either we've MUTED their chat (a
         # deliberate "silence this creator" — never profile one even if they once
         # paid), or they're in the account's promo-blaster set.
@@ -927,7 +927,7 @@ async def _sync_of_nickname(
 ) -> None:
     """Re-assert the structured OF nickname (Name/City,Country/Age/Job) after a
     profile regen, using the SAME canonical builder the senders use so OF gets the
-    identical format. This is the periodic self-heal: of_ai_chat pushes the name
+    identical format. This is the periodic self-heal: welcome_chatter_for_info pushes the name
     each gather tick, but once a fan graduates the name is only
     asserted once — any later enrichment (or an external edit on onlyfans.com that
     clears it back to the bare profile name) would otherwise never reach OF. We

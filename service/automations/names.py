@@ -274,7 +274,7 @@ def build_structured_nickname(f: Fan) -> str:
     nickname format). Empty segments are dropped, so a thin profile yields a
     short nickname. '' when nothing is known."""
     # `custom_nickname` is the OUTPUT this function mirrors back (via
-    # of_ai_chat._maybe_push_nickname, every tick). Feeding the whole structured
+    # welcome_chatter_for_info._maybe_push_nickname, every tick). Feeding the whole structured
     # string back in as the Name made each tick re-append loc/age/job, growing
     # 'Donovon/chef/25' → 'Donovon/chef/25/chef/25/chef/nanaimo,canada/25/…' until
     # the 70-char cap. Pull only the NAME slot from it so the loop can't compound.

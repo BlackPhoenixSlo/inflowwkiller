@@ -138,7 +138,7 @@ def _contract_system() -> str:
     """CALL 1's system prompt, hoisted out of `read_contract`.
 
     House idiom — `_daylog`, `_objection`, `_persona`, `_pins`, `gen_info`,
-    `describe_media` and `of_ai_chat` all keep their prompt at module level.
+    `describe_media` and `welcome_chatter_for_info` all keep their prompt at module level.
     `read_contract` was 139 lines with 62 of them this string, which buried the
     three things it actually does: read the thread, call, parse.
 
