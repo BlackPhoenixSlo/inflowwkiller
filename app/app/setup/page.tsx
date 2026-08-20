@@ -8,6 +8,8 @@
  *   • PasteCurlCard  — primary bootstrap path; mirrors the legacy /ui/.
  *   • AccountsTable  — every model, with rename + default + delete.
  *   • ProxiesTable   — every proxy + assignment + test.
+ *   • AgencyKeysCard — YOUR agency's LLM keys (what your models bill).
+ *   • KeysCard       — the server's own house keys + tokens.
  *
  * Order is intentional: stale banner first (urgent), then paste cURL
  * (the fix), then the read-only tables for review.
@@ -18,6 +20,7 @@ import AccountsTable from "@/components/setup/AccountsTable";
 import ProxiesTable from "@/components/setup/ProxiesTable";
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
 import KeysCard from "@/components/setup/KeysCard";
+import AgencyKeysCard from "@/components/setup/AgencyKeysCard";
 
 export default function SetupPage() {
   return (
@@ -43,6 +46,8 @@ export default function SetupPage() {
       </p>
 
       <div className="hidden md:block"><ProxiesTable /></div>
+
+      <div className="hidden md:block"><AgencyKeysCard /></div>
 
       <div className="hidden md:block"><KeysCard /></div>
     </div>

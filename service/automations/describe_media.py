@@ -367,6 +367,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     copied = 0
     capped = False
     failed = 0
+    first_error = ""
     over_budget = 0
 
     def _budget_hit() -> bool:
@@ -402,27 +403,38 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if status == "capped":
                 capped = True
                 break
-            if res.get("ok"):
-                described += 1
-                # Chase this fresh description with the 2nd (copy) call so
-                # caption + script hit the row in the SAME sweep — the vault
-                # is instantly grouped-approvable rather than needing another
-                # cadence cycle. Skipped if a cap already blocked us.
-                if capped or _budget_hit():
-                    continue
-                try:
-                    cp = await _copy_one(
-                        account_id, media_id, model=caption_model)
-                except Exception:  # noqa: BLE001
-                    failed += 1
-                    log.warning("copy_failed account=%s media=%s",
-                                account_id, media_id, exc_info=True)
-                    continue
-                spent_mc += int(cp.get("cost_millicents") or 0)
-                if cp.get("status") == "capped":
-                    capped = True
-                elif cp.get("ok") and cp.get("status") == "copied":
-                    copied += 1
+            if not res.get("ok"):
+                # vault_sweep's rule: anything that is not `ok` and not `capped`
+                # is a counted failure and the walk goes on. Counting nothing
+                # made a whole vault failing read as a finished one; STOPPING
+                # here would repeat the fault vault_sweep was extracted to end
+                # (one bad item abandoning the rest of the pass).
+                failed += 1
+                first_error = first_error or str(res.get("detail") or "")[:300]
+                continue
+            described += 1
+            # Chase this fresh description with the 2nd (copy) call so
+            # caption + script hit the row in the SAME sweep — the vault
+            # is instantly grouped-approvable rather than needing another
+            # cadence cycle. Skipped if a cap already blocked us.
+            if capped or _budget_hit():
+                continue
+            try:
+                cp = await _copy_one(
+                    account_id, media_id, model=caption_model)
+            except Exception:  # noqa: BLE001
+                failed += 1
+                log.warning("copy_failed account=%s media=%s",
+                            account_id, media_id, exc_info=True)
+                continue
+            spent_mc += int(cp.get("cost_millicents") or 0)
+            if cp.get("status") == "capped":
+                capped = True
+            elif cp.get("ok") and cp.get("status") == "copied":
+                copied += 1
+            else:
+                failed += 1
+                first_error = first_error or str(cp.get("detail") or "")[:300]
 
     # ── Standalone copy pass: described-but-uncopied backlog ─────────
     if not capped:
@@ -445,6 +457,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 break
             if cp.get("ok") and cp.get("status") == "copied":
                 copied += 1
+            else:
+                failed += 1
+                first_error = first_error or str(cp.get("detail") or "")[:300]
 
     return {
         "described": described,
@@ -452,6 +467,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "capped": capped,
         "over_budget": over_budget,
         "failed": failed,
+        # The sentence an operator reads when a run did nothing — the refusal
+        # itself, not a count. Same key and same meaning as vault_sweep's, which
+        # is what the "Describe all" button reports.
+        "first_error": first_error,
         "budget_mc": budget_mc,
         "spent_mc": spent_mc,
         "describe_model": describe_model,

@@ -85,6 +85,10 @@ from scripts_api import router as _scripts_router  # noqa: E402
 from style_config_api import router as _style_config_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
 from settings_transfer_api import router as _settings_transfer_router  # noqa: E402
+from tenant_keys_api import (  # noqa: E402
+    router as _tenant_keys_router,
+    admin_router as _tenant_keys_admin_router,
+)
 from auth import (  # noqa: E402
     router as _auth_router,
     admin_router as _auth_admin_router,
@@ -193,6 +197,10 @@ app.include_router(_scripts_router)
 app.include_router(_style_config_router)
 app.include_router(_account_config_router)
 app.include_router(_settings_transfer_router)
+# Per-agency LLM keys. Placed before the auth routers because it is
+# session-gated by them: the signed-in owner is the only row it can touch.
+app.include_router(_tenant_keys_router)
+app.include_router(_tenant_keys_admin_router)
 app.include_router(_auth_router)
 app.include_router(_auth_admin_router)
 app.include_router(_auth_impersonate_router)
@@ -394,7 +402,10 @@ async def admin_secrets_set(request: Request) -> dict[str, Any]:
         body = None
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="expected a JSON object of key→value")
-    secrets_store.set_many({str(k): v for k, v in body.items()})
+    try:
+        secrets_store.set_many({str(k): v for k, v in body.items()})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"keys": secrets_store.status()}
 
 

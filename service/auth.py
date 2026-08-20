@@ -945,6 +945,20 @@ async def admin_transfer_user_account(body: TransferAccountBody = Body(...)) -> 
             raise HTTPException(
                 status_code=404, detail=f"unknown user {body.to_user_id!r}"
             )
+        # The destination may ALREADY hold this account — that is the shape a
+        # grant leaves behind (two links, one account), and handing it to the
+        # co-owner is how an operator resolves it. Checked before the delete
+        # rather than caught after: the insert's IntegrityError used to trigger
+        # a rollback that undid the DELETE TOO, so the whole transfer became a
+        # no-op while still returning ok:true — a silent success that leaves the
+        # account with two owners, which now stops its AI entirely
+        # (tenant_keys.owners_of refuses rather than bill the wrong agency).
+        dest_already_holds = (await s.execute(
+            select(UserAccount.user_id).where(
+                UserAccount.user_id == body.to_user_id,
+                UserAccount.account_id == body.account_id,
+            )
+        )).first() is not None
         result = await s.execute(
             delete(UserAccount).where(
                 UserAccount.user_id == me.id,
@@ -960,10 +974,11 @@ async def admin_transfer_user_account(body: TransferAccountBody = Body(...)) -> 
                 detail="account link is missing; refresh and retry",
             )
         try:
-            s.add(UserAccount(
-                user_id=body.to_user_id, account_id=body.account_id,
-            ))
-            await s.flush()
+            if not dest_already_holds:
+                s.add(UserAccount(
+                    user_id=body.to_user_id, account_id=body.account_id,
+                ))
+                await s.flush()
             # The account is leaving this owner — drop the chatter visibility
             # grants they set for it. Left behind, these orphan: the access
             # editor re-surfaces a now-foreign account_id and "Save access"
