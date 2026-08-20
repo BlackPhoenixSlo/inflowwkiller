@@ -56,6 +56,8 @@ type OpenPane = { userId: string; pane: "grant" | "keys" | "delete" | "impersona
 export default function AdminUsersPage() {
   const { user: me } = useUser();
   const [rows, setRows] = useState<AdminUserRow[] | null>(null);
+  const [keyStatus, setKeyStatus] = useState<Record<string, AgencyKeyStatus>>({});
+  const [liveOnly, setLiveOnly] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<OpenPane>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -64,8 +66,16 @@ export default function AdminUsersPage() {
     setError(null);
     setRefreshing(true);
     try {
-      const data = await relay.get<AdminUserRow[]>("/admin/users");
+      // Two calls, not one. /admin/users is readable by any owner because the
+      // transfer picker needs it; the key roster is a list of every tenant and
+      // their credential state, so it lives behind the master gate on its own
+      // endpoint rather than making the shared one sometimes-shaped.
+      const [data, status] = await Promise.all([
+        relay.get<AdminUserRow[]>("/admin/users"),
+        relay.get<{ agencies: AgencyKeyStatus[] }>("/admin/users/llm-key-status"),
+      ]);
       setRows(data);
+      setKeyStatus(Object.fromEntries(status.agencies.map((a) => [a.user_id, a])));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -74,6 +84,13 @@ export default function AdminUsersPage() {
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  // Filter only when the roster actually loaded — otherwise a failed key-status
+  // call would silently empty a list that /admin/users returned perfectly well.
+  const loaded = Object.keys(keyStatus).length > 0;
+  const shown = (rows ?? []).filter(
+    (u) => !liveOnly || !loaded || (keyStatus[u.id]?.live_accounts ?? 0) > 0,
+  );
 
   const togglePane = (userId: string, pane: "grant" | "keys" | "delete" | "impersonate") =>
     setOpen((cur) =>
@@ -106,19 +123,55 @@ export default function AdminUsersPage() {
       ) : rows.length === 0 ? (
         <div className="text-sm text-fg-dim">No users registered yet.</div>
       ) : (
+        <>
+        {/* A dead session sends nothing, so a key pasted under its owner buys
+            nothing until the session is re-captured. Most agencies here are in
+            that state — default to hiding them so the rows that are worth
+            filling in are the ones on screen. */}
+        <label className="flex items-center gap-2 text-xs text-fg-dim">
+          <input
+            type="checkbox"
+            checked={liveOnly}
+            onChange={(e) => setLiveOnly(e.target.checked)}
+          />
+          Only agencies with a live model session
+          <span className="text-fg-dim/70">
+            ({shown.length} of {rows.length})
+          </span>
+        </label>
         <ul className="divide-y divide-fg/10 border border-fg/10 rounded-xl">
-          {rows.map((u) => {
+          {shown.map((u) => {
             const grantOpen = open?.userId === u.id && open.pane === "grant";
             const keysOpen = open?.userId === u.id && open.pane === "keys";
             const deleteOpen = open?.userId === u.id && open.pane === "delete";
             const impersonateOpen = open?.userId === u.id && open.pane === "impersonate";
             const isSelf = me?.user_id === u.id;
+            const live = keyStatus[u.id]?.live_accounts ?? 0;
+            const providers = keyStatus[u.id]?.providers_set ?? [];
             return (
               <li key={u.id} className="p-4 space-y-3">
                 <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
                   <div className="font-medium">@{u.username}</div>
                   <div className="text-xs text-fg-dim">
                     {u.account_count} account{u.account_count === 1 ? "" : "s"}
+                  </div>
+                  <div className="text-xs">
+                    {live > 0 ? (
+                      <span className="text-emerald-400">{live} live</span>
+                    ) : (
+                      <span className="text-fg-dim/70">no live model</span>
+                    )}
+                  </div>
+                  <div className="text-xs">
+                    {providers.length > 0 ? (
+                      <span className="text-fg-dim">key: {providers.join(", ")}</span>
+                    ) : live > 0 ? (
+                      // The one row that is actually costing something: a model
+                      // that can talk, and no credential for it to talk on.
+                      <span className="text-amber-400">needs a key</span>
+                    ) : (
+                      <span className="text-fg-dim/70">no key</span>
+                    )}
                   </div>
                   <div className="text-xs text-fg-dim">
                     joined {fmtDate(u.created_at)}
@@ -178,6 +231,7 @@ export default function AdminUsersPage() {
             );
           })}
         </ul>
+        </>
       )}
     </main>
   );
@@ -583,4 +637,14 @@ function AgencyKeysForm({ user }: { user: AdminUserRow }) {
 interface KeyStatus {
   set: boolean;
   hint: string;
+}
+
+/** One row of GET /admin/users/llm-key-status — provider NAMES only, never a
+ *  value or a hint. The per-agency pane is where a masked hint belongs. */
+interface AgencyKeyStatus {
+  user_id: string;
+  username: string;
+  accounts: number;
+  live_accounts: number;
+  providers_set: string[];
 }

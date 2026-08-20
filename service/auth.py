@@ -777,6 +777,29 @@ class DeleteUserBody(BaseModel):
     admin_password: str = Field(..., min_length=1, max_length=512)
 
 
+def require_master() -> AuthedUser:
+    """THE master-role gate. Founder-only surfaces call this; nothing re-derives it.
+
+    Two gates exist on purpose and are not interchangeable. This one proves WHO
+    is asking from the session, and is what a read needs — a masked key hint or
+    a roster of every agency is a leak whether or not the caller knows a
+    password. `_assert_admin_password` proves the caller holds the founder
+    secret, and rides along on writes. A destructive founder write wants both.
+
+    401 when nobody is signed in rather than 403: the role has to be PROVEN, so
+    an absent principal is refused on the same footing as a wrong one, and
+    `ALLOW_ANONYMOUS_ADMIN` (which resolves to no user) buys nothing here.
+    """
+    user = get_request_user()
+    if user is None:
+        raise HTTPException(
+            status_code=401, detail="sign in as the master account")
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=403, detail="master account required")
+    return user
+
+
 def _assert_admin_password(supplied: str) -> None:
     """Founder-gate. 503 if the relay never had the env var configured,
     403 if the caller's password doesn't match. Centralised so every

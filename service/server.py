@@ -95,6 +95,7 @@ from auth import (  # noqa: E402
     impersonate_router as _auth_impersonate_router,
     session_middleware as _auth_session_middleware,
     get_request_user as _get_request_user,
+    require_master as _require_master,
     assert_account_owned,
     allow_anonymous_account_access as _allow_anonymous_account_access,
     clamp_account_filter,
@@ -396,20 +397,11 @@ async def _share_token_gate(request: Request, call_next):
 # still leaks the last four characters of every house key.
 
 
-def _require_master_for_secrets() -> None:
-    user = _get_request_user()
-    if user is None or not user.is_admin:
-        raise HTTPException(
-            status_code=403,
-            detail="only the master account can manage this server's keys",
-        )
-
-
 @app.get("/admin/secrets")
 def admin_secrets_status() -> dict[str, Any]:
     """Masked status of every UI-settable key (set?/source/hint — never the
     raw value). Master only."""
-    _require_master_for_secrets()
+    _require_master()
     return {"keys": secrets_store.status()}
 
 
@@ -418,7 +410,7 @@ async def admin_secrets_set(request: Request) -> dict[str, Any]:
     """Set or clear keys. Body is a flat JSON object {KEY: value, …}; an empty
     string or null clears that key. Unknown keys are ignored. Returns the new
     masked status. Master only."""
-    _require_master_for_secrets()
+    _require_master()
     try:
         body = await request.json()
     except Exception:
