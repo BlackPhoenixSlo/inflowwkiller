@@ -21,6 +21,7 @@ import ProxiesTable from "@/components/setup/ProxiesTable";
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
 import KeysCard from "@/components/setup/KeysCard";
 import AgencyKeysCard from "@/components/setup/AgencyKeysCard";
+import ManagedAgencyKeysCard from "@/components/setup/ManagedAgencyKeysCard";
 import { useUser } from "@/contexts/UserContext";
 
 export default function SetupPage() {
@@ -50,6 +51,10 @@ export default function SetupPage() {
       <div className="hidden md:block"><ProxiesTable /></div>
 
       <div className="hidden md:block"><AgencyKeysCard /></div>
+
+      {/* Other agencies' keys. Renders nothing for non-founders (the endpoint
+          403s and the card returns null), so no second gate is needed here. */}
+      <div className="hidden md:block"><ManagedAgencyKeysCard /></div>
 
       {/* The SERVER's house keys — founder only. The relay 403s both verbs for
           anyone else, so an agency that saw this card would get a broken panel

@@ -67,6 +67,14 @@ KNOWN: dict[str, dict] = {
         "secret": False,
         "help": "Tab the export writes to (default: Main).",
     },
+    "ADMIN_PASSWORD": {
+        "label": "Founder password",
+        "group": "Access",
+        "help": "Second factor on founder-only writes: granting or revoking a "
+                "model, transferring one, deleting a user, and setting another "
+                "agency's AI keys. BOOTSTRAP ONLY — once set it can be changed "
+                "from the VPS .env, not from here.",
+    },
     "SHARE_TOKEN": {
         "label": "Access password (share link token)",
         "group": "Access",
@@ -182,6 +190,31 @@ def get(name: str) -> str:
     return stored(name) or (os.environ.get(name) or "").strip()
 
 
+# Keys this store may CREATE but never CHANGE. `ADMIN_PASSWORD` is the second
+# factor on every founder-only write, and the page that edits this store is
+# gated by the master SESSION — so if the session could rotate the password, a
+# stolen cookie would be the only thing standing between an attacker and every
+# founder operation, and the two factors would collapse into one.
+#
+# Bootstrapping is still allowed because the alternative is worse: this
+# deployment shipped with the variable undocumented and unset, which does not
+# make founder writes safe, it makes them all 503. Being able to set the first
+# one from the UI is the difference between a working second factor and none.
+# Rotation stays where it cannot be reached by a session: the VPS .env.
+_BOOTSTRAP_ONLY = ("ADMIN_PASSWORD",)
+
+
+def _assert_bootstrap_only(values: dict[str, str | None]) -> None:
+    for k in _BOOTSTRAP_ONLY:
+        if k not in values:
+            continue
+        if get(k):
+            raise ValueError(
+                f"{k} is already configured and cannot be changed from here — "
+                "rotate it in the VPS .env and restart the relay"
+            )
+
+
 def set_many(values: dict[str, str | None]) -> None:
     """Merge updates into secrets.json. A None/empty value CLEARS the key.
     Unknown keys are ignored. Atomic write, chmod 600.
@@ -199,6 +232,7 @@ def set_many(values: dict[str, str | None]) -> None:
                 f"{k}: that looks like the masked placeholder, not a value — "
                 "leave the field blank to keep what is stored"
             )
+    _assert_bootstrap_only(values)
     with _LOCK:
         data = _load()
         for k, v in values.items():
