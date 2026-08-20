@@ -168,7 +168,7 @@ async def agency_exists(user_id: str) -> bool:
         ) is not None
 
 
-async def key_overview() -> list[dict]:
+async def key_overview(registry_ids: set[str] | None = None) -> list[dict]:
     """Every agency, with the two facts that decide whether it needs a key:
     how many of its models can currently TALK, and which providers it has set.
 
@@ -179,10 +179,21 @@ async def key_overview() -> list[dict]:
     "has a live model" is the difference between four rows to fill in and
     twenty to guess at.
 
-    LIVE means: a latest captured session exists AND `account_health` has not
-    flagged it dead. That flag LAGS — it is set by a probe, not by the failure
-    — so a model counted live here can still be a few hours behind reality.
-    Good enough for "who is worth a key", not a health dashboard.
+    LIVE means: the account is IN THE REGISTRY, a latest captured session
+    exists, and `account_health` has not flagged it dead. That flag LAGS — it
+    is set by a probe, not by the failure — so a model counted live here can
+    still be a few hours behind reality. Good enough for "who is worth a key",
+    not a health dashboard.
+
+    `registry_ids` is not optional in spirit. Deleting a model removes it from
+    the registry and leaves every DB row behind — the `accounts` row, a
+    `sessions` row still flagged `is_latest`, the `user_accounts` link — so a
+    DB-only read counts models that were deleted days ago and sends the founder
+    to buy a key for one of them. That happened: an account deleted on 08-14
+    still read as live on 08-20 and got its owner keyed for nothing. The
+    registry is what the operator sees and what they can act on, so it is what
+    this counts. Passing None keeps every account, which is only right when the
+    caller has already scoped them.
 
     Counts are BILLED, not linked — the same rule `owners_of` resolves with, and
     it has to be the same or the screen lies. A master holding oversight links
@@ -245,7 +256,10 @@ async def key_overview() -> list[dict]:
         })
         if not account_id:
             continue
-        links[(uid, account_id)] = bool(has_session) and dead_at is None
+        in_registry = registry_ids is None or account_id in registry_ids
+        links[(uid, account_id)] = (
+            in_registry and bool(has_session) and dead_at is None
+        )
         owners = owners_by_account.setdefault(account_id, [])
         if (uid, bool(is_admin)) not in owners:
             owners.append((uid, bool(is_admin)))

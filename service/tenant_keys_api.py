@@ -134,7 +134,12 @@ async def agency_llm_key_status_all() -> dict[str, Any]:
     Provider NAMES only — never a value or a hint.
     """
     require_master()
-    return {"agencies": await tenant_keys.key_overview()}
+    # Local import, matching `auth.admin_list_user_accounts` — the registry
+    # pulls in the account layer and this module has no business dragging it
+    # into every import of the key API.
+    from accounts import list_accounts
+    registry = {str(a.get("id") or "") for a in list_accounts()}
+    return {"agencies": await tenant_keys.key_overview(registry)}
 
 
 @admin_router.get("/{user_id}/llm-keys")
