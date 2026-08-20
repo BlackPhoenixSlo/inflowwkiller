@@ -295,7 +295,19 @@ def set_many(values: dict[str, str | None]) -> None:
     did not happen — same contract as `tenant_keys.set_keys`.
     """
     for k, v in values.items():
-        if k in KNOWN and v is not None and MASK_CHAR in str(v):
+        if k not in KNOWN or v is None:
+            continue
+        if not isinstance(v, str):
+            # JSON permits numbers, booleans, lists and objects here. Reject at
+            # the boundary, as `tenant_keys.set_keys` does: coercing with
+            # `str(v)` would make the founder gate below and the write loop
+            # disagree — `False`/`0`/`[]` read as BLANK to the gate (a
+            # permitted retire) but as the truthy `"False"`/`"0"`/`"[]"` to the
+            # writer, storing a session-chosen ADMIN_PASSWORD row that
+            # `_BOOTSTRAP_ONLY` exists to forbid. It also stored the Python
+            # repr of an object over a working key.
+            raise ValueError(f"{k}: expected a string value, got {type(v).__name__}")
+        if MASK_CHAR in v:
             raise ValueError(
                 f"{k}: that looks like the masked placeholder, not a value — "
                 "leave the field blank to keep what is stored"
