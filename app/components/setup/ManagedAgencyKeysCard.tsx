@@ -27,8 +27,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { relay } from "@/lib/relay";
+import { relay, RelayError } from "@/lib/relay";
 import { Badge, Card } from "@/components/ui/primitives";
+import { AgencyKeyBadges, needsKey } from "@/components/setup/AgencyKeyBadges";
+import { useUser } from "@/contexts/UserContext";
 import { AgencyKeysForm } from "@/components/setup/AgencyKeysForm";
 
 interface AgencyKeyStatus {
@@ -37,14 +39,17 @@ interface AgencyKeyStatus {
   is_admin: boolean;
   accounts: number;
   live_accounts: number;
+  blocked_accounts: number;
   providers_set: string[];
 }
 
 export default function ManagedAgencyKeysCard() {
+  const { user: me } = useUser();
   const [agencies, setAgencies] = useState<AgencyKeyStatus[] | null>(null);
   const [liveOnly, setLiveOnly] = useState(true);
   const [openId, setOpenId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [forbidden, setForbidden] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -54,29 +59,51 @@ export default function ManagedAgencyKeysCard() {
       );
       setAgencies(data.agencies);
     } catch (err) {
+      // 401/403 is the ordinary non-founder answer and means "draw nothing".
+      // ANYTHING else is a real failure and must stay on screen: this same
+      // `load` runs after a successful save, and folding a 500 into the
+      // not-a-founder branch would delete the card — and the form inside it —
+      // moments after the write landed, leaving no note, no row, and no way
+      // back short of a page reload.
+      // 401 as well as 403: require_master refuses an absent principal and a
+      // non-master on different codes, and both mean "not for you".
+      if (err instanceof RelayError && (err.status === 401 || err.status === 403)) {
+        setForbidden(true);
+        return;
+      }
       setError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
 
-  // A 403 here is the normal case for everyone who is not the founder, so the
-  // card renders nothing at all rather than an error someone can do nothing
-  // about. The relay stays the authority; this only decides what to draw.
-  if (error) return null;
+  // Not a founder: draw nothing at all rather than an error nobody can act on.
+  if (forbidden) return null;
   if (agencies === null) {
     return (
       <Card className="space-y-2">
         <h2 className="text-lg font-semibold">Other agencies&apos; AI keys</h2>
-        <div className="text-sm text-fg-dim">Loading…</div>
+        {error ? (
+          <div className="text-sm text-err" role="alert">
+            Couldn&apos;t load the agency list — {error}{" "}
+            <button type="button" className="underline" onClick={() => void load()}>
+              Retry
+            </button>
+          </div>
+        ) : (
+          <div className="text-sm text-fg-dim">Loading…</div>
+        )}
       </Card>
     );
   }
 
-  const shown = liveOnly ? agencies.filter((a) => a.live_accounts > 0) : agencies;
-  const needing = agencies.filter(
-    (a) => a.live_accounts > 0 && a.providers_set.length === 0,
-  ).length;
+  // OTHER agencies — the card says so, and "Your AI keys" one card up already
+  // owns this founder's own row. Listing it twice on one page would give the
+  // same stored key two write paths whose caches never hear about each other,
+  // so whichever card you did not save through keeps showing the old hint.
+  const others = agencies.filter((a) => a.user_id !== me?.user_id);
+  const shown = liveOnly ? others.filter((a) => a.live_accounts > 0) : others;
+  const needing = others.filter(needsKey).length;
 
   return (
     <Card className="space-y-4">
@@ -98,6 +125,15 @@ export default function ManagedAgencyKeysCard() {
         )}
       </div>
 
+      {error && (
+        <div className="text-xs text-err" role="alert">
+          Couldn&apos;t refresh the list — {error}{" "}
+          <button type="button" className="underline" onClick={() => void load()}>
+            Retry
+          </button>
+        </div>
+      )}
+
       <label className="flex items-center gap-2 text-xs text-fg-dim">
         <input
           type="checkbox"
@@ -106,7 +142,7 @@ export default function ManagedAgencyKeysCard() {
         />
         Only agencies with a live model session
         <span className="text-fg-dim/70">
-          ({shown.length} of {agencies.length})
+          ({shown.length} of {others.length})
         </span>
       </label>
 
@@ -118,33 +154,11 @@ export default function ManagedAgencyKeysCard() {
         <ul className="divide-y divide-fg/10 border border-fg/10 rounded-lg">
           {shown.map((a) => {
             const open = openId === a.user_id;
-            const needsKey = a.live_accounts > 0 && a.providers_set.length === 0;
             return (
               <li key={a.user_id} className="p-3 space-y-2">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                   <span className="font-medium text-sm">@{a.username}</span>
-                  {a.is_admin && <Badge color="muted">you</Badge>}
-                  <span className="text-xs">
-                    {a.live_accounts > 0 ? (
-                      <span className="text-ok">{a.live_accounts} live</span>
-                    ) : (
-                      <span className="text-fg-dim/70">no live model</span>
-                    )}
-                  </span>
-                  <span className="text-xs text-fg-dim">
-                    of {a.accounts} model{a.accounts === 1 ? "" : "s"}
-                  </span>
-                  <span className="text-xs">
-                    {a.providers_set.length > 0 ? (
-                      <span className="text-fg-dim">
-                        key: {a.providers_set.join(", ")}
-                      </span>
-                    ) : needsKey ? (
-                      <span className="text-warn">needs a key</span>
-                    ) : (
-                      <span className="text-fg-dim/70">no key</span>
-                    )}
-                  </span>
+                  <AgencyKeyBadges agency={a} />
                   <button
                     type="button"
                     className="ml-auto text-xs text-fg-dim hover:text-fg"

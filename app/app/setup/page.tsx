@@ -52,9 +52,13 @@ export default function SetupPage() {
 
       <div className="hidden md:block"><AgencyKeysCard /></div>
 
-      {/* Other agencies' keys. Renders nothing for non-founders (the endpoint
-          403s and the card returns null), so no second gate is needed here. */}
-      <div className="hidden md:block"><ManagedAgencyKeysCard /></div>
+      {/* Other agencies' keys — founder only, same gate as the house keys below.
+          The card also returns null on a 403, but only AFTER the answer lands;
+          without this gate every tenant paints the founder heading for the
+          whole in-flight window and fires one guaranteed 403 per page view. */}
+      {me?.is_admin && (
+        <div className="hidden md:block"><ManagedAgencyKeysCard /></div>
+      )}
 
       {/* The SERVER's house keys — founder only. The relay 403s both verbs for
           anyone else, so an agency that saw this card would get a broken panel
