@@ -41,6 +41,7 @@ interface AgencyKeyStatus {
   live_accounts: number;
   blocked_accounts: number;
   providers_set: string[];
+  missing_providers: string[];
 }
 
 export default function ManagedAgencyKeysCard() {

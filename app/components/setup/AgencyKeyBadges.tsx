@@ -20,12 +20,24 @@ export interface AgencyKeyFacts {
   live_accounts: number;
   blocked_accounts: number;
   providers_set: string[];
+  /** Providers a live model needs and this agency has NOT set. Credentials
+   *  resolve per provider, so "has some key" is not the question. */
+  missing_providers?: string[];
 }
 
 /** True when this agency is costing something right now: a model that can talk
- *  and no credential for it to talk on. */
+ *  and no credential for it to talk on.
+ *
+ *  Keyed on MISSING providers, not on "has none". Credentials resolve per
+ *  provider, so an agency holding only a DeepInfra key has a key and still
+ *  fails every chat reply closed — the case a `providers_set.length === 0`
+ *  test reads as configured. Falls back to the old test when the backend
+ *  predates the field, so a stale response cannot turn the badge off. */
 export function needsKey(a: AgencyKeyFacts): boolean {
-  return a.live_accounts > 0 && a.providers_set.length === 0;
+  if (a.live_accounts <= 0) return false;
+  return a.missing_providers
+    ? a.missing_providers.length > 0
+    : a.providers_set.length === 0;
 }
 
 export function AgencyKeyBadges({ agency }: { agency: AgencyKeyFacts }) {
@@ -42,10 +54,12 @@ export function AgencyKeyBadges({ agency }: { agency: AgencyKeyFacts }) {
         of {agency.accounts} model{agency.accounts === 1 ? "" : "s"}
       </span>
       <span className="text-xs">
-        {agency.providers_set.length > 0 ? (
+        {agency.providers_set.length > 0 && !needsKey(agency) ? (
           <span className="text-fg-dim">key: {agency.providers_set.join(", ")}</span>
         ) : needsKey(agency) ? (
-          <span className="text-warn">needs a key</span>
+          <span className="text-warn">
+            needs {(agency.missing_providers ?? []).join(", ") || "a key"}
+          </span>
         ) : (
           <span className="text-fg-dim/70">no key</span>
         )}

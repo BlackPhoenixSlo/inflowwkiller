@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 import tenant_keys
@@ -98,7 +98,13 @@ async def my_llm_keys_set(request: Request) -> dict[str, Any]:
 # the founder password on the write, because this stores a credential someone
 # else's models will spend.
 
-admin_router = APIRouter(prefix="/admin/users", tags=["tenant-keys"])
+# The gate is a ROUTER dependency, not a line at the top of each handler.
+# 231c0ee exists precisely because a gate that had to be typed into every
+# handler was not typed into two of them, and /admin/secrets sat ungated for the
+# life of those routes. Declaring it once means a route added here is master-only
+# by construction — forgetting is no longer possible.
+admin_router = APIRouter(prefix="/admin/users", tags=["tenant-keys"],
+                         dependencies=[Depends(require_master)])
 
 
 class AgencyKeysBody(BaseModel):
@@ -133,20 +139,33 @@ async def agency_llm_key_status_all() -> dict[str, Any]:
     every tenant on the deployment, which is not one agency's business to read.
     Provider NAMES only — never a value or a hint.
     """
-    require_master()
     # Local import, matching `auth.admin_list_user_accounts` — the registry
     # pulls in the account layer and this module has no business dragging it
     # into every import of the key API.
+    #
+    # `has_session` is the registry's own answer and the only current one: the
+    # `sessions` TABLE has no live writer, so the store must not be left to
+    # guess from it.
     from accounts import list_accounts
-    registry = {str(a.get("id") or "") for a in list_accounts()}
-    return {"agencies": await tenant_keys.key_overview(registry)}
+    registry = {
+        str(a.get("id") or ""): bool(a.get("has_session"))
+        for a in list_accounts() if a.get("id")
+    }
+    # What a live model needs before it can reply at all. Named HERE, at the
+    # composition root, rather than inferred in the store or hardcoded in the
+    # component: credentials resolve per provider, so an agency holding only a
+    # DeepInfra key would otherwise read as configured while every chat reply it
+    # makes fails closed. Every account on this deployment leaves
+    # `model_by_purpose` unset and falls through to the house DeepSeek default;
+    # when that stops being true, this set is the one line to change.
+    required = {"deepseek"}
+    return {"agencies": await tenant_keys.key_overview(registry, required)}
 
 
 @admin_router.get("/{user_id}/llm-keys")
 async def agency_llm_keys_status(user_id: str) -> dict[str, Any]:
     """Masked status of ONE agency's provider keys, for the founder's Manage
     screen. Never the raw value."""
-    require_master()
     await _assert_agency(user_id)
     return {"user_id": user_id, "providers": await tenant_keys.status(user_id)}
 
@@ -158,7 +177,6 @@ async def agency_llm_keys_set(
     """Set or clear one agency's keys on their behalf. Same rules as the
     self-serve card: "" clears, an absent provider keeps its stored value, and a
     masked placeholder is refused rather than stored."""
-    require_master()
     _assert_admin_password(body.admin_password)
     await _assert_agency(user_id)
     try:

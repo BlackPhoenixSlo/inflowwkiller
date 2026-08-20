@@ -24,7 +24,25 @@ from threading import Lock
 
 log = logging.getLogger("of-relay.secrets")
 
-_PATH = Path(__file__).resolve().parent / "secrets.json"
+# Inside a DIRECTORY that the container bind-mounts, not beside this module.
+#
+# `service/secrets.json` was never bind-mounted, and docker-compose said so in
+# its own comment: every value pasted into Setup → Keys died on the next
+# `up -d --build`. That is survivable for an API key an operator re-pastes; it
+# is not survivable for ADMIN_PASSWORD, because a deploy would silently delete
+# the founder's second factor AND re-open the bootstrap window that
+# `_BOOTSTRAP_ONLY` exists to close. It happened: a password set on 2026-08-20
+# was gone by the next deploy.
+#
+# A DIRECTORY mount, not a file mount: Docker materialises a missing bind-mount
+# path as a directory, so mounting the file itself turns a first deploy on a
+# fresh host into a directory where the JSON should be. Mounting the parent is
+# the shape that cannot go wrong — the app creates the file inside it.
+_DIR = Path(__file__).resolve().parent / "secrets"
+_PATH = _DIR / "secrets.json"
+# Where it used to live. Read once at import if the durable copy is absent, so
+# a plain restart (as opposed to a rebuild) does not lose what is already set.
+_LEGACY_PATH = Path(__file__).resolve().parent / "secrets.json"
 _LOCK = Lock()
 
 # The keys the UI exposes. `secret` False = shown back in clear (it's config, not
@@ -126,6 +144,29 @@ def _stamp() -> tuple[int, int, int, int] | None:
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
+def _adopt_legacy_file() -> None:
+    """One-way move of the pre-mount store into the mounted directory.
+
+    Only when the durable copy does not exist yet — never an overwrite. A
+    rebuild destroys the legacy file before this can run, which is the whole
+    problem; this recovers the restart case and costs one stat at import.
+    """
+    try:
+        if _PATH.exists() or not _LEGACY_PATH.is_file():
+            return
+        _DIR.mkdir(parents=True, exist_ok=True)
+        _PATH.write_text(_LEGACY_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        try:
+            os.chmod(_PATH, 0o600)
+        except OSError:
+            pass
+        log.info("secrets_store: adopted legacy %s into %s", _LEGACY_PATH, _PATH)
+    except Exception:
+        # A store that cannot be adopted must not stop the relay booting; the
+        # env is still a complete source for every key here.
+        log.exception("secrets_store: could not adopt the legacy secrets file")
+
+
 def _load() -> dict:
     """The parsed store, re-read only when the file on disk has changed.
 
@@ -200,7 +241,10 @@ def get(name: str) -> str:
 # deployment shipped with the variable undocumented and unset, which does not
 # make founder writes safe, it makes them all 503. Being able to set the first
 # one from the UI is the difference between a working second factor and none.
-# Rotation stays where it cannot be reached by a session: the VPS .env.
+# Rotation stays where it cannot be reached by a session: the VPS .env. That
+# only works because `auth._read_admin_password` reads the ENV FIRST for this
+# key — store-first plus bootstrap-only would make a UI-set password permanent,
+# with `.env` silently outranked and this store refusing to change it.
 _BOOTSTRAP_ONLY = ("ADMIN_PASSWORD",)
 
 
@@ -273,6 +317,12 @@ def _atomic_write(data: dict) -> None:
 
 def _hint(name: str, val: str, meta: dict) -> str:
     """A safe preview of a set value — never the full secret."""
+    if name in _BOOTSTRAP_ONLY:
+        # A password, not an API key. `mask` shows the last four characters,
+        # which is a fine tail for `sk-…7132` and a real leak for a passphrase
+        # — it also reveals the short-vs-long length bucket. Nobody needs to
+        # recognise this value in a list; they only need to know it is set.
+        return "••••••••" if val else ""
     if not val:
         return ""
     if meta.get("secret", True) is False:
@@ -305,3 +355,6 @@ def status() -> dict:
             "hint": _hint(name, live, meta),
         }
     return out
+
+
+_adopt_legacy_file()
