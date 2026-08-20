@@ -25,6 +25,8 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+
+import secrets_store
 import re
 import secrets
 import uuid
@@ -739,7 +741,21 @@ ADMIN_PASSWORD_ENV = "ADMIN_PASSWORD"
 
 
 def _read_admin_password() -> str:
-    return os.environ.get(ADMIN_PASSWORD_ENV, "").strip()
+    """The founder second factor: UI store first, then the process env.
+
+    Store-before-env is the contract every other consumer of `secrets_store`
+    already follows, and this one was the exception — it read the env alone. On
+    this deployment the variable was never set OR documented, so all five
+    founder-only writes (grant, revoke, transfer, delete user, set another
+    agency's AI keys) answered 503 and nothing said why. A second factor nobody
+    can configure is not a second factor.
+
+    Writing it back through the store is BOOTSTRAP ONLY — see
+    `secrets_store._BOOTSTRAP_ONLY`: the page that edits the store is gated by
+    the master session, so letting a session rotate this would collapse the two
+    factors into one.
+    """
+    return secrets_store.get(ADMIN_PASSWORD_ENV)
 
 
 class AdminUserRow(BaseModel):
