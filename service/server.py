@@ -379,15 +379,37 @@ async def _share_token_gate(request: Request, call_next):
 
 
 # ── Setup → Keys: UI-writable secret/key store ─────────────────────
-# Lets a self-hoster paste their DeepSeek key, Google Sheets token, access
-# password, etc. instead of editing the VPS .env. Values land in
+# Lets the FOUNDER paste the deployment's DeepSeek key, Google Sheets token,
+# access password, etc. instead of editing the VPS .env. Values land in
 # service/secrets.json and every consumer checks the store before the env, so
 # they take effect on the next call with no restart. GET never returns raw
-# secrets — only a masked status. Both sit under /admin/* (already gated).
+# secrets — only a masked status.
+#
+# MASTER ONLY, both verbs. These are the SERVER's house keys, not a tenant's —
+# distinct from /admin/my-llm-keys, which is one agency's own. A comment here
+# used to claim "both sit under /admin/* (already gated)"; that was FALSE and
+# had been since the routes were written. Nothing gated them: the account-
+# isolation middleware returns early on a path with no account id, the
+# share-token gate waves through any auth cookie, and /auth/register is open —
+# so any signed-in agency could read the masked house-key status AND overwrite
+# the deployment's credentials. The read is gated too, because the masked hint
+# still leaks the last four characters of every house key.
+
+
+def _require_master_for_secrets() -> None:
+    user = _get_request_user()
+    if user is None or not user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="only the master account can manage this server's keys",
+        )
+
+
 @app.get("/admin/secrets")
 def admin_secrets_status() -> dict[str, Any]:
     """Masked status of every UI-settable key (set?/source/hint — never the
-    raw value)."""
+    raw value). Master only."""
+    _require_master_for_secrets()
     return {"keys": secrets_store.status()}
 
 
@@ -395,7 +417,8 @@ def admin_secrets_status() -> dict[str, Any]:
 async def admin_secrets_set(request: Request) -> dict[str, Any]:
     """Set or clear keys. Body is a flat JSON object {KEY: value, …}; an empty
     string or null clears that key. Unknown keys are ignored. Returns the new
-    masked status."""
+    masked status. Master only."""
+    _require_master_for_secrets()
     try:
         body = await request.json()
     except Exception:

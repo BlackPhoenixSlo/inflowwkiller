@@ -490,6 +490,16 @@ class AuthResp(BaseModel):
     # cookie. UI uses it to render the "Viewing as @X (real: @Y)" banner
     # and to wipe RQ caches across the transition.
     impersonating: ImpersonatingResp | None = None
+    # Master role. The UI needs it to HIDE founder-only surfaces (the server's
+    # house-key panel) rather than render them and let the 403 arrive as a
+    # broken card. Not a gate in itself — every founder-only route checks the
+    # role server-side; this only decides what is worth drawing.
+    #
+    # While impersonating this is the IMPERSONATED user's role, matching the
+    # rest of the app's view. A founder wearing an agency's identity therefore
+    # stops seeing the house-key panel, which is right: impersonation is
+    # read-only anyway, and the panel is not that agency's business.
+    is_admin: bool = False
 
 
 @router.post("/register", response_model=AuthResp)
@@ -533,9 +543,10 @@ async def login(response: Response, body: LoginBody = Body(...)) -> AuthResp:
         )
         uid = row.id
         uname = row.username
+        is_admin = bool(row.is_admin)
 
     _set_session_cookie(response, uid)
-    return AuthResp(user_id=uid, username=uname)
+    return AuthResp(user_id=uid, username=uname, is_admin=is_admin)
 
 
 @router.post("/logout")
@@ -562,6 +573,7 @@ async def me() -> AuthResp | None:
     return AuthResp(
         user_id=u.id,
         username=u.username,
+        is_admin=bool(u.is_admin),
         impersonating=ImpersonatingResp(
             real_user_id=imp.real_user_id,
             real_username=imp.real_username,

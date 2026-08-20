@@ -21,8 +21,10 @@ import ProxiesTable from "@/components/setup/ProxiesTable";
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
 import KeysCard from "@/components/setup/KeysCard";
 import AgencyKeysCard from "@/components/setup/AgencyKeysCard";
+import { useUser } from "@/contexts/UserContext";
 
 export default function SetupPage() {
+  const { user: me } = useUser();
   return (
     <div className="max-w-6xl mx-auto p-3 sm:p-6 space-y-6">
       <header>
@@ -49,7 +51,10 @@ export default function SetupPage() {
 
       <div className="hidden md:block"><AgencyKeysCard /></div>
 
-      <div className="hidden md:block"><KeysCard /></div>
+      {/* The SERVER's house keys — founder only. The relay 403s both verbs for
+          anyone else, so an agency that saw this card would get a broken panel
+          and a wrong idea about whose keys these are. Hidden, not disabled. */}
+      {me?.is_admin && <div className="hidden md:block"><KeysCard /></div>}
     </div>
   );
 }
