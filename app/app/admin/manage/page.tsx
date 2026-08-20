@@ -22,6 +22,7 @@ import { useRouter } from "next/navigation";
 
 import { relay } from "@/lib/relay";
 import { AgencyKeysForm } from "@/components/setup/AgencyKeysForm";
+import { AgencyKeyBadges } from "@/components/setup/AgencyKeyBadges";
 import { useUser } from "@/contexts/UserContext";
 
 interface AdminUserRow {
@@ -146,8 +147,7 @@ export default function AdminUsersPage() {
             const deleteOpen = open?.userId === u.id && open.pane === "delete";
             const impersonateOpen = open?.userId === u.id && open.pane === "impersonate";
             const isSelf = me?.user_id === u.id;
-            const live = keyStatus[u.id]?.live_accounts ?? 0;
-            const providers = keyStatus[u.id]?.providers_set ?? [];
+            const status = keyStatus[u.id];
             return (
               <li key={u.id} className="p-4 space-y-3">
                 <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
@@ -155,24 +155,11 @@ export default function AdminUsersPage() {
                   <div className="text-xs text-fg-dim">
                     {u.account_count} account{u.account_count === 1 ? "" : "s"}
                   </div>
-                  <div className="text-xs">
-                    {live > 0 ? (
-                      <span className="text-emerald-400">{live} live</span>
-                    ) : (
-                      <span className="text-fg-dim/70">no live model</span>
-                    )}
-                  </div>
-                  <div className="text-xs">
-                    {providers.length > 0 ? (
-                      <span className="text-fg-dim">key: {providers.join(", ")}</span>
-                    ) : live > 0 ? (
-                      // The one row that is actually costing something: a model
-                      // that can talk, and no credential for it to talk on.
-                      <span className="text-amber-400">needs a key</span>
-                    ) : (
-                      <span className="text-fg-dim/70">no key</span>
-                    )}
-                  </div>
+                  {status && (
+                    <div className="flex items-center gap-3">
+                      <AgencyKeyBadges agency={status} />
+                    </div>
+                  )}
                   <div className="text-xs text-fg-dim">
                     joined {fmtDate(u.created_at)}
                   </div>
@@ -523,5 +510,6 @@ interface AgencyKeyStatus {
   username: string;
   accounts: number;
   live_accounts: number;
+  blocked_accounts: number;
   providers_set: string[];
 }

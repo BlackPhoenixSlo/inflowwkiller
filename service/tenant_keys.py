@@ -184,11 +184,18 @@ async def key_overview() -> list[dict]:
     — so a model counted live here can still be a few hours behind reality.
     Good enough for "who is worth a key", not a health dashboard.
 
-    Master links are NOT dropped the way `owners_of` drops them. This answers
-    "whose row would I type a key into", and a master with a solo link IS that
-    row — an account linked only to the master bills the master. Counting per
-    LINK also means a two-agency account shows up under both, which is correct
-    here: both are candidates until someone resolves the conflict.
+    Counts are BILLED, not linked — the same rule `owners_of` resolves with, and
+    it has to be the same or the screen lies. A master holding oversight links
+    on three agencies' models would otherwise read as "3 live" under its own
+    row and be told it needs a key, when those calls bill the agencies and
+    nothing would ever spend the master's credential. So: an account counts for
+    its non-master owner when it has one, for the master when the master is the
+    only link, and for NEITHER when two agencies claim it.
+
+    That last case would vanish silently, so it comes back as `blocked_accounts`.
+    Those models are refused outright and no key fixes them — the fix is a
+    transfer or a revoke — and a screen about keys is exactly where someone will
+    otherwise sit and wonder why a pasted key changed nothing.
 
     Providers are NAMES only, never values or hints — this feeds a list of many
     agencies at once, and the per-agency card is where a masked hint belongs.
@@ -225,28 +232,45 @@ async def key_overview() -> list[dict]:
         providers.setdefault(uid, []).append(prov)
 
     out: dict[str, dict] = {}
-    seen_links: set[tuple[str, str]] = set()
+    # One row per (user, account) before anything is counted: the Session join
+    # can fan out if more than one row is flagged latest for an account, and
+    # that is a bug to not double-count our way around.
+    links: dict[tuple[str, str], bool] = {}
+    owners_by_account: dict[str, list[tuple[str, bool]]] = {}
     for uid, username, is_admin, account_id, has_session, dead_at in rows:
-        entry = out.setdefault(uid, {
+        out.setdefault(uid, {
             "user_id": uid, "username": username, "is_admin": bool(is_admin),
-            "accounts": 0, "live_accounts": 0,
+            "accounts": 0, "live_accounts": 0, "blocked_accounts": 0,
             "providers_set": sorted(providers.get(uid, [])),
         })
         if not account_id:
             continue
-        # One row per (user, account): the Session join can fan out if more
-        # than one row is flagged latest for an account, which is a bug we
-        # should not double-count our way around.
-        if (uid, account_id) in seen_links:
+        links[(uid, account_id)] = bool(has_session) and dead_at is None
+        owners = owners_by_account.setdefault(account_id, [])
+        if (uid, bool(is_admin)) not in owners:
+            owners.append((uid, bool(is_admin)))
+
+    for (uid, account_id), is_live in links.items():
+        owners = owners_by_account.get(account_id, [])
+        agencies = [o for o, adm in owners if not adm]
+        if len(agencies) > 1:
+            # Two agencies claim it — refused by `owners_of`, so it bills
+            # nobody. Reported, not counted, and only against the agencies
+            # actually in the dispute.
+            if uid in agencies and is_live:
+                out[uid]["blocked_accounts"] += 1
             continue
-        seen_links.add((uid, account_id))
-        entry["accounts"] += 1
-        if has_session and dead_at is None:
-            entry["live_accounts"] += 1
+        billed = agencies[0] if agencies else (owners[0][0] if owners else None)
+        if billed != uid:
+            continue
+        out[uid]["accounts"] += 1
+        if is_live:
+            out[uid]["live_accounts"] += 1
 
     return sorted(
         out.values(),
-        key=lambda e: (-e["live_accounts"], -e["accounts"], e["username"].lower()),
+        key=lambda e: (-e["live_accounts"], -e["blocked_accounts"],
+                       -e["accounts"], e["username"].lower()),
     )
 
 
