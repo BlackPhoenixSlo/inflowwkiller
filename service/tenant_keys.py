@@ -47,11 +47,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
-from db.models import Account, User, UserAccount, UserLlmKey
+from db.models import Account, AccountHealth, Session, User, UserAccount, UserLlmKey
 from llm_providers import PROVIDERS
 from secrets_store import MASK_CHAR, mask
 
@@ -166,6 +166,88 @@ async def agency_exists(user_id: str) -> bool:
         return await s.scalar(
             select(User.id).where(User.id == user_id)
         ) is not None
+
+
+async def key_overview() -> list[dict]:
+    """Every agency, with the two facts that decide whether it needs a key:
+    how many of its models can currently TALK, and which providers it has set.
+
+    A dead session is the reason most rows here don't matter. Two thirds of
+    this deployment's accounts have one, and an account whose session OF has
+    rejected sends nothing at all — so pasting a key under its owner buys
+    nothing until the session is re-captured. Sorting the founder's screen by
+    "has a live model" is the difference between four rows to fill in and
+    twenty to guess at.
+
+    LIVE means: a latest captured session exists AND `account_health` has not
+    flagged it dead. That flag LAGS — it is set by a probe, not by the failure
+    — so a model counted live here can still be a few hours behind reality.
+    Good enough for "who is worth a key", not a health dashboard.
+
+    Master links are NOT dropped the way `owners_of` drops them. This answers
+    "whose row would I type a key into", and a master with a solo link IS that
+    row — an account linked only to the master bills the master. Counting per
+    LINK also means a two-agency account shows up under both, which is correct
+    here: both are candidates until someone resolves the conflict.
+
+    Providers are NAMES only, never values or hints — this feeds a list of many
+    agencies at once, and the per-agency card is where a masked hint belongs.
+    """
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(
+                User.id, User.username, User.is_admin,
+                UserAccount.account_id,
+                Session.account_id.label("has_session"),
+                AccountHealth.session_dead_at,
+            )
+            .join(UserAccount, UserAccount.user_id == User.id, isouter=True)
+            .join(
+                Session,
+                (Session.account_id == UserAccount.account_id)
+                & (Session.is_latest.is_(True)),
+                isouter=True,
+            )
+            .join(
+                AccountHealth,
+                AccountHealth.account_id == UserAccount.account_id,
+                isouter=True,
+            )
+        )).all()
+
+        keyed = (await s.execute(
+            select(UserLlmKey.user_id, UserLlmKey.provider)
+            .where(func.trim(UserLlmKey.api_key) != "")
+        )).all()
+
+    providers: dict[str, list[str]] = {}
+    for uid, prov in keyed:
+        providers.setdefault(uid, []).append(prov)
+
+    out: dict[str, dict] = {}
+    seen_links: set[tuple[str, str]] = set()
+    for uid, username, is_admin, account_id, has_session, dead_at in rows:
+        entry = out.setdefault(uid, {
+            "user_id": uid, "username": username, "is_admin": bool(is_admin),
+            "accounts": 0, "live_accounts": 0,
+            "providers_set": sorted(providers.get(uid, [])),
+        })
+        if not account_id:
+            continue
+        # One row per (user, account): the Session join can fan out if more
+        # than one row is flagged latest for an account, which is a bug we
+        # should not double-count our way around.
+        if (uid, account_id) in seen_links:
+            continue
+        seen_links.add((uid, account_id))
+        entry["accounts"] += 1
+        if has_session and dead_at is None:
+            entry["live_accounts"] += 1
+
+    return sorted(
+        out.values(),
+        key=lambda e: (-e["live_accounts"], -e["accounts"], e["username"].lower()),
+    )
 
 
 async def get_key(user_id: str, provider: str) -> str:

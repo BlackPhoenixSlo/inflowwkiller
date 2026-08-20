@@ -25,7 +25,9 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field
 
 import tenant_keys
-from auth import AuthedUser, _assert_admin_password, get_request_user
+from auth import (
+    AuthedUser, _assert_admin_password, get_request_user, require_master,
+)
 
 router = APIRouter(prefix="/admin/my-llm-keys", tags=["tenant-keys"])
 
@@ -105,16 +107,6 @@ class AgencyKeysBody(BaseModel):
     providers: dict[str, str] = Field(default_factory=dict)
 
 
-def _require_master() -> AuthedUser:
-    user = _require_user()
-    if not user.is_admin:
-        raise HTTPException(
-            status_code=403,
-            detail="only the master account can manage another agency's keys",
-        )
-    return user
-
-
 async def _assert_agency(user_id: str) -> None:
     """404 on an id that names no agency, before either verb answers.
 
@@ -128,11 +120,28 @@ async def _assert_agency(user_id: str) -> None:
         raise HTTPException(status_code=404, detail=f"unknown user {user_id!r}")
 
 
+@admin_router.get("/llm-key-status")
+async def agency_llm_key_status_all() -> dict[str, Any]:
+    """Every agency, with how many of its models can currently TALK and which
+    providers it already has a key for. Feeds the founder's Manage screen.
+
+    Registered BEFORE `/{user_id}/llm-keys` and matched first because it is a
+    literal path — but it is also a different shape (a list, no user id), so
+    the two cannot be confused by a caller.
+
+    Master only, and not merely because keys are involved: this is a roster of
+    every tenant on the deployment, which is not one agency's business to read.
+    Provider NAMES only — never a value or a hint.
+    """
+    require_master()
+    return {"agencies": await tenant_keys.key_overview()}
+
+
 @admin_router.get("/{user_id}/llm-keys")
 async def agency_llm_keys_status(user_id: str) -> dict[str, Any]:
     """Masked status of ONE agency's provider keys, for the founder's Manage
     screen. Never the raw value."""
-    _require_master()
+    require_master()
     await _assert_agency(user_id)
     return {"user_id": user_id, "providers": await tenant_keys.status(user_id)}
 
@@ -144,7 +153,7 @@ async def agency_llm_keys_set(
     """Set or clear one agency's keys on their behalf. Same rules as the
     self-serve card: "" clears, an absent provider keeps its stored value, and a
     masked placeholder is refused rather than stored."""
-    _require_master()
+    require_master()
     _assert_admin_password(body.admin_password)
     await _assert_agency(user_id)
     try:
