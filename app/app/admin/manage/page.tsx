@@ -60,8 +60,9 @@ export default function AdminUsersPage() {
   const [keyStatus, setKeyStatus] = useState<Record<string, AgencyKeyStatus>>({});
   // OFF here, unlike the Setup keys card. This is the screen where a founder
   // grants a brand-new agency its FIRST model, and such an agency has zero live
-  // models by definition — defaulting the filter on hides exactly the row you
-  // came to act on.
+  // models by definition — defaulting the filter ON would hide exactly the row
+  // you came to act on. The keys card can default it on because there the
+  // question really is "who is worth a key right now".
   const [liveOnly, setLiveOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<OpenPane>(null);
@@ -82,11 +83,23 @@ export default function AdminUsersPage() {
         relay.get<AdminUserRow[]>("/admin/users"),
         relay.get<{ agencies: AgencyKeyStatus[] }>("/admin/users/llm-key-status"),
       ]);
+      // The user list IS the page — grant, revoke, delete and impersonate all
+      // hang off it, so its failure is the page's failure.
       if (usersRes.status === "rejected") throw usersRes.reason;
       setRows(usersRes.value);
       if (statusRes.status === "fulfilled") {
         setKeyStatus(Object.fromEntries(
           statusRes.value.agencies.map((a) => [a.user_id, a])));
+      } else {
+        // Badges are decoration, so this must not take the page down — but it
+        // must not be silent either. Dropping the stale map is the point:
+        // keeping it would leave last-load's "needs a key" next to a row whose
+        // key may have changed, and would leave `loaded` true so the live
+        // filter kept filtering on numbers nobody refreshed.
+        setKeyStatus({});
+        setError(statusRes.reason instanceof Error
+          ? `Key status unavailable — ${statusRes.reason.message}`
+          : "Key status unavailable.");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -138,9 +151,8 @@ export default function AdminUsersPage() {
       ) : (
         <>
         {/* A dead session sends nothing, so a key pasted under its owner buys
-            nothing until the session is re-captured. Most agencies here are in
-            that state — default to hiding them so the rows that are worth
-            filling in are the ones on screen. */}
+            nothing until the session is re-captured — worth filtering FOR, but
+            off by default here: see the note on `liveOnly` above. */}
         <label className="flex items-center gap-2 text-xs text-fg-dim">
           <input
             type="checkbox"

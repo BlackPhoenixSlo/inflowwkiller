@@ -8,7 +8,7 @@
  *   PUT /admin/secrets   flat body { NAME: value }; "" clears. Returns the new
  *                        masked status.
  *
- * Values are stored server-side in service/secrets.json and take effect on the
+ * Values are stored server-side in service/secrets/secrets.json and take effect on the
  * next call — no relay restart.
  */
 

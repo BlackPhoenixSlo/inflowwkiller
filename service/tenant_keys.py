@@ -126,10 +126,14 @@ async def shared_accounts(account_ids) -> list[dict]:
     """The accounts in `account_ids` whose LLM calls are blocked by a second
     agency, with who the two are.
 
-    Same rule as `owners_of`, and it has to be: a master's oversight link is not
-    a conflict and must not be reported as one, or the card cries wolf on every
-    account the founder can see. Only two or more NON-master owners blocks a
-    call.
+    Literally the same rule as `owners_of` — both call `billable_owners`, which
+    is the point: this card exists to explain a refusal the money path made, so
+    it must not be able to disagree about what gets refused. A master's
+    oversight link is dropped whenever an agency link exists and so is never
+    reported as a conflict, or the card cries wolf on every account the founder
+    can see. Two or more BILLABLE owners is the refusal — usually two agencies,
+    and also two masters with no agency between them, which the earlier
+    hand-written version of this rule silently passed.
 
     Both ways it happens are silent (a grant, or a second signed-in user
     completing a session capture), so without this the operator's only signal is
