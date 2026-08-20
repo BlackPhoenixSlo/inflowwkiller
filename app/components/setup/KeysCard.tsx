@@ -81,12 +81,11 @@ export default function KeysCard() {
                   ) : (
                     <Badge color="muted">not set</Badge>
                   )}
-                  {/* `stored`, not `source === "store"`: clear removes the ROW,
-                      and for the founder password the row is the superseded copy
-                      sitting under an env value — exactly the state the server
-                      permits clearing and the only state worth offering it in.
-                      For every other key the two conditions are identical. */}
-                  {k.stored && (
+                  {/* The SERVER says whether a clear would be accepted. Deriving
+                      it here from `source` got it exactly backwards for the
+                      founder password: offered in the one state set_many
+                      refuses, hidden in the one state it permits. */}
+                  {k.clearable && (
                     <button
                       type="button"
                       disabled={save.isPending}

@@ -385,12 +385,15 @@ def status() -> dict:
             "multiline": bool(meta.get("multiline")),
             "help": meta.get("help", ""),
             "set": bool(live),
-            # A row exists on disk — the ONLY thing `clear` can remove, and not
-            # the same question as `source`. For every ordinary key the two
-            # coincide; for a bootstrap-only one they are exact complements,
-            # because `source` reports env-first while the row it would delete
-            # is the superseded copy underneath. The UI needs this one.
-            "stored": bool(sval),
+            # Would `set_many({name: ""})` be accepted? The server answering
+            # directly, rather than the UI re-deriving it from `source` — which
+            # answers a different question and, for a bootstrap-only key, the
+            # exactly complementary one. The clear affordance keys off this, so
+            # it is offered when and only when it works.
+            "clearable": bool(sval) and (
+                name not in _BOOTSTRAP_ONLY
+                or bool((os.environ.get(name) or "").strip())
+            ),
             "source": source,
             "hint": _hint(name, live, meta),
         }
