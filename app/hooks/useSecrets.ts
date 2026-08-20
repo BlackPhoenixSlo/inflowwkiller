@@ -23,6 +23,10 @@ export interface SecretKeyStatus {
   multiline: boolean;
   help: string;
   set: boolean;
+  /** A value exists in the store file — what `clear` would remove. Distinct
+   *  from `source`, which names where the LIVE value comes from; for the
+   *  founder password those are deliberately different questions. */
+  stored: boolean;
   source: "store" | "env" | "unset";
   hint: string;
 }

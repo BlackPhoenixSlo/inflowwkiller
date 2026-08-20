@@ -855,7 +855,8 @@ def _assert_admin_password(supplied: str) -> None:
             status_code=503,
             detail=(
                 f"{ADMIN_PASSWORD_ENV} is not configured on this relay — set it "
-                f"in service/.env and restart, or once from Setup → Server keys"
+                f"in the relay's environment (~/fastt/.env, beside "
+                f"docker-compose.yml) and restart, or once from Setup → Server keys"
             ),
         )
     if not hmac.compare_digest(supplied, expected):

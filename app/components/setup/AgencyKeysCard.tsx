@@ -14,41 +14,9 @@
  */
 
 import { useTenantKeys, useSaveTenantKeys } from "@/hooks/useTenantKeys";
+import { LABELS, HELP, wrongFieldWarning } from "@/components/setup/providerFields";
 import { useKeyDraft } from "@/hooks/useKeyDraft";
 import { Badge, Button, Card, Input } from "@/components/ui/primitives";
-
-/** Provider id → how it reads in the UI. An id with no entry renders as itself,
- *  so a provider added to the server registry shows up with no frontend deploy. */
-const LABELS: Record<string, string> = {
-  deepseek: "DeepSeek API key",
-  deepinfra: "DeepInfra API key",
-  grok: "Grok (x.ai) API key",
-};
-
-/** A DeepSeek key is `sk-` + 32 hex and nothing else on this list looks like
- *  that, so a value in that shape sitting in another provider's field is a
- *  paste into the wrong box — the single most likely way to configure this
- *  card wrong, and one that fails SILENTLY: the key stores fine, and the first
- *  sign of trouble is that provider's calls 401ing later.
- *
- *  A warning, never a block. Key formats are the vendor's to change, and being
- *  wrong about a shape must not stop someone saving a key that works. */
-const DEEPSEEK_SHAPE = /^sk-[0-9a-f]{32}$/i;
-
-export function wrongFieldWarning(provider: string, value: string): string | null {
-  const v = value.trim();
-  if (!v || provider === "deepseek") return null;
-  if (DEEPSEEK_SHAPE.test(v)) {
-    return "That looks like a DeepSeek key — it belongs in the DeepSeek field below.";
-  }
-  return null;
-}
-
-const HELP: Record<string, string> = {
-  deepseek: "Powers chat replies and most automations. platform.deepseek.com.",
-  deepinfra: "Vision — vault image describes and inbound-photo replies. deepinfra.com.",
-  grok: "Optional second provider (x.ai). Only needed if a model of yours uses it.",
-};
 
 export default function AgencyKeysCard() {
   const { data, isLoading, error } = useTenantKeys();
