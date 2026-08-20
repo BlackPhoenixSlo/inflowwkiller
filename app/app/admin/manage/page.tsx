@@ -58,7 +58,11 @@ export default function AdminUsersPage() {
   const { user: me } = useUser();
   const [rows, setRows] = useState<AdminUserRow[] | null>(null);
   const [keyStatus, setKeyStatus] = useState<Record<string, AgencyKeyStatus>>({});
-  const [liveOnly, setLiveOnly] = useState(true);
+  // OFF here, unlike the Setup keys card. This is the screen where a founder
+  // grants a brand-new agency its FIRST model, and such an agency has zero live
+  // models by definition — defaulting the filter on hides exactly the row you
+  // came to act on.
+  const [liveOnly, setLiveOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<OpenPane>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -67,16 +71,23 @@ export default function AdminUsersPage() {
     setError(null);
     setRefreshing(true);
     try {
-      // Two calls, not one. /admin/users is readable by any owner because the
-      // transfer picker needs it; the key roster is a list of every tenant and
-      // their credential state, so it lives behind the master gate on its own
-      // endpoint rather than making the shared one sometimes-shaped.
-      const [data, status] = await Promise.all([
+      // Two calls, and they must fail INDEPENDENTLY. /admin/users is readable
+      // by any owner because the transfer picker needs it; the key roster is a
+      // list of every tenant and their credential state, so it sits behind the
+      // master gate on its own endpoint. Under Promise.all a roster failure
+      // rejected the pair and left `rows` null — the page then rendered
+      // "Loading…" forever and grant, revoke, delete and impersonate went with
+      // it, because a badge could not be drawn.
+      const [usersRes, statusRes] = await Promise.allSettled([
         relay.get<AdminUserRow[]>("/admin/users"),
         relay.get<{ agencies: AgencyKeyStatus[] }>("/admin/users/llm-key-status"),
       ]);
-      setRows(data);
-      setKeyStatus(Object.fromEntries(status.agencies.map((a) => [a.user_id, a])));
+      if (usersRes.status === "rejected") throw usersRes.reason;
+      setRows(usersRes.value);
+      if (statusRes.status === "fulfilled") {
+        setKeyStatus(Object.fromEntries(
+          statusRes.value.agencies.map((a) => [a.user_id, a])));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -86,8 +97,9 @@ export default function AdminUsersPage() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  // Filter only when the roster actually loaded — otherwise a failed key-status
-  // call would silently empty a list that /admin/users returned perfectly well.
+  // Filter only when the roster actually loaded — without this a failed
+  // key-status call would silently empty a list that /admin/users returned
+  // perfectly well. Live code now that the two calls settle independently.
   const loaded = Object.keys(keyStatus).length > 0;
   const shown = (rows ?? []).filter(
     (u) => !liveOnly || !loaded || (keyStatus[u.id]?.live_accounts ?? 0) > 0,
@@ -512,4 +524,5 @@ interface AgencyKeyStatus {
   live_accounts: number;
   blocked_accounts: number;
   providers_set: string[];
+  missing_providers: string[];
 }

@@ -60,14 +60,9 @@ services:
       # once the local bytes are gone the mirror's stored url can no longer
       # re-fetch them and the tile stays blank forever. Bind-mounted here so
       # a rebuild keeps the pictures.
-      # All three live UNDER one directory, which is the layout the deployed
-      # server uses: the writer does mkdir(parents=True), so thumbs/ images/
-      # posters/ appear under a single bind mount and there is one path to keep
-      # in step instead of three. Changing these paths ORPHANS the bytes already
-      # on the host — they are keyed by directory, not recorded in the DB.
-      VAULT_THUMB_DIR: "/app/service/vault_stills/thumbs"
-      VAULT_IMAGE_DIR: "/app/service/vault_stills/images"
-      VAULT_POSTER_DIR: "/app/service/vault_stills/posters"
+      VAULT_THUMB_DIR: "/app/service/vault_thumbs"
+      VAULT_POSTER_DIR: "/app/service/vault_posters"
+      VAULT_IMAGE_DIR: "/app/service/vault_images"
       IMG_CACHE_DIR: "/app/service/img_cache"
       # LLM provider keys (Grok + DeepSeek) for service/llm_client.py. They also
       # ride in via the COPYed service/.env, but declaring them here means a host
@@ -80,9 +75,9 @@ services:
       # Vision (Qwen3-VL 30B/235B) for the vault describe pass. Missing this is
       # NOT a visible error: every describe call raises LLMError, the sweep
       # counts the item as "done", and the vault ends up 100% undescribed with a
-      # green progress bar. Note a key pasted into Setup → Keys lands in
-      # service/secrets.json, which is NOT bind-mounted — it dies on the next
-      # rebuild. The env is the durable place for it.
+      # green progress bar. A key pasted into Setup → Keys now survives a
+      # rebuild (service/secrets is bind-mounted below); the env still wins for
+      # ADMIN_PASSWORD alone, so that one can be rotated out of band.
       DEEPINFRA_API_KEY: "${DEEPINFRA_API_KEY:-}"
     volumes:
       # File bind-mount for the SQLite event store. WAL + SHM sidecars
@@ -92,6 +87,12 @@ services:
       - ./service/chatterly.db:/app/service/chatterly.db
       - ./service/sessions:/app/service/sessions
       - ./service/proxies.json:/app/service/proxies.json
+      # Setup → Keys / Server keys (secrets_store). A DIRECTORY, not the JSON
+      # file: Docker materialises a missing bind-mount path as a directory, so
+      # mounting the file would break a first deploy on a fresh host. Before
+      # this existed nothing persisted it and every rebuild silently wiped the
+      # founder password along with every pasted key.
+      - ./service/secrets:/app/service/secrets
       # Storyboard cache. Each video gets a dir of 12 small jpgs (~10-25
       # KB each) keyed by URL hash. Survives container rebuilds so a
       # familiar vault stays scrub-warm.
@@ -100,9 +101,10 @@ services:
       # poster frames — keyed by media id, so they survive OF re-signing the
       # url. Same reasoning as the storyboard cache above, and the same
       # reason it has to be a bind mount: these bytes are unrecoverable once
-      # the signature they came from has expired. ONE mount for all three
-      # stores; the env above puts them in subdirectories of it.
-      - ./service/vault_stills:/app/service/vault_stills
+      # the signature they came from has expired.
+      - ./service/vault_thumbs:/app/service/vault_thumbs
+      - ./service/vault_posters:/app/service/vault_posters
+      - ./service/vault_images:/app/service/vault_images
       # Generic /img proxy byte cache (chat bubbles, avatars, wall media),
       # keyed by host+path with the signature stripped.
       - ./service/img_cache:/app/service/img_cache

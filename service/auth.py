@@ -27,6 +27,7 @@ import logging
 import os
 
 import secrets_store
+from dotenv import dotenv_values
 import re
 import secrets
 import uuid
@@ -738,24 +739,42 @@ async def session_middleware(request: Request, call_next):
 admin_router = APIRouter(prefix="/admin/users", tags=["admin-users"])
 
 ADMIN_PASSWORD_ENV = "ADMIN_PASSWORD"
+_ENV_FILE = Path(__file__).resolve().parent / ".env"
 
 
 def _read_admin_password() -> str:
-    """The founder second factor: UI store first, then the process env.
+    """The founder second factor: the process ENV first, the UI store as the
+    bootstrap fallback.
 
-    Store-before-env is the contract every other consumer of `secrets_store`
-    already follows, and this one was the exception — it read the env alone. On
-    this deployment the variable was never set OR documented, so all five
-    founder-only writes (grant, revoke, transfer, delete user, set another
-    agency's AI keys) answered 503 and nothing said why. A second factor nobody
-    can configure is not a second factor.
+    This is the one key whose precedence is inverted, and the inversion is the
+    whole rotation story. `secrets_store.get` is store-first, which is right for
+    a key the UI owns — but ADMIN_PASSWORD is also BOOTSTRAP ONLY
+    (`secrets_store._BOOTSTRAP_ONLY`), so store-first made a UI-set password
+    PERMANENT: the store refused to change it and a new `.env` value could never
+    outrank it. Both the error message and DEPLOY.md told operators to rotate in
+    `.env`, which would have silently done nothing.
 
-    Writing it back through the store is BOOTSTRAP ONLY — see
-    `secrets_store._BOOTSTRAP_ONLY`: the page that edits the store is gated by
-    the master session, so letting a session rotate this would collapse the two
-    factors into one.
+    Env-first fixes that without loosening the gate. A master session can write
+    the store, but it can never displace a value it cannot reach — so the two
+    factors stay two, and `.env` + restart really is the rotation path.
+
+    The store still carries the FIRST one. On this deployment the variable was
+    never set or documented, so all five founder-only writes (grant, revoke,
+    transfer, delete user, set another agency's AI keys) answered 503 and
+    nothing said why; a second factor nobody can configure is not a second
+    factor, it is an outage.
     """
-    return secrets_store.get(ADMIN_PASSWORD_ENV)
+    env = (os.environ.get(ADMIN_PASSWORD_ENV) or "").strip()
+    if not env:
+        # service/.env directly, not just os.environ. `llm_providers` calls
+        # load_dotenv at import and that is how the file normally reaches the
+        # process — but this function must not depend on WHICH other module
+        # happened to be imported first. Getting this wrong reads as an empty
+        # password, which is a 503 on all five founder writes and looks like a
+        # relay fault rather than a config one. Same pattern as
+        # `llm_providers._api_key`.
+        env = (dotenv_values(_ENV_FILE).get(ADMIN_PASSWORD_ENV) or "").strip()
+    return env or secrets_store.stored(ADMIN_PASSWORD_ENV)
 
 
 class AdminUserRow(BaseModel):
@@ -797,10 +816,17 @@ def require_master() -> AuthedUser:
     """THE master-role gate. Founder-only surfaces call this; nothing re-derives it.
 
     Two gates exist on purpose and are not interchangeable. This one proves WHO
-    is asking from the session, and is what a read needs — a masked key hint or
+    is asking from the session, and is what a READ needs — a masked key hint or
     a roster of every agency is a leak whether or not the caller knows a
     password. `_assert_admin_password` proves the caller holds the founder
-    secret, and rides along on writes. A destructive founder write wants both.
+    secret, and is what a WRITE needs.
+
+    They are not yet applied together everywhere they should be: the account
+    grant, revoke, transfer and delete endpoints below carry the password ALONE,
+    so any signed-in owner who learns it can move accounts between agencies.
+    That predates this helper and is not changed here — it is written down so
+    the next person adding a founder route knows the difference between the
+    policy and the current state.
 
     401 when nobody is signed in rather than 403: the role has to be PROVEN, so
     an absent principal is refused on the same footing as a wrong one, and
@@ -824,7 +850,10 @@ def _assert_admin_password(supplied: str) -> None:
     if not expected:
         raise HTTPException(
             status_code=503,
-            detail=f"{ADMIN_PASSWORD_ENV} env var not set on relay",
+            detail=(
+                f"{ADMIN_PASSWORD_ENV} is not configured on this relay — set it "
+                f"in service/.env and restart, or once from Setup → Server keys"
+            ),
         )
     if not hmac.compare_digest(supplied, expected):
         raise HTTPException(status_code=403, detail="wrong admin password")

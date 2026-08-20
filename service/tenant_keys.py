@@ -51,12 +51,31 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
-from db.models import Account, AccountHealth, Session, User, UserAccount, UserLlmKey
+from db.models import Account, AccountHealth, User, UserAccount, UserLlmKey
 from llm_providers import PROVIDERS
 from secrets_store import MASK_CHAR, mask
 
 
 # ── Store ─────────────────────────────────────────────────────────────────
+
+def billable_owners(links: list[tuple[str, bool]]) -> list[str]:
+    """THE rule for who could be billed for one account, from its
+    `(identifier, is_master)` links. The list IS the answer and its length is
+    the state: none (orphan — no tenant to leak across), one (bill them),
+    several (nobody can say whose money this is).
+
+    One definition on purpose. It was written out three times — once on the
+    money path, once for the "two owners" warning, once for the founder's
+    roster — and the copies had already drifted: the roster did not treat two
+    MASTER links as a dispute, while `llm_client` refuses them. A screen whose
+    job is to predict what the money path will do cannot re-derive its rule.
+
+    Generic in the first element so a caller with usernames gets the same
+    answer as one with ids.
+    """
+    non_master = [ident for ident, is_master in links if not is_master]
+    return non_master or [ident for ident, _ in links]
+
 
 async def owners_of(account_id: str) -> list[str]:
     """The agencies that could be billed for one OF account, best first.
@@ -100,8 +119,7 @@ async def owners_of(account_id: str) -> list[str]:
             .join(User, User.id == UserAccount.user_id)
             .where(UserAccount.account_id == account_id)
         )).all()
-    non_master = [uid for uid, is_admin in rows if not is_admin]
-    return non_master or [uid for uid, _ in rows]
+    return billable_owners(list(rows))
 
 
 async def shared_accounts(account_ids) -> list[dict]:
@@ -135,10 +153,13 @@ async def shared_accounts(account_ids) -> list[dict]:
         entry = by_account.setdefault(
             account_id,
             {"account_id": account_id, "nickname": nickname or account_id,
-             "owners": []},
+             "links": []},
         )
-        if not is_admin:
-            entry["owners"].append(username)
+        entry["links"].append((username, bool(is_admin)))
+    for e in by_account.values():
+        e["owners"] = billable_owners(e.pop("links"))
+    # More than one billable owner IS the refusal `llm_client` raises — same
+    # rule, same source, so this card can never disagree with the money path.
     out = [e for e in by_account.values() if len(e["owners"]) > 1]
     for e in out:
         e["owners"].sort()
@@ -168,45 +189,49 @@ async def agency_exists(user_id: str) -> bool:
         ) is not None
 
 
-async def key_overview(registry_ids: set[str] | None = None) -> list[dict]:
+async def key_overview(registry: dict[str, bool],
+                       required_providers: set[str]) -> list[dict]:
     """Every agency, with the two facts that decide whether it needs a key:
     how many of its models can currently TALK, and which providers it has set.
 
-    A dead session is the reason most rows here don't matter. Two thirds of
-    this deployment's accounts have one, and an account whose session OF has
-    rejected sends nothing at all — so pasting a key under its owner buys
-    nothing until the session is re-captured. Sorting the founder's screen by
-    "has a live model" is the difference between four rows to fill in and
-    twenty to guess at.
+    `registry` is the account registry — `{account_id: has_a_captured_session}`,
+    exactly what `accounts.list_accounts()` reports. REQUIRED, and passed in
+    rather than read here, for two reasons that both bite:
 
-    LIVE means: the account is IN THE REGISTRY, a latest captured session
-    exists, and `account_health` has not flagged it dead. That flag LAGS — it
-    is set by a probe, not by the failure — so a model counted live here can
-    still be a few hours behind reality. Good enough for "who is worth a key",
-    not a health dashboard.
+      • The registry is a DIRECTORY. This module is a pure store that the LLM
+        money path imports on every call; the route owns the filesystem read.
+      • Deleting a model removes its registry entry and leaves every database
+        row behind — the `accounts` row, the `user_accounts` link, and a
+        `sessions` row still flagged `is_latest`. Counting from the tables
+        alone reported a model deleted on 08-14 as live on 08-20, and its
+        owner was keyed for nothing. An account absent from the registry is
+        gone: not live, and not owned either, or "1 live of 3 models" keeps
+        quoting models the operator cannot see.
 
-    `registry_ids` is not optional in spirit. Deleting a model removes it from
-    the registry and leaves every DB row behind — the `accounts` row, a
-    `sessions` row still flagged `is_latest`, the `user_accounts` link — so a
-    DB-only read counts models that were deleted days ago and sends the founder
-    to buy a key for one of them. That happened: an account deleted on 08-14
-    still read as live on 08-20 and got its owner keyed for nothing. The
-    registry is what the operator sees and what they can act on, so it is what
-    this counts. Passing None keeps every account, which is only right when the
-    caller has already scoped them.
+    The `sessions` TABLE is deliberately NOT consulted. Its only writer is
+    `db/import_legacy.py`, a one-shot importer, so on this deployment it is
+    frozen at 2026-08-14 and knows nothing about any session captured since.
+    Live sessions live on disk — which is what the registry reads.
 
-    Counts are BILLED, not linked — the same rule `owners_of` resolves with, and
-    it has to be the same or the screen lies. A master holding oversight links
-    on three agencies' models would otherwise read as "3 live" under its own
-    row and be told it needs a key, when those calls bill the agencies and
-    nothing would ever spend the master's credential. So: an account counts for
-    its non-master owner when it has one, for the master when the master is the
-    only link, and for NEITHER when two agencies claim it.
+    A dead session still counts as OWNED: `accounts` is what the agency has,
+    `live_accounts` is what can talk today. `account_health` supplies the death
+    certificate, and that flag LAGS (a probe sets it, not the failure), so read
+    a live count as "worth a key", never as health.
 
-    That last case would vanish silently, so it comes back as `blocked_accounts`.
-    Those models are refused outright and no key fixes them — the fix is a
-    transfer or a revoke — and a screen about keys is exactly where someone will
-    otherwise sit and wonder why a pasted key changed nothing.
+    Counts are BILLED, not linked, through `billable_owners` — the same rule
+    the money path resolves with, because a screen that predicts what the relay
+    will do must not re-derive it. That leaves accounts two agencies both claim
+    billing nobody, which would vanish silently, so they come back as
+    `blocked_accounts`: no key fixes those, the fix is a transfer or a revoke,
+    and a keys screen is exactly where someone would otherwise paste one and
+    wonder why nothing changed.
+
+    `required_providers` is what a live model actually needs in order to reply,
+    and it is supplied by the caller rather than inferred here. Without it the
+    only honest statement this could make is "has SOME key", and credentials
+    resolve PER PROVIDER: an agency holding only a DeepInfra key reads as
+    configured while every chat reply it makes fails closed. `missing_providers`
+    is the difference, and it is what the screen should act on.
 
     Providers are NAMES only, never values or hints — this feeds a list of many
     agencies at once, and the per-agency card is where a masked hint belongs.
@@ -216,16 +241,9 @@ async def key_overview(registry_ids: set[str] | None = None) -> list[dict]:
             select(
                 User.id, User.username, User.is_admin,
                 UserAccount.account_id,
-                Session.account_id.label("has_session"),
                 AccountHealth.session_dead_at,
             )
             .join(UserAccount, UserAccount.user_id == User.id, isouter=True)
-            .join(
-                Session,
-                (Session.account_id == UserAccount.account_id)
-                & (Session.is_latest.is_(True)),
-                isouter=True,
-            )
             .join(
                 AccountHealth,
                 AccountHealth.account_id == UserAccount.account_id,
@@ -243,39 +261,32 @@ async def key_overview(registry_ids: set[str] | None = None) -> list[dict]:
         providers.setdefault(uid, []).append(prov)
 
     out: dict[str, dict] = {}
-    # One row per (user, account) before anything is counted: the Session join
-    # can fan out if more than one row is flagged latest for an account, and
-    # that is a bug to not double-count our way around.
     links: dict[tuple[str, str], bool] = {}
     owners_by_account: dict[str, list[tuple[str, bool]]] = {}
-    for uid, username, is_admin, account_id, has_session, dead_at in rows:
+    for uid, username, is_admin, account_id, dead_at in rows:
         out.setdefault(uid, {
             "user_id": uid, "username": username, "is_admin": bool(is_admin),
             "accounts": 0, "live_accounts": 0, "blocked_accounts": 0,
             "providers_set": sorted(providers.get(uid, [])),
+            "missing_providers": sorted(
+                required_providers - set(providers.get(uid, []))),
         })
-        if not account_id:
+        if not account_id or account_id not in registry:
             continue
-        in_registry = registry_ids is None or account_id in registry_ids
-        links[(uid, account_id)] = (
-            in_registry and bool(has_session) and dead_at is None
-        )
+        links[(uid, account_id)] = registry[account_id] and dead_at is None
         owners = owners_by_account.setdefault(account_id, [])
         if (uid, bool(is_admin)) not in owners:
             owners.append((uid, bool(is_admin)))
 
     for (uid, account_id), is_live in links.items():
-        owners = owners_by_account.get(account_id, [])
-        agencies = [o for o, adm in owners if not adm]
-        if len(agencies) > 1:
-            # Two agencies claim it — refused by `owners_of`, so it bills
-            # nobody. Reported, not counted, and only against the agencies
-            # actually in the dispute.
-            if uid in agencies and is_live:
+        billable = billable_owners(owners_by_account.get(account_id, []))
+        if len(billable) > 1:
+            # Two agencies claim it, so it bills nobody. Reported, not counted,
+            # and only against the owners actually in the dispute.
+            if uid in billable and is_live:
                 out[uid]["blocked_accounts"] += 1
             continue
-        billed = agencies[0] if agencies else (owners[0][0] if owners else None)
-        if billed != uid:
+        if not billable or billable[0] != uid:
             continue
         out[uid]["accounts"] += 1
         if is_live:

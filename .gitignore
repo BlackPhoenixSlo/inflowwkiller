@@ -16,6 +16,7 @@ dist/
 # Local state — anything containing real session data, account data, or secrets
 service/proxies.json
 service/secrets.json
+service/secrets/
 service/chatterly.db
 service/chatterly.db-journal
 service/chatterly.db-wal
@@ -140,32 +141,3 @@ convo_review.html
 
 # operator scratch note — kept on disk, never tracked
 wwwwwwwww
-
-# ── Root-level debug artifacts (public-sync leak class, 2026-08-01) ──────────
-# Five root docs + two dirs reached this PUBLIC repo carrying real account ids,
-# a verbatim production DM transcript, revenue figures and 12 SIGNED OnlyFans
-# CDN urls. None were hypothetical — all were live on github until they were
-# purged from history. The patterns above missed them for narrow reasons worth
-# naming, so the next near-miss is recognisable:
-#   • `*CHAT*.md` matched .md ONLY — the transcript was `make_right_chat.html`.
-#   • `service/*.html` covers probe output under service/, not the repo ROOT.
-#   • nothing matched a root REPORT/BRIEF/PLAN/ANALYSIS doc at all.
-# Deliberately targeted, not a blanket root `*.md`/`*.html`: README, CLAUDE,
-# DEPLOY, DEPLOY_HOWTO, privacy.html and telegram-vault-* are legitimate and
-# must keep shipping.
-*_BRIEF.md
-*_REPORT.md
-*_TEST_PLAN.md
-*_ANALYSIS.md
-*_chat.html
-*_chat*.html
-
-# Simulation harness + tool output — persona files hardcode real account ids,
-# and every transcript under out/ is a rendered conversation.
-service/sim/
-service/tools/out/
-
-# HMAC keys — NEVER in this repo (it is public). Leaked once via the Flow A
-# file-copy, which had no dotfile exclusion; the rsync in Flow B always had one.
-service/.session_secret
-service/.chatter_secret
