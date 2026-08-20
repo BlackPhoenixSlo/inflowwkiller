@@ -57,6 +57,11 @@ export interface ImpersonatingDTO {
 export interface AuthedUserDTO {
   user_id: string;
   username: string;
+  /** Master role. Used ONLY to decide whether a founder-only surface is worth
+   *  drawing — the relay gates every one of them server-side regardless. While
+   *  impersonating this is the impersonated user's role, so the founder stops
+   *  seeing the server's house-key panel while wearing an agency's identity. */
+  is_admin?: boolean;
   /** Present when the founder is currently viewing this user via the
    *  /admin/impersonate overlay. The relay restricts the session to
    *  read-only requests while this is non-null. */

@@ -36,11 +36,20 @@ export default function KeysCard() {
   return (
     <Card className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">Keys</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-lg font-semibold">Server keys</h2>
+          <Badge color="muted">founder only</Badge>
+        </div>
         <p className="text-sm text-fg-dim">
-          API keys and tokens for this server. Paste them here instead of editing
-          the VPS <code>.env</code> — they&apos;re stored on the server only and
-          take effect immediately. Leave a field blank to keep its current value.
+          This <em>server&apos;s</em> own keys and tokens — not any agency&apos;s.
+          Paste them here instead of editing the VPS <code>.env</code>; they&apos;re
+          stored on the server only and take effect immediately. Leave a field
+          blank to keep its current value.
+        </p>
+        <p className="text-[11px] text-fg-dim mt-1">
+          A model owned by an agency bills that agency&apos;s key from{" "}
+          <strong>Your AI keys</strong> above, never these. These cover models with
+          no owner and the relay&apos;s own maintenance calls.
         </p>
       </div>
 

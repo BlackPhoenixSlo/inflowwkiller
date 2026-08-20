@@ -717,6 +717,8 @@ _CHATTER_BLOCKED_ADMIN_PREFIXES: tuple[str, ...] = (
     "/admin/session",      # session bootstrap / capture — owner-only
     "/admin/rev",          # drift detection — owner-only
     "/admin/audit",        # multi-tenant audit log
+    "/admin/secrets",      # the SERVER's house keys — founder-only
+    "/admin/my-llm-keys",  # an agency's own LLM keys — the OWNER's, never a chatter's
 )
 
 
