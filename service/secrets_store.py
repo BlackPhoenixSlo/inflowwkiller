@@ -2,12 +2,16 @@
 
 Onboarding without SSH: a self-hoster pastes their DeepSeek key, Google Sheets
 token, etc. into Setup → Keys instead of editing the VPS `.env`. Values land in
-`service/secrets.json` (sibling of `proxies.json`, same bind-mount + .gitignore
-story) and every consumer checks the store BEFORE the environment, so a pasted
-key takes effect on the next call with no restart — while existing env-based
-deploys keep working as the fallback.
+`service/secrets/secrets.json` — a bind-mounted DIRECTORY, see the comment on
+`_PATH`, and one an older VPS needs adding to its compose file by hand — and
+every consumer checks the store BEFORE the environment, so a pasted key takes
+effect on the next call with no restart while env-based deploys keep working.
 
-Precedence everywhere: `secrets.json` value → process env → module `.env` file.
+Precedence: store value → process env → module `.env` file. ONE exception, and
+it is load-bearing: `_BOOTSTRAP_ONLY` keys (ADMIN_PASSWORD) are resolved
+ENV-FIRST by their reader (`auth._read_admin_password`) and reported env-first
+by `status()`. Store-first there made a UI-set founder password permanent —
+the store refused to change it and no `.env` value could outrank it.
 
 Never logs values. The HTTP layer only ever returns `status()` (masked), never
 the raw secret.
@@ -90,8 +94,9 @@ KNOWN: dict[str, dict] = {
         "group": "Access",
         "help": "Second factor on founder-only writes: granting or revoking a "
                 "model, transferring one, deleting a user, and setting another "
-                "agency's AI keys. BOOTSTRAP ONLY — once set it can be changed "
-                "from the VPS .env, not from here.",
+                "agency's AI keys. BOOTSTRAP ONLY — set it here once; changing "
+                "it is done in the relay's environment (ADMIN_PASSWORD in "
+                "~/fastt/.env, then restart), which outranks this value.",
     },
     "SHARE_TOKEN": {
         "label": "Access password (share link token)",
@@ -252,10 +257,25 @@ def _assert_bootstrap_only(values: dict[str, str | None]) -> None:
     for k in _BOOTSTRAP_ONLY:
         if k not in values:
             continue
+        raw = values[k]
+        superseded = (os.environ.get(k) or "").strip()
+        if superseded and not (raw or "").strip():
+            # RETIRING a superseded copy is not rotating. Once the environment
+            # carries the live value the reader takes THAT (env-first, see
+            # `auth._read_admin_password`) and this row is a dead credential —
+            # one that comes back to life the moment the env var goes missing,
+            # on a file that now survives deploys. Deleting it is the operator
+            # tidying up after a rotation they performed somewhere a session
+            # cannot reach, so it stays allowed. Only a CLEAR, and only while
+            # the env holds a value: a session can still never set or change
+            # the password that is actually in force.
+            continue
         if get(k):
             raise ValueError(
                 f"{k} is already configured and cannot be changed from here — "
-                "rotate it in the VPS .env and restart the relay"
+                "set ADMIN_PASSWORD in the relay's environment (~/fastt/.env) "
+                "and restart; it outranks this value, and you can then clear "
+                "this one"
             )
 
 
@@ -342,8 +362,18 @@ def status() -> dict:
         sval = data.get(name)
         sval = sval.strip() if isinstance(sval, str) else ""
         env = (os.environ.get(name) or "").strip()
-        source = "store" if sval else ("env" if env else "unset")
-        live = sval or env
+        # Resolve the way the key's READER does, or the card names a dead value
+        # as the live one. Every key here is store-first — except the
+        # bootstrap-only ones, whose reader is env-first precisely so a UI-set
+        # value can be superseded. Reporting store-first for those would show
+        # "set · via UI" with the stored hint while every founder write is
+        # actually being checked against the environment.
+        if name in _BOOTSTRAP_ONLY:
+            source = "env" if env else ("store" if sval else "unset")
+            live = env or sval
+        else:
+            source = "store" if sval else ("env" if env else "unset")
+            live = sval or env
         out[name] = {
             "label": meta["label"],
             "group": meta["group"],

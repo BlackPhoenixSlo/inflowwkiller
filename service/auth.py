@@ -766,13 +766,16 @@ def _read_admin_password() -> str:
     """
     env = (os.environ.get(ADMIN_PASSWORD_ENV) or "").strip()
     if not env:
-        # service/.env directly, not just os.environ. `llm_providers` calls
-        # load_dotenv at import and that is how the file normally reaches the
-        # process — but this function must not depend on WHICH other module
-        # happened to be imported first. Getting this wrong reads as an empty
-        # password, which is a 503 on all five founder writes and looks like a
-        # relay fault rather than a config one. Same pattern as
-        # `llm_providers._api_key`.
+        # service/.env directly, not just os.environ, for a NATIVE run
+        # (scripts/start.sh), where the process reads that file and this must
+        # not depend on which other module happened to call load_dotenv first.
+        #
+        # In the CONTAINER this file does not exist — the Dockerfile COPY is a
+        # .py allow-list and nothing mounts it — so the container path is the
+        # `environment:` entry in docker-compose.yml, fed from the compose-level
+        # ~/fastt/.env. Both are covered here, which is the point: getting it
+        # wrong reads as an empty password, i.e. a 503 on all five founder
+        # writes that looks like a relay fault rather than a config gap.
         env = (dotenv_values(_ENV_FILE).get(ADMIN_PASSWORD_ENV) or "").strip()
     return env or secrets_store.stored(ADMIN_PASSWORD_ENV)
 

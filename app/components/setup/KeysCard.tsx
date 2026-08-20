@@ -2,7 +2,7 @@
 
 /**
  * KeysCard — Setup → Keys. Paste API keys and tokens here instead of editing
- * the server's .env. Saved values live on the server only (service/secrets.json)
+ * the server's .env. Saved values live on the server only (service/secrets/secrets.json)
  * and take effect immediately — no restart.
  *
  * Each field shows whether the key is currently set and where the live value

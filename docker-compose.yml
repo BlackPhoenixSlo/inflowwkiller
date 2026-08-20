@@ -65,7 +65,9 @@ services:
       VAULT_IMAGE_DIR: "/app/service/vault_images"
       IMG_CACHE_DIR: "/app/service/img_cache"
       # LLM provider keys (Grok + DeepSeek) for service/llm_client.py. They also
-      # ride in via the COPYed service/.env, but declaring them here means a host
+      # ride in via service/.env, but that file is NOT in the image (the
+      # Dockerfile COPY is a .py allow-list) and is not mounted — declaring them
+      # here is what actually delivers them, and it means a host
       # that exports them (or a compose .env) flows them through on a clean build
       # — the same Phase-F allowlist footgun as the Dockerfile. The `:-` empty
       # default keeps compose from warning when the key is only in service/.env;
@@ -79,6 +81,14 @@ services:
       # rebuild (service/secrets is bind-mounted below); the env still wins for
       # ADMIN_PASSWORD alone, so that one can be rotated out of band.
       DEEPINFRA_API_KEY: "${DEEPINFRA_API_KEY:-}"
+      # Founder second factor (auth._read_admin_password), and the ONE key where
+      # the environment outranks the Setup → Keys store — which is what makes
+      # rotating it possible at all. It only works if it is NAMED here: the relay
+      # has no `env_file`, and service/.env is neither COPYed by the Dockerfile
+      # (line 41 is an explicit .py allow-list) nor bind-mounted, so an unnamed
+      # var reaches nothing. Set the value in the COMPOSE-level env — ~/fastt/.env
+      # beside this file — not in service/.env, which the container never sees.
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
     volumes:
       # File bind-mount for the SQLite event store. WAL + SHM sidecars
       # are created in /app/service/ inside the container; on `docker
