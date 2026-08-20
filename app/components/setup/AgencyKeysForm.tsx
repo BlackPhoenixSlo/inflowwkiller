@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { relay } from "@/lib/relay";
 import { useKeyDraft } from "@/hooks/useKeyDraft";
+import { LABELS, HELP, wrongFieldWarning } from "@/components/setup/providerFields";
 
 /**
  * AgencyKeysForm — set an agency's LLM keys FOR them.
@@ -77,8 +78,9 @@ export function AgencyKeysForm(
         <div className="text-xs text-fg-dim">Loading…</div>
       ) : (
         Object.entries(providers).map(([name, k]) => (
-          <div key={name} className="flex items-center gap-2">
-            <label className="w-24 text-xs">{name}</label>
+          <div key={name} className="space-y-1">
+          <div className="flex items-center gap-2">
+            <label className="w-40 text-xs">{LABELS[name] ?? name}</label>
             <input
               type="password"
               autoComplete="off"
@@ -104,6 +106,14 @@ export function AgencyKeysForm(
                 clear
               </button>
             )}
+          </div>
+          {wrongFieldWarning(name, draft[name] ?? "") ? (
+            <p className="text-[11px] text-warn" role="alert">
+              {wrongFieldWarning(name, draft[name] ?? "")}
+            </p>
+          ) : (
+            HELP[name] && <p className="text-[11px] text-fg-dim">{HELP[name]}</p>
+          )}
           </div>
         ))
       )}

@@ -258,8 +258,12 @@ def _assert_bootstrap_only(values: dict[str, str | None]) -> None:
         if k not in values:
             continue
         raw = values[k]
+        # str() first: this runs BEFORE the loop below coerces, and the body is
+        # arbitrary JSON — a number or a list here would AttributeError inside
+        # the founder gate rather than surfacing as a 400.
+        blank = not str(raw or "").strip()
         superseded = (os.environ.get(k) or "").strip()
-        if superseded and not (raw or "").strip():
+        if superseded and blank:
             # RETIRING a superseded copy is not rotating. Once the environment
             # carries the live value the reader takes THAT (env-first, see
             # `auth._read_admin_password`) and this row is a dead credential —
@@ -381,6 +385,12 @@ def status() -> dict:
             "multiline": bool(meta.get("multiline")),
             "help": meta.get("help", ""),
             "set": bool(live),
+            # A row exists on disk — the ONLY thing `clear` can remove, and not
+            # the same question as `source`. For every ordinary key the two
+            # coincide; for a bootstrap-only one they are exact complements,
+            # because `source` reports env-first while the row it would delete
+            # is the superseded copy underneath. The UI needs this one.
+            "stored": bool(sval),
             "source": source,
             "hint": _hint(name, live, meta),
         }
