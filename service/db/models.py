@@ -2523,6 +2523,37 @@ class UserAccount(Base):
     created_at: Mapped[datetime] = _ts_now()
 
 
+class UserLlmKey(Base):
+    """One agency's LLM provider key. THE tenancy boundary for model spend.
+
+    An owner (`users` row) is an agency; the OF accounts linked to it via
+    `user_accounts` are its creators. Every LLM call that creator makes bills
+    the key stored here, so two agencies can never spend on one credential —
+    the invariant this table exists for. One row per (owner, provider); an
+    agency that only uses DeepSeek simply has no deepinfra/grok row.
+
+    `provider` holds a key of `llm_providers.PROVIDERS` ("deepseek" | "deepinfra" |
+    "grok"). It is validated on the WRITE path against that registry rather
+    than by a CHECK constraint, and the read path only ever queries a name that
+    came out of the same registry — so a renamed provider can't silently make a
+    stored key unreachable (which would fail over to the house key, i.e. to the
+    deployment owner's bill).
+
+    Plaintext, like `proxies.json` passwords and `secrets.json` — the same
+    known limitation, tracked with them. `ON DELETE CASCADE` is what makes
+    offboarding an agency actually destroy its credentials; `PRAGMA
+    foreign_keys=ON` is wired at connect (db/engine.py) so it really fires.
+    """
+    __tablename__ = "user_llm_keys"
+
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(String, primary_key=True)
+    api_key: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = _ts_now()
+
+
 # ── §X.Y Chatter login (one human, union of owners' accounts) ────────
 #
 # See Todo.txt STEP 8. A Chatter is a separate principal from a User.

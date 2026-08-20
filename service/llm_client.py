@@ -49,35 +49,22 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import httpx
-from dotenv import dotenv_values, load_dotenv
 from sqlalchemy import select, update as sa_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import tenant_keys
 from db.engine import get_session
 from db.models import AccountAiConfig, GrokCall, GrokDailyCost
+from llm_providers import LLMProvider, PROVIDERS, house_key
 
 log = logging.getLogger("of-relay.llm_client")
 
-_HERE = Path(__file__).resolve().parent
-_ENV_FILE = _HERE / ".env"
-# Mirror db.engine: load service/.env if it hasn't been loaded yet. override=False
-# means a real value already in the process env (e.g. a host-exported key) wins.
-load_dotenv(_ENV_FILE, override=False)
-
-
-# ── Provider + model registry ───────────────────────────────────────────
-# DB-backed model_pricing is a later migration (19 §3); this is the seed.
-
-@dataclass(frozen=True)
-class LLMProvider:
-    name: str          # "grok" | "deepseek"
-    base_url: str      # OpenAI-compatible base
-    api_key_env: str   # env var holding the bearer key
-
+# ── Model registry ──────────────────────────────────────────────────────
+# Which models exist, what they cost, and which provider (llm_providers) serves
+# each. DB-backed model_pricing is a later migration (19 §3); this is the seed.
 
 @dataclass(frozen=True)
 class LLMModel:
@@ -108,14 +95,6 @@ class LLMModel:
         """The model name to put on the request body (provider's real name)."""
         return self.api_model or self.id
 
-
-# Both keys are CONFIRMED present in service/.env (verified 2026-06-04, 19 §4).
-PROVIDERS: dict[str, LLMProvider] = {
-    "grok":     LLMProvider("grok",     "https://api.x.ai/v1",      "GROK_API_KEY"),
-    "deepseek": LLMProvider("deepseek", "https://api.deepseek.com", "DEEPSEEK_API_KEY"),
-    # DeepInfra hosts the Qwen3-VL vision models (OpenAI-compatible, NSFW-permissive).
-    "deepinfra": LLMProvider("deepinfra", "https://api.deepinfra.com/v1/openai", "DEEPINFRA_API_KEY"),
-}
 
 # Prices are cents per 1k tokens (small, real-as-of-2026-06 seeds — enough to
 # stop a runaway loop via the cap; model_pricing later overrides). DeepSeek
@@ -253,37 +232,13 @@ class LLMResult:
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-def _api_key(env_name: str) -> str:
-    """Resolve a provider key. A non-empty process-env value wins; if it's
-    missing or blank we fall back to the COPYed service/.env directly.
+def _resolve(model: str) -> tuple[LLMModel, LLMProvider]:
+    """model -> (LLMModel, LLMProvider). Fail-fast on every gap.
 
-    Why the file fallback: docker-compose passes the key through as
-    `${GROK_API_KEY:-}`, which injects an EMPTY string into the container when
-    the host shell doesn't export it. load_dotenv(override=False) then refuses
-    to backfill the already-set (empty) var, so the real value sitting in the
-    COPYed service/.env would be ignored. Reading the file here recovers it —
-    the Phase-F clean-build footgun, defused.
-
-    A value pasted into the Setup → Keys UI (secrets.json) wins over both, so a
-    self-hoster can add a key without touching env/.env or restarting."""
-    try:
-        from secrets_store import stored as _stored
-        s = _stored(env_name)
-        if s:
-            return s
-    except Exception:  # never let the key store crash a provider call
-        pass
-    val = (os.environ.get(env_name) or "").strip()
-    if val:
-        return val
-    try:
-        return (dotenv_values(_ENV_FILE).get(env_name) or "").strip()
-    except Exception:  # pragma: no cover — never let key lookup crash the caller
-        return ""
-
-
-def _resolve(model: str) -> tuple[LLMModel, LLMProvider, str]:
-    """model -> (LLMModel, LLMProvider, api_key). Fail-fast on every gap."""
+    The KEY is deliberately not resolved here: which credential a call bills
+    depends on WHOSE account it is, not on which model it picked. See
+    `_tenant_api_key`.
+    """
     mdl = MODELS.get(model)
     if mdl is None:
         raise LLMConfigError(
@@ -294,13 +249,66 @@ def _resolve(model: str) -> tuple[LLMModel, LLMProvider, str]:
         raise LLMConfigError(
             f"model {model!r} maps to unknown provider {mdl.provider!r}"
         )
-    key = _api_key(prov.api_key_env)
-    if not key:
+    return mdl, prov
+
+
+async def _tenant_api_key(account_id: str, prov: LLMProvider) -> str:
+    """The credential THIS account's call must bill.
+
+    One agency = one key set: the owner of `account_id` (a `users` row) supplies
+    the key for every creator it runs, so two agencies can never spend on one
+    credential. The house key — the process-wide credential this deployment booted
+    with (`llm_providers.house_key`) — is reachable only when the account has NO owner at all (an
+    orphan, or the NULL house-account rollup): there is no tenant to leak
+    across, and refusing those would take the deployment's own maintenance
+    calls down with them.
+
+    Everything else FAILS CLOSED. An owner that has not pasted a key for this
+    provider gets an error, never a silent fall-through to the house key: a
+    generic `or house_key` turns every configuration and ownership defect into a
+    successful cross-tenant request billed to the deployment owner, which is
+    both the invariant this function exists to hold and the only alarm that
+    would ever have reported it broken.
+    """
+    owners = await tenant_keys.owners_of(account_id)
+    if len(owners) > 1:
+        # Two AGENCIES claim this creator (a master's oversight link is already
+        # dropped by owners_of). REACHABLE BY DESIGN, not a corruption alarm:
+        # two owners each completing a session capture for the same account, or
+        # `auth.admin_grant_user_account` adding a link without removing one.
+        # Neither row order nor link age says whose credential pays, so refuse —
+        # billing the wrong agency silently is the one outcome this path exists
+        # to prevent. The Setup card names the account and its owners; the fix
+        # is for one of them to transfer it to the other (DEPLOY.md → Per-agency
+        # AI keys). TRANSFER itself is safe: it deletes the old link in the same
+        # transaction as the insert, so it never creates this state.
         raise LLMConfigError(
-            f"{prov.api_key_env} is missing/empty — cannot call provider "
-            f"{prov.name!r} for model {model!r}"
+            f"account {account_id!r} has more than one owner — cannot tell "
+            f"which agency's {prov.name!r} key to bill"
         )
-    return mdl, prov, key
+    if not owners:
+        key = house_key(prov.name)
+        if not key:
+            raise LLMConfigError(
+                f"{prov.api_key_env} is missing/empty — cannot call provider "
+                f"{prov.name!r} for un-owned account {account_id!r}"
+            )
+        return key
+    owner = owners[0]
+    key = await tenant_keys.get_key(owner, prov.name)
+    if not key:
+        # The one log line this feature needs: an agency's models can be split
+        # across providers (`model_by_purpose` is per account AND per purpose),
+        # so "they brought a DeepSeek key" does not mean every one of their
+        # calls has a key. This names the missing pair instead of leaving one
+        # purpose mysteriously dead on one account.
+        log.warning("tenant_key_missing provider=%s account=%s owner=%s",
+                    prov.name, account_id, owner)
+        raise LLMConfigError(
+            f"agency {owner!r} has no {prov.name!r} API key — add it in "
+            f"Setup → Your AI keys (account {account_id!r})"
+        )
+    return key
 
 
 # Vision: a single image consumes hundreds–thousands of tokens, NOT the ~10
@@ -689,7 +697,8 @@ async def chat(
     """Call an OpenAI-compatible LLM (Grok or DeepSeek) with full cost + audit.
 
     Flow (19 §2):
-      1. Resolve model -> provider -> base_url + key (fail-fast on any gap).
+      1. Resolve model -> provider -> base_url, then the KEY of the agency that
+         owns `account_id` (fail-fast on any gap — see _tenant_api_key).
       2. ATOMICALLY reserve the estimated cost against the daily soft cap
          (05 §7) BEFORE firing — raises LLMCapExceeded if it doesn't fit.
       3. Write a pending `grok_calls` row.
@@ -700,7 +709,8 @@ async def chat(
         model:           a key of MODELS (e.g. "grok-4-1-fast-non-reasoning").
         messages:        OpenAI chat messages (already variable-substituted).
         purpose:         attribution tag (gen_info / welcome / welcome_chatter_for_info_reply / …).
-        account_id:      per-account cap + audit attribution.
+        account_id:      per-account cap + audit attribution, AND the agency
+                         whose API key pays for the call (_tenant_api_key).
         fan_id:          optional fan attribution.
         response_format: e.g. {"type": "json_object"} for structured output.
         temperature:     sampling temperature.
@@ -709,7 +719,11 @@ async def chat(
     Raises:
         LLMConfigError, LLMCapExceeded, LLMHTTPError.
     """
-    mdl, prov, api_key = _resolve(model)
+    mdl, prov = _resolve(model)
+    # Before the cap reservation and the audit row, exactly where the old
+    # combined _resolve raised: a call with no usable credential must cost
+    # neither a cap slot nor a grok_calls row.
+    api_key = await _tenant_api_key(account_id, prov)
 
     url = prov.base_url.rstrip("/") + "/chat/completions"
     endpoint = httpx.URL(url).path  # "/v1/chat/completions" (grok) | "/chat/completions" (deepseek)

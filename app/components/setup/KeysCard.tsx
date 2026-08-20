@@ -10,16 +10,15 @@
  * the browser; an empty field means "leave unchanged".
  */
 
-import { useState } from "react";
-
 import { useSecrets, useSaveSecrets, type SecretKeyStatus } from "@/hooks/useSecrets";
+import { useKeyDraft } from "@/hooks/useKeyDraft";
 import { Badge, Button, Card, Input, Textarea } from "@/components/ui/primitives";
 
 export default function KeysCard() {
   const { data, isLoading, error } = useSecrets();
   const save = useSaveSecrets();
-  const [draft, setDraft] = useState<Record<string, string>>({});
-  const [note, setNote] = useState<string | null>(null);
+  const { draft, dirty, setField, save: onSave, clear: clearKey, note } =
+    useKeyDraft(save.mutateAsync, "Saved — takes effect on the next run.");
 
   const keys = data?.keys ?? {};
   // Preserve backend (registry) order, bucket by group.
@@ -32,37 +31,6 @@ export default function KeysCard() {
       groups.push(bucket);
     }
     bucket.items.push(entry);
-  }
-
-  const dirty = Object.keys(draft).length > 0;
-
-  function setField(name: string, val: string) {
-    setDraft((d) => ({ ...d, [name]: val }));
-  }
-
-  async function onSave() {
-    setNote(null);
-    try {
-      await save.mutateAsync(draft);
-      setDraft({});
-      setNote("Saved — takes effect on the next run.");
-      setTimeout(() => setNote(null), 3000);
-    } catch (e) {
-      setNote(e instanceof Error ? e.message : "Save failed");
-    }
-  }
-
-  async function clearKey(name: string) {
-    setNote(null);
-    try {
-      await save.mutateAsync({ [name]: "" });
-      setDraft((d) => {
-        const { [name]: _drop, ...rest } = d;
-        return rest;
-      });
-    } catch (e) {
-      setNote(e instanceof Error ? e.message : "Clear failed");
-    }
   }
 
   return (
@@ -107,8 +75,9 @@ export default function KeysCard() {
                   {k.set && k.source === "store" && (
                     <button
                       type="button"
+                      disabled={save.isPending}
                       onClick={() => clearKey(name)}
-                      className="text-[11px] text-err hover:underline"
+                      className="text-[11px] text-err hover:underline disabled:opacity-40"
                     >
                       clear
                     </button>

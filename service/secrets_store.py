@@ -76,6 +76,22 @@ KNOWN: dict[str, dict] = {
 }
 
 
+# The one character a masked value is made of, and the one function that makes
+# one. Both Setup cards render through `mask()`, so "what a masked key looks
+# like" has a single definition — which is what lets a write path reject a value
+# containing MASK_CHAR and know it is rejecting its OWN placeholder coming back
+# (see tenant_keys.set_keys, and the settings-form bug that guard exists for).
+MASK_CHAR = "•"
+
+
+def mask(val: str) -> str:
+    """A safe preview of a secret: bullets, plus the last four if there is
+    enough to spare. Never enough to reconstruct the value."""
+    if not val:
+        return ""
+    return MASK_CHAR * 4 if len(val) <= 8 else MASK_CHAR * 4 + val[-4:]
+
+
 # (mtime_ns, size, inode) of the file the cached dict was parsed from, or None
 # for "nothing cached yet". No lock: a torn read is impossible because the tuple
 # and the dict are published in ONE assignment, and the worst race is two
@@ -168,7 +184,21 @@ def get(name: str) -> str:
 
 def set_many(values: dict[str, str | None]) -> None:
     """Merge updates into secrets.json. A None/empty value CLEARS the key.
-    Unknown keys are ignored. Atomic write, chmod 600."""
+    Unknown keys are ignored. Atomic write, chmod 600.
+
+    A value made of the mask this store itself renders is REFUSED, not stored:
+    that is our own placeholder coming back from a form, and taking it literally
+    replaces a working secret with bullets. `mask()` is the single definition of
+    what one looks like, which is what makes the test sound. It raises rather
+    than dropping the field, so the caller cannot report "Saved" for a write that
+    did not happen — same contract as `tenant_keys.set_keys`.
+    """
+    for k, v in values.items():
+        if k in KNOWN and v is not None and MASK_CHAR in str(v):
+            raise ValueError(
+                f"{k}: that looks like the masked placeholder, not a value — "
+                "leave the field blank to keep what is stored"
+            )
     with _LOCK:
         data = _load()
         for k, v in values.items():
@@ -214,8 +244,8 @@ def _hint(name: str, val: str, meta: dict) -> str:
     if meta.get("secret", True) is False:
         return val if len(val) <= 80 else val[:77] + "…"
     if meta.get("multiline"):
-        return f"•••• ({len(val)} chars)"
-    return "••••" if len(val) <= 8 else "••••" + val[-4:]
+        return f"{MASK_CHAR * 4} ({len(val)} chars)"
+    return mask(val)
 
 
 def status() -> dict:
