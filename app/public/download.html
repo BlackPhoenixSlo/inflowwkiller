@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Download the Fastt desktop app for Mac and Windows.">
+<meta name="robots" content="noindex">
+<title>Fastt Desktop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<script>
+/* ─────────────────────────────────────────────────────────────────────────
+   THE ONLY THING YOU EDIT.
+
+   1. Upload the three installers to Google Drive.
+   2. For EACH file: right-click -> Share -> General access ->
+      "Anyone with the link" -> Viewer.   (Without this, downloads 403.)
+   3. Right-click -> Copy link. You get:
+        https://drive.google.com/file/d/1AbC...XyZ/view?usp=sharing
+                                     ^^^^^^^^^^^^  <- paste THAT part below
+   ───────────────────────────────────────────────────────────────────────── */
+const DRIVE_IDS = {
+  macArm: "15VppVmInb7QyeH7hQv6DmZro_Fj4ms3x",   // Fastt-0.2.0-arm64.dmg   (120 MB)
+  macIntel: "1PWaLRnN9FJMuTmDuU1-z6NrApaqMnxTd", // Fastt-0.2.0-x64.dmg     (121 MB)
+  windows: "1v-CZR9zO27lwv5Vp5-NXTbHivbMPktAv",  // Fastt-Setup-0.2.0.exe   (104 MB)
+};
+</script>
+
+<style>
+/* ── Tokens: light is the bare :root, so the un-stamped default always resolves ── */
+:root {
+  --ground:      #F6F8F9;
+  --surface:     #FFFFFF;
+  --surface-alt: #EDF1F3;
+  --ink:         #101619;
+  --ink-soft:    #56646D;
+  --ink-faint:   #84949E;
+  --line:        #DDE4E8;
+  --line-strong: #C3CED5;
+  --accent:      #0B6E78;
+  --accent-hot:  #0E8B97;
+  --accent-wash: #E4F2F3;
+  --warn:        #8A5200;
+  --warn-line:   #E8C98E;
+  --warn-wash:   #FDF5E7;
+  --shadow:      0 1px 2px rgba(16,22,25,.06), 0 8px 24px -12px rgba(16,22,25,.18);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0D1214;
+    --surface:     #151C20;
+    --surface-alt: #1C252A;
+    --ink:         #E7EDF0;
+    --ink-soft:    #94A3AC;
+    --ink-faint:   #6B7C86;
+    --line:        #253137;
+    --line-strong: #35454D;
+    --accent:      #45C6D1;
+    --accent-hot:  #6BDCE6;
+    --accent-wash: #12292C;
+    --warn:        #EDB55F;
+    --warn-line:   #4A3818;
+    --warn-wash:   #221909;
+    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"] {
+  --ground:      #0D1214;
+  --surface:     #151C20;
+  --surface-alt: #1C252A;
+  --ink:         #E7EDF0;
+  --ink-soft:    #94A3AC;
+  --ink-faint:   #6B7C86;
+  --line:        #253137;
+  --line-strong: #35454D;
+  --accent:      #45C6D1;
+  --accent-hot:  #6BDCE6;
+  --accent-wash: #12292C;
+  --warn:        #EDB55F;
+  --warn-line:   #4A3818;
+  --warn-wash:   #221909;
+  --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 940px; margin: 0 auto; padding: 0 24px; }
+.prose { max-width: 64ch; }
+
+h1, h2, h3 { font-family: Archivo, "IBM Plex Sans", sans-serif; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2.1rem, 5vw, 3.1rem); font-weight: 700; letter-spacing: -.028em; line-height: 1.08; }
+h2 { font-size: 1.45rem; font-weight: 700; letter-spacing: -.018em; }
+h3 { font-size: 1rem; font-weight: 600; letter-spacing: -.005em; }
+
+p { margin: 0; }
+a { color: var(--accent); }
+
+.eyebrow {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .72rem;
+  font-weight: 500;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+:where(a, button, summary):focus-visible {
+  outline: 2px solid var(--accent-hot);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+/* ── Masthead ── */
+.masthead {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.masthead-in {
+  display: flex; align-items: center; gap: 14px;
+  padding-top: 18px; padding-bottom: 18px;
+}
+.mark {
+  font-family: Archivo, sans-serif; font-weight: 700; font-size: 1.15rem;
+  letter-spacing: -.03em; color: var(--ink);
+}
+.mark span { color: var(--accent); }
+.version {
+  font-family: "IBM Plex Mono", monospace; font-size: .74rem; font-weight: 500;
+  color: var(--accent); background: var(--accent-wash);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  padding: 2px 8px; border-radius: 100px;
+}
+.masthead-note { margin-left: auto; font-size: .82rem; color: var(--ink-faint); }
+
+/* ── Hero ── */
+.hero { padding: 68px 0 44px; }
+.hero .eyebrow { display: block; margin-bottom: 18px; }
+.hero p.lede {
+  margin-top: 20px; font-size: 1.09rem; color: var(--ink-soft); max-width: 56ch;
+}
+
+.facts {
+  display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px;
+  list-style: none; padding: 0;
+}
+.facts li {
+  font-size: .84rem; color: var(--ink-soft);
+  border: 1px solid var(--line); border-radius: 100px;
+  padding: 5px 13px; background: var(--surface);
+}
+
+/* ── Download cards ── */
+.downloads {
+  display: grid; gap: 14px; margin: 44px 0 12px;
+  grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
+}
+.card {
+  display: flex; flex-direction: column; gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 22px;
+  box-shadow: var(--shadow);
+}
+.card-os { display: flex; align-items: baseline; gap: 9px; }
+.card-os .plat { font-family: Archivo, sans-serif; font-weight: 700; font-size: 1.02rem; letter-spacing: -.015em; }
+.card-os .chip {
+  font-family: "IBM Plex Mono", monospace; font-size: .7rem; color: var(--ink-faint);
+}
+.card-for { font-size: .87rem; color: var(--ink-soft); flex: 1; }
+
+.dl {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  font-family: Archivo, sans-serif; font-weight: 600; font-size: .93rem;
+  text-decoration: none;
+  background: var(--accent); color: #fff;
+  border: 1px solid transparent; border-radius: 7px;
+  padding: 11px 15px;
+  transition: background .14s ease, transform .14s ease;
+}
+.dl:hover { background: var(--accent-hot); }
+.dl:active { transform: translateY(1px); }
+.dl .size { font-family: "IBM Plex Mono", monospace; font-weight: 400; font-size: .78rem; opacity: .82; }
+.dl[aria-disabled="true"] {
+  background: var(--surface-alt); color: var(--ink-faint);
+  border-color: var(--line); cursor: not-allowed; pointer-events: none;
+}
+
+.unset-note {
+  display: none; gap: 10px; align-items: flex-start;
+  margin: 4px 0 0; padding: 13px 16px;
+  border: 1px dashed var(--warn-line); background: var(--warn-wash);
+  border-radius: 8px; font-size: .86rem; color: var(--warn);
+}
+.unset-note.show { display: flex; }
+.unset-note code { font-family: "IBM Plex Mono", monospace; font-size: .82em; }
+
+/* ── Sections ── */
+section.band { border-top: 1px solid var(--line); padding: 56px 0; }
+.section-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }
+
+/* ── Platform switch ── */
+.switch {
+  display: inline-flex; margin: 22px 0 30px;
+  background: var(--surface-alt); border: 1px solid var(--line);
+  border-radius: 8px; padding: 3px; gap: 3px;
+}
+.switch button {
+  font-family: "IBM Plex Sans", sans-serif; font-size: .87rem; font-weight: 500;
+  color: var(--ink-soft); background: none; border: 0; cursor: pointer;
+  padding: 7px 16px; border-radius: 6px;
+}
+.switch button[aria-selected="true"] {
+  background: var(--surface); color: var(--ink);
+  box-shadow: 0 1px 2px rgba(0,0,0,.09); font-weight: 600;
+}
+
+/* ── Steps: numbered because install genuinely is a sequence ── */
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+/* An author `display` rule outranks the UA sheet's [hidden]{display:none},
+   so the inactive tab panel would render anyway. Restore it explicitly. */
+.steps[hidden] { display: none; }
+.steps > li {
+  display: grid; grid-template-columns: 34px 1fr; gap: 18px;
+  padding-bottom: 26px;
+}
+.steps > li:not(:last-child) .num-rail::after {
+  content: ""; position: absolute; left: 50%; top: 34px; bottom: -26px;
+  width: 1px; background: var(--line); transform: translateX(-.5px);
+}
+.num-rail { position: relative; }
+.num {
+  display: grid; place-items: center;
+  width: 34px; height: 34px; border-radius: 50%;
+  font-family: "IBM Plex Mono", monospace; font-size: .84rem; font-weight: 500;
+  color: var(--accent); background: var(--accent-wash);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.step-body { padding-top: 5px; display: flex; flex-direction: column; gap: 11px; }
+.step-body p { color: var(--ink-soft); font-size: .95rem; max-width: 60ch; }
+.step-body strong { color: var(--ink); font-weight: 600; }
+
+kbd {
+  font-family: "IBM Plex Mono", monospace; font-size: .8em;
+  background: var(--surface-alt); border: 1px solid var(--line-strong);
+  border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px; color: var(--ink);
+}
+
+/* ── The Gatekeeper moment — the page's real payload ── */
+.gk { display: grid; gap: 0; grid-template-columns: minmax(0, 250px) minmax(0, 1fr); align-items: stretch; }
+@media (max-width: 620px) { .gk { grid-template-columns: 1fr; } }
+
+.gk-dialog {
+  background: var(--surface-alt);
+  border: 1px solid var(--line); border-radius: 10px 0 0 10px;
+  padding: 22px 20px; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 9px;
+}
+@media (max-width: 620px) { .gk-dialog { border-radius: 10px 10px 0 0; } }
+.gk-icon {
+  width: 44px; height: 44px; border-radius: 10px;
+  background: var(--warn-wash); border: 1px solid var(--warn-line);
+  display: grid; place-items: center; color: var(--warn);
+  font-family: Archivo, sans-serif; font-weight: 700; font-size: 1.4rem;
+}
+.gk-title { font-family: "IBM Plex Sans", sans-serif; font-weight: 600; font-size: .89rem; line-height: 1.4; }
+.gk-sub { font-size: .78rem; color: var(--ink-faint); }
+.gk-btn {
+  margin-top: 4px; font-size: .78rem; font-weight: 500;
+  border: 1px solid var(--line-strong); border-radius: 5px;
+  padding: 4px 18px; color: var(--ink-soft); background: var(--surface);
+}
+.gk-explain {
+  background: var(--surface); border: 1px solid var(--line); border-left: 0;
+  border-radius: 0 10px 10px 0; padding: 24px;
+  display: flex; flex-direction: column; gap: 13px;
+}
+@media (max-width: 620px) { .gk-explain { border-left: 1px solid var(--line); border-top: 0; border-radius: 0 0 10px 10px; } }
+.gk-explain p { font-size: .93rem; color: var(--ink-soft); }
+
+.cmd {
+  display: flex; align-items: stretch; gap: 0;
+  border: 1px solid var(--line-strong); border-radius: 7px; overflow: hidden;
+  background: var(--surface-alt);
+}
+.cmd code {
+  flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap;
+  font-family: "IBM Plex Mono", monospace; font-size: .82rem; color: var(--ink);
+  padding: 11px 13px;
+}
+.cmd button {
+  flex: none; border: 0; border-left: 1px solid var(--line-strong);
+  background: var(--surface); color: var(--ink-soft); cursor: pointer;
+  font-family: "IBM Plex Sans", sans-serif; font-size: .78rem; font-weight: 600;
+  padding: 0 15px;
+}
+.cmd button:hover { color: var(--accent); }
+
+/* ── Known issue / footer ── */
+.notice {
+  display: flex; gap: 13px; align-items: flex-start;
+  border: 1px solid var(--line); border-left: 3px solid var(--warn);
+  background: var(--surface); border-radius: 0 8px 8px 0;
+  padding: 16px 18px; margin-top: 12px;
+}
+.notice .n-label {
+  font-family: "IBM Plex Mono", monospace; font-size: .68rem; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--warn); flex: none; padding-top: 3px;
+}
+.notice p { font-size: .9rem; color: var(--ink-soft); }
+
+footer {
+  border-top: 1px solid var(--line); background: var(--surface);
+  padding: 30px 0 44px; margin-top: 8px;
+}
+footer p { font-size: .84rem; color: var(--ink-faint); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+</style>
+</head>
+<body>
+<header class="masthead">
+  <div class="wrap masthead-in">
+    <span class="mark">Fa<span>s</span>tt</span>
+    <span class="version">v0.2.0</span>
+    <span class="masthead-note">Internal build — agency use</span>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <div class="hero">
+      <span class="eyebrow">Desktop app · macOS &amp; Windows</span>
+      <h1>Your inbox, in a window that never sleeps.</h1>
+      <p class="lede">
+        The same Fastt you use in the browser, as a real Mac and Windows app. Browsers
+        throttle background tabs and quietly drop the live connection — a window doesn't.
+        Messages keep arriving while you're in another app, and the unread count sits on
+        your dock.
+      </p>
+      <ul class="facts">
+        <li>Live connection stays open in the background</li>
+        <li>Unread count on the dock &amp; taskbar</li>
+        <li>Sign in to OnlyFans without the Chrome extension</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="downloads">
+      <div class="card">
+        <div class="card-os"><span class="plat">macOS</span><span class="chip">Apple&nbsp;Silicon</span></div>
+        <p class="card-for">Any Mac with an M1, M2, M3 or M4 chip — that's every Mac sold since late 2020.</p>
+        <a class="dl" data-key="macArm" href="#"><span>Download&nbsp;.dmg</span><span class="size">120 MB</span></a>
+      </div>
+      <div class="card">
+        <div class="card-os"><span class="plat">macOS</span><span class="chip">Intel</span></div>
+        <p class="card-for">Older Macs with an Intel processor, roughly 2020 and earlier.</p>
+        <a class="dl" data-key="macIntel" href="#"><span>Download&nbsp;.dmg</span><span class="size">121 MB</span></a>
+      </div>
+      <div class="card">
+        <div class="card-os"><span class="plat">Windows</span><span class="chip">10&nbsp;/&nbsp;11 · 64-bit</span></div>
+        <p class="card-for">Standard installer. Installs for your user account — no admin password needed.</p>
+        <a class="dl" data-key="windows" href="#"><span>Download&nbsp;.exe</span><span class="size">104 MB</span></a>
+      </div>
+    </div>
+
+    <div class="unset-note" id="unsetNote">
+      <strong>Links not set yet.</strong>
+      <span>Upload the installers to Google Drive, share each one as
+      <em>Anyone with the link</em>, then paste the three file IDs into
+      <code>DRIVE_IDS</code> at the top of this page's source.</span>
+    </div>
+
+    <p class="prose" style="margin-top:22px;font-size:.9rem;color:var(--ink-soft)">
+      <strong style="color:var(--ink)">Not sure which Mac you have?</strong>
+      Apple menu → About This Mac. If it says <strong style="color:var(--ink)">Chip</strong>, take Apple Silicon.
+      If it says <strong style="color:var(--ink)">Processor</strong>, take Intel.
+    </p>
+  </div>
+
+  <section class="band" id="install">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Installing</h2>
+        <span class="eyebrow">Four steps, about two minutes</span>
+      </div>
+
+      <div class="switch" role="tablist" aria-label="Choose your operating system">
+        <button role="tab" id="tab-mac" aria-controls="steps-mac" aria-selected="true">macOS</button>
+        <button role="tab" id="tab-win" aria-controls="steps-win" aria-selected="false">Windows</button>
+      </div>
+
+      <ol class="steps" id="steps-mac" role="tabpanel" aria-labelledby="tab-mac">
+        <li>
+          <div class="num-rail"><span class="num">1</span></div>
+          <div class="step-body">
+            <h3>Download and open the .dmg</h3>
+            <p>Google Drive will warn that it can't scan a file this large. That's a size
+            limit on Drive's scanner, not a finding — choose <strong>Download anyway</strong>.</p>
+          </div>
+        </li>
+        <li>
+          <div class="num-rail"><span class="num">2</span></div>
+          <div class="step-body">
+            <h3>Drag Fastt into Applications</h3>
+            <p>The window that opens shows exactly that. Then eject the disk image.</p>
+          </div>
+        </li>
+        <li>
+          <div class="num-rail"><span class="num">3</span></div>
+          <div class="step-body">
+            <h3>Open it — and expect macOS to refuse the first time</h3>
+            <div class="gk">
+              <div class="gk-dialog">
+                <div class="gk-icon">!</div>
+                <div class="gk-title">"Fastt" is damaged and can't be opened.</div>
+                <div class="gk-sub">You should move it to the Trash.</div>
+                <div class="gk-btn">Move to Trash</div>
+              </div>
+              <div class="gk-explain">
+                <p><strong style="color:var(--ink)">The app is not damaged.</strong> This build
+                isn't signed with an Apple Developer certificate, and macOS shows this same
+                message for every unsigned app it hasn't seen before. Click
+                <strong style="color:var(--ink)">Cancel</strong> — never Move to Trash.</p>
+                <p>Open <strong style="color:var(--ink)">Terminal</strong> (⌘-Space, type "Terminal"),
+                paste this line, press <kbd>Return</kbd>, then open Fastt again:</p>
+                <div class="cmd">
+                  <code id="xattrCmd">xattr -dr com.apple.quarantine /Applications/Fastt.app</code>
+                  <button type="button" id="copyBtn">Copy</button>
+                </div>
+                <p style="font-size:.86rem">You only ever do this once, on this one app.</p>
+              </div>
+            </div>
+          </div>
+        </li>
+        <li>
+          <div class="num-rail"><span class="num">4</span></div>
+          <div class="step-body">
+            <h3>Sign in</h3>
+            <p>First launch asks for a <strong>Server URL</strong> — leave it at
+            <code style="font-family:'IBM Plex Mono',monospace;font-size:.86em">https://fastt.lol</code>
+            — and your <strong>access token</strong>, which is the part after
+            <code style="font-family:'IBM Plex Mono',monospace;font-size:.86em">?t=</code>
+            in your Fastt link. After that the app asks for your normal username and
+            password, same as the website.</p>
+          </div>
+        </li>
+      </ol>
+
+      <ol class="steps" id="steps-win" role="tabpanel" aria-labelledby="tab-win" hidden>
+        <li>
+          <div class="num-rail"><span class="num">1</span></div>
+          <div class="step-body">
+            <h3>Download and run the installer</h3>
+            <p>Google Drive will warn that it can't scan a file this large. That's a size
+            limit on Drive's scanner, not a finding — choose <strong>Download anyway</strong>.</p>
+          </div>
+        </li>
+        <li>
+          <div class="num-rail"><span class="num">2</span></div>
+          <div class="step-body">
+            <h3>Get past the blue SmartScreen window</h3>
+            <p>Windows shows <strong>"Windows protected your PC"</strong> for any installer it
+            hasn't seen many times before. Click the small
+            <strong>More info</strong> link, then <strong>Run anyway</strong>.</p>
+          </div>
+        </li>
+        <li>
+          <div class="num-rail"><span class="num">3</span></div>
+          <div class="step-body">
+            <h3>Let it install</h3>
+            <p>It installs for your account only, so there's no admin password prompt.
+            Fastt lands in your Start menu and on the desktop.</p>
+          </div>
+        </li>
+        <li>
+          <div class="num-rail"><span class="num">4</span></div>
+          <div class="step-body">
+            <h3>Sign in</h3>
+            <p>First launch asks for a <strong>Server URL</strong> — leave it at
+            <code style="font-family:'IBM Plex Mono',monospace;font-size:.86em">https://fastt.lol</code>
+            — and your <strong>access token</strong>, which is the part after
+            <code style="font-family:'IBM Plex Mono',monospace;font-size:.86em">?t=</code>
+            in your Fastt link. After that the app asks for your normal username and
+            password, same as the website.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="band" id="known">
+    <div class="wrap prose">
+      <div class="section-head"><h2>Before you rely on it</h2></div>
+      <div class="notice">
+        <span class="n-label">Known</span>
+        <p><strong style="color:var(--ink)">Desktop notification pop-ups don't work yet.</strong>
+        The unread count on the dock and taskbar is accurate and updates live — but the
+        banner that slides in from the corner doesn't appear. Keep an eye on the badge.
+        We're still on this one.</p>
+      </div>
+      <div class="notice">
+        <span class="n-label">Note</span>
+        <p><strong style="color:var(--ink)">The app doesn't update itself.</strong>
+        When there's a new version you'll get a fresh link — install it over the top,
+        no need to uninstall first. Your sign-in is kept.</p>
+      </div>
+      <div class="notice">
+        <span class="n-label">Careful</span>
+        <p><strong style="color:var(--ink)">For adding OnlyFans accounts, the Chrome
+        extension is still the safer route.</strong> The app can capture a login itself
+        (Menu → Add OnlyFans Account), but that path hasn't been proven on a real account
+        yet. For an account that matters, keep using the extension.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap"><p>Fastt Desktop v0.2.0 · Built 21 August 2026 · Loads the live app from fastt.lol — it stores no messages on your computer.</p></div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  /* Large Drive files (>100 MB) can't use the classic uc?export=download URL —
+     that returns the virus-scan interstitial as HTML instead of the bytes.
+     drive.usercontent.google.com with confirm=t is the endpoint that streams. */
+  function driveUrl(id) {
+    return "https://drive.usercontent.google.com/download?id=" +
+      encodeURIComponent(id) + "&export=download&confirm=t";
+  }
+
+  var ids = (typeof DRIVE_IDS === "object" && DRIVE_IDS) || {};
+  var anyUnset = false;
+
+  document.querySelectorAll(".dl").forEach(function (a) {
+    var id = ids[a.dataset.key];
+    if (!id || id.indexOf("PASTE") === 0) {
+      anyUnset = true;
+      a.setAttribute("aria-disabled", "true");
+      a.setAttribute("href", "#");
+      a.querySelector("span").textContent = "Link not set";
+      return;
+    }
+    a.setAttribute("href", driveUrl(id));
+  });
+  if (anyUnset) document.getElementById("unsetNote").classList.add("show");
+
+  /* OS detection picks the opening tab only. Both panels stay one click away —
+     a wrong guess must never hide the instructions someone needs. */
+  var tabMac = document.getElementById("tab-mac");
+  var tabWin = document.getElementById("tab-win");
+  var panelMac = document.getElementById("steps-mac");
+  var panelWin = document.getElementById("steps-win");
+
+  function select(isMac) {
+    tabMac.setAttribute("aria-selected", String(isMac));
+    tabWin.setAttribute("aria-selected", String(!isMac));
+    panelMac.hidden = !isMac;
+    panelWin.hidden = isMac;
+  }
+  tabMac.addEventListener("click", function () { select(true); });
+  tabWin.addEventListener("click", function () { select(false); });
+
+  var ua = navigator.userAgent || "";
+  if (/Windows|Win32|Win64/i.test(ua)) select(false);
+
+  var btn = document.getElementById("copyBtn");
+  btn.addEventListener("click", function () {
+    var text = document.getElementById("xattrCmd").textContent;
+    function ok() { btn.textContent = "Copied"; setTimeout(function () { btn.textContent = "Copy"; }, 1600); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(ok, select_fallback);
+    } else { select_fallback(); }
+    function select_fallback() {
+      var r = document.createRange();
+      r.selectNodeContents(document.getElementById("xattrCmd"));
+      var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      btn.textContent = "Press ⌘C";
+      setTimeout(function () { btn.textContent = "Copy"; }, 2400);
+    }
+  });
+})();
+</script>
+</body>
+</html>

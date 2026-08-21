@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Fastt — Settings</title>
+    <link rel="stylesheet" href="local.css" />
+  </head>
+  <body>
+    <div class="card">
+      <h1>Connect to Fastt</h1>
+      <p class="sub">
+        Enter your Fastt server and your share link token. You only need to do this once —
+        the app remembers it.
+      </p>
+      <p class="sub">
+        After this, Fastt may ask you to sign in with your own username and
+        password. That is a separate, normal step — the token below only gets
+        the app to the door.
+      </p>
+
+      <label for="url">Server URL</label>
+      <input id="url" type="url" spellcheck="false" autocomplete="off" placeholder="https://fastt.lol" />
+
+      <label for="token">Share token</label>
+      <input id="token" type="password" spellcheck="false" autocomplete="off" placeholder="paste your token" />
+      <div class="hint" id="tokenHint">This is the <code>t=</code> value from your Fastt link.</div>
+
+      <div class="error" id="err"></div>
+
+      <div class="row">
+        <button id="quit" type="button">Quit</button>
+        <button id="save" class="primary" type="button">Save &amp; Open</button>
+      </div>
+    </div>
+    <script src="config.js"></script>
+  </body>
+</html>

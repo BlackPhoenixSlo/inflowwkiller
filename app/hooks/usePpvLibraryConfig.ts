@@ -52,6 +52,20 @@ export interface PpvLibraryConfig {
    *  Defaults 300/20000 ($3–$200). Authored base prices are kept as typed. */
   price_min_cents?: number;
   price_max_cents?: number;
+  /** Whale gate: fans at or above this lifetime spend (cents) leave the PPV lane
+   *  entirely — no tier send, and they stay in the broadcast's exclude set, so
+   *  they get nothing from this automation. 0/absent = OFF. Same key name as the
+   *  gate in ai_chatter / autoreply / nudge_online. */
+  max_lifetime_spend_cents?: number;
+  /** The "Send to everyone" audience, as OF `userLists` values: the built-in
+   *  names "fans"/"following" and/or custom folder ids, as strings.
+   *  ABSENT/null = the historical fans + following. An EMPTY ARRAY is a real
+   *  choice ("reach nobody new") and must never be coerced back to the default. */
+  broadcast_lists?: string[] | null;
+  /** Folders that broadcast never reaches, as OF list ids. IDS ONLY — OF
+   *  silently ignores "fans"/"following" inside `excludedLists`, so the server
+   *  422s rather than storing an exclusion that cannot work. */
+  broadcast_exclude_lists?: number[];
   ppvs?: PpvItem[];
 }
 
@@ -66,6 +80,10 @@ export interface PpvPreview {
   account_id: string;
   total_fans: number;
   cells: PpvPreviewCell[];
+  /** The whale gate the preview was computed under (cents), or null when off.
+   *  Echoed back by the server so the readout can name the ceiling without
+   *  re-deriving the normalization the validator just applied. */
+  spend_cap_cents?: number | null;
 }
 
 export interface PriceMatrix {
@@ -123,6 +141,10 @@ export interface PpvPreviewArgs {
    *  save would send. Absent → the stored config's limits. */
   priceMinCents?: number;
   priceMaxCents?: number;
+  /** DRAFT whale gate (cents) — the number the operator is choosing RIGHT NOW.
+   *  0 is meaningful ("preview with the cap off"), so it must be sent, not
+   *  treated as absent; only `undefined` means "read the stored config". */
+  maxLifetimeSpendCents?: number;
 }
 
 /** Dry-run: how the account's current fans split into price cells (no send). */
@@ -163,12 +185,18 @@ export function useSuggestPpvs(accountId: string | null) {
 
 export function usePpvPreview(accountId: string | null) {
   return useMutation<PpvPreview, Error, PpvPreviewArgs>({
-    mutationFn: ({ basePriceCents, priceMinCents, priceMaxCents }) =>
+    mutationFn: ({ basePriceCents, priceMinCents, priceMaxCents,
+                   maxLifetimeSpendCents }) =>
       relay.post(`/admin/ppv-library-config/preview`, {
         account_id: accountId,
         base_price_cents: basePriceCents,
         ...(priceMinCents != null ? { price_min_cents: priceMinCents } : {}),
         ...(priceMaxCents != null ? { price_max_cents: priceMaxCents } : {}),
+        // `!== undefined`, not `!= null`: 0 is the operator asking to preview
+        // the lane with the gate OFF, and the tab's own copy promises that
+        // preview reflects the UNSAVED value.
+        ...(maxLifetimeSpendCents !== undefined
+          ? { max_lifetime_spend_cents: maxLifetimeSpendCents } : {}),
       }),
   });
 }

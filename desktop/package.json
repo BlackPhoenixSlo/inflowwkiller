@@ -1,0 +1,77 @@
+{
+  "name": "fastt-desktop",
+  "productName": "Fastt",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Fastt desktop shell — a thin, secure Electron window onto the hosted Fastt web UI. Ships the existing frontend as a downloadable Mac/Windows app WITHOUT touching app/ or service/.",
+  "author": "Fastt",
+  "license": "UNLICENSED",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "lint:syntax": "node --check main.js && node --check preload.js && node --check config-preload.js && node --check lib/store.js && node --check lib/badge.js && node --check lib/signing.js && node --check renderer/config.js && node --check renderer/error.js && node --check renderer/capture.js && node --check capture/of-capture.js && node --check capture/of-interceptor.js && node --check capture/status-preload.js",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "pack": "electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "lol.fastt.desktop",
+    "productName": "Fastt",
+    "copyright": "Copyright © 2026 Fastt",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "config-preload.js",
+      "lib/**/*",
+      "capture/**/*",
+      "renderer/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.business",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "identity": null,
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "icon": "build/icon.icns"
+    },
+    "dmg": {
+      "writeUpdateInfo": false
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

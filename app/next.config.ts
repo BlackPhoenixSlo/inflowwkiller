@@ -89,6 +89,11 @@ const nextConfig: NextConfig = {
       // /t/<slug>; the relay records the click and 302s to the target. Must be
       // a top-level rewrite — it's outside the /admin/* prefix.
       { source: "/t/:slug", destination: `${RELAY_URL}/t/:slug` },
+      // Desktop-app download page. Unlike everything above this is served by
+      // Next itself out of `public/download.html` — it is deliberately NOT a
+      // relay path, so it stays reachable with no share token and no login,
+      // which is the whole point: it is linked from the login screens.
+      { source: "/download", destination: "/download.html" },
     ];
   },
   // Skip image optimization for now — OF media URLs are CDN-hosted with

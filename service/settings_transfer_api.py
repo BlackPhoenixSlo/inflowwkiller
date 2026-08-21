@@ -545,6 +545,27 @@ def _sanitize_config_clone(cfg: dict, rep: _Report) -> dict:
         kpath = base + ("ppv_library_config_json", "last_posted_ppv_id")
         rep.visited.add(kpath)
         ppv["last_posted_ppv_id"] = None
+        # OF fan-list ids are PER-ACCOUNT — the same class as the media ids
+        # stripped above. Carried to another model they name a list that does not
+        # exist there, or (worse) a DIFFERENT list; either way OF accepts the send
+        # and the exclusion silently protects nobody. Clear them and say so, the
+        # same way vault FOLDER NAMES get a warning higher up.
+        kpath = base + ("ppv_library_config_json", "broadcast_exclude_lists")
+        rep.visited.add(kpath)
+        if ppv.get("broadcast_exclude_lists"):
+            rep.warnings.append("ppv broadcast list-excludes cleared — OF list ids are "
+                                "per-account; re-pick them on this account")
+        ppv["broadcast_exclude_lists"] = []
+        # broadcast_lists is NOT stripped: its default content is the virtual
+        # names "fans"/"following", which mean the same thing on every account.
+        # A custom LIST ID selected there is per-account, so drop just those.
+        bl = ppv.get("broadcast_lists")
+        if isinstance(bl, list):
+            kept = [x for x in bl if str(x).strip().lower() in ("fans", "following")]
+            if len(kept) != len(bl):
+                rep.warnings.append("ppv broadcast include-lists dropped a per-account "
+                                    "list id — re-pick it on this account")
+            ppv["broadcast_lists"] = kept
 
     # Clone lands QUIET: config-blob enabled flags are consumed by senders /
     # dispatchers outside the rule executor (W7 reads webhook config off the WS
