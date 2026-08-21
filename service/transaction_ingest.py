@@ -76,6 +76,21 @@ _DEFAULT_BACKFILL_DAYS = 90
 _FAIL_BACKOFF_S = 3600                  # auto-pause for 1h after 3 fails
 _PAGE_LIMIT = 100                       # OF max per request
 _BACKFILL_CONCURRENCY = 4               # synthesis review §4
+# Minimum gap between cycles, ALWAYS honoured — the anti-spin floor.
+# Both loops below sleep `interval - elapsed` so the inter-scan GAP stays
+# constant regardless of cycle duration (that fix is why they sleep at end
+# rather than at start). But `max(0.0, ...)` means a cycle that OVERRUNS its
+# interval sleeps zero and re-enters immediately — a hot loop that pegs the
+# CPU and never backs off. It is self-sustaining: the spin starves the event
+# loop and the SQLite writer, which makes the next cycle slower still, so the
+# sleep stays zero forever. Observed 2026-08-21: relay at ~102% CPU on a
+# 2-vCPU box, load 7.48, and every request's `last_seen_at` bump timing out
+# on the 30 s busy_timeout ("database is locked") because the writer never
+# got a gap. Recovery required the backlog to drain by luck.
+# So: overrunning yields the floor, never zero. Fast cycles are unaffected
+# (interval - elapsed is far larger than the floor), so the anti-drift intent
+# is preserved exactly.
+_MIN_CYCLE_GAP_S = 5.0
 _PPV_LINK_LOOKBACK_DAYS = 30
 _FAILS_BEFORE_PAUSE = 3
 # Per-tick orphan-attribution sweep window (see attribution_backfill). Covers
@@ -1465,7 +1480,7 @@ async def start_fast_poll() -> None:
                         "ingest_tx_fast_cycle_account_failed account=%s",
                         aid, exc_info=True)
             elapsed = time.monotonic() - cycle_started
-            await asyncio.sleep(max(0.0, _FAST_TICK_INTERVAL_S - elapsed))
+            await asyncio.sleep(max(_MIN_CYCLE_GAP_S, _FAST_TICK_INTERVAL_S - elapsed))
         except asyncio.CancelledError:
             return
         except Exception:
@@ -1634,7 +1649,7 @@ async def start_supervisor() -> None:
             # 30s fast poll is for — THAT one keeps the online gate.
             if not account_ids:
                 elapsed = time.monotonic() - cycle_started
-                await asyncio.sleep(max(0.0, _TICK_INTERVAL_S - elapsed))
+                await asyncio.sleep(max(_MIN_CYCLE_GAP_S, _TICK_INTERVAL_S - elapsed))
                 continue
             refresh_aids: list[str] = []
             backfill_aids: list[str] = []
@@ -1670,7 +1685,7 @@ async def start_supervisor() -> None:
                 await asyncio.gather(*(_bf(a) for a in backfill_aids))
 
             elapsed = time.monotonic() - cycle_started
-            await asyncio.sleep(max(0.0, _TICK_INTERVAL_S - elapsed))
+            await asyncio.sleep(max(_MIN_CYCLE_GAP_S, _TICK_INTERVAL_S - elapsed))
         except asyncio.CancelledError:
             return
         except Exception:
