@@ -36,34 +36,20 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
-# Every service/*.py that server.py imports at runtime, plus the db/ package.
-# Capture-only modules are excluded via .dockerignore (and not listed here).
-COPY service/__init__.py \
-     service/accounts.py \
-     service/attribution.py \
-     service/capture_session_proxy.py \
-     service/employees.py \
-     service/event_transcoder.py \
-     service/events.py \
-     service/fans.py \
-     service/lists.py \
-     service/live_rev.py \
-     service/messages.py \
-     service/of_client.py \
-     service/of_signer.py \
-     service/of_ws.py \
-     service/posts.py \
-     service/proxies.py \
-     service/relay_cache.py \
-     service/relay_coalesce.py \
-     service/server.py \
-     service/session_bootstrap.py \
-     service/stats.py \
-     service/transaction_ingest.py \
-     service/transactions.py \
-     service/vault.py \
-     service/
-COPY service/db/ service/db/
+# Copy the whole service package in one shot. The synced tree is already
+# curated: dev/live-test drivers (_drive_*/_test_*/_send_*), capture scripts,
+# the test suite, secrets (.session_secret/.chatter_secret) and *.db files are
+# all excluded by the deploy filter and .dockerignore.
+#
+# ⚠️ DO NOT go back to a per-file allowlist. One lived here and crashed boot
+# every time a new module landed; the deploy repo replaced it with this single
+# COPY, that fix was never back-ported, and on 2026-08-21 the first commit to
+# touch this file synced the allowlist back over it — server.py imports 32
+# modules it did not list, so the relay died on `ModuleNotFoundError:
+# account_health` and took fastt-app down with it. The whole automations engine
+# (automation_executor, webhook_dispatch, funnels_api, the automations/ package)
+# has to be in the image, and an allowlist cannot keep up with that by hand.
+COPY service/ service/
 COPY web/ web/
 # The Infloww-skin frontend. server.py mounts it at /infloww from
 # HERE.parent/"ui-redesign"/"infloww-exact" — i.e. /app/ui-redesign/… — and the
