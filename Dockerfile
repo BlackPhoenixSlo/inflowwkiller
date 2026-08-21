@@ -36,15 +36,42 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
-# Copy the whole service package in one shot. This repo is already curated:
-# dev/live-test drivers (_drive_*/_test_*/_send_*), capture scripts, the test
-# suite, secrets (.session_secret/.chatter_secret) and *.db files are all
-# excluded from the tree and from .dockerignore. A single COPY avoids the
-# brittle per-file allowlist that used to crash boot at runtime whenever a new
-# module landed (the whole automations engine — automation_executor,
-# webhook_dispatch, funnels_api, the automations/ package — needs to be here).
-COPY service/ service/
+# Every service/*.py that server.py imports at runtime, plus the db/ package.
+# Capture-only modules are excluded via .dockerignore (and not listed here).
+COPY service/__init__.py \
+     service/accounts.py \
+     service/attribution.py \
+     service/capture_session_proxy.py \
+     service/employees.py \
+     service/event_transcoder.py \
+     service/events.py \
+     service/fans.py \
+     service/lists.py \
+     service/live_rev.py \
+     service/messages.py \
+     service/of_client.py \
+     service/of_signer.py \
+     service/of_ws.py \
+     service/posts.py \
+     service/proxies.py \
+     service/relay_cache.py \
+     service/relay_coalesce.py \
+     service/server.py \
+     service/session_bootstrap.py \
+     service/stats.py \
+     service/transaction_ingest.py \
+     service/transactions.py \
+     service/vault.py \
+     service/
+COPY service/db/ service/db/
 COPY web/ web/
+# The Infloww-skin frontend. server.py mounts it at /infloww from
+# HERE.parent/"ui-redesign"/"infloww-exact" — i.e. /app/ui-redesign/… — and the
+# mount is guarded by `if _INFLOWW_DIR.is_dir()`. Without this COPY the folder is
+# absent in the image, that guard is False, and the whole 54-page skin 404s while
+# the relay boots perfectly healthy. It rsyncs to the VPS but never entered the
+# image; that gap made /infloww dark in prod until 2026-08-21.
+COPY ui-redesign/ ui-redesign/
 
 # Persistent state lives outside the image so a rebuild never wipes your
 # auth or your event history. Volume targets:

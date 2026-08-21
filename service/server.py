@@ -8964,3 +8964,10 @@ else:
 _INFLOWW_DIR = HERE.parent / "ui-redesign" / "infloww-exact"
 if _INFLOWW_DIR.is_dir():
     app.mount("/infloww", NoCacheStatic(directory=_INFLOWW_DIR, html=True), name="infloww")
+else:
+    # STATE, not a scolding. The folder is genuinely optional (a deploy may not
+    # ship the skin), so this must not read as an error — but it must be SAID.
+    # Silence here is what let /infloww 404 in prod for a full release while the
+    # relay reported healthy: an absent precondition looked like "nothing to do"
+    # instead of "the feature is off". Its /ui twin above has always logged.
+    log.warning("ui-redesign/infloww-exact not found at %s — /infloww skin NOT mounted", _INFLOWW_DIR)
