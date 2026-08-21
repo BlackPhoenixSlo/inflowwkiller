@@ -89,6 +89,21 @@ services:
       # var reaches nothing. Set the value in the COMPOSE-level env — ~/fastt/.env
       # beside this file — not in service/.env, which the container never sees.
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      # Cookie-signing HMAC keys: auth.py (friend sessions) and chatters.py
+      # (chatter sessions). Each falls back to a random key written to
+      # service/.session_secret / .chatter_secret — and BOTH of those are
+      # .dockerignore'd and bind-mounted nowhere, so the fallback lives only in
+      # the container's writable layer. Every `up -d --build` therefore mints a
+      # NEW key and signs every user out, which is exactly what the advertised
+      # "re-run the one-liner to update" path does. Naming them here is what
+      # makes a value in the compose-level .env reach the process; the on-VPS
+      # installer has generated both into that file since day one and they have
+      # been going nowhere.
+      # They lived in the deploy repo's compose and never in this one, so the
+      # 2026-07-21 sync quietly overwrote them out of it — the same repo-only-fix
+      # clobber that took the Dockerfile's whole-package COPY down on 2026-08-21.
+      SESSION_SECRET: "${SESSION_SECRET:-}"
+      CHATTER_SESSION_SECRET: "${CHATTER_SESSION_SECRET:-}"
     volumes:
       # File bind-mount for the SQLite event store. WAL + SHM sidecars
       # are created in /app/service/ inside the container; on `docker

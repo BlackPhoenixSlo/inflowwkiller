@@ -105,9 +105,12 @@ Random `trycloudflare.com` URL that changes on every restart. Works on **any** V
 > only need the n8n plan (or to install Traefik/Caddy yourself) for the _stable_
 > https in options 2–3.
 
-Other prefixes: `DEEPSEEK_API_KEY=sk-…` (bake in an AI key — optional, dashboard
-runs without it), `PORT=8080` (different host port for option 1), `REPO_URL=` /
-`BRANCH=` (deploy a fork), `DIR=` (install path).
+Other prefixes: `DEEPSEEK_API_KEY=sk-…` (bake in the **house** AI key — optional,
+dashboard runs without it; note that the account you capture is owned by your
+login and takes its key from **Setup → Your AI keys** in the dashboard, not from
+`.env`, which is spent only on accounts nobody owns), `PORT=8080` (different
+host port for option 1), `REPO_URL=` / `BRANCH=` (deploy a fork), `DIR=`
+(install path).
 
 ### From your laptop, over SSH (alternative)
 
@@ -267,7 +270,7 @@ Dockerfile, docker-compose.yml, requirements.txt
 
 ```bash
 tar czf fastt-backup-$(date +%F).tgz \
-  service/sessions service/proxies.json service/chatterly.db
+  service/sessions service/proxies.json service/chatterly.db service/secrets
 ```
 
 Drop the tarball back into a fresh clone and you are running again — no
