@@ -34,6 +34,13 @@ each id must be an int or a digit string. Unknown keys pass through untouched
 (forward-compat: the seeded funnels carry a `trigger` flag and legacy
 vault_folder/media_indices on steps that the executor ignores).
 
+Either shape may carry an OPTIONAL `next` map that turns the linear walker into a
+BRANCHING storyline — reply_mass_funnel.resolve_next reads it to pick the step
+after this one from the fan's reply:
+  {"next": {"bought": 5, "ignored": 2, "keyword": {"more": 3}, "default": 3}}
+Every target is a step NUMBER and must reference an existing step (else 422).
+ABSENT `next` is the classic +1 advance, so every existing funnel is unaffected.
+
 The opener-media columns (vault_folder/media_indices/opening_*) are left
 writable + nullable but NOT depended on: send_mass_message.run uses only
 funnel.opening_message (text) and takes opener media from the send-time
@@ -91,6 +98,60 @@ def _is_generated(step: dict) -> bool:
                                          and step["prompt"].strip()))
 
 
+# The keys reply_mass_funnel.resolve_next understands on a step's `next` map.
+_NEXT_KEYS = frozenset({"bought", "ignored", "default", "keyword"})
+
+
+def _validate_next(idx: int, step: dict) -> None:
+    """Shape-check an OPTIONAL `next` branch map — the storyline routing
+    reply_mass_funnel.resolve_next reads to pick the step after this one
+    ({"bought": n, "ignored": n, "default": n, "keyword": {word: n}}). Every
+    target is a STEP NUMBER (validated to reference a real step across the whole
+    funnel in _validate_steps). ABSENT `next` → the classic linear +1 walk, so
+    an existing funnel is unaffected. Only the shape is checked here."""
+    nxt = step.get("next")
+    if nxt is None:
+        return
+    if not isinstance(nxt, dict):
+        raise HTTPException(422, f"step[{idx}].next must be an object")
+    for k in nxt:
+        if k not in _NEXT_KEYS:
+            raise HTTPException(
+                422, f"step[{idx}].next has unknown key {k!r} "
+                     "(allowed: bought, ignored, default, keyword)")
+    for k in ("bought", "ignored", "default"):
+        if k in nxt:
+            _whole_int(f"step[{idx}].next.{k}", nxt[k])
+    if "keyword" in nxt:
+        kw = nxt["keyword"]
+        if not isinstance(kw, dict) or not kw:
+            raise HTTPException(
+                422, f"step[{idx}].next.keyword must be a non-empty object "
+                     "of {{word: step}}")
+        for word, target in kw.items():
+            if not str(word).strip():
+                raise HTTPException(422, f"step[{idx}].next.keyword has a blank keyword")
+            _whole_int(f"step[{idx}].next.keyword[{word!r}]", target)
+
+
+def _next_targets(step: dict) -> list[tuple[str, int]]:
+    """(label, target-step-number) pairs a validated `next` routes to — used to
+    check every target references an existing step. Assumes _validate_next has
+    already run (values are whole ints)."""
+    nxt = step.get("next")
+    if not isinstance(nxt, dict):
+        return []
+    out: list[tuple[str, int]] = []
+    for k in ("bought", "ignored", "default"):
+        if k in nxt:
+            out.append((k, int(nxt[k])))
+    kw = nxt.get("keyword")
+    if isinstance(kw, dict):
+        for word, target in kw.items():
+            out.append((f"keyword[{word!r}]", int(target)))
+    return out
+
+
 def _validate_intervals(idx: int, step: dict) -> None:
     """`check_intervals_min`, when present, must be a non-empty list of positive
     ints (the reply-poll cadence). Absent → reply_mass_funnel uses its [2,4,10]
@@ -144,6 +205,11 @@ def _validate_step(idx: int, step: Any) -> dict:
     else:
         _validate_intervals(idx, step)
 
+    # Optional branching map — allowed on either shape (a PPV step may route to a
+    # follow-up on purchase, a reply step on a keyword). Target existence is
+    # checked across all steps once they're collected (_validate_steps).
+    _validate_next(idx, step)
+
     return step
 
 
@@ -153,6 +219,16 @@ def _validate_steps(steps: Any) -> list[dict]:
     if not isinstance(steps, list):
         raise HTTPException(422, "steps must be a list")
     out = [_validate_step(i, st) for i, st in enumerate(steps)]
+    # Cross-step: every `next` branch target must reference an EXISTING step
+    # number (the funnel numbers steps via the `step` field). A dangling target
+    # would strand a fan mid-storyline, so reject the whole funnel with a 422.
+    step_numbers = {int(st["step"]) for st in out}
+    for i, st in enumerate(out):
+        for label, target in _next_targets(st):
+            if target not in step_numbers:
+                raise HTTPException(
+                    422, f"step[{i}].next.{label} → step {target} references no "
+                         "existing step")
     # Round-trips cleanly (rejects NaN/Infinity and non-serialisable values).
     try:
         json.dumps(out)

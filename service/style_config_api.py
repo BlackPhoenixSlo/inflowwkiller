@@ -87,7 +87,7 @@ def _defaults() -> dict[str, Any]:
     out[SELL_CUSTOMS_KEY] = False
     # Cat-sticker reaction pack — DEFAULT ON (see load_cat_stickers_flag).
     out[CAT_STICKERS_KEY] = True
-    # Sticker rate knobs — numeric (see load_cat_sticker_tuning).
+    # Sticker rate knobs — numeric (see cat_stickers.load_cat_sticker_config).
     out.update({k: d for k, (d, _) in _NUMERIC_KNOBS.items()})
     # Pins — both OFF, and NOT tri-state (mirrors _pins.load_flags exactly).
     out[PINS_ENABLED_KEY] = False

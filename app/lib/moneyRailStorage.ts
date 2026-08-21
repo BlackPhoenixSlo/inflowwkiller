@@ -19,7 +19,10 @@ export const SETTINGS_KEY = "chatterly:money-rail:settings:v1";
 export const SMALL_ROW_CHOICES = [0, 1, 2, 3, 4] as const;
 export const BIG_ROW_CHOICES = [5, 6, 7, 8] as const;
 
-const SURFACE_VALUES = ["inbox", "popup", "group", "other"] as const;
+/** The canonical surface universe — exported so the ⚙ picker derives its
+ *  checkboxes from THIS list (a fifth surface added here is a compile error
+ *  at the picker's label map, not a silently missing checkbox). */
+export const SURFACE_VALUES = ["inbox", "popup", "group", "other"] as const;
 
 /** The rail is mounted once in the root layout, but the same dock in the
  *  inbox, a chat pop-out, the group tab and everything else are different
@@ -28,7 +31,7 @@ const SURFACE_VALUES = ["inbox", "popup", "group", "other"] as const;
  *  globally. "other" is every non-chat page (Setup, Automations, Stats, …):
  *  one bucket, because none of them is a chatting surface — it exists so the
  *  rail can be kept on the chat surfaces but off the admin ones. */
-export type Surface = "inbox" | "popup" | "group" | "other";
+export type Surface = (typeof SURFACE_VALUES)[number];
 
 export function surfaceOf(pathname: string | null): Surface {
   if (pathname?.startsWith("/group")) return "group";

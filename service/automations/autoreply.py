@@ -75,10 +75,13 @@ from ._common import (
     recent_payer_fans, resolve_fan_name, resolve_model, should_skip_muted_creator,
     skip_unreachable_fan, typing_delay_seconds,
 )
+from ._wordfilter import (  # compliance word filter
+    banned_hit_summary, filter_banned, load_banned_words,
+)
+from ._clock import clock_block, clock_line, load_clock_tz
 from automations._outbound import finalize_draft
 from .welcome_chatter_for_info import (_is_info_complete, _strip_html,
-                         split_for_bubbles, _dedupe_lead_reaction,
-                         _clock_line, _load_clock_tz)
+                         split_for_bubbles, _dedupe_lead_reaction)
 
 log = logging.getLogger("of-relay.automation.autoreply")
 
@@ -264,17 +267,15 @@ def _build_messages(persona: str, f: Fan, history: list[tuple[str, str]],
             f"{NO_NARRATION_RULE}"
         )
 
-    # The prompt clock ("" when the account has no tz configured → byte-equal
-    # prompt) — same block as welcome_chatter_for_info. A model with no clock invents one.
-    clock_block = (
-        f"RIGHT NOW for you it is {clock} — never claim a different time of "
-        "day.\n\n" if clock else "")
+    # The prompt clock (clock_block: "" when the account has no tz configured →
+    # byte-equal prompt) — same block as welcome_chatter_for_info. A model with
+    # no clock invents one.
     system = (
         f"{persona}\n"
         "A fan messaged you — reply to his last message like you just got back "
         "to your phone. 100% human, never a bot.\n\n"
         f"{v.painful_texting + chr(10) + chr(10) if painful_on else ''}"
-        f"{clock_block}"
+        f"{clock_block(clock)}"
         f"{directive}\n\n"
         f"{hard_rules}\n"
         f"{ONPLATFORM_GUARDRAIL}\n\n"
@@ -539,7 +540,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     spend = await _spend_and_last_purchase(account_id, cand_ids, win_start)
 
     persona = await _load_persona(account_id)
-    clock_tz = await _load_clock_tz(account_id)  # None ⇒ no clock line in the prompt
+    clock_tz = await load_clock_tz(account_id)  # None ⇒ no clock line in the prompt
+    banned_words, banned_mode = await load_banned_words(account_id)  # compliance word filter
     # Content-ask tip-ask: when a fan asks to SEE content, Auto Convo answers with a
     # natural "tip me $X" line instead of pure keep-warm banter (tip_reward delivers
     # once he tips), NEVER the bare word "tip". Account-level → build once.
@@ -582,7 +584,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     sent = skipped_spend = skipped_cap = skipped_raced = errors = 0
     skipped_restricted = 0   # muted creator / manual "restrict from automations"
     skipped_unreachable = 0  # skip_list 'unreachable' (dead/blocked → send 404s)
-    skipped_spam = 0         # peer-creator promo: creator_we_follow + $0 + blasted
+    skipped_banned = 0       # compliance word filter tripped in "block" mode
+    skipped_spam = 0         # peer-creator promo: creator_we_follow + $0 + no exchange + blasted
     skipped_hot_lead = 0     # tipped/unlocked recently → closer's moment
     skipped_cooldown = 0     # a sibling sender paused him this tick
     skipped_locked = 0       # another sender holds the fan-lease
@@ -718,7 +721,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                    content_ask=content_ask,
                                    sell_signal=signal_on,
                                    tip_ask_block=tip_ask_block,
-                                   painful_on=painful_on, clock=_clock_line(clock_tz),
+                                   painful_on=painful_on, clock=clock_line(clock_tz),
                                    v=v,
                                    custom_owed=_customs.is_owed(f))
             try:
@@ -775,6 +778,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if not parts:
                 errors += 1
                 continue
+            # Compliance word filter — before the nonnative/typo layers
+            # (filter_banned's documented contract), so a typo can't smuggle a
+            # flagged word past the scan.
+            parts, _bw = filter_banned(parts, banned_words, banned_mode)
+            if parts is None:
+                skipped_banned += 1
+                log.warning("autoreply BLOCKED reply — banned word(s) %r account=%s fan=%s",
+                            banned_hit_summary(_bw), account_id, fid)
+                continue
+            if _bw:
+                log.info("autoreply masked banned word(s) %r account=%s fan=%s",
+                         banned_hit_summary(_bw), account_id, fid)
             name_protect = [n for n in (f.real_name, f.generated_nickname,
                                         f.of_display_name) if n]
             if nonnative_on:  # opt-in: deterministic non-native misspellings (always)
@@ -866,7 +881,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "skipped_raced": skipped_raced, "skipped_restricted": skipped_restricted,
             "skipped_unreachable": skipped_unreachable, "skipped_spam": skipped_spam,
             "skipped_hot_lead": skipped_hot_lead, "skipped_cooldown": skipped_cooldown,
-            "skipped_locked": skipped_locked,
+            "skipped_locked": skipped_locked, "skipped_banned": skipped_banned,
             **lane.stats,
             "errors": errors, "dry_run": dry_run, "model": model}
 

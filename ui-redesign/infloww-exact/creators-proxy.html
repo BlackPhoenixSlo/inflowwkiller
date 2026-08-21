@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>Infloww — Custom proxy</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -417,12 +416,53 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="px-css">
+  .pxstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:22px}
+  .pxstat{background:#141414;border:1px solid #262626;border-radius:11px;padding:16px 18px}
+  .pxstat .v{font-size:26px;font-weight:700;color:#fff;letter-spacing:-.5px}
+  .pxstat .v.warn{color:#f0aa5a}
+  .pxstat .l{font-size:12.5px;color:#8a8a8a;margin-top:5px;line-height:1.4}
+  .et-body .cap2{font-size:13px;color:#7a7a7a;max-width:560px;text-align:center;line-height:1.55;margin-top:-4px}
+  #px-egress{margin-bottom:30px}
+  #px-table .et-body{min-height:210px;padding:26px 30px;gap:14px}
+  /* .tblpage is a flex column with a bounded height — without this its
+     children shrink and the honest empty-state copy gets clipped. */
+  .tblpage > *{flex:0 0 auto}
+
+  /* inline add-proxy form (replaces the prompt() chain — friendlier) */
+  .pxform{background:#141414;border:1px solid #2a2a2a;border-radius:12px;padding:18px 20px;margin-bottom:22px;display:none}
+  .pxform.open{display:block}
+  .pxform-grid{display:grid;grid-template-columns:1.2fr 128px 1.7fr 108px;gap:12px}
+  .pxf-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+  .pxf-field label{font-size:12px;color:#8a8a8a;font-weight:500}
+  .pxf-in{height:42px;background:#0f0f0f;border:1px solid #2a2a2a;border-radius:9px;padding:0 12px;color:#e6e6e6;font-family:inherit;font-size:14px;outline:none;width:100%}
+  .pxf-in:focus{border-color:#4166f6}
+  .pxf-in::placeholder{color:#6a6a6a}
+  select.pxf-in{cursor:pointer}
+  .pxadv-toggle{display:inline-flex;align-items:center;gap:7px;color:#6d8bfb;font-size:13.5px;font-weight:600;cursor:pointer;user-select:none;margin-top:14px}
+  .pxadv-toggle .cv{display:flex;transition:transform .15s}
+  .pxadv-toggle.open .cv{transform:rotate(180deg)}
+  .pxadv{display:none;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+  .pxadv.open{display:grid}
+  .pxadv .full{grid-column:1/-1}
+  .pxform-foot{display:flex;align-items:center;gap:14px;margin-top:18px}
+  .pxform-foot .hint{font-size:11.5px;color:#6a6a6a;flex:1;line-height:1.45}
+  .pxform-foot .hint code{color:#9a9a9a;font-size:11px}
+  .pxform-foot .err{font-size:12.5px;color:#e05b5b;font-weight:500}
+  .pxf-cancel{background:transparent;border:1px solid #2f2f2f;color:#cfcfcf;border-radius:9px;height:44px;padding:0 20px;font-family:inherit;font-size:14px;font-weight:500;cursor:pointer}
+  /* inline controls inside table rows (bind dropdowns, unbind chips) */
+  .pxf-inline-dd{background:#0f0f0f;border:1px solid #2a2a2a;border-radius:8px;height:32px;padding:0 8px;color:#cfcfcf;font-family:inherit;font-size:12.5px;cursor:pointer;outline:none;max-width:100%}
+  .pxf-inline-dd:focus{border-color:#4166f6}
+  .pxchip{display:inline-flex;align-items:center;gap:7px;padding:3px 5px 3px 9px;border-radius:14px;border:1px solid #2b2b2b;background:#191919;font-size:12.5px;color:#e6e6e6}
+  .pxchip .x{cursor:pointer;color:#8a8a8a;font-size:15px;line-height:1;padding:0 2px}
+  .pxchip .x:hover{color:#e05b5b}
+  .pxwarn{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:14px;font-size:12px;font-weight:600;background:rgba(240,170,90,.14);color:#f0aa5a;border:1px solid rgba(240,170,90,.3);cursor:help}
+</style>
 </head>
 <body>
 <div class="app">
 
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -499,7 +539,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -520,7 +560,7 @@
       </div>
       <div class="version">Version 5.7.14</div>
     </aside>
-    <main class="page"><div class="tblpage"><div class="tp-head"><div class="tp-title">Manage your custom proxies</div><div class="sp"></div><button class="btn-blue">+ Add new proxy</button></div><div class="emptytable"><div class="et-head" style="grid-template-columns:1.4fr 1fr .8fr 1fr 1.2fr 1.3fr 1fr"><div>Proxy label</div><div>Host</div><div>Port</div><div>Type</div><div>Creator</div><div>Proxy status</div><div>Actions</div></div><div class="et-body"><svg width="66" height="66" viewBox="0 0 66 66" fill="none"><path d="M14 35l6-16a4 4 0 0 1 3.7-2.5h18.6A4 4 0 0 1 46 19l6 16" stroke="#d6d6d6" stroke-width="2.4" stroke-linejoin="round"/><path d="M14 35h11l2 5h12l2-5h11v11a3.5 3.5 0 0 1-3.5 3.5h-31A3.5 3.5 0 0 1 14 46V35z" fill="#eee" stroke="#cfcfcf" stroke-width="1.8"/></svg><div class="cap">No data</div></div></div></div></main>
+    <main class="page"><div class="tblpage"><div class="tp-head"><div class="tp-title" id="px-title">Manage your custom proxies</div><div class="sp"></div><button class="btn-blue" id="px-add">+ Add new proxy</button></div><div class="pxform" id="px-form"><div class="pxform-grid"><div class="pxf-field"><label for="pf-label">Label</label><input class="pxf-in" id="pf-label" placeholder="hu-4" autocomplete="off"></div><div class="pxf-field"><label for="pf-scheme">Scheme</label><select class="pxf-in" id="pf-scheme"><option value="http">http</option><option value="https">https</option><option value="socks5">socks5</option></select></div><div class="pxf-field"><label for="pf-host">Host</label><input class="pxf-in" id="pf-host" placeholder="188.244.113.72" autocomplete="off"></div><div class="pxf-field"><label for="pf-port">Port</label><input class="pxf-in" id="pf-port" inputmode="numeric" placeholder="12323" autocomplete="off"></div></div><div class="pxadv-toggle" id="pf-adv-t"><span class="cv"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>Auth &amp; notes (optional)</div><div class="pxadv" id="pf-adv"><div class="pxf-field"><label for="pf-user">Username</label><input class="pxf-in" id="pf-user" placeholder="proxy user" autocomplete="off"></div><div class="pxf-field"><label for="pf-pass">Password</label><input class="pxf-in" id="pf-pass" type="password" placeholder="••••••" autocomplete="new-password"></div><div class="pxf-field full"><label for="pf-notes">Notes</label><input class="pxf-in" id="pf-notes" placeholder="Budapest, HU AS211439 LOCOTORPI" autocomplete="off"></div></div><div class="pxform-foot"><span class="hint">Credentials are stored in <code>service/proxies.json</code> in plain text (phase-1).</span><span class="err" id="pf-err"></span><button class="pxf-cancel" id="pf-cancel">Cancel</button><button class="btn-blue" id="pf-save">Save proxy</button></div></div><div class="pxstats" id="px-stats"></div><div class="emptytable" id="px-table"><div class="et-head" style="grid-template-columns:1.4fr 1fr .8fr 1fr 1.2fr 1.3fr 1fr"><div>Proxy label</div><div>Host</div><div>Port</div><div>Type</div><div>Creator</div><div>Proxy status</div><div>Actions</div></div><div class="et-body" id="px-body"><svg width="66" height="66" viewBox="0 0 66 66" fill="none"><path d="M14 35l6-16a4 4 0 0 1 3.7-2.5h18.6A4 4 0 0 1 46 19l6 16" stroke="#d6d6d6" stroke-width="2.4" stroke-linejoin="round"/><path d="M14 35h11l2 5h12l2-5h11v11a3.5 3.5 0 0 1-3.5 3.5h-31A3.5 3.5 0 0 1 14 46V35z" fill="#eee" stroke="#cfcfcf" stroke-width="1.8"/></svg><div class="cap" id="px-cap">No data</div><div class="cap2" id="px-cap2"></div></div></div><div class="tp-head" style="margin:30px 0 14px"><div class="tp-title" id="px-egress-t" style="font-size:17px">Creator egress</div></div><div class="emptytable" id="px-egress"><div class="et-head" style="grid-template-columns:1.4fr 1.1fr 1.3fr 1.5fr 1fr"><div>Creator</div><div>Creator ID</div><div>Egress</div><div>Session</div><div>Action</div></div><div id="px-egress-body"></div></div></div></main>
   </div>
   <div class="help"><span class="help-dot"></span><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11.5a7.5 7.5 0 0 1-10.8 6.7L4 19.5l1.3-4.1A7.5 7.5 0 1 1 20 11.5z"/></svg></div>
 </div>
@@ -581,5 +621,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="creators-proxy.js"></script>
 </body>
 </html>

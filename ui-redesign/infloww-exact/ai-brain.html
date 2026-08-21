@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>fastt — Brain &amp; Persona</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -346,7 +345,28 @@
   .brain-head-sub{font-size:13.5px;color:var(--muted);margin-top:4px}
   .persona-wrap{margin:14px 0 16px}
   .persona-wrap textarea.fx-input{min-height:112px;font-size:14px}
-  .brain-grid{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:12px 18px;margin-bottom:4px}
+  .brain-grid{display:grid;grid-template-columns:1.2fr 1fr .9fr 1fr;gap:12px 18px;margin-bottom:4px}
+  /* vault picker for the day-rhythm slot images */
+  .vp-back{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:9990;display:flex;
+    align-items:center;justify-content:center}
+  .vp{background:var(--card);border:1px solid var(--border);border-radius:14px;width:640px;
+    max-width:92vw;max-height:80vh;display:flex;flex-direction:column;overflow:hidden}
+  .vp-h{display:flex;align-items:center;gap:10px;padding:16px 18px 12px;font-size:15px;font-weight:600;color:#fff}
+  .vp-h .sub{font-size:12px;font-weight:400;color:var(--muted2)}
+  .vp-h .x{margin-left:auto;background:transparent;border:0;color:var(--muted);font-size:18px;cursor:pointer}
+  .vp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px;
+    padding:0 18px 16px;overflow-y:auto}
+  .vp-tile{aspect-ratio:1;border-radius:10px;border:1px solid var(--border);background:#1c1c1c;
+    background-size:cover;background-position:center;cursor:pointer;position:relative}
+  .vp-tile:hover{border-color:var(--accent)}
+  .vp-tile.sel{border-color:var(--accent);outline:2px solid rgba(65,102,246,.4)}
+  .vp-tile b{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);color:#cfcfcf;
+    font-size:9.5px;font-weight:500;text-align:center;padding:2px 0;border-radius:0 0 9px 9px}
+  .vp-empty{padding:0 18px 18px;font-size:13px;color:var(--muted);line-height:1.55}
+  /* the slot control is JS-owned now (thumb OR "+ Picture"), so it needs its own
+     flex box — .rhy-thumb used to be a direct flex child of .rhy-row */
+  .rhy-slot{display:inline-flex;flex:0 0 auto;align-items:center}
+  .rhy-slot .rhy-thumb{display:inline-block;box-sizing:border-box}
   /* day-rhythm rows */
   .rhy-row{display:flex;align-items:center;gap:12px;margin-bottom:9px}
   .rhy-lbl{width:128px;flex:0 0 128px;font-size:12.5px;font-weight:500;color:#b9b9b9;line-height:1.3}
@@ -365,6 +385,31 @@
   .g-dusk{background:linear-gradient(135deg,#8a5fc9,#4166f6)}
   .g-night{background:linear-gradient(135deg,#3a4a8c,#141a38)}
   a.plink{color:#9db1fb;text-decoration:underline;text-underline-offset:2px}
+  /* automation-rule cards (welcome / follow-ups) */
+  #tz-clock{font-size:11px;color:var(--muted2);margin-top:4px;line-height:1.35}
+  .auto-row{display:flex;align-items:center;gap:22px;flex-wrap:wrap;margin:16px 0 4px}
+  .en-row{display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
+  .en-row .en-lbl{font-size:14px;font-weight:600;color:#fff}
+  .inl{display:flex;align-items:center;gap:8px}
+  .inl>label{font-size:12.5px;font-weight:500;color:#b9b9b9;margin:0}
+  .inl .fx-input{height:36px;width:74px;text-align:center}
+  .inl .u{font-size:12.5px;color:var(--muted)}
+  .prev-tools{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+  .prev-tools .fx-field{gap:5px}
+  .prev-wrap{display:flex;gap:12px;align-items:flex-start;background:#1c1c1c;border:1px solid var(--border);border-radius:12px;padding:12px}
+  .prev-thumb{width:56px;height:56px;flex:0 0 56px;border-radius:10px;border:1px solid var(--border)}
+  .prev-body{flex:1;min-width:0}
+  .prev-meta{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted2);margin-bottom:8px}
+  .prev-bubbles{display:flex;flex-direction:column;gap:6px}
+  .prev-bubble{background:#262626;border-radius:9px;padding:8px 11px;font-size:13.5px;color:#eee;line-height:1.5;white-space:pre-wrap}
+  .prev-tag{display:inline-block;background:rgba(65,102,246,.2);color:#9db1fb;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;margin-right:6px;vertical-align:middle}
+  .prev-cap{font-size:11.5px;color:#e8cf9a;margin-bottom:6px}
+  .prev-loading{font-size:13px;color:var(--muted)}
+  .prev-err{font-size:13px;color:#e5735b;background:rgba(229,115,91,.08);border:1px solid rgba(229,115,91,.25);border-radius:10px;padding:11px 13px;line-height:1.5}
+  .prev-err .sub{display:block;font-size:11.5px;color:var(--muted);margin-top:5px}
+  .fx-card-h .ttl{display:inline-flex;align-items:center;gap:8px}
+  .fx-card-h .hr-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+  .fx-card-h .hr-right .fx-st{background:transparent;border:0;padding:0;font-size:12px}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -395,7 +440,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -474,7 +518,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -509,16 +553,16 @@
           <div class="brain-head-sub">Who your AI is. One persona powers everything she sends — set it once and every message sounds like her.</div>
         </div>
         <div class="head-right">
-          <button class="fx-btn ghost">Reset to defaults</button>
-          <button class="fx-btn">Save brain</button>
+          <button class="fx-btn ghost" id="btn-reset">Reset to defaults</button>
+          <button class="fx-btn" id="btn-save">Save brain</button>
         </div>
       </div>
 
       <!-- status strip -->
       <div class="fx-status">
-        <span class="fx-st ok"><i></i>Brain active</span>
-        <span class="fx-st"><i></i>DeepSeek V4 Flash</span>
-        <span class="fx-st"><i></i>$0.41 of $2.00 spent today</span>
+        <span class="fx-st" id="st-brain"><i></i>Loading…</span>
+        <span class="fx-st" id="st-model"><i></i>—</span>
+        <span class="fx-st" id="st-cap"><i></i>—</span>
         <span class="fx-st"><i></i>Powers Welcome · Follow-ups · AI Chatter · Fan profiles</span>
       </div>
 
@@ -531,33 +575,35 @@
         <div class="fx-card-sub">Describe her in a few sentences — name, age, vibe, what she loves. The AI speaks as this person in every chat.</div>
 
         <div class="persona-wrap">
-          <textarea class="fx-input">You are Mia, a playful, confident 23-year-old creator from Ljubljana. Warm and quick-witted, you text in short casual bursts and never sound scripted. You love hiking, lake swims at Bled, long espresso mornings, and dancing until late — and you remember the little things fans tell you.</textarea>
+          <textarea class="fx-input" id="t-persona" placeholder="Loading her persona…"></textarea>
         </div>
 
         <div class="brain-grid">
           <div class="fx-field">
             <label>AI model</label>
-            <select class="fx-select">
-              <option selected>DeepSeek V4 Flash — fast &amp; cheap (recommended)</option>
-              <option>DeepSeek Chat</option>
-              <option>DeepSeek Reasoner</option>
-              <option>Qwen3-VL 30B</option>
+            <select class="fx-select" id="s-model">
+              <option value="" selected>Loading…</option>
             </select>
           </div>
           <div class="fx-field">
             <label>Where she lives</label>
-            <input class="fx-input" value="Ljubljana, Slovenia">
+            <input class="fx-input" id="f-location" value="">
+          </div>
+          <div class="fx-field">
+            <label>She writes in</label>
+            <select class="fx-select" id="s-lang"></select>
           </div>
           <div class="fx-field">
             <label>Her timezone</label>
-            <select class="fx-select">
-              <option>UTC−08:00 — Los Angeles</option>
-              <option>UTC−06:00 — Mexico City</option>
-              <option>UTC−05:00 — New York</option>
-              <option>UTC+00:00 — London</option>
-              <option selected>UTC+01:00 — Ljubljana / Berlin</option>
-              <option>UTC+02:00 — Athens</option>
+            <select class="fx-select" id="s-tz">
+              <option value="America/Los_Angeles">UTC−08:00 — Los Angeles</option>
+              <option value="America/Mexico_City">UTC−06:00 — Mexico City</option>
+              <option value="America/New_York">UTC−05:00 — New York</option>
+              <option value="Europe/London">UTC+00:00 — London</option>
+              <option value="Europe/Ljubljana">UTC+01:00 — Ljubljana / Berlin</option>
+              <option value="Europe/Athens">UTC+02:00 — Athens</option>
             </select>
+            <div id="tz-clock"></div>
           </div>
         </div>
 
@@ -565,9 +611,9 @@
           <div class="fx-sl-head">
             <span class="fx-sl-name">Daily AI budget</span>
             <span class="fx-sl-hint">the most the AI may spend on itself per day — it pauses quietly at the cap</span>
-            <span class="fx-rv">$2.00</span>
+            <span class="fx-rv">$—</span>
           </div>
-          <input type="range" class="fx-range" min="1" max="10" step="1" value="2" data-fmt="$%v.00">
+          <input type="range" class="fx-range" id="r-cap" min="1" max="10" step="1" value="1" data-fmt="$%v.00">
         </div>
 
         <div class="fx-note">
@@ -590,41 +636,29 @@
               <div class="fx-grid3">
                 <div class="fx-field">
                   <label>Chatting</label>
-                  <select class="fx-select">
-                    <option>Inherit default</option>
-                    <option selected>DeepSeek V4 Flash</option>
-                    <option>DeepSeek Chat</option>
-                    <option>DeepSeek Reasoner</option>
+                  <select class="fx-select" data-purpose="welcome_chatter_for_info">
+                    <option value="" selected>Inherit default</option>
                   </select>
                 </div>
                 <div class="fx-field">
                   <label>Fan profiling</label>
-                  <select class="fx-select">
-                    <option>Inherit default</option>
-                    <option>DeepSeek V4 Flash</option>
-                    <option selected>DeepSeek Chat</option>
-                    <option>DeepSeek Reasoner</option>
+                  <select class="fx-select" data-purpose="gen_info">
+                    <option value="" selected>Inherit default</option>
                   </select>
                 </div>
                 <div class="fx-field">
                   <label>Welcomes</label>
-                  <select class="fx-select">
-                    <option>Inherit default</option>
-                    <option selected>DeepSeek V4 Flash</option>
-                    <option>DeepSeek Chat</option>
-                    <option>DeepSeek Reasoner</option>
+                  <select class="fx-select" data-purpose="send_welcome">
+                    <option value="" selected>Inherit default</option>
                   </select>
                 </div>
                 <div class="fx-field">
                   <label>Follow-ups</label>
-                  <select class="fx-select">
-                    <option>Inherit default</option>
-                    <option selected>DeepSeek V4 Flash</option>
-                    <option>DeepSeek Chat</option>
-                    <option>DeepSeek Reasoner</option>
+                  <select class="fx-select" data-purpose="send_followup">
+                    <option value="" selected>Inherit default</option>
                   </select>
                 </div>
-                <div class="fx-field">
+                <div class="fx-field" id="fld-vault-vision">
                   <label>Vault vision</label>
                   <select class="fx-select">
                     <option>Inherit default</option>
@@ -638,7 +672,7 @@
             <hr class="fx-hr">
 
             <div class="fx-adv-group">
-              <h4>Her day rhythm</h4>
+              <h4 id="h-rhythm">Her day rhythm</h4>
               <div class="fx-card-sub" style="margin-bottom:12px">
                 What she's doing at each time of day — messages open with "it's Tuesday morning here, I'm {activity}".
                 The optional picture rides along on welcomes and follow-ups sent in that slot.
@@ -646,33 +680,33 @@
 
               <div class="rhy-row">
                 <div class="rhy-lbl">Morning (early)<span class="tm">6–10 am her time</span></div>
-                <input class="fx-input" value="just woke up and made myself a coffee">
-                <div class="rhy-thumb g-sunrise" title="Change picture"><span class="rx">✕</span></div>
+                <input class="fx-input" data-slot="morning_1" value="">
+                <span class="rhy-slot" data-imgslot="morning_1"></span>
               </div>
               <div class="rhy-row">
                 <div class="rhy-lbl">Morning (late)<span class="tm">10 am–12 pm</span></div>
-                <input class="fx-input" value="out for a morning yoga session">
-                <button class="rhy-add">+ Picture</button>
+                <input class="fx-input" data-slot="morning_2" value="">
+                <span class="rhy-slot" data-imgslot="morning_2"></span>
               </div>
               <div class="rhy-row">
                 <div class="rhy-lbl">Afternoon (early)<span class="tm">12–3 pm</span></div>
-                <input class="fx-input" value="just got back from the beach">
-                <button class="rhy-add">+ Picture</button>
+                <input class="fx-input" data-slot="afternoon_1" value="">
+                <span class="rhy-slot" data-imgslot="afternoon_1"></span>
               </div>
               <div class="rhy-row">
                 <div class="rhy-lbl">Afternoon (late)<span class="tm">3–6 pm</span></div>
-                <input class="fx-input" value="chilling at home with my cat">
-                <button class="rhy-add">+ Picture</button>
+                <input class="fx-input" data-slot="afternoon_2" value="">
+                <span class="rhy-slot" data-imgslot="afternoon_2"></span>
               </div>
               <div class="rhy-row">
                 <div class="rhy-lbl">Evening<span class="tm">6–10 pm</span></div>
-                <input class="fx-input" value="getting ready to head out">
-                <div class="rhy-thumb g-dusk" title="Change picture"><span class="rx">✕</span></div>
+                <input class="fx-input" data-slot="evening" value="">
+                <span class="rhy-slot" data-imgslot="evening"></span>
               </div>
               <div class="rhy-row">
                 <div class="rhy-lbl">Night<span class="tm">10 pm–6 am</span></div>
-                <input class="fx-input" value="just got home and gonna shower">
-                <div class="rhy-thumb g-night" title="Change picture"><span class="rx">✕</span></div>
+                <input class="fx-input" data-slot="night" value="">
+                <span class="rhy-slot" data-imgslot="night"></span>
               </div>
             </div>
 
@@ -684,11 +718,7 @@
                 Extra do/don'ts for her first message to a new fan. The welcome itself is set up in
                 <a class="plink" href="onboarding-welcome.html">Onboarding → Welcome</a>.
               </div>
-              <textarea class="fx-input" style="min-height:118px">Rules for your first welcome message to a new fan:
-- Keep it to 2-3 lines total, casual texting style, real emojis, no markdown.
-- Line 1: Start with "Hello there, " immediately followed by the name classification (provided below). Do not use the word 'Stranger'.
-- Line 2: The activity line (provided below).
-- Line 3 (Optional): The drama line (provided below) if it exists.</textarea>
+              <textarea class="fx-input" style="min-height:118px" id="t-welcome" placeholder="Loading her welcome rules…"></textarea>
             </div>
 
             <div class="fx-note warn">
@@ -697,6 +727,97 @@
 
           </div>
         </div>
+      </div>
+
+      <!-- ============ WELCOME AUTOMATION (send_welcome rule) ============ -->
+      <div class="fx-card" id="card-welcome">
+        <div class="fx-card-h">
+          <span class="ttl">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#7d97f8" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M4 7.5l8 5.5 8-5.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Welcome new subscribers
+          </span>
+          <span class="hr-right">
+            <span class="fx-st" id="wc-lastrun"><i></i>—</span>
+            <button class="fx-btn" id="wc-save">Save welcome</button>
+          </span>
+        </div>
+        <div class="fx-card-sub">Auto-messages every new subscriber in her voice — persona, welcome rules &amp; the time-of-day line/image above. Composed fresh per fan.</div>
+
+        <div class="auto-row">
+          <span class="en-row" id="wc-enable-row">
+            <span class="fx-switch" id="wc-enable"></span>
+            <span class="en-lbl" id="wc-state-lbl">Off</span>
+          </span>
+          <div class="inl">
+            <label>Check every</label>
+            <input class="fx-input" id="wc-every" type="number" min="1"><span class="u">min</span>
+          </div>
+        </div>
+
+        <hr class="fx-hr">
+
+        <div class="fx-card-sub" style="margin-bottom:10px">Preview the exact greeting she'll send — composed here, <b style="color:#c9d3ff">never sent</b>. With <b>AI restyle</b> on it runs the real restyle so you see the shipped line (a small AI call toward the daily cap).</div>
+        <div class="prev-tools">
+          <div class="fx-field" style="width:184px">
+            <label>Time of day</label>
+            <select class="fx-select" id="wc-slot"><option value="">Current time</option></select>
+          </div>
+          <div class="fx-field" style="width:150px">
+            <label>Preview for fan id</label>
+            <input class="fx-input" id="wc-fan" placeholder="optional">
+          </div>
+          <label class="fx-check on" id="wc-restyle" title="Runs the real AI restyle so the preview matches what ships."><span class="bx"></span>AI restyle</label>
+          <button class="fx-btn ghost" id="wc-preview">Preview</button>
+          <button class="fx-btn ghost" id="wc-regen" style="display:none">↻ Regenerate</button>
+          <button class="fx-btn green" id="wc-keep" style="display:none">✓ Keep this line</button>
+          <button class="fx-btn ghost" id="wc-unpin" style="display:none">Unpin</button>
+        </div>
+        <div id="wc-preview-box" style="margin-top:14px"></div>
+      </div>
+
+      <!-- ============ FOLLOW-UP AUTOMATION (send_followup rule) ============ -->
+      <div class="fx-card" id="card-followup">
+        <div class="fx-card-h">
+          <span class="ttl">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#7d97f8" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/><path d="M9 11h6M9 14h4" stroke-linecap="round"/></svg>
+            Follow up quiet fans
+          </span>
+          <span class="hr-right">
+            <span class="fx-st" id="fu-lastrun"><i></i>—</span>
+            <button class="fx-btn" id="fu-save">Save follow-ups</button>
+          </span>
+        </div>
+        <div class="fx-card-sub">Nudges a fan who's gone quiet, escalating in warmth — up to three, each after the silence you set. Same persona &amp; time-of-day image as above.</div>
+
+        <div class="auto-row">
+          <span class="en-row" id="fu-enable-row">
+            <span class="fx-switch" id="fu-enable"></span>
+            <span class="en-lbl" id="fu-state-lbl">Off</span>
+          </span>
+          <div class="inl">
+            <label>Check every</label>
+            <input class="fx-input" id="fu-every" type="number" min="1"><span class="u">min</span>
+          </div>
+          <label class="fx-check on" id="fu-image"><span class="bx"></span>Attach the slot image</label>
+        </div>
+
+        <div class="prev-tools" style="margin-top:8px">
+          <div class="inl"><label>1st nudge after</label><input class="fx-input" id="fu-h1" type="number" min="1"><span class="u">h quiet</span></div>
+          <div class="inl"><label>2nd after</label><input class="fx-input" id="fu-h2" type="number" min="1"><span class="u">h</span></div>
+          <div class="inl"><label>3rd after</label><input class="fx-input" id="fu-h3" type="number" min="1"><span class="u">h</span></div>
+        </div>
+
+        <hr class="fx-hr">
+
+        <div class="fx-card-sub" style="margin-bottom:10px">Preview the next nudge — composed here, never sent. Uses one live AI call.</div>
+        <div class="prev-tools">
+          <div class="fx-field" style="width:150px">
+            <label>Preview for fan id</label>
+            <input class="fx-input" id="fu-fan" placeholder="optional">
+          </div>
+          <button class="fx-btn ghost" id="fu-preview">Preview</button>
+        </div>
+        <div id="fu-preview-box" style="margin-top:14px"></div>
       </div>
 
     </main>
@@ -798,5 +919,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="ai-brain.js" id="wire-js"></script>
 </body>
 </html>

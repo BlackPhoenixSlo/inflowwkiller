@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>Infloww — Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -176,6 +175,20 @@
 
   .clocked{min-height:250px;display:flex;flex-direction:column}
 
+  /* compact Team strip (shifts + clock-in have no relay backend — one thin
+     row below the live data instead of two fold-eating empty cards) */
+  .teamstrip{display:flex;align-items:center;gap:16px;padding:16px 22px}
+  .teamstrip-ico{width:40px;height:40px;flex:0 0 40px;border-radius:50%;
+    background:#1c1c1c;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:#8a8a8a}
+  .teamstrip-txt{flex:1;min-width:0}
+  .teamstrip-t{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;color:#fff}
+  .teamstrip-s{font-size:12.5px;color:var(--muted);margin-top:2px}
+  .teamstrip-link{display:flex;align-items:center;gap:6px;height:36px;padding:0 15px;flex:0 0 auto;
+    border:1px solid var(--border);border-radius:9px;background:#1c1c1c;color:#e6e6e6;
+    font:600 12.5px Inter,sans-serif;text-decoration:none}
+  .teamstrip-link:hover{border-color:#3a3a3a;background:#242424}
+  .teamstrip-link svg{color:#9a9a9a}
+
   /* chart */
   .chart-wrap{display:flex;height:322px;margin-top:22px}
   .yaxis{width:34px;flex:0 0 34px;display:flex;flex-direction:column;justify-content:space-between;
@@ -229,13 +242,133 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="es-css">
+  /* employee-sales bars (data layer only — the card/axis skin is untouched) */
+  .esbars{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:space-around;gap:10px;padding:0 8px}
+  .escol{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;flex:0 1 76px;height:100%;min-width:0}
+  .escol .val{font-size:11.5px;font-weight:600;color:#fff;margin-bottom:4px;white-space:nowrap}
+  .escol .bar{width:100%;max-width:46px;background:var(--accent);border-radius:4px 4px 0 0;min-height:2px}
+  .escol .nm{font-size:11.5px;color:var(--muted);margin-top:6px;height:16px;line-height:16px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .es-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13.5px}
+</style>
+<style id="home2-css">
+  /* The real Infloww home SCROLLS (the reference capture shows a right-hand
+     scrollbar). `overflow:hidden` was clipping the employee-sales chart dead
+     — 259px of the page was unreachable. Same fix automations.html uses. */
+  .main{overflow-y:auto;padding-bottom:40px}
+
+  /* per-tile provenance line: every money tile names the basis it came from */
+  .metric .msrc{font-size:11px;color:#6a6a6a;margin-top:3px}
+  .earn .total .tsrc{font-size:11px;color:#6a6a6a;margin-top:-4px}
+
+  /* Net / Gross basis menu on the "Net earnings ▾" control */
+  #dd-net{position:relative}
+  .ddmenu{position:absolute;top:48px;left:0;min-width:236px;background:#1b1b1d;border:1px solid #333;
+    border-radius:11px;padding:6px;box-shadow:0 12px 34px rgba(0,0,0,.55);display:none;z-index:70}
+  .dropdown.open .ddmenu{display:block}
+  .dropdown .cv svg{transition:transform .15s}
+  .dropdown.open .cv svg{transform:rotate(180deg)}
+  .ddopt{display:flex;flex-direction:column;gap:2px;padding:9px 11px;border-radius:8px;color:#e6e6e6;
+    font-size:13.5px;font-weight:500;cursor:pointer}
+  .ddopt:hover,.ddopt.on{background:#242424}
+  .ddopt small{color:#8a8a8a;font-size:11px;font-weight:400;line-height:1.4}
+
+  .iconbtn{position:relative}
+  .iconbtn .bcount{position:absolute;top:1px;right:-1px;min-width:16px;height:16px;border-radius:9px;
+    background:#f2295b;color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center;padding:0 4px}
+  /* fans / subscription strip */
+  .fansgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--border-soft);
+    border:1px solid var(--border-soft);border-radius:10px;overflow:hidden;margin-top:16px}
+  .fanstile{background:var(--card);padding:15px 18px;display:flex;flex-direction:column;gap:3px;min-height:88px}
+  .fanstile .fv{font-size:26px;font-weight:700;color:#fff;letter-spacing:-.4px;line-height:1.2}
+  .fanstile .fl{font-size:13px;color:var(--muted)}
+  .fanstile .fs{font-size:11px;color:#6a6a6a}
+
+  /* daily earnings trend */
+  .trend-wrap{display:flex;height:250px;margin-top:20px}
+  .trend-y{width:52px;flex:0 0 52px;display:flex;flex-direction:column;justify-content:space-between;
+    padding:2px 0 30px;text-align:right}
+  .trend-y span{font-size:11.5px;color:var(--muted2);line-height:1}
+  .trend-plot{flex:1;position:relative;margin-left:10px}
+  .trend-bars{position:absolute;inset:0;display:flex;align-items:flex-end;gap:3px;padding-bottom:28px}
+  .tcol{flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;height:100%;position:relative}
+  .tcol .tb{width:100%;background:var(--accent);border-radius:3px 3px 0 0;min-height:1px}
+  .tcol .tb.zero{background:#333}
+  .tcol .tx{position:absolute;bottom:-24px;left:-14px;right:-14px;text-align:center;font-size:10px;
+    color:var(--muted2);white-space:nowrap;overflow:hidden}
+  .chips{margin-left:auto;display:flex;gap:6px}
+  .chip{border:1px solid var(--border);background:#1c1c1c;color:var(--muted);border-radius:8px;
+    padding:5px 12px;font:500 12.5px Inter,sans-serif;cursor:pointer}
+  .chip.on{background:#343434;color:#fff}
+
+  /* creators overview table */
+  .tblwrap{margin-top:14px;overflow-x:auto}
+  table.ctbl{width:100%;border-collapse:collapse;font-size:13px;min-width:1040px}
+  .ctbl th{text-align:right;font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+    color:#7a7a7a;padding:0 9px 10px;white-space:nowrap;border-bottom:1px solid var(--border)}
+  .ctbl th:first-child,.ctbl td:first-child{text-align:left}
+  .ctbl td{padding:11px 9px;border-bottom:1px solid #2a2a2a;text-align:right;color:#d8d8d8;white-space:nowrap}
+  .ctbl tbody tr:last-child td{border-bottom:0}
+  .ctbl .cname{display:flex;align-items:center;gap:9px;color:#fff;font-weight:500}
+  .ctbl .cav{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:700;color:#fff;flex:0 0 auto}
+  .ctbl .rev{color:#fff;font-weight:600}
+  .ctbl .dash{color:#5f5f5f}
+  .ctbl tr.me td{background:rgba(65,102,246,.07)}
+  .kchips{display:flex;gap:4px;justify-content:flex-end;flex-wrap:nowrap}
+  .kchip{font-size:10.5px;color:#9a9a9a;background:#1c1c1c;border:1px solid #2e2e2e;border-radius:6px;padding:2px 6px}
+  .kchip.warn{color:#f0c98a;border-color:#7a5a20;background:#2a2012}
+  .note{font-size:12px;color:#7a7a7a;margin-top:12px;line-height:1.6}
+
+  /* ==== earnings-by-channel multi-line (all models) ==== */
+  .chanwrap{display:flex;gap:26px;align-items:center;padding-top:6px}
+  .chan-chart{flex:1;min-width:0;width:100%;height:auto;display:block}
+  .chan-legend{flex:0 0 236px;display:flex;flex-direction:column}
+  .chan-legend .lg{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #232323;font-size:14px}
+  .chan-legend .lg:last-child{border-bottom:none}
+  .chan-legend .lg .dot{width:10px;height:10px;border-radius:50%;flex:0 0 auto}
+  .chan-legend .lg .nm{color:#d4d4d4}
+  .chan-legend .lg .pc{margin-left:auto;color:#8a8a8a;font-variant-numeric:tabular-nums;font-size:13px}
+  .chan-legend .lg .am{color:#fff;font-weight:600;min-width:62px;text-align:right;font-variant-numeric:tabular-nums}
+  .note b{color:#9a9a9a;font-weight:600}
+  .panel-empty{color:var(--muted);font-size:13.5px;padding:26px 0 10px}
+</style>
+<style id="cre2-css">
+  /* ===== Creators-overview toolbar: search · export · sortable table ===== */
+  /* Purely additive over the existing roster: search + sort + export operate
+     on rows already loaded from /admin/stats/per-model — no new fetch, no
+     outbound action. Strictly friendlier than the real app, whose sort arrows
+     are decorative and which has no search. */
+  .cre-tools{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .cre-search{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border:1px solid var(--border);
+    border-radius:9px;background:#1c1c1c}
+  .cre-search svg{flex:0 0 auto;color:var(--muted)}
+  .cre-search input{border:0;background:transparent;color:#eee;font:500 13px Inter,sans-serif;outline:none;width:150px}
+  .cre-search input::placeholder{color:#6a6a6a}
+  .cre-btn{display:flex;align-items:center;gap:7px;height:34px;padding:0 13px;border:1px solid var(--border);
+    border-radius:9px;background:#1c1c1c;color:#e6e6e6;font:600 12.5px Inter,sans-serif;cursor:pointer}
+  .cre-btn:hover{border-color:#3a3a3a;background:#242424}
+  .cre-btn svg{flex:0 0 auto;color:#9a9a9a}
+  /* summary stat tiles above the table */
+  .crestats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border-soft);
+    border:1px solid var(--border-soft);border-radius:10px;overflow:hidden;margin-top:16px}
+  .crestat{background:var(--card);padding:14px 18px;display:flex;flex-direction:column;gap:3px}
+  .crestat .csv{font-size:23px;font-weight:700;color:#fff;letter-spacing:-.4px;line-height:1.2}
+  .crestat .csl{font-size:12.5px;color:var(--muted)}
+  .crestat .css{font-size:11px;color:#6a6a6a}
+  /* sortable header cells */
+  .ctbl th.sortable{cursor:pointer;user-select:none}
+  .ctbl th.sortable:hover{color:#c9c9c9}
+  .ctbl th .sarr{display:inline-block;margin-left:3px;color:#5a5a5a;font-size:9px;vertical-align:middle}
+  .ctbl th.sorted{color:#eaeaea}
+  .ctbl th.sorted .sarr{color:var(--accent)}
+</style>
 </head>
 <body>
 <div class="app">
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -259,12 +392,12 @@
     </div>
 
     <div class="top-right">
-      <div class="pill"><span class="dot-green"></span>Operational</div>
+      <div class="pill" id="ops-pill"><span class="dot-green" id="ops-dot"></span><span id="ops-status">Operational</span></div>
       <div class="pill">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7">
           <circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/>
         </svg>
-        UTC-10:00
+        <span id="tz-top">UTC-10:00</span>
         <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
       </div>
       <a class="pill" href="referrals.html">
@@ -283,7 +416,7 @@
       <a class="iconbtn" href="notifications.html">
         <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
           <path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10.5 19a2 2 0 0 0 3 0" stroke-linecap="round"/>
-        </svg>
+        </svg><span class="bcount" id="bell-count" style="display:none"></span>
       </a>
       <div class="avatar-top">Aa</div>
     </div>
@@ -311,10 +444,10 @@
         <a class="nav-item" href="dashboard.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span><span class="lbl">Dashboard</span></a>
         <div class="nav-item has-sub" data-sub="ofm"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20l1-4L16 5l3 3L8 19l-4 1z"/><path d="M14 7l3 3"/></svg></span><span class="lbl">OF Manager</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ofm"><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Home</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">New post</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Notifications</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Messages Basic</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Queue</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Collections</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Statements</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Statistics</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Bank</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">My profile</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">OF settings</span></a></div>
         <div class="nav-item has-sub" data-sub="ana"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 20V10M12 20V4M18 20v-7" stroke-linecap="round"/></svg></span><span class="lbl">Analytics</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ana"><a class="sub-item" href="analytics-creator-reports.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="12" cy="10" r="2.3"/><path d="M8.5 16c.5-1.7 1.8-2.5 3.5-2.5s3 .8 3.5 2.5" stroke-linecap="round"/></svg></span><span class="lbl">Creator reports</span></a><a class="sub-item" href="analytics-employee-reports.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M6 15.5c.4-1.5 1.5-2.2 3-2.2s2.6.7 3 2.2" stroke-linecap="round"/><path d="M14.5 9.5h3.5M14.5 13h3.5" stroke-linecap="round"/></svg></span><span class="lbl">Employee reports</span></a><a class="sub-item" href="analytics-fan-reports.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="8.5" r="3.4"/><path d="M5.5 19.5c.7-3.4 3.2-5.2 6.5-5.2s5.8 1.8 6.5 5.2" stroke-linecap="round"/></svg></span><span class="lbl">Fan reports</span></a><a class="sub-item" href="analytics-message-dashboard.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12h4l2-6 4 12 2-6h6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Message dashboard</span></a></div>
-        <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
+        <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge" id="msg-badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -350,12 +483,16 @@
         <div class="sec-title">Creator earnings overview
           <span class="info"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
         </div>
-        <div class="sec-utc">UTC-10:00
+        <div class="sec-utc"><span id="tz-sec">UTC-10:00</span>
           <span class="info"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
         </div>
         <div class="head-right">
-          <div class="dropdown">Net earnings
+          <div class="dropdown" id="dd-net"><span id="dd-net-label">Net earnings</span>
             <span class="cv"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <div class="ddmenu" id="dd-net-menu">
+              <div class="ddopt on" data-basis="net">Net earnings<small>OF payouts — after OF's cut</small></div>
+              <div class="ddopt" data-basis="gross">Gross earnings<small>relay ledger — what the fan paid</small></div>
+            </div>
           </div>
           <div class="segment" id="seg">
             <button>Yesterday</button>
@@ -377,98 +514,162 @@
             </svg>
           </div>
           <div class="tl">Total earnings</div>
-          <div class="tv">$0.00</div>
+          <div class="tv" id="kpi-total">$0.00</div>
+          <div class="tsrc" id="kpi-total-src"></div>
         </div>
         <div class="metrics">
-          <div class="metric">
+          <div class="metric" data-kpi="subscriptions">
             <div><div class="mv">$0.00</div><div class="ml">Subscriptions</div></div>
             <div class="mi green"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 4h9a2 2 0 0 1 2 2v14l-6.5-4L4 20V6a2 2 0 0 1 2-2z"/><path d="M13.5 8h4M15.5 6v4" stroke-linecap="round"/></svg></div>
           </div>
-          <div class="metric">
+          <div class="metric" data-kpi="posts">
             <div><div class="mv">$0.00</div><div class="ml">Posts</div></div>
             <div class="mi green"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M13 3v5h5M8 13h8M8 17h6" stroke-linecap="round"/></svg></div>
           </div>
-          <div class="metric">
+          <div class="metric" data-kpi="messages">
             <div><div class="mv">$0.00</div><div class="ml">Messages</div></div>
             <div class="mi purple"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a7.5 7.5 0 0 1-10.6 6.8L4 20l1.3-4.2A7.5 7.5 0 1 1 20 12z"/><circle cx="9" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12.5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="1" fill="currentColor" stroke="none"/></svg></div>
           </div>
-          <div class="metric">
+          <div class="metric" data-kpi="tips">
             <div><div class="mv">$0.00</div><div class="ml">Tips</div></div>
             <div class="mi blue"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 18h6M10 21h4" stroke-linecap="round"/><path d="M12 3a6 6 0 0 0-4 10.5c.8.8 1.3 1.5 1.4 2.5h5.2c.1-1 .6-1.7 1.4-2.5A6 6 0 0 0 12 3z"/></svg></div>
           </div>
-          <div class="metric">
+          <div class="metric" data-kpi="referrals">
             <div><div class="mv">$0.00</div><div class="ml">Referrals</div></div>
             <div class="mi red"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.3"/><path d="M4 19c.5-3.2 2.9-5 6-5" stroke-linecap="round"/><path d="M17.5 12.5l1 2 2.2.3-1.6 1.6.4 2.2-2-1-2 1 .4-2.2L14.3 14.8l2.2-.3 1-2z" stroke-linejoin="round"/></svg></div>
           </div>
-          <div class="metric">
+          <div class="metric" data-kpi="streams">
             <div><div class="mv">$0.00</div><div class="ml">Streams</div></div>
             <div class="mi blue"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 7h11M5 12h7M5 17h13" stroke-linecap="round"/></svg></div>
           </div>
         </div>
       </div>
 
-      <!-- lower grid -->
-      <div class="grid2">
-        <div class="col-left">
-          <div class="card cardpad myshifts">
-            <div class="card-h">My shifts
-              <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
-            </div>
-            <div class="empty-center">
-              <svg width="86" height="94" viewBox="0 0 86 94" fill="none">
-                <g stroke="#4a4a4a" stroke-width="2" stroke-linecap="round">
-                  <path d="M11 30H5M15 21l-4-4M25 13l-2-5"/>
-                  <path d="M75 34h6M71 24l4-4M61 14l2-5"/>
-                </g>
-                <path d="M22 26h30l13 13v39a4 4 0 0 1-4 4H22a4 4 0 0 1-4-4V30a4 4 0 0 1 4-4z" fill="#585858"/>
-                <path d="M52 26v9a4 4 0 0 0 4 4h9z" fill="#6d6d6d"/>
-                <rect x="31" y="54" width="10" height="4.5" rx="2.25" fill="#4166f6"/>
-                <rect x="45" y="54" width="10" height="4.5" rx="2.25" fill="#4166f6"/>
-              </svg>
-              <div class="cap">No data</div>
-            </div>
+      <!-- ===== earnings by channel (multi-line, ALL models combined) ===== -->
+      <div class="card cardpad" id="chan-card" style="margin-top:20px">
+        <div class="card-h" id="chan-head">Earnings by channel
+          <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
+        </div>
+        <div class="chanwrap">
+          <svg id="chan-chart" class="chan-chart" viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet"></svg>
+          <div class="chan-legend" id="chan-legend"></div>
+        </div>
+        <div class="note" id="chan-note"></div>
+      </div>
+
+      <!-- ===== employee sales (relay ledger — live; leads the fold now that
+           the no-backend Team cards are collapsed into a strip below) ===== -->
+      <div class="card cardpad" id="es-card" style="margin-top:20px">
+        <div class="card-h" id="es-head">Employee sales
+          <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
+        </div>
+        <div class="chart-wrap">
+          <div class="yaxis" id="es-yaxis"><span>1</span><span>0.8</span><span>0.6</span><span>0.4</span><span>0.2</span></div>
+          <div class="plot" id="es-plot">
+            <div class="gl" style="top:2px"></div>
+            <div class="gl" style="top:25%"></div>
+            <div class="gl" style="top:50%"></div>
+            <div class="gl" style="top:75%"></div>
+            <div class="gl" style="top:100%"></div>
           </div>
         </div>
+      </div>
 
-        <div class="col-right">
-          <div class="card cardpad clocked">
-            <div class="card-h">Current clocked-in employees
-              <span class="count">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3.2 2.9-5 5.5-5s4.9 1.8 5.5 5"/><path d="M16 6.5a2.7 2.7 0 0 1 0 5M18.5 19c-.3-2-1.1-3.6-2.3-4.6" stroke-linecap="round"/></svg>
-                0
-              </span>
-            </div>
-            <div class="empty-center">
-              <svg width="86" height="94" viewBox="0 0 86 94" fill="none">
-                <g stroke="#4a4a4a" stroke-width="2" stroke-linecap="round">
-                  <path d="M11 30H5M15 21l-4-4M25 13l-2-5"/>
-                  <path d="M75 34h6M71 24l4-4M61 14l2-5"/>
-                </g>
-                <path d="M22 26h30l13 13v39a4 4 0 0 1-4 4H22a4 4 0 0 1-4-4V30a4 4 0 0 1 4-4z" fill="#585858"/>
-                <path d="M52 26v9a4 4 0 0 0 4 4h9z" fill="#6d6d6d"/>
-                <rect x="31" y="54" width="10" height="4.5" rx="2.25" fill="#4166f6"/>
-                <rect x="45" y="54" width="10" height="4.5" rx="2.25" fill="#4166f6"/>
-              </svg>
-              <div class="cap">No employees have clocked in.</div>
-            </div>
-          </div>
+      <!-- ===== fans & subscriptions (OF live counts) ===== -->
+      <div class="card cardpad" id="fans-card" style="margin-top:20px">
+        <div class="card-h" id="fans-head">Fans &amp; subscriptions
+          <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
+        </div>
+        <div class="fansgrid" id="fansgrid">
+          <div class="fanstile" data-fan="active"><div class="fv">…</div><div class="fl">Active fans</div><div class="fs">OF subscribers.active</div></div>
+          <div class="fanstile" data-fan="new"><div class="fv">…</div><div class="fl">New fans</div><div class="fs">in the selected period</div></div>
+          <div class="fanstile" data-fan="online"><div class="fv">…</div><div class="fl">Online now</div><div class="fs">OF subscribers.activeOnline</div></div>
+          <div class="fanstile" data-fan="expired"><div class="fv">…</div><div class="fl">Expired fans</div><div class="fs">lapsed subscriptions</div></div>
+          <div class="fanstile" data-fan="all"><div class="fv">…</div><div class="fl">All-time fans</div><div class="fs">active + expired + blocked</div></div>
+        </div>
+        <div class="note" id="fans-note"></div>
+      </div>
 
-          <div class="card cardpad">
-            <div class="card-h">Employee sales
-              <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
-            </div>
-            <div class="chart-wrap">
-              <div class="yaxis"><span>1</span><span>0.8</span><span>0.6</span><span>0.4</span><span>0.2</span></div>
-              <div class="plot">
-                <div class="gl" style="top:2px"></div>
-                <div class="gl" style="top:25%"></div>
-                <div class="gl" style="top:50%"></div>
-                <div class="gl" style="top:75%"></div>
-                <div class="gl" style="top:100%"></div>
-              </div>
-            </div>
+      <!-- ===== daily earnings trend (relay ledger) ===== -->
+      <div class="card cardpad" id="trend-card" style="margin-top:20px">
+        <div class="card-h" id="trend-head">Daily earnings
+          <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
+          <span class="chips" id="trend-chips">
+            <button class="chip" data-days="7" type="button">7d</button>
+            <button class="chip on" data-days="30" type="button">30d</button>
+            <button class="chip" data-days="90" type="button">90d</button>
+          </span>
+        </div>
+        <div class="trend-wrap trend-chart">
+          <div class="trend-y" id="trend-y"><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="trend-plot" id="trend-plot">
+            <div class="gl" style="top:2px"></div>
+            <div class="gl" style="top:25%"></div>
+            <div class="gl" style="top:50%"></div>
+            <div class="gl" style="top:75%"></div>
+            <div class="gl" style="top:calc(100% - 28px)"></div>
           </div>
         </div>
+        <div class="note" id="trend-note"></div>
+      </div>
+
+      <!-- ===== creators overview (whole roster) ===== -->
+      <div class="card cardpad" id="cre-card" style="margin-top:20px">
+        <div class="card-h" id="cre-head">Creators overview
+          <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
+          <span class="count" id="cre-count"></span>
+          <span class="cre-tools">
+            <span class="cre-search">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5" stroke-linecap="round"/></svg>
+              <input id="cre-q" type="text" placeholder="Search creators" autocomplete="off">
+            </span>
+            <button class="cre-btn" id="cre-export" type="button" title="Download the rows below as CSV">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3v12M8 11l4 4 4-4M5 21h14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Export CSV
+            </button>
+          </span>
+        </div>
+        <div class="crestats" id="cre-stats">
+          <div class="crestat"><div class="csv" data-cs="creators">…</div><div class="csl">Creators</div><div class="css" data-css="creators"></div></div>
+          <div class="crestat"><div class="csv" data-cs="revenue">…</div><div class="csl">Total revenue</div><div class="css">gross ledger, this window</div></div>
+          <div class="crestat"><div class="csv" data-cs="messages">…</div><div class="csl">Message earnings</div><div class="css">PPV DM unlocks</div></div>
+          <div class="crestat"><div class="csv" data-cs="ppvs">…</div><div class="csl">PPVs sold</div><div class="css">attributed unlocks</div></div>
+        </div>
+        <div class="tblwrap">
+          <table class="ctbl" id="cre-tbl">
+            <thead><tr>
+              <th class="sortable" data-sk="name">Creator<span class="sarr"></span></th>
+              <th class="sortable" data-sk="revenue">Revenue<span class="sarr"></span></th>
+              <th>Split</th>
+              <th class="sortable" data-sk="pending">Pending<span class="sarr"></span></th>
+              <th class="sortable" data-sk="fans">Fans<span class="sarr"></span></th>
+              <th class="sortable" data-sk="new_subs">New subs<span class="sarr"></span></th>
+              <th class="sortable" data-sk="arpu">ARPU<span class="sarr"></span></th>
+              <th class="sortable" data-sk="ltv">LTV<span class="sarr"></span></th>
+              <th class="sortable" data-sk="msgs">Msgs<span class="sarr"></span></th>
+              <th class="sortable" data-sk="ppvs">PPVs sold<span class="sarr"></span></th>
+            </tr></thead>
+            <tbody id="cre-body"></tbody>
+          </table>
+        </div>
+        <div class="note" id="cre-note"></div>
+      </div>
+
+      <!-- ===== Team (shifts & clock-in) — no relay backend yet, so this is a
+           single compact strip below the live data rather than two fold-eating
+           empty cards. ===== -->
+      <div class="card teamstrip" id="team-strip" style="margin-top:20px">
+        <div class="teamstrip-ico">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3.2 2.9-5 5.5-5s4.9 1.8 5.5 5"/><path d="M16 6.5a2.7 2.7 0 0 1 0 5M18.5 19c-.3-2-1.1-3.6-2.3-4.6" stroke-linecap="round"/></svg>
+        </div>
+        <div class="teamstrip-txt">
+          <div class="teamstrip-t" id="team-head">Team &middot; shifts &amp; clock-in</div>
+          <div class="teamstrip-s">My shifts and live clocked-in employees will appear here once shift tracking is wired up.</div>
+        </div>
+        <a class="teamstrip-link" href="employees-shift.html">
+          Shift schedule
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
       </div>
 
     </main>
@@ -537,5 +738,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="dashboard.js"></script>
 </body>
 </html>

@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>Infloww — Smart Messages</title>
+<!-- the relay serves no /favicon.ico, so Chrome's implicit request 404s and
+     lands in the console as an error on every page. Blank data-URI icon = no request. -->
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +32,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +47,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +89,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -345,6 +346,51 @@
   .nav-item.active{background:#1c1c1c;border:1px solid #2b2b2b;color:#fff;box-shadow:0 1px 0 rgba(255,255,255,.04), 0 2px 8px rgba(0,0,0,.4)}
   .nav-item.active .ico{color:#fff}
   .spacer{flex:1}
+
+  /* ==== additive: real filters, row status + row actions (Infloww palette) ==== */
+  .sm-sel,.sm-date{height:46px;padding:0 12px;background:#141414;border:1px solid #2b2b2b;border-radius:9px;
+    color:#cfcfcf;font-family:inherit;font-size:14.5px;outline:0}
+  .sm-sel{appearance:none;-webkit-appearance:none;cursor:pointer;padding-right:32px;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2'><path d='M6 9l6 6 6-6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat:no-repeat;background-position:right 10px center}
+  .sm-sel:focus,.sm-date:focus{border-color:#4166f6}
+  .sm-date{color-scheme:dark;width:140px}
+  .sm-tag{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:7px;font-size:11.5px;font-weight:600;white-space:nowrap}
+  .sm-tag.ok{background:rgba(103,209,174,.12);color:#67d1ae}
+  .sm-tag.err{background:rgba(224,91,91,.12);color:#e05b5b}
+  .sm-tag.mut{background:#1f1f1f;color:#8a8a8a}
+  .sm-tag.blue{background:rgba(65,102,246,.14);color:#8fa6ff}
+  .sm-act{padding:5px 10px;border:1px solid #333;border-radius:7px;background:transparent;color:#cfcfcf;
+    font:500 12.5px Inter,sans-serif;cursor:pointer}
+  .sm-act:hover{border-color:#4166f6;color:#fff}
+  .sm-act.danger:hover{border-color:#e05b5b;color:#e05b5b}
+  .sm-sub{display:block;font-size:12px;color:#8a8a8a;margin-top:5px;line-height:1.45}
+  /* .gbody is a flex column; with 17 rows the 58px header shrank to 0. */
+  .gbody > .fbar,.gbody > .thead,.gbody > #sm-rows{flex:0 0 auto}
+  .ft-modal .sm-f{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+  .ft-modal .sm-f > span{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#8a8a8a}
+  .ft-modal .sm-f input[type=text],.ft-modal .sm-f input[type=number],.ft-modal .sm-f select,.ft-modal .sm-f textarea{
+    width:100%;box-sizing:border-box;background:#1c1c1c;border:1px solid #333;color:#fff;border-radius:8px;
+    padding:8px 10px;font:13px Inter,sans-serif;margin:0}
+  .ft-modal .sm-f textarea{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+  .ft-modal .sm-hint{font-size:11px;color:#8a8a8a;line-height:1.45}
+  .ft-modal .sm-row{display:flex;gap:10px}
+  .ft-modal .sm-chk{display:flex;align-items:center;gap:8px;font-size:13px;color:#e6e6e6;cursor:pointer;margin-bottom:10px}
+  .ft-modal .sm-chk input{width:16px;height:16px;accent-color:#4166f6;margin:0}
+  /* live summary strip — leads the tab */
+  #sm-summary{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:22px}
+  #sm-summary:empty{display:none}
+  .sm-stat{flex:1;min-width:150px;background:#161616;border:1px solid #262626;border-radius:11px;padding:14px 18px}
+  .sm-stat-v{font-size:26px;font-weight:700;line-height:1.1;letter-spacing:-.5px}
+  .sm-stat-l{font-size:12.5px;color:#8a8a8a;margin-top:6px}
+  .sm-refresh{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 16px;border:1px solid #333;
+    border-radius:10px;background:transparent;color:#e6e6e6;font:500 15px Inter,sans-serif;cursor:pointer}
+  .sm-refresh:hover{border-color:#4166f6}
+  .sm-refresh.spin svg{animation:sm-spin .8s linear infinite}
+  @keyframes sm-spin{to{transform:rotate(360deg)}}
+  /* reserve a right gutter so row action buttons clear the fixed help bubble
+     (bottom-right, ~78px from the edge) instead of being covered ("Edi…"). */
+  .gbody{padding-right:88px}
 </style>
 <style id="canon-sb2">
   /* canonical sidebar: nav scrolls, footer pinned */
@@ -380,7 +426,6 @@
 <div class="app">
 
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/></svg></div>
     <div class="trial"><b>You're on a free trial</b><span>7 days left</span></div>
     <div class="modelswap" id="modelswap">
@@ -432,7 +477,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -463,16 +508,20 @@
       <div class="gbody">
         <div class="fbar">
           <div class="inp" style="width:440px;flex:0 0 440px"><input placeholder="Search message"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2" stroke-linecap="round"/></svg></div>
-          <div class="fld"><label>Status:</label><div class="inp sel" style="width:200px">All<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
-          <div class="fld"><label>Trigger:</label><div class="inp sel" style="width:220px">All<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
+          <div class="fld"><label>Status:</label><select class="sm-sel" id="sm-fstatus" style="width:200px">
+            <option value="">All</option><option value="on">Running</option><option value="off">Off</option>
+            <option value="ok">Last run OK</option><option value="error">Last run errored</option>
+            <option value="never">Never run</option><option value="queued">Job queued</option>
+          </select></div>
+          <div class="fld"><label>Trigger:</label><select class="sm-sel" id="sm-ftrigger" style="width:240px"><option value="">All</option></select></div>
           <div class="fld"><label>Sent to:</label><div class="inp sel" style="width:190px">All<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
           <div class="fld"><label>Start date:</label><div class="inp" style="width:300px"><span class="mut">Start date</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7a7a7a" stroke-width="1.8" style="margin:0 8px"><path d="M4 12h14M13 7l5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="mut">End date</span><span style="margin-left:auto"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#7a7a7a" stroke-width="1.7"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 9h16M8 3v4M16 3v4" stroke-linecap="round"/></svg></span></div></div>
-          <div class="fld"><label>Date created:</label><div class="inp" style="width:300px"><span class="mut">Start date</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7a7a7a" stroke-width="1.8" style="margin:0 8px"><path d="M4 12h14M13 7l5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="mut">End date</span><span style="margin-left:auto"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#7a7a7a" stroke-width="1.7"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 9h16M8 3v4M16 3v4" stroke-linecap="round"/></svg></span></div></div>
+          <div class="fld"><label>Date created:</label><input class="sm-date" type="date" data-sm="cfrom"><span style="color:#7a7a7a">→</span><input class="sm-date" type="date" data-sm="cto"></div>
           <div class="fld"><label>Created by:</label><div class="inp sel" style="width:180px">All<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
-          <button class="btn-out">Reset</button>
-          <button class="btn-blue" style="padding:0 26px">Search</button>
+          <button class="btn-out" id="sm-reset">Reset</button>
+          <button class="btn-blue" id="sm-search" style="padding:0 26px">Search</button>
         </div>
-        <div class="thead"><div class="th" style="flex:1">Messages</div><div class="th" style="width:170px">Status</div><div class="th" style="width:190px">Trigger</div><div class="th" style="width:150px">Sent</div><div class="th" style="width:140px">Purchased</div><div class="actcol" style="width:130px">Actions</div></div>
+        <div class="thead"><div class="th" style="flex:1;min-width:0">Messages</div><div class="th" style="width:200px">Status</div><div class="th" style="width:200px">Trigger</div><div class="th" style="width:130px">Sent</div><div class="th" style="width:120px">Purchased</div><div class="actcol" style="width:160px">Actions</div></div>
         <div class="empty"><svg width="92" height="96" viewBox="0 0 92 96" fill="none">
   <g stroke="#3a3a3a" stroke-width="2" stroke-linecap="round"><path d="M22 12l-3-6M33 8l-1-5M11 22l-6-2"/><path d="M70 12l3-6M59 8l1-5M81 22l6-2"/></g>
   <path d="M28 22h26l12 12v34a4 4 0 0 1-4 4H28a4 4 0 0 1-4-4V26a4 4 0 0 1 4-4z" fill="#5a5a5a"/>
@@ -488,6 +537,7 @@
 
 </div>
 
+<script src="_shared/fastt.js"></script>
 <script>
   function toggleSub(e){e.preventDefault();e.stopPropagation();var s=document.getElementById('growthSub');var c=document.getElementById('growthChev');var open=s.style.display!=='none';s.style.display=open?'none':'flex';c.style.transform=open?'rotate(0deg)':'rotate(180deg)';return false;}
   function tab(el){el.parentNode.querySelectorAll('.gtab,.ptab,.sbtab').forEach(function(x){x.classList.remove('on')});el.classList.add('on');}
@@ -543,5 +593,6 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="growth-smart-messages.js" id="wire-js"></script>
 </body>
 </html>

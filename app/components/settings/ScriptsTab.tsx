@@ -15,7 +15,7 @@
  * the other's keys.
  */
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Bot, Play, Plus, Save, X } from "lucide-react";
 
 import { Badge, Button, Card } from "@/components/ui/primitives";
@@ -36,6 +36,14 @@ import {
 import ReengageBuyersTab from "@/components/settings/ReengageBuyersTab";
 import MakeRightTab from "@/components/settings/MakeRightTab";
 import type { AiChatterConfig } from "@/hooks/useCatalog";
+
+// Proven-spender cap floor: the two windows the UI edits, with the display/seed
+// defaults. THE in-file home for these numbers — the render maps over this table
+// (the same defaults live server-side in ai_chatter's config table).
+const SPEND_RULES = [
+  { days: 30, dollars: 10, cap: 10 },
+  { days: 7, dollars: 100, cap: 15 },
+] as const;
 
 export default function ScriptsTab({ accountId }: { accountId: string | null }) {
   const cfgQ = useAiChatterConfig(accountId);
@@ -218,20 +226,16 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
     tier: "baseline" | "buying_signal" | "no_signal" | "pic_sent", n: number,
   ) => set({ msg_limits_by_signal: { ...(cfg.msg_limits_by_signal ?? {}), [tier]: n } });
 
-  // Proven-spender cap floor (item 21b). Two fixed windows (30d, 7d); each row edits
-  // either the dollar threshold or the cap for its window. Always write the WHOLE list
-  // (the server shallow-merges the config, so a partial list would drop the other rule).
+  // Proven-spender cap floor (item 21b). Each row edits either the dollar
+  // threshold or the cap for its window. Always write the WHOLE list (the server
+  // shallow-merges the config, so a partial list would drop the other rule).
   // A row whose threshold or cap is cleared to 0 is inert server-side (never caps at 0).
-  const SPEND_RULES = [
-    { days: 30, dollars: 10, cap: 10 },
-    { days: 7, dollars: 100, cap: 15 },
-  ] as const;
   const spendRule = (days: number) =>
     (cfg.msg_limits_by_spend ?? []).find((r) => r.days === days);
   const setSpend = (days: number, patch: { min_cents?: number; cap?: number }) => {
-    const dflt = SPEND_RULES.find((r) => r.days === days)!;
+    const rule = SPEND_RULES.find((r) => r.days === days)!;
     const cur = spendRule(days) ??
-      { days, min_cents: dflt.dollars * 100, cap: dflt.cap };
+      { days, min_cents: rule.dollars * 100, cap: rule.cap };
     const next = { ...cur, ...patch };
     const rest = (cfg.msg_limits_by_spend ?? []).filter((r) => r.days !== days);
     set({ msg_limits_by_spend: [...rest, next].sort((a, b) => b.days - a.days) });
@@ -440,34 +444,24 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
                 least this cap (only ever raises it; 0 = off)
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <label className="space-y-1">
-                  <div className="text-fg-dim text-xs">Spent $ in last 30 days</div>
-                  <input type="number" className={`${INPUT} w-full`} min={0}
-                    value={Math.round((spendRule(30)?.min_cents ?? 1000) / 100)}
-                    onChange={(e) => setSpend(30, {
-                      min_cents: parseInt(e.target.value || "0", 10) * 100 })} />
-                </label>
-                <label className="space-y-1">
-                  <div className="text-fg-dim text-xs">→ cap</div>
-                  <input type="number" className={`${INPUT} w-full`} min={0}
-                    value={spendRule(30)?.cap ?? 10}
-                    onChange={(e) => setSpend(30, {
-                      cap: parseInt(e.target.value || "0", 10) })} />
-                </label>
-                <label className="space-y-1">
-                  <div className="text-fg-dim text-xs">Spent $ in last 7 days</div>
-                  <input type="number" className={`${INPUT} w-full`} min={0}
-                    value={Math.round((spendRule(7)?.min_cents ?? 10000) / 100)}
-                    onChange={(e) => setSpend(7, {
-                      min_cents: parseInt(e.target.value || "0", 10) * 100 })} />
-                </label>
-                <label className="space-y-1">
-                  <div className="text-fg-dim text-xs">→ cap</div>
-                  <input type="number" className={`${INPUT} w-full`} min={0}
-                    value={spendRule(7)?.cap ?? 15}
-                    onChange={(e) => setSpend(7, {
-                      cap: parseInt(e.target.value || "0", 10) })} />
-                </label>
+                {SPEND_RULES.map(({ days, dollars: dflt, cap }) => (
+                  <Fragment key={days}>
+                    <label className="space-y-1">
+                      <div className="text-fg-dim text-xs">Spent $ in last {days} days</div>
+                      <input type="number" className={`${INPUT} w-full`} min={0}
+                        value={Math.round((spendRule(days)?.min_cents ?? dflt * 100) / 100)}
+                        onChange={(e) => setSpend(days, {
+                          min_cents: parseInt(e.target.value || "0", 10) * 100 })} />
+                    </label>
+                    <label className="space-y-1">
+                      <div className="text-fg-dim text-xs">→ cap</div>
+                      <input type="number" className={`${INPUT} w-full`} min={0}
+                        value={spendRule(days)?.cap ?? cap}
+                        onChange={(e) => setSpend(days, {
+                          cap: parseInt(e.target.value || "0", 10) })} />
+                    </label>
+                  </Fragment>
+                ))}
               </div>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

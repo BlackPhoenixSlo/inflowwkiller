@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Welcome</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -399,9 +398,94 @@
   .wk-slot .nm{font-size:13px;font-weight:600;color:#ddd}
   .wk-slot .tr{font-size:11.5px;color:var(--muted2);margin-top:1px}
   .wk-slot .fx-input{height:34px}
-  .wk-img{display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 10px;border:1px solid var(--border);
+  .wk-img{display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 6px 0 5px;border:1px solid var(--border);
     border-radius:9px;background:#161616;font-size:12.5px;color:#b9b9b9;cursor:pointer;white-space:nowrap;overflow:hidden}
-  .wk-thumb{width:22px;height:22px;border-radius:6px;flex:0 0 auto}
+  .wk-img:hover{border-color:#4a4a4a;color:#fff}
+  .wk-thumb{width:24px;height:24px;border-radius:6px;flex:0 0 auto;object-fit:cover;display:block;
+    background:#242424;border:1px solid #2c2c2c}
+  .wk-img .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .wk-x{width:22px;height:22px;border-radius:6px;flex:0 0 auto;display:none;align-items:center;justify-content:center;
+    color:var(--muted2);font-size:13px;line-height:1;border:1px solid transparent}
+  .wk-img.has .wk-x{display:flex}
+  .wk-x:hover{color:#e5735b;border-color:#4a2a2a}
+
+  /* cadence knob, always visible next to the enable switch (mirrors BrainPanel) */
+  .wk-every-wrap{display:inline-flex;align-items:center;gap:7px;margin-right:14px;flex:0 0 auto;
+    font-size:12.5px;color:var(--muted);white-space:nowrap}
+  .wk-every-wrap .fx-input{width:56px;height:30px;text-align:center;font-size:13px;padding:0 6px}
+
+  /* prose hints: .fx-kv is a flex row, which shreds inline <b>/<a> runs */
+  .fx-kv.wk-hint{display:block;line-height:1.55}
+  .fx-kv.wk-hint b{color:#ddd;font-weight:600}
+
+  /* live-preview attachment */
+  .wk-photo img{width:100%;height:100%;object-fit:cover;display:block}
+  .wk-photo.ph{background:#1c1c1c;border:1px dashed #3a3a3a;display:flex;align-items:center;
+    justify-content:center;color:var(--muted2);font-size:11.5px}
+  .wk-photo.ph span{position:static;background:transparent;padding:0 12px;text-align:center;
+    color:var(--muted2);font-weight:500;line-height:1.4}
+
+  /* preview fan targeting row */
+  .wk-target{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+  .wk-target .fx-input{height:32px;font-size:12.5px;width:150px}
+  .wk-target .lb{font-size:12px;color:var(--muted)}
+
+  /* last-sweep panel */
+  .wk-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:4px}
+  .wk-stat{background:#1c1c1c;border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px}
+  .wk-stat b{display:block;font-size:19px;font-weight:700;color:#fff;line-height:1.2;letter-spacing:-.3px}
+  .wk-stat b.zero{color:#6a6a6a}
+  .wk-stat span{display:block;font-size:11.5px;color:var(--muted);margin-top:3px;line-height:1.35}
+  .wk-runs{display:flex;flex-direction:column;gap:6px;margin-top:14px}
+  .wk-run{display:flex;align-items:center;gap:10px;background:#1c1c1c;border:1px solid var(--border-soft);
+    border-radius:9px;padding:7px 11px;font-size:12.5px;color:#c9c9c9}
+  .wk-run i{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:#5a5a5a}
+  .wk-run i.ok{background:#3ec46a}.wk-run i.err{background:#f2295b}
+  .wk-run .ago{color:var(--muted)}
+  .wk-run .num{margin-left:auto;color:var(--muted);font-variant-numeric:tabular-nums}
+  .wk-empty{background:#1c1c1c;border:1px dashed #3a3a3a;border-radius:10px;padding:18px;
+    text-align:center;color:var(--muted);font-size:13px;line-height:1.5}
+
+  /* OF native-welcome cross-check */
+  .ofw-quote{display:flex;gap:12px;align-items:flex-start;background:#1c1c1c;border:1px solid var(--border-soft);
+    border-radius:10px;padding:12px 14px;margin-bottom:12px}
+  .ofw-quote .qmark{font-size:22px;line-height:1;color:var(--muted2);flex:0 0 auto;margin-top:-2px}
+  .ofw-qcol{min-width:0}
+  .ofw-qtext{font-size:14px;line-height:1.5;color:#e9e9e9;white-space:pre-wrap;word-break:break-word}
+  .ofw-qmeta{font-size:11.5px;color:var(--muted2);margin-top:6px}
+  .ofw-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:2px}
+
+  /* vault picker modal */
+  .vp-back{position:fixed;inset:0;background:rgba(0,0,0,.66);z-index:9998;display:flex;
+    align-items:center;justify-content:center;font-family:'Inter',sans-serif}
+  .vp{background:#262626;border:1px solid var(--border);border-radius:14px;width:840px;max-width:94vw;
+    max-height:86vh;display:flex;flex-direction:column;overflow:hidden}
+  .vp-h{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--border);
+    font-size:15px;font-weight:600;color:#fff}
+  .vp-h .sub{font-size:12.5px;font-weight:400;color:var(--muted)}
+  .vp-h .x{margin-left:auto;cursor:pointer;color:var(--muted);font-size:19px;line-height:1;padding:0 4px}
+  .vp-h .x:hover{color:#fff}
+  .vp-body{display:flex;min-height:0;flex:1}
+  .vp-folders{width:220px;flex:0 0 220px;border-right:1px solid var(--border);overflow-y:auto;padding:8px}
+  .vp-f{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;cursor:pointer;
+    font-size:13px;color:#c9c9c9}
+  .vp-f:hover{background:#1c1c1c}
+  .vp-f.on{background:rgba(65,102,246,.13);color:#c9d3ff;outline:1px solid rgba(65,102,246,.35)}
+  .vp-f .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .vp-f .c{font-size:11.5px;color:var(--muted2);flex:0 0 auto}
+  .vp-f .star{color:#e0b35c;flex:0 0 auto;font-size:11px}
+  .vp-grid{flex:1;min-width:0;overflow-y:auto;padding:12px;display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:10px;align-content:start}
+  .vp-cell{position:relative;aspect-ratio:1;border-radius:9px;overflow:hidden;border:1px solid #2c2c2c;
+    background:#1c1c1c;cursor:pointer}
+  .vp-cell img{width:100%;height:100%;object-fit:cover;display:block}
+  .vp-cell:hover{border-color:var(--accent)}
+  .vp-cell.sel{border-color:var(--accent);box-shadow:0 0 0 2px rgba(65,102,246,.4)}
+  .vp-cell .id{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);color:#cfcfcf;
+    font-size:10px;padding:2px 5px;text-align:center}
+  .vp-msg{grid-column:1/-1;padding:26px;text-align:center;color:var(--muted);font-size:13px}
+  .vp-foot{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border);
+    font-size:12.5px;color:var(--muted)}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -432,7 +516,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -511,7 +594,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -550,64 +633,101 @@
       <div class="wk-sub">The first DM every new subscriber gets — greeted by name, time-aware, photo attached, paced like real typing.</div>
 
       <div class="fx-status">
-        <span class="fx-st ok"><i></i>Running</span>
-        <span class="fx-st"><i></i>Checks the sub feed every 5 min</span>
-        <span class="fx-st"><i></i>61 welcomed this week</span>
-        <span class="fx-st"><i></i>Last welcome 12 min ago</span>
-        <span class="fx-st"><i></i>DeepSeek V4 Flash</span>
+        <span class="fx-st ok" id="st-run"><i></i>Loading…</span>
+        <span class="fx-st" id="st-every"><i></i>Checks the sub feed every …</span>
+        <span class="fx-st" id="st-week"><i></i>… welcomed this week</span>
+        <span class="fx-st" id="st-last"><i></i>Last run …</span>
+        <span class="fx-st" id="st-model"><i></i>…</span>
       </div>
 
       <!-- ===== primary: the toggle ===== -->
-      <div class="fx-togglecard on">
+      <div class="fx-togglecard on" id="wk-card">
         <div class="fx-tc-row">
           <div class="fx-tc-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></div>
           <div class="fx-tc-body">
             <div class="fx-tc-title">Welcome every new subscriber</div>
             <div class="fx-tc-desc">Within ~5 minutes of subscribing, every new fan gets a short hello in her voice — two paced bubbles, photo on the first. Regulars whose renewal shows up in the feed are never re-welcomed.</div>
           </div>
-          <span class="fx-tc-state">Running</span>
-          <span class="fx-switch on"></span>
+          <span class="wk-every-wrap" title="How often the sub feed is checked for new subscribers (rule cadence)">
+            <span>Check every</span>
+            <input class="fx-input" id="wk-every" value="">
+            <span>min</span>
+          </span>
+          <span class="fx-tc-state" id="wk-state">…</span>
+          <span class="fx-switch on" id="wk-enable"></span>
         </div>
         <div class="fx-tc-knobs">
-          <label class="fx-check on"><span class="bx"></span>Attach a photo per time slot <span class="sub">rides on the first bubble</span></label>
-          <div class="fx-kv"><b>61</b> welcomed this week · next feed check in <b>3 min</b></div>
+          <label class="fx-check on" id="wk-photo-check"><span class="bx"></span>Attach a photo per time slot <span class="sub">rides on the first bubble</span></label>
+          <div class="fx-kv wk-hint" id="wk-kv"><b>…</b> welcomed this week · next feed check <b>…</b></div>
         </div>
       </div>
 
+      <!-- ===== OnlyFans' own welcome (cross-check) ===== -->
+      <div class="fx-card" id="ofw-card">
+        <div class="fx-card-h">OnlyFans’ own welcome
+          <span class="fx-st" id="ofw-state" style="height:24px"><i></i>…</span>
+          <span style="margin-left:auto;font-size:12px;font-weight:500;color:var(--muted)" id="ofw-meta">loading…</span>
+        </div>
+        <div class="fx-card-sub" style="margin-bottom:12px">OnlyFans can fire its own <b>fixed</b> auto-reply the instant someone subscribes — the one set in <a href="onboarding-templates.html" style="color:#7d97f8;text-decoration:none">Templates</a>. It runs <b>separately</b> from the AI welcome above, so if both are on a new sub gets two hellos.</div>
+        <div id="ofw-body"></div>
+      </div>
+
       <!-- ===== live preview ===== -->
-      <div class="fx-card">
+      <div class="fx-card" id="pv-card">
         <div class="fx-card-h">Live preview
-          <span style="margin-left:auto;font-size:12px;font-weight:500;color:var(--muted)">8:12 AM her time · morning slot</span>
+          <span style="margin-left:auto;font-size:12px;font-weight:500;color:var(--muted)" id="pv-meta">loading…</span>
         </div>
         <div class="fx-card-sub" style="margin-bottom:12px">Exactly what a brand-new sub sees. Pick a time slot to see how her line changes through the day.</div>
 
         <div class="wk-meta">
-          <div class="fx-chips" data-single>
-            <span class="fx-chip on">☀️ 5–9am</span><span class="fx-chip">9–12</span><span class="fx-chip">12–3pm</span><span class="fx-chip">3–6pm</span><span class="fx-chip">6–9pm</span><span class="fx-chip">🌙 Night</span>
+          <div class="fx-chips" data-single id="pv-chips">
+            <span class="fx-chip on" data-slot="morning_1">☀️ 5–9am</span><span class="fx-chip" data-slot="morning_2">9–12</span><span class="fx-chip" data-slot="afternoon_1">12–3pm</span><span class="fx-chip" data-slot="afternoon_2">3–6pm</span><span class="fx-chip" data-slot="evening">6–9pm</span><span class="fx-chip" data-slot="night">🌙 Night</span>
           </div>
         </div>
 
+        <div class="wk-target">
+          <span class="lb">Preview for</span>
+          <input class="fx-input" id="pv-name-in" placeholder="a name, e.g. Marcus" value="">
+          <span class="lb">or fan id</span>
+          <input class="fx-input" id="pv-fan-in" placeholder="e.g. 453746631" value="">
+          <button class="fx-btn ghost" id="pv-apply" style="height:32px;font-size:12.5px">Compose</button>
+          <button class="fx-btn ghost" id="pv-clear-target" style="height:32px;font-size:12.5px;display:none">Back to the stand-in</button>
+        </div>
+
         <div class="wk-chat">
-          <div class="wk-av">A</div>
+          <div class="wk-av" id="pv-av">A</div>
           <div class="wk-col">
-            <div class="wk-name">Aria · to a new sub · just now</div>
-            <div class="wk-b">
-              <div class="wk-photo"><span>☀️ morning slot photo</span></div>
-              Hello there, handsome 😏
+            <div class="wk-name" id="pv-name">loading preview…</div>
+            <div class="wk-b" id="pv-b1">
+              <div class="wk-photo ph" id="pv-photo"><span id="pv-photo-ph">no photo for this slot</span></div>
+              <div class="wk-time" id="pv-photo-label" style="margin:-2px 0 6px"></div>
+              <span id="pv-b1-text">…</span>
             </div>
-            <div class="wk-b">just woke up and made myself a coffee ☕</div>
-            <div class="wk-b">what got you here so early?</div>
+            <div class="wk-b" id="pv-b2">…</div>
+            <div class="wk-b" id="pv-b3" style="display:none"></div>
             <div class="wk-time">each bubble is held for its real typing time — “…is typing” shows in between</div>
           </div>
         </div>
 
         <div class="wk-actions">
-          <button class="fx-btn ghost"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 1 1-2.3-5.7" stroke-linecap="round"/><path d="M20 3v4h-4" stroke-linecap="round" stroke-linejoin="round"/></svg>Regenerate</button>
-          <button class="fx-btn ghost">📌 Pin this line</button>
-          <span class="fx-chip on">📌 Morning pinned: “just woke up and made myself a coffee ☕”</span>
+          <button class="fx-btn ghost" id="pv-regen"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 1 1-2.3-5.7" stroke-linecap="round"/><path d="M20 3v4h-4" stroke-linecap="round" stroke-linejoin="round"/></svg>Regenerate</button>
+          <button class="fx-btn ghost" id="pv-pin">📌 Pin this line</button>
+          <span class="fx-chip on" id="pv-pinned" style="display:none"></span>
         </div>
 
+        <div class="fx-note warn" id="pv-restyle-warn" style="margin-top:12px;display:none"></div>
+
         <div class="fx-note" style="margin-top:14px">A pinned line ships exactly as approved — the weekday refreshes itself and the AI never rerolls it. Regenerate to sample a fresh one, then pin the keeper.</div>
+      </div>
+
+      <!-- ===== last sweep ===== -->
+      <div class="fx-card" id="wk-lastrun">
+        <div class="fx-card-h">Last sweep
+          <span style="margin-left:auto;font-size:12px;font-weight:500;color:var(--muted)" id="wk-lr-meta">loading…</span>
+        </div>
+        <div class="fx-card-sub" style="margin-bottom:12px">What the welcome pass actually did the last time it ran — and why a fan did or didn’t get a hello.</div>
+        <div class="wk-stats" id="wk-lr-stats"></div>
+        <div class="wk-runs" id="wk-lr-runs"></div>
       </div>
 
       <!-- ===== advanced ===== -->
@@ -621,66 +741,64 @@
           <div class="fx-adv-body" id="adv-welcome">
 
             <div class="fx-adv-group"><h4>Time-slot lines &amp; photos</h4>
-              <div class="wk-slots">
+              <div class="wk-slots" id="wk-slots">
                 <div class="wk-slot">
                   <div><div class="nm">Early morning</div><div class="tr">5–9am</div></div>
-                  <input class="fx-input" value="just woke up and made myself a coffee ☕">
-                  <span class="wk-img"><span class="wk-thumb" style="background:linear-gradient(150deg,#f9c46b,#ec6b9b)"></span>photo #201</span>
+                  <input class="fx-input" data-slot="morning_1" value="">
+                  <span class="wk-img" data-pick="morning_1"><img class="wk-thumb" alt="" data-thumb="morning_1"><span class="lbl" data-img="morning_1">…</span><span class="wk-x" data-clear="morning_1" title="Back to auto">✕</span></span>
                 </div>
                 <div class="wk-slot">
                   <div><div class="nm">Morning</div><div class="tr">9am–12</div></div>
-                  <input class="fx-input" value="doing my makeup before a shoot 💄">
-                  <span class="wk-img"><span class="wk-thumb" style="background:linear-gradient(150deg,#6bd3f9,#4166f6)"></span>photo #202</span>
+                  <input class="fx-input" data-slot="morning_2" value="">
+                  <span class="wk-img" data-pick="morning_2"><img class="wk-thumb" alt="" data-thumb="morning_2"><span class="lbl" data-img="morning_2">…</span><span class="wk-x" data-clear="morning_2" title="Back to auto">✕</span></span>
                 </div>
                 <div class="wk-slot">
                   <div><div class="nm">Early afternoon</div><div class="tr">12–3pm</div></div>
-                  <input class="fx-input" value="out grabbing lunch in the sun 🥗">
-                  <span class="wk-img"><span class="wk-thumb" style="background:linear-gradient(150deg,#67d1ae,#3b82f6)"></span>photo #203</span>
+                  <input class="fx-input" data-slot="afternoon_1" value="">
+                  <span class="wk-img" data-pick="afternoon_1"><img class="wk-thumb" alt="" data-thumb="afternoon_1"><span class="lbl" data-img="afternoon_1">…</span><span class="wk-x" data-clear="afternoon_1" title="Back to auto">✕</span></span>
                 </div>
                 <div class="wk-slot">
                   <div><div class="nm">Late afternoon</div><div class="tr">3–6pm</div></div>
-                  <input class="fx-input" value="just got back from the gym 🏃‍♀️">
-                  <span class="wk-img"><span class="wk-thumb" style="background:linear-gradient(150deg,#f9976b,#ec4b9b)"></span>photo #204</span>
+                  <input class="fx-input" data-slot="afternoon_2" value="">
+                  <span class="wk-img" data-pick="afternoon_2"><img class="wk-thumb" alt="" data-thumb="afternoon_2"><span class="lbl" data-img="afternoon_2">…</span><span class="wk-x" data-clear="afternoon_2" title="Back to auto">✕</span></span>
                 </div>
                 <div class="wk-slot">
                   <div><div class="nm">Evening</div><div class="tr">6–9pm</div></div>
-                  <input class="fx-input" value="cooking dinner and picking a movie 🍝">
-                  <span class="wk-img"><span class="wk-thumb" style="background:linear-gradient(150deg,#8b5cf6,#ec4b9b)"></span>photo #205</span>
+                  <input class="fx-input" data-slot="evening" value="">
+                  <span class="wk-img" data-pick="evening"><img class="wk-thumb" alt="" data-thumb="evening"><span class="lbl" data-img="evening">…</span><span class="wk-x" data-clear="evening" title="Back to auto">✕</span></span>
                 </div>
                 <div class="wk-slot">
                   <div><div class="nm">Night</div><div class="tr">9pm–5am</div></div>
-                  <input class="fx-input" value="in bed scrolling, can't sleep 🌙">
-                  <span class="wk-img"><span class="wk-thumb" style="background:linear-gradient(150deg,#1d2b64,#4166f6)"></span>auto · “Welcome” folder</span>
+                  <input class="fx-input" data-slot="night" value="">
+                  <span class="wk-img" data-pick="night"><img class="wk-thumb" alt="" data-thumb="night"><span class="lbl" data-img="night">…</span><span class="wk-x" data-clear="night" title="Back to auto">✕</span></span>
                 </div>
               </div>
-              <div class="fx-kv" style="margin-top:8px">The slot photo rides on the greeting bubble. Slots on <b>auto</b> pick from your “Welcome” vault folder by time of day.</div>
+              <div class="fx-kv wk-hint" style="margin-top:8px" id="wk-folder-hint">The slot photo rides on the greeting bubble. Click a thumbnail to pick from the vault, ✕ to put the slot back on auto.</div>
             </div>
 
             <div class="fx-adv-group"><h4>Welcome rules</h4>
-              <textarea class="fx-input" style="min-height:96px">keep it to 2 short bubbles, casual texting tone
-never say the word welcome twice
-mention what you're doing right now, like you just looked up from it
-end with one light question so he has something easy to answer</textarea>
-              <div class="fx-kv" style="margin-top:6px">Persona &amp; texting voice come from <a href="ai-brain.html" style="color:#7d97f8;text-decoration:none">Brain &amp; Persona</a> · saved snippets live in <a href="onboarding-templates.html" style="color:#7d97f8;text-decoration:none">Templates</a>.</div>
+              <textarea class="fx-input" style="min-height:96px" id="wk-rules" placeholder="loading…"></textarea>
+              <div class="fx-kv wk-hint" style="margin-top:6px">Persona &amp; texting voice come from <a href="ai-brain.html" style="color:#7d97f8;text-decoration:none">Brain &amp; Persona</a> · saved snippets live in <a href="onboarding-templates.html" style="color:#7d97f8;text-decoration:none">Templates</a>.</div>
             </div>
 
             <div class="fx-adv-group"><h4>Names &amp; voice</h4>
-              <div class="fx-note" style="margin-bottom:12px">Uses the fan's name when OF provides it — ~80% arrive with none. A real name gets the signature stutter hello (“Hey S-S-S-Sweet Sam ! !!”); a bare handle or number gets a playful riff instead.</div>
-              <label class="fx-check on"><span class="bx"></span>AI-restyle the activity line into her texting voice <span class="sub">one cached call per slot · fans already chatting get a fresh line</span></label>
+              <div class="fx-note" style="margin-bottom:12px">Uses the fan's name when OF provides it. A real name gets the signature stutter hello (“Hey S-S-S-Sweet Sam ! !!”); a bare handle or number gets a playful riff instead — type a name or a fan id into the live preview above to see either path.</div>
+              <label class="fx-check on" id="wk-restyle"><span class="bx"></span>AI-restyle the activity line into her texting voice <span class="sub">one cached call per slot · fans already chatting get a fresh line</span></label>
               <div class="fx-grid2" style="margin-top:12px">
-                <div class="fx-field"><label>Model</label>
-                  <select class="fx-select"><option>DeepSeek V4 Flash</option><option>DeepSeek Chat</option><option>DeepSeek Reasoner</option></select>
+                <div class="fx-field"><label>Model for the welcome <span style="color:var(--muted2);font-weight:400">this automation only</span></label>
+                  <select class="fx-select" id="wk-model"><option>loading…</option></select>
+                  <div class="fx-kv wk-hint" id="wk-model-hint" style="padding-top:2px">…</div>
                 </div>
               </div>
             </div>
 
             <div class="fx-adv-group" style="margin-bottom:4px"><h4>Pacing &amp; safety</h4>
               <div class="fx-grid3">
-                <div class="fx-field"><label>Max welcomes per check</label><input class="fx-input" value="25"></div>
-                <div class="fx-field"><label>Feed items scanned per check</label><input class="fx-input" value="50"></div>
-                <div class="fx-field"><label>Contact-guard window (hrs)</label><input class="fx-input" value="12"></div>
-                <div class="fx-field"><label>“Regular” after this many sent msgs</label><input class="fx-input" value="2"></div>
-                <div class="fx-field"><label>“Regular” after this many fan msgs</label><input class="fx-input" value="8"></div>
+                <div class="fx-field"><label>Max welcomes per check</label><input class="fx-input" id="wk-maxw" value=""></div>
+                <div class="fx-field"><label>Feed items scanned per check</label><input class="fx-input" id="wk-limit" value=""></div>
+                <div class="fx-field"><label>Contact-guard window (hrs)</label><input class="fx-input" id="wk-guard" value=""></div>
+                <div class="fx-field"><label>“Regular” after this many sent msgs</label><input class="fx-input" id="wk-newout" value=""></div>
+                <div class="fx-field"><label>“Regular” after this many fan msgs</label><input class="fx-input" id="wk-newin" value=""></div>
               </div>
               <div class="fx-note warn" style="margin-top:12px">The subscribe feed includes renewals — a fan you already chat with is skipped, never re-welcomed like a stranger.</div>
             </div>
@@ -788,5 +906,7 @@ end with one light question so he has something easy to answer</textarea>
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="onboarding-welcome.js" id="wire-js"></script>
 </body>
 </html>

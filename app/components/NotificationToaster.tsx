@@ -44,15 +44,21 @@ import {
 const MAX_SEEN_IDS = 500;
 const seenIdsByAccount = new Map<string, Set<string>>();
 
-// Insertion-ordered Set: record an id as seen, evicting the oldest
-// once we exceed the cap.
-function markSeen(seen: Set<string>, id: string): void {
+// Atomically claim an arrival id for an account: false = already seen (the
+// caller drops the event), true = now marked seen. THE dedup step every lane
+// (toasts / DM / purchase) runs before delivering anything. The insertion-
+// ordered Set evicts its oldest ids past MAX_SEEN_IDS.
+function claimUnseen(aid: string, id: string): boolean {
+  const seen = seenIdsByAccount.get(aid) ?? new Set<string>();
+  if (seen.has(id)) return false;
   seen.add(id);
   while (seen.size > MAX_SEEN_IDS) {
     const oldest = seen.values().next().value;
     if (oldest === undefined) break;
     seen.delete(oldest);
   }
+  seenIdsByAccount.set(aid, seen);
+  return true;
 }
 
 interface NotificationUser {
@@ -238,7 +244,6 @@ function withRefreshFlag(href: string, typeKey: NotifTypeKey | null): string {
  *  tell whether anything in the batch was user-visible.
  */
 function deliverNotification(
-  qc: QueryClient,
   settings: NotifSettings,
   n: {
     id: string;
@@ -342,10 +347,7 @@ function NotificationDeltaPoller() {
 
         // Dedup on the notification ID. OF's locale variants share the
         // same id so we only count each arrival once.
-        const seen = seenIdsByAccount.get(aid) ?? new Set<string>();
-        if (seen.has(id)) continue;
-        markSeen(seen, id);
-        seenIdsByAccount.set(aid, seen);
+        if (!claimUnseen(aid, id)) continue;
 
         const typeKey = mapOfTypeToKey(typeof t.type === "string" ? t.type : null);
 
@@ -419,7 +421,7 @@ function NotificationDeltaPoller() {
         const baseHref = hrefFor({ user } as NotificationItem, aid);
         // History always, pings gated — the money rail and the feed dropdown
         // must still list a muted arrival (incl. likes).
-        deliverNotification(qc, settings, {
+        deliverNotification(settings, {
           id,
           accountId: aid,
           typeKey,
@@ -483,10 +485,7 @@ function NotificationDeltaPoller() {
       // Namespace the id with "m" so a message can't collide with an OF
       // notification id in the shared per-account seen set / toast dedup.
       const id = "m" + String(msg.id);
-      const seen = seenIdsByAccount.get(aid) ?? new Set<string>();
-      if (seen.has(id)) return;
-      markSeen(seen, id);
-      seenIdsByAccount.set(aid, seen);
+      if (!claimUnseen(aid, id)) return;
 
       const fromUser = (msg.fromUser ?? {}) as NotificationUser;
       const user: NotificationUser = {
@@ -517,7 +516,7 @@ function NotificationDeltaPoller() {
       // so the bell dropdown still lists DMs with toasts off — OF's
       // /notifications feed lists them inconsistently, so this is their only
       // reliable route into the dropdown.
-      const pinged = deliverNotification(qc, settings, {
+      const pinged = deliverNotification(settings, {
         id,
         accountId: aid,
         typeKey: "message",
@@ -563,10 +562,7 @@ function NotificationDeltaPoller() {
       // OF's own id, unprefixed — it MUST equal the id the feed will carry
       // for this purchase, or the dedupe this whole design rests on fails.
       const id = String(p.notif_id);
-      const seen = seenIdsByAccount.get(aid) ?? new Set<string>();
-      if (seen.has(id)) return;
-      markSeen(seen, id);
-      seenIdsByAccount.set(aid, seen);
+      if (!claimUnseen(aid, id)) return;
 
       // The notification names the payer; fall back to the ["of-user"] cache
       // the message handler above populates.
@@ -588,7 +584,7 @@ function NotificationDeltaPoller() {
         ? Date.parse(toUtcIso(p.created_at)) || Date.now()
         : Date.now();
 
-      const pinged = deliverNotification(qc, settings, {
+      const pinged = deliverNotification(settings, {
         id,
         accountId: aid,
         typeKey: "purchases",

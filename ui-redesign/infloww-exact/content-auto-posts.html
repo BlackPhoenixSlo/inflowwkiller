@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Auto Posts</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -377,6 +376,17 @@
 <style>
   /* ---- page-specific: Auto Posts queue strip + overrides table ---- */
   .main{overflow-y:auto;padding-bottom:40px}
+  /* The queue, the pace inputs and the two checkboxes ARE this page. The kit
+     hides .fx-tc-knobs until the card carries .on, which on a live-wired page
+     means the only way to reach them would be flipping the master switch —
+     and that switch PATCHes is_enabled and starts posting to the real feed.
+     So the body stays open at all times here; the switch only reports state. */
+  #card-autoposts .fx-tc-knobs{display:flex}
+  .pausebar{flex:1 1 100%;display:none;align-items:flex-start;gap:10px;background:rgba(254,188,46,.07);
+    border:1px solid rgba(254,188,46,.25);border-radius:10px;padding:10px 13px;font-size:12.5px;
+    color:#e8cf9a;line-height:1.5;margin-bottom:2px}
+  #card-autoposts:not(.on) .pausebar{display:flex}
+  .pausebar b{color:#f2dcae;font-weight:600}
   .qstrip{display:flex;gap:12px;margin:12px 0 6px;overflow-x:auto;padding-bottom:4px}
   .qcard{width:196px;flex:0 0 196px;background:#1c1c1c;border:1px solid var(--border);border-radius:12px;overflow:hidden}
   .qthumb{height:92px;position:relative}
@@ -402,7 +412,88 @@
   .ovr-table td.cap{max-width:360px;overflow:hidden;text-overflow:ellipsis}
   .ovr-table .fx-input{height:32px;width:82px}
   .ovr-table .fx-unit{width:92px}
-  .dotk{width:12px;height:12px;border-radius:4px;display:inline-block;margin-right:9px;vertical-align:-2px}
+  .dotk{width:12px;height:12px;border-radius:4px;display:inline-block;margin-right:9px;vertical-align:-2px;
+    background:#1c1c1c;background-size:cover;background-position:center}
+  .qthumb{background:#1c1c1c;background-size:cover;background-position:center}
+  .qcard{position:relative}
+  .qtools{position:absolute;top:6px;left:6px;display:flex;gap:4px;opacity:0;transition:opacity .12s}
+  .qcard:hover .qtools{opacity:1}
+  .qtool{width:22px;height:22px;border-radius:6px;background:rgba(0,0,0,.6);border:1px solid #3a3a3a;color:#eee;
+    display:flex;align-items:center;justify-content:center;font-size:12px;line-height:1;cursor:pointer;padding:0}
+  .qtool:hover{background:#4166f6;border-color:#4166f6}
+  .qedit{cursor:pointer}
+  /* previous-runs strip */
+  /* keep the header's right-edge LIVE badge clear of the floating help/chat
+     widget (bottom-right, ~52px wide + 26px gutter) so it never reads "LIV" */
+  #runs-h{padding-right:78px}
+  .runrow{display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--border-soft);
+    font-size:12.5px;color:#b9b9b9;flex-wrap:wrap}
+  .runrow:first-child{border-top:0}
+  .rstat{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:10px;font-size:10.5px;
+    font-weight:700;letter-spacing:.03em;text-transform:uppercase;background:#1c1c1c;border:1px solid var(--border-soft);color:#9a9a9a}
+  .rstat.ok{color:var(--green);background:rgba(103,209,174,.12);border-color:rgba(103,209,174,.3)}
+  .rstat.err{color:#e5735b;background:rgba(229,115,91,.13);border-color:rgba(229,115,91,.3)}
+  .rstat.skip{color:#e8cf9a;background:rgba(254,188,46,.1);border-color:rgba(254,188,46,.28)}
+  .runrow .rwhen{color:#ddd;font-weight:500}
+  .runrow .rbits{color:var(--muted)}
+  /* post editor modal */
+  .pe-back{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:9998;display:flex;align-items:center;justify-content:center}
+  .pe{background:#262626;border:1px solid #333;border-radius:12px;padding:20px;width:640px;max-height:86vh;overflow-y:auto;
+    display:flex;flex-direction:column;gap:14px;font:13px Inter,sans-serif;color:#fff}
+  .pe h3{margin:0;font-size:16px;font-weight:600}
+  .pe .pe-foot{display:flex;gap:10px;align-items:center}
+  .pe .pe-foot .sp{margin-left:auto}
+  .pe textarea.fx-input{min-height:110px}
+
+  /* ── hand-picked media box (inside the post editor) ── */
+  .pe-media{border:1px solid #2e2e2e;border-radius:10px;background:#1c1c1c;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+  .pe-media .pm-top{display:flex;align-items:center;gap:10px}
+  .pe-media .pm-lbl{font-size:13px;color:#cfcfcf}
+  .pe-media .pm-lbl b{color:#fff}
+  .pe-media .pm-clear{cursor:pointer;color:#e5735b;font-size:12px;margin-left:2px}
+  .pe-media .pm-clear:hover{text-decoration:underline}
+  .pe-media .pm-thumbs{display:flex;flex-wrap:wrap;gap:6px}
+  .pe-media .pm-th{width:44px;height:44px;border-radius:7px;background:#111 center/cover no-repeat;border:1px solid #333;flex:none}
+
+  /* ── folder-organized vault picker (folders → media) ── */
+  .vp-back{position:fixed;inset:0;background:rgba(0,0,0,.66);z-index:9999;display:flex;align-items:center;justify-content:center}
+  .vp{background:#232323;border:1px solid #333;border-radius:12px;width:700px;max-width:94vw;max-height:88vh;
+    display:flex;flex-direction:column;font:13px Inter,sans-serif;color:#fff}
+  .vp-h{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid #333;font-size:15px;font-weight:600}
+  .vp-h .x{margin-left:auto;cursor:pointer;color:#8a8a8a;font-size:16px;line-height:1}
+  .vp-h .x:hover{color:#fff}
+  .vp-b{padding:16px 18px;overflow-y:auto;flex:1;min-height:120px}
+  .vp-f{display:flex;align-items:center;gap:12px;padding:12px 18px;border-top:1px solid #333}
+  .vp-f .vp-sel{color:#8a8a8a}
+  .vp-loading{color:#8a8a8a;padding:6px 2px}
+  .vp-crumb{display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:13px;color:#cfcfcf;flex-wrap:wrap}
+  .vp-crumb .vp-back-btn{display:inline-flex;align-items:center;gap:6px;color:#8ea0e6;cursor:pointer;font-weight:600;
+    padding:5px 11px;border:1px solid #333;border-radius:8px;background:#1c1c1c}
+  .vp-crumb .vp-back-btn:hover{background:#242424}
+  .vp-crumb .vp-back-btn svg{width:14px;height:14px}
+  .vp-crumb .vp-sep{color:#6a6a6a}
+  .vp-crumb .vp-here{font-weight:700;color:#fff}
+  .vp-folders{display:flex;flex-direction:column;gap:8px}
+  .vp-folder{display:flex;align-items:center;gap:12px;padding:11px 13px;border:1px solid #2e2e2e;border-radius:10px;background:#181818;cursor:pointer}
+  .vp-folder:hover{background:#212121;border-color:#3a3a3a}
+  .vp-folder .vf-ic{width:38px;height:38px;border-radius:8px;background:#242424;display:grid;place-items:center;flex:none;color:#ec4b9b}
+  .vp-folder .vf-ic svg{width:20px;height:20px}
+  .vp-folder.all .vf-ic{color:#8ea0e6;background:rgba(65,102,246,.12)}
+  .vp-folder .vf-meta{flex:1;min-width:0}
+  .vp-folder .vf-name{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .vp-folder .vf-count{color:#8a8a8a;font-size:12px;margin-top:2px}
+  .vp-folder .vf-chev{color:#6a6a6a;flex:none}
+  .vp-folder .vf-chev svg{width:16px;height:16px}
+  .vp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:10px}
+  .vp-tile{position:relative;border-radius:9px;overflow:hidden;background:#111;aspect-ratio:1;border:1px solid #2e2e2e;cursor:pointer}
+  .vp-tile img{width:100%;height:100%;object-fit:cover;display:block}
+  .vp-tile .vp-tag{position:absolute;left:6px;bottom:6px;background:rgba(0,0,0,.7);border-radius:6px;padding:2px 6px;font-size:10.5px;font-weight:700}
+  .vp-tile.sel{outline:2px solid #ec4b9b;outline-offset:-2px}
+  .vp-tile.sel::after{content:"✓";position:absolute;top:5px;right:6px;background:#ec4b9b;color:#fff;width:18px;height:18px;
+    border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:700}
+  .vp-honest{border:1px solid #3a2b2b;background:#221a1a;border-radius:10px;padding:14px 16px;color:#d9c3c3;font-size:13px;line-height:1.5}
+  .vp-honest b{color:#fff}
+  .vp-honest code{background:#111;padding:1px 6px;border-radius:5px;font-size:12px;color:#e0a0a0}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -433,7 +524,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -512,7 +602,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -546,78 +636,63 @@
       </div>
 
       <div class="fx-status">
-        <span class="fx-st ok"><i></i>Running</span>
-        <span class="fx-st"><i></i>4 posts queued</span>
-        <span class="fx-st"><i></i>Next post today · 6:00 PM</span>
-        <span class="fx-st"><i></i>Last posted 9:12 AM · auto-deletes tomorrow</span>
+        <span class="fx-st ok" id="st-run"><i></i>Loading…</span>
+        <span class="fx-st" id="st-queue"><i></i>— posts queued</span>
+        <span class="fx-st" id="st-next"><i></i>—</span>
+        <span class="fx-st" id="st-last"><i></i>—</span>
         <span class="fx-st"><i></i>No AI cost — posting is free</span>
       </div>
 
       <!-- PRIMARY: the feed drip -->
-      <div class="fx-togglecard on">
+      <div class="fx-togglecard" id="card-autoposts">
         <div class="fx-tc-row">
           <div class="fx-tc-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M21 16l-5-5-9 8" stroke-linejoin="round"/></svg></div>
           <div class="fx-tc-body">
             <div class="fx-tc-title">Auto Posts</div>
             <div class="fx-tc-desc">Posts the next ready-made post from the queue below, spaces them out on the pace you pick, and deletes each one later — so the feed always looks fresh without you touching it.</div>
           </div>
-          <span class="fx-tc-state">Running</span>
-          <span class="fx-switch on"></span>
+          <span class="fx-tc-state">Loading…</span>
+          <span class="fx-switch" id="sw-enabled"></span>
         </div>
         <div class="fx-tc-knobs">
+          <div class="pausebar" id="pausebar">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="flex:0 0 auto;margin-top:1px"><circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6" stroke-linecap="round"/></svg>
+            <span id="pausebar-txt">Loading rule state…</span>
+          </div>
           <div style="flex:1 1 100%;min-width:0">
 
-            <div class="fx-sliderrow" style="margin:4px 0 10px">
-              <div class="fx-sl-head"><span class="fx-sl-name">Posting pace</span><span class="fx-sl-hint">randomized so the feed never looks scheduled</span><span class="fx-rv">every 3–5 h (randomized)</span></div>
-              <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-                <label style="display:inline-flex;align-items:center;gap:9px;font-size:13px;color:#ddd;cursor:pointer">Randomize the gap <span class="fx-switch sm on"></span></label>
-                <div style="display:inline-flex;align-items:center;gap:8px;font-size:13px;color:#b9b9b9">between <input class="fx-input" value="3" style="width:56px;height:32px"> and <input class="fx-input" value="5" style="width:56px;height:32px"> hours</div>
+            <div class="fx-sliderrow" style="margin:4px 0 10px" id="pace-row">
+              <div class="fx-sl-head"><span class="fx-sl-name">Posting pace</span><span class="fx-sl-hint">the repeat cycle is the real drumbeat — auto_posts drips itself, it is not a looping rule</span><span class="fx-rv" id="pace-rv">—</span></div>
+              <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+                <div style="display:inline-flex;align-items:center;gap:8px;font-size:13px;color:#b9b9b9">Repeat the whole queue every <input class="fx-input" id="pace-hours" style="width:62px;height:32px" placeholder="off"> h, <input class="fx-input" id="pace-cycles" style="width:62px;height:32px" placeholder="0"> more times</div>
+                <div style="display:inline-flex;align-items:center;gap:8px;font-size:13px;color:#b9b9b9">Fresh pass every <input class="fx-input" id="pace-every" style="width:62px;height:32px"> days</div>
               </div>
-              <div style="font-size:12px;color:var(--muted2);margin-top:8px">the graded vault currently: every 7 h</div>
+              <div style="font-size:12px;color:var(--muted2);margin-top:8px" id="pace-note">—</div>
             </div>
 
             <div style="display:flex;align-items:center;margin-top:12px">
-              <span style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted2)">Up next · 4 in the queue</span>
-              <a class="fx-btn ghost" href="content-create-post.html" style="margin-left:auto;height:32px;padding:0 13px;font-size:12.5px;text-decoration:none;gap:6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>Add a post</a>
+              <span style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted2)" id="q-count">Up next · loading…</span>
+              <button class="fx-btn ghost" id="btn-addpost" style="margin-left:auto;height:32px;padding:0 13px;font-size:12.5px;gap:6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>Add a post</button>
             </div>
 
-            <div class="qstrip">
-            <div class="qcard">
-                <div class="qthumb" style="background:linear-gradient(135deg,#173a5e 0%,#2b7a9e 55%,#57b7c9 100%)"><span class="ftag">Beach set</span></div>
-                <div class="qbody">
-                  <div class="qcap">golden hour hits different 🌅 new set just went up</div>
-                  <div class="qmeta"><span class="qchip"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Today 6 PM</span><span class="qdel"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7h16M10 4h4M7 7l1 13h8l1-13" stroke-linecap="round" stroke-linejoin="round"/></svg>48 h</span></div>
-                </div>
-              </div>
-            <div class="qcard">
-                <div class="qthumb" style="background:linear-gradient(135deg,#5b2a86 0%,#a4508b 60%,#d67ba8 100%)"><span class="ftag">Teasers</span></div>
-                <div class="qbody">
-                  <div class="qcap">guess what I'm filming later… 👀</div>
-                  <div class="qmeta"><span class="qchip"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Tomorrow 12 AM</span><span class="qdel"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7h16M10 4h4M7 7l1 13h8l1-13" stroke-linecap="round" stroke-linejoin="round"/></svg>48 h</span></div>
-                </div>
-              </div>
-            <div class="qcard">
-                <div class="qthumb" style="background:linear-gradient(135deg,#7a3b2e 0%,#c96f3b 60%,#e8a54b 100%)"><span class="ptag"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>$15</span><span class="ftag">VIP set</span></div>
-                <div class="qbody">
-                  <div class="qcap">the set you kept asking for — up for 48 h only</div>
-                  <div class="qmeta"><span class="qchip"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Tomorrow 6 AM</span><span class="qdel"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7h16M10 4h4M7 7l1 13h8l1-13" stroke-linecap="round" stroke-linejoin="round"/></svg>48 h</span></div>
-                </div>
-              </div>
-            <div class="qcard">
-                <div class="qthumb" style="background:linear-gradient(135deg,#1f5e4b 0%,#3a9d7a 60%,#7ccf9e 100%)"><span class="ftag">Gym set</span></div>
-                <div class="qbody">
-                  <div class="qcap">leg day 🏋️ should I drop the full video?</div>
-                  <div class="qmeta"><span class="qchip"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Tomorrow 12 PM</span><span class="qdel"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 4h9a2 2 0 0 1 2 2v14l-6.5-4L4 20V6a2 2 0 0 1 2-2z" stroke-linejoin="round"/></svg>keeps</span></div>
-                </div>
-              </div>
-              <a class="qadd" href="content-create-post.html"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>Add a post</a>
+            <div class="qstrip" id="qstrip">
+              <div class="qadd" id="qadd"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>Add a post</div>
             </div>
 
-            <label class="fx-check on"><span class="bx"></span>Auto-delete each post after 48 h <span class="sub">old drops disappear on their own — the queue keeps things fresh</span></label>
-            <label class="fx-check on"><span class="bx"></span>Re-post from the pool when the queue empties <span class="sub">shuffles a fresh caption + photo each cycle, so re-posts never look identical</span></label>
-            <label class="fx-check on"><span class="bx"></span>Skip fans I've chatted with in the last 1 h <span class="sub">posting + follow-up DMs never land mid-conversation</span></label>
+            <label class="fx-check" id="ck-ttl"><span class="bx"></span><span id="ck-ttl-lbl">Auto-delete each post after 48 h</span> <span class="sub">old drops disappear on their own — the queue keeps things fresh</span></label>
+            <label class="fx-check" id="ck-repost"><span class="bx"></span>Re-post from the pool when the queue empties <span class="sub">shuffles a fresh caption + photo each cycle, so re-posts never look identical</span></label>
+            <div class="fx-kv" style="padding-top:6px"><span style="color:var(--muted2);line-height:1.5">Auto Posts never DMs anyone — it only writes to the public feed, so there is no fan-contact gate to set here. Pair it with <a href="outreach-mass-message.html" style="color:#8ea0e6">Mass Message</a> if you want the announcement DM.</span></div>
           </div>
         </div>
+      </div>
+
+      <!-- PREVIOUS RUNS -->
+      <div class="fx-card" id="card-runs">
+        <div class="fx-card-h" id="runs-h">Previous runs
+          <button class="fx-btn ghost" id="btn-runnow" style="margin-left:auto;height:32px;padding:0 13px;font-size:12.5px;gap:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M7 5v14l11-7z"/></svg>Post one now</button>
+        </div>
+        <div class="fx-card-sub" style="margin-bottom:10px">What the automation actually did, straight from <code style="color:#8ea0e6">automation_runs</code> — post id, auto-delete window and how many cycles were left.</div>
+        <div id="runs-list"><div class="runrow"><span class="rstat">…</span><span style="color:var(--muted)">Loading runs…</span></div></div>
       </div>
 
       <!-- ADVANCED DRAWER -->
@@ -630,57 +705,33 @@
           </div>
           <div class="fx-adv-body" id="adv-posts">
 
-            <div class="fx-adv-group">
+            <div class="fx-adv-group" id="grp-ovr">
               <h4>Per-post schedule overrides</h4>
               <div class="ovr-wrap">
-              <table class="ovr-table">
-                <tr><th>Post</th><th>Extra wait before it (min)</th><th>Keep for (h)</th><th>Price</th></tr>
-                <tr>
-                  <td class="cap"><span class="dotk" style="background:linear-gradient(135deg,#173a5e,#57b7c9)"></span>golden hour hits different 🌅 new set just went up</td>
-                  <td><input class="fx-input" value="0"></td>
-                  <td><input class="fx-input" value="48"></td>
-                  <td><div class="fx-unit" data-unit="$"><input class="fx-input" value="0"></div></td>
-                </tr>
-                <tr>
-                  <td class="cap"><span class="dotk" style="background:linear-gradient(135deg,#5b2a86,#d67ba8)"></span>guess what I'm filming later… 👀</td>
-                  <td><input class="fx-input" value="0"></td>
-                  <td><input class="fx-input" value="48"></td>
-                  <td><div class="fx-unit" data-unit="$"><input class="fx-input" value="0"></div></td>
-                </tr>
-                <tr>
-                  <td class="cap"><span class="dotk" style="background:linear-gradient(135deg,#7a3b2e,#e8a54b)"></span>the set you kept asking for — up for 48 h only</td>
-                  <td><input class="fx-input" value="45"></td>
-                  <td><input class="fx-input" value="48"></td>
-                  <td><div class="fx-unit" data-unit="$"><input class="fx-input" value="15"></div></td>
-                </tr>
-                <tr>
-                  <td class="cap"><span class="dotk" style="background:linear-gradient(135deg,#1f5e4b,#7ccf9e)"></span>leg day 🏋️ should I drop the full video?</td>
-                  <td><input class="fx-input" value="0"></td>
-                  <td><input class="fx-input" placeholder="keep"></td>
-                  <td><div class="fx-unit" data-unit="$"><input class="fx-input" value="0"></div></td>
-                </tr>
+              <table class="ovr-table" id="ovr-table">
+                <tr><th>Post</th><th>Extra wait before it (min)</th><th>Keep for (h)</th><th>Photos per fire</th><th>Price</th></tr>
               </table>
               </div>
-              <div style="font-size:12px;color:var(--muted2);margin-top:8px">0 extra wait = just follow the pace slider · leave “Keep for” empty to keep a post forever.</div>
+              <div style="font-size:12px;color:var(--muted2);margin-top:8px">0 extra wait = fire straight after the one before it · leave “Keep for” empty to keep a post forever · “Photos per fire” samples that many images out of the post's pool each time it goes up.</div>
             </div>
 
-            <div class="fx-adv-group">
+            <div class="fx-adv-group" id="grp-repost">
               <h4>Re-post cycle</h4>
               <div class="fx-grid3">
-                <div class="fx-field"><label>Wait after the queue finishes (h)</label><input class="fx-input" value="24"></div>
-                <div class="fx-field"><label>Extra cycles</label><input class="fx-input" value="2"></div>
-                <div class="fx-field"><label>&nbsp;</label><label class="fx-check on" style="padding:6px 0 0"><span class="bx"></span>Shuffle caption + photo each cycle</label></div>
+                <div class="fx-field"><label>Wait after the queue finishes (h)</label><input class="fx-input" value="" id="rp-wait"></div>
+                <div class="fx-field"><label>Extra cycles</label><input class="fx-input" value="" id="rp-cycles"></div>
+                <div class="fx-field"><label>&nbsp;</label><label class="fx-check on" style="padding:6px 0 0" id="ck-shuffle"><span class="bx"></span>Shuffle caption + photo each cycle</label></div>
               </div>
             </div>
 
-            <div class="fx-adv-group">
+            <div class="fx-adv-group" id="grp-paid">
               <h4>Paid feed posts</h4>
-              <div class="fx-grid3">
-                <div class="fx-field"><label>Default price on new posts</label><div class="fx-unit" data-unit="$"><input class="fx-input" value="0"></div></div>
-                <div class="fx-field"><label>Free preview photos on a paid post</label><select class="fx-select"><option>1 photo</option><option>2 photos</option><option>3 photos</option></select></div>
-                <div class="fx-field"><label>Previews pull from</label><select class="fx-select"><option>Teasers</option><option>Beach set</option><option>VIP set</option></select></div>
+              <div class="ovr-wrap">
+                <table class="ovr-table" id="paid-table">
+                  <tr><th>Post</th><th>Price</th><th>Free preview photos</th><th>Previews pull from</th></tr>
+                </table>
               </div>
-              <div class="fx-note" style="margin-top:12px">A priced post must include media — a paid text-only post gets rejected. Preview photos show unlocked on top of the locked set, and the photo order is shuffled on every post.</div>
+              <div class="fx-note" style="margin-top:12px">A priced post must include media — a paid text-only post gets rejected. The preview pool is sampled separately and its picks are added to the locked set, so the teaser is always part of the gallery; the photo order is shuffled on every post. Preview knobs only fire on a post whose price is above $0.</div>
             </div>
 
             <div class="fx-adv-group">
@@ -688,9 +739,9 @@
               <div class="fx-note"><span>Pair the feed drop with DMs: <b>Mass Message</b> can send a ready-made announcement blast on its own timer after each post — with its own resend and auto-unsend. Set that up in <a href="outreach-mass-message.html" style="color:#c9d3ff;font-weight:600">Outreach → Mass Message</a>.</span></div>
             </div>
 
-            <div class="fx-adv-group" style="margin-bottom:4px">
+            <div class="fx-adv-group" style="margin-bottom:4px" id="grp-test">
               <h4>Testing</h4>
-              <label class="fx-check"><span class="bx"></span>Plan-only test run <span class="sub">writes the full posting plan to the log — posts nothing</span></label>
+              <label class="fx-check" id="ck-dry"><span class="bx"></span>Plan-only test run <span class="sub">writes the full posting plan to the log — posts nothing</span></label>
             </div>
 
           </div>
@@ -796,5 +847,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="content-auto-posts.js"></script>
 </body>
 </html>

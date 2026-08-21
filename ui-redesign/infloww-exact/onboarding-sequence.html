@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Follow-up Sequence</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -417,9 +416,9 @@
   .nc-preview{display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin-top:10px;padding-left:44px}
   .pv-bubble{display:flex;align-items:center;gap:9px;background:#1c1c1c;border:1px solid var(--border-soft);
     border-radius:4px 12px 12px 12px;padding:7px 11px;font-size:12.5px;color:#ddd;line-height:1.45;max-width:520px}
-  .pv-media{width:30px;height:30px;border-radius:7px;flex:0 0 auto}
-  .pv-media.m1{background:linear-gradient(135deg,#f6b26b,#e56a54)}
-  .pv-media.m2{background:linear-gradient(135deg,#5b7cfa,#9b59d0)}
+  .pv-media{width:30px;height:30px;border-radius:7px;flex:0 0 auto;object-fit:cover;display:none;
+    background:#242424;border:1px solid #333}
+  .pv-media.on{display:block}
   .nc-foot{font-size:11.5px;color:var(--muted2);margin-top:9px;padding-left:44px}
   .nc-body{font-size:13px;color:#c6cde8;line-height:1.55;margin-top:9px;padding-left:44px;max-width:720px}
 
@@ -431,6 +430,26 @@
   .gate b{display:block;font-size:13px;font-weight:600;color:#eee}
   .gate span{display:block;font-size:12px;color:var(--muted);line-height:1.45;margin-top:2px}
   #adv-seq .fx-note.warn{margin-top:2px}
+
+  /* live-sample controls + honest failure note */
+  .seq-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap;max-width:980px;margin:0 0 12px}
+  .seq-tools .hint{font-size:12.5px;color:var(--muted2)}
+  #sq-sample-note{max-width:980px;margin:0 0 14px}
+  .pv-note{font-size:11.5px;color:var(--muted2);padding-left:44px;margin-top:6px;line-height:1.45}
+
+  /* real per-sweep counts on the gate cards */
+  .gate{position:relative}
+  .gate .gn{margin-left:auto;flex:0 0 auto;align-self:flex-start;height:22px;padding:0 9px;border-radius:11px;
+    background:#242424;border:1px solid var(--border);font-size:11.5px;font-weight:600;color:#cfcfcf;
+    display:inline-flex;align-items:center;white-space:nowrap}
+  .gate .gn.zero{color:var(--muted2);font-weight:500}
+  .gate .gn.na{color:var(--muted2);font-weight:500;background:transparent;border-style:dashed}
+  .fx-adv-group>h4 .h4n{margin-left:8px;font-size:11px;font-weight:600;letter-spacing:0;text-transform:none;
+    color:#7ed7b6;background:rgba(103,209,174,.1);border:1px solid rgba(103,209,174,.28);
+    border-radius:9px;padding:2px 8px}
+  .fx-adv-group>h4 .h4n.zero{color:var(--muted2);background:transparent;border-color:var(--border)}
+  .fx-kv.sq-hint{display:block;line-height:1.55}
+  .fx-kv.sq-hint b{color:#ddd;font-weight:600}
 </style>
 <style>.main{overflow-y:auto;padding-bottom:40px}</style>
 <style id="ms-css">
@@ -462,7 +481,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -541,7 +559,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -573,18 +591,24 @@
         </div>
         <div class="head-right">
           <span style="font-size:13px;font-weight:500;color:var(--muted)">Sequence</span>
-          <span class="fx-switch on" title="Follow-up drip on/off"></span>
+          <span class="fx-switch on" id="sq-enable" title="Follow-up drip on/off"></span>
         </div>
       </div>
       <div class="pg-sub">The road every new fan travels — from the welcome DM to the moment the AI takes over. This page is the map, not the knobs: open any step to change it.</div>
 
       <div class="fx-status">
-        <span class="fx-st ok"><i></i>Running</span>
-        <span class="fx-st"><i></i>14 fans mid-sequence</span>
-        <span class="fx-st"><i></i>Last sweep 9 min ago · next in 46 min</span>
-        <span class="fx-st"><i></i>DeepSeek V4 Flash</span>
+        <span class="fx-st ok" id="sq-st-run"><i></i>Loading…</span>
+        <span class="fx-st" id="sq-st-sent"><i></i>… nudges sent this week</span>
+        <span class="fx-st" id="sq-st-sweep"><i></i>Last sweep …</span>
+        <span class="fx-st" id="sq-st-model"><i></i>…</span>
         <span class="fx-st"><i></i>3 nudges max, then she waits</span>
       </div>
+
+      <div class="seq-tools">
+        <button class="fx-btn ghost" id="sq-sample" style="height:32px;font-size:12.5px">Compose a live sample (1 AI call)</button>
+        <span class="hint">The welcome below is composed for real on every load (no AI call). The three nudges are written fresh per fan at send time — sampling one costs a single LLM call.</span>
+      </div>
+      <div class="fx-note warn" id="sq-sample-note" style="display:none"></div>
 
       <!-- ============ the journey ============ -->
       <div class="seq">
@@ -597,73 +621,77 @@
             <div class="nc-top">
               <div class="nc-ico green"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></div>
               <div class="nc-name">Welcome message</div>
-              <span class="nc-chip on"><i></i>On</span>
+              <span class="nc-chip on" id="sq-chip0"><i></i>…</span>
               <span class="nc-open">Welcome settings <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
             </div>
-            <div class="nc-preview">
-              <div class="pv-bubble"><span class="pv-media m1"></span>heyy Mike 😊 so happy you're here</div>
-              <div class="pv-bubble">just got back from the gym, what are you up to?</div>
+            <div class="nc-preview" id="sq-pv0">
+              <div class="pv-bubble"><img class="pv-media" data-media="0" alt=""><span data-txt="0a">composing…</span></div>
+              <div class="pv-bubble" data-b2="0"><span data-txt="0b"></span></div>
             </div>
+            <div class="nc-note pv-note" id="sq-note0"></div>
             <div class="nc-foot">Sends within ~5 min of subscribing · two paced bubbles, photo picked by time of day</div>
           </a>
         </div>
 
-        <div class="seq-gap"><span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M6 13l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>no reply for 26 hours</span></div>
+        <div class="seq-gap"><span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M6 13l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="sq-g1">no reply for 26 hours</span></span></div>
 
         <!-- +26 h · Follow-up 1 -->
         <div class="seq-row">
-          <div class="seq-when"><b>+26 h</b><span>still silent</span></div>
+          <div class="seq-when"><b id="sq-t1">+26 h</b><span>still silent</span></div>
           <div class="seq-rail"><span class="seq-dot"></span></div>
           <a class="seq-card" href="outreach-followups.html">
             <div class="nc-top">
               <div class="nc-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/><path d="M10.2 9.8a1.9 1.9 0 0 1 3.6.6c0 1.2-1.8 1.5-1.8 2.6" stroke-linecap="round"/><circle cx="12" cy="15.6" r=".8" fill="currentColor" stroke="none"/></svg></div>
               <div class="nc-name">Follow-up 1 · light check-in</div>
-              <span class="nc-chip on"><i></i>On</span>
+              <span class="nc-chip on sq-chip"><i></i>…</span>
               <span class="nc-open">Follow-ups settings <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
             </div>
-            <div class="nc-preview">
-              <div class="pv-bubble">okay random but… are you a coffee or tea person? I feel like I can guess ☕</div>
+            <div class="nc-preview" id="sq-pv1">
+              <div class="pv-bubble"><img class="pv-media" data-media="1" alt=""><span data-txt="1">okay random but… are you a coffee or tea person? I feel like I can guess ☕</span></div>
             </div>
+            <div class="nc-note pv-note" id="sq-note1"></div>
             <div class="nc-foot">AI-written fresh for each fan · casual and light, never mentions the silence</div>
           </a>
         </div>
 
-        <div class="seq-gap"><span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M6 13l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>still nothing at 64 hours</span></div>
+        <div class="seq-gap"><span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M6 13l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="sq-g2">still nothing at 64 hours</span></span></div>
 
         <!-- +64 h · Follow-up 2 -->
         <div class="seq-row">
-          <div class="seq-when"><b>+64 h</b><span>still silent</span></div>
+          <div class="seq-when"><b id="sq-t2">+64 h</b><span>still silent</span></div>
           <div class="seq-rail"><span class="seq-dot"></span></div>
           <a class="seq-card" href="outreach-followups.html">
             <div class="nc-top">
               <div class="nc-ico purple"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.5-7 10-7 10z" stroke-linejoin="round"/></svg></div>
               <div class="nc-name">Follow-up 2 · gets personal</div>
-              <span class="nc-chip on"><i></i>On</span>
+              <span class="nc-chip on sq-chip"><i></i>…</span>
               <span class="nc-open">Follow-ups settings <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
             </div>
-            <div class="nc-preview">
-              <div class="pv-bubble">still thinking about you saying you surf 🌊 when are you taking me?</div>
+            <div class="nc-preview" id="sq-pv2">
+              <div class="pv-bubble"><img class="pv-media" data-media="2" alt=""><span data-txt="2">still thinking about you saying you surf 🌊 when are you taking me?</span></div>
             </div>
+            <div class="nc-note pv-note" id="sq-note2"></div>
             <div class="nc-foot">Works in one real detail from the fan's profile — auto-learned in the background</div>
           </a>
         </div>
 
-        <div class="seq-gap"><span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M6 13l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>still nothing at 256 hours</span></div>
+        <div class="seq-gap"><span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M6 13l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="sq-g3">still nothing at 256 hours</span></span></div>
 
         <!-- +256 h · Follow-up 3 -->
         <div class="seq-row">
-          <div class="seq-when"><b>+256 h</b><span>final nudge</span></div>
+          <div class="seq-when"><b id="sq-t3">+256 h</b><span>final nudge</span></div>
           <div class="seq-rail"><span class="seq-dot"></span></div>
           <a class="seq-card" href="outreach-followups.html">
             <div class="nc-top">
               <div class="nc-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3.5l1.7 4 4 1.7-4 1.7L12 15l-1.7-4L6.3 9.2l4-1.7z" stroke-linejoin="round"/><path d="M18 14.5l.9 2 2 .9-2 .9-.9 2-.9-2-2-.9 2-.9z" stroke-linejoin="round"/></svg></div>
               <div class="nc-name">Follow-up 3 · a little FOMO</div>
-              <span class="nc-chip on"><i></i>On</span>
+              <span class="nc-chip on sq-chip"><i></i>…</span>
               <span class="nc-open">Follow-ups settings <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
             </div>
-            <div class="nc-preview">
-              <div class="pv-bubble"><span class="pv-media m2"></span>shooting something new tomorrow… you'd be the first to see 👀</div>
+            <div class="nc-preview" id="sq-pv3">
+              <div class="pv-bubble"><img class="pv-media" data-media="3" alt=""><span data-txt="3">shooting something new tomorrow… you'd be the first to see 👀</span></div>
             </div>
+            <div class="nc-note pv-note" id="sq-note3"></div>
             <div class="nc-foot">Final nudge, warm with a hint of exclusivity · after this she goes quiet until the fan replies</div>
           </a>
         </div>
@@ -698,7 +726,7 @@
         </div>
         <div class="fx-adv-body" id="adv-seq">
 
-          <div class="fx-adv-group"><h4>Who gets the sequence</h4>
+          <div class="fx-adv-group"><h4>Who gets the sequence <span class="h4n" id="sq-n-eligible">…</span></h4>
             <div class="fx-grid2">
               <div class="gate keep">
                 <span class="gi"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.5l4.5 4.5L19 7.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
@@ -706,58 +734,71 @@
               </div>
               <div class="gate keep">
                 <span class="gi"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.5l4.5 4.5L19 7.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-                <div><b>Fans who engage</b><span>They've liked her content (brand-new fans count too).</span></div>
+                <div><b>…and who engage</b><span>Both must be true: lifetime spend ≥ $1 <b style="display:inline;font-weight:700">and</b> at least one like (or no like count on file yet).</span></div>
               </div>
             </div>
+            <div class="fx-kv sq-hint" style="margin-top:8px" id="sq-eligible-hint">…</div>
           </div>
 
-          <div class="fx-adv-group"><h4>Who skips it</h4>
+          <div class="fx-adv-group"><h4>Who skips it <span class="h4n" id="sq-n-skips">…</span></h4>
             <div class="fx-grid2">
               <div class="gate skip">
                 <span class="gi"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 12h12" stroke-linecap="round"/></svg></span>
                 <div><b>Already chatting</b><span>The fan replied recently — AI Chatter owns the thread; the drip pauses 26 h.</span></div>
-              </div>
+              <span class="gn" data-gate="skipped_cooldown">…</span></div>
               <div class="gate skip">
                 <span class="gi"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 12h12" stroke-linecap="round"/></svg></span>
                 <div><b>Waiting on you</b><span>They have an unread message in — she owes a real reply, not a nudge.</span></div>
-              </div>
+              <span class="gn" data-gate="skipped_unread">…</span></div>
               <div class="gate skip">
                 <span class="gi"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 12h12" stroke-linecap="round"/></svg></span>
                 <div><b>Just contacted</b><span>Any blast, nudge or AI message touched them in the last 12 h.</span></div>
-              </div>
+              <span class="gn" data-gate="skipped_guard">…</span></div>
               <div class="gate skip">
                 <span class="gi"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 12h12" stroke-linecap="round"/></svg></span>
                 <div><b>Restricted, muted or blocked</b><span>Skip-list and blacklist fans never get the drip.</span></div>
-              </div>
+              <span class="gn" data-gate="skipped_locked">…</span></div>
               <div class="gate skip">
                 <span class="gi"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 12h12" stroke-linecap="round"/></svg></span>
                 <div><b>Undeliverable</b><span>OnlyFans rejected a DM to them — the fan rests for 7 days.</span></div>
-              </div>
+              <span class="gn" data-gate="__none_quarantine">…</span></div>
               <div class="gate skip">
                 <span class="gi"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 12h12" stroke-linecap="round"/></svg></span>
                 <div><b>Cold for 7+ days</b><span>A chat that's been dead a week gets no reminders.</span></div>
-              </div>
+              <span class="gn" data-gate="__none_prefilter">…</span></div>
             </div>
           </div>
 
           <div class="fx-adv-group"><h4>Timing</h4>
             <div class="fx-grid3">
-              <div class="fx-field"><label>Follow-up 1 after (hrs silent)</label><input class="fx-input" value="26"></div>
-              <div class="fx-field"><label>Follow-up 2 after (hrs silent)</label><input class="fx-input" value="64"></div>
-              <div class="fx-field"><label>Follow-up 3 after (hrs silent)</label><input class="fx-input" value="256"></div>
-              <div class="fx-field"><label>Min gap between nudges (hrs)</label><input class="fx-input" value="18"></div>
-              <div class="fx-field"><label>Pause after a reply (hrs)</label><input class="fx-input" value="26"></div>
-              <div class="fx-field"><label>Rest before a restart (hrs)</label><input class="fx-input" value="72"></div>
+              <div class="fx-field"><label>Follow-up 1 after (hrs silent)</label><input class="fx-input" id="sq-h1" value=""></div>
+              <div class="fx-field"><label>Follow-up 2 after (hrs silent)</label><input class="fx-input" id="sq-h2" value=""></div>
+              <div class="fx-field"><label>Follow-up 3 after (hrs silent)</label><input class="fx-input" id="sq-h3" value=""></div>
+              <div class="fx-field" id="sq-fixed-gap"><label>Min gap between nudges (hrs)</label><input class="fx-input" value="18" disabled title="Fixed in code (send_followup._MIN_GAP_H) — not configurable per account"></div>
+              <div class="fx-field" id="sq-fixed-pause"><label>Pause after a reply (hrs)</label><input class="fx-input" value="26" disabled title="Fixed in code (reply_cooldown) — not configurable per account"></div>
+              <div class="fx-field" id="sq-fixed-rest"><label>Rest before a restart (hrs)</label><input class="fx-input" value="72" disabled title="Fixed in code (restart_cooldown) — not configurable per account"></div>
             </div>
           </div>
 
           <div class="fx-adv-group"><h4>Sending</h4>
             <div class="fx-grid3">
-              <div class="fx-field"><label>Recently-contacted guard (hrs)</label><input class="fx-input" value="12"></div>
-              <div class="fx-field"><label>Fans checked per sweep</label><input class="fx-input" value="200"></div>
-              <div class="fx-field"><label>Model</label><select class="fx-select"><option>DeepSeek V4 Flash</option><option>DeepSeek Chat</option></select></div>
+              <div class="fx-field"><label>Recently-contacted guard (hrs)</label><input class="fx-input" id="sq-guard" value=""></div>
+              <div class="fx-field"><label>Fans checked per sweep</label><input class="fx-input" id="sq-limit" value=""></div>
+              <div class="fx-field"><label>Model</label><select class="fx-select" id="sq-model"><option>loading…</option></select></div>
             </div>
-            <label class="fx-check on" style="margin-top:10px"><span class="bx"></span>Attach a time-of-day photo <span class="sub">from your "Teasers" folder — morning, afternoon, evening, night slots</span></label>
+            <label class="fx-check on" style="margin-top:10px" id="sq-img"><span class="bx"></span>Attach a time-of-day photo <span class="sub" id="sq-img-sub">…</span></label>
+            <label class="fx-check" style="margin-top:2px" id="sq-dry"><span class="bx"></span>Test mode — compose but never send <span class="sub">watch the drip pick fans and write lines with zero DMs going out</span></label>
+            <div class="fx-kv sq-hint" style="margin-top:6px" id="sq-folder-hint">…</div>
+          </div>
+
+          <div class="fx-adv-group"><h4>Schedule</h4>
+            <div class="fx-grid3">
+              <div class="fx-field"><label>Check for silent fans every (min)</label><input class="fx-input" id="sq-every" value=""></div>
+              <div class="fx-field"><label>Quiet hours — from</label><select class="fx-select" id="sq-qh-start" disabled></select></div>
+              <div class="fx-field"><label>Quiet hours — to</label><select class="fx-select" id="sq-qh-end" disabled></select></div>
+            </div>
+            <label class="fx-check" style="margin-top:10px" id="sq-qh-on"><span class="bx"></span>Hold the drip during quiet hours <span class="sub" id="sq-qh-sub">off — the sweep runs around the clock</span></label>
+            <div class="fx-kv sq-hint" style="margin-top:6px">Cadence is how often the sweep wakes to look for silent fans — it does <b>not</b> change the 26/64/256 h silence thresholds above. Quiet hours pause the whole automation between the two times (creator local, UTC-10:00).</div>
           </div>
 
           <div class="fx-note warn">Drips stop once a chat has been cold for 7 days — so follow-up 3 (256 h) only fires when a reply reset the clock along the way.</div>
@@ -864,5 +905,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="onboarding-sequence.js" id="wire-js"></script>
 </body>
 </html>

@@ -71,7 +71,6 @@ from . import _customs
 from . import _voice  # whose voice this account writes in (NULL → 'her')
 from . import _openers  # the gen_info opener pool (the deepen phase)
 # 🚫 no `_pins` import — pins unwired 2026-08-15, ruling in `_pins.py`'s docstring.
-from . import rhythm  # tz_offset_for — the prompt clock (creator-local time)
 from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
@@ -94,7 +93,6 @@ from ._common import (
     content_payer_fans,
     facts_from_fan, hold_with_typing, apply_typo_throttle, is_content_ask,
     is_substantive_msg,
-    load_cat_sticker_tuning, load_cat_stickers_flag,
     load_factground_flag, load_painful_texting_flag,
     load_consistency_flags,
     load_nonnative_flags, load_spacing_flags, load_strip_emojis, load_style_flags, load_tip_ask_config,
@@ -104,6 +102,10 @@ from ._common import (
     should_skip_muted_creator, skip_unreachable_fan,
     typing_delay_seconds,
 )
+from ._wordfilter import (  # compliance word filter
+    banned_hit_summary, filter_banned, load_banned_words,
+)
+from ._clock import clock_block, clock_line, load_clock_tz
 from ._persona import (
     claims_to_scalars, compose_persona, fan_claims_block, mentions_self_claim,
     merge_persona_claims, parse_persona_claims, persona_register_age,
@@ -558,36 +560,6 @@ async def _load_persona(account_id: str) -> str:
         cfg = await s.get(AccountAiConfig, account_id)
     return compose_persona(cfg, fallback=(
         "You are a warm, flirty OnlyFans creator chatting with one of your fans."))
-
-
-async def _load_clock_tz(account_id: str) -> int | None:
-    """Creator-local offset in MINUTES for the prompt clock. The fixed
-    `utc_offset` decides (it is what the Brain's one clock dropdown writes); a
-    legacy IANA `timezone` is the fallback; None when neither is set — and None
-    means NO clock line, never the server's clock."""
-    async with get_session() as s:
-        cfg = await s.get(AccountAiConfig, account_id)
-    if cfg is None:
-        return None
-    return rhythm.tz_offset_for(getattr(cfg, "timezone", None),
-                                getattr(cfg, "utc_offset", None))
-
-
-def _clock_line(tz_offset_minutes: int | None,
-                now: datetime | None = None) -> str:
-    """Creator-local wall clock for the chat prompt, e.g.
-    'Thursday, July 23 — 12:32 AM (late night)'. Returns '' when the account
-    has no timezone/utc_offset configured: the model must be told NOTHING
-    rather than the server's clock — a fan asking "what time is it where you
-    are?" caught the bot claiming 10am at 12:30am creator-time, then burning
-    the thread trying to talk its way out."""
-    if tz_offset_minutes is None:
-        return ""
-    local = (now or datetime.utcnow()) + timedelta(minutes=int(tz_offset_minutes))
-    h = local.hour
-    tod = ("late night" if h < 5 else "morning" if h < 12 else
-           "afternoon" if h < 18 else "evening" if h < 22 else "late night")
-    return f"{local.strftime('%A, %B %d — %I:%M %p')} ({tod})"
 
 
 # ── Stop-lists + candidate gathering ─────────────────────────────────
@@ -1109,9 +1081,6 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
     # The prompt clock ("" when the account has no tz configured → byte-equal
     # prompt). One hard consistency rule: "what time is it where you are?" is
     # the classic bot trap, and a model with no clock invents one.
-    clock_block = (
-        f"RIGHT NOW for you it is {clock} — never claim a different time of "
-        "day.\n\n" if clock else "")
     # TODAY's day, read at the creator-local hour — see ai_chatter's twin. "" when
     # the account has no day log, so the prompt stays byte-equal.
     day_sys = day.system_block(v.voice)
@@ -1130,7 +1099,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         + f"{offer_clause}he may "
         "send several texts — read all, reply to the latest.\n\n"
         f"{v.painful_texting + chr(10) + chr(10) if painful_on else ''}"
-        f"{clock_block}{day_sys}"
+        f"{clock_block(clock)}{day_sys}"
         f"{need_block}{dodge_note}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         # The age here is the VOICE (text young and casual), not a claim about
@@ -1445,7 +1414,7 @@ async def _send_gather_close(client, cfg: dict, account_id: str, fan_id: int,
     caller's graduation can never hinge on a send.
 
     The folder knob doubles as the switch: empty → the feature is off and this
-    returns immediately. Media resolution is `tip_reward.folder_media_pool` —
+    returns immediately. Media resolution is `_vault_pick.folder_media_pool` —
     the one name→ids read every folder-configured lane shares.
     """
     folder = str((cfg or {}).get("gather_close_folder") or "").strip()
@@ -1454,8 +1423,8 @@ async def _send_gather_close(client, cfg: dict, account_id: str, fan_id: int,
     try:
         # `pack_farewell` plans it (its own product), `pack_sender` ships it
         # (the wire every lane shares).
-        from . import pack_farewell, pack_sender, tip_reward
-        pool = await asyncio.to_thread(tip_reward.folder_media_pool, client, folder)
+        from . import _vault_pick, pack_farewell, pack_sender
+        pool = await asyncio.to_thread(_vault_pick.folder_media_pool, client, folder)
         if pool is None:
             log.info("gather-close folder not found account=%s name=%r",
                      account_id, folder)
@@ -1716,9 +1685,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     spacing_on = (await load_spacing_flags(account_id))[_PURPOSE]
     factground_on = await load_factground_flag(account_id)  # rich-profile grounding (default ON)
     painful_on = await load_painful_texting_flag(account_id)  # brevity/emotion framing (default ON)
-    stickers_on = await load_cat_stickers_flag(account_id)    # cat reaction gifs (default ON)
-    sticker_skip_w, sticker_solo_w, sticker_gap_min = \
-        await load_cat_sticker_tuning(account_id)             # per-account rate knobs
+    # Cat reaction gifs (default ON) + per-account rate knobs — one config read.
+    sticker_cfg = await cat_stickers.load_cat_sticker_config(account_id)
     account_lang = await _language.load_account_language(account_id)  # output language + guard gate
     # Whose voice this account writes in AND whether it may sell customs — one
     # bundle off ONE row read, resolved once per run beside the language. This
@@ -1744,7 +1712,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # content-ask just gets a normal reply instead of a tip-ask.
     tip_ask_enabled, tip_ask_amount, tip_ask_template = await load_tip_ask_config(account_id)
     persona = await _load_persona(account_id)
-    clock_tz = await _load_clock_tz(account_id)  # None ⇒ no clock line in the prompt
+    clock_tz = await load_clock_tz(account_id)  # None ⇒ no clock line in the prompt
     # TODAY's day log — one lazy generation per (account, creator-local date), shared
     # by every fan in this sweep. `ensure_day_log` re-reads inside its lock, so when
     # ai_chatter already generated today's row this engine ADOPTS it rather than
@@ -1754,6 +1722,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # the one query that used to be two (the flag had its own by-id loader).
     day = await _daylog.load_day(account_id, model=model, purpose=_PURPOSE,
                                  clock_tz=clock_tz)
+    banned_words, banned_mode = await load_banned_words(account_id)  # compliance word filter
     blacklist, skip_list = await _load_stop_lists(account_id)
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)  # W7 cross-tick ownership
     promo_spam = await load_promo_spam_ids(account_id)
@@ -1898,6 +1867,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     farewells_sent = 0      # gather-close PPVs that went out with a graduation
     skipped_locked = 0
     skipped_cooldown = 0
+    skipped_banned = 0      # compliance word filter tripped in "block" mode
     errors = 0
     cap_hit = False
     # The vault sell lane: config, permission, counter snapshot, budget and tally,
@@ -2040,12 +2010,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # deterministic per reply (fan + his latest text) so a re-run rolls
             # the same. Cooldown (per-account gap knob) forces skip.
             sticker_mode = "skip"
-            if stickers_on:
+            if sticker_cfg.enabled:
                 sticker_mode = cat_stickers.roll_mode(
                     random.Random(f"sticker:{account_id}:{fan_id}:{c.last_body}"),
                     cat_stickers.cooldown_active(account_id, fan_id,
-                                                 gap_min=sticker_gap_min),
-                    skip_w=sticker_skip_w, solo_w=sticker_solo_w)
+                                                 gap_min=sticker_cfg.gap_min),
+                    skip_w=sticker_cfg.skip_w, solo_w=sticker_cfg.solo_w)
             msgs, presented = _build_messages(
                 persona, f, c, asked, history_tail,
                 style_on=style_on, nonnative_on=nonnative_on,
@@ -2054,7 +2024,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 custom_owed=_customs.is_owed(f),
                 painful_on=painful_on, lang=fan_lang,
                 profile=profiles.get(fan_id) if factground_on else None,
-                clock=_clock_line(clock_tz),
+                clock=clock_line(clock_tz),
                 sticker_mode=sticker_mode,
                 day=day,
                 opener=opener, v=v)
@@ -2140,6 +2110,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 log.debug("welcome_chatter_for_info dropped echo-only reply account=%s fan=%s",
                           account_id, fan_id)
                 continue
+            # Compliance word filter — before the nonnative/typo layers (filter_banned's
+            # documented contract), so a typo can't smuggle a flagged word past the scan.
+            parts, _bw = filter_banned(parts, banned_words, banned_mode)
+            if parts is None:
+                skipped_banned += 1
+                log.warning("of_ai_chat BLOCKED reply — banned word(s) %r account=%s fan=%s",
+                            banned_hit_summary(_bw), account_id, fan_id)
+                continue
+            if _bw:
+                log.info("of_ai_chat masked banned word(s) %r account=%s fan=%s",
+                         banned_hit_summary(_bw), account_id, fan_id)
             name_protect = [n for n in (f.real_name, f.generated_nickname,
                                         f.of_display_name) if n]
             if nonnative_on:  # opt-in: deterministic non-native misspellings (always)
@@ -2324,6 +2305,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "newly_skiplisted": newly_skiplisted,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
+        "skipped_banned": skipped_banned,
         "errors": errors,
         "cap_hit": cap_hit,
         "dry_run": dry_run,

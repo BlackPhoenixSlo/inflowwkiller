@@ -4,12 +4,21 @@ __pycache__/
 .venv/
 venv/
 .env
+# …and every suffixed variant. `.env` alone is an EXACT match, so the
+# `.env.bak.20260819` rollback copy sitting in service/ — live GROK/DEEPSEEK/
+# DEEPINFRA keys and ADMIN_PASSWORD — was one `git add -A` from a commit, and
+# this repo feeds a public mirror. The example file stays tracked.
+.env.*
+!.env.example
 
 # OS
 .DS_Store
 
 # Node
-node_modules/
+# No trailing slash: a directory-only pattern does not match a SYMLINK, and both
+# worktree node_modules here are symlinks into the main checkout — so they kept
+# showing up as untracked.
+node_modules
 .next/
 dist/
 

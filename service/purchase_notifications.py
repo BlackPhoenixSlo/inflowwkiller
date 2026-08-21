@@ -110,8 +110,8 @@ def _parse_amount_cents(raw: Any) -> int:
 
 
 def parse_purchase(n: Any) -> dict[str, Any] | None:
-    """One notification → {notif_id, fan_id, message_id, amount_cents, created_at},
-    or None when it isn't a chat-message purchase we can act on."""
+    """One notification → {notif_id, fan_id, message_id, amount_cents, created_at,
+    name}, or None when it isn't a chat-message purchase we can act on."""
     if not isinstance(n, dict):
         return None
     if str(n.get("type") or "") not in _PAID_TYPES:
@@ -292,7 +292,7 @@ async def _broadcast_purchase(account_id: str, p: dict[str, Any]) -> None:
                 "message_id": int(p["message_id"]),
                 "amount_cents": int(p["amount_cents"] or 0),
                 "created_at": p.get("created_at"),
-                "name": p.get("name") or None,
+                "name": (str(p["name"]) if p.get("name") else None),
             },
             "__account_id": str(account_id),
         })
@@ -401,7 +401,9 @@ async def poll_purchases(account_id: str, client: Any, *, limit: int = 10) -> di
     """
     try:
         items = await asyncio.to_thread(_fetch_feed, client, limit, 0)
-        # The live tick is the only announcing caller — see backfill below.
+        # BOTH callers announce — the 30s fast tick AND the post-ownership sweep
+        # (transaction_ingest); noise stays bounded by the _ANNOUNCED_NOTIFS dedupe
+        # + the 2h freshness gate. The silent path is backfill_purchases below.
         return await _handle_items(account_id, client, items, announce=True)
     except Exception:  # noqa: BLE001
         log.debug("purchase_notif_poll_failed account=%s", account_id, exc_info=True)

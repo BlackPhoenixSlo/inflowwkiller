@@ -2,9 +2,123 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>fastt — Mass Nudge moved</title>
-<meta http-equiv="refresh" content="0;url=outreach-broadcast.html">
-<style>body{background:#1e1e1e;color:#8a8a8a;font-family:Inter,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}a{color:#4166f6}</style>
+<meta name="viewport" content="width=1440, initial-scale=1">
+<title>fastt — Mass Nudge moved to Broadcast</title>
+<link rel="icon" href="data:,">
+<!-- Mass Nudge is no longer its own page. Its whole surface (the mass_nudge
+     automation rule — six time-of-day message slots, preview, per-creator fan-out)
+     now lives inside Broadcast (Outreach & Blasts -> Broadcast), alongside the
+     1:1 online-nudge and Online Blast controls that share the same engine.
+     This is a REDIRECT STUB: it forwards there and never touches the relay API. -->
+<meta http-equiv="refresh" content="2;url=outreach-broadcast.html">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --canvas:#1e1e1e; --card:#262626; --black:#000; --border:#333;
+    --accent:#4166f6; --green:#67d1ae; --text:#fff; --muted:#8a8a8a; --muted2:#6a6a6a;
+    font-synthesis:none;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:#050505;
+    font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  body{display:flex;justify-content:center;align-items:center;min-height:100vh}
+
+  /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+  .app{width:1440px;height:100vh;overflow:hidden;background:var(--canvas);color:var(--text);
+    display:flex;align-items:center;justify-content:center;padding:40px}
+
+  .stub{width:520px;max-width:92vw;background:var(--card);border:1px solid var(--border);
+    border-radius:16px;padding:36px 38px;text-align:center;
+    box-shadow:0 24px 70px rgba(0,0,0,.5)}
+  .stub .ico{width:64px;height:64px;border-radius:16px;margin:0 auto 20px;
+    background:rgba(65,102,246,.13);color:#7d97f8;display:flex;align-items:center;justify-content:center}
+  .stub h1{font-size:22px;font-weight:600;color:#fff;margin-bottom:10px;letter-spacing:-.01em}
+  .stub p{font-size:14.5px;color:var(--muted);line-height:1.6;max-width:400px;margin:0 auto}
+  .stub p code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
+    color:#c9d3ff;background:rgba(65,102,246,.12);padding:1px 6px;border-radius:5px}
+  .path{display:inline-flex;align-items:center;gap:8px;margin:20px 0 6px;font-size:13px;
+    color:#b9b9b9;font-weight:500}
+  .path .sep{color:var(--muted2);display:flex}
+  .path b{color:#fff;font-weight:600}
+
+  .cta{margin-top:26px;display:flex;flex-direction:column;align-items:center;gap:14px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;height:44px;padding:0 26px;
+    border-radius:10px;border:0;background:var(--accent);color:#fff;font-family:inherit;font-size:14.5px;
+    font-weight:600;cursor:pointer;text-decoration:none;transition:filter .12s}
+  .btn:hover{filter:brightness(1.08)}
+  .count{font-size:12.5px;color:var(--muted2)}
+  .count b{color:var(--muted);font-weight:600}
+
+  /* thin progress bar that fills over the redirect window */
+  .bar{height:3px;width:180px;margin:2px auto 0;border-radius:2px;background:#333;overflow:hidden}
+  .bar i{display:block;height:100%;width:0;background:var(--accent);border-radius:2px;
+    animation:fill 2s linear forwards}
+  @keyframes fill{from{width:0}to{width:100%}}
+  @media (prefers-reduced-motion:reduce){.bar i{animation:none;width:100%}}
+</style>
 </head>
-<body><p>Mass Nudge is now part of <a href="outreach-broadcast.html">Broadcast</a> — redirecting…</p></body>
+<body>
+<div class="app">
+  <div class="stub" role="status" aria-live="polite">
+    <div class="ico">
+      <!-- paper-plane = the Outreach & Blasts section glyph in the sidebar -->
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <h1>Mass Nudge lives in Broadcast now</h1>
+    <p>The <code>mass_nudge</code> broadcast — its six time-of-day message slots, preview, and
+      per-creator fan-out — moved in with the 1:1 online nudges and Online Blast that share the
+      same engine. One page, one set of pools.</p>
+
+    <div class="path">
+      Outreach &amp; Blasts
+      <span class="sep"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <b>Broadcast</b>
+    </div>
+
+    <div class="cta">
+      <a class="btn" id="go" href="outreach-broadcast.html">
+        Open Broadcast
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </a>
+      <div class="count">Taking you there in <b id="secs">2</b>s…</div>
+      <div class="bar" aria-hidden="true"><i></i></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Redirect stub — never calls the relay API. Forwards to Broadcast, which hosts
+  // the real mass_nudge surface. location.replace() so Back skips this stub.
+  (function () {
+    var TARGET = 'outreach-broadcast.html';
+    var DELAY = 2000;
+
+    // live countdown for the friendly "in Ns" label
+    var secsEl = document.getElementById('secs');
+    var left = Math.round(DELAY / 1000);
+    var tick = setInterval(function () {
+      left -= 1;
+      if (left < 0) left = 0;
+      if (secsEl) secsEl.textContent = String(left);
+      if (left <= 0) clearInterval(tick);
+    }, 1000);
+
+    // manual click wins immediately (and cancels the auto-timer)
+    var go = document.getElementById('go');
+    if (go) go.addEventListener('click', function (e) {
+      e.preventDefault();
+      clearInterval(tick);
+      window.location.replace(TARGET);
+    });
+
+    // auto-forward; the <meta refresh> above is the no-JS fallback
+    setTimeout(function () { window.location.replace(TARGET); }, DELAY);
+  })();
+</script>
+</body>
 </html>

@@ -27,6 +27,22 @@ const BG_CTX: RelayContext = { priority: "background" };
 
 // ── Types (mirror funnels_api.py _validate_steps) ─────────────────────
 
+/** Optional branching map — reply_mass_funnel.resolve_next reads it to pick the
+ *  step AFTER this one from the fan's reply, turning the linear walker into a
+ *  branching storyline. Every value is a STEP NUMBER that must reference an
+ *  existing step (funnels_api rejects a dangling target with 422). ABSENT `next`
+ *  → the classic +1 advance. Precedence: keyword > bought > ignored > default. */
+export interface StepNext {
+  /** Jump here once the fan UNLOCKS a PPV (the #30 "offer taken" signal). */
+  bought?: number;
+  /** Jump here once the reply window is exhausted with no reply. */
+  ignored?: number;
+  /** {keyword → step}: a matching word in the reply routes past `default`. */
+  keyword?: Record<string, number>;
+  /** Fallback when no other branch matched (else the linear +1). */
+  default?: number;
+}
+
 /** A reply step: poll the fan for a reply on `check_intervals_min`, then send
  *  one of `messages` (first ≤2 used) — or generate one via `prompt`/`generate`. */
 export interface ReplyStep {
@@ -38,6 +54,8 @@ export interface ReplyStep {
   messages?: string[];
   prompt?: string;
   generate?: boolean;
+  /** Optional branching route from the fan's reply (see StepNext). */
+  next?: StepNext;
 }
 
 /** A paid PPV step: send sales copy + locked media at a price.
@@ -60,6 +78,8 @@ export interface PpvStep {
   generate?: boolean;
   /** When true, the fan must pay to even read the copy. */
   locked_text?: boolean;
+  /** Optional branching route (e.g. `{bought: n}` to an upsell — see StepNext). */
+  next?: StepNext;
 }
 
 export type FunnelStep = ReplyStep | PpvStep;

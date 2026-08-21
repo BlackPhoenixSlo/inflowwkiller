@@ -108,7 +108,8 @@ CONFIG_JSON_COLS = ("persona_facts_json",
                     "model_by_purpose", "nudge_config_json", "webhook_config_json",
                     "autoreply_config_json", "style_config_json", "tip_reward_config_json",
                     "ai_chatter_config_json", "ppv_library_config_json",
-                    "vault_ai_config_json", "make_right_config_json")
+                    "vault_ai_config_json", "make_right_config_json",
+                    "banned_words_config_json")
 CONFIG_COLS = CONFIG_SCALAR_COLS + CONFIG_JSON_COLS
 
 # Config blobs whose `enabled` flag is consumed by senders/dispatchers OUTSIDE

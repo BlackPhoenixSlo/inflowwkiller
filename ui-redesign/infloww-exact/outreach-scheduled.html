@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Scheduled Sends</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -426,6 +425,21 @@
   .sched-empty[hidden]{display:none}
   .sched-empty .cap{font-size:14.5px;color:var(--muted)}
   .sched-empty .sub{font-size:12.5px;color:var(--muted2)}
+  /* `.fx-st{display:inline-flex}` in the component kit out-specifies the UA's
+     [hidden]{display:none}, so a hidden status chip kept rendering its baked
+     text (a fabricated "1 overdue" next to "0 queued"). Restore the contract. */
+  .fx-st[hidden]{display:none}
+  .sav img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
+  /* roster scan */
+  .rost{display:flex;flex-direction:column;gap:0;margin-top:6px}
+  .rrow{display:flex;align-items:center;gap:12px;padding:9px 4px;border-bottom:1px solid var(--border-soft);font-size:13px}
+  .rrow:last-child{border-bottom:0}
+  .rrow .rn{width:190px;flex:0 0 190px;color:#ddd;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rrow .rv{color:#cfcfcf}
+  .rrow .rv.zero{color:var(--muted)}
+  .rrow .rv.na{color:var(--muted2)}
+  .rrow .rv.err{color:#e5a35b}
+  .rrow .rid{margin-left:auto;font-size:11px;color:var(--muted2)}
 </style>
 <style>.main{overflow-y:auto;padding-bottom:40px}</style>
 <style id="ms-css">
@@ -457,7 +471,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -536,7 +549,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -570,14 +583,14 @@
       </div>
 
       <div class="fx-status">
-        <span class="fx-st ok"><i></i><span id="stQ">4 queued</span></span>
-        <span class="fx-st warn" id="stOverdue"><i></i>1 overdue — goes out on the next server pass</span>
+        <span class="fx-st ok"><i></i><span id="stQ">… queued</span></span>
+        <span class="fx-st warn" id="stOverdue" hidden><i></i>1 overdue — goes out on the next server pass</span>
         <span class="fx-st"><i></i>Server-side — safe to close this tab</span>
-        <span class="fx-st"><i></i>Checked every 30&nbsp;s</span>
+        <span class="fx-st" title="The server-side job supervisor drains due sends on a 30-second tick. This page does not poll — use Refresh."><i></i>Server checks every 30&nbsp;s</span>
       </div>
 
       <!-- ============ HERO: not an automation, a clock in every composer ============ -->
-      <div class="card sched-hero">
+      <div class="card sched-hero" id="heroCard">
         <div class="sh-left">
           <span class="sh-kicker">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>
@@ -610,15 +623,15 @@
       </div>
 
       <!-- ============ UPCOMING ============ -->
-      <div class="card cardpad">
+      <div class="card cardpad" id="cardUpcoming">
         <div class="card-h">Upcoming
-          <span class="count" id="qCount">4</span>
-          <button class="fx-btn ghost btn-sm" style="margin-left:auto">
+          <span class="count" id="qCount">…</span>
+          <button class="fx-btn ghost btn-sm" style="margin-left:auto" id="btnRefresh">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v4.3h-4.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Refresh
           </button>
         </div>
-        <div class="fx-card-sub" style="margin-bottom:14px">Everything queued across your creators. Cancel or move a send any time before it fires.</div>
+        <div class="fx-card-sub" style="margin-bottom:14px" id="qScope">Everything queued on this creator. Cancel or move a send any time before it fires.</div>
 
         <div class="shead" id="schedHead">
           <span class="c-fan">Fan</span>
@@ -628,86 +641,8 @@
         </div>
 
         <div class="sched-rows" id="schedRows">
-
-          <div class="srow" data-overdue="1">
-            <div class="c-fan">
-              <span class="sav g2">SK</span>
-              <span><span class="fn">Sam K.</span><span class="fa">on Ava</span></span>
-            </div>
-            <div class="c-msg">
-              <div class="mtx">thank you for the tip yesterday 🥰 you really are the sweetest</div>
-            </div>
-            <div class="c-when">
-              <span class="tchip warn"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Today · 4:45 PM</span>
-              <div class="trel">Overdue — goes out on the next server pass</div>
-            </div>
-            <div class="c-act">
-              <button class="fx-btn ghost btn-sm" title="Pick a new time"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Reschedule</button>
-              <button class="fx-btn ghost btn-sm btn-cancel">Cancel</button>
-            </div>
-          </div>
-
-          <div class="srow">
-            <div class="c-fan">
-              <span class="sav g1">MR</span>
-              <span><span class="fn">Mike R.</span><span class="fa">on Aria</span></span>
-            </div>
-            <div class="c-msg">
-              <div class="mtx">hey you 👀 that beach set you asked about is finally ready…</div>
-              <div class="mband">
-                <span class="mbadge"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.5 11.5l-7.8 7.8a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8" stroke-linecap="round" stroke-linejoin="round"/></svg>2 photos · Beach set</span>
-                <span class="mbadge price"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>$24 to unlock</span>
-              </div>
-            </div>
-            <div class="c-when">
-              <span class="tchip"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Today · 9:00 PM</span>
-              <div class="trel">in 3 h 05 m</div>
-            </div>
-            <div class="c-act">
-              <button class="fx-btn ghost btn-sm" title="Pick a new time"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Reschedule</button>
-              <button class="fx-btn ghost btn-sm btn-cancel">Cancel</button>
-            </div>
-          </div>
-
-          <div class="srow">
-            <div class="c-fan">
-              <span class="sav g3">AT</span>
-              <span><span class="fn">Alex T.</span><span class="fa">on Aria</span></span>
-            </div>
-            <div class="c-msg">
-              <div class="mtx">good morning ☀️ up yet? don’t let the day start without me</div>
-            </div>
-            <div class="c-when">
-              <span class="tchip"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Tomorrow · 8:30 AM</span>
-              <div class="trel">in 14 h</div>
-            </div>
-            <div class="c-act">
-              <button class="fx-btn ghost btn-sm" title="Pick a new time"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Reschedule</button>
-              <button class="fx-btn ghost btn-sm btn-cancel">Cancel</button>
-            </div>
-          </div>
-
-          <div class="srow">
-            <div class="c-fan">
-              <span class="sav g4">JP</span>
-              <span><span class="fn">Jordan P.</span><span class="fa">on Ava</span></span>
-            </div>
-            <div class="c-msg">
-              <div class="mtx">first look at the VIP set — before anyone else gets it 🤫</div>
-              <div class="mband">
-                <span class="mbadge"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.5 11.5l-7.8 7.8a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8" stroke-linecap="round" stroke-linejoin="round"/></svg>1 photo · VIP set</span>
-              </div>
-            </div>
-            <div class="c-when">
-              <span class="tchip"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Fri, Jul 24 · 7:00 PM</span>
-              <div class="trel">in 3 days</div>
-            </div>
-            <div class="c-act">
-              <button class="fx-btn ghost btn-sm" title="Pick a new time"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Reschedule</button>
-              <button class="fx-btn ghost btn-sm btn-cancel">Cancel</button>
-            </div>
-          </div>
-
+          <!-- rows are rendered by wire-js from /api/of/v2/scheduled-sends +
+               /api/of/v2/schedules (type:"chat"); the empty state covers "none". -->
         </div>
 
         <!-- empty state (appears when the queue is empty) -->
@@ -727,6 +662,19 @@
         </div>
 
         <div class="fx-note" style="margin-top:16px">One-shot by design — each row fires exactly once at its time, then it’s gone. Nothing here repeats, and none of it counts as an automation: the delivered message shows as sent by the person who scheduled it, and right after it lands the fan gets the same short AI cooldown as any manual send.</div>
+      </div>
+
+      <!-- ============ ACROSS EVERY CREATOR ============ -->
+      <div class="card cardpad" id="cardRoster" style="margin-top:16px">
+        <div class="card-h">Across every creator
+          <span class="count" id="rostCount"></span>
+          <button class="fx-btn ghost btn-sm" style="margin-left:auto" id="btnScanAll">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v4.3h-4.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Scan all creators
+          </button>
+        </div>
+        <div class="fx-card-sub" style="margin-bottom:4px" id="rostSub">The table above is scoped to one creator. Scan reads both <b style="color:#cfd8ff;font-weight:600">/scheduled-sends</b> (server jobs) and <b style="color:#cfd8ff;font-weight:600">/schedules</b> (OF queue) once per creator — a creator whose OF session isn’t loaded on this relay reports “no session”, never a zero.</div>
+        <div class="rost" id="rostRows"></div>
       </div>
 
     </main>
@@ -810,31 +758,7 @@
   })();
   /* =============== /fx behaviors =============== */
 </script>
-<script>
-  // page-only: Cancel visually removes the row; empty state appears at zero (UI mock — nothing real happens)
-  (function(){
-    var list = document.getElementById('schedRows');
-    if (!list) return;
-    document.addEventListener('click', function(e){
-      var btn = e.target.closest('.btn-cancel');
-      if (!btn) return;
-      var row = btn.closest('.srow');
-      if (!row) return;
-      if (row.hasAttribute('data-overdue')) {
-        var so = document.getElementById('stOverdue');
-        if (so) so.remove();
-      }
-      row.remove();
-      var n = list.querySelectorAll('.srow').length;
-      var q = document.getElementById('stQ'); if (q) q.textContent = n + ' queued';
-      var c = document.getElementById('qCount'); if (c) c.textContent = n;
-      if (!n) {
-        var h = document.getElementById('schedHead'); if (h) h.style.display = 'none';
-        var em = document.getElementById('schedEmpty'); if (em) em.hidden = false;
-      }
-    });
-  })();
-</script>
+<!-- (former UI-mock cancel handler removed — cancel is wired live in wire-js below) -->
 <script id="ms-js">(function(){
   if(window.__msInit)return; window.__msInit=1;
   document.addEventListener('click',function(e){
@@ -853,5 +777,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="outreach-scheduled.js" id="wire-js"></script>
 </body>
 </html>

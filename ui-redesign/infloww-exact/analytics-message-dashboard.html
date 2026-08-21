@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<link rel="icon" href="data:,">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>Infloww — Message dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -17,13 +18,11 @@
   html,body{background:#050505;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
   body{display:flex;justify-content:center;align-items:flex-start;min-height:100vh}
   a{color:inherit;text-decoration:none}
-  .app{position:relative;width:1440px;height:900px;overflow:hidden;background:var(--canvas);color:var(--text);display:flex;flex-direction:column}
+  /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+  .app{position:relative;width:1440px;height:100vh;overflow:hidden;background:var(--canvas);color:var(--text);display:flex;flex-direction:column}
 
   /* TOP BAR */
   .topbar{height:52px;flex:0 0 52px;background:var(--black);display:flex;align-items:center;padding:0 18px 0 20px;gap:14px}
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}.traffic .y{background:#febc2e}.traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -50,6 +49,8 @@
   .creator .pink{width:8px;height:8px;border-radius:50%;background:#ec4b9b;margin-left:auto}
   .creator .cv{color:var(--muted);display:flex}
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative}
   .nav-item:hover{background:#141414}
   .nav-item .ico{width:22px;display:flex;align-items:center;justify-content:center;flex:0 0 22px;color:#9a9a9a}
@@ -112,13 +113,54 @@
 
   .mtable{margin-top:14px;border:1px solid #202020;border-radius:12px;overflow:hidden;background:#0d0d0e}
   .mthead{display:grid;grid-template-columns:1fr 1.5fr 2.7fr 1.15fr 1.15fr 1fr;color:#cfcfcf;font-size:14.5px;font-weight:500;background:#161616}
-  .mthead>div{padding:18px 22px;display:flex;align-items:center;gap:8px}
+  .mthead>div{padding:18px 16px;display:flex;align-items:center;gap:8px}
   .mthead .msgi{color:var(--muted);display:flex}
   .mthead .actcol{background:#1e1e1e}
   .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:80px 0 100px}
   .empty-state .cap{color:#8a8a8a;font-size:14.5px}
 
   .help{position:absolute;right:26px;bottom:22px;width:52px;height:52px;border-radius:50%;background:#111;border:1px solid #2a2a2a;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 20px rgba(0,0,0,.5);color:#eaeaea}
+
+  /* ==== additive: real form controls inside the mockup shells ==== */
+  .sel,.inp{flex:1;min-width:0;background:transparent;border:0;outline:none;color:#e6e6e6;
+    font:14.5px Inter,sans-serif;cursor:pointer;-webkit-appearance:none;appearance:none}
+  .inp{cursor:text}
+  .inp::placeholder{color:#6a6a6a}
+  .sel option{background:#1b1b1d;color:#e6e6e6}
+  .select:focus-within,.priceinput:focus-within,.searchbig:focus-within{border-color:#4166f6}
+  .ft-pop{position:fixed;z-index:9995;background:#1b1b1d;border:1px solid #333;border-radius:12px;padding:13px;
+    box-shadow:0 12px 34px rgba(0,0,0,.55);font:13px Inter,sans-serif;color:#e6e6e6;min-width:262px}
+  .ft-pop .pr{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .ft-pop .pr button{background:#151515;border:1px solid #333;color:#cfcfcf;border-radius:7px;padding:6px 10px;
+    font:500 12px Inter,sans-serif;cursor:pointer}
+  .ft-pop .pr button:hover{border-color:#4166f6;color:#fff}
+  .ft-pop .rw{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:7px 0;color:#8a8a8a}
+  .ft-pop input[type=date]{background:#151515;border:1px solid #333;color:#fff;border-radius:7px;padding:6px 8px;
+    font:13px Inter,sans-serif;color-scheme:dark}
+  .ft-pop .go{width:100%;margin-top:11px;background:#4166f6;border:0;color:#fff;border-radius:8px;padding:9px;
+    font:600 13px Inter,sans-serif;cursor:pointer}
+  .kstrip{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:13px;margin:18px 0 0}
+  .kbox{background:#161618;border:1px solid #262626;border-radius:12px;padding:13px 16px}
+  .kbox .kl{color:#8a8a8a;font-size:12.5px}
+  .kbox .kv{color:#fff;font-size:24px;font-weight:700;margin-top:5px;font-variant-numeric:tabular-nums;letter-spacing:-.4px}
+  .kbox .kd{font-size:11.5px;margin-top:3px;color:#7a7a7a}
+  .capnote{color:#8a8a8a;font-size:12.5px;margin-top:14px;line-height:1.55}
+  .mthead,.mtrow{grid-template-columns:1fr .85fr 1.1fr 2.3fr 1fr .7fr 1.3fr}
+  .mtrow{display:grid;border-top:1px solid #202020;color:#d6d6d6;font-size:14px}
+  .mtrow>div{padding:14px 16px;display:flex;align-items:center;min-width:0}
+  .mtrow .msg{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:100%}
+  .mtrow .mut{color:#8a8a8a}
+  .mtrow .who{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%}
+  .mtrow .sub{color:#6a6a6a;font-size:11px;white-space:nowrap}
+  .pill-paid{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+    border-radius:99px;padding:2px 9px}
+  .pill-paid.y{color:#67d1ae;background:rgba(103,209,174,.12);border:1px solid rgba(103,209,174,.32)}
+  .pill-paid.n{color:#8a8a8a;background:rgba(138,138,138,.1);border:1px solid #333}
+  .pill-paid.f{color:#8fa9ff;background:rgba(65,102,246,.12);border:1px solid rgba(65,102,246,.32)}
+  .pill-paid.i{color:#e5a35b;background:rgba(229,163,91,.12);border:1px solid rgba(229,163,91,.3)}
+  .btn-more{margin:16px auto 0;display:block;height:42px;padding:0 22px;border:1px solid #333;border-radius:9px;
+    background:#141414;color:#cfcfcf;font:500 14.5px Inter,sans-serif;cursor:pointer}
+  .btn-more:hover{border-color:#4166f6;color:#fff}
 
   /* ==== canonical sidebar submenu (propagated from dashboard.html) ==== */
   .nav-item.has-sub{cursor:pointer}
@@ -166,13 +208,116 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="md-analytics-css">
+  /* ==== additive: quick-view presets + ledger analytics band ==== */
+  .mpresets{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:2px 0 20px}
+  .mpresets .pl{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#6a6a6a;margin-right:2px}
+  .chip{background:#141414;border:1px solid #333;color:#cfcfcf;border-radius:99px;padding:8px 15px;
+    font:500 13.5px Inter,sans-serif;cursor:pointer;white-space:nowrap;transition:border-color .12s,color .12s,background .12s}
+  .chip:hover{border-color:#4166f6;color:#fff}
+  .chip.on{background:#4166f6;border-color:#4166f6;color:#fff}
+  .chip .ct{margin-left:6px;font-weight:700;opacity:.7;font-variant-numeric:tabular-nums}
+
+  .analytics{position:relative;border:1px solid #262626;border-radius:14px;background:#141416;
+    padding:17px 20px 18px;margin:0 0 8px;display:grid;grid-template-columns:minmax(0,1.02fr) minmax(0,1.35fr);gap:26px}
+  .an-title{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#cfcfcf;margin-bottom:12px}
+  .an-title .mut{color:#7a7a7a;font-weight:500}
+  .an-title svg{color:#67d1ae}
+  .an-kpis{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+  .akbox{background:#101012;border:1px solid #242424;border-radius:11px;padding:11px 13px}
+  .akbox .kl{color:#8a8a8a;font-size:11.5px;display:flex;align-items:center;gap:6px}
+  .akbox .kl i{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+  .akbox .kv{color:#fff;font-size:22px;font-weight:700;margin-top:5px;font-variant-numeric:tabular-nums;letter-spacing:-.4px}
+  .akbox .kd{font-size:11px;margin-top:2px;color:#6f6f6f}
+  .an-r{display:flex;flex-direction:column;min-width:0}
+  .an-chartwrap{flex:1;min-height:150px;display:flex;align-items:flex-end}
+  .an-chartwrap svg{width:100%;height:auto}
+  .an-skel{color:#6a6a6a;font-size:13px;padding:22px 0;display:flex;align-items:center;gap:9px}
+  .an-skel .sp{width:15px;height:15px;border:2px solid #333;border-top-color:#4166f6;border-radius:50%;animation:anspin .7s linear infinite}
+  @keyframes anspin{to{transform:rotate(360deg)}}
+  .an-err{color:#e5a35b;font-size:13px;padding:20px 0}
+  .an-cap{grid-column:1/-1;color:#6a6a6a;font-size:11.5px;margin-top:4px;line-height:1.5}
+</style>
+<style id="md-revint-css">
+  /* ==== additive: revenue-integrity band (ingest health + attribution) ==== */
+  .revint{display:flex;flex-direction:column;gap:14px;margin-bottom:22px}
+
+  /* ingest-health banner (leads) */
+  .rhealth{position:relative;border:1px solid #2c2c2c;border-radius:12px;background:#161618;overflow:hidden}
+  .rhealth.tier-r{border-color:rgba(224,91,91,.42);background:#1a1516}
+  .rhealth.tier-a{border-color:rgba(229,163,91,.36)}
+  .rhealth.tier-g{border-color:rgba(103,209,174,.30)}
+  .rh-head{width:100%;display:flex;align-items:center;gap:14px;padding:15px 18px;background:transparent;
+    border:0;cursor:pointer;color:#fff;font-family:inherit;text-align:left}
+  .rh-head:hover{background:#1b1b1d}
+  .rh-dot{width:12px;height:12px;border-radius:50%;flex:0 0 auto;background:#8a8a8a}
+  .rh-dot.g{background:#67d1ae;box-shadow:0 0 9px rgba(103,209,174,.55)}
+  .rh-dot.a{background:#e5a35b;box-shadow:0 0 9px rgba(229,163,91,.55)}
+  .rh-dot.r{background:#e05b5b;box-shadow:0 0 9px rgba(224,91,91,.55)}
+  .rh-txt{flex:1;min-width:0}
+  .rh-title{font-size:14.5px;font-weight:600;display:flex;align-items:center;gap:9px}
+  .rh-tier{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+  .rh-tier.g{color:#67d1ae}.rh-tier.a{color:#e5a35b}.rh-tier.r{color:#e05b5b}
+  .rh-sub{font-size:12.5px;color:#8a8a8a;margin-top:3px;line-height:1.4}
+  .rh-sub .warn{color:#e5a35b}
+  .rh-chev{color:#8a8a8a;font-size:13px;transition:transform .15s;flex:0 0 auto}
+  .rhealth.open .rh-chev{transform:rotate(180deg)}
+  .rh-body{border-top:1px solid #262626;max-height:340px;overflow-y:auto}
+  .rh-body::-webkit-scrollbar{width:8px}.rh-body::-webkit-scrollbar-thumb{background:#2b2b2b;border-radius:5px}
+  .rh-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;padding:12px 18px;border-bottom:1px solid #1d1d1d;font-size:13px}
+  .rh-row:last-child{border-bottom:0}
+  .rh-rdot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+  .rh-rdot.g{background:#67d1ae}.rh-rdot.a{background:#e5a35b}.rh-rdot.r{background:#e05b5b}
+  .rh-name{font-weight:600;color:#fff}
+  .rh-meta{color:#8a8a8a;font-size:12.5px;font-variant-numeric:tabular-nums}
+  .rh-st{margin-left:auto;font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+    padding:3px 8px;border-radius:99px;white-space:nowrap}
+  .rh-st.g{color:#67d1ae;background:rgba(103,209,174,.12);border:1px solid rgba(103,209,174,.3)}
+  .rh-st.a{color:#e5a35b;background:rgba(229,163,91,.12);border:1px solid rgba(229,163,91,.3)}
+  .rh-st.r{color:#e05b5b;background:rgba(224,91,91,.12);border:1px solid rgba(224,91,91,.3)}
+  .rh-err{color:#e05b5b;font-size:11.5px;flex-basis:100%;padding-left:23px;font-family:ui-monospace,Menlo,monospace}
+
+  /* attribution + orphan cards */
+  .rgrid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(0,1fr);gap:14px}
+  .rcard{position:relative;border:1px solid #262626;border-radius:12px;background:#141416;
+    padding:15px 17px 14px;display:flex;flex-direction:column;min-width:0}
+  .rc-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  .rc-title{font-size:14px;font-weight:600;color:#fff;display:flex;align-items:baseline;gap:8px}
+  .rc-title .amt{color:#67d1ae;font-variant-numeric:tabular-nums}
+  .rc-title.tips .amt{color:#ec4b9b}
+  .rc-count{font-size:12px;color:#8a8a8a;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .rc-desc{font-size:12px;color:#7a7a7a;margin:5px 0 10px;line-height:1.5}
+  .rc-scroll{overflow-y:auto;max-height:300px;margin:0 -4px;padding:0 4px}
+  .rc-scroll::-webkit-scrollbar{width:8px}.rc-scroll::-webkit-scrollbar-thumb{background:#2b2b2b;border-radius:5px}
+  .sat{display:flex;align-items:center;gap:11px;padding:9px 3px;border-top:1px solid #1d1d1d;font-size:12.5px}
+  .sat:first-child{border-top:0}
+  .sat-amt{font-weight:700;color:#fff;font-variant-numeric:tabular-nums;flex:0 0 auto;min-width:58px;text-align:right}
+  .sat-kind{font-size:9.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#8fa9ff;
+    background:rgba(65,102,246,.13);border:1px solid rgba(65,102,246,.3);border-radius:5px;padding:2px 6px;flex:0 0 auto}
+  .sat-kind.tip{color:#ec4b9b;background:rgba(236,75,155,.12);border-color:rgba(236,75,155,.32)}
+  .sat-when{color:#8a8a8a;flex:0 0 auto;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .sat-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  .sat-desc{color:#d0d0d0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sat-cand{color:#6f6f6f;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sat-cand b{color:#8a8a8a;font-weight:600}
+  .sat-st{flex:0 0 auto;font-size:9.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+    padding:2px 7px;border-radius:99px;white-space:nowrap}
+  .sat-st.pending{color:#e5a35b;background:rgba(229,163,91,.1);border:1px solid rgba(229,163,91,.28)}
+  .sat-st.cleared{color:#67d1ae;background:rgba(103,209,174,.1);border:1px solid rgba(103,209,174,.28)}
+  .rc-empty{font-size:13px;color:#7a7a7a;padding:14px 2px}
+  .rc-empty.ok{color:#67d1ae}
+  .rc-err{font-size:12.5px;color:#e5a35b;padding:12px 2px}
+  .rc-note{font-size:11px;color:#6a6a6a;margin-top:9px;line-height:1.5;border-top:1px solid #1d1d1d;padding-top:9px}
+  .rc-skel{color:#6a6a6a;font-size:12.5px;padding:16px 2px;display:flex;align-items:center;gap:9px}
+  .rc-skel .sp{width:14px;height:14px;border:2px solid #333;border-top-color:#4166f6;border-radius:50%;animation:anspin .7s linear infinite}
+  @media (max-width:1180px){.rgrid{grid-template-columns:1fr}}
+</style>
 </head>
 <body>
 <div class="app">
 
   <!-- TOP BAR -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/></svg></div>
     <div class="trial"><b>You're on a free trial</b><span>7 days left</span></div>
     <div class="modelswap" id="modelswap">
@@ -225,7 +370,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -257,29 +402,87 @@
         <div class="learn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5V5.5z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5V5.5z"/></svg>Learn</div>
       </div>
 
+      <!-- ==== Revenue-integrity band: leads the page ====
+           (1) ingest-health banner  GET /admin/ingest/transactions/health
+           (2) sales needing attribution  GET …/sales-needing-attribution?account_id=<id>
+           (3) orphan tips  GET …/orphan-tips?account_id=<id>
+           All three are READ-ONLY operator diagnostics — no mutating actions. -->
+      <section class="revint" id="revint">
+        <div class="rhealth" id="rHealth">
+          <button class="rh-head" id="rhHead" type="button" aria-expanded="false" aria-controls="rhBody">
+            <span class="rh-dot" id="rhDot"></span>
+            <span class="rh-txt">
+              <span class="rh-title">Ingest health <span class="rh-tier" id="rhTier"></span></span>
+              <span class="rh-sub" id="rhSub">Loading transaction-ingest health…</span>
+            </span>
+            <span class="rh-chev" id="rhChev"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </button>
+          <div class="rh-body" id="rhBody" hidden></div>
+        </div>
+
+        <div class="rgrid">
+          <div class="rcard" id="rSales">
+            <div class="rc-head">
+              <span class="rc-title">Sales needing attribution <span class="amt" id="rSalesAmt"></span></span>
+              <span class="rc-count" id="rSalesCount"></span>
+            </div>
+            <div class="rc-desc">Confirmed PPV &amp; message sales the scraped message left with no chatter credited — the money is real, the seller is ambiguous.</div>
+            <div class="rc-scroll" id="rSalesBody"><div class="rc-skel"><span class="sp"></span>Loading sales…</div></div>
+            <div class="rc-note" id="rSalesNote"></div>
+          </div>
+
+          <div class="rcard" id="rOrphan">
+            <div class="rc-head">
+              <span class="rc-title tips">Orphan tips <span class="amt" id="rOrphanAmt"></span></span>
+              <span class="rc-count" id="rOrphanCount"></span>
+            </div>
+            <div class="rc-desc">Tips whose 7-day lookback found no chatter-attributed outbound message to the fan.</div>
+            <div class="rc-scroll" id="rOrphanBody"><div class="rc-skel"><span class="sp"></span>Loading tips…</div></div>
+            <div class="rc-note" id="rOrphanNote"></div>
+          </div>
+        </div>
+      </section>
+
       <div class="md-info">
         <span class="ii"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
-        Message dashboard currently displays data for direct messages only
+        <span id="mdBanner">Direct messages from the fastt message log — outbound and inbound, paid and free.</span>
       </div>
 
       <div class="md-toprow">
-        <div class="searchbig">Search for Creator message<span class="mg"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5" stroke-linecap="round"/></svg></span></div>
+        <div class="searchbig"><input class="inp" id="qText" type="search" placeholder="Search message text (filters the rows below)" autocomplete="off"><span class="mg"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5" stroke-linecap="round"/></svg></span></div>
         <div style="margin-left:auto"></div>
-        <div class="field">Jul 22, 2026 <span style="color:#8a8a8a">&#8594;</span> Jul 22, 2026 <span class="cal"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 3v4M16 3v4" stroke-linecap="round"/></svg></span></div>
+        <div class="field" id="mdRange">Jul 22, 2026 <span style="color:#8a8a8a">&#8594;</span> Jul 22, 2026 <span class="cal"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 3v4M16 3v4" stroke-linecap="round"/></svg></span></div>
       </div>
 
       <div class="mgrid">
-        <div class="mcell"><span class="mlabel">Sender:</span><div class="select">All<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
-        <div class="mcell"><span class="mlabel">Creator:</span><div class="select">All<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
-        <div class="mcell"><span class="mlabel">Sent to:</span><div class="select ph">Select recipient<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
+        <div class="mcell"><span class="mlabel">Sender:</span><div class="select"><select class="sel" id="fEmp"><option value="">All senders</option></select><span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
+        <div class="mcell"><span class="mlabel">Creator:</span><div class="select"><select class="sel" id="fAcct"><option value="">All creators</option></select><span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
+        <div class="mcell"><span class="mlabel">Sent to:</span><div class="select"><input class="inp" id="fFan" type="search" placeholder="Fan username / display name" autocomplete="off"><span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5" stroke-linecap="round"/></svg></span></div></div>
 
-        <div class="mcell"><span class="mlabel">Price:</span><div class="pricewrap"><div class="priceinput">$</div><span style="color:#8a8a8a">-</span><div class="priceinput">$</div></div></div>
-        <div class="mcell"><span class="mlabel">Purchased:</span><div class="select">All<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
-        <div class="mcell"><span class="mlabel">Status:</span><div class="select">All<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
+        <div class="mcell"><span class="mlabel">Price:</span><div class="pricewrap"><div class="priceinput">$<input class="inp" id="fMin" type="number" min="0" step="1" placeholder="min" style="margin-left:6px"></div><span style="color:#8a8a8a">-</span><div class="priceinput">$<input class="inp" id="fMax" type="number" min="0" step="1" placeholder="max" style="margin-left:6px"></div></div></div>
+        <div class="mcell"><span class="mlabel">Purchased:</span><div class="select"><select class="sel" id="fStatus"><option value="all">All</option><option value="paid">Purchased</option><option value="unpaid">Not purchased</option></select><span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
+        <div class="mcell"><span class="mlabel">Status:</span><div class="select"><select class="sel" id="fType"><option value="all">All messages</option><option value="paid">Priced (PPV)</option><option value="free">Free</option></select><span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
 
-        <div class="mcell"><span class="mlabel">Source:</span><div class="select">All<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
+        <div class="mcell"><span class="mlabel">Direction:</span><div class="select"><select class="sel" id="fDir"><option value="any">All</option><option value="out">Outbound (from creator)</option><option value="in">Inbound (from fan)</option></select><span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
         <div class="mcell"><div class="btnrow"><button class="btn-reset">Reset</button><button class="btn-search">Search</button></div></div>
-        <div class="mcell"></div>
+        <div class="mcell"><label style="display:flex;align-items:center;gap:9px;color:#cfcfcf;font-size:14px;cursor:pointer"><input type="checkbox" id="fCollapse" checked style="accent-color:#4166f6;width:16px;height:16px">Collapse mass broadcasts</label></div>
+      </div>
+
+      <!-- Quick-view presets: one click sets the real server filters (friendlier lead) -->
+      <div class="mpresets" id="mdPresets">
+        <span class="pl">Quick views</span>
+        <button class="chip" type="button" data-preset="all">All messages</button>
+        <button class="chip" type="button" data-preset="ppv">PPV sent</button>
+        <button class="chip" type="button" data-preset="purchased">Purchased</button>
+        <button class="chip" type="button" data-preset="unpaid">Unpaid PPV</button>
+        <button class="chip" type="button" data-preset="free">Free sends</button>
+        <button class="chip" type="button" data-preset="inbound">Inbound</button>
+      </div>
+
+      <!-- Ledger analytics band: TRUE window totals from the transactions ledger
+           (independent of the message-log filters below) — the money summary leads. -->
+      <div class="analytics" id="mdAnalytics">
+        <div class="an-skel"><span class="sp"></span>Loading revenue for this window…</div>
       </div>
 
       <div class="result-head">
@@ -295,10 +498,11 @@
         <div class="mthead">
           <div>Sender</div>
           <div>Creator</div>
+          <div>Sent to</div>
           <div>Message <span class="msgi"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span></div>
           <div>Sent time</div>
-          <div>Reply time</div>
-          <div class="actcol">Actions</div>
+          <div>Price</div>
+          <div class="actcol">Purchased</div>
         </div>
         <div class="empty-state">
           <svg width="120" height="120" viewBox="0 0 120 120" fill="none">
@@ -315,6 +519,9 @@
           <div class="cap">No data</div>
         </div>
       </div>
+      <button class="btn-more" id="mdMore" style="display:none">Load 50 more</button>
+      <div class="kstrip" id="mdStrip"></div>
+      <div class="capnote" id="mdNote"></div>
 
     </main>
   </div>
@@ -354,6 +561,200 @@
     });
   })();
   // ==== /CANONICAL SIDEBAR JS ====
+</script>
+<script src="_shared/fastt.js"></script>
+<script src="analytics-message-dashboard.js"></script>
+<script>
+// ==== REVENUE-INTEGRITY BAND (read-only operator diagnostics) ====
+// Ports the stats page's IngestHealthBanner + SalesNeedingAttributionCard +
+// OrphanTipsCard. Purely diagnostic reads — NO attribute/pause/resume/re-sync
+// actions are exposed here (those mutate; this surface never does).
+//   (1) GET /admin/ingest/transactions/health           → {overall_status, as_of, accounts[]}
+//   (2) GET /admin/ingest/transactions/sales-needing-attribution?account_id → {rows[]}
+//   (3) GET /admin/ingest/transactions/orphan-tips?account_id               → {rows[]}
+// Timestamps are tz-naive UTC → Fastt.parseUtc / Fastt.fmtAgo. Money is *_cents.
+Fastt.ready(async () => {
+  const esc = Fastt.esc, fmtCents = Fastt.fmtCents, fmtInt = Fastt.fmtInt, fmtAgo = Fastt.fmtAgo;
+  const tierCls = (t) => (t === 'green' ? 'g' : (t === 'red' ? 'r' : 'a'));
+  const tierWord = (t) => (t === 'green' ? 'Healthy' : (t === 'red' ? 'Action needed' : 'Watching'));
+
+  // scope: honour the page's Creator dropdown when set, else the picked account.
+  const acctSel = document.getElementById('fAcct');
+  const scopeAcct = () => (acctSel && acctSel.value) ? acctSel.value : (Fastt.account() || '');
+  const acctLabel = (id) => {
+    const a = Fastt.accounts().find((x) => String(x.id) === String(id));
+    return a ? (a.nickname || String(id)) : (id ? String(id) : 'this account');
+  };
+
+  // ── (1) ingest-health banner ─────────────────────────────────
+  const hEl = document.getElementById('rHealth');
+  const hHead = document.getElementById('rhHead');
+  const hDot = document.getElementById('rhDot');
+  const hTier = document.getElementById('rhTier');
+  const hSub = document.getElementById('rhSub');
+  const hBody = document.getElementById('rhBody');
+
+  hHead.addEventListener('click', () => {
+    const open = hEl.classList.toggle('open');
+    hBody.hidden = !open;
+    hHead.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+
+  async function loadHealth() {
+    try {
+      const d = await Fastt.get('/admin/ingest/transactions/health', null, { noAccount: true });
+      const overall = d.overall_status || 'green';
+      const accts = d.accounts || [];
+      const oc = tierCls(overall);
+      hEl.classList.remove('tier-g', 'tier-a', 'tier-r');
+      hEl.classList.add('tier-' + oc);
+      hDot.className = 'rh-dot ' + oc;
+      hTier.className = 'rh-tier ' + oc;
+      hTier.textContent = tierWord(overall);
+
+      const behind = accts.filter((a) => a.tier !== 'green');
+      if (!accts.length) {
+        hSub.textContent = 'No accounts bound — bind a session to start ingest.';
+      } else if (overall === 'green') {
+        hSub.innerHTML = 'All ' + fmtInt(accts.length) + ' accounts up to date · <span style="color:#6a6a6a">click for per-account detail</span>';
+      } else {
+        hSub.innerHTML = '<span class="warn">' + fmtInt(behind.length) + ' of ' + fmtInt(accts.length) +
+          ' account' + (accts.length === 1 ? '' : 's') + ' behind or paused</span> · ' +
+          '<span style="color:#6a6a6a">click for per-account detail</span>';
+      }
+
+      // sort worst-first so the problems lead the expanded list
+      const rank = { red: 0, yellow: 1, amber: 1, green: 2 };
+      const sorted = accts.slice().sort((a, b) =>
+        (rank[a.tier] ?? 3) - (rank[b.tier] ?? 3) || (b.minutes_since_scan || 0) - (a.minutes_since_scan || 0));
+      hBody.innerHTML = sorted.map((a) => {
+        const c = tierCls(a.tier);
+        const name = a.display_name || String(a.account_id);
+        const scan = a.last_scan_at ? ('last scan ' + fmtAgo(a.last_scan_at)) : 'never scanned';
+        const paused = a.paused_until && Fastt.parseUtc(a.paused_until) && Fastt.parseUtc(a.paused_until).getTime() > Date.now();
+        const statusTxt = paused ? 'paused' : (a.current_status && a.current_status !== 'ok' ? a.current_status : (a.tier === 'green' ? 'ok' : 'stale'));
+        return '<div class="rh-row">' +
+          '<span class="rh-rdot ' + c + '"></span>' +
+          '<span class="rh-name">' + esc(name) + '</span>' +
+          '<span class="rh-meta">' + esc(scan) + '</span>' +
+          '<span class="rh-meta">' + fmtInt(a.rows_inserted_total || 0) + ' rows in · ' + fmtInt(a.rows_patched_total || 0) + ' patched</span>' +
+          '<span class="rh-st ' + c + '">' + esc(statusTxt) + '</span>' +
+          (a.last_error ? '<span class="rh-err">' + esc(String(a.last_error).slice(0, 160)) + '</span>' : '') +
+          '</div>';
+      }).join('');
+      Fastt.liveBadge(hEl);
+    } catch (e) {
+      hEl.classList.add('tier-a');
+      hDot.className = 'rh-dot a';
+      hTier.className = 'rh-tier a';
+      hTier.textContent = 'Unavailable';
+      hSub.innerHTML = '<span class="warn">Could not read /admin/ingest/transactions/health — see the error toast.</span>';
+      Fastt.staticBadge(hEl, 'NO LIVE DATA');
+      Fastt.oops(e);
+    }
+  }
+
+  // ── (2) sales needing attribution ────────────────────────────
+  const CAP = 60;
+  const kindLabel = (k) => (String(k || '').startsWith('ppv') ? 'PPV' : (String(k || '').startsWith('tip') ? 'Tip' : String(k || '')));
+  const sBody = document.getElementById('rSalesBody');
+  const sAmt = document.getElementById('rSalesAmt');
+  const sCount = document.getElementById('rSalesCount');
+  const sNote = document.getElementById('rSalesNote');
+
+  async function loadSales() {
+    const acct = scopeAcct();
+    sBody.innerHTML = '<div class="rc-skel"><span class="sp"></span>Loading sales…</div>';
+    sAmt.textContent = ''; sCount.textContent = ''; sNote.textContent = '';
+    try {
+      const d = await Fastt.get('/admin/ingest/transactions/sales-needing-attribution',
+        acct ? { account_id: acct } : {}, { noAccount: true });
+      const rows = d.rows || [];
+      const total = rows.reduce((a, r) => a + (Number(r.amount_cents) || 0), 0);
+      sAmt.textContent = total ? fmtCents(total) : '';
+      sCount.textContent = fmtInt(rows.length) + ' open';
+      if (!rows.length) {
+        sBody.innerHTML = '<div class="rc-empty ok">Nothing awaiting attribution for ' + esc(acctLabel(acct)) + ' — every sale is credited.</div>';
+      } else {
+        const shown = rows.slice(0, CAP);
+        sBody.innerHTML = shown.map((r) => {
+          const cand = (r.candidate_chatters || []).map((c) => c.name || ('#' + c.employee_id));
+          const candTxt = cand.length
+            ? '<span class="sat-cand"><b>candidates:</b> ' + esc(cand.join(', ')) + '</span>'
+            : '<span class="sat-cand">no 1:1 candidate chatter found</span>';
+          const st = String(r.status || '').toLowerCase();
+          const stCls = st === 'pending' ? 'pending' : (st === 'cleared' ? 'cleared' : '');
+          return '<div class="sat">' +
+            '<span class="sat-amt">' + fmtCents(r.amount_cents) + '</span>' +
+            '<span class="sat-kind' + (kindLabel(r.kind) === 'Tip' ? ' tip' : '') + '">' + esc(kindLabel(r.kind)) + '</span>' +
+            '<span class="sat-when" title="' + esc(Fastt.fmtDate(r.occurred_at)) + '">' + esc(fmtAgo(r.occurred_at)) + '</span>' +
+            '<span class="sat-body">' +
+              '<span class="sat-desc" title="' + esc(r.description || '') + '">' + esc(r.description || ('fan ' + (r.fan_id || '?'))) + '</span>' +
+              candTxt +
+            '</span>' +
+            (stCls ? '<span class="sat-st ' + stCls + '">' + esc(st) + '</span>' : '') +
+            '</div>';
+        }).join('');
+        sNote.textContent = rows.length > CAP
+          ? ('Showing the ' + CAP + ' most recent of ' + fmtInt(rows.length) + ' · attribute them in the full stats app.')
+          : 'Attribution is done in the full stats app — this surface is read-only.';
+      }
+      Fastt.liveBadge(document.getElementById('rSales'));
+    } catch (e) {
+      sBody.innerHTML = '<div class="rc-err">Could not read sales-needing-attribution — see the error toast.</div>';
+      sCount.textContent = '';
+      Fastt.staticBadge(document.getElementById('rSales'), 'NO LIVE DATA');
+      Fastt.oops(e);
+    }
+  }
+
+  // ── (3) orphan tips ──────────────────────────────────────────
+  const oBody = document.getElementById('rOrphanBody');
+  const oAmt = document.getElementById('rOrphanAmt');
+  const oCount = document.getElementById('rOrphanCount');
+  const oNote = document.getElementById('rOrphanNote');
+
+  async function loadOrphan() {
+    const acct = scopeAcct();
+    oBody.innerHTML = '<div class="rc-skel"><span class="sp"></span>Loading tips…</div>';
+    oAmt.textContent = ''; oCount.textContent = ''; oNote.textContent = '';
+    try {
+      const d = await Fastt.get('/admin/ingest/transactions/orphan-tips',
+        acct ? { account_id: acct } : {}, { noAccount: true });
+      const rows = d.rows || [];
+      const total = rows.reduce((a, r) => a + (Number(r.amount_cents) || 0), 0);
+      oAmt.textContent = total ? fmtCents(total) : '';
+      oCount.textContent = fmtInt(rows.length) + ' orphan';
+      if (!rows.length) {
+        oBody.innerHTML = '<div class="rc-empty ok">No orphan tips for ' + esc(acctLabel(acct)) + '.</div>';
+      } else {
+        const shown = rows.slice(0, CAP);
+        oBody.innerHTML = shown.map((r) =>
+          '<div class="sat">' +
+            '<span class="sat-amt">' + fmtCents(r.amount_cents) + '</span>' +
+            '<span class="sat-when" title="' + esc(Fastt.fmtDate(r.occurred_at)) + '">' + esc(fmtAgo(r.occurred_at)) + '</span>' +
+            '<span class="sat-body"><span class="sat-desc" title="' + esc(r.description || '') + '">' +
+              esc(r.description || ('fan ' + (r.fan_id || '?'))) + '</span></span>' +
+          '</div>').join('');
+        oNote.textContent = rows.length > CAP
+          ? ('Showing the ' + CAP + ' most recent of ' + fmtInt(rows.length) + ' orphan tips.')
+          : 'Read-only — assign these in the full stats app.';
+      }
+      Fastt.liveBadge(document.getElementById('rOrphan'));
+    } catch (e) {
+      oBody.innerHTML = '<div class="rc-err">Could not read orphan-tips — see the error toast.</div>';
+      oCount.textContent = '';
+      Fastt.staticBadge(document.getElementById('rOrphan'), 'NO LIVE DATA');
+      Fastt.oops(e);
+    }
+  }
+
+  // re-scope the two account-scoped cards when the Creator dropdown changes
+  // (health is roster-wide, so it does not need to refetch).
+  if (acctSel) acctSel.addEventListener('change', () => { loadSales(); loadOrphan(); });
+
+  await Promise.all([loadHealth(), loadSales(), loadOrphan()]);
+});
 </script>
 <script id="ms-js">(function(){
   if(window.__msInit)return; window.__msInit=1;

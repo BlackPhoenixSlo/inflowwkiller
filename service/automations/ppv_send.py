@@ -997,7 +997,7 @@ async def _eligible_fans(account_id: str):
     is NOT audience gating and stays, in the send path below.)"""
     blacklisted = select(Blacklist.fan_id)
     # Operator stops (muted_creator / manual_restrict / of_restricted, plus any
-    # hand-written ladder_stop). ppv_send read NONE of these before 07-23 — a
+    # not-yet-converted ladder_stop row). ppv_send read NONE of these before 07-23 — a
     # hand-restricted fan kept receiving priced blasts, and as a past payer he
     # landed in the HIGHEST spend-band cell.
     hard_skip = await load_hard_skip_ids(account_id)

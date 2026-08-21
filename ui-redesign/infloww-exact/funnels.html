@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Funnels</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -395,12 +394,10 @@
   .mchip{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 11px 0 5px;border-radius:9px;
     background:#1c1c1c;border:1px solid var(--border-soft);font-size:12px;color:#b9b9b9}
   .mtiles{display:flex}
-  .mtile{width:26px;height:26px;border-radius:6px;border:2px solid #1c1c1c}
+  .mtile{width:26px;height:26px;border-radius:6px;border:2px solid #1c1c1c;overflow:hidden;
+    background:#161616;flex:0 0 auto}
   .mtile+.mtile{margin-left:-9px}
-  .mtile.g1{background:linear-gradient(150deg,#d98aa2,#7a5cc0)}
-  .mtile.g2{background:linear-gradient(150deg,#6f9bd8,#3a5aa8)}
-  .mtile.g3{background:linear-gradient(150deg,#e0a04e,#c0605c)}
-  .mtile.g4{background:linear-gradient(150deg,#67d1ae,#2a7a8c)}
+  .mtile img{width:100%;height:100%;object-fit:cover;display:block}
 
   /* wait pill between steps */
   .twait{position:relative;z-index:1;margin:2px 0 8px 62px}
@@ -423,6 +420,17 @@
   .mmx .model{font-weight:600;color:#fff}
   .cell-ok{display:inline-flex;align-items:center;gap:6px;color:var(--green);font-weight:500}
   .cell-warn{display:inline-flex;align-items:center;gap:6px;color:#e0b05e;font-weight:500}
+  .cell-none{color:var(--muted2)}
+  /* the real OF list universe is 30 rows — keep each picker to a scroll pane
+     so the launch panel stays the size of a panel */
+  #fn-inc,#fn-exc{max-height:104px;overflow-y:auto;align-content:flex-start;
+    padding:2px 2px 2px 0;scrollbar-width:thin;scrollbar-color:#3a3a3a transparent}
+  #fn-inc::-webkit-scrollbar,#fn-exc::-webkit-scrollbar{width:6px}
+  #fn-inc::-webkit-scrollbar-thumb,#fn-exc::-webkit-scrollbar-thumb{background:#3a3a3a;border-radius:3px}
+  .mmx tr.me td{background:rgba(65,102,246,.07)}
+  .mmx tr.me .model::after{content:"current";margin-left:8px;font-size:9px;font-weight:700;letter-spacing:.04em;
+    color:#9db1fb;background:rgba(65,102,246,.15);border-radius:5px;padding:2px 6px;vertical-align:middle}
+  .mmx .load{color:var(--muted2)}
 
   /* raw JSON */
   .rawpre{background:#151515;border:1px solid var(--border);border-radius:10px;padding:14px 16px;
@@ -452,13 +460,74 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="fn-edit-css">
+  /* ---- walker toggle in the status strip ---- */
+  .fx-st .wk-btn{margin-left:9px;height:22px;padding:0 10px;border-radius:11px;border:1px solid var(--border);
+    background:#1c1c1c;color:#cfcfcf;font-family:inherit;font-size:11.5px;font-weight:600;cursor:pointer}
+  .fx-st .wk-btn:hover{border-color:#4a4a4a;color:#fff}
+  .fx-st .wk-btn.go{background:var(--accent);border-color:var(--accent);color:#fff}
+  .fx-st .wk-btn.go:hover{background:#3557e0}
+
+  /* ---- inline step tools on timeline cards ---- */
+  .tc-tools{display:flex;align-items:center;gap:1px;margin-left:6px}
+  .tc-tool{width:26px;height:26px;border-radius:7px;display:flex;align-items:center;justify-content:center;
+    color:#8a8a8a;cursor:pointer;background:transparent;border:0;padding:0}
+  .tc-tool:hover{background:#1c1c1c;color:#fff}
+  .tc-tool:disabled{opacity:.25;cursor:default;background:transparent!important}
+  .tc-tool.del:hover{color:#f2295b}
+
+  /* ---- modal shell ---- */
+  .fn-ov{position:absolute;inset:0;background:rgba(0,0,0,.62);display:none;align-items:flex-start;
+    justify-content:center;z-index:220;overflow-y:auto;padding:34px 20px}
+  .fn-ov.open{display:flex}
+  .fn-modal{width:600px;max-width:100%;background:var(--card);border:1px solid var(--border);border-radius:14px;
+    box-shadow:0 24px 70px rgba(0,0,0,.62);margin:auto}
+  .fn-mh{display:flex;align-items:center;gap:10px;padding:17px 20px;border-bottom:1px solid var(--border-soft)}
+  .fn-mh .t{font-size:16px;font-weight:600;color:#fff;flex:1;display:flex;align-items:center;gap:9px}
+  .fn-mh .x{color:var(--muted);cursor:pointer;display:flex;padding:4px;border-radius:7px}
+  .fn-mh .x:hover{background:#1c1c1c;color:#fff}
+  .fn-mb{padding:18px 20px;display:flex;flex-direction:column;gap:15px;max-height:62vh;overflow-y:auto;
+    scrollbar-width:thin;scrollbar-color:#3a3a3a transparent}
+  .fn-mb::-webkit-scrollbar{width:7px}.fn-mb::-webkit-scrollbar-thumb{background:#3a3a3a;border-radius:3px}
+  .fn-mf{display:flex;align-items:center;gap:10px;padding:15px 20px;border-top:1px solid var(--border-soft)}
+  .fn-mf .sp{flex:1}
+  .fn-mf .err{font-size:12.5px;color:#f2b0b0}
+  .fn-mf .ok{font-size:12.5px;color:var(--green)}
+
+  /* variant pool rows */
+  .fn-vars{display:flex;flex-direction:column;gap:8px}
+  .fn-var{display:flex;gap:8px;align-items:flex-start}
+  .fn-var textarea{flex:1}
+  .fn-var .rm{width:30px;height:30px;flex:0 0 30px;border:0;background:transparent;color:#8a8a8a;
+    cursor:pointer;border-radius:7px;font-size:16px;margin-top:3px}
+  .fn-var .rm:hover{background:#1c1c1c;color:#f2295b}
+  .fn-addvar{font-size:12.5px;color:#7f9bff;background:none;border:0;cursor:pointer;font-family:inherit;
+    align-self:flex-start;padding:2px 0}
+  .fn-addvar:hover{text-decoration:underline}
+
+  /* media strip in the media modal */
+  .fn-mstrip{display:flex;flex-wrap:wrap;gap:8px}
+  .fn-mt{position:relative;width:60px}
+  .fn-mt .im{width:60px;height:60px;border-radius:8px;overflow:hidden;background:#161616;
+    border:1px solid var(--border-soft);display:flex;align-items:center;justify-content:center;
+    font-size:10px;color:var(--muted2)}
+  .fn-mt.free .im{border-color:rgba(103,209,174,.6)}
+  .fn-mt .im img{width:100%;height:100%;object-fit:cover;display:block}
+  .fn-mt .flag{position:absolute;top:2px;left:3px;font-size:11px;line-height:1;filter:drop-shadow(0 1px 1px #000)}
+  .fn-mt .drop{position:absolute;top:2px;right:3px;width:16px;height:16px;border-radius:50%;
+    background:rgba(0,0,0,.6);color:#fff;border:0;cursor:pointer;font-size:10px;line-height:16px;padding:0}
+  .fn-mt .drop:hover{background:#f2295b}
+  .fn-mt .ord{font-size:9px;color:var(--muted2);text-align:center;margin-top:2px}
+  .fn-msec{border:1px solid var(--border-soft);border-radius:10px;padding:12px 13px}
+  .fn-msec .sh{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#eee;margin-bottom:8px}
+  .fn-msec .sh .pr{margin-left:auto;font-size:11.5px;color:var(--muted)}
+</style>
 </head>
 <body>
 <div class="app">
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -537,7 +606,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -573,150 +642,40 @@
             </div>
           </div>
           <div class="head-right">
-            <button class="fx-btn ghost"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>New funnel</button>
+            <button class="fx-btn ghost" id="fn-settings"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M3 12h2M19 12h2M5.6 18.4L7 17M17 7l1.4-1.4" stroke-linecap="round"/></svg>Edit funnel</button>
+            <button class="fx-btn" id="fn-new"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>New funnel</button>
           </div>
         </div>
 
         <!-- status strip -->
-        <div class="fx-status">
-          <span class="fx-st ok"><i></i>Walker running · checks every 2 min</span>
-          <span class="fx-st"><i></i>388 fans in the funnel now</span>
-          <span class="fx-st"><i></i>73 unlocks · $1,862 this week</span>
-          <span class="fx-st"><i></i>Last pass 1 min ago</span>
+        <div class="fx-status" id="fn-status">
+          <span class="fx-st ok" id="fn-st-walker"><i></i>Walker loading…</span>
+          <span class="fx-st" id="fn-st-fans"><i></i>—</span>
+          <span class="fx-st" id="fn-st-unlocks"><i></i>— unlocks</span>
+          <span class="fx-st" id="fn-st-last"><i></i>Last pass —</span>
         </div>
 
         <!-- funnel picker -->
-        <div class="fpick-lbl">Your funnels</div>
-        <div class="fpick">
+        <div class="fpick-lbl" id="fn-pick-lbl">Your funnels</div>
+        <div class="fpick" id="fn-pick">
           <div class="fpk sel" data-pick>
-            <div class="r1"><span class="nm">Week PPV drip</span><span class="fx-switch sm on"></span></div>
-            <div class="meta">4 steps · $0 → $78 · tease sent Mon 7:30 pm</div>
-          </div>
-          <div class="fpk" data-pick>
-            <div class="r1"><span class="nm">Beach day tease</span><span class="fx-switch sm"></span></div>
-            <div class="meta">3 steps · $0 → $24 · paused</div>
-          </div>
-          <div class="fpk new">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
-            New funnel
+            <div class="r1"><span class="nm">Loading funnels…</span></div>
+            <div class="meta">…</div>
           </div>
         </div>
 
-        <!-- ============ TIMELINE ============ -->
-        <div class="tl">
-
-          <!-- trigger -->
+        <!-- ============ TIMELINE (rebuilt from the live funnel by fn-wire) ============ -->
+        <div class="tl" id="fn-tl">
           <div class="titem">
             <div class="tdot trig">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg>
             </div>
             <div class="tcard trigc">
               <div class="tc-top">
-                <span class="tc-title">Fan replies to the mass tease</span>
-                <span class="chip">trigger · any reply</span>
-                <span class="tc-status">388 entered</span>
-              </div>
-              <div class="tc-msg">"guess what I just finished shooting 🙈 the first ones to reply get a sneak peek…"
-                <span class="by">Tease sent to 1,240 fans · Mon 7:30 pm · free</span>
-              </div>
-              <div class="tc-sub">Only fans who write back enter the funnel. Quiet fans are never paywalled — they just never hear from it again.</div>
-            </div>
-          </div>
-
-          <div class="twait"><span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>Checks for the reply at <b>2, 4, 10 min</b> · then every 10</span></div>
-
-          <!-- step 1 -->
-          <div class="titem">
-            <div class="tdot">1</div>
-            <div class="tcard">
-              <div class="tc-top">
-                <span class="tc-title">Warm-up gift</span>
-                <span class="chip">on any reply</span>
-                <span class="chip free">$0 · free</span>
-                <span class="tc-status">Sent to 312</span>
-              </div>
-              <div class="tc-msg">"omg hi 🤭 ok since you actually replied… here's the little preview I promised. no charge, just for you"</div>
-              <div class="tc-meta">
-                <span class="mchip"><span class="mtiles"><span class="mtile g1"></span></span>Teasers · 1 photo</span>
+                <span class="tc-title">Loading funnel…</span>
               </div>
             </div>
           </div>
-
-          <div class="twait"><span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>Waits for the next reply · <b>2, 4, 10 min</b></span></div>
-
-          <!-- step 2 -->
-          <div class="titem">
-            <div class="tdot paid">2</div>
-            <div class="tcard">
-              <div class="tc-top">
-                <span class="tc-title">First little unlock</span>
-                <span class="chip">on any reply</span>
-                <span class="chip price">$7</span>
-                <span class="chip lockc"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3" stroke-linecap="round"/></svg>text locked too</span>
-                <span class="tc-status">Sent 188 · 41 unlocked</span>
-              </div>
-              <div class="tc-msg">"that was just the warm-up… my favorite one from the set is way better 🙈 unlocking it for you for $7"</div>
-              <div class="tc-meta">
-                <span class="mchip"><span class="mtiles"><span class="mtile g1"></span><span class="mtile g2"></span></span>Teasers · 2 items</span>
-                <span class="chip free">1 free preview</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="twait"><span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>Waits for the next reply · <b>2, 4, 10 min</b></span></div>
-
-          <!-- step 3 -->
-          <div class="titem">
-            <div class="tdot paid">3</div>
-            <div class="tcard">
-              <div class="tc-top">
-                <span class="tc-title">The beach set</span>
-                <span class="chip">on any reply</span>
-                <span class="chip price">$24</span>
-                <span class="tc-status">Sent 92 · 23 unlocked</span>
-              </div>
-              <div class="tc-msg">"ok you clearly have good taste 😌 the full beach set is where it gets really good… want the rest?"</div>
-              <div class="tc-meta">
-                <span class="mchip"><span class="mtiles"><span class="mtile g2"></span><span class="mtile g4"></span><span class="mtile g1"></span></span>Beach set · 4 items</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="twait"><span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>Waits for the next reply · <b>2, 4, 10 min</b></span></div>
-
-          <!-- step 4 -->
-          <div class="titem">
-            <div class="tdot paid">4</div>
-            <div class="tcard">
-              <div class="tc-top">
-                <span class="tc-title">VIP finale</span>
-                <span class="chip">on any reply</span>
-                <span class="chip price">$78</span>
-                <span class="chip lockc"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3" stroke-linecap="round"/></svg>text locked too</span>
-                <span class="tc-status wait">Waiting · 31 fans due</span>
-              </div>
-              <div class="tc-msg">"last one 💎 the VIP set — everything from the shoot, nothing held back. I only offer this to my favorites"</div>
-              <div class="tc-meta">
-                <span class="mchip"><span class="mtiles"><span class="mtile g3"></span><span class="mtile g1"></span><span class="mtile g2"></span></span>VIP set · 6 items</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- end node -->
-          <div class="titem">
-            <div class="tdot end">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.5l4.5 4.5L19 7.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </div>
-            <div class="tcard endc">
-              <div class="tc-top">
-                <span class="tc-title">A buy ends the climb</span>
-                <span class="tc-status">73 handed off</span>
-              </div>
-              <div class="tc-sub">Any unlocked PPV — this funnel's or another automation's — halts the walk right there and hands the thread to a live chatter to keep the momentum.</div>
-            </div>
-          </div>
-
-          <button class="addstep"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>Add step</button>
         </div>
 
         <!-- ============ ADVANCED ============ -->
@@ -728,62 +687,51 @@
           </div>
           <div class="fx-adv-body" id="adv-funnels">
 
-            <div class="fx-adv-group">
+            <div class="fx-adv-group" id="fn-launch">
               <h4>Send the tease (launch)</h4>
               <div class="fx-card" style="margin-bottom:0">
                 <div class="fx-audience">
-                  <div class="fx-aud-row"><span class="fx-aud-lbl">Send to</span>
-                    <div class="fx-seg" data-single><button class="on">All fans</button><button>Following</button></div>
-                    <label class="fx-check"><span class="bx"></span>Online fans only</label>
+                  <div class="fx-aud-row" style="align-items:flex-start"><span class="fx-aud-lbl" style="margin-top:6px">Send to</span>
+                    <div style="flex:1;min-width:0">
+                      <div class="fx-chips" id="fn-inc"></div>
+                      <label class="fx-check" id="fn-ck-online" style="margin-top:8px"><span class="bx"></span>Online fans only <span class="sub">online_only — OF resolves it at send time</span></label>
+                    </div>
                   </div>
-                  <div class="fx-aud-row"><span class="fx-aud-lbl">Exclude</span>
-                    <div class="fx-chips"><span class="fx-chip on">No-PPV list (standing)</span><span class="fx-chip">Recent buyers</span></div>
+                  <div class="fx-aud-row" style="align-items:flex-start"><span class="fx-aud-lbl" style="margin-top:6px">Exclude</span>
+                    <div class="fx-chips" id="fn-exc" style="flex:1;min-width:0"></div>
                   </div>
                   <div class="fx-aud-row" style="align-items:flex-end">
-                    <div class="fx-field" style="width:220px"><label>Skip fans messaged in the last (hours)</label><input class="fx-input" placeholder="off"></div>
-                    <div class="fx-field" style="width:220px"><label>Auto-unsend the tease after (hours)</label><input class="fx-input" value="4"></div>
+                    <div class="fx-field" style="width:220px"><label>Skip fans messaged in the last (hours)</label><input class="fx-input" id="fn-l-replied" placeholder="off"></div>
+                    <div class="fx-field" style="width:220px"><label>Auto-unsend the tease after (hours)</label><input class="fx-input" id="fn-l-unsend" value="4"></div>
                     <div style="margin-left:auto;display:flex;align-items:center;gap:14px">
-                      <span class="fx-aud-reach">Estimated reach: <b>1,306 fans</b></span>
-                      <button class="fx-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg>Send the tease</button>
+                      <span class="fx-aud-reach" id="fn-reach">Estimated reach: <b>—</b></span>
+                      <button class="fx-btn" id="fn-send-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg>Send the tease</button>
                     </div>
                   </div>
                 </div>
-                <div class="fx-note" style="margin-top:14px"><span>The tease itself is <b>free</b> — the paywalls live in the steps above. After the 4-hour auto-unsend, new repliers stop entering, but fans already inside keep walking.</span></div>
+                <div class="fx-note" style="margin-top:14px" id="fn-launch-note"><span>The tease itself is <b>free</b> — the paywalls live in the steps above. After the auto-unsend window, new repliers stop entering, but fans already inside keep walking.</span></div>
               </div>
             </div>
 
             <div class="fx-adv-group">
               <h4>Reply pacing</h4>
               <div class="fx-grid3">
-                <div class="fx-field"><label>Check for a reply at (minutes)</label><input class="fx-input" value="2, 4, 10"></div>
-                <div class="fx-field"><label>Then keep checking every (minutes)</label><input class="fx-input" value="10"></div>
-                <div class="fx-field"><label>Max sends per pass</label><input class="fx-input" value="40"></div>
+                <div class="fx-field"><label>Check for a reply at (minutes)</label><input class="fx-input" id="fn-iv" value=""></div>
+                <div class="fx-field"><label>Then keep checking every (minutes)</label><input class="fx-input" id="fn-iv2" readonly title="Derived — the walker repeats the LAST interval in the list on the left"></div>
+                <div class="fx-field"><label>Max sends per pass</label><input class="fx-input" id="fn-max" value="" placeholder="default"></div>
               </div>
             </div>
 
             <div class="fx-adv-group">
               <h4>Per-model media</h4>
-              <div class="fx-note warn" style="margin-bottom:12px"><span><b>Text is shared. Media is not.</b> A vault ID from Bella's vault means nothing in Aria's — each model maps her own folders to the paid steps. A paywall never sends empty: an unmapped step is skipped and logged for that model.</span></div>
+              <div class="fx-note warn" style="margin-bottom:12px"><span><b>Text is shared. Media is not.</b> A vault id from one creator's vault means nothing in another's — every model maps her own items to the paid steps. A paywall never sends empty: an unmapped step is skipped and logged for that model.</span></div>
               <div class="mmx-wrap">
-                <table class="mmx">
-                  <tr><th>Model</th><th>Tease</th><th>Step 1 · free</th><th>Step 2 · $7</th><th>Step 3 · $24</th><th>Step 4 · $78</th><th></th></tr>
-                  <tr>
-                    <td class="model">Bella Rae</td>
-                    <td><span class="cell-ok">✓ mapped</span></td><td><span class="cell-ok">✓ mapped</span></td><td><span class="cell-ok">✓ mapped</span></td><td><span class="cell-ok">✓ mapped</span></td><td><span class="cell-ok">✓ mapped</span></td>
-                    <td><button class="fx-btn ghost" style="height:30px;padding:0 12px;font-size:12px">Edit</button></td>
-                  </tr>
-                  <tr>
-                    <td class="model">Aria M.</td>
-                    <td><span class="cell-ok">✓ mapped</span></td><td><span class="cell-ok">✓ mapped</span></td><td><span class="cell-ok">✓ mapped</span></td><td><span class="cell-warn">needs mapping</span></td><td><span class="cell-warn">needs mapping</span></td>
-                    <td><button class="fx-btn ghost" style="height:30px;padding:0 12px;font-size:12px">Map…</button></td>
-                  </tr>
-                  <tr>
-                    <td class="model">Mia K.</td>
-                    <td><span class="cell-ok">✓ mapped</span></td><td><span class="cell-warn">needs mapping</span></td><td><span class="cell-warn">needs mapping</span></td><td><span class="cell-warn">needs mapping</span></td><td><span class="cell-warn">needs mapping</span></td>
-                    <td><button class="fx-btn ghost" style="height:30px;padding:0 12px;font-size:12px">Map…</button></td>
-                  </tr>
+                <table class="mmx" id="fn-mmx">
+                  <tr><th>Model</th><th>Tease</th><th>Steps</th><th></th></tr>
+                  <tr><td class="model">Loading…</td><td></td><td></td><td></td></tr>
                 </table>
               </div>
+              <div class="bc-hint" id="fn-mmx-cap" style="font-size:12px;color:var(--muted2);margin-top:8px;line-height:1.5"></div>
             </div>
 
             <div class="fx-adv-group" style="margin-bottom:6px">
@@ -794,20 +742,7 @@
                 <span class="h">the wire shape the walker reads — media lives per model, never here</span>
               </div>
               <div class="fx-adv-body" id="raw-json" style="margin-top:10px">
-<pre class="rawpre">{
-  "name": "Week PPV drip",
-  "opening_message": "guess what I just finished shooting 🙈 the first ones to reply get a sneak peek…",
-  "steps": [
-    { "step": 1, "check_intervals_min": [2, 4, 10],
-      "messages": ["omg hi 🤭 ok since you actually replied… here's the little preview I promised. no charge, just for you"] },
-    { "step": 2, "type": "paid_ppv", "price": 7, "locked_text": true,
-      "messages": ["that was just the warm-up… my favorite one from the set is way better 🙈 unlocking it for you for $7"] },
-    { "step": 3, "type": "paid_ppv", "price": 24,
-      "messages": ["ok you clearly have good taste 😌 the full beach set is where it gets really good… want the rest?"] },
-    { "step": 4, "type": "paid_ppv", "price": 78, "locked_text": true,
-      "messages": ["last one 💎 the VIP set — everything from the shoot, nothing held back. I only offer this to my favorites"] }
-  ]
-}</pre>
+<pre class="rawpre" id="fn-raw">loading…</pre>
               </div>
             </div>
 
@@ -821,6 +756,9 @@
   <div class="help">
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11.5a7.5 7.5 0 0 1-10.8 6.7L4 19.5l1.3-4.1A7.5 7.5 0 1 1 20 11.5z"/></svg>
   </div>
+
+  <!-- friendly editor modal (funnel settings / step editor / per-model media) -->
+  <div class="fn-ov" id="fn-ov"></div>
 
 </div>
 
@@ -924,5 +862,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="funnels.js" id="fn-wire"></script>
 </body>
 </html>

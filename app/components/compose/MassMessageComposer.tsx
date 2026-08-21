@@ -18,6 +18,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
+import { useSmartListAudience } from "@/hooks/useSmartListAudience";
 import { useFunnels } from "@/hooks/useFunnels";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { relay, type VaultMedia } from "@/lib/relay";
@@ -335,6 +336,23 @@ export function MassMessageComposer({
     if (match) setExcludes((prev) => new Set(prev).add(String(match.id)));
   }, [accountId, allModels, listsQ.isLoading, listsQ.isFetching, listsQ.data]);
 
+  // ── Smart Lists (saved segments) as include/exclude audiences ──────────
+  // A Smart List is an internal fan-id segment (spend/recency/status/tag). On
+  // send we resolve the picked lists to explicit userIds / excludedUsers, so a
+  // saved segment sharpens any blast. The picked sets, their mutual exclusion,
+  // the per-account reset, and send-time resolution all live in
+  // useSmartListAudience — disabled in all-models / compose-into-rule modes
+  // (segments are per-account and useInRule freezes a rule without resolving
+  // them). Local names kept so the send + render below read unchanged.
+  const {
+    lists: smartLists,
+    include: includeSmartLists,
+    exclude: excludeSmartLists,
+    toggleInclude: toggleSmartInclude,
+    toggleExclude: toggleSmartExclude,
+    resolve: resolveSelectedSmartLists,
+  } = useSmartListAudience(accountId, { allModels, composeMode });
+
   // All-models broadcasts force free + unlocked-text (ask #4). For per-employee
   // sends, a typed price > 0 is the sole paid signal — clearing the field is
   // how the user opts back into a free send.
@@ -361,6 +379,8 @@ export function MassMessageComposer({
     mediaFiles: Array<number | Record<string, unknown>>,
     scheduledIso: string | null,
     giphyId: string | null,
+    extraUserIds: number[] = [],
+    extraExcludeUserIds: number[] = [],
   ): Record<string, unknown> {
     // Numeric vault ids only — fresh-claim dicts have no id until OF
     // resolves them post-send, so they can't appear in `previews`. Match
@@ -370,12 +390,20 @@ export function MassMessageComposer({
           .slice(0, previewCount)
           .filter((m): m is number => typeof m === "number" && m > 0)
       : [];
+    // On the OF wire userLists and userIds are UNIONED, never intersected. So
+    // if we sent both, a Smart List could only ever ADD people to the blast —
+    // picking "Whales" would still message the whole roster. When an include
+    // segment is chosen it therefore becomes the WHOLE audience and the list
+    // chips drop out; that is the only way a segment can narrow a send.
+    const segmentIsAudience = extraUserIds.length > 0;
     const body: Record<string, unknown> = {
       text: text.trim(),
       scheduled_date: scheduledIso,
-      user_lists: Array.from(includes),
-      user_ids: [],
-      excluded_users: [],
+      user_lists: segmentIsAudience ? [] : Array.from(includes),
+      // Smart-List members resolved to explicit fan ids (empty unless a saved
+      // segment is toggled into include/exclude).
+      user_ids: extraUserIds,
+      excluded_users: extraExcludeUserIds,
       excluded_user_lists: Array.from(excludes),
       price: effectivePrice,
       locked_text: effectiveLockedText && effectivePrice > 0,
@@ -419,7 +447,27 @@ export function MassMessageComposer({
     scheduledIso: string | null,
     giphyId: string | null,
   ) {
-    const body = buildBody(mediaFiles, scheduledIso, giphyId);
+    // Resolve any selected Smart Lists to explicit fan ids (skip in all-models
+    // mode — segments are per-account). Empty when nothing is toggled.
+    let incUserIds: number[] = [];
+    let excUserIds: number[] = [];
+    if (!allModels) {
+      [incUserIds, excUserIds] = await Promise.all([
+        resolveSelectedSmartLists(includeSmartLists),
+        resolveSelectedSmartLists(excludeSmartLists),
+      ]);
+      // A segment that matches nobody must STOP the send. Without this the body
+      // is byte-identical to picking no segment at all, so "message my whales"
+      // silently became "message everyone" — the worst possible failure for a
+      // mass send, and completely invisible to the operator.
+      if (includeSmartLists.size > 0 && incUserIds.length === 0) {
+        throw new Error(
+          "The Smart List you picked matches 0 fans right now — nothing was sent. " +
+          "Adjust the segment or remove it to message an audience list instead.",
+        );
+      }
+    }
+    const body = buildBody(mediaFiles, scheduledIso, giphyId, incUserIds, excUserIds);
     const resp = await relay.post(
       "/api/of/v2/messages/queue",
       body,
@@ -466,7 +514,11 @@ export function MassMessageComposer({
       const totalMedia = allModels ? 0 : attached.length;
       const hasGif = pickedGifs.length > 0;
       if (!trimmed && totalMedia === 0 && !hasGif) throw new Error("Add text, media, or a GIF");
-      if (includes.size === 0) throw new Error("Pick at least one audience list to include");
+      // An include Smart List IS an audience — requiring a list chip alongside
+      // it was what forced the union that made segments unable to narrow.
+      if (includes.size === 0 && (allModels || includeSmartLists.size === 0)) {
+        throw new Error("Pick at least one audience list or Smart List to include");
+      }
       if (!Number.isFinite(effectivePrice) || effectivePrice < 0) throw new Error("Invalid price");
       const scheduledIso = schedule ? localDatetimeToIso(schedule) : null;
       if (schedule && !scheduledIso) throw new Error("Invalid schedule date");
@@ -902,6 +954,50 @@ export function MassMessageComposer({
                 </div>
               </div>
             )}
+            {/* Smart Lists — saved dynamic segments, resolved to fan ids on send.
+             *  Hidden in compose-into-rule mode (useInRule doesn't resolve them). */}
+            {!allModels && !composeMode && smartLists.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-border/60">
+                <div>
+                  <div className="text-[11px] text-fg-dim mb-1.5">Smart Lists — include</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {smartLists.map((l) => (
+                      <button
+                        key={l.id}
+                        type="button"
+                        onClick={() => toggleSmartInclude(l.id)}
+                        className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                          includeSmartLists.has(l.id)
+                            ? "bg-accent text-white border-accent"
+                            : "bg-bg-elev-1 text-fg-dim border-border hover:text-fg"
+                        }`}
+                      >
+                        {l.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-fg-dim mb-1.5">Smart Lists — exclude</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {smartLists.map((l) => (
+                      <button
+                        key={l.id}
+                        type="button"
+                        onClick={() => toggleSmartExclude(l.id)}
+                        className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                          excludeSmartLists.has(l.id)
+                            ? "bg-err/20 text-err border-err/40"
+                            : "bg-bg-elev-1 text-fg-dim border-border hover:text-fg"
+                        }`}
+                      >
+                        {l.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
             {!allModels && (includes.size > 0 || excludes.size > 0) && (
               <div className="text-[11px] text-fg-dim border-t border-border/60 pt-2">
                 Reach: {includeReach} fan{includeReach === 1 ? "" : "s"} from custom
@@ -1034,15 +1130,20 @@ export function MassMessageComposer({
                 setError(null);
                 setResults(null);
                 const action = isScheduled ? "Schedule" : "Broadcast";
+                const segmentOnly = !allModels && includeSmartLists.size > 0;
                 const target = allModels
                   ? `${broadcastAccounts.length} model${broadcastAccounts.length === 1 ? "" : "s"}`
-                  : `${includes.size} audience group${includes.size === 1 ? "" : "s"}`;
+                  : segmentOnly
+                    // A segment replaces the list chips as the audience, so say
+                    // that plainly rather than counting groups that won't be sent to.
+                    ? `${includeSmartLists.size} Smart List${includeSmartLists.size === 1 ? "" : "s"} only`
+                    : `${includes.size} audience group${includes.size === 1 ? "" : "s"}`;
                 if (!confirm(`${action} from ${target}?`)) return;
                 send.mutate();
               }}
               disabled={
                 send.isPending ||
-                includes.size === 0 ||
+                (includes.size === 0 && (allModels || includeSmartLists.size === 0)) ||
                 (allModels ? broadcastAccounts.length === 0 : !accountId)
               }
               className="text-xs px-4 py-1.5 rounded bg-accent text-white font-medium hover:bg-accent-hover disabled:opacity-50"

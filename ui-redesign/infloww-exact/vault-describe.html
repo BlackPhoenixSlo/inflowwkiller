@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Auto-describe</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='88'%3E%F0%9F%91%81%EF%B8%8F%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -402,6 +401,17 @@
   .vd-cost span{font-size:14px;font-weight:500;color:var(--muted);letter-spacing:0;margin-left:2px}
   .vd-w{color:#fff;font-weight:600}
   .vd-link{color:#8ea0e6;text-decoration:underline;text-underline-offset:2px}
+  .vd-prog{position:relative;height:6px;border-radius:3px;background:#2a2a2a;margin:-6px 0 16px;
+    max-width:520px;overflow:visible}
+  .vd-prog>i{display:block;height:6px;width:0;background:var(--accent);border-radius:3px;transition:width .35s}
+  .vd-prog.ok>i{background:var(--green)}
+  .vd-prog .lb{position:absolute;left:0;top:10px;font-size:11.5px;color:var(--muted)}
+  .vd-tile.real{background:#161616 center/cover no-repeat}
+  .vd-tile.real::before{display:none}
+  .vd-tile.blank{background:#1a1a1a;border:1px dashed #3a3a3a}
+  .vd-tile.blank::before{display:none}
+  .fx-btn:disabled{opacity:.42;cursor:not-allowed}
+  .fx-note>div{min-width:0}
   .vd-hint{font-size:12px;color:var(--muted2);margin-top:10px;line-height:1.5}
   .fx-chip.ok{border-color:rgba(103,209,174,.35);background:rgba(103,209,174,.1);color:#8fdfc3}
 </style>
@@ -434,7 +444,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -513,7 +522,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -545,63 +554,64 @@
         </div>
         <div class="sec-sub">The vision engine — it looks at every vault item and writes down what it actually is, so every selling tool knows what it's offering.</div>
         <div class="head-right">
-          <button class="fx-btn ghost"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11a8 8 0 1 0-2.3 5.7" stroke-linecap="round"/><path d="M20 5v6h-6" stroke-linecap="round" stroke-linejoin="round"/></svg>Run a sweep now</button>
+          <select class="fx-select" id="dsc-pv" style="width:158px" title="Which describe prompt the sweep uses">
+            <option value="v2" selected>B &middot; rich (v2)</option>
+            <option value="v1">A &middot; fast (v1)</option>
+          </select>
+          <button class="fx-btn ghost" id="dsc-restage" style="display:none;border-color:rgba(232,170,70,.45);color:#e8aa46">Re-scan old</button>
+          <button class="fx-btn ghost" id="dsc-sweep"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11a8 8 0 1 0-2.3 5.7" stroke-linecap="round"/><path d="M20 5v6h-6" stroke-linecap="round" stroke-linejoin="round"/></svg>Run a sweep now</button>
         </div>
       </div>
 
       <!-- status strip -->
-      <div class="fx-status">
-        <span class="fx-st ok"><i></i>Running</span>
-        <span class="fx-st"><i></i>2,041 / 2,309 items described</span>
-        <span class="fx-st"><i></i>Last sweep 24 min ago</span>
-        <span class="fx-st"><i></i>Next in 5 h 36 m</span>
-        <span class="fx-st"><i></i>Qwen3-VL 30B</span>
-        <span class="fx-st"><i></i>$0.88 all-time</span>
+      <div class="fx-status" id="dsc-status">
+        <span class="fx-st ok" id="dsc-st-run"><i></i>Checking…</span>
+        <span class="fx-st" id="dsc-st-count"><i></i>… items described</span>
+        <span class="fx-st" id="dsc-st-last"><i></i>Last sweep …</span>
+        <span class="fx-st" id="dsc-st-next"><i></i>Next …</span>
+        <span class="fx-st" id="dsc-st-model"><i></i>…</span>
+        <span class="fx-st" id="dsc-st-cost"><i></i>…</span>
       </div>
+      <div class="vd-prog" id="dsc-prog" style="display:none"><i></i><span class="lb" id="dsc-prog-lb"></span></div>
 
       <!-- PRIMARY: the one toggle -->
-      <div class="fx-togglecard on">
+      <div class="fx-togglecard" id="dsc-card">
         <div class="fx-tc-row">
           <div class="fx-tc-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg></div>
           <div class="fx-tc-body">
             <div class="fx-tc-title">Auto-describe my vault</div>
             <div class="fx-tc-desc">Every few hours the AI looks at your newest photos and clips and writes down what happens in each one. That's it — it describes, it never posts or messages anyone.</div>
           </div>
-          <span class="fx-tc-state">Running</span>
-          <span class="fx-switch on"></span>
+          <span class="fx-tc-state">…</span>
+          <span class="fx-switch" id="dsc-switch"></span>
         </div>
         <div class="fx-tc-knobs">
           <div class="fx-field" style="width:140px"><label>Runs every</label>
-            <select class="fx-select"><option>3 hours</option><option selected>6 hours</option><option>12 hours</option><option>24 hours</option></select>
+            <select class="fx-select" id="dsc-cad"><option value="3">3 hours</option><option value="6" selected>6 hours</option><option value="12">12 hours</option><option value="24">24 hours</option></select>
           </div>
-          <div class="fx-field" style="width:120px"><label>Items per run</label><input class="fx-input" value="40"></div>
-          <div class="fx-kv"><b>2,041</b> of <b>2,309</b> described &middot; next sweep in <b>5 h 36 m</b></div>
+          <div class="fx-field" style="width:120px"><label>Items per run</label><input class="fx-input" value="40" id="dsc-per"></div>
+          <div class="fx-kv" id="dsc-kv">…</div>
         </div>
       </div>
 
       <!-- example + cost / suggest-only -->
       <div class="vd-cols">
         <div class="vd-main">
-          <div class="fx-card">
+          <div class="fx-card" id="dsc-ex-card">
             <div class="fx-card-h">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M21 16l-5-5-9 8" stroke-linejoin="round"/></svg>
               What the AI sees
-              <span class="vd-tag">safe example</span>
+              <span class="vd-tag" id="dsc-ex-tag">loading&hellip;</span>
             </div>
-            <div class="fx-card-sub">One real pass on one item. The description is a private note on the item — fans never see it.</div>
+            <div class="fx-card-sub" id="dsc-ex-sub">One real pass on one item. The description is a private note on the item &mdash; fans never see it.</div>
             <div class="vd-example">
-              <div class="vd-tile">
-                <span class="tag"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M21 16l-5-5-9 8" stroke-linejoin="round"/></svg>Photo</span>
+              <div class="vd-tile" id="dsc-ex-tile">
+                <span class="tag" id="dsc-ex-kind"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M21 16l-5-5-9 8" stroke-linejoin="round"/></svg>&mdash;</span>
               </div>
               <div class="vd-read">
-                <div class="vd-desc">&ldquo;Bright bedroom, daylight. Cosplay look &mdash; pink bob wig, sailor-style uniform with a red bow, white knee socks. She adjusts the wig, twirls once, then smiles over her shoulder at the camera. Playful mood, three outfit angles, face clearly visible.&rdquo;</div>
-                <div class="fx-chips" style="margin-top:12px">
-                  <span class="fx-chip on">Clothing state: dressed</span>
-                  <span class="fx-chip">People: 1</span>
-                  <span class="fx-chip ok">Confidence 92%</span>
-                  <span class="fx-chip">Suggested folder: &ldquo;Cosplay&rdquo;</span>
-                </div>
-                <div class="vd-cap">It also drafts a caption: <b>&ldquo;new cosplay just dropped&hellip; bet you can't guess the character 👀&rdquo;</b></div>
+                <div class="vd-desc" id="dsc-ex-desc">Reading the newest described item&hellip;</div>
+                <div class="fx-chips" id="dsc-ex-chips" style="margin-top:12px"></div>
+                <div class="vd-cap" id="dsc-ex-cap"></div>
               </div>
             </div>
           </div>
@@ -614,11 +624,11 @@
               What it costs
             </div>
             <div class="vd-cost">0.038&cent;<span> per item</span></div>
-            <div class="fx-card-sub">A full 2,309-item vault pass &asymp; <b class="vd-w">$0.88</b>. Only new or changed items are re-read, so day-to-day cost is near zero.</div>
+            <div class="fx-card-sub" id="dsc-cost-sub">A full vault pass is priced per item. Only new or changed items are re-read, so day-to-day cost is near zero.</div>
           </div>
 
-          <div class="fx-card">
-            <div class="fx-card-h">Suggest-only<span style="margin-left:auto"></span><span class="fx-switch on"></span></div>
+          <div class="fx-card" id="dsc-suggest-card">
+            <div class="fx-card-h">Suggest-only<span style="margin-left:auto"></span><span class="fx-switch on" id="dsc-suggest"></span></div>
             <div class="fx-card-sub">Descriptions stay internal. Anything a fan could ever see &mdash; folders, PPV drafts, reminder cards &mdash; waits in <a class="vd-link" href="vault-review.html">Review</a> for your approval first.</div>
           </div>
         </div>
@@ -635,11 +645,11 @@
           <div class="fx-adv-body" id="adv-describe">
 
             <div class="fx-adv-group"><h4>What gets described</h4>
-              <label class="fx-check on"><span class="bx"></span>Photos &amp; GIFs</label>
-              <label class="fx-check on"><span class="bx"></span>Videos <span class="sub">DRM-protected clips can't be decoded — the AI reads their preview frames instead</span></label>
+              <label class="fx-check on" id="dsc-imgs"><span class="bx"></span>Photos &amp; GIFs</label>
+              <label class="fx-check on" id="dsc-vids"><span class="bx"></span>Videos <span class="sub">DRM-protected clips can't be decoded — the AI reads their preview frames instead</span></label>
             </div>
 
-            <div class="fx-adv-group"><h4>Video frame ladder</h4>
+            <div class="fx-adv-group" id="dsc-ladder"><h4>Video frame ladder</h4>
               <div class="fx-grid3">
                 <div class="fx-field"><label>Short clips &mdash; under 1 min</label>
                   <select class="fx-select"><option selected>6 frames</option><option>9 frames</option><option>12 frames</option></select>
@@ -657,23 +667,29 @@
             <div class="fx-adv-group"><h4>Vision model</h4>
               <div class="fx-grid2">
                 <div class="fx-field"><label>Describe with</label>
-                  <select class="fx-select"><option selected>Qwen3-VL 30B</option><option>Qwen3-VL 235B</option></select>
+                  <select class="fx-select" id="dsc-model"><option value="qwen3-vl-30b" selected>Qwen3-VL 30B</option><option value="qwen3-vl-235b">Qwen3-VL 235B</option></select>
                 </div>
                 <div class="fx-field"><label>Escalate to</label>
-                  <select class="fx-select"><option selected>Qwen3-VL 235B</option><option>Never escalate</option></select>
+                  <select class="fx-select" id="dsc-esc"><option value="qwen3-vl-235b" selected>Qwen3-VL 235B</option><option value="never">Never escalate</option></select>
                 </div>
               </div>
               <div class="fx-sliderrow" style="margin-bottom:0">
                 <div class="fx-sl-head"><span class="fx-sl-name">Escalate below confidence</span><span class="fx-sl-hint">when the 30B model isn't sure, the item is retried on the bigger model</span><span class="fx-rv">65%</span></div>
-                <input type="range" class="fx-range" min="0" max="100" step="5" value="65" data-fmt="%v%">
+                <input type="range" class="fx-range" min="0" max="100" step="5" value="65" data-fmt="%v%" id="dsc-conf">
               </div>
             </div>
 
             <div class="fx-adv-group"><h4>Budget guard</h4>
               <div class="fx-sliderrow" style="margin-bottom:0">
                 <div class="fx-sl-head"><span class="fx-sl-name">Describe-all budget cap</span><span class="fx-sl-hint">one run may use at most this share of the day's AI budget</span><span class="fx-rv">80%</span></div>
-                <input type="range" class="fx-range" min="10" max="100" step="10" value="80" data-fmt="%v%">
+                <input type="range" class="fx-range" min="10" max="100" step="10" value="80" data-fmt="%v%" id="dsc-cap">
               </div>
+            </div>
+
+            <div class="fx-adv-group" id="dsc-mode"><h4>Sweep mode</h4>
+              <label class="fx-check" id="dsc-force"><span class="bx"></span>Force re-describe everything <span class="sub">ignore describe_status and re-read every item &mdash; fields you locked are still skipped</span></label>
+              <label class="fx-check" id="dsc-restage-opt"><span class="bx"></span>Restage only <span class="sub">re-read just the items described under an older prompt version</span></label>
+              <div class="fx-kv" id="dsc-mode-kv" style="margin-top:6px">&hellip;</div>
             </div>
 
             <div class="fx-note">Re-describing an item never wipes your corrections — garment names you've fixed and fields you've locked are always kept.</div>
@@ -781,5 +797,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="vault-describe.js" id="wire-js"></script>
 </body>
 </html>

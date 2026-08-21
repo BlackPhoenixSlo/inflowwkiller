@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Auto Stories</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -388,6 +387,50 @@
   .rc .rm .s{font-size:11px;color:var(--muted);margin-top:2px}
   .rc .v{font-size:12px;color:#cfcfcf;font-weight:600;display:flex;align-items:center;gap:5px;flex:0 0 auto}
   .rc .v svg{color:#8a8a8a}
+  /* real thumbnails paint through CSSOM — the box has to be ready for an image */
+  .thumb,.rc .mth{background:#1c1c1c;background-size:cover;background-position:center}
+  /* live-on-profile rows */
+  .lsrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border-soft)}
+  .lsrow:first-child{border-top:0}
+  .lsth{width:28px;height:42px;border-radius:6px;flex:0 0 auto;background:#1c1c1c;background-size:cover;background-position:center}
+  .lsm{flex:1;min-width:0}
+  .lsm .n{font-size:12.5px;color:#e0e0e0}
+  .lsm .s{font-size:11px;color:var(--muted);margin-top:2px}
+  .lsstat{display:flex;gap:9px;font-size:11.5px;color:#b9b9b9;flex:0 0 auto;align-items:center}
+  .lsstat b{color:#fff;font-weight:600}
+  .lsstat .tip{color:var(--green)}
+  /* previous-runs strip */
+  .runrow{display:flex;align-items:center;gap:9px;padding:7px 0;border-top:1px solid var(--border-soft);
+    font-size:12px;color:#b9b9b9;flex-wrap:wrap}
+  .runrow:first-child{border-top:0}
+  .rstat{display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:10px;font-size:10px;
+    font-weight:700;letter-spacing:.03em;text-transform:uppercase;background:#1c1c1c;border:1px solid var(--border-soft);color:#9a9a9a}
+  .rstat.ok{color:var(--green);background:rgba(103,209,174,.12);border-color:rgba(103,209,174,.3)}
+  .rstat.err{color:#e5735b;background:rgba(229,115,91,.13);border-color:rgba(229,115,91,.3)}
+  .rstat.skip{color:#e8cf9a;background:rgba(254,188,46,.1);border-color:rgba(254,188,46,.28)}
+  .runrow .rwhen{color:#ddd;font-weight:500}
+  .runrow .rbits{color:var(--muted)}
+  .lastrun{display:flex;align-items:flex-start;gap:9px;background:#1c1c1c;border:1px solid var(--border-soft);
+    border-radius:10px;padding:10px 12px;font-size:12.5px;color:#cfcfcf;line-height:1.5;margin-top:12px}
+  /* explicit image-pool picker */
+  .poolpick{display:flex;align-items:center;gap:12px;margin-top:12px}
+  .pick-clear{font-size:12px;color:var(--muted);cursor:pointer}
+  .pick-clear:hover{color:#e5735b}
+  .imgpick-back{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:9998;display:flex;align-items:center;justify-content:center}
+  .imgpick{width:740px;max-width:92vw;max-height:82vh;background:#232323;border:1px solid #333;border-radius:14px;
+    display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .imgpick-h{display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid #2c2c2c}
+  .imgpick-h .t{font-size:15px;font-weight:600;color:#fff}
+  .imgpick-h .c{margin-left:auto;font-size:12.5px;color:var(--muted)}
+  .imgpick-body{flex:1;overflow-y:auto;padding:16px 20px;min-height:180px}
+  .imgpick-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+  .imgpick-cell{aspect-ratio:2/3;border-radius:8px;background:#1c1c1c center/cover no-repeat;border:2px solid transparent;
+    cursor:pointer;position:relative}
+  .imgpick-cell.sel{border-color:var(--accent)}
+  .imgpick-cell.sel::after{content:"✓";position:absolute;top:5px;right:5px;width:18px;height:18px;border-radius:50%;
+    background:var(--accent);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .imgpick-f{display:flex;align-items:center;gap:10px;padding:14px 20px;border-top:1px solid #2c2c2c}
+  .imgpick-msg{font-size:13px;color:var(--muted)}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -418,7 +461,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -497,7 +539,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -537,11 +579,11 @@
 
       <!-- status strip -->
       <div class="fx-status">
-        <span class="fx-st ok"><i></i>Running</span>
-        <span class="fx-st"><i></i>8 photos posted today</span>
-        <span class="fx-st"><i></i>Every 4 h · next run 18:00 · in 3h 24m</span>
-        <span class="fx-st"><i></i>Auto-delete after 14 h</span>
-        <span class="fx-st"><i></i>Pool: Teasers · 48 photos</span>
+        <span class="fx-st ok" id="st-run"><i></i>Loading…</span>
+        <span class="fx-st" id="st-posted"><i></i>—</span>
+        <span class="fx-st" id="st-next"><i></i>—</span>
+        <span class="fx-st" id="st-ttl"><i></i>—</span>
+        <span class="fx-st" id="st-pool"><i></i>Pool: —</span>
       </div>
 
       <div class="asgrid">
@@ -552,49 +594,52 @@
             <div class="fx-card-h">
               <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#7d97f8" stroke-width="1.8"><circle cx="12" cy="12" r="8.5" stroke-dasharray="2.6 2.4"/><path d="M12 9v6M9 12h6" stroke-linecap="round"/></svg>
               Post stories on autopilot
-              <span style="margin-left:auto;font-size:12.5px;font-weight:600;color:var(--green)">Running</span>
-              <span class="fx-switch on"></span>
+              <span style="margin-left:auto;font-size:12.5px;font-weight:600;color:var(--green)" id="lbl-state">Loading…</span>
+              <span class="fx-switch" id="sw-en"></span>
             </div>
-            <div class="fx-card-sub">Two fresh photos every 4 hours from your Teasers folder, hands-free. Each story removes itself after 14 hours, so the feed always looks fresh.</div>
+            <div class="fx-card-sub" id="card-sub">Loading the saved automation…</div>
 
             <div class="plabel">Stories pool — vault folder</div>
-            <select class="fx-select" style="max-width:340px">
-              <option selected>Teasers — 48 photos</option>
-              <option>Beach set — 32 photos</option>
-              <option>VIP set — 21 photos</option>
+            <select class="fx-select" style="max-width:340px" id="sel-folder">
+              <option selected>Loading folders…</option>
             </select>
-            <div class="thumbs">
-              <span class="thumb g1"></span>
-              <span class="thumb g2"></span>
-              <span class="thumb g3"></span>
-              <span class="thumb g4"></span>
-              <span class="thumb g5"></span>
-              <span class="thumb g6"></span>
-              <span class="thumb more">+42</span>
+            <div class="thumbs" id="pool-thumbs">
+              <span class="pool-meta" style="color:var(--muted)">Loading the folder preview…</span>
             </div>
             <div class="pool-meta">Photos only · DRM items are skipped automatically</div>
+
+            <div class="poolpick">
+              <button class="fx-btn ghost" id="btn-pickimgs" style="height:32px;padding:0 13px;font-size:12.5px">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.6"/><path d="M21 16l-5-5-9 8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <span id="pick-lbl">Add specific photos</span>
+              </button>
+              <span id="pick-clear" class="pick-clear" style="display:none">clear</span>
+            </div>
+            <div class="hint">Folder + picked photos form one pool — each run samples the count below from it. Pick specifics if you only want certain shots in rotation.</div>
+
+            <div class="lastrun" id="lastrun"><span style="color:var(--muted)">Loading the last run…</span></div>
 
             <div class="plabel">Cadence</div>
             <div class="fx-grid2" style="max-width:480px">
               <div class="fx-field">
                 <label>Post every (hours)</label>
-                <input class="fx-input" value="4">
+                <input class="fx-input" value="" id="in-every">
               </div>
               <div class="fx-field">
                 <label>&nbsp;</label>
-                <div class="hint" style="margin-top:0">the graded vault: 6 h · Isabelle: 7 h</div>
+                <div class="hint" style="margin-top:0" id="hint-mode">interval mode</div>
               </div>
             </div>
-            <div class="hint">Runs on the creator's clock (UTC−10:00). Every tick posts random photos from the pool.</div>
+            <div class="hint">Every tick posts random photos from the pool. Switch to clock times in Advanced → Trigger.</div>
 
             <div class="fx-grid2" style="margin-top:16px;max-width:480px">
               <div class="fx-field">
                 <label>Photos per run</label>
-                <input class="fx-input" value="2">
+                <input class="fx-input" value="" id="in-perrun">
               </div>
               <div class="fx-field">
                 <label>Auto-delete after (hours)</label>
-                <input class="fx-input" value="14">
+                <input class="fx-input" value="" id="in-ttl">
               </div>
             </div>
             <div class="hint">13–15 h across accounts — stories come down long before they'd naturally expire, so the profile always shows the newest run.</div>
@@ -625,7 +670,7 @@
                   <div class="fx-grid2" style="max-width:480px">
                     <div class="fx-field">
                       <label>Stop after (total runs)</label>
-                      <input class="fx-input" placeholder="∞ — run forever">
+                      <input class="fx-input" placeholder="∞ — run forever" id="in-maxruns">
                     </div>
                   </div>
                 </div>
@@ -634,11 +679,20 @@
                   <div class="fx-grid2" style="max-width:480px;margin-bottom:14px">
                     <div class="fx-field">
                       <label>Watermark text</label>
-                      <input class="fx-input" placeholder="none">
+                      <input class="fx-input" placeholder="none" id="in-watermark">
                     </div>
                   </div>
-                  <div class="fx-note" style="margin-bottom:8px">Every trigger picks photos <b>at random</b> from the pool, so the story feed never looks scripted — the same photo won't post twice in a row.</div>
-                  <div class="fx-note warn">FairPlay-DRM videos can't be sliced — fastt posts slideshow preview frames instead.</div>
+                  <label class="fx-check" id="ck-dupe" style="margin-bottom:12px"><span class="bx"></span>Remove the re-uploaded vault copy<span class="sub">every story re-uploads its photo (OF requires it) — this hides the duplicate once it finishes processing; your live story is untouched</span></label>
+                  <div class="fx-note" style="margin-bottom:8px"><span>Every trigger picks photos <b>at random</b> from the pool, so the story feed never looks scripted — the same photo won't post twice in a row.</span></div>
+                  <div class="fx-note warn"><span>FairPlay-DRM videos can't be sliced — fastt posts slideshow preview frames instead.</span></div>
+                </div>
+
+                <div class="fx-adv-group" id="adv-danger" style="display:none"><h4>Danger</h4>
+                  <button class="fx-btn ghost" id="btn-delete" style="color:#e5735b;border-color:rgba(229,115,91,.4)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    Delete this automation
+                  </button>
+                  <div class="hint">Removes the auto_stories rule for this creator. Stories already posted are unaffected.</div>
                 </div>
 
               </div>
@@ -653,55 +707,49 @@
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7d97f8" stroke-width="1.7"><rect x="4" y="5" width="16" height="16" rx="2.5"/><path d="M4 9.5h16M8 3v4M16 3v4" stroke-linecap="round"/></svg>
               Today &amp; next
             </div>
-            <div class="fx-card-sub" style="margin-bottom:8px">What the 4-hour cadence does over the next runs.</div>
+            <div class="fx-card-sub" style="margin-bottom:8px" id="up-sub">What the saved cadence does over the next runs.</div>
 
-            <div class="uprow">
-              <div class="up-t"><b>14:00</b><span>Today</span></div>
-              <div class="up-m"><div class="a">Teasers · 2 photos</div><div class="b">1,204 views · deletes 04:00 tomorrow</div></div>
-              <span class="up-pill done">Posted</span>
-            </div>
-            <div class="uprow">
-              <div class="up-t"><b>18:00</b><span>Today</span></div>
-              <div class="up-m"><div class="a">Teasers · 2 photos</div><div class="b">random pick · auto-delete 14 h</div></div>
-              <span class="up-pill next">in 3h 24m</span>
-            </div>
-            <div class="uprow">
-              <div class="up-t"><b>22:00</b><span>Today</span></div>
-              <div class="up-m"><div class="a">Teasers · 2 photos</div><div class="b">random pick · auto-delete 14 h</div></div>
-              <span class="up-pill q">Scheduled</span>
-            </div>
+            <div id="upcoming">
             <div class="uprow last">
-              <div class="up-t"><b>02:00</b><span>Thu 23</span></div>
-              <div class="up-m"><div class="a">Teasers · 2 photos</div><div class="b">random pick · auto-delete 14 h</div></div>
-              <span class="up-pill q">Scheduled</span>
+              <div class="up-t"><b>—</b><span></span></div>
+              <div class="up-m"><div class="a">Loading…</div><div class="b"></div></div>
+              <span class="up-pill q">…</span>
+            </div>
             </div>
 
             <hr class="fx-hr">
 
-            <div class="plabel" style="margin-top:0">Recent stories</div>
-            <div class="rc">
-              <span class="mth g2"></span>
-              <div class="rm"><div class="n">Posted today, 14:00</div><div class="s">deletes in 13h</div></div>
-              <span class="v"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>1,204</span>
-            </div>
-            <div class="rc">
-              <span class="mth g1"></span>
-              <div class="rm"><div class="n">Posted today, 10:00</div><div class="s">deletes in 9h</div></div>
-              <span class="v"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>2,038</span>
-            </div>
-            <div class="rc">
-              <span class="mth g3"></span>
-              <div class="rm"><div class="n">Tue Jul 21, 22:00</div><div class="s">auto-deleted after 14 h</div></div>
-              <span class="v"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>1,761</span>
+            <div class="plabel" style="margin-top:0" id="live-h">Live on the profile now</div>
+            <div id="live-stories">
+              <div class="lsrow"><span class="lsth"></span><div class="lsm"><div class="n" style="color:var(--muted)">Loading…</div><div class="s"></div></div></div>
             </div>
 
             <hr class="fx-hr">
 
-            <button class="fx-btn ghost" style="width:100%;justify-content:center">
+            <div class="plabel" style="margin-top:0" id="recent-h">Story archive</div>
+            <div id="recent-stories">
+            <div class="rc">
+              <span class="mth"></span>
+              <div class="rm"><div class="n" style="color:var(--muted)">Loading…</div><div class="s"></div></div>
+            </div>
+            </div>
+
+            <hr class="fx-hr">
+
+            <button class="fx-btn ghost" style="width:100%;justify-content:center" id="btn-runnow">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M7 5v14l11-7z"/></svg>
               Post one now
             </button>
-            <div class="hint" style="text-align:center">Fires the saved schedule once — 2 random photos, same auto-delete.</div>
+            <div class="hint" style="text-align:center" id="runnow-hint">Fires the saved schedule once — random photos, same auto-delete.</div>
+          </div>
+
+          <div class="fx-card">
+            <div class="fx-card-h" id="runs-h">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7d97f8" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>
+              Previous runs
+            </div>
+            <div class="fx-card-sub" style="margin-bottom:8px">Straight from <code style="color:#8ea0e6">automation_runs</code> — how many stories each run posted, how many failed, and the delete window.</div>
+            <div id="runs-list"><div class="runrow"><span style="color:var(--muted)">Loading runs…</span></div></div>
           </div>
         </div>
 
@@ -828,5 +876,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="auto-stories.js"></script>
 </body>
 </html>

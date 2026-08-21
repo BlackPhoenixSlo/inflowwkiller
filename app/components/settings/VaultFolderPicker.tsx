@@ -123,7 +123,7 @@ export function VaultFolderPicker({
             </div>
           ) : (
             folders.map((f) => (
-              <FolderRow
+              <PickerFolderRow
                 key={f.id}
                 folder={f}
                 accountId={accountId}
@@ -179,7 +179,7 @@ export function VaultFolderPicker({
 
 // ── one folder row: checkbox + name + counts, expands to a media grid ──────
 
-function FolderRow({
+function PickerFolderRow({
   folder, accountId, selected, expanded, onToggle, onExpand,
 }: {
   folder: VaultList;

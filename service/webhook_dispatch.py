@@ -584,7 +584,7 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int,
 
     `is_video` picks which lane of the free-fan daily budget this DM spends."""
     try:
-        from automations.tip_reward import (  # lazy: avoid cycle
+        from automations.tip_reward_config import (
             image_describe_flags, image_reply_flags,
         )
         send_img, run_closer = await image_reply_flags(account_id)

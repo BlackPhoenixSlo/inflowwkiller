@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Restrictions</title>
+<!-- inline favicon (data-URI) so the browser's auto /favicon.ico probe can't 404 the console -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234166f6' stroke-width='2.2'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M5.6 5.6l12.8 12.8' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +31,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +46,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +88,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -347,7 +347,10 @@
   /* ---- page-specific: restrictions (rx-) ---- */
   .rx-hero{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px}
   .rx-stat{background:var(--card);border:1px solid var(--border);border-radius:12px;
-    padding:15px 17px;display:flex;align-items:center;gap:13px}
+    padding:15px 17px;display:flex;align-items:center;gap:13px;position:relative}
+  .rx-stat>div:not(.rx-si){min-width:0}
+  /* badges pin to the corner so a 4-up grid can never be pushed off-canvas */
+  .rx-stat>.ft-live,.rx-stat>.ft-static{position:absolute;top:9px;right:10px}
   .rx-si{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
   .rx-si.amber{background:rgba(254,188,46,.1);color:#e8cf9a}
   .rx-si.purple{background:rgba(167,139,250,.15);color:#a78bfa}
@@ -355,6 +358,13 @@
   .rx-si.blue{background:rgba(91,124,250,.16);color:#6d8bfb}
   .rx-sv{font-size:23px;font-weight:700;color:#fff;line-height:1.1;letter-spacing:-.4px}
   .rx-sl{font-size:12.5px;color:var(--muted);margin-top:2px;white-space:nowrap}
+  /* honest "no endpoint" tile: the number reads as absent, not as loading */
+  .rx-stat.na .rx-sv{font-size:17px;font-weight:600;color:var(--muted2);letter-spacing:0;display:flex;align-items:baseline;gap:7px}
+  .rx-stat.na .rx-sv .rx-svn{font-size:12px;font-weight:500;color:var(--muted2)}
+  .rx-sn{font-size:11px;color:var(--muted2);margin-top:5px;line-height:1.4}
+  .rx-acct-lbl{max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fx-note code,.rx-leg-row code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+    background:rgba(255,255,255,.06);border-radius:4px;padding:1px 4px}
 
   .rx-b{display:inline-flex;align-items:center;gap:7px;height:24px;padding:0 10px;border-radius:12px;
     font-size:12px;font-weight:600;white-space:nowrap}
@@ -424,7 +434,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -503,7 +512,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -535,9 +544,9 @@
         </div>
         <div class="sec-utc" style="color:#8a8a8a">The fans no automation will ever message — and why.</div>
         <div class="head-right">
-          <div class="dropdown">
+          <div class="dropdown" id="rx-acct" title="This page is scoped to one creator">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7"><circle cx="12" cy="8.5" r="3.4"/><path d="M5.5 19.5c.7-3.4 3.2-5.2 6.5-5.2s5.8 1.8 6.5 5.2" stroke-linecap="round"/></svg>
-            Aria
+            <span class="rx-acct-lbl" id="rx-acct-lbl">…</span>
             <span class="cv"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
           </div>
         </div>
@@ -547,19 +556,23 @@
       <div class="rx-hero">
         <div class="rx-stat">
           <div class="rx-si amber"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M5.7 5.7l12.6 12.6" stroke-linecap="round"/></svg></div>
-          <div><div class="rx-sv">6</div><div class="rx-sl">Manual restrict · by you</div></div>
+          <div><div class="rx-sv" id="rx-n-manual">—</div><div class="rx-sl">Manual restrict · by you</div></div>
         </div>
-        <div class="rx-stat">
+        <div class="rx-stat na" id="rx-stat-muted">
           <div class="rx-si purple"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M11 5.5L6.8 9H3.5v6h3.3L11 18.5v-13z" stroke-linejoin="round"/><path d="M15.5 9.8l4.7 4.7M20.2 9.8l-4.7 4.7" stroke-linecap="round"/></svg></div>
-          <div><div class="rx-sv">3</div><div class="rx-sl">Muted creators · on OF</div></div>
+          <div><div class="rx-sv" id="rx-n-muted">—<span class="rx-svn">not tracked yet</span></div><div class="rx-sl">Muted creators · on OF</div>
+            <div class="rx-sn">No relay endpoint lists or counts muted-creator skips — they still gate every send server-side.</div>
+          </div>
         </div>
         <div class="rx-stat">
           <div class="rx-si red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3.2 2.9-5 5.5-5s4.9 1.8 5.5 5" stroke-linecap="round"/><path d="M16.5 8.5l4 4M20.5 8.5l-4 4" stroke-linecap="round"/></svg></div>
-          <div><div class="rx-sv">2</div><div class="rx-sl">Restricted on OnlyFans</div></div>
+          <div><div class="rx-sv" id="rx-n-ofr">—</div><div class="rx-sl">Restricted on OnlyFans</div></div>
         </div>
-        <div class="rx-stat">
+        <div class="rx-stat na" id="rx-stat-unr">
           <div class="rx-si blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-          <div><div class="rx-sv">4</div><div class="rx-sl">Unreachable · retry in 7 d</div></div>
+          <div><div class="rx-sv" id="rx-n-unr">—<span class="rx-svn">not tracked yet</span></div><div class="rx-sl">Unreachable · 7-day pause</div>
+            <div class="rx-sn">No relay endpoint lists or counts unreachable skips — they still gate every send server-side.</div>
+          </div>
         </div>
       </div>
 
@@ -572,10 +585,10 @@
       <div class="fx-card" style="padding:18px 22px 8px">
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
           <div class="fx-card-h" style="margin:0">Skip list</div>
-          <span id="rx-count" style="font-size:13px;color:var(--muted)">15 fans — every automation skips them</span>
-          <button class="fx-btn ghost" style="margin-left:auto;height:34px;padding:0 14px;font-size:12.5px">
+          <span id="rx-count" style="font-size:13px;color:var(--muted)">loading…</span>
+          <button class="fx-btn ghost" id="rx-liftall" style="margin-left:auto;height:34px;padding:0 14px;font-size:12.5px">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7M6.5 7l.8 12a1.5 1.5 0 0 0 1.5 1.4h6.4a1.5 1.5 0 0 0 1.5-1.4l.8-12" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            Lift all manual restricts (6)
+            <span id="rx-liftall-txt">Lift all manual restricts</span>
           </button>
         </div>
 
@@ -694,17 +707,22 @@
           </div>
           <div class="fx-adv-body" id="adv-rx">
 
-            <div class="fx-adv-group">
+            <div class="fx-adv-group" id="rx-quar-group">
               <h4>Unreachable quarantine</h4>
               <div class="fx-grid3">
                 <div class="fx-field"><label>Pause after a failed send (days)</label><input class="fx-input" value="7"></div>
                 <div class="fx-field"><label>Failed sends before quarantine</label><input class="fx-input" value="1"></div>
                 <div class="fx-field"><label>After the pause</label>
-                  <select class="fx-select"><option>Retry automatically</option><option>Keep restricted until I lift</option></select>
+                  <input class="fx-input" value="Timer expires — skip-list row stays">
                 </div>
               </div>
-              <label class="fx-check on" style="margin-top:10px"><span class="bx"></span>Leave quarantined fans out of blast audience totals</label>
-              <div class="fx-note" style="margin-top:8px"><span>When a send bounces (blocked you, deleted account), the fan is paused for <b>7 days</b> so blasts don't burn on dead threads — then retried automatically. Lifting a fan clears the timer and retries right away.</span></div>
+              <div class="fx-note warn" style="margin-top:10px"><span>What the code actually does — <b>_UNDELIVERABLE_RETRY = 7 days</b>, <b>1</b> failed send:
+                a bounce writes a durable <code>skip_list('unreachable')</code> row <b>and</b> sets <code>automation_paused_until = now + 7 d</code>.
+                Only the 7-day timer expires; <b>nothing ever clears the skip-list row</b>, so every skip-list-aware sender keeps skipping him. There is no lift path either —
+                <code>DELETE /automation-restrict/{id}</code> removes manual rows only.</span></div>
+              <div class="fx-note" style="margin-top:8px"><span>Blast audiences do <b>not</b> exclude these fans: <code>load_hard_skip_ids</code> is
+                <code>{muted_creator, manual_restrict, of_restricted, ladder_stop}</code> and <code>contact_guard_excludes</code> never reads
+                <code>automation_paused_until</code> — <b>unreachable is not in that set</b>, so quarantined fans still count in blast audience totals.</span></div>
             </div>
 
             <div class="fx-adv-group">
@@ -723,7 +741,7 @@
               </div>
               <div class="rx-leg-row">
                 <span class="rx-b unr"><i></i>Unreachable</span>
-                <p>A send to this fan failed — likely blocked or a deleted account. Paused for 7 days, then retried once automatically. Lift to retry now.</p>
+                <p>A send to this fan failed — likely blocked or a deleted account. One failure quarantines him: a permanent <code>skip_list('unreachable')</code> row plus a 7-day <code>automation_paused_until</code> timer. The timer expires on its own; the skip-list row does not, and there is no lift button for it here. Not listed above — the relay exposes no endpoint for this reason.</p>
               </div>
             </div>
 
@@ -820,14 +838,16 @@
         var f = chip.getAttribute('data-f');
         var n = 0;
         document.querySelectorAll('#rx-rows tr').forEach(function(r){
-          var show = (f === 'all' || r.getAttribute('data-type') === f);
+          var t = r.getAttribute('data-type');
+          if (t === 'loading' || t === 'empty') return;   // status rows aren't fans
+          var show = (f === 'all' || t === f);
           r.style.display = show ? '' : 'none';
           if (show) n++;
         });
+        // Count what is actually on screen — never a baked mockup total.
         var c = document.getElementById('rx-count');
-        if (c) c.textContent = (f === 'all')
-          ? '15 fans — every automation skips them'
-          : n + ' fan' + (n === 1 ? '' : 's') + ' shown';
+        if (c) c.textContent = n + ' fan' + (n === 1 ? '' : 's')
+          + (f === 'all' ? ' — every automation skips them' : ' shown');
       });
     });
   })();
@@ -850,5 +870,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="fans-restrictions.js"></script>
 </body>
 </html>

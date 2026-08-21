@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>Infloww — OF Manager</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -17,13 +18,11 @@
   html,body{background:#050505;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
   body{display:flex;justify-content:center;align-items:flex-start;min-height:100vh}
   a{text-decoration:none;color:inherit}
-  .app{position:relative;width:1440px;height:900px;overflow:hidden;background:var(--canvas);color:var(--text);display:flex;flex-direction:column}
+  /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+  .app{position:relative;width:1440px;height:100vh;overflow:hidden;background:var(--canvas);color:var(--text);display:flex;flex-direction:column}
 
   /* TOP BAR */
   .topbar{height:52px;flex:0 0 52px;background:var(--black);display:flex;align-items:center;padding:0 18px 0 20px;gap:14px}
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}.traffic .y{background:#febc2e}.traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -54,6 +53,8 @@
   .nav{display:flex;flex-direction:column;gap:2px;flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin}
   .nav::-webkit-scrollbar{width:6px}
   .nav::-webkit-scrollbar-thumb{background:#242424;border-radius:3px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;flex:0 0 auto}
   .nav-item:hover{background:#141414}
   .nav-item .ico{width:22px;display:flex;align-items:center;justify-content:center;flex:0 0 22px;color:#9a9a9a}
@@ -114,6 +115,134 @@
   .nav-item.active .ico{color:#fff}
   .spacer{flex:1}
 </style>
+<style id="ofm-css">
+  /* ==== OF Manager: in-page tabs over the relay's OnlyFans mirror ==== */
+  .mgr-head .h{display:flex;align-items:center;gap:9px}
+  .ofm-tabs{display:flex;gap:3px;padding:9px 22px 0;background:#0d0d0d;border-bottom:1px solid #232323;
+    overflow-x:auto;scrollbar-width:none;flex:0 0 auto}
+  .ofm-tabs::-webkit-scrollbar{display:none}
+  .ofm-tab{height:35px;padding:0 13px;border-radius:9px 9px 0 0;color:#8f8f8f;font-family:inherit;
+    font-size:13.5px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:7px;
+    white-space:nowrap;border:1px solid transparent;border-bottom:none;background:transparent}
+  .ofm-tab:hover{color:#ddd;background:#151515}
+  .ofm-tab.on{color:#fff;background:#151515;border-color:#2b2b2b}
+  .ofm-tab .cnt{font-size:10px;font-weight:700;background:#f2295b;color:#fff;border-radius:8px;padding:1px 5px;line-height:1.3}
+
+  .ofm-body{flex:1;min-height:0;overflow-y:auto;padding:18px 22px 44px;scrollbar-width:thin}
+  .ofm-body::-webkit-scrollbar{width:8px}
+  .ofm-body::-webkit-scrollbar-thumb{background:#282828;border-radius:4px}
+
+  .ofm-card{background:#232323;border:1px solid #333;border-radius:12px;padding:17px 19px;margin-bottom:14px}
+  .ofm-card>h3{font-size:15px;font-weight:600;color:#fff;display:flex;align-items:center;gap:9px;margin:0 0 4px;flex-wrap:wrap}
+  .ofm-card>h3 .r{margin-left:auto;font-size:12px;font-weight:500;color:#8a8a8a}
+  .ofm-card .sub{font-size:12.5px;color:#8a8a8a;line-height:1.55;margin-bottom:2px}
+  .ofm-row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+  .ofm-row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;align-items:start}
+
+  .ofm-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(146px,1fr));gap:11px;margin-top:13px}
+  .ofm-stat{background:#1c1c1c;border:1px solid #2c2c2c;border-radius:10px;padding:11px 13px}
+  .ofm-stat .k{font-size:10px;color:#6a6a6a;text-transform:uppercase;letter-spacing:.07em;font-weight:700}
+  .ofm-stat .v{font-size:21px;font-weight:600;color:#fff;margin-top:5px;line-height:1.15}
+  .ofm-stat .d{font-size:11.5px;color:#8a8a8a;margin-top:3px}
+  .ofm-stat .d.up{color:#67d1ae}
+  .ofm-stat .d.dn{color:#e05b5b}
+  .ofm-stat.accent .v{color:#67d1ae}
+  .ofm-stat.pink .v{color:#ec4b9b}
+
+  .ofm-hero{border-radius:12px;overflow:hidden;border:1px solid #333;margin-bottom:14px;background:#232323}
+  .ofm-hero .hdr{width:100%;height:158px;object-fit:cover;display:block;background:#1a1a1a}
+  .ofm-hero .who{display:flex;align-items:flex-end;gap:15px;padding:0 20px 15px}
+  .ofm-hero .av{width:72px;height:72px;border-radius:50%;border:3px solid #232323;object-fit:cover;
+    margin-top:-34px;background:#1a1a1a;flex:0 0 72px}
+  .ofm-hero .nm{font-size:19px;font-weight:600;color:#fff;display:flex;align-items:center;gap:8px}
+  .ofm-hero .un{font-size:13px;color:#8a8a8a;margin-top:2px}
+  .ofm-hero .rr{margin-left:auto;text-align:right;font-size:12.5px;color:#8a8a8a;line-height:1.6;padding-bottom:2px}
+  .ofm-hero .rr b{color:#ddd;font-weight:500}
+  .ofm-vfy{width:15px;height:15px;border-radius:50%;background:#00aff0;color:#fff;font-size:9px;
+    display:inline-flex;align-items:center;justify-content:center;font-weight:700}
+
+  .ofm-tbl{width:100%;border-collapse:collapse;font-size:13px}
+  .ofm-tbl th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#6a6a6a;
+    font-weight:700;padding:0 9px 8px;white-space:nowrap}
+  .ofm-tbl td{padding:8px 9px;border-top:1px solid #2a2a2a;color:#ddd;vertical-align:middle}
+  .ofm-tbl td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .ofm-tbl td.mut{color:#8a8a8a}
+  .ofm-tbl tr:hover td{background:#262626}
+  .ofm-wrap{max-height:420px;overflow-y:auto;scrollbar-width:thin;margin-top:10px}
+  .ofm-wrap::-webkit-scrollbar{width:7px}
+  .ofm-wrap::-webkit-scrollbar-thumb{background:#2a2a2a;border-radius:4px}
+
+  .ofm-pill{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px;border-radius:11px;
+    background:#1c1c1c;border:1px solid #2f2f2f;font-size:11.5px;color:#b9b9b9;white-space:nowrap}
+  .ofm-pill.ok{color:#67d1ae;border-color:rgba(103,209,174,.35);background:rgba(103,209,174,.1)}
+  .ofm-pill.warn{color:#e8cf9a;border-color:rgba(254,188,46,.3);background:rgba(254,188,46,.08)}
+  .ofm-pill.err{color:#e05b5b;border-color:rgba(224,91,91,.35);background:rgba(224,91,91,.1)}
+  .ofm-pill.blue{color:#c9d3ff;border-color:rgba(65,102,246,.35);background:rgba(65,102,246,.12)}
+
+  .ofm-empty{font-size:13px;color:#8a8a8a;line-height:1.6;background:#1c1c1c;border:1px dashed #333;
+    border-radius:10px;padding:15px 17px}
+  .ofm-empty b{color:#ddd;font-weight:500}
+  .ofm-err{border-color:rgba(224,91,91,.4);color:#e0a0a0}
+
+  .ofm-bar{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin:12px 0 2px}
+  .ofm-sel,.ofm-inp{height:34px;background:#1c1c1c;border:1px solid #333;border-radius:9px;color:#eee;
+    font-family:inherit;font-size:13px;padding:0 11px;outline:none}
+  .ofm-sel{-webkit-appearance:none;appearance:none;padding-right:28px;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");
+    background-repeat:no-repeat;background-position:right 9px center}
+  .ofm-btn{height:34px;padding:0 14px;border-radius:9px;border:1px solid #333;background:#1c1c1c;color:#ddd;
+    font-family:inherit;font-size:13px;font-weight:500;cursor:pointer}
+  .ofm-btn:hover{border-color:#4a4a4a;color:#fff}
+  .ofm-btn.pri{background:#4166f6;border-color:#4166f6;color:#fff}
+  .ofm-btn:disabled{opacity:.45;cursor:default}
+
+  .ofm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(116px,1fr));gap:10px;margin-top:12px}
+  .ofm-mi{position:relative;aspect-ratio:1;border-radius:10px;overflow:hidden;background:#1a1a1a;border:1px solid #2c2c2c}
+  .ofm-mi img{width:100%;height:100%;object-fit:cover;display:block}
+  .ofm-mi .tg{position:absolute;left:6px;top:6px;background:rgba(0,0,0,.66);color:#fff;font-size:9.5px;
+    font-weight:600;padding:2px 6px;border-radius:6px;letter-spacing:.03em}
+  .ofm-mi .mt{position:absolute;left:0;right:0;bottom:0;color:#e6e6e6;font-size:10.5px;padding:16px 7px 5px;
+    display:flex;gap:9px;background:linear-gradient(transparent,rgba(0,0,0,.8))}
+
+  .ofm-lists{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin-top:12px}
+  .ofm-list{background:#1c1c1c;border:1px solid #2c2c2c;border-radius:11px;padding:11px 12px}
+  .ofm-list .nm{font-size:13.5px;font-weight:600;color:#fff;display:flex;align-items:center;gap:7px}
+  .ofm-list .ct{font-size:11.5px;color:#8a8a8a;margin-top:3px}
+  .ofm-list .cv{display:flex;gap:5px;margin-top:9px}
+  .ofm-list .cv img,.ofm-list .cv .ph{width:44px;height:44px;border-radius:8px;object-fit:cover;
+    background:#242424;border:1px solid #2f2f2f;display:block}
+
+  .ofm-feed .it{display:flex;gap:12px;padding:11px 0;border-top:1px solid #2a2a2a}
+  .ofm-feed .it:first-child{border-top:0}
+  .ofm-feed .av2{width:34px;height:34px;border-radius:50%;background:#2f2f2f;color:#b9b9b9;flex:0 0 34px;
+    display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;object-fit:cover}
+  .ofm-feed .bd{flex:1;min-width:0}
+  .ofm-feed .tt{font-size:13px;color:#e6e6e6;line-height:1.5}
+  .ofm-feed .tt b{color:#fff;font-weight:600}
+  .ofm-feed .tt a{color:#7d97f8;text-decoration:none;pointer-events:none}
+  .ofm-feed .mm{font-size:11.5px;color:#6a6a6a;margin-top:3px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .ofm-feed .it.unread{background:rgba(65,102,246,.05);border-radius:8px;padding-left:8px;padding-right:8px}
+  .ofm-feed .thumb{width:52px;height:52px;border-radius:8px;object-fit:cover;background:#242424;flex:0 0 52px}
+
+  .ofm-chart{width:100%;height:auto;display:block;margin-top:12px}
+  .ofm-chart .gl{stroke:#2e2e2e;stroke-width:1}
+  .ofm-chart .ax{fill:#6a6a6a;font-size:9px;font-family:Inter,sans-serif}
+  .ofm-chart .ln{fill:none;stroke:#4166f6;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+  .ofm-chart .ar{fill:rgba(65,102,246,.16)}
+  .ofm-chart .br{fill:#4166f6}
+  .ofm-chart .br.g{fill:#67d1ae}
+  .ofm-chart .dt{fill:#4166f6}
+  .ofm-chartnote{font-size:11.5px;color:#6a6a6a;margin-top:7px}
+
+  .ofm-kv{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:13px;margin-top:12px}
+  .ofm-kv .k{color:#8a8a8a;white-space:nowrap}
+  .ofm-kv .v{color:#ddd;word-break:break-word}
+  .ofm-about{font-size:13px;color:#c9c9c9;line-height:1.6;margin-top:10px;background:#1c1c1c;
+    border:1px solid #2c2c2c;border-radius:10px;padding:12px 14px;max-height:200px;overflow-y:auto}
+  .ofm-about p{margin:0 0 8px}
+  .ofm-flags{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .ofm-load{font-size:13px;color:#8a8a8a;padding:6px 0}
+</style>
 <style id="canon-sb2">
   /* canonical sidebar: nav scrolls, footer pinned */
   .nav{flex:1;min-height:0;overflow-y:auto;scrollbar-width:none}
@@ -149,7 +278,6 @@
 
   <!-- TOP BAR -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/></svg></div>
     <div class="trial"><b>You're on a free trial</b><span>7 days left</span></div>
     <div class="modelswap" id="modelswap">
@@ -203,7 +331,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -228,31 +356,23 @@
     <!-- MAIN -->
     <main class="main">
       <div class="mgr-head">
-        <div class="h">Home</div>
-        <div class="tz">UTC+02:00 <span class="info"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span></div>
+        <div class="h" id="ofm-title">Home</div>
+        <div class="tz" id="ofm-sub">the relay's live OnlyFans mirror <span class="info"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span></div>
         <div class="right">
-          <span class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-          <span class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.7L4 16M4 20v-4h4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <span class="kbd-hint" style="font-size:11.5px;color:#6a6a6a;display:flex;align-items:center;gap:6px;margin-right:2px">
+            <kbd style="font:inherit;font-size:10.5px;background:#1c1c1c;border:1px solid #333;border-radius:5px;padding:1px 5px;color:#b9b9b9">←</kbd>
+            <kbd style="font:inherit;font-size:10.5px;background:#1c1c1c;border:1px solid #333;border-radius:5px;padding:1px 5px;color:#b9b9b9">→</kbd>
+            <span>switch · </span>
+            <kbd style="font:inherit;font-size:10.5px;background:#1c1c1c;border:1px solid #333;border-radius:5px;padding:1px 5px;color:#b9b9b9">R</kbd>
+            <span>reload</span>
+          </span>
+          <span class="ic" id="ofm-reload" title="Reload this tab"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.7L4 16M4 20v-4h4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
         </div>
       </div>
 
-      <div class="embed">
-        <div class="embed-card">
-          <div class="of-brand">
-            <svg width="58" height="42" viewBox="0 0 58 42" fill="none">
-              <circle cx="37" cy="21" r="18" fill="#00aff0"/>
-              <circle cx="37" cy="21" r="7" fill="#fff"/>
-              <path d="M20 21C10 21 2 15 0 6c11 0 19 6 20 15z" fill="#008ccf"/>
-            </svg>
-            <span class="word">OnlyFans</span>
-          </div>
-          <h1>OF Manager opens the live OnlyFans site inside Infloww</h1>
-          <p>Your creator's OnlyFans account loads here — Home, Messages, Vault, Statements and more — embedded directly within the desktop app.</p>
-          <button class="go">Open OnlyFans
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
-          <div class="embed-note">This is a placeholder — real OnlyFans content is not reproduced here.</div>
-        </div>
+      <div class="ofm-tabs" id="ofm-tabs"></div>
+      <div class="ofm-body" id="ofm-body">
+        <div class="ofm-load">Loading OF Manager…</div>
       </div>
     </main>
   </div>
@@ -260,6 +380,7 @@
   <div class="help"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11.5a7.5 7.5 0 0 1-10.8 6.7L4 19.5l1.3-4.1A7.5 7.5 0 1 1 20 11.5z"/></svg></div>
 </div>
 
+<script src="_shared/fastt.js"></script>
 <script>
   // ==== CANONICAL SIDEBAR JS (identical on every page — do not fork) ====
   (function(){
@@ -310,5 +431,6 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="ofmanager.js" id="wire-js"></script>
 </body>
 </html>

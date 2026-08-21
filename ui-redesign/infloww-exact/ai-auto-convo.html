@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>fastt — Auto Convo</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -295,6 +294,17 @@
   .fx-unit::before{content:attr(data-unit);position:absolute;left:11px;top:50%;transform:translateY(-50%);
     font-size:13.5px;color:var(--muted);z-index:1}
 
+  /* Sound-human card extras (style-config knobs) */
+  .sh-sep{height:1px;background:var(--border-soft);margin:12px 0 10px}
+  .sh-h{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted2);margin-bottom:6px}
+  .sh-h span{font-weight:500;letter-spacing:0;text-transform:none;color:var(--muted2);margin-left:8px}
+  .sh-grid{display:grid;grid-template-columns:1fr 84px 84px 84px;align-items:center;row-gap:2px}
+  .sh-col{font-size:11px;color:var(--muted2);text-align:center;padding-bottom:6px}
+  .sh-nm{font-size:13px;color:#ddd}
+  .sh-cell{display:flex;justify-content:center}
+  .sh-cell .fx-check{padding:5px 0;gap:0}
+  #cat-knobs.off{opacity:.45;pointer-events:none}
+
   /* checkbox row */
   .fx-check{display:flex;align-items:center;gap:10px;font-size:13.5px;color:#ddd;cursor:pointer;padding:5px 0}
   .fx-check .bx{width:18px;height:18px;border-radius:5px;border:1.5px solid #4a4a4a;flex:0 0 auto;
@@ -396,6 +406,18 @@
     display:flex;align-items:center;justify-content:center;color:#9a9a9a;flex:0 0 auto}
   .skiprow .ss{display:block;font-size:11.5px;color:var(--muted2);margin-top:2px}
   .fx-adv-note{font-size:12px;color:var(--muted2);margin-top:10px;line-height:1.5}
+  /* last-sweep funnel */
+  .sw-tiles{display:flex;gap:10px;margin-bottom:6px}
+  .sw-tile{flex:1;background:#1c1c1c;border:1px solid var(--border-soft);border-radius:10px;padding:11px 13px}
+  .sw-tile .n{font-size:26px;font-weight:700;line-height:1.05;letter-spacing:-.5px}
+  .sw-tile .n.g{color:var(--green)}
+  .sw-tile .l{font-size:12px;color:var(--muted);margin-top:3px}
+  .sw-break{margin-top:12px;padding-top:12px;border-top:1px solid var(--border-soft)}
+  .sw-break .h{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted2);margin-bottom:8px}
+  .sw-row{display:flex;align-items:center;gap:10px;font-size:13px;color:#ddd;padding:4px 0}
+  .sw-row .v{margin-left:auto;font-weight:600;color:#fff;font-variant-numeric:tabular-nums}
+  .sw-row i{width:6px;height:6px;border-radius:50%;background:#5a5a5a;flex:0 0 auto}
+  .sw-empty{font-size:13px;color:var(--muted);line-height:1.5}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -426,7 +448,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -505,7 +526,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -545,37 +566,65 @@
 
           <!-- live status -->
           <div class="fx-status">
-            <span class="fx-st ok"><i></i>Running</span>
-            <span class="fx-st"><i></i>12 nudges today</span>
-            <span class="fx-st"><i></i>Last sweep 3 min ago</span>
-            <span class="fx-st"><i></i>DeepSeek V4 Flash</span>
-            <span class="fx-st"><i></i>$0.01 today</span>
+            <span class="fx-st ok" id="st-run"><i></i>Loading…</span>
+            <span class="fx-st" id="st-nudges"><i></i>—</span>
+            <span class="fx-st" id="st-sweep"><i></i>Last sweep —</span>
+            <span class="fx-st" id="st-model"><i></i>—</span>
+            <span class="fx-st" id="st-cost"><i></i>—</span>
           </div>
 
           <!-- PRIMARY: toggle card -->
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" id="tc-convo">
             <div class="fx-tc-row">
               <div class="fx-tc-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/><path d="M8.5 10.5h7M8.5 13.5h4.5" stroke-linecap="round"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">Auto Convo</div>
-                <div class="fx-tc-desc">Keeps quiet fans talking. One friendly reply when a fan goes silent 30&nbsp;min&nbsp;–&nbsp;2&nbsp;h — covers everyone but whales. Never mentions prices.</div>
+                <div class="fx-tc-desc" id="tc-desc">Keeps quiet fans talking. One friendly reply when a fan goes silent — covers everyone but whales. Never mentions prices.</div>
               </div>
-              <span class="fx-tc-state">Running</span>
-              <span class="fx-switch on"></span>
+              <span class="fx-tc-state">Off</span>
+              <span class="fx-switch" id="sw-convo"></span>
             </div>
             <div class="fx-tc-knobs">
-              <div class="fx-kv"><b>12</b> fans kept warm today · <b>9</b> replied back</div>
-              <div class="fx-kv">steps in after <b>30 min</b> · max <b>1</b> nudge per waiting message</div>
+              <div class="fx-kv" id="kv-sweep">—</div>
+              <div class="fx-kv" id="kv-steps">steps in after <b>—</b> · max <b>—</b> nudge per waiting message</div>
             </div>
           </div>
 
-          <!-- Sound human -->
-          <div class="fx-card fx-human">
-            <div class="fx-card-h">Sound human<span style="margin-left:auto"></span><span class="fx-switch on"></span></div>
-            <div class="fx-card-sub" style="margin-bottom:8px">Short girl-voice bubbles, real thumb typos, non-native touches. Applied to every Auto Convo reply.</div>
-            <label class="fx-check on"><span class="bx"></span>Natural voice + 3-bubble split</label>
-            <label class="fx-check on"><span class="bx"></span>Occasional thumb typos <span class="sub">*fix follows, max 1/hr</span></label>
-            <label class="fx-check on"><span class="bx"></span>Non-native English touches</label>
+          <!-- Sound human — GET/PUT /admin/style-config (server merges partials) -->
+          <div class="fx-card fx-human" id="card-human">
+            <div class="fx-card-h">Sound human<span style="margin-left:auto"></span><span class="fx-switch" id="sh-master"></span></div>
+            <div class="fx-card-sub" style="margin-bottom:8px">Short girl-voice bubbles, real thumb typos, non-native touches. The master switch flips all three for Auto Convo at once.</div>
+            <label class="fx-check" data-style="autoreply"><span class="bx"></span>Natural voice + 3-bubble split</label>
+            <label class="fx-check" data-style="typos_autoreply"><span class="bx"></span>Occasional thumb typos <span class="sub">*fix follows, max 1/hr</span></label>
+            <label class="fx-check" data-style="nonnative_autoreply"><span class="bx"></span>Non-native English touches</label>
+
+            <div class="sh-sep"></div>
+            <div class="sh-h">Applies to every AI reply on this creator</div>
+            <label class="fx-check" data-style="strip_emojis"><span class="bx"></span>Strip all emojis <span class="sub">emoji placement is a dead LLM tell</span></label>
+            <label class="fx-check" data-style="painful_texting"><span class="bx"></span>Painful texting <span class="sub">fewest words that still land — never a dead one-worder</span></label>
+            <label class="fx-check" data-style="factground_welcome_chatter_for_info"><span class="bx"></span>Fact-grounding <span class="sub">feeds the reply his gen_info profile so it lands as "she remembers me"</span></label>
+
+            <div class="sh-sep"></div>
+            <label class="fx-check" data-style="cat_stickers"><span class="bx"></span>Cat stickers 🐱 <span class="sub">89-gif reaction pack; sometimes the gif IS the reply</span></label>
+            <div class="fx-grid3" id="cat-knobs" style="margin:8px 0 2px">
+              <div class="fx-field"><label>Skip roll (%)</label><input class="fx-input" id="f-cat-skip" value=""></div>
+              <div class="fx-field"><label>Gif-only (%)</label><input class="fx-input" id="f-cat-solo" value=""></div>
+              <div class="fx-field"><label>Min gap (min)</label><input class="fx-input" id="f-cat-gap" value=""></div>
+            </div>
+
+            <div class="sh-sep"></div>
+            <div class="sh-h">Per automation <span>the same three knobs for the other chat engines</span></div>
+            <div class="sh-grid" id="sh-grid">
+              <span class="sh-col"></span><span class="sh-col">Human style</span><span class="sh-col">Typos</span><span class="sh-col">Non-native</span>
+              <span class="sh-nm" title="the get-to-know-you reply loop">Info-gather</span>
+              <span class="sh-cell"><span class="fx-check" data-style="welcome_chatter_for_info"><span class="bx"></span></span></span>
+              <span class="sh-cell"><span class="fx-check" data-style="typos_welcome_chatter_for_info"><span class="bx"></span></span></span>
+              <span class="sh-cell"><span class="fx-check" data-style="nonnative_welcome_chatter_for_info"><span class="bx"></span></span></span>
+              <span class="sh-nm" title="the 1:1 selling replies — edit them on the AI Chatter page too">AI Chatter</span>
+              <span class="sh-cell"><span class="fx-check" data-style="ai_chatter"><span class="bx"></span></span></span>
+              <span class="sh-cell"><span class="fx-check" data-style="typos_ai_chatter"><span class="bx"></span></span></span>
+              <span class="sh-cell"><span class="fx-check" data-style="nonnative_ai_chatter"><span class="bx"></span></span></span>
+            </div>
           </div>
 
           <div class="fx-note">Never sells. If the fan just paid, a teammate is in the chat, or the AI&nbsp;Chatter closer owns the moment, Auto Convo stands down — it only covers fans nobody answered in time.</div>
@@ -591,36 +640,36 @@
 
               <div class="fx-adv-group"><h4>Who qualifies</h4>
                 <div class="fx-grid3">
-                  <div class="fx-field"><label>Lifetime spend under</label><div class="fx-unit" data-unit="$"><input class="fx-input" value="2,000"></div></div>
-                  <div class="fx-field"><label>Recent spend under</label><div class="fx-unit" data-unit="$"><input class="fx-input" value="5"></div></div>
-                  <div class="fx-field"><label>…counting the last (days)</label><input class="fx-input" value="30"></div>
-                  <div class="fx-field"><label>Days since last purchase ≥</label><input class="fx-input" value="0"></div>
-                  <div class="fx-field"><label>Days since first chat ≥</label><input class="fx-input" value="0"></div>
+                  <div class="fx-field"><label>Lifetime spend under</label><div class="fx-unit" data-unit="$"><input class="fx-input" id="f-life" value=""></div></div>
+                  <div class="fx-field"><label>Recent spend under</label><div class="fx-unit" data-unit="$"><input class="fx-input" id="f-recent" value=""></div></div>
+                  <div class="fx-field"><label>…counting the last (days)</label><input class="fx-input" id="f-recent-days" value=""></div>
+                  <div class="fx-field"><label>Days since last purchase ≥</label><input class="fx-input" id="f-days-purch" value=""></div>
+                  <div class="fx-field"><label>Days since first chat ≥</label><input class="fx-input" id="f-days-first" value=""></div>
                 </div>
-                <div class="fx-adv-note">Only true whales ($2,000+ lifetime) belong to the AI Chatter closer — Auto Convo covers everyone else. Both day-gates sit at 0: she doesn't wait after a purchase or a first chat. <span style="color:var(--muted2)">Ava runs a tighter recent gate: $500 in the last 1 day.</span></div>
+                <div class="fx-adv-note" id="qual-note">—</div>
               </div>
 
               <div class="fx-adv-group"><h4>Timing</h4>
                 <div class="fx-sliderrow">
-                  <div class="fx-sl-head"><span class="fx-sl-name">Step in after</span><span class="fx-sl-hint">give your team this long to answer first</span><span class="fx-rv">30 min</span></div>
-                  <input type="range" class="fx-range" min="5" max="120" step="5" value="30" data-fmt="%v min">
+                  <div class="fx-sl-head"><span class="fx-sl-name">Step in after</span><span class="fx-sl-hint">give your team this long to answer first</span><span class="fx-rv">— min</span></div>
+                  <input type="range" class="fx-range" id="r-stepin" min="5" max="120" step="5" value="30" data-fmt="%v min">
                 </div>
                 <div class="fx-sliderrow">
-                  <div class="fx-sl-head"><span class="fx-sl-name">Too stale after</span><span class="fx-sl-hint">past this the follow-up drip owns the fan · Ava: 25 min – 13 h</span><span class="fx-rv">120 min</span></div>
-                  <input type="range" class="fx-range" min="30" max="360" step="10" value="120" data-fmt="%v min">
+                  <div class="fx-sl-head"><span class="fx-sl-name">Too stale after</span><span class="fx-sl-hint" id="stale-hint">past this the follow-up drip owns the fan</span><span class="fx-rv">— min</span></div>
+                  <input type="range" class="fx-range" id="r-stale" min="30" max="360" step="10" value="120" data-fmt="%v min">
                 </div>
                 <div class="fx-grid3" style="margin-top:14px">
-                  <div class="fx-field"><label>Max nudges per waiting message</label><input class="fx-input" value="1"></div>
-                  <div class="fx-field"><label>Min gap between nudges (min)</label><input class="fx-input" value="5"></div>
-                  <div class="fx-field"><label>Quiet hours</label><select class="fx-select"><option selected>Off — runs 24/7</option><option>00:00 – 07:00</option><option>01:00 – 08:00</option><option>02:00 – 09:00</option></select></div>
+                  <div class="fx-field"><label>Max nudges per waiting message</label><input class="fx-input" id="f-max-nudges" value=""></div>
+                  <div class="fx-field"><label>Min gap between nudges (min)</label><input class="fx-input" id="f-min-gap" value=""></div>
+                  <div class="fx-field"><label>Quiet hours</label><select class="fx-select" id="s-quiet"><option value="" selected>Off — runs 24/7</option><option value="0,7">00:00 – 07:00</option><option value="1,8">01:00 – 08:00</option><option value="2,9">02:00 – 09:00</option></select></div>
                 </div>
               </div>
 
               <div class="fx-adv-group"><h4>Grounding</h4>
-                <label class="fx-check on"><span class="bx"></span>Reply even without a full profile <span class="sub">off = she only texts fans she actually knows (75%+ profile)</span></label>
+                <label class="fx-check on" id="ck-noinfo"><span class="bx"></span>Reply even without a full profile <span class="sub">off = she only texts fans she actually knows (75%+ profile)</span></label>
                 <div class="fx-sliderrow">
-                  <div class="fx-sl-head"><span class="fx-sl-name">History she reads first</span><span class="fx-sl-hint">recent messages used to tone-match the reply</span><span class="fx-rv">16 msgs</span></div>
-                  <input type="range" class="fx-range" min="4" max="40" step="2" value="16" data-fmt="%v msgs">
+                  <div class="fx-sl-head"><span class="fx-sl-name">History she reads first</span><span class="fx-sl-hint">recent messages used to tone-match the reply</span><span class="fx-rv">— msgs</span></div>
+                  <input type="range" class="fx-range" id="r-history" min="4" max="40" step="2" value="16" data-fmt="%v msgs">
                 </div>
               </div>
 
@@ -633,7 +682,7 @@
         <div class="pg-side">
 
           <div class="fx-card">
-            <div class="fx-card-h" style="font-size:15px">What a nudge looks like</div>
+            <div class="fx-card-h" style="font-size:15px" id="h-nudge-demo">What a nudge looks like</div>
             <div class="fx-card-sub" style="margin-bottom:12px">Mike R. · $12 lifetime · last bought 3 weeks ago</div>
             <div class="demo">
               <div class="bub fan">long day… just got home from work 😩</div>
@@ -657,12 +706,21 @@
             </div>
             <div class="skiprow">
               <span class="si"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-              <div>He's over the $2,000 spend cutoff<span class="ss">true whales go to AI Chatter</span></div>
+              <div id="skip-whale">He's over the spend cutoff<span class="ss">true whales go to AI Chatter</span></div>
             </div>
             <div class="skiprow">
               <span class="si"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 13.5A8 8 0 1 1 10.5 4a6.5 6.5 0 0 0 9.5 9.5z" stroke-linejoin="round"/></svg></span>
               <div>Quiet hours or already nudged<span class="ss">max one nudge, then it waits for him</span></div>
             </div>
+          </div>
+
+          <!-- LIVE last-sweep funnel — /admin/automation-rules autoreply row .last_run.stats -->
+          <div class="fx-card" id="card-sweep">
+            <div class="fx-card-h" style="font-size:15px">Last sweep
+              <span id="sweep-when" style="margin-left:auto;font-size:12px;font-weight:500;color:var(--muted)"></span>
+            </div>
+            <div class="fx-card-sub" style="margin-bottom:12px">Where the fans she looked at actually went.</div>
+            <div id="sweep-body"><div class="fx-card-sub">Loading…</div></div>
           </div>
 
         </div>
@@ -767,5 +825,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="ai-auto-convo.js" id="wire-js"></script>
 </body>
 </html>

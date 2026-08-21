@@ -590,10 +590,10 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
     # choosing PHOTOS, which costs OF folder resolution and a dedup read. This
     # endpoint promises no OF calls.
     teaser: dict[str, Any] | None = None
-    from automations import tip_reward as _tip_reward
-    tcfg = await _tip_reward.convo_teaser_config(account_id)
+    from automations import teaser_select as _teaser
+    tcfg = await _teaser.convo_teaser_config(account_id)
     if tcfg and fan is not None:
-        tstate = _tip_reward.teaser_state(fan)
+        tstate = _teaser.teaser_state(fan)
         since_at: datetime | None = None
         if tstate.get("at"):
             try:
@@ -610,7 +610,7 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
         sold = False
         if tcfg.get("adaptive") and last_px > 0 and tstate.get("last_msg"):
             sold = await ac._teaser_sold(account_id, int(fan_id), int(tstate["last_msg"]))
-        teaser = _tip_reward.convo_teaser_forecast(
+        teaser = _teaser.convo_teaser_forecast(
             tcfg=tcfg, state=tstate,
             msgs_since=await ac._fan_msgs_since(account_id, int(fan_id), since_at),
             last_sold=sold,

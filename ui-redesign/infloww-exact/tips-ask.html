@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>fastt — Tip Ask</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -394,6 +393,26 @@
   .skiplist li{font-size:13px;color:#b9b9b9;display:flex;gap:8px;align-items:baseline;line-height:1.45}
   .skiplist li::before{content:"·";color:var(--accent);font-weight:700}
   .skiplist b{color:#ddd;font-weight:500}
+  .teaser-tile img{width:100%;height:100%;object-fit:cover;border-radius:10px;display:block}
+
+  /* ---- vault media picker (the nudge's one teaser image) ---- */
+  .mp-back{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:9995;display:flex;align-items:center;justify-content:center}
+  .mp-panel{background:var(--card);border:1px solid var(--border);border-radius:12px;width:640px;max-height:80vh;
+    display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .mp-head{padding:16px 18px 12px;font-size:15px;font-weight:600;color:#fff;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .mp-head .sub{flex:1 1 100%;font-size:12.5px;font-weight:400;color:var(--muted);margin-top:-2px}
+  .mp-head .fx-select{width:250px;height:34px}
+  .mp-grid{overflow-y:auto;padding:4px 16px 12px;flex:1;min-height:0;
+    display:grid;grid-template-columns:repeat(5,1fr);gap:10px;align-content:start}
+  .mp-cell{position:relative;aspect-ratio:1/1;border-radius:9px;overflow:hidden;background:#1c1c1c;
+    border:1px solid var(--border-soft);cursor:pointer}
+  .mp-cell img{width:100%;height:100%;object-fit:cover;display:block}
+  .mp-cell.on{outline:2px solid var(--accent);border-color:var(--accent)}
+  .mp-cell .vid{position:absolute;left:5px;bottom:4px;font-size:9.5px;font-weight:700;letter-spacing:.04em;
+    background:rgba(0,0,0,.6);color:#fff;border-radius:5px;padding:1px 5px}
+  .mp-msg{grid-column:1/-1;font-size:13px;color:var(--muted);padding:14px 2px;line-height:1.5}
+  .mp-foot{display:flex;gap:10px;justify-content:flex-end;align-items:center;padding:12px 18px;border-top:1px solid var(--border-soft)}
+  .mp-foot .pickid{margin-right:auto;font-size:12px;color:var(--muted2)}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -424,7 +443,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -503,7 +521,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -539,11 +557,13 @@
         <p class="pg-sub">The <b>asking</b> side of tips. The AI asks at the natural moment in a conversation, and an optional nudge warms up buyers who went quiet. What she sends back once a tip lands lives in <a href="tips-rewards.html" style="color:#7d97f8">Tip Rewards</a>.</p>
 
         <!-- status strip -->
-        <div class="fx-status">
-          <span class="fx-st ok"><i></i>Ask running</span>
-          <span class="fx-st"><i></i>Cold-buyer nudge off</span>
-          <span class="fx-st"><i></i>This week 41 asks · 18 tips landed</span>
-          <span class="fx-st"><i></i>Last ask 2 h ago — Mike R. tipped $15</span>
+        <div class="fx-status" id="ta-strip">
+          <span class="fx-st ok" id="ta-st-ask"><i></i>Ask running</span>
+          <span class="fx-st" id="ta-st-nudge"><i></i>Cold-buyer nudge off</span>
+          <span class="fx-st" id="ta-st-amt"><i></i>This week 41 asks · 18 tips landed</span>
+          <span class="fx-st" id="ta-st-cool"><i></i>Last ask 2 h ago — Mike R. tipped $15</span>
+          <span class="fx-st" id="ta-st-cfg"><i></i>—</span>
+          <span id="ta-sample-badge" style="align-self:center;display:inline-flex"></span>
         </div>
 
         <!-- PRIMARY: the ask -->
@@ -555,22 +575,22 @@
               <div class="fx-tc-desc">When a fan is leaning in — sweet talk, a compliment, asking to see more — the AI asks for a tip <b style="color:#ddd;font-weight:600">without naming a number</b>. She reads the moment and lets him decide how generous to be.</div>
             </div>
             <span class="fx-tc-state">Running</span>
-            <span class="fx-switch on"></span>
+            <span class="fx-switch on" data-k="ask_enabled"></span>
           </div>
           <div class="fx-tc-knobs">
             <div class="fx-field" style="flex:1;min-width:250px">
               <label>Amount to ask for (optional)</label>
-              <div class="fx-unit" data-unit="$"><input class="fx-input" placeholder="no set amount — reads the moment"></div>
+              <div class="fx-unit" data-unit="$"><input class="fx-input" placeholder="no set amount — reads the moment" id="ta-amt"></div>
             </div>
             <div class="fx-field" style="flex:1.3;min-width:300px">
               <label>How she asks (optional)</label>
-              <input class="fx-input" placeholder="leave empty — the AI writes the ask in her own voice">
+              <input class="fx-input" placeholder="leave empty — the AI writes the ask in her own voice" id="ta-tpl">
             </div>
           </div>
         </div>
 
         <!-- SECONDARY: nudge cold buyers -->
-        <div class="fx-togglecard">
+        <div class="fx-togglecard" id="ta-nudge-card">
           <div class="fx-tc-row">
             <div class="fx-tc-ico purple"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10.5 19a2 2 0 0 0 3 0" stroke-linecap="round"/></svg></div>
             <div class="fx-tc-body">
@@ -578,26 +598,31 @@
               <div class="fx-tc-desc">He bought one of your blasts, then went silent. Send one free teaser with a soft tip ask — the money is warm, the conversation went cold.</div>
             </div>
             <span class="fx-tc-state">Off</span>
-            <span class="fx-switch"></span>
+            <span class="fx-switch" data-tr="enabled"></span>
           </div>
 
           <div class="nudge-cfg">
+            <div class="fx-note warn" id="ta-nudge-warn" style="display:none;margin-bottom:14px">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="flex:0 0 auto;margin-top:1px"><path d="M12 3l9 16H3z" stroke-linejoin="round"/><path d="M12 10v4" stroke-linecap="round"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg>
+              <span id="ta-nudge-warn-txt"></span>
+            </div>
             <div class="teaser-row">
-              <div class="teaser-tile"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M21 16l-5-5-9 8" stroke-linejoin="round"/></svg></div>
+              <div class="teaser-tile" id="ta-media-tile"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M21 16l-5-5-9 8" stroke-linejoin="round"/></svg></div>
               <div class="teaser-meta">
                 <div class="tt-name">Global teaser image</div>
-                <div class="tt-sub">From <b>Teasers</b> · sent free — the same one image on every nudge</div>
+                <div class="tt-sub" id="ta-media-sub">From <b>Teasers</b> · sent free — the same one image on every nudge</div>
               </div>
-              <button class="fx-btn ghost">Change</button>
+              <button class="fx-btn ghost" id="ta-media-clear" style="display:none">Clear</button>
+              <button class="fx-btn ghost" id="ta-media-btn">Choose from vault</button>
             </div>
             <div class="nudge-grid">
               <div class="fx-field" style="grid-column:1/-1">
                 <label>Caption sent with it</label>
-                <input class="fx-input" value="hope you loved that 🥺 wanna send me a lil tip so i keep going?">
+                <input class="fx-input" value="hope you loved that 🥺 wanna send me a lil tip so i keep going?" id="ta-nudge-cap" placeholder="hope you loved that 🥺 wanna send me a lil tip so i keep going?">
               </div>
               <div class="fx-field">
                 <label>How often per fan</label>
-                <select class="fx-select"><option selected>Once a week (recommended)</option><option>Once every 3 days</option><option>Once every 2 weeks</option></select>
+                <select class="fx-select" id="ta-cool"><option value="168" selected>Once a week (recommended)</option><option value="72">Once every 3 days</option><option value="336">Once every 2 weeks</option></select>
               </div>
             </div>
           </div>
@@ -612,15 +637,15 @@
             <div class="fx-adv-body" id="adv-tip">
               <div class="fx-adv-group"><h4>When a nudge fires</h4>
                 <div class="fx-grid3">
-                  <div class="fx-field"><label>Wait for his reply first (hrs)</label><input class="fx-input" value="2"></div>
-                  <div class="fx-field"><label>Don't chase buys older than (hrs)</label><input class="fx-input" value="48"></div>
-                  <div class="fx-field"><label>Per-fan cooldown (hrs)</label><input class="fx-input" value="168"></div>
+                  <div class="fx-field"><label>Wait for his reply first (hrs)</label><input class="fx-input" value="2" id="ta-wait"></div>
+                  <div class="fx-field"><label>Don't chase buys older than (hrs)</label><input class="fx-input" value="48" id="ta-age"></div>
+                  <div class="fx-field"><label>Per-fan cooldown (hrs)</label><input class="fx-input" value="168" id="ta-cool2"></div>
                 </div>
               </div>
               <div class="fx-adv-group"><h4>Pacing &amp; safety</h4>
                 <div class="fx-grid2">
-                  <div class="fx-field"><label>Skip if anything messaged him in the last (hrs)</label><input class="fx-input" value="6"></div>
-                  <div class="fx-field"><label>Max fans per sweep</label><input class="fx-input" value="200"></div>
+                  <div class="fx-field"><label>Skip if anything messaged him in the last (hrs)</label><input class="fx-input" value="6" id="ta-guard"></div>
+                  <div class="fx-field"><label>Max fans per sweep</label><input class="fx-input" value="200" id="ta-limit"></div>
                 </div>
               </div>
               <div class="fx-adv-group"><h4>Always skipped — built in</h4>
@@ -638,6 +663,17 @@
           </div>
         </div>
 
+        <!-- DID IT WORK: real tips landed + the nudge's run log -->
+        <div class="fx-card" id="ta-activity">
+          <div class="fx-card-h"><span>Tips that actually landed</span> <span style="margin-left:6px;font-size:12.5px;font-weight:600;color:var(--green)" id="ta-act-n">…</span></div>
+          <div class="fx-card-sub" id="ta-act-sub">The outcome side of the ask — every tip this creator received in the last 30 days.</div>
+          <div id="ta-act-body"></div>
+          <div class="fx-note" style="margin-top:14px" id="ta-nudge-runs">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="flex:0 0 auto;margin-top:1px"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg>
+            <span id="ta-nudge-runs-txt">Reading the cold-buyer nudge run log…</span>
+          </div>
+        </div>
+
       </div>
 
     </main>
@@ -649,6 +685,7 @@
 
 </div>
 
+<script src="_shared/fastt.js"></script>
 <script>
   // ==== CANONICAL SIDEBAR JS (identical on every page — do not fork) ====
   (function(){
@@ -739,5 +776,6 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="tips-ask.js" id="page-wiring"></script>
 </body>
 </html>

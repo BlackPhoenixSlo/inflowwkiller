@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<link rel="icon" href="data:,">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>Infloww — Tracking links</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -375,12 +374,52 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="gap-css">
+  /* additive only — same palette, same font, no layout rewrite */
+  .secbar{display:flex;align-items:center;gap:12px;margin:24px 0 12px;flex-wrap:wrap}
+  .secbar .sectitle{font-size:17px;font-weight:600;color:#fff;display:flex;align-items:center;gap:9px;cursor:default}
+  .secbar .secsub{font-size:13px;color:#8a8a8a}
+  .ofchip{font:600 10px Inter,sans-serif;letter-spacing:.04em;color:#67d1ae;
+    background:rgba(103,209,174,.12);border:1px solid rgba(103,209,174,.35);border-radius:99px;padding:2px 8px}
+  .chevbtn{width:26px;height:26px;border-radius:7px;display:flex;align-items:center;justify-content:center;
+    color:#9a9a9a;cursor:pointer}
+  .chevbtn:hover{background:#1c1c1c}
+  .chevbtn.closed svg{transform:rotate(-90deg)}
+  .nodata{color:#5a5a5a;font-size:13px}
+  .dateinp{background:transparent;border:0;outline:0;color:#cfcfcf;font-family:inherit;font-size:14px;
+    width:120px;color-scheme:dark}
+  .btn-sm{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 13px;border:1px solid #333;
+    border-radius:8px;background:transparent;color:#e6e6e6;font-size:13.5px;font-weight:500;font-family:inherit;cursor:pointer}
+  .btn-sm:hover{background:#1c1c1c}
+  .totstrip{display:flex;flex-wrap:wrap;gap:26px;background:#141414;border:1px solid #232323;border-radius:10px;
+    padding:14px 20px;margin:14px 0 4px}
+  .totstrip .t{display:flex;flex-direction:column;gap:5px}
+  .totstrip .tl{font-size:12px;color:#8a8a8a}
+  .totstrip .tv{font-size:19px;font-weight:700;color:#fff;letter-spacing:-.3px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+  .stat{background:#232323;border:1px solid #333;border-radius:12px;padding:16px 18px}
+  .stat .sl{font-size:13px;color:#8a8a8a}
+  .stat .sv{font-size:28px;font-weight:700;color:#fff;margin-top:8px;letter-spacing:-.5px}
+  .stat .sd{font-size:12.5px;margin-top:6px;color:#8a8a8a}
+  .stat .sd.up{color:#67d1ae}
+  .stat .sd.dn{color:#f0715f}
+  .cbox{background:#232323;border:1px solid #333;border-radius:12px;padding:18px 20px 14px;margin-bottom:18px}
+  .cbox .ch{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:600;color:#fff;margin-bottom:4px}
+  .cbox .cs{font-size:13px;color:#8a8a8a;margin-bottom:16px}
+  .barsrow{display:flex;align-items:flex-end;gap:4px;height:180px}
+  .barcol{flex:1 1 0;min-width:0;max-width:56px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%}
+  .barfill{width:100%;background:#4166f6;border-radius:3px 3px 0 0;min-height:3px}
+  .barfill.dim{background:#2f3a63}
+  .barlab{font-size:8.5px;color:#6a6a6a;margin-top:6px;white-space:nowrap;overflow:hidden;max-width:100%}
+  .noplot{height:120px;display:flex;align-items:center;justify-content:center;color:#8a8a8a;font-size:14px}
+  .minirow{display:flex;align-items:flex-end;gap:2px;height:46px;margin-top:8px}
+  .minirow .barfill{background:#4166f6;opacity:.75;border-radius:2px 2px 0 0}
+</style>
 </head>
 <body>
 <div class="app">
 
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/></svg></div>
     <div class="trial"><b>You're on a free trial</b><span>7 days left</span></div>
     <div class="modelswap" id="modelswap">
@@ -432,7 +471,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -455,19 +494,64 @@
     </aside>
 
     <main class="main">
-      <div class="ghead" style="padding-bottom:0"><div class="gtitle">Tracking links<span class="utc">UTC-10:00</span><span class="info"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span></div></div>
+      <div class="ghead" style="padding-bottom:0"><div class="gtitle" id="tk-title">Tracking links<span class="utc">UTC-10:00</span><span class="info"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span></div></div>
       <div class="gbody">
-        <div class="ptabs" style="margin-bottom:18px"><div class="ptab on" onclick="tab(this)">Links list</div><div class="ptab" onclick="tab(this)">Dashboard</div></div>
+        <div class="ptabs" style="margin-bottom:18px" id="tk-ptabs"><div class="ptab on" data-view="list" onclick="tab(this)">Links list</div><div class="ptab" data-view="dash" onclick="tab(this)">Dashboard</div></div>
+        <div id="tk-view-list">
         <div class="ibanner"><span class="ii"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span><div>Each fan's spending is always attributed to the last free trial link, tracking link or promotion campaign that has been clicked by the fan. <a>Learn more</a></div></div>
-<div class="fbar" style="margin-bottom:22px"><div class="csel"><span class="av"><span class="odot"></span></span>Aria<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="inp" style="width:330px"><input placeholder="Search tracking link name"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2" stroke-linecap="round"/></svg></div><div class="inp sel" style="width:150px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.7"><circle cx="6" cy="6" r="2.3"/><circle cx="6" cy="18" r="2.3"/><circle cx="18" cy="12" r="2.3"/><path d="M8.1 7l7.8 4M8.1 17l7.8-4"/></svg>Source<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="inp sel" style="width:140px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.7"><path d="M4 12V5h7l9 9-7 7-9-9z" stroke-linejoin="round"/><circle cx="8.5" cy="8.5" r="1.3" fill="currentColor" stroke="none"/></svg>Tag<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="inp" style="width:380px"><span style="display:flex;align-items:center;gap:8px;color:#8a8a8a"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#7a7a7a" stroke-width="1.7"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 9h16M8 3v4M16 3v4" stroke-linecap="round"/></svg>Date created</span><span class="mut" style="margin-left:12px">Start date</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7a7a7a" stroke-width="1.8" style="margin:0 8px"><path d="M4 12h14M13 7l5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="mut">End date</span><span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
-<div style="display:flex;align-items:center;gap:34px"><div style="display:flex;align-items:center;gap:12px;color:#cfcfcf;font-size:15px">Show deactivated links <span class="tgl" onclick="tgl(this)"></span></div><div style="display:flex;align-items:center;gap:12px;color:#cfcfcf;font-size:15px">Show net earnings <span class="tgl on" onclick="tgl(this)"></span></div><div style="margin-left:auto;display:flex;gap:14px"><button class="btn-orange"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>Create tracking link</button><button class="btn-out"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4M8 8l4-4 4 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" stroke-linecap="round"/></svg>Export</button></div></div>
-<div style="display:flex;align-items:center;gap:8px;color:#8a8a8a;font-size:13.5px;margin:16px 0 14px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg> Data is updated once every 2 hours</div>
-        <div class="thead"><div class="th" style="width:56px"><span class="cbx"></span></div><div class="th" style="flex:1">Tracking link</div><div class="th" style="width:160px">Date created</div><div class="th" style="width:110px">Clicks</div><div class="th" style="width:110px">Subs</div><div class="th" style="width:200px">Subscription CVR <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></div><div class="th" style="width:160px">Promo cost <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></div><div class="actcol" style="width:130px">Actions</div></div>
+<div class="fbar" style="margin-bottom:22px"><div class="csel"><span class="av"><span class="odot"></span></span><span id="tk-acct">Aria</span><span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="inp" style="width:330px"><input placeholder="Search tracking link name" id="tk-search"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2" stroke-linecap="round"/></svg></div><div class="inp sel" style="width:150px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.7"><circle cx="6" cy="6" r="2.3"/><circle cx="6" cy="18" r="2.3"/><circle cx="18" cy="12" r="2.3"/><path d="M8.1 7l7.8 4M8.1 17l7.8-4"/></svg>Source<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="inp sel" style="width:140px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.7"><path d="M4 12V5h7l9 9-7 7-9-9z" stroke-linejoin="round"/><circle cx="8.5" cy="8.5" r="1.3" fill="currentColor" stroke="none"/></svg>Tag<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="inp" style="width:400px" id="tk-daterange"><span style="display:flex;align-items:center;gap:8px;color:#8a8a8a"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#7a7a7a" stroke-width="1.7"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 9h16M8 3v4M16 3v4" stroke-linecap="round"/></svg>Date created</span><input type="date" class="dateinp" id="tk-from" style="margin-left:10px" title="Only links created on/after this date"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7a7a7a" stroke-width="1.8" style="margin:0 4px"><path d="M4 12h14M13 7l5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/></svg><input type="date" class="dateinp" id="tk-to" title="Only links created on/before this date"><span class="cv" id="tk-datclear" title="Clear the date filter" style="cursor:pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 7l10 10M17 7L7 17" stroke-linecap="round"/></svg></span></div></div>
+<div style="display:flex;align-items:center;gap:34px"><div style="display:flex;align-items:center;gap:12px;color:#8a8a8a;font-size:15px" id="tk-showdead-row">Show deactivated links <span class="tgl" id="tk-showdead" style="pointer-events:none;opacity:.4"></span></div><div style="display:flex;align-items:center;gap:12px;color:#8a8a8a;font-size:15px" id="tk-net-row">Show net earnings <span class="tgl on" id="tk-net-tgl" style="pointer-events:none;opacity:.4"></span><span id="tk-net-note"></span></div><div style="margin-left:auto;display:flex;gap:14px"><button class="btn-out" id="tk-refresh"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11a8 8 0 0 0-14-4M4 5v3h3M4 13a8 8 0 0 0 14 4M20 19v-3h-3" stroke-linecap="round" stroke-linejoin="round"/></svg>Refresh</button></div></div>
+<div style="display:flex;align-items:center;gap:8px;color:#8a8a8a;font-size:13.5px;margin:16px 0 14px" id="tk-fresh"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg> <span id="tk-fresh-txt">Fetching…</span></div>
+
+        <!-- ── OnlyFans-native tracking links (OF reports clicks AND subscribers) ── -->
+        <div class="secbar" id="tk-of-head" style="margin-top:4px">
+          <div class="sectitle">OnlyFans tracking links <span class="ofchip">ONLYFANS</span></div>
+          <div class="secsub" id="tk-of-sub">Loading…</div>
+          <button class="btn-orange" id="tk-of-create" style="margin-left:auto;height:38px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>Create link</button>
+        </div>
+        <div class="wbanner" id="tk-of-warn" style="display:none"><span class="wi"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4l9 16H3l9-16z" stroke-linejoin="round"/><path d="M12 10v4" stroke-linecap="round"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg></span><div><b style="color:#e8e8e8">Confirm the link once.</b> OnlyFans never returns the share URL through its API, so the address below is our best construction (<code>/&lt;username&gt;/c&lt;code&gt;</code>). Click one — if it opens the profile, the format is right for every row here.</div></div>
+        <div class="thead"><div class="th" style="width:56px"></div><div class="th" style="flex:1">Tracking link</div><div class="th" style="width:160px">Date created</div><div class="th" style="width:110px">Clicks</div><div class="th" style="width:110px">Subs</div><div class="th" style="width:200px">Subscription CVR</div><div class="actcol" style="width:130px">Actions</div></div>
+        <div id="tk-ofrows"><div class="empty" style="flex:none;padding:34px 0"><div>Loading OnlyFans tracking links…</div></div></div>
+
+        <div class="totstrip" id="tk-totals"></div>
+
+        <!-- ── internal /t/<slug> redirects (secondary) ── -->
+        <div class="secbar" id="tk-int-head">
+          <span class="chevbtn closed" id="tk-int-chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <div class="sectitle" style="cursor:pointer" id="tk-int-title">Internal redirect links <span class="ofchip" style="color:#8a8a8a;background:rgba(138,138,138,.1);border-color:#333">FASTT /t/</span></div>
+          <div class="secsub" id="tk-int-sub"></div>
+          <button class="btn-sm" id="tk-create" style="margin-left:auto"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>Create redirect</button>
+          <button class="btn-sm" id="tk-export"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4M8 8l4-4 4 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" stroke-linecap="round"/></svg>Export</button>
+        </div>
+        <div id="tk-int-wrap" style="display:none">
+        <div class="thead"><div class="th" style="width:56px"><span class="cbx"></span></div><div class="th" style="flex:1">Tracking link</div><div class="th" style="width:160px">Date created</div><div class="th" style="width:110px">Clicks</div><div class="th" style="width:110px">Subs</div><div class="th" style="width:200px">Subscription CVR</div><div class="th" style="width:160px">Promo cost</div><div class="actcol" style="width:130px">Actions</div></div>
+        <div id="tk-rows">
         <div class="empty"><svg width="94" height="86" viewBox="0 0 94 86" fill="none">
   <path d="M14 20h20l6 8h34a6 6 0 0 1 6 6v34a6 6 0 0 1-6 6H14a6 6 0 0 1-6-6V26a6 6 0 0 1 6-6z" fill="url(#og)"/>
   <circle cx="45" cy="47" r="10" stroke="#fff" stroke-width="3.4" fill="none"/>
   <path d="M52.5 54.5l7 7" stroke="#fff" stroke-width="3.6" stroke-linecap="round"/>
-  <defs><linearGradient id="og" x1="8" y1="20" x2="86" y2="80" gradientUnits="userSpaceOnUse"><stop stop-color="#f0a97a"/><stop offset="1" stop-color="#c96a3a"/></linearGradient></defs></svg><div>No data</div></div><div class="hscroll"></div>
+  <defs><linearGradient id="og" x1="8" y1="20" x2="86" y2="80" gradientUnits="userSpaceOnUse"><stop stop-color="#f0a97a"/><stop offset="1" stop-color="#c96a3a"/></linearGradient></defs></svg><div>No data</div></div>
+        </div>
+        <div id="tk-int-note" style="color:#8a8a8a;font-size:13px;margin:14px 0 4px;line-height:1.7;max-width:900px">A /t/ redirect only ever sees the click — nothing joins that click to an OnlyFans fan, so <b style="color:#b5b5b5;font-weight:600">Subs</b>, <b style="color:#b5b5b5;font-weight:600">Subscription&nbsp;CVR</b> and <b style="color:#b5b5b5;font-weight:600">Promo&nbsp;cost</b> stay blank here by design. Use an OnlyFans tracking link above when you need subscriber attribution.</div>
+        <div class="hscroll"></div>
+        </div>
+        </div><!-- /#tk-view-list -->
+
+        <!-- ── Dashboard view ── -->
+        <div id="tk-view-dash" style="display:none">
+          <div class="secbar" id="tk-dash-head" style="margin-top:0"><div class="sectitle">Profile funnel</div><div class="secsub" id="tk-dash-sub">Loading…</div></div>
+          <div class="stats" id="tk-dash-stats"></div>
+          <div class="cbox" id="tk-visitors-chart">
+            <div class="ch">Profile visitors</div>
+            <div class="cs" id="tk-visitors-sub">Loading…</div>
+            <div id="tk-visitors-plot"><div class="noplot">Loading…</div></div>
+          </div>
+          <div class="cbox" id="tk-linkstats">
+            <div class="ch">Link performance</div>
+            <div class="cs">Aggregates over every link this account owns — OnlyFans-native links carry real subscriber attribution, internal /t/ redirects carry clicks only.</div>
+            <div id="tk-linkstats-body"></div>
+          </div>
+        </div>
       </div>
     </main>
   </div>
@@ -531,5 +615,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="growth-tracking-links.js"></script>
 </body>
 </html>

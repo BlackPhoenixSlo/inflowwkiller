@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>Infloww — Smart lists</title>
+<!-- the relay serves no /favicon.ico, so Chrome's implicit request 404s and
+     lands in the console as an error on every page. Blank data-URI icon = no request. -->
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +32,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +47,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +89,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -283,6 +284,17 @@
   .cbadge{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:11px;font-size:12.5px;font-weight:600}
   .cbadge.red{background:#3a1a17;color:#ff8f7f}
   .cbadge.amber{background:#3a2c12;color:#f0b45e}
+  /* additive: real per-creator stats need money-green + accent-blue chips */
+  .cbadge.green{background:rgba(103,209,174,.12);color:#67d1ae}
+  .cbadge.blue{background:rgba(65,102,246,.14);color:#8fa6ff}
+  .cbadge.grey{background:#1f1f1f;color:#8a8a8a}
+  .allcreators{cursor:pointer;border-radius:8px}
+  .allcreators:hover{background:#141414}
+  .allcreators.on{color:#fff;background:#161d31;outline:1px solid #27314f}
+  .cempty{padding:14px 10px;color:#8a8a8a;font-size:13.5px;line-height:1.5}
+  .ccard .cname{max-width:158px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ccard .cinfo{min-width:0;flex:1}
+  .clegend{padding:2px 8px 8px;color:#6a6a6a;font-size:11px;letter-spacing:.04em;text-transform:uppercase;font-weight:600}
 
   .setrow{display:flex;align-items:center;padding:22px 0}
   .setrow .lbl2{font-size:16px;font-weight:600;color:#fff}
@@ -375,12 +387,51 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="slb-css">
+  /* additive: structured segment builder (replaces the raw-JSON textarea) —
+     friendlier than the real app: presets + live auto-preview + plain-English
+     summary, all in the Infloww visual language. */
+  .slb-lbl{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#7a7a7a;margin:16px 0 8px;display:block}
+  .slb-presets{display:flex;flex-wrap:wrap;gap:7px}
+  /* scoped under .slb so they out-specify the generic `.ft-modal button` fill */
+  .slb .slb-preset{padding:6px 12px;border-radius:16px;border:1px solid #2e2e2e;background:#171717;color:#cfcfcf;font-size:12.5px;cursor:pointer;font-family:inherit;width:auto}
+  .slb .slb-preset:hover{border-color:#4166f6;color:#fff}
+  .slb-match{display:flex;gap:8px}
+  .slb .slb-mbtn{flex:1;padding:9px;border-radius:9px;border:1px solid #2e2e2e;background:#171717;color:#b5b5b5;font-size:13px;cursor:pointer;font-family:inherit;text-align:center;width:auto}
+  .slb .slb-mbtn.on{border-color:#4166f6;color:#fff;background:rgba(65,102,246,.14)}
+  .slb-rule{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .slb-rule select,.slb-rule input{background:#1c1c1c;border:1px solid #333;color:#fff;border-radius:8px;padding:8px 9px;font-family:inherit;font-size:13px;height:38px;box-sizing:border-box;width:auto;margin:0}
+  .slb-rule select{cursor:pointer}
+  .slb-rule .fld{flex:1;min-width:0}
+  .slb-rule .slb-val{width:94px}
+  .slb-rule .slb-days{width:52px}
+  .slb-rule .unit{font-size:12.5px;color:#8a8a8a;white-space:nowrap}
+  .slb-x{color:#7a7a7a;cursor:pointer;font-size:17px;line-height:1;width:22px;text-align:center;flex:0 0 auto}
+  .slb-x:hover{color:#e05b5b}
+  .slb-money{position:relative;display:inline-flex;align-items:center}
+  .slb-money::before{content:"$";position:absolute;left:9px;color:#8a8a8a;font-size:13px;pointer-events:none;z-index:1}
+  .slb-money .slb-val{padding-left:18px}
+  .slb .slb-add{background:transparent;border:1px dashed #3a3a3a;color:#9fb0ff;border-radius:8px;padding:8px 13px;font-size:13px;cursor:pointer;font-family:inherit;width:auto;margin-top:2px}
+  .slb .slb-add:hover{border-color:#4166f6;color:#fff}
+  .slb-sum{background:#141414;border:1px solid #262626;border-radius:9px;padding:12px 14px;margin-top:16px}
+  .slb-desc{font-size:13px;color:#cfcfcf;line-height:1.5;margin-bottom:9px}
+  .slb-cnt{font-size:14px;color:#e8e8e8}
+  .slb-cnt b{color:#67d1ae;font-size:20px;font-weight:700;letter-spacing:-.3px}
+  .slb-cnt .t{color:#8a8a8a;font-size:13px}
+  .slb-cnt .warn{color:#e2a94e;font-size:12.5px}
+  .slb-sample{font-size:12px;margin-top:10px;line-height:1.9}
+  .slb-chip{display:inline-block;background:#1c1c1c;border:1px solid #2c2c2c;border-radius:12px;padding:2px 9px;margin:0 5px 4px 0;color:#cfcfcf}
+  .slb-chip .s{color:#67d1ae}
+  .slb-foot{display:flex;gap:8px;margin-top:18px}
+  .slb .slb-foot button{width:auto;flex:1}
+  .slb .slb-cancel{background:#2a2a2a}
+  .slb .slb-cancel:hover{background:#333}
+</style>
 </head>
 <body>
 <div class="app">
 
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/></svg></div>
     <div class="trial"><b>You're on a free trial</b><span>7 days left</span></div>
     <div class="modelswap" id="modelswap">
@@ -432,7 +483,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -455,21 +506,28 @@
     </aside>
 
     <main class="main">
-      <div class="ghead" style="padding-bottom:8px"><div class="gtitle">Smart lists</div></div>
+      <div class="ghead" style="padding-bottom:8px;flex-direction:column;align-items:flex-start;gap:5px">
+        <div style="display:flex;align-items:center;gap:14px;width:100%">
+          <div class="gtitle">Smart lists</div>
+          <span id="sl-summary" style="font-size:13px;color:#8a8a8a"></span>
+        </div>
+        <div style="font-size:13px;color:#8a8a8a">Saved fan segments — build a rule once (spend, recency, status, tag) and reuse it as a mass-message audience. Preview the exact count before you save.</div>
+      </div>
       <div class="gcols">
         <aside class="cpanel">
           <div class="cp-top"><div class="cp-search"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2" stroke-linecap="round"/></svg><input placeholder="Search"></div><div class="cp-refresh"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11a8 8 0 0 0-14-4M4 5v3h3M4 13a8 8 0 0 0 14 4M20 19v-3h-3" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div>
-          <div class="allcreators">All creators <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-          <div class="ccard sel"><div class="cav"><span class="odot"></span></div><div class="cinfo"><div class="cname">Aria</div><span class="cbadge amber"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2a5 5 0 0 0-5 5c0 4-1.6 5-1.6 5h13.2S17 11 17 7a5 5 0 0 0-5-5zM10.2 18.5a2 2 0 0 0 3.6 0z"/></svg>4</span></div><div class="cbadges-tr"><span class="cbadge red"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M4 4h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-5 4V5a1 1 0 0 1 1-1z"/></svg>2</span></div></div>
-          <div class="ccard"><div class="cav j"><span class="odot"></span></div><div class="cinfo"><div class="cname">Mia</div><span class="cbadge amber"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2a5 5 0 0 0-5 5c0 4-1.6 5-1.6 5h13.2S17 11 17 7a5 5 0 0 0-5-5zM10.2 18.5a2 2 0 0 0 3.6 0z"/></svg>99+</span></div><div class="cbadges-tr"><span class="cbadge red"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M4 4h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-5 4V5a1 1 0 0 1 1-1z"/></svg>35</span></div></div>
+          <div class="allcreators" id="sl-all">All creators <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          <div id="sl-creators"><div class="cempty">Loading creators…</div></div>
         </aside>
         <section class="rpanel" style="padding:16px 24px">
-          <div style="display:flex;align-items:center;margin-bottom:20px"><div class="inp" style="width:300px;margin-left:auto"><input placeholder="Search list name"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2" stroke-linecap="round"/></svg></div><button class="btn-blue" style="margin-left:16px"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>Create list</button></div>
-          <div class="thead"><div class="th" style="width:200px">List name</div><div class="th" style="flex:1">Criteria</div><div class="th" style="width:180px">Incl. expired</div><div class="th" style="width:110px">Fans</div><div class="th" style="width:150px">Actions</div></div>
+          <div style="display:flex;align-items:center;margin-bottom:20px" id="sl-head"><div class="inp" style="width:300px;margin-left:auto"><input placeholder="Search list name" id="sl-search"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2" stroke-linecap="round"/></svg></div><button class="btn-blue" style="margin-left:16px" id="sl-create"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>Create list</button></div>
+          <div class="thead" id="sl-thead"><div class="th" style="width:200px">List name</div><div class="th" style="flex:1">Criteria</div><div class="th" style="width:180px">Incl. expired</div><div class="th" style="width:110px">Fans</div><div class="th" style="width:150px">Actions</div></div>
+          <div id="sl-rows">
           <div class="trow"><div class="td" style="width:200px">40</div><div class="td" style="flex:1">Total spend: $1-$40</div><div class="td" style="width:180px"><span class="pill-in">Includes</span></div><div class="td" style="width:110px">106</div><div class="td" style="width:150px;display:flex;gap:8px"><span class="iconbtn2"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20l1-4L16 5l3 3L8 19l-4 1z"/><path d="M14 7l3 3"/></svg></span><span class="iconbtn2"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M10 7V5h4v2M6 7l1 13h10l1-13" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
           <div class="trow"><div class="td" style="width:200px">200</div><div class="td" style="flex:1">Total spend: $40-$200</div><div class="td" style="width:180px"><span class="pill-in">Includes</span></div><div class="td" style="width:110px">8</div><div class="td" style="width:150px;display:flex;gap:8px"><span class="iconbtn2"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20l1-4L16 5l3 3L8 19l-4 1z"/><path d="M14 7l3 3"/></svg></span><span class="iconbtn2"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M10 7V5h4v2M6 7l1 13h10l1-13" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
           <div class="trow"><div class="td" style="width:200px">200+</div><div class="td" style="flex:1">Total spend: $200-no upper limit</div><div class="td" style="width:180px"><span class="pill-in">Includes</span></div><div class="td" style="width:110px">1</div><div class="td" style="width:150px;display:flex;gap:8px"><span class="iconbtn2"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20l1-4L16 5l3 3L8 19l-4 1z"/><path d="M14 7l3 3"/></svg></span><span class="iconbtn2"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M10 7V5h4v2M6 7l1 13h10l1-13" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
           <div class="trow"><div class="td" style="width:200px">4</div><div class="td" style="flex:1">Subscription less than 4 day(s)</div><div class="td" style="width:180px"><span class="pill-ex">Excludes</span></div><div class="td" style="width:110px">0</div><div class="td" style="width:150px;display:flex;gap:8px"><span class="iconbtn2"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20l1-4L16 5l3 3L8 19l-4 1z"/><path d="M14 7l3 3"/></svg></span><span class="iconbtn2"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M10 7V5h4v2M6 7l1 13h10l1-13" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
+          </div>
         </section>
       </div>
     </main>
@@ -534,5 +592,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="growth-smart-lists.js"></script>
 </body>
 </html>

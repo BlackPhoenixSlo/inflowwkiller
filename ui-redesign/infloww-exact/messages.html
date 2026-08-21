@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Messages Pro</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -25,6 +26,8 @@
   --topbar:#171717;
   --win:#0d0d0d;
   --red:#f0483e;
+  --pink:#ec4b9b;
+  --pink-soft:rgba(236,75,155,.14);
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
@@ -49,9 +52,6 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
   display:flex;align-items:center;gap:0;padding:0 14px;
   border-bottom:1px solid #0c0c0c;position:relative;
 }
-.lights{display:flex;gap:8px;align-items:center;margin-right:14px}
-.lights i{width:12px;height:12px;border-radius:50%;display:block}
-.lights .r{background:#ff5f57}.lights .y{background:#febc2e}.lights .g{background:#28c840}
 .ctab{
   display:flex;align-items:center;gap:8px;height:36px;padding:0 10px 0 6px;
   background:var(--panel);border-radius:9px 9px 0 0;position:relative;top:5px;
@@ -80,9 +80,34 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 
 /* ===== HOME TAB ROW ===== */
 .hometabs{height:34px;min-height:34px;background:var(--topbar);display:flex;align-items:flex-end;padding:0 14px;border-bottom:1px solid var(--border)}
+/* Pop-out: a focused single chat in its own window — hide the multi-creator
+   tab strip, the app-tab bar, and the inbox list so the thread fills it. */
+body.ft-popout .topstrip,body.ft-popout .hometabs,body.ft-popout .list,body.ft-popout .thread-tabs{display:none!important}
+body.ft-popout .ft-rail,body.ft-popout .ft-money-toasts{display:none!important}
 .htab{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:#eee;
   background:var(--panel);padding:6px 16px;border-radius:8px 8px 0 0;text-decoration:none;cursor:pointer}
 .htab svg{width:15px;height:15px;color:var(--muted)}
+
+/* "All Models" promoted up into the top strip as the leading (hero) scope tab. */
+.am-hero{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 14px;margin-left:2px;
+  border-radius:8px;font-size:13px;font-weight:700;color:var(--blue-txt);background:var(--blue-soft);
+  text-decoration:none;white-space:nowrap;cursor:pointer}
+.am-hero svg{width:16px;height:16px;color:var(--blue-txt)}
+.am-hero:hover,.am-hero.active{background:var(--blue);color:#fff}
+.am-hero:hover svg,.am-hero.active svg{color:#fff}
+
+/* Row 1 is a tab bar: Home + creator tabs hang at the bottom edge so they read as
+   tabs feeding the row below; window chrome (lights, controls) stays centered. */
+.topstrip{align-items:flex-end}
+.topstrip .top-right,.topstrip .add-creator{align-self:center}
+.topstrip .htab{align-self:flex-end}
+.topstrip .am-hero{align-self:flex-end;margin-bottom:5px}
+.topstrip .ctab{top:0}
+
+/* Row 2 hosts Group chat + the popped-out fan tabs (thread-tabs relocated here). */
+.hometabs .thread-tabs{background:transparent;border-bottom:none;padding:0;margin-left:4px;
+  flex:1;min-width:0;align-items:flex-end}
+.ttab-dot{width:7px;height:7px;border-radius:50%;flex:none}
 
 /* ===== BODY 3 COLS ===== */
 .body{flex:1;display:flex;min-height:0}
@@ -118,8 +143,19 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .chip{display:flex;align-items:center;gap:0;background:#2f2f2f;color:#e5e5e5;border-radius:16px;padding:7px 15px;font-size:13px;font-weight:500;white-space:nowrap;position:relative;flex:none}
 .chip.active{background:var(--blue);color:#fff}
 .chip .cbadge{position:absolute;top:-5px;right:-4px;background:var(--coral);color:#fff;min-width:17px;height:17px;border-radius:9px;display:grid;place-items:center;font-size:10px;font-weight:700;padding:0 3px}
+.chip .cbadge.amber{background:#f0a06a;color:#2a1a10}
+.chips.folders{padding-top:0;padding-bottom:10px}
+.chips.folders .fchip{display:flex;align-items:center;gap:6px;background:#2a2333;color:#e5d5ee;border-radius:16px;
+  padding:6px 13px;font-size:12.5px;font-weight:500;white-space:nowrap;flex:none;cursor:pointer;border:1px solid transparent}
+.chips.folders .fchip.active{background:var(--blue);color:#fff}
+.chips.folders .fchip.edit{background:#2f2f2f;color:#bbb}
+.chips.folders .fchip svg{width:13px;height:13px;flex:none}
 
 .rows{flex:1;overflow-y:auto;min-height:0}
+.load-more{padding:14px 16px;text-align:center;color:var(--blue-txt);font-size:13px;font-weight:600;
+  cursor:pointer;border-top:1px solid #262626}
+.load-more:hover{background:#2b2b2b}
+.load-more.busy{color:var(--muted);cursor:default}
 .conv{display:flex;gap:12px;padding:13px 16px;cursor:pointer;position:relative;border-bottom:1px solid #262626}
 .conv:hover{background:#2b2b2b}
 .conv.selected{background:var(--hover)}
@@ -149,10 +185,19 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .ctime{color:var(--muted);font-size:12px;white-space:nowrap;flex:none}
 .ctime.due{color:#f0a06a}
 .ud{width:9px;height:9px;border-radius:50%;background:var(--coral);flex:none}
+.owe-dot{width:9px;height:9px;border-radius:50%;background:#f0a06a;flex:none;
+  box-shadow:0 0 0 2px rgba(240,160,106,.18)}
 .mute-i{width:14px;height:14px;color:var(--muted2);flex:none}
 
 /* ===== CENTER ===== */
 .center{flex:1;background:var(--thread);display:flex;flex-direction:column;min-width:0;min-height:0}
+.thread-tabs{display:flex;gap:3px;align-items:flex-end;background:var(--topbar);border-bottom:1px solid var(--border);padding:6px 10px 0;overflow-x:auto}
+.thread-tabs .ttab{display:inline-flex;align-items:center;gap:8px;background:#191919;border:1px solid var(--border);border-bottom:none;border-radius:8px 8px 0 0;padding:7px 11px;font-size:12.5px;font-weight:600;color:var(--muted);cursor:pointer;white-space:nowrap;max-width:190px}
+.thread-tabs .ttab:hover{background:#242424;color:#eee}
+.thread-tabs .ttab.active{background:#111;color:#fff;border-color:var(--blue);box-shadow:inset 0 2px 0 var(--blue)}
+.thread-tabs .ttab-name{overflow:hidden;text-overflow:ellipsis}
+.thread-tabs .ttab-x{opacity:.5;font-size:11px;line-height:1;border-radius:4px;padding:2px 4px}
+.thread-tabs .ttab-x:hover{opacity:1;background:rgba(255,255,255,.14)}
 .thread-head{display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--border);min-height:58px}
 .back{color:#cfcfcf;width:22px;height:22px;flex:none}
 .th-id{display:flex;flex-direction:column;gap:2px;margin-right:6px}
@@ -203,6 +248,22 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .ppv-mini{align-self:flex-end;background:#232323;border:1px solid #2f2f2f;border-radius:14px;padding:14px 16px;max-width:320px;display:flex;flex-direction:column;gap:8px}
 .ppv-mini .pm-title{font-weight:600}
 .ppv-mini .paid-tag{color:var(--green);font-size:12px;font-weight:600}
+/* Bubble hover actions (unsend / like) */
+.bubble,.ppv-mini{position:relative}
+.msg-acts{position:absolute;top:-11px;display:none;gap:3px;z-index:2}
+.bubble.out .msg-acts,.ppv-mini .msg-acts{right:6px}
+.bubble.in .msg-acts{left:6px}
+.bubble:hover .msg-acts,.ppv-mini:hover .msg-acts,.msg-acts:hover{display:flex}
+.msg-acts .ma{width:24px;height:24px;border-radius:50%;background:#1c1c1c;border:1px solid #3a3a3a;color:#cfcfcf;
+  font-size:13px;line-height:1;display:grid;place-items:center;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+.msg-acts .ma:hover{background:#2a2a2a;color:#fff}
+.msg-acts .ma.on{color:#f0483e;border-color:#f0483e}
+.seen-tick{font-size:10px;margin-left:5px;opacity:.6}
+.bubble .btime .sent-by{font-size:10px;font-weight:700;margin-left:7px;opacity:.9;white-space:nowrap}
+.seen-tick.seen{color:#7fd0ff;opacity:.95}
+.tip-reward{margin-left:8px;background:#2a2333;border:1px solid rgba(236,75,155,.4);color:#f3b6da;
+  border-radius:7px;padding:1px 7px;font-size:11px;font-weight:700;cursor:pointer}
+.tip-reward:hover{background:var(--pink);color:#fff}
 
 /* ===== COMPOSER ===== */
 .composer{border-top:1px solid var(--border);background:var(--thread);padding:12px 16px 14px}
@@ -266,6 +327,252 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .rtab.active{color:var(--blue)}
 
 .hidden{display:none!important}
+
+/* ===== MULTI-CREATOR TAB STRIP (added) ===== */
+.ctabs{display:flex;align-items:flex-end;gap:4px;min-width:0;max-width:58vw;overflow-x:auto;scrollbar-width:none}
+.ctabs::-webkit-scrollbar{display:none}
+.ctab{cursor:pointer;border:1px solid transparent;border-bottom:0;flex:none;user-select:none;transition:background .12s}
+.ctab:hover{background:#2b2b2b}
+.ctab.active{background:#2d2130;border-color:rgba(236,75,155,.55);box-shadow:inset 0 2px 0 var(--pink)}
+.ctab.active .cname{color:#ffd8ec}
+.ctab.dragging{opacity:.4}
+.ctab.dropmark{box-shadow:inset 2px 0 0 var(--pink)}
+.ctab .cav{position:relative;overflow:hidden;display:grid;place-items:center;font:800 11px Inter,sans-serif;color:#fff;background:#4a4a4a}
+.ctab .cav img{width:100%;height:100%;object-fit:cover;display:block}
+.ctab.nosess{opacity:.6}
+.ctab.nosess .cav:after{content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(45deg,rgba(0,0,0,.45) 0 3px,transparent 3px 6px)}
+.ctab .cclose:hover{color:#fff}
+.ctab .lock{color:#7a7a7a;font-size:11px;flex:none}
+.mini-badge.pink{background:var(--pink)}
+
+/* keep the thread header on one line now that it carries live badges */
+.thread-head{flex-wrap:nowrap}
+.th-name{white-space:nowrap}
+.open-new{white-space:nowrap}
+.th-status{white-space:nowrap}
+.inbox-box{min-width:150px}
+.inbox-box .ft-live{flex:none;margin-left:2px}
+.inbox-box .chev{margin-left:auto}
+.filter-row{flex-wrap:wrap;row-gap:6px}
+.ctabs-empty{color:var(--muted);font-size:12px;padding:0 10px}
+
+/* ===== POPOVERS ===== */
+.pop{position:fixed;z-index:9994;background:#1c1c1c;border:1px solid #333;border-radius:10px;padding:6px;
+  min-width:238px;max-width:360px;max-height:72vh;overflow:auto;box-shadow:0 12px 34px rgba(0,0,0,.55);
+  font-size:13px;color:#e6e6e6}
+.pop .prow{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;line-height:1.3}
+.pop .prow:hover{background:#2a2a2a}
+.pop .prow.on{background:#2d2130;outline:1px solid rgba(236,75,155,.5)}
+.pop .prow.dim{color:#8a8a8a;cursor:default}
+.pop .prow.dim:hover{background:none}
+.pop .prow.danger{color:#f08a8a}
+.pop .phead{color:#8a8a8a;font-size:10.5px;font-weight:700;letter-spacing:.5px;padding:8px 10px 4px;text-transform:uppercase}
+.pop .pdiv{height:1px;background:#333;margin:5px 2px}
+.pop .pdot{width:9px;height:9px;border-radius:50%;flex:none}
+.pop .pav{width:22px;height:22px;border-radius:5px;flex:none;overflow:hidden;display:grid;place-items:center;
+  font:800 9px Inter,sans-serif;background:#4a4a4a}
+.pop .pav img{width:100%;height:100%;object-fit:cover;display:block}
+.pop .pmeta{margin-left:auto;color:#8a8a8a;font-size:11px;flex:none}
+.pop .ptxt{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.pop input[type=text],.pop textarea{width:100%;background:#151515;border:1px solid #333;border-radius:7px;
+  color:#eee;padding:7px 9px;font:13px Inter,sans-serif;margin:4px 0 6px}
+
+/* ===== SHEETS (gallery / notifications / vault / gif) ===== */
+.sheet-back{position:fixed;inset:0;background:rgba(0,0,0,.64);z-index:9993;display:flex;align-items:center;justify-content:center}
+.sheet{background:#1c1c1c;border:1px solid #333;border-radius:14px;width:min(900px,92vw);max-height:84vh;
+  display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.sheet-h{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid #2e2e2e;font-weight:700;font-size:14px}
+.sheet-h .x{margin-left:auto;color:#8a8a8a;cursor:pointer;font-size:17px;line-height:1;padding:2px 6px;border-radius:6px}
+.sheet-h .x:hover{background:#2a2a2a;color:#fff}
+.sheet-b{padding:14px 16px;overflow:auto;min-height:90px;font-size:13px;color:#dcdcdc}
+.sheet-f{padding:11px 16px;border-top:1px solid #2e2e2e;display:flex;align-items:center;gap:8px}
+.mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:10px}
+.mgrid .mt{position:relative;border-radius:9px;overflow:hidden;background:#111;aspect-ratio:1;border:1px solid #2e2e2e;cursor:pointer}
+.mgrid .mt img{width:100%;height:100%;object-fit:cover;display:block}
+.mgrid .mt .tag{position:absolute;left:6px;bottom:6px;background:rgba(0,0,0,.7);border-radius:6px;padding:2px 6px;font-size:10.5px;font-weight:700}
+.mgrid .mt.sel{outline:2px solid var(--pink);outline-offset:-2px}
+/* Video preview affordances on a vault tile */
+.mgrid .mt .vdur{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.72);border-radius:6px;
+  padding:2px 6px;font-size:10.5px;font-weight:700;display:flex;align-items:center;gap:3px}
+.mgrid .mt .vdur svg{width:9px;height:9px}
+.mgrid .mt .vplay{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:38px;height:38px;
+  border-radius:50%;background:rgba(0,0,0,.55);display:grid;place-items:center;cursor:pointer;
+  border:1.5px solid rgba(255,255,255,.85);transition:background .12s,transform .12s;z-index:2}
+.mgrid .mt .vplay:hover{background:var(--blue);transform:translate(-50%,-50%) scale(1.08)}
+.mgrid .mt .vplay svg{width:16px;height:16px;margin-left:2px;color:#fff}
+.mgrid .mt .vlock{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.7);border-radius:6px;
+  padding:2px 5px;font-size:10px;font-weight:700;z-index:2}
+/* Video lightbox */
+.vid-back{position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:9996;display:flex;
+  align-items:center;justify-content:center;padding:24px}
+.vid-wrap{position:relative;display:flex;flex-direction:column;align-items:center;max-width:90vw}
+.vid-wrap video,.vid-wrap #vpFrame{max-width:88vw;max-height:80vh;border-radius:12px;background:#000;display:block}
+.vid-x{position:absolute;top:-14px;right:-14px;width:34px;height:34px;border-radius:50%;background:#1c1c1c;
+  border:1px solid #3a3a3a;color:#fff;font-size:20px;line-height:1;display:grid;place-items:center;cursor:pointer;z-index:2}
+.vid-x:hover{background:#2a2a2a}
+.vid-note{color:#c9c9c9;font-size:12.5px;margin-top:12px;text-align:center;max-width:520px;line-height:1.5}
+.vid-frames{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap;justify-content:center}
+.vid-frames b{width:8px;height:8px;border-radius:50%;background:#3a3a3a;cursor:pointer}
+.vid-frames b.on{background:var(--pink)}
+/* Vault folder-picker (folders → media, with breadcrumb) */
+.vault-crumb{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:13px;color:#cfcfcf;flex-wrap:wrap}
+.vault-crumb .vc-back{display:inline-flex;align-items:center;gap:6px;color:var(--blue-txt);cursor:pointer;font-weight:600;padding:5px 11px;border:1px solid #333;border-radius:8px;background:#1c1c1c}
+.vault-crumb .vc-back:hover{background:#242424}
+.vault-crumb .vc-back svg{width:14px;height:14px}
+.vault-crumb .vc-sep{color:var(--muted2)}
+.vault-crumb .vc-here{font-weight:700;color:#fff}
+.vault-folders{display:flex;flex-direction:column;gap:8px}
+.vfolder{display:flex;align-items:center;gap:12px;padding:11px 13px;border:1px solid #2e2e2e;border-radius:10px;background:#181818;cursor:pointer}
+.vfolder:hover{background:#212121;border-color:#3a3a3a}
+.vfolder .vf-ic{width:38px;height:38px;border-radius:8px;background:#242424;display:grid;place-items:center;flex:none;color:var(--pink)}
+.vfolder .vf-ic svg{width:20px;height:20px}
+.vfolder.all .vf-ic{color:var(--blue-txt);background:rgba(65,102,246,.12)}
+.vfolder .vf-meta{flex:1;min-width:0}
+.vfolder .vf-name{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vfolder .vf-count{color:var(--muted);font-size:12px;margin-top:2px}
+.vfolder .vf-chev{color:var(--muted2);flex:none}
+.vfolder .vf-chev svg{width:16px;height:16px}
+/* unified vault picker (app-parity) */
+.vtb{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:9px}
+.vtb .vseg{display:inline-flex;background:#151515;border:1px solid #2e2e2e;border-radius:9px;padding:2px}
+.vtb .vseg button{border:0;background:transparent;color:var(--muted);font:600 12px Inter,sans-serif;padding:5px 11px;border-radius:7px;cursor:pointer}
+.vtb .vseg button.on{background:#2a2a2a;color:#fff}
+.vtb select,.vtb input{background:#151515;border:1px solid #2e2e2e;border-radius:8px;color:#eee;font:12px Inter,sans-serif;padding:6px 9px}
+.vtb input[type=search]{min-width:128px}
+.vtb .vcap-tog{display:inline-flex;align-items:center;gap:5px;border:1px solid #2e2e2e;background:#151515;color:var(--muted);border-radius:999px;padding:5px 11px;font:600 11.5px Inter,sans-serif;cursor:pointer}
+.vtb .vcap-tog.on{border-color:var(--pink);color:var(--pink);background:rgba(255,64,129,.08)}
+.vtb .vcached{margin-left:auto;color:#3ddc84;font:600 11px Inter,sans-serif;display:inline-flex;align-items:center;gap:3px}
+.vchips{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px;font-size:11.5px}
+.vchips .vlbl{color:var(--muted2);margin-right:2px}
+.vchips .vchip{border:1px solid #2e2e2e;background:#181818;color:#cfcfcf;border-radius:999px;padding:4px 11px;cursor:pointer;font-weight:600}
+.vchips .vchip.on{border-color:var(--blue);background:rgba(65,102,246,.14);color:#fff}
+.vchips .vchip .st{color:var(--pink);margin-right:3px}
+.vcap-hint{color:var(--muted);font-size:11.5px;background:#1a1a1a;border:1px dashed #333;border-radius:8px;padding:7px 10px;margin-bottom:9px}
+.mgrid .mt .vt-dot{position:absolute;top:6px;left:6px;width:8px;height:8px;border-radius:50%;background:#3ddc84;box-shadow:0 0 0 2px rgba(0,0,0,.5)}
+.mgrid .mt .vt-own,.mgrid .mt .vt-sent{position:absolute;top:6px;left:6px;border-radius:6px;padding:1px 6px;font-size:9px;font-weight:800;letter-spacing:.02em;line-height:1.55;box-shadow:0 1px 3px rgba(0,0,0,.5)}
+.mgrid .mt .vt-own{background:rgba(61,220,132,.95);color:#053017}
+.mgrid .mt .vt-sent{background:rgba(255,196,64,.95);color:#3a2a00}
+.mgrid .mt .vcap{position:absolute;left:0;right:0;bottom:0;height:52%;pointer-events:none;display:flex;flex-direction:column;justify-content:flex-end;gap:3px;padding:6px;background:linear-gradient(to top,rgba(0,0,0,.9),rgba(0,0,0,.45) 55%,transparent)}
+.mgrid .mt .vcap p{margin:0;color:#fff;font-size:10px;line-height:1.28;text-shadow:0 1px 2px rgba(0,0,0,.95);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.mgrid .mt .vcap-tags{display:flex;flex-wrap:wrap;gap:3px}
+.mgrid .mt .vcap-tags span{background:rgba(255,255,255,.22);color:#fff;border-radius:999px;padding:1px 5px;font-size:8px;line-height:1.4}
+.vmore-row{display:flex;align-items:center;justify-content:center;gap:14px;padding:10px 0 2px;color:var(--muted);font-size:12px}
+.mgrid .mt.vhovering{outline:2px solid var(--blue);outline-offset:-2px}
+.mgrid .mt.vhovering img{transition:none}
+.mgrid .mt .vhover-cd{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,.74);color:#fff;font:700 11px Inter,sans-serif;padding:3px 9px;border-radius:11px;z-index:3;pointer-events:none;display:inline-flex;align-items:center;gap:4px}
+.mgrid .mt .vhover-cd::before{content:'';width:9px;height:9px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:vspin .7s linear infinite}
+@keyframes vspin{to{transform:rotate(360deg)}}
+.nlist .n{display:flex;gap:10px;padding:9px 4px;border-bottom:1px solid #262626;align-items:flex-start}
+.nlist .n .nav{width:34px;height:34px;border-radius:50%;background:#3a3a3a;flex:none;display:grid;place-items:center;
+  font:700 11px Inter,sans-serif;overflow:hidden}
+.nlist .n .nav img{width:100%;height:100%;object-fit:cover}
+.nlist .n .nt{flex:1;min-width:0}
+.nlist .n .na{color:var(--muted);font-size:11.5px;margin-top:2px}
+.nlist .n.unread{background:rgba(65,102,246,.07)}
+
+/* ===== AI STATUS STRIP ===== */
+.ai-strip{display:flex;flex-wrap:wrap;align-items:center;gap:5px 12px;padding:7px 18px;background:#131313;
+  border-bottom:1px solid var(--border);font-size:11.5px;color:#9a9a9a;line-height:1.35}
+.ai-strip .st-active{color:var(--green);font-weight:600}
+.ai-strip .st-paused{color:#e0b15b;font-weight:600}
+.ai-strip .st-blocked{color:#e97070;font-weight:600}
+.ai-strip .st-off{color:#8a8a8a;font-weight:600}
+.ai-strip .st-companion{color:#7fb6e6;font-weight:600}
+.ai-strip .meter{display:inline-block;width:50px;height:5px;border-radius:3px;background:#2e2e2e;overflow:hidden;vertical-align:middle}
+.ai-strip .meter i{display:block;height:100%;background:var(--blue)}
+
+/* ===== RIGHT-RAIL SALES / NOTES ===== */
+.rtab{cursor:pointer}
+.rtab.active{color:var(--blue)}
+.stab{width:100%;border-collapse:collapse;font-size:12px}
+.stab th{color:#8a8a8a;font-weight:600;text-align:left;padding:4px 5px;border-bottom:1px solid #2a2a2a;font-size:10.5px;
+  text-transform:uppercase;letter-spacing:.3px}
+.stab td{padding:6px 5px;border-bottom:1px solid #232323;color:#dcdcdc;white-space:nowrap}
+.stab td.r,.stab th.r{text-align:right}
+.bars{display:flex;align-items:flex-end;gap:3px;height:62px;margin:6px 0 4px}
+.bars i{flex:1;background:var(--blue);border-radius:2px 2px 0 0;min-height:2px;display:block}
+.bars i.z{background:#2c2c2c;min-height:2px}
+.axis{display:flex;justify-content:space-between;color:#6a6a6a;font-size:10px}
+.note-ta{width:100%;min-height:132px;background:#151515;border:1px solid #333;border-radius:9px;color:#e6e6e6;
+  padding:10px;font:13px/1.5 Inter,sans-serif;resize:vertical;box-sizing:border-box}
+.btn-sm{background:#2c2c2c;color:#ddd;border-radius:7px;padding:7px 12px;font-size:12.5px;font-weight:600}
+.btn-sm:hover{background:#383838}
+.btn-sm.pri{background:var(--blue);color:#fff}
+.btn-sm.pnk{background:var(--pink);color:#fff}
+.subtle{color:var(--muted);font-size:12px;line-height:1.5}
+.honest{border:1px dashed #3a3a3a;border-radius:10px;padding:14px;color:#9a9a9a;font-size:12.5px;line-height:1.55}
+.honest b{color:#d6d6d6;font-weight:600}
+.honest code{background:#111;border:1px solid #2e2e2e;border-radius:5px;padding:1px 5px;font-size:11.5px;color:#c9c9c9}
+
+/* ===== AGGREGATED-INBOX ROW CHIP ===== */
+.creator-chip{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:800;color:#d8d8d8;
+  background:#2f2f2f;border-radius:6px;padding:1px 6px;margin-right:5px;letter-spacing:.2px;flex:none}
+.creator-chip i{width:7px;height:7px;border-radius:50%;display:block;flex:none}
+
+/* ===== COMPOSER EXTRAS ===== */
+.comp-x{display:none;align-items:center;gap:8px;padding:0 0 8px;flex-wrap:wrap;font-size:12.5px;color:#bdbdbd}
+.comp-x.on{display:flex}
+.comp-x input[type=number],.comp-x input[type=datetime-local],.comp-x input[type=text]{
+  background:#1c1c1c;border:1px solid #333;color:#eee;border-radius:7px;padding:6px 8px;font:13px Inter,sans-serif}
+.comp-x input[type=number]{width:92px}
+.att{display:flex;gap:6px;flex-wrap:wrap}
+.att .a{position:relative;width:42px;height:42px;border-radius:7px;overflow:hidden;border:1px solid #383838;background:#111}
+.att .a img{width:100%;height:100%;object-fit:cover;display:block}
+.att .a b{position:absolute;top:0;right:0;background:rgba(0,0,0,.75);font-size:10px;padding:0 4px;cursor:pointer;border-bottom-left-radius:5px}
+.typing-line{padding:4px 26px 0;color:var(--pink);font-size:12px;font-weight:600}
+/* quote-reply strip above the composer */
+.reply-strip{display:flex;align-items:center;gap:9px;padding:8px 12px;margin:0 0 8px;background:#171717;
+  border-left:3px solid var(--blue);border-radius:8px;font-size:13px;color:#cfcfcf}
+.reply-strip svg{width:15px;height:15px;color:var(--blue-txt);flex:none}
+.reply-strip .rs-txt{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.reply-strip .rs-x{color:var(--muted);width:22px;height:22px;border-radius:6px;flex:none;font-size:14px}
+.reply-strip .rs-x:hover{background:#2a2a2a;color:#fff}
+/* load-older-messages affordance at the top of the thread */
+.load-older{align-self:center;margin:2px 0 8px;padding:7px 16px;border:1px solid #333;border-radius:99px;
+  background:#1c1c1c;color:var(--blue-txt);font-size:12.5px;font-weight:600;cursor:pointer}
+.load-older:hover{border-color:var(--blue);color:#fff}
+.load-older.busy{color:var(--muted);cursor:default}
+
+/* ===== PINNED BAR (view pinned messages in the loaded window) ===== */
+.pinbar{display:flex;align-items:center;gap:8px;padding:7px 18px;background:#161616;
+  border-bottom:1px solid var(--border);font-size:12px;color:#cfcfcf;cursor:pointer}
+.pinbar:hover{background:#1b1b1b}
+.pinbar svg{width:14px;height:14px;color:var(--pink);flex:none}
+.pinbar .pintxt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.pinbar .pincount{color:var(--pink);font-weight:700;flex:none}
+.msg-pinned{position:relative}
+.msg-pinned:before{content:"📌";position:absolute;top:-4px;left:-16px;font-size:11px;opacity:.8}
+/* Model-persona popover "right now" block */
+.mi-now{background:var(--pink-soft);border:1px solid rgba(236,75,155,.3);border-radius:9px;
+  padding:9px 11px;margin:2px 2px 8px;line-height:1.45}
+.mi-now .mi-t{color:#ffd8ec;font-weight:700;font-size:11px;letter-spacing:.4px;text-transform:uppercase;margin-bottom:3px}
+.mi-row{padding:5px 10px;color:#d4d4d4;line-height:1.5}
+.mi-row b{color:#fff}
+.mi-foot{color:#7a7a7a;font-size:11px;padding:8px 10px 4px;border-top:1px solid #2a2a2a;margin-top:4px}
+
+/* ===== AVATAR INITIALS FALLBACK ===== */
+/* Initials sit in the (already-centered) container; the photo is overlaid on top.
+   If the photo 404s / the proxy is down, onerror removes the <img> and the
+   initials show through — no more blank grey squares. */
+.av,.pav,.nlist .n .nav{position:relative}
+.av>img,.ctab .cav>img,.pav>img,.nlist .n .nav>img{
+  position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block}
+
+/* ===== CONVERSATION-LIST SKELETON (cold load can take ~10-30s) =====
+   Shimmer placeholders that clearly read as loading, not a broken/hung list.
+   Replaced wholesale by real rows once the inbox resolves. */
+@keyframes ft-shimmer{0%{background-position:-360px 0}100%{background-position:360px 0}}
+.skel-row{display:flex;gap:12px;padding:13px 16px;align-items:center;border-bottom:1px solid #262626}
+.skel-av{width:48px;height:48px;border-radius:50%;flex:none}
+.skel-lines{flex:1;min-width:0;display:flex;flex-direction:column;gap:10px}
+.skel-bar{height:11px;border-radius:6px}
+.skel-bar.w1{width:52%}
+.skel-bar.w2{width:78%}
+.skel-av,.skel-bar{
+  background:linear-gradient(90deg,#2a2a2a 25%,#363636 37%,#2a2a2a 63%);
+  background-size:720px 100%;animation:ft-shimmer 1.25s linear infinite}
+@media (prefers-reduced-motion:reduce){.skel-av,.skel-bar{animation:none}}
 </style>
 </head>
 <body>
@@ -273,15 +580,18 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 
   <!-- ===== TOP STRIP ===== -->
   <div class="topstrip">
-    <div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
-    <div class="ctab">
-      <div class="cav"></div>
-      <span class="cname">Aria</span>
-      <span class="mini-badge red">2</span>
-      <span class="mini-badge grn">4</span>
-      <span class="cclose">✕</span>
-    </div>
-    <button class="add-creator">
+    <!-- Row 1 = account / scope switching: Home, the All Models unified scope,
+         one tab per creator (live roster), and Add-a-Creator. -->
+    <a class="htab" href="dashboard.html">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+      Home
+    </a>
+    <a class="am-hero" id="tabAllModels" href="messages.html?scope=all" title="All Models — every creator's chats in one combined list (unread + owe-reply flagged per model)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3L2 8l10 5 10-5-10-5z"/><path d="M2 12l10 5 10-5"/><path d="M2 16l10 5 10-5"/></svg>
+      All Models
+    </a>
+    <div class="ctabs" id="ctabs"><span class="ctabs-empty">Loading creators…</span></div>
+    <button class="add-creator" id="addCreator">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
       Add a Creator
     </button>
@@ -299,10 +609,14 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 
   <!-- ===== HOME TAB ROW ===== -->
   <div class="hometabs">
-    <a class="htab" href="dashboard.html">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
-      Home
+    <a class="htab" href="group.html" title="Open group chat — up to 8 fan conversations side-by-side">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17.5" cy="9" r="2.4"/><path d="M15.5 20c0-2.8 1.8-5 4.5-5"/></svg>
+      Group chat
     </a>
+    <!-- Row 2 = open conversations: the popped-out fan tabs (one per pinned chat,
+         any model). Relocated up from the thread column; hidden until a chat is
+         popped out. Same #threadTabs id the tab-strip JS binds to. -->
+    <div class="thread-tabs" id="threadTabs" style="display:none"></div>
   </div>
 
   <!-- ===== BODY ===== -->
@@ -314,7 +628,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
         <h1>Aria</h1>
         <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.8"/><path d="M21 15l-5-5L5 21"/></svg></button>
         <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></button>
-        <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+        <button class="icon-btn" id="newBtn" title="New — mass message, message online fans, broadcast, post"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
       </div>
 
       <div class="big-btns">
@@ -325,171 +639,46 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
         <button class="btn-notif">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
           Notifications
-          <span class="notif-badge">4</span>
+          <span class="notif-badge" style="display:none">0</span>
         </button>
       </div>
 
       <div class="filter-row">
-        <div class="inbox-box">
+        <div class="inbox-box" id="inboxBox" style="cursor:pointer">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 8l9 6 9-6"/><rect x="3" y="5" width="18" height="14" rx="2"/></svg>
-          All inboxes
+          <span id="inboxLabel" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">All inboxes</span>
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:14px;height:14px"><path d="M6 9l6 6 6-6"/></svg>
         </div>
         <button class="gear"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1A2 2 0 1 1 6.9 4.2l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg></button>
         <div class="spacer"></div>
         <div class="sortline">
-          <span class="txt">Newest first</span>
+          <span class="txt">Needs reply</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h13M4 12h9M4 18h5"/></svg>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v3h-3"/></svg>
         </div>
       </div>
 
       <div class="chips">
-        <div class="chip active">All</div>
-        <div class="chip">Pinned<span class="cbadge">4</span></div>
-        <div class="chip">Priority<span class="cbadge">1</span></div>
-        <div class="chip">Unread<span class="cbadge">2</span></div>
-        <div class="chip">With Tips</div>
+        <div class="chip active" data-role="all">All</div>
+        <div class="chip" data-role="unread">Unread<span class="cbadge" style="display:none">0</span></div>
+        <div class="chip" data-role="owe" id="chipOwe">↩ Owe reply<span class="cbadge amber" style="display:none">0</span></div>
+        <div class="chip" data-role="pinned">Pinned<span class="cbadge" style="display:none">0</span></div>
+        <div class="chip" data-role="priority">Priority<span class="cbadge" style="display:none">0</span></div>
+        <div class="chip" data-role="tips" id="chipTips">Unread tips</div>
       </div>
 
+      <!-- Pinned OF chat-folders as filter chips (single-creator only). -->
+      <div class="chips folders" id="folderChips" style="display:none"></div>
+
+      <!-- Conversations are rendered from the live inbox (see the wiring script).
+           The skin's baked demo fans were deleted, not just hidden. -->
       <div class="rows" id="rows">
-
-        <!-- Weekly Promo (expired / unsub) -->
-        <div class="conv" data-name="Weekly Promo" data-handle="@weeklyprom_" data-verified="1" data-status="online" data-thread="chris" data-insights="chris">
-          <div class="av-wrap">
-            <div class="av coral"><svg class="xmark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></div>
-            <span class="dot"></span>
-            <span class="spend">$0</span>
-          </div>
-          <div class="conv-main">
-            <div class="conv-top"><span class="cname">Weekly Promo &amp; ...</span><svg class="vf" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="#4fbfda"/><path d="M8 12.5l2.5 2.5 5-5.5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="chandle">@weeklyprom...</span><span class="cx">×</span></div>
-            <div class="conv-bot">
-              <span class="cprev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.6"/><path d="M4 18l5-4 4 3 3-2 4 3"/></svg>Big weekend sale — save 20%</span>
-              <span class="ctime">11:32 pm</span>
-              <svg class="mute-i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 8a6 6 0 0 0-9-5M6 8c0 7-3 9-3 9h13M13.7 21a2 2 0 0 1-3.4 0M3 3l18 18"/></svg>
-            </div>
-          </div>
-        </div>
-
-        <!-- Emma (selected) -->
-        <div class="conv selected" data-name="Emma" data-handle="@emma_r" data-verified="1" data-status="online" data-thread="emma" data-insights="emma">
-          <div class="av-wrap">
-            <div class="av grey"><svg viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7"><circle cx="12" cy="8.5" r="3.4"/><path d="M5 20c0-3.6 3-6.2 7-6.2s7 2.6 7 6.2"/></svg></div>
-            <span class="dot"></span>
-            <span class="spend">$0</span>
-          </div>
-          <div class="conv-main">
-            <div class="conv-top"><span class="cname">Emma</span><svg class="vf" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="#4fbfda"/><path d="M8 12.5l2.5 2.5 5-5.5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="chandle">@emma_r</span><span class="cx">×</span></div>
-            <div class="conv-bot">
-              <span class="cprev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.6"/><path d="M4 18l5-4 4 3 3-2 4 3"/></svg>Custom video just for...</span>
-              <span class="ctime">4:46 am</span>
-              <svg class="mute-i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 8a6 6 0 0 0-9-5M6 8c0 7-3 9-3 9h13M13.7 21a2 2 0 0 1-3.4 0M3 3l18 18"/></svg>
-            </div>
-          </div>
-        </div>
-
-        <!-- Jake M. -->
-        <div class="conv" data-name="Jake M." data-handle="@jakem" data-verified="1" data-status="online" data-thread="jake" data-insights="jake">
-          <div class="av-wrap">
-            <div class="av purple">OFF</div>
-            <span class="dot"></span>
-            <span class="spend">$0</span>
-          </div>
-          <div class="conv-main">
-            <div class="conv-top"><span class="cname">Jake M.</span><svg class="vf" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="#4fbfda"/><path d="M8 12.5l2.5 2.5 5-5.5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="chandle">@jakem</span><span class="cx">×</span></div>
-            <div class="off-label">OFF</div>
-            <div class="conv-bot">
-              <span class="cprev bold">Hey, love your content just...</span>
-              <span class="ctime due">Jul 20</span>
-              <span class="ud"></span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Daniel -->
-        <div class="conv" data-name="Daniel" data-handle="@daniel_k" data-verified="0" data-status="offline" data-thread="jake" data-insights="jake">
-          <div class="av-wrap">
-            <div class="av purple">OFF</div>
-            <span class="spend">$0</span>
-          </div>
-          <div class="conv-main">
-            <div class="conv-top"><span class="cname">Daniel</span><span class="chandle">@daniel_k</span><span class="cx">×</span></div>
-            <div class="off-label">OFF</div>
-            <div class="conv-bot">
-              <span class="cprev bold">Just subscribed!</span>
-              <span class="ctime due">Jul 18</span>
-              <span class="ud"></span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Chris_88 -->
-        <div class="conv" data-name="Chris_88" data-handle="@chris_88" data-verified="0" data-status="offline" data-thread="chris" data-insights="chris">
-          <div class="av-wrap">
-            <div class="av coral"><svg class="xmark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></div>
-            <span class="spend">$333</span>
-          </div>
-          <div class="conv-main">
-            <div class="conv-top"><span class="cname">Chris_88</span><span class="chandle">@chris_88</span><span class="cx">×</span></div>
-            <div class="conv-bot" style="margin-top:2px">
-              <span class="xred">✕</span>
-              <span style="color:#4fbfda">❄</span>
-            </div>
-            <div class="conv-bot">
-              <span class="cprev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.6"/><path d="M4 18l5-4 4 3 3-2 4 3"/></svg>Thanks so much!</span>
-              <span class="ctime">Jul 16</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Sophie -->
-        <div class="conv" data-name="Sophie" data-handle="@sophie99" data-verified="0" data-status="offline" data-thread="chris" data-insights="chris">
-          <div class="av-wrap">
-            <div class="av coral"><svg class="xmark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></div>
-            <span class="spend">$0</span>
-          </div>
-          <div class="conv-main">
-            <div class="conv-top"><span class="cname">Sophie</span><span class="chandle">@sophie99</span><span class="cx">×</span></div>
-            <div class="conv-bot" style="margin-top:2px"><span class="xred">✕</span></div>
-            <div class="conv-bot">
-              <span class="cprev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.6"/><path d="M4 18l5-4 4 3 3-2 4 3"/></svg>Nice one 🙌</span>
-              <span class="ctime">Jul 16</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Ryan99 -->
-        <div class="conv" data-name="Ryan99" data-handle="@ryan_99" data-verified="0" data-status="offline" data-thread="chris" data-insights="chris">
-          <div class="av-wrap">
-            <div class="av coral"><svg class="xmark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></div>
-            <span class="spend">$0</span>
-          </div>
-          <div class="conv-main">
-            <div class="conv-top"><span class="cname">Ryan99</span><span class="chandle">@ryan_99</span><span class="cx">×</span></div>
-            <div class="conv-bot" style="margin-top:2px"><span class="xred">✕</span></div>
-            <div class="conv-bot">
-              <span class="cprev">Hey there 👋</span>
-              <span class="ctime">Jul 15</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Alex T. -->
-        <div class="conv" data-name="Alex T." data-handle="@alext" data-verified="1" data-status="online" data-thread="jake" data-insights="jake">
-          <div class="av-wrap">
-            <div class="av purple">AT</div>
-            <span class="dot"></span>
-            <span class="spend">$12</span>
-          </div>
-          <div class="conv-main">
-            <div class="conv-top"><span class="cname">Alex T.</span><svg class="vf" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="#4fbfda"/><path d="M8 12.5l2.5 2.5 5-5.5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="chandle">@alext</span><span class="cx">×</span></div>
-            <div class="conv-bot">
-              <span class="cprev bold">Can't wait for the next drop 🎬</span>
-              <span class="ctime">Jul 14</span>
-            </div>
-          </div>
-        </div>
-
+        <div class="skel-row"><div class="skel-av"></div><div class="skel-lines"><div class="skel-bar w1"></div><div class="skel-bar w2"></div></div></div>
+        <div class="skel-row"><div class="skel-av"></div><div class="skel-lines"><div class="skel-bar w1"></div><div class="skel-bar w2"></div></div></div>
+        <div class="skel-row"><div class="skel-av"></div><div class="skel-lines"><div class="skel-bar w1"></div><div class="skel-bar w2"></div></div></div>
+        <div class="skel-row"><div class="skel-av"></div><div class="skel-lines"><div class="skel-bar w1"></div><div class="skel-bar w2"></div></div></div>
+        <div class="skel-row"><div class="skel-av"></div><div class="skel-lines"><div class="skel-bar w1"></div><div class="skel-bar w2"></div></div></div>
+        <div class="skel-row"><div class="skel-av"></div><div class="skel-lines"><div class="skel-bar w1"></div><div class="skel-bar w2"></div></div></div>
       </div>
     </div>
 
@@ -499,25 +688,31 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
         <svg class="back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
         <div class="th-id">
           <div class="th-name-row">
-            <span class="th-name" id="thName">Emma</span>
+            <span class="th-name" id="thName">—</span>
             <svg class="vf" id="thVf" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="#4fbfda"/><path d="M8 12.5l2.5 2.5 5-5.5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </div>
-          <div class="th-status" id="thStatus"><span class="sdot"></span>Available now</div>
+          <div class="th-status off" id="thStatus"><span class="sdot"></span>—</div>
         </div>
         <div class="th-tools">
-          <button class="icon-btn" style="color:var(--blue)"><svg viewBox="0 0 24 24" fill="var(--blue)" stroke="var(--blue)" stroke-width="1"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 17l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></button>
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 8a6 6 0 0 0-9-5M6 8c0 7-3 9-3 9h13M13.7 21a2 2 0 0 1-3.4 0M3 3l18 18"/></svg></button>
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></button>
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 17v5M9 3h6l-1 7 3 2H7l3-2z"/></svg></button>
-          <button class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.6"/><path d="M4 18l5-4 4 3 3-2 4 3"/></svg>Gallery</button>
-          <button class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>Find</button>
+          <button class="icon-btn" id="tbStar" style="color:var(--blue)"><svg viewBox="0 0 24 24" fill="var(--blue)" stroke="var(--blue)" stroke-width="1"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 17l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></button>
+          <button class="icon-btn" id="tbMute"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 8a6 6 0 0 0-9-5M6 8c0 7-3 9-3 9h13M13.7 21a2 2 0 0 1-3.4 0M3 3l18 18"/></svg></button>
+          <button class="icon-btn" id="tbNotes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></button>
+          <button class="icon-btn" id="tbPin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 17v5M9 3h6l-1 7 3 2H7l3-2z"/></svg></button>
+          <button class="lbl" id="tbGallery"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.6"/><path d="M4 18l5-4 4 3 3-2 4 3"/></svg>Gallery</button>
+          <button class="lbl" id="tbFind"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>Find</button>
+          <button class="icon-btn" id="tbModel" title="Model persona — what she is doing right now"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01" stroke-linecap="round"/></svg></button>
         </div>
         <div class="th-right">
-          <button class="open-new"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 4h6v6M20 4l-8 8M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></svg>Open in new tab</button>
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v3h-3"/></svg></button>
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg></button>
+          <button class="open-new" id="schedChip" style="display:none;color:var(--pink);white-space:nowrap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2" stroke-linecap="round"/></svg><span id="schedChipN">0</span> scheduled</button>
+          <button class="open-new" id="tbOpen" title="Pin this chat as a tab so you can switch between conversations without losing it"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 6v12a1 1 0 0 0 1 1h6M8 6V4a1 1 0 0 1 1-1h4M15 13h6M18 10v6"/></svg>Pop out</button>
+          <button class="icon-btn" id="tbRefresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v3h-3"/></svg></button>
+          <button class="icon-btn" id="tbKebab"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg></button>
         </div>
       </div>
+
+      <div class="ai-strip" id="aiStrip" style="display:none"></div>
+      <div class="typing-line hidden" id="typingLine"></div>
+      <div class="pinbar hidden" id="pinBar"></div>
 
       <div class="thread-body" id="threadBody"><!-- injected --></div>
 
@@ -528,22 +723,43 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 
       <div class="composer" id="composer">
         <div class="comp-r1">
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4 4 0 0 0 7 0" stroke-linecap="round"/><circle cx="9" cy="10" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r="1" fill="currentColor" stroke="none"/></svg></button>
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1A2 2 0 1 1 6.9 4.2l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg></button>
+          <button class="icon-btn" id="cbEmoji"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4 4 0 0 0 7 0" stroke-linecap="round"/><circle cx="9" cy="10" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r="1" fill="currentColor" stroke="none"/></svg></button>
+          <button class="icon-btn" id="cbGear"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1A2 2 0 1 1 6.9 4.2l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg></button>
           <div class="comp-input"><input id="composerInput" placeholder='Press "/" + keyword to quickly search scripts'></div>
-          <button class="pill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8z"/><path d="M18 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg>AI</button>
-          <button class="pill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 21l1.8-5.5A8 8 0 1 1 21 12z"/></svg>Scripts</button>
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M5 4L2 7M19 4l3 3" stroke-linecap="round"/></svg></button>
+          <button class="pill" id="cbAI"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8z"/><path d="M18 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg>AI</button>
+          <button class="pill" id="cbScripts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 21l1.8-5.5A8 8 0 1 1 21 12z"/></svg>Scripts</button>
+          <button class="icon-btn" id="cbSched"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M5 4L2 7M19 4l3 3" stroke-linecap="round"/></svg></button>
+        </div>
+        <div id="replyStrip" class="reply-strip hidden">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 5 5v3"/></svg>
+          <span class="rs-txt" id="replyStripTxt"></span>
+          <button class="rs-x" id="replyCancel" title="Cancel reply">✕</button>
+        </div>
+        <div class="comp-x" id="compX">
+          <span style="font-weight:700;color:#e2e2e2">PPV</span>
+          <label style="display:flex;align-items:center;gap:5px">$<input type="number" id="ppvPrice" min="0" step="0.01" placeholder="0.00"></label>
+          <label style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="ppvLock"> lock text</label>
+          <span id="prevStep" style="display:none;align-items:center;gap:5px" title="How many leading vault items ride UNLOCKED as free teasers on this PPV">
+            <span style="color:#8a8a8a">free previews</span>
+            <button class="btn-sm" id="prevMinus" style="padding:2px 9px">−</button>
+            <b id="prevN" style="min-width:16px;text-align:center;color:#e2e2e2">0</b>
+            <button class="btn-sm" id="prevPlus" style="padding:2px 9px">+</button>
+          </span>
+          <span id="attWrap" class="att"></span>
+          <span id="schedWrap" style="display:none;align-items:center;gap:6px">
+            <span style="color:#8a8a8a">at</span><input type="datetime-local" id="schedAt">
+          </span>
+          <button class="btn-sm" id="compXClear" style="margin-left:auto">Clear</button>
         </div>
         <div class="comp-r2">
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M3 10h18M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="6" width="18" height="12" rx="2"/><text x="12" y="15" font-size="7" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">GIF</text></svg></button>
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.6"/><path d="M4 18l5-4 4 3 3-2 4 3"/></svg></button>
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg></button>
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M20.6 13.4L13 21l-9-9V4h8l8.6 8.6a1.5 1.5 0 0 1 0 .8z"/><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none"/></svg></button>
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="4"/><path d="M16 12v1.5a2.5 2.5 0 0 0 5 0V12a9 9 0 1 0-3.5 7.1"/></svg></button>
-          <button class="icon-btn" style="font-weight:800;font-size:15px;color:#a9a9a9">Aa</button>
-          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17A15.5 15.5 0 0 1 9 11.24 15.7 15.7 0 0 1 6.83 8H4.75a17.7 17.7 0 0 0 2.83 4.56l-4.24 4.18L5 18l4-4 2.87 2.87.87-1.8zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12z"/></svg></button>
+          <button class="icon-btn" id="cbUpload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M3 10h18M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+          <button class="icon-btn" id="cbGif"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="6" width="18" height="12" rx="2"/><text x="12" y="15" font-size="7" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">GIF</text></svg></button>
+          <button class="icon-btn" id="cbVault"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.6"/><path d="M4 18l5-4 4 3 3-2 4 3"/></svg></button>
+          <button class="icon-btn" id="cbCal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg></button>
+          <button class="icon-btn" id="cbTag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M20.6 13.4L13 21l-9-9V4h8l8.6 8.6a1.5 1.5 0 0 1 0 .8z"/><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none"/></svg></button>
+          <button class="icon-btn" id="cbMention"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="4"/><path d="M16 12v1.5a2.5 2.5 0 0 0 5 0V12a9 9 0 1 0-3.5 7.1"/></svg></button>
+          <button class="icon-btn" id="cbAa" style="font-weight:800;font-size:15px;color:#a9a9a9">Aa</button>
+          <button class="icon-btn" id="cbTranslate"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17A15.5 15.5 0 0 1 9 11.24 15.7 15.7 0 0 1 6.83 8H4.75a17.7 17.7 0 0 0 2.83 4.56l-4.24 4.18L5 18l4-4 2.87 2.87.87-1.8zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12z"/></svg></button>
           <button class="send-btn" id="sendBtn">Send</button>
         </div>
       </div>
@@ -551,8 +767,9 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 
     <!-- ===== RIGHT PANEL ===== -->
     <div class="right" id="rightPanel">
-      <div class="right-head">Fan insights</div>
+      <div class="right-head" id="rightHead">Fan insights</div>
       <div class="right-body">
+       <div id="paneInsights" style="display:flex;flex-direction:column;gap:12px">
 
         <div class="card">
           <div class="card-head">
@@ -561,14 +778,20 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
             <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 15l6-6 6 6"/></svg></span>
           </div>
           <div class="spend-top">
-            <div class="spend-col"><div class="lbl">Total spend</div><div class="big" id="insTotal">$0</div></div>
-            <div class="spend-col"><div class="lbl">Last spend</div><div class="sub" id="insLast">— ago</div></div>
+            <div class="spend-col"><div class="lbl">Total spend</div><div class="big" id="insTotal">…</div></div>
+            <div class="spend-col"><div class="lbl">Last spend</div><div class="sub" id="insLast">…</div></div>
           </div>
-          <div class="tiny-line">- | -</div>
+          <div class="tiny-line" id="insTiny">…</div>
           <div class="hr"></div>
-          <div class="mrow"><span class="k">PPV</span><span class="v"><span class="vt" id="insPpvTotal">$0</span> Total<br><span class="va"><span id="insPpvAvg">–</span> Avg</span></span></div>
-          <div class="mrow"><span class="k">Tip</span><span class="v"><span class="vt" id="insTipTotal">$0</span> Total<br><span class="va"><span id="insTipAvg">–</span> Avg</span></span></div>
-          <div class="mrow plain"><span class="k">Highest spend</span><span class="v" id="insHighest">–</span></div>
+          <div class="mrow"><span class="k">PPV</span><span class="v"><span class="vt" id="insPpvTotal">…</span> Total<br><span class="va"><span id="insPpvAvg">–</span> Avg</span></span></div>
+          <div class="mrow"><span class="k">Tip</span><span class="v"><span class="vt" id="insTipTotal">…</span> Total<br><span class="va"><span id="insTipAvg">–</span> Avg</span></span></div>
+          <div class="mrow plain"><span class="k">Highest spend</span><span class="v" id="insHighest">…</span></div>
+          <div id="insSparkWrap" style="display:none">
+            <div class="hr"></div>
+            <div class="mrow plain" style="margin-bottom:4px"><span class="k">Purchases over time</span><span class="v insSparkOpen" id="insSparkOpen" title="Open the full sales history" style="cursor:pointer;color:var(--blue-txt)">Full history ↗</span></div>
+            <div class="bars" id="insSparkBars"></div>
+            <div class="axis" id="insSparkAxis"></div>
+          </div>
         </div>
 
         <div class="card">
@@ -587,10 +810,10 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
             <span class="ct">Subscription</span>
             <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 15l6-6 6 6"/></svg></span>
           </div>
-          <div class="mrow plain"><span class="k">Status</span><span class="v" id="subStatus">Expired</span></div>
-          <div class="mrow plain"><span class="k">Cost</span><span class="v" id="subCost">free</span></div>
-          <div class="mrow plain"><span class="k">Duration</span><span class="v" id="subDuration">-</span></div>
-          <div class="mrow plain"><span class="k">Auto-renewal</span><span class="v" id="subRenewal">Off</span></div>
+          <div class="mrow plain"><span class="k">Status</span><span class="v" id="subStatus">…</span></div>
+          <div class="mrow plain"><span class="k">Cost</span><span class="v" id="subCost">…</span></div>
+          <div class="mrow plain"><span class="k">Duration</span><span class="v" id="subDuration">…</span></div>
+          <div class="mrow plain"><span class="k">Auto-renewal</span><span class="v" id="subRenewal">…</span></div>
         </div>
 
         <div class="card">
@@ -600,154 +823,58 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
             <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 15l6-6 6 6"/></svg></span>
           </div>
           <div class="mrow"><span class="k" style="display:flex;align-items:center;gap:6px">Nickname <svg class="info-i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01" stroke-linecap="round"/></svg></span>
-            <span class="v"><span class="nick-edit"><span id="profNick">baby</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 4l6 6L8 22H2v-6z" /></svg></span></span></div>
+            <span class="v"><span class="nick-edit"><span id="profNick">…</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 4l6 6L8 22H2v-6z" /></svg></span></span></div>
+          <div class="mrow"><span class="k" title="VIP / whale markers — same tags the real app uses">Tags</span>
+            <span class="v"><span class="nick-edit" id="tagsEdit" style="cursor:pointer"><span id="profTags">…</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 4l6 6L8 22H2v-6z" /></svg></span></span></div>
+          <div class="mrow"><span class="k" title="Per-fan language override (ISO 639-1) — steers the AI's language for this fan">Language</span>
+            <span class="v"><span class="nick-edit" id="langEdit" style="cursor:pointer"><span id="profLang">…</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 4l6 6L8 22H2v-6z" /></svg></span></span></div>
           <div class="mrow"><span class="k">Birthday</span><span class="v" style="display:flex;align-items:center;gap:8px;color:var(--muted)">Select date <svg class="cal-i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg></span></div>
           <div style="margin-top:10px">
-            <div class="loc-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 21s7-5.2 7-11a7 7 0 1 0-14 0c0 5.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.4"/></svg><span id="profLoc">Unknown</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:14px;height:14px"><path d="M6 9l6 6 6-6"/></svg></div>
+            <div class="loc-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 21s7-5.2 7-11a7 7 0 1 0-14 0c0 5.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.4"/></svg><span id="profLoc">…</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:14px;height:14px"><path d="M6 9l6 6 6-6"/></svg></div>
           </div>
         </div>
 
+       </div>
+
+       <div id="paneSales" class="hidden"></div>
+       <div id="paneNotes" class="hidden"></div>
+
       </div>
       <div class="right-tabs">
-        <button class="rtab active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="2.6"/></svg>Insights</button>
-        <button class="rtab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20.6 13.4L13 21l-9-9V4h8l8.6 8.6a1.5 1.5 0 0 1 0 .8z"/><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none"/></svg>Sales</button>
-        <button class="rtab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>Notes</button>
+        <button class="rtab active" id="rtInsights"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="2.6"/></svg>Insights</button>
+        <button class="rtab" id="rtSales"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20.6 13.4L13 21l-9-9V4h8l8.6 8.6a1.5 1.5 0 0 1 0 .8z"/><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none"/></svg>Sales</button>
+        <button class="rtab" id="rtNotes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>Notes</button>
       </div>
     </div>
 
   </div>
 </div>
 
-<script>
-(function(){
-  var mediaBadgeSVG = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8"><path d="M15 8l5-3v14l-5-3v-2z"/><rect x="3" y="6" width="12" height="12" rx="2"/></svg>';
-
-  var threads = {
-    emma:
-      '<div class="msg-block">'+
-        '<div class="ppv-card">'+
-          '<div class="ppv-badge">'+mediaBadgeSVG+'11</div>'+
-          '<button class="unlock-btn">UNLOCK FOR $35</button>'+
-        '</div>'+
-        '<div class="ppv-text">'+
-          '<div class="ppv-title">Made something just for you 💛</div>'+
-          '<p>You said you wanted something special, so I put this together just for you — unlock to see the full thing.</p>'+
-          '<div class="ppv-title small">💛 A behind-the-scenes cut<br>💛 A few bonus clips<br>💛 A little note at the end</div>'+
-          '<p>Hope it makes your night a little brighter.</p>'+
-          '<p>Let me know what you think when you get a sec 😊</p>'+
-        '</div>'+
-        '<div class="msg-avatar-row"><div class="mini-avatar"></div></div>'+
-        '<div class="msg-meta">$35.00 · not paid · 4:46 am</div>'+
-      '</div>'+
-      '<div class="bubble in">Hey! How\'s your day going? 😊<span class="btime">4:48 am</span></div>'+
-      '<div class="bubble out">Pretty good! Just uploaded something new for you 🎬<span class="btime">4:49 am</span></div>'+
-      '<div class="bubble in">Ooh, can\'t wait to check it out 💛<span class="btime">4:50 am</span></div>',
-    jake:
-      '<div class="bubble in">Hey, love your content — just subscribed 🙌<span class="btime">Jul 20</span></div>'+
-      '<div class="bubble out">Welcome aboard! So glad you\'re here 💛<span class="btime">Jul 20</span></div>'+
-      '<div class="ppv-mini"><div class="pm-title">🎬 Custom video</div><div class="paid-tag">$30.00 · paid · Jul 20</div></div>'+
-      '<div class="bubble in">That was awesome, worth every penny 😄<span class="btime">Jul 20</span></div>'+
-      '<div class="bubble out">Haha thank you! More coming soon 🎥<span class="btime">Jul 20</span></div>',
-    chris:
-      '<div class="bubble out">Thanks so much for the support! 🙏<span class="btime">Jul 16</span></div>'+
-      '<div class="bubble in">Of course — love what you do 😊<span class="btime">Jul 16</span></div>'+
-      '<div class="bubble in">Send me the next one when it\'s ready 👀<span class="btime">Jul 16</span></div>'+
-      '<div class="bubble out">You got it — working on something good 🎬<span class="btime">Jul 16</span></div>'
-  };
-
-  var insights = {
-    emma:  {total:'$0',   last:'— ago', ppvTotal:'$0',   ppvAvg:'–',   tipTotal:'$0',  tipAvg:'–',  highest:'–',    power:'Insufficient data', charge:'Unknown', status:'Expired', cost:'free',   duration:'-',    renewal:'Off', nick:'baby',  loc:'Unknown'},
-    jake:  {total:'$48',  last:'2d ago',ppvTotal:'$30',  ppvAvg:'$15', tipTotal:'$18', tipAvg:'$9', highest:'$30',  power:'Low',               charge:'Low',     status:'Active',  cost:'$9.99',  duration:'3 mo', renewal:'On',  nick:'champ', loc:'United States'},
-    chris: {total:'$333', last:'5d ago',ppvTotal:'$300', ppvAvg:'$60', tipTotal:'$33', tipAvg:'$11',highest:'$120', power:'High',              charge:'Unknown', status:'Expired', cost:'free',   duration:'-',    renewal:'Off', nick:'—',     loc:'Unknown'}
-  };
-
-  var $ = function(id){return document.getElementById(id);};
-  var center = $('center');
-  var threadHead = $('threadHead');
-  var threadBody = $('threadBody');
-  var composer = $('composer');
-  var emptyState = $('emptyState');
-  var rightPanel = $('rightPanel');
-
-  function applyInsights(k){
-    var d = insights[k];
-    $('insTotal').textContent = d.total;
-    $('insLast').textContent = d.last;
-    $('insPpvTotal').textContent = d.ppvTotal;
-    $('insPpvAvg').textContent = d.ppvAvg;
-    $('insTipTotal').textContent = d.tipTotal;
-    $('insTipAvg').textContent = d.tipAvg;
-    $('insHighest').textContent = d.highest;
-    $('insPower').textContent = d.power;
-    $('insCharge').textContent = d.charge;
-    $('subStatus').textContent = d.status;
-    $('subCost').textContent = d.cost;
-    $('subDuration').textContent = d.duration;
-    $('subRenewal').textContent = d.renewal;
-    $('profNick').textContent = d.nick;
-    $('profLoc').textContent = d.loc;
-  }
-
-  function selectRow(row){
-    document.querySelectorAll('.conv').forEach(function(c){c.classList.remove('selected');});
-    row.classList.add('selected');
-
-    $('thName').textContent = row.getAttribute('data-name');
-    $('thVf').style.display = row.getAttribute('data-verified')==='1' ? '' : 'none';
-
-    var status = $('thStatus');
-    if(row.getAttribute('data-status')==='online'){
-      status.classList.remove('off');
-      status.innerHTML = '<span class="sdot"></span>Available now';
-    }else{
-      status.classList.add('off');
-      status.innerHTML = '<span class="sdot"></span>Offline';
-    }
-
-    threadBody.innerHTML = threads[row.getAttribute('data-thread')] || '';
-    threadBody.scrollTop = threadBody.scrollHeight;
-    applyInsights(row.getAttribute('data-insights'));
-
-    threadHead.style.display = '';
-    threadBody.style.display = '';
-    composer.style.display = '';
-    emptyState.style.display = 'none';
-    rightPanel.style.display = '';
-  }
-
-  function clearSelection(){
-    document.querySelectorAll('.conv').forEach(function(c){c.classList.remove('selected');});
-    threadHead.style.display = 'none';
-    threadBody.style.display = 'none';
-    composer.style.display = 'none';
-    emptyState.style.display = 'flex';
-    rightPanel.style.display = 'none';
-  }
-
-  document.querySelectorAll('.conv').forEach(function(row){
-    row.addEventListener('click', function(e){
-      if(e.target.classList.contains('cx')){ // row × just deselects that row
-        e.stopPropagation();
-      }
-      if(row.classList.contains('selected')){
-        clearSelection();
-      }else{
-        selectRow(row);
-      }
-    });
+<script id="demoClear">/* Parse-time honesty pass: the skin ships baked conversations and unread
+ * counters. Fastt.ready only fires after /admin/accounts resolves and the first
+ * /api/of/v2/chats can take 10-30s on a cold OF assemble — so blank the invented
+ * rows and counts NOW, before anything fabricated can read as live data. */
+(function () {
+  var rows = document.getElementById('rows');
+  if (rows) rows.innerHTML = new Array(6).join('|').split('|').map(function () {
+    return '<div class="skel-row"><div class="skel-av"></div><div class="skel-lines">' +
+      '<div class="skel-bar w1"></div><div class="skel-bar w2"></div></div></div>';
+  }).join('');
+  // The baked single creator tab (with its invented 2/4 counters) is replaced by
+  // the real roster strip in the wiring script — blank it NOW so no fabricated
+  // unread count is ever on screen, not even for one frame.
+  var ctabs = document.getElementById('ctabs');
+  if (ctabs) ctabs.innerHTML = '<span class="ctabs-empty">Loading creators…</span>';
+  ['.notif-badge', '.mini-badge.red', '.mini-badge.grn'].forEach(function (sel) {
+    var el = document.querySelector(sel);
+    if (el) el.style.display = 'none';
   });
-
-  // composer send-button enable state
-  var input = $('composerInput');
-  var send = $('sendBtn');
-  input.addEventListener('input', function(){
-    if(input.value.trim().length){ send.classList.add('active'); }
-    else{ send.classList.remove('active'); }
-  });
-
-  // init: Emma selected
-  selectRow(document.querySelector('.conv.selected') || document.querySelector('.conv'));
-})();
-</script>
+  // Pinned / Priority / Unread chip counts — re-shown only with real numbers.
+  Array.prototype.forEach.call(document.querySelectorAll('.chips .chip .cbadge'),
+    function (b) { b.style.display = 'none'; });
+})();</script>
+<script src="_shared/fastt.js"></script>
+<script src="_shared/vault-media.js"></script>
+<script src="messages.js"></script>
 </body>
 </html>

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Automations Overview</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -391,6 +390,45 @@
   .xt tr.dis .en{color:#8a8a8a}
   .xt tr.dis .en i{background:#5a5a5a}
   .xt-foot{font-size:12.5px;color:#7f7f7f;margin-top:10px}
+
+  /* ---- per-card last-run strip ---- */
+  .tc-run{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:9px;font-size:11.5px;color:var(--muted2);line-height:1.5}
+  .tc-run .st{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:10px;
+    font-weight:600;font-size:10.5px;letter-spacing:.02em;background:#1c1c1c;border:1px solid var(--border-soft);color:#9a9a9a}
+  .tc-run .st.ok{color:var(--green);border-color:rgba(103,209,174,.32);background:rgba(103,209,174,.1)}
+  .tc-run .st.error{color:#e05b5b;border-color:rgba(224,91,91,.35);background:rgba(224,91,91,.1)}
+  .tc-run .st.running{color:#c9d3ff;border-color:rgba(65,102,246,.35);background:rgba(65,102,246,.12)}
+  .tc-run .st.queued{color:#e8cf9a;border-color:rgba(254,188,46,.3);background:rgba(254,188,46,.08)}
+  .tc-run .etxt{color:#e05b5b;flex-basis:100%}
+
+  /* ---- run history ---- */
+  .rh-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-top:26px}
+  .rh-h{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:600;color:#fff;flex-wrap:wrap}
+  .rh-h .r{margin-left:auto;font-size:12px;font-weight:500;color:var(--muted)}
+  .rh-sub{font-size:13px;color:var(--muted);line-height:1.5;margin-top:3px}
+  .rh-list{margin-top:12px;border-top:1px solid #262626}
+  .rh-row{display:flex;align-items:center;gap:12px;padding:9px 4px;border-bottom:1px solid #242424;cursor:pointer}
+  .rh-row:hover{background:#282828}
+  .rh-row .cv{width:12px;color:#8a8a8a;font-size:12px;line-height:1;flex:0 0 12px}
+  .rh-list .st{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:10px;
+    font-size:10.5px;font-weight:600;letter-spacing:.02em;background:#1c1c1c;border:1px solid var(--border-soft);color:#9a9a9a}
+  .rh-list .st.ok{color:var(--green);border-color:rgba(103,209,174,.32);background:rgba(103,209,174,.1)}
+  .rh-list .st.error{color:#e05b5b;border-color:rgba(224,91,91,.35);background:rgba(224,91,91,.1)}
+  .rh-list .st.running{color:#c9d3ff;border-color:rgba(65,102,246,.35);background:rgba(65,102,246,.12)}
+  .rh-d .st{height:18px;padding:0 7px;font-size:10px}
+  .rh-row .kd{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;color:#e6e6e6;flex:1;min-width:0;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rh-row .lb{font-size:12px;color:var(--muted2);flex:1.2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rh-row .ag{font-size:12px;color:var(--muted);width:120px;text-align:right;flex:0 0 120px;font-variant-numeric:tabular-nums}
+  .rh-row .nn{font-size:11.5px;color:#6a6a6a;width:66px;text-align:right;flex:0 0 66px}
+  .rh-err{font-size:12px;color:#e05b5b;padding:0 4px 9px 28px;border-bottom:1px solid #242424;line-height:1.5}
+  .rh-detail{padding:4px 4px 12px 28px;border-bottom:1px solid #242424;display:none}
+  .rh-detail.open{display:block}
+  .rh-d{font-size:11.5px;color:var(--muted2);padding:5px 0;border-left:1px solid #2c2c2c;padding-left:11px;
+    display:flex;gap:9px;flex-wrap:wrap;align-items:baseline}
+  .rh-d .js{flex-basis:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#8f8f8f;
+    word-break:break-word;line-height:1.5}
+  .rh-empty{font-size:13px;color:var(--muted);padding:14px 0}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -415,13 +453,68 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="rx-css">
+  /* expert-view rule manager: toolbar + per-row actions + inline editor */
+  .rx-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+  .rx-toolbar .sp{flex:1}
+  .xt th.rx-ah,.xt td.rx-actcell{text-align:right;white-space:nowrap}
+  .rx-act{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 9px;border-radius:7px;
+    border:1px solid var(--border);background:#1c1c1c;color:#cfcfcf;font:600 11.5px Inter,sans-serif;
+    cursor:pointer;margin-left:5px}
+  .rx-act:hover{border-color:#4a4a4a;color:#fff}
+  .rx-act.run:hover{border-color:rgba(65,102,246,.5);color:#c9d3ff}
+  .rx-act.del:hover{border-color:rgba(224,91,91,.5);color:#e05b5b}
+  .rx-modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;
+    justify-content:center;z-index:200;padding:24px}
+  .rx-modal.open{display:flex}
+  .rx-panel{width:640px;max-width:100%;max-height:88vh;overflow-y:auto;background:#1c1c1c;
+    border:1px solid #333;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .rx-panel::-webkit-scrollbar{width:9px}.rx-panel::-webkit-scrollbar-thumb{background:#2c2c2c;border-radius:5px}
+  .rx-head{display:flex;align-items:center;gap:10px;padding:18px 22px;border-bottom:1px solid var(--border);position:sticky;top:0;background:#1c1c1c;z-index:1}
+  .rx-head h3{font-size:16px;font-weight:600;color:#fff}
+  .rx-head .kd{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#8a8a8a;background:#151515;
+    border:1px solid #2c2c2c;padding:2px 7px;border-radius:6px}
+  .rx-head .sp{flex:1}
+  .rx-x{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+    color:#9a9a9a;cursor:pointer;font-size:15px;background:transparent;border:0}
+  .rx-x:hover{background:#262626;color:#fff}
+  .rx-body{padding:20px 22px}
+  .rx-body .fx-field{margin-bottom:14px}
+  .rx-row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+  .rx-cad{display:flex;gap:8px;align-items:center}
+  .rx-cad .fx-input{width:88px;flex:0 0 88px}
+  .rx-cad .fx-select{flex:1}
+  .rx-enrow{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .rx-knobs{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px}
+  .rx-knobs .full{grid-column:1 / -1}
+  .rx-lbl{font-size:12.5px;font-weight:500;color:#b9b9b9;margin-bottom:6px;display:block}
+  .rx-lbl code{color:#8fa6ff;font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+  .rx-hint{font-size:11.5px;color:var(--muted2)}
+  .rx-sum{background:#161616;border:1px solid var(--border-soft);border-radius:9px;padding:10px 13px;
+    font-size:12.5px;color:var(--muted);line-height:1.5;margin-bottom:16px}
+  .rx-sum .ex{color:#8fa6ff}
+  .rx-adv-t{display:flex;align-items:center;gap:8px;margin:16px 0 4px;cursor:pointer;user-select:none;
+    font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted2)}
+  .rx-adv-t .cv{transition:transform .15s}
+  .rx-adv-t.open .cv{transform:rotate(90deg)}
+  .rx-adv-b{display:none;padding-top:12px}
+  .rx-adv-b.open{display:block}
+  .rx-jsonlink{font-size:11.5px;color:#8fa6ff;cursor:pointer;margin-left:auto}
+  .rx-jsonlink:hover{text-decoration:underline}
+  textarea.rx-json{width:100%;min-height:120px;background:#151515;border:1px solid var(--border);border-radius:9px;
+    color:#eee;font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:10px 12px;outline:none;resize:vertical;line-height:1.5}
+  .rx-foot{display:flex;align-items:center;gap:10px;padding:16px 22px;border-top:1px solid var(--border);
+    position:sticky;bottom:0;background:#1c1c1c}
+  .rx-foot .eq{margin-left:auto;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .rx-err{color:#e05b5b;font-size:12.5px;margin:10px 0 0;white-space:pre-wrap;line-height:1.5}
+  .rx-warn{color:#e8cf9a;font-size:11.5px;margin-top:8px;line-height:1.5}
+</style>
 </head>
 <body>
 <div class="app">
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -500,7 +593,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -529,55 +622,59 @@
       <div class="sec-head">
         <div class="sec-title">Automations</div>
         <span class="pgsub">Every switch below is one background worker. Flip it on and it runs on its own — fine-tune on its Configure page.</span>
+        <span style="flex:1"></span>
+        <button class="fx-btn ghost" id="pg-refresh" type="button" title="Reload rules and run log from the relay">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12a8 8 0 1 1-2.4-5.7" stroke-linecap="round"/><path d="M20 4v4h-4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Refresh
+        </button>
       </div>
 
       <!-- status hero -->
-      <div class="hero-line">17 automations running<span class="sep">·</span><span class="ok">all healthy</span></div>
-      <div class="hero-sub">Isabelle runs the lean set: 10</div>
+      <!-- Every number in this hero is painted from /admin/automation-rules by
+           wire-js below. The markup ships with neutral placeholders on purpose:
+           if the wiring never runs, the page must not show invented counts. -->
+      <div class="hero-line"><span style="color:#8a8a8a">Loading automations…</span></div>
+      <div class="hero-sub">Reading rules from the relay…</div>
       <div class="fx-status" style="margin:12px 0 2px">
-        <span class="fx-st ok"><i></i>Executor ticking · last run 2 min ago</span>
-        <span class="fx-st"><i></i>Next: Welcome in 4 min</span>
-        <span class="fx-st"><i></i>1,417 sends today</span>
-        <span class="fx-st"><i></i>DeepSeek V4 Flash</span>
-        <span class="fx-st"><i></i>$0.17 AI spend today</span>
+        <span class="fx-st"><i></i>Loading live status…</span>
       </div>
 
       <!-- ===== 1 · AI Selling ===== -->
       <div class="aut-sec">
-        <div class="aut-sec-h"><span class="dot" style="background:#4166f6"></span><span class="t">AI Selling</span><span class="c">4 of 5 running</span></div>
+        <div class="aut-sec-h"><span class="dot" style="background:#4166f6"></span><span class="t">AI Selling</span><span class="c">…</span></div>
         <div class="aut-grid">
 
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" data-kind="ai_chatter">
             <div class="fx-tc-row">
               <div class="fx-tc-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">AI Chatter</div>
                 <div class="fx-tc-desc">Chats and sells in DMs when a fan leans in. Whales ($2,000+) always go to your team.</div>
-                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>every 1 min</span>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Running</span><span class="fx-switch on"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="ai-chatter.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
           </div>
 
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" data-kind="autoreply">
             <div class="fx-tc-row">
               <div class="fx-tc-ico green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01" stroke-linecap="round"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">Auto Convo</div>
                 <div class="fx-tc-desc">One casual check-in to a quiet fan the AI knows. Never sells, never repeats itself.</div>
-                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>every 3 min</span>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Running</span><span class="fx-switch on"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="ai-auto-convo.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
           </div>
 
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" data-kind="reengage_buyers">
             <div class="fx-tc-row">
               <div class="fx-tc-ico teal"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 1 1-2.4-5.7" stroke-linecap="round"/><path d="M20 4v4h-4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
               <div class="fx-tc-body">
@@ -585,13 +682,28 @@
                 <div class="fx-tc-desc">One warm hello to buyers quiet for a day, then AI Chatter takes over. Soft tone, max 25 a run.</div>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Running</span><span class="fx-switch on"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="ai-reengage.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
           </div>
 
-          <div class="fx-togglecard">
+          <div class="fx-togglecard" data-kind="welcome_chatter_for_info">
+            <div class="fx-tc-row">
+              <div class="fx-tc-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/><path d="M9.6 9.8a2.4 2.4 0 0 1 4.6.9c0 1.5-2.3 1.9-2.3 3.2" stroke-linecap="round"/><circle cx="12" cy="16.4" r=".8" fill="currentColor" stroke="none"/></svg></div>
+              <div class="fx-tc-body">
+                <div class="fx-tc-title">Get to know fans</div>
+                <div class="fx-tc-desc">The warm-up chatter — one gentle question at a time, building each fan's profile. Not the seller.</div>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
+              </div>
+              <div class="tc-right">
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
+                <a class="cfg" href="ai-chatter.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+              </div>
+            </div>
+          </div>
+
+          <div class="fx-togglecard" data-cfg="rhythm">
             <div class="fx-tc-row">
               <div class="fx-tc-ico amber"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
               <div class="fx-tc-body">
@@ -599,7 +711,7 @@
                 <div class="fx-tc-desc">Human pacing — wait, type, pause, sleep at night. Off means replies arrive instantly.</div>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Off</span><span class="fx-switch"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="ai-reply-timing.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
@@ -610,65 +722,95 @@
 
       <!-- ===== 2 · Outreach & Blasts ===== -->
       <div class="aut-sec">
-        <div class="aut-sec-h"><span class="dot" style="background:#e8a24e"></span><span class="t">Outreach &amp; Blasts</span><span class="c">4 of 4 running</span></div>
+        <div class="aut-sec-h"><span class="dot" style="background:#e8a24e"></span><span class="t">Outreach &amp; Blasts</span><span class="c">…</span></div>
         <div class="aut-grid">
 
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" data-kind="mass_nudge">
             <div class="fx-tc-row">
               <div class="fx-tc-ico amber"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">Broadcast</div>
                 <div class="fx-tc-desc">One tease to everyone online when you want a push.</div>
-                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>every 1 min (Ava)</span>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Running</span><span class="fx-switch on"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="outreach-broadcast.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
-                <span class="tc-hint">Ava: on · others: off</span>
+                <a class="cfg" href="mass-nudge.html">Message lines <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
           </div>
 
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" data-kind="reply_mass_funnel">
             <div class="fx-tc-row">
               <div class="fx-tc-ico teal"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16l-6 7v5l-4 2v-7L4 5z" stroke-linejoin="round"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">Funnels</div>
                 <div class="fx-tc-desc">Walks fans who reply to a blast through a step-by-step chat that ends in a paid unlock.</div>
-                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>every 2 min</span>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Running</span><span class="fx-switch on"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="funnels.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
           </div>
 
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" data-kind="send_followup">
             <div class="fx-tc-row">
               <div class="fx-tc-ico green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10.5 19a2 2 0 0 0 3 0" stroke-linecap="round"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">Follow-ups</div>
                 <div class="fx-tc-desc">Nudges fans who went silent — up to three gentle notes spread over ten days.</div>
-                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>every 45 min</span>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Running</span><span class="fx-switch on"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="outreach-followups.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
           </div>
 
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" data-kind="nudge_online">
+            <div class="fx-tc-row">
+              <div class="fx-tc-ico green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3.2"/><path d="M6.7 6.7a7.5 7.5 0 0 0 0 10.6M17.3 6.7a7.5 7.5 0 0 1 0 10.6" stroke-linecap="round"/><path d="M3.9 3.9a11.5 11.5 0 0 0 0 16.2M20.1 3.9a11.5 11.5 0 0 1 0 16.2" stroke-linecap="round"/></svg></div>
+              <div class="fx-tc-body">
+                <div class="fx-tc-title">Nudge online</div>
+                <div class="fx-tc-desc">Catches each fan the moment they come online and sends one personal note after a short delay.</div>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
+              </div>
+              <div class="tc-right">
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
+                <a class="cfg" href="outreach-broadcast.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+              </div>
+            </div>
+          </div>
+
+          <div class="fx-togglecard" data-kind="mass_premade">
+            <div class="fx-tc-row">
+              <div class="fx-tc-ico amber"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="14" height="11" rx="2"/><path d="M7 20h14V9" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+              <div class="fx-tc-body">
+                <div class="fx-tc-title">Premade mass</div>
+                <div class="fx-tc-desc">Fires ready-written broadcasts on a timer — can resend later and clean itself up afterwards.</div>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
+              </div>
+              <div class="tc-right">
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
+                <a class="cfg" href="outreach-mass-message.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+              </div>
+            </div>
+          </div>
+
+          <div class="fx-togglecard" data-kind="ppv_send">
             <div class="fx-tc-row">
               <div class="fx-tc-ico pink"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M12 13.5v3" stroke-linecap="round"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">PPV Library</div>
                 <div class="fx-tc-desc">Sends your ready-made paid drops to the right fans at the right time. Prices $3–$200.</div>
-                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>2–7 days per PPV</span>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Running</span><span class="fx-switch on"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="ai-scripts-pricing.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
@@ -679,25 +821,25 @@
 
       <!-- ===== 3 · Onboarding ===== -->
       <div class="aut-sec">
-        <div class="aut-sec-h"><span class="dot" style="background:#67d1ae"></span><span class="t">Onboarding</span><span class="c">1 of 2 running</span></div>
+        <div class="aut-sec-h"><span class="dot" style="background:#67d1ae"></span><span class="t">Onboarding</span><span class="c">…</span></div>
         <div class="aut-grid">
 
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" data-kind="send_welcome">
             <div class="fx-tc-row">
               <div class="fx-tc-ico green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">Welcome</div>
                 <div class="fx-tc-desc">Greets every new subscriber within minutes, matched to their time of day.</div>
-                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>every 2–5 min</span>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Running</span><span class="fx-switch on"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="onboarding-welcome.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
           </div>
 
-          <div class="fx-togglecard">
+          <div class="fx-togglecard" data-kind="process_old_fans">
             <div class="fx-tc-row">
               <div class="fx-tc-ico purple"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v10M8 9l4 4 4-4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke-linecap="round"/></svg></div>
               <div class="fx-tc-body">
@@ -705,7 +847,7 @@
                 <div class="fx-tc-desc">One-time pass that introduces the AI to fans from before you installed it.</div>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Off</span><span class="fx-switch"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="onboarding-import.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
@@ -716,25 +858,25 @@
 
       <!-- ===== 4 · Tips & Rewards ===== -->
       <div class="aut-sec">
-        <div class="aut-sec-h"><span class="dot" style="background:#ec4b9b"></span><span class="t">Tips &amp; Rewards</span><span class="c">1 of 2 running</span></div>
+        <div class="aut-sec-h"><span class="dot" style="background:#ec4b9b"></span><span class="t">Tips &amp; Rewards</span><span class="c">…</span></div>
         <div class="aut-grid">
 
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" data-cfg="tip_reward">
             <div class="fx-tc-row">
               <div class="fx-tc-ico pink"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="9" width="16" height="11" rx="2"/><path d="M4 12h16M12 9v11" stroke-linecap="round"/><path d="M12 9c-4 0-5-1.6-5-3 0-1.2 1-2 2.2-2C11 4 12 6 12 9zm0 0c4 0 5-1.6 5-3 0-1.2-1-2-2.2-2C13 4 12 6 12 9z"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">Tip Rewards</div>
                 <div class="fx-tc-desc">A tip triggers a thank-you gift — one free pic per $10, up to five, within 72 hours.</div>
-                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>event-driven</span>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Running</span><span class="fx-switch on"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="tips-rewards.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
           </div>
 
-          <div class="fx-togglecard">
+          <div class="fx-togglecard" data-cfg="make_right">
             <div class="fx-tc-row">
               <div class="fx-tc-ico red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20s-7-4.4-7-9.6A4.2 4.2 0 0 1 12 7.3a4.2 4.2 0 0 1 7 3.1c0 5.2-7 9.6-7 9.6z" stroke-linejoin="round"/></svg></div>
               <div class="fx-tc-body">
@@ -742,7 +884,7 @@
                 <div class="fx-tc-desc">Spots a double-charged fan and makes it right — apology plus a free gift, automatically.</div>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Off</span><span class="fx-switch"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="tips-make-right.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
@@ -753,25 +895,40 @@
 
       <!-- ===== 5 · Fan Intelligence ===== -->
       <div class="aut-sec">
-        <div class="aut-sec-h"><span class="dot" style="background:#a78bfa"></span><span class="t">Fan Intelligence</span><span class="c">1 of 2 running</span></div>
+        <div class="aut-sec-h"><span class="dot" style="background:#a78bfa"></span><span class="t">Fan Intelligence</span><span class="c">…</span></div>
         <div class="aut-grid">
 
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" data-kind="gen_info">
             <div class="fx-tc-row">
               <div class="fx-tc-ico purple"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="12" cy="10" r="2.3"/><path d="M8.5 16c.5-1.7 1.8-2.5 3.5-2.5s3 .8 3.5 2.5" stroke-linecap="round"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">Auto-learn fans</div>
                 <div class="fx-tc-desc">Reads each chat and keeps a profile per fan — name, job, likes. Every automation uses it.</div>
-                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>every 24 h · Ava: 45 min</span>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Running</span><span class="fx-switch on"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="fans-auto-learn.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
           </div>
 
-          <div class="fx-togglecard">
+          <div class="fx-togglecard" data-kind="apply_profiles">
+            <div class="fx-tc-row">
+              <div class="fx-tc-ico teal"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20l1-4L16 5l3 3L8 19l-4 1z" stroke-linejoin="round"/><path d="M14 7l3 3" stroke-linecap="round"/></svg></div>
+              <div class="fx-tc-body">
+                <div class="fx-tc-title">Apply profiles</div>
+                <div class="fx-tc-desc">Writes the learned nickname and sticky note onto each fan — optionally onto OnlyFans itself.</div>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
+              </div>
+              <div class="tc-right">
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
+                <a class="cfg" href="fans-auto-learn.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+              </div>
+            </div>
+          </div>
+
+          <div class="fx-togglecard" data-kind="push_to_sheets">
             <div class="fx-tc-row">
               <div class="fx-tc-ico green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M4 10h16M10 4v16" stroke-linecap="round"/></svg></div>
               <div class="fx-tc-body">
@@ -779,7 +936,7 @@
                 <div class="fx-tc-desc">Copies fan profiles to one Google Sheet tab, read-only, once a day.</div>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Off</span><span class="fx-switch"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="fans-sheets-export.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
@@ -790,34 +947,34 @@
 
       <!-- ===== 6 · Content & Stories ===== -->
       <div class="aut-sec">
-        <div class="aut-sec-h"><span class="dot" style="background:#4bb7c9"></span><span class="t">Content &amp; Stories</span><span class="c">2 of 2 running</span></div>
+        <div class="aut-sec-h"><span class="dot" style="background:#4bb7c9"></span><span class="t">Content &amp; Stories</span><span class="c">…</span></div>
         <div class="aut-grid">
 
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" data-kind="auto_posts">
             <div class="fx-tc-row">
               <div class="fx-tc-ico teal"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h8l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M13 3v5h5M8 13h8M8 17h6" stroke-linecap="round"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">Auto Posts</div>
                 <div class="fx-tc-desc">Publishes your prepared feed posts one at a time, on a drip. Old ones can self-delete.</div>
-                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>every 3–7 h</span>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Running</span><span class="fx-switch on"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="content-auto-posts.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
           </div>
 
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" data-kind="auto_stories">
             <div class="fx-tc-row">
               <div class="fx-tc-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5" stroke-dasharray="2.6 2.4"/><path d="M12 9v6M9 12h6" stroke-linecap="round"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">Auto Stories</div>
                 <div class="fx-tc-desc">Posts a fresh photo from a vault folder as a story every evening, cleans up after itself.</div>
-                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>every 4–7 h</span>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Running</span><span class="fx-switch on"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="auto-stories.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
@@ -828,25 +985,50 @@
 
       <!-- ===== 7 · Housekeeping ===== -->
       <div class="aut-sec">
-        <div class="aut-sec-h"><span class="dot" style="background:#e5735b"></span><span class="t">Housekeeping</span><span class="c">1 of 1 running</span></div>
+        <div class="aut-sec-h"><span class="dot" style="background:#e5735b"></span><span class="t">Housekeeping</span><span class="c">…</span></div>
         <div class="aut-grid">
 
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" data-kind="unsend_messages">
             <div class="fx-tc-row">
               <div class="fx-tc-ico red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 14L4 9l5-5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9h9a7 7 0 0 1 0 14h-3" stroke-linecap="round"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">Auto-unsend</div>
                 <div class="fx-tc-desc">Quietly removes unsold mass messages after a few hours so inboxes stay clean.</div>
-                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>every 1 h</span>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
               </div>
               <div class="tc-right">
-                <div class="row"><span class="fx-tc-state">Running</span><span class="fx-switch on"></span></div>
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
+                <a class="cfg" href="settings.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+              </div>
+            </div>
+          </div>
+
+          <div class="fx-togglecard" data-kind="scrape_chats">
+            <div class="fx-tc-row">
+              <div class="fx-tc-ico purple"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6" stroke-linecap="round"/><path d="M4.5 12v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6" stroke-linecap="round"/></svg></div>
+              <div class="fx-tc-body">
+                <div class="fx-tc-title">Backfill chat history</div>
+                <div class="fx-tc-desc">Fills gaps in the message archive straight from OnlyFans, so every other automation reads a complete chat.</div>
+                <span class="tc-cad"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>…</span>
+              </div>
+              <div class="tc-right">
+                <div class="row"><span class="fx-tc-state">…</span><span class="fx-switch"></span></div>
                 <a class="cfg" href="settings.html">Configure <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
               </div>
             </div>
           </div>
 
         </div>
+      </div>
+
+      <!-- ===== Run history (automation_runs audit log) ===== -->
+      <div class="rh-card" id="rh-card">
+        <div class="rh-h">Recent runs
+          <span class="r" id="rh-count">…</span>
+        </div>
+        <div class="rh-sub">One row per automation, newest run first — status, when, and the executor's own stats.
+          Click a row for its recent history. Read-only; refreshes every 60&nbsp;s.</div>
+        <div class="rh-list" id="rh-list"><div class="rh-empty">Loading the run log…</div></div>
       </div>
 
       <!-- ===== Expert view (advanced drawer) ===== -->
@@ -857,43 +1039,46 @@
           <span class="h">the raw rules — exactly what the background executor sees</span>
         </div>
         <div class="fx-adv-body" id="adv-expert">
-          <div class="fx-note" style="margin-bottom:14px"><span>Each row below is one <b>automation_rules</b> record: a kind, a trigger, and an enabled flag. The cards above are friendly handles on these rows — <b>ppv_send</b> appears once per PPV in your library.</span></div>
+          <div class="fx-note" style="margin-bottom:14px"><span>Each row below is one <b>automation_rules</b> record: a kind, a trigger, and an enabled flag. The cards above are friendly handles on these rows — <b>ppv_send</b> appears once per PPV in your library. Edit cadence, quiet hours and per-run settings here; new rules are created <b>paused</b>.</span></div>
+          <div class="rx-toolbar">
+            <button class="fx-btn" id="rx-new" type="button">+ New rule</button>
+            <span class="sp"></span>
+            <span class="rx-hint" id="rx-toolcount"></span>
+          </div>
           <div class="xt-wrap">
             <table class="xt">
               <thead>
-                <tr><th>Name</th><th>Kind</th><th>Trigger</th><th>Enabled</th></tr>
+                <tr><th>Name</th><th>Kind</th><th>Trigger</th><th>Enabled</th><th class="rx-ah">Actions</th></tr>
               </thead>
               <tbody>
-                <tr><td class="rname">AI Chatter</td><td><span class="kind">ai_chatter</span></td><td class="trg">every_seconds 60</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">Info-gather</td><td><span class="kind">welcome_chatter_for_info</span></td><td class="trg">every_seconds 45</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">Auto Convo</td><td><span class="kind">autoreply</span></td><td class="trg">every_seconds 300</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">Profile fans</td><td><span class="kind">gen_info</span></td><td class="trg">every_seconds 3600</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">Apply nicknames &amp; notes</td><td><span class="kind">apply_profiles</span></td><td class="trg">every_seconds 3600</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">Welcome new subs</td><td><span class="kind">send_welcome</span></td><td class="trg">every_seconds 300</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">Follow-up drip</td><td><span class="kind">send_followup</span></td><td class="trg">every_seconds 3600</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">Reply funnel</td><td><span class="kind">reply_mass_funnel</span></td><td class="trg">every_seconds 300</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">PPV · Beach set</td><td><span class="kind">ppv_send</span></td><td class="trg">every_seconds 120</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">PPV · VIP set</td><td><span class="kind">ppv_send</span></td><td class="trg">every_seconds 120</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">PPV · Teasers</td><td><span class="kind">ppv_send</span></td><td class="trg">every_seconds 120</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">Auto-unsend sweep</td><td><span class="kind">unsend_messages</span></td><td class="trg">every_seconds 1800</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">Auto stories</td><td><span class="kind">auto_stories</span></td><td class="trg">daily_at 18:00 · max_runs 1</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">Auto posts</td><td><span class="kind">auto_posts</span></td><td class="trg">every_seconds 21600</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">Premade mass re-send</td><td><span class="kind">mass_premade</span></td><td class="trg">every_seconds 86400</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">Tip rewards</td><td><span class="kind">tip_reward</span></td><td class="trg">on_inbound_tip (event)</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr><td class="rname">Re-engage buyers</td><td><span class="kind">reengage_buyers</span></td><td class="trg">every_seconds 21600</td><td><span class="en"><i></i>enabled</span></td></tr>
-                <tr class="dis"><td class="rname">Nudge online</td><td><span class="kind">nudge_online</span></td><td class="trg">every_seconds 300</td><td><span class="en"><i></i>disabled</span></td></tr>
-                <tr class="dis"><td class="rname">Mass nudge</td><td><span class="kind">mass_nudge</span></td><td class="trg">daily_at 19:30</td><td><span class="en"><i></i>disabled</span></td></tr>
-                <tr class="dis"><td class="rname">Import old fans</td><td><span class="kind">process_old_fans</span></td><td class="trg">every_seconds 3600</td><td><span class="en"><i></i>disabled</span></td></tr>
-                <tr class="dis"><td class="rname">Sheets export</td><td><span class="kind">push_to_sheets</span></td><td class="trg">every_seconds 86400</td><td><span class="en"><i></i>disabled</span></td></tr>
-                <tr class="dis"><td class="rname">Make it right</td><td><span class="kind">make_right</span></td><td class="trg">every_seconds 3600</td><td><span class="en"><i></i>disabled</span></td></tr>
+                <!-- painted from /admin/automation-rules by wire-js; no demo rows here -->
+                <tr><td colspan="5" style="color:#8a8a8a">Loading rules…</td></tr>
               </tbody>
             </table>
           </div>
-          <div class="xt-foot">23 rules · 18 enabled · schedules run via the background executor — the UI never blocks on them.</div>
+          <div class="xt-foot">Loading rules… · schedules run via the background executor — the UI never blocks on them.</div>
         </div>
       </div>
 
     </main>
+  </div>
+
+  <!-- ===== inline rule editor (create / edit one automation_rules row) ===== -->
+  <div class="rx-modal" id="rx-modal">
+    <div class="rx-panel" role="dialog" aria-modal="true" aria-labelledby="rx-title">
+      <div class="rx-head">
+        <h3 id="rx-title">New rule</h3>
+        <span class="kd" id="rx-kindtag" style="display:none"></span>
+        <span class="sp"></span>
+        <button class="rx-x" id="rx-close" type="button" aria-label="Close editor">✕</button>
+      </div>
+      <div class="rx-body" id="rx-body"><!-- built by JS --></div>
+      <div class="rx-foot">
+        <button class="fx-btn" id="rx-save" type="button">Save</button>
+        <button class="fx-btn ghost" id="rx-cancel" type="button">Cancel</button>
+        <span class="eq" id="rx-eq"></span>
+      </div>
+    </div>
   </div>
 
   <div class="help">
@@ -902,6 +1087,7 @@
 
 </div>
 
+<script src="_shared/fastt.js"></script>
 <script>
   // ==== CANONICAL SIDEBAR JS (identical on every page — do not fork) ====
   (function(){
@@ -992,5 +1178,6 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="automations.js" id="wire-js"></script>
 </body>
 </html>

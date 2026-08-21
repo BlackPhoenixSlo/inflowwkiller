@@ -1118,9 +1118,18 @@ class OFClient:
 
     # ── Promotions / trials / tracking links ───────────────────
 
-    def promotions(self) -> dict:
-        """GET /api2/v2/promotions — my subscription promotions."""
-        return self.get_json(f"{API_BASE}/promotions")
+    def promotions(self, *, offset: int = 0, limit: int = 100) -> dict:
+        """GET /api2/v2/promotions — my subscription promotions.
+
+        PAGINATED. Verified live 2026-07-22 (Ava): the default page is only 10
+        items, `limit` is honoured to at least 100, and — importantly —
+        `hasMore` stayed true past offset 180 on a 230+ promo history. Do NOT
+        loop on hasMore; stop on a short or empty page. Reading page 1 alone
+        makes an older-but-LIVE promo look absent, which promo_reactivate would
+        read as "expired" and re-create.
+        """
+        return self.get_json(f"{API_BASE}/promotions",
+                             params={"offset": int(offset), "limit": int(limit)})
 
     def trials(self) -> dict:
         """GET /api2/v2/promotions?type=trial — trial-link campaigns (same endpoint
@@ -1553,6 +1562,50 @@ class OFClient:
     def unrestrict_user(self, user_id: str | int) -> Any:
         return self.delete_json(f"{API_BASE}/users/{user_id}/restrict")
 
+    # ── Follow / subscribe (creator → fan re-engagement) ──────
+    # Endpoints read straight out of OnlyFans' own web bundle (app.js), NOT
+    # guessed:
+    #   T = (e,t={}) => post(`/users/${e}/subscribe`, t)
+    #   E = (e,t={}) => post(`/users/${e}/resubscribe`, t)
+    #   P = (e,{reasonId}) => delete(`/users/${e}/subscribe`, {data:{reason}})
+    #
+    # ⚠️ MONEY: "subscribe" is OnlyFans' pay-to-subscribe action. It is free
+    # ONLY when the target's subscribePrice is 0 (a free profile). Following a
+    # fan whose profile is paid would CHARGE the creator. Callers MUST verify
+    # subscribePrice == 0 before calling follow_user — this method does not, and
+    # cannot, know the price.
+    #
+    # VERIFIED LIVE 2026-07-23 on the owned Ava→jaka loop (free profile):
+    # unfollow(reason=1) → subscribe re-follow works end-to-end, restores the
+    # edge with a FRESH expire clock, and OF RE-SENDS the "started following
+    # you" notification (seen on the target account within the minute).
+
+    def follow_user(self, user_id: str | int) -> Any:
+        """POST /api2/v2/users/{id}/subscribe — follow/subscribe to a user.
+        FREE only when their subscribePrice == 0; otherwise it PAYS. Gate first."""
+        return self.post_json(f"{API_BASE}/users/{user_id}/subscribe", json_body={})
+
+    def unfollow_user(self, user_id: str | int, *, reason_id: int = 1) -> Any:
+        """DELETE /api2/v2/users/{id}/subscribe — unfollow/unsubscribe.
+        `reason` is REQUIRED: an empty body 400s ("Invalid reason"); reason=1
+        is accepted. VERIFIED LIVE 2026-07-23 (Ava→jaka)."""
+        return self.delete_json(f"{API_BASE}/users/{user_id}/subscribe",
+                                json_body={"reason": reason_id})
+
+    def resubscribe_user(self, user_id: str | int) -> Any:
+        """POST /api2/v2/users/{id}/resubscribe — re-follow a LAPSED/EXPIRED
+        relationship. NOT for a just-unfollowed one: there it 400s
+        ("Resubscribe failed.") and the re-follow must go through
+        /subscribe instead. VERIFIED LIVE 2026-07-23 (Ava→jaka)."""
+        return self.post_json(f"{API_BASE}/users/{user_id}/resubscribe", json_body={})
+
+    def recent_expired_subscribers(self) -> Any:
+        """GET /api2/v2/subscriptions/subscribers/recent-expired?skip_users=all —
+        fans whose subscription to me lapsed recently. The re-engagement target
+        pool. Verified live."""
+        return self.get_json(f"{API_BASE}/subscriptions/subscribers/recent-expired",
+                             params={"skip_users": "all"})
+
     # ── Stories feed (for me as a fan) ─────────────────────────
 
     def stories_feed(self) -> list:
@@ -1821,14 +1874,25 @@ class OFClient:
     # /promotions returns every promo type (all / expired / trial / offer)
     # in one paginated list. Writes follow OF's standard CRUD shape.
 
-    def create_promo(self, *, price: float, subscribe_counts: int,
-                     subscribe_days: int = 0, message: str = "",
-                     type: str = "all") -> Any:
-        """POST /api2/v2/promotions — create a promo campaign.
-        `subscribe_counts` is the max number of claims; `subscribe_days` is
-        the duration of the discounted price (0 = lifetime)."""
+    def create_promo(self, *, subscribe_counts: int, subscribe_days: int = 30,
+                     discount: int | None = None, message: str = "",
+                     type: str = "all", price: float | None = None) -> Any:
+        """POST /api2/v2/promotions — create a subscription-DISCOUNT promo.
+
+        VERIFIED LIVE 2026-07-22 (Ava): OF requires `discount` — an INTEGER
+        PERCENT in [1, 100] off the current subscription price. `price` is NOT a
+        valid field; sending it without `discount` 400s:
+          {"errors":{"discount":["Discount is required","Discount must be an
+           integer","Discount must be at least 1","Discount must be no more
+           than 100"]}}
+        `subscribe_counts` caps claims; `subscribe_days` is the discounted-access
+        duration in days. The legacy `price=` kwarg is accepted but IGNORED
+        (kept so old callers don't TypeError) — pass `discount`."""
+        if discount is None:
+            raise ValueError("create_promo requires discount (integer percent 1-100)")
         return self.post_json(f"{API_BASE}/promotions", json_body={
-            "price": price, "subscribeCounts": subscribe_counts,
+            "discount": max(1, min(int(discount), 100)),
+            "subscribeCounts": subscribe_counts,
             "subscribeDays": subscribe_days,
             "message": message, "type": type,
         })
@@ -1848,9 +1912,12 @@ class OFClient:
 
     def create_tracking_link(self, *, name: str, code: int | None = None) -> Any:
         """POST /api2/v2/campaigns — register a new tracking link.
-        `name` shows in stats; `code` is the URL suffix int. If `code` omitted
-        OF auto-picks the next available."""
-        body: dict[str, Any] = {"campaignName": name}
+
+        The CREATE body field is `name` (verified live 2026-07-23: sending
+        `campaignName` 400s "Name is required"). Note the asymmetry — the LIST
+        response spells the same thing `campaignName`. `code` is the URL-suffix
+        int; if omitted OF auto-picks the next available. VERIFIED LIVE."""
+        body: dict[str, Any] = {"name": name}
         if code is not None:
             body["campaignCode"] = code
         return self.post_json(f"{API_BASE}/campaigns", json_body=body)
@@ -1863,9 +1930,16 @@ class OFClient:
     # GET /trials returns active trial-link entries; each has a public URL,
     # subscribeDays (free duration), subscribeCounts (cap), claimCounts.
 
-    def trial_links(self) -> list:
-        """GET /api2/v2/trials — free-trial link list with usage counts."""
-        return self.get_json(f"{API_BASE}/trials")
+    def trial_links(self, *, offset: int = 0, limit: int = 100) -> list:
+        """GET /api2/v2/trials — free-trial link list with usage counts.
+
+        PAGINATED, and the default page is only THREE items. Verified live
+        2026-07-22 (Ava): a bare call returned 3 of 18 links; limit=50 and
+        limit=100 both returned all 18. A bare call silently hides most of the
+        creator's links.
+        """
+        return self.get_json(f"{API_BASE}/trials",
+                             params={"offset": int(offset), "limit": int(limit)})
 
     def create_trial_link(self, *, name: str, subscribe_days: int = 7,
                           subscribe_counts: int = 1,

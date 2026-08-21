@@ -134,6 +134,28 @@ async def hero_media_map(
     return out
 
 
+async def seen_media(account_id: str, fan_id: int) -> set[int]:
+    """Media this fan has been SENT — every VaultSend row, bought or not.
+
+    The other half of the pair below: `owned_or_seen_media` answers "may we sell
+    him this again?" (purchased only), this one answers "has he laid eyes on it?"
+    (anything we delivered). A teaser picker wants freshness, so it reads THIS;
+    a resale guard wants proof of purchase, so it reads that one. Confusing them
+    is a money bug in both directions, which is why they sit together.
+
+    It lived as two byte-identical private copies — one in ai_chatter, one in
+    teaser_select — while the fan-to-media reads they belong beside were already
+    public here.
+    """
+    async with get_session() as s:
+        ids = (await s.execute(
+            select(VaultSend.media_id).where(
+                VaultSend.account_id == str(account_id),
+                VaultSend.fan_id == int(fan_id))
+        )).scalars().all()
+    return {int(x) for x in ids}
+
+
 async def owned_or_seen_media(account_id: str, fan_id: int) -> set[int]:
     """Media we must NOT re-offer this fan: only what he actually OWNS — a tip/PPV
     unlock (VaultSend.was_purchased) or a paid Message whose media JSON overlaps.

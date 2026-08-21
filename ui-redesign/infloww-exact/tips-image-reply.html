@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>fastt — Image Reply &amp; Teasers</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -395,6 +394,40 @@
   .tz-tile.lock b{font-size:12.5px;font-weight:700;color:#c9d3ff}
   .tz-arrow{display:flex;align-items:center;margin:0 2px;padding-bottom:20px}
   .fx-check .sub a{color:#7d97f8;text-decoration:none}
+  .tz-tile img{width:100%;height:100%;object-fit:cover;border-radius:8px;display:block}
+  .tz-tile.lock img{opacity:.35;position:absolute;inset:0}
+  .tz-tile.lock{position:relative;overflow:hidden}
+  .tz-tile.lock svg,.tz-tile.lock b{position:relative;z-index:1}
+
+  /* ---- set-it-up-before-you-switch-it-on: knobs stay reachable while OFF ---- */
+  #ir-card .fx-tc-knobs,#ht-card .fx-tc-knobs,#tc-card .fx-tc-knobs{display:flex}
+  #ir-card:not(.on) .fx-tc-knobs,#ht-card:not(.on) .fx-tc-knobs,#tc-card:not(.on) .fx-tc-knobs{opacity:.66}
+  .tz-offnote{display:none;width:100%;margin-bottom:2px}
+  .fx-togglecard:not(.on) .tz-offnote{display:flex}
+
+  /* ---- conversation-ladder editor (advanced drawer) ---- */
+  .cv-rung{display:flex;align-items:center;gap:10px;background:#1c1c1c;border:1px solid var(--border-soft);
+    border-radius:10px;padding:9px 12px;margin-bottom:8px}
+  .cv-rung .n{width:24px;height:24px;border-radius:50%;background:rgba(65,102,246,.15);color:#7d97f8;
+    font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .cv-rung .fx-select{flex:1;height:34px;min-width:0}
+  .cv-rung .fx-unit{width:104px;flex:0 0 104px}
+  .cv-rung .fx-unit .fx-input{height:34px}
+  .cv-rung .tag{font-size:11.5px;color:var(--muted2);width:74px;flex:0 0 74px}
+  .cv-del{width:26px;height:26px;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+    border:1px solid var(--border);border-radius:8px;color:var(--muted2);font-size:13px;cursor:pointer}
+  .cv-del:hover{color:#f2295b;border-color:rgba(242,41,91,.45)}
+
+  /* ---- pic-back activity feed ---- */
+  .pb-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--border-soft)}
+  .pb-row.first{border-top:0;margin-top:8px}
+  .pb-av{width:32px;height:32px;border-radius:50%;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+    font-size:11.5px;font-weight:700;color:#fff}
+  .pb-txt{font-size:13.5px;color:#ddd;min-width:0}
+  .pb-txt b{color:#fff;font-weight:600}
+  .pb-out{font-size:12.5px;color:var(--muted);margin-left:auto;flex:0 0 auto;width:150px;text-align:left}
+  .pb-time{font-size:12px;color:var(--muted2);flex:0 0 auto;width:66px;text-align:right}
+  .pb-tabs{display:flex;gap:8px;margin:10px 0 2px}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -425,7 +458,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -504,7 +536,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -540,16 +572,16 @@
         <p class="pg-sub">Two reactive plays that answer what the fan <b>just did</b>: he sends a photo → she sends one back free; a thread heats up → she drops unseen pics straight into it. Both pull only content he has <b>never received</b>.</p>
 
         <!-- status strip -->
-        <div class="fx-status">
-          <span class="fx-st ok"><i></i>Running</span>
-          <span class="fx-st"><i></i>14 photo replies this week</span>
-          <span class="fx-st"><i></i>11 teasers dropped</span>
-          <span class="fx-st"><i></i>$135 in teaser unlocks</span>
-          <span class="fx-st"><i></i>Last: Mike R. · 18 min ago</span>
+        <div class="fx-status" id="ir-strip">
+          <span class="fx-st ok" id="ir-st-1"><i></i>Running</span>
+          <span class="fx-st" id="ir-st-2"><i></i>14 photo replies this week</span>
+          <span class="fx-st" id="ir-st-3"><i></i>11 teasers dropped</span>
+          <span class="fx-st" id="ir-st-4"><i></i>$135 in teaser unlocks</span>
+          <span class="fx-st" id="ir-st-5"><i></i>Last: Mike R. · 18 min ago</span>
         </div>
 
         <!-- CARD 1: image reply -->
-        <div class="fx-togglecard on">
+        <div class="fx-togglecard on" id="ir-card">
           <div class="fx-tc-row">
             <div class="fx-tc-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="13" height="11" rx="2"/><circle cx="7" cy="8" r="1.3"/><path d="M15.5 14.5L12 11l-5.5 4" stroke-linejoin="round"/><path d="M21 8v5a3 3 0 0 1-3 3h-6.5" stroke-linecap="round"/><path d="M14 13.5L11.5 16l2.5 2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             <div class="fx-tc-body">
@@ -557,21 +589,25 @@
               <div class="fx-tc-desc">His picture is a buying signal. She answers it in the same breath with one unseen pic from your starter folder — free — so the moment never cools.</div>
             </div>
             <span class="fx-tc-state">Running</span>
-            <span class="fx-switch on"></span>
+            <span class="fx-switch on" data-k="image_reply_enabled"></span>
           </div>
           <div class="fx-tc-knobs">
+            <div class="fx-note warn tz-offnote">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="flex:0 0 auto;margin-top:1px"><path d="M12 4l9 16H3l9-16z" stroke-linejoin="round"/><path d="M12 10v4" stroke-linecap="round"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg>
+              <span><b>Set it up first.</b> This play is <b>off</b> — nothing sends. Tune it here (and in Advanced mode below), then flip the switch.</span>
+            </div>
             <div class="tz-demo">
               <div class="tz-item"><div class="tz-tile fan"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M21 16l-5-5-9 8" stroke-linejoin="round"/></svg></div><span>he sends</span></div>
               <span class="tz-arrow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6a6a6a" stroke-width="1.9"><path d="M4 12h14M14 7l5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-              <div class="tz-item"><div class="tz-tile g1"></div><span>she sends back · <b>free</b></span></div>
+              <div class="tz-item"><div class="tz-tile g1" id="ir-back-tile"></div><span id="ir-back-lbl">she sends back · <b>free</b></span></div>
             </div>
-            <label class="fx-check on"><span class="bx"></span>Then the closer takes over <span class="sub"><a href="ai-chatter.html">AI Chatter</a> picks up the thread and works it toward an offer</span></label>
-            <div class="fx-kv"><b>1</b> pic back · once per fan every <b>6 h</b></div>
+            <label class="fx-check on" id="ir-closer"><span class="bx"></span>Then the closer takes over <span class="sub"><a href="ai-chatter.html">AI Chatter</a> picks up the thread and works it toward an offer</span></label>
+            <div class="fx-kv" id="ir-kv"><b>1</b> pic back · once per fan every <b>6 h</b></div>
           </div>
         </div>
 
         <!-- CARD 2: hot-thread teaser -->
-        <div class="fx-togglecard on">
+        <div class="fx-togglecard on" id="ht-card">
           <div class="fx-tc-row">
             <div class="fx-tc-ico purple"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3c.5 3-1.5 4.7-2.9 6.3A6.8 6.8 0 0 0 7 13.8 5 5 0 0 0 17 14c0-2.2-1-3.9-2-5.2-.4 1-.9 1.8-1.8 2.4C13 9.4 12.6 6 12 3z" stroke-linejoin="round"/><path d="M10.2 16.5a1.9 1.9 0 0 0 3.7.6c.2-.9-.3-1.7-1.4-2.6-.9.6-2 1-2.3 2z" stroke-linejoin="round"/></svg></div>
             <div class="fx-tc-body">
@@ -579,22 +615,20 @@
               <div class="fx-tc-desc">When a conversation is heating up, she drops unseen pics into the reply she is already writing — it never costs an extra message. New fans get a free taste; proven buyers get a priced unlock.</div>
             </div>
             <span class="fx-tc-state">Running</span>
-            <span class="fx-switch on"></span>
+            <span class="fx-switch on" data-k="hot_teaser_enabled"></span>
           </div>
           <div class="fx-tc-knobs">
-            <div class="tz-demo">
-              <div class="tz-item"><div class="tz-tile g2"></div><span>free</span></div>
-              <div class="tz-item"><div class="tz-tile g3"></div><span>free</span></div>
-              <div class="tz-item"><div class="tz-tile g4"></div><span>free</span></div>
-              <span class="tz-arrow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6a6a6a" stroke-width="1.9"><path d="M4 12h14M14 7l5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-              <div class="tz-item"><div class="tz-tile lock"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#c9d3ff" stroke-width="1.9"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><b>$15</b></div><span>then priced</span></div>
+            <div class="fx-note warn tz-offnote">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="flex:0 0 auto;margin-top:1px"><path d="M12 4l9 16H3l9-16z" stroke-linejoin="round"/><path d="M12 10v4" stroke-linecap="round"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg>
+              <span><b>Set it up first.</b> This play is <b>off</b> — nothing sends. Pick the folders in Advanced mode below, then flip the switch.</span>
             </div>
-            <div class="fx-kv">New fans: <b>3 free</b> from <b>Teasers</b> (max 3 ever) · buyers: <b>$15</b> unlock from <b>VIP set</b></div>
+            <div class="tz-demo" id="ht-demo"></div>
+            <div class="fx-kv" id="ht-kv">New fans: <b>3 free</b> from <b>Teasers</b> (max 3 ever) · buyers: <b>$15</b> unlock from <b>VIP set</b></div>
           </div>
         </div>
 
         <!-- CARD 3: conversation teaser ladder -->
-        <div class="fx-togglecard on">
+        <div class="fx-togglecard on" id="tc-card">
           <div class="fx-tc-row">
             <div class="fx-tc-ico green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19h4v-4h4v-4h4V7h4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 19V5" stroke-linecap="round"/></svg></div>
             <div class="fx-tc-body">
@@ -602,18 +636,30 @@
               <div class="fx-tc-desc">Once a thread has ~20 fan messages, she starts dropping folder teasers on a rung ladder — each rung a bigger set at a bigger price, always pics he has never seen.</div>
             </div>
             <span class="fx-tc-state">Running</span>
-            <span class="fx-switch on"></span>
+            <span class="fx-switch on" data-k="teaser_convo_enabled"></span>
           </div>
           <div class="fx-tc-knobs">
-            <div class="tz-demo">
+            <div class="fx-note warn tz-offnote">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="flex:0 0 auto;margin-top:1px"><path d="M12 4l9 16H3l9-16z" stroke-linejoin="round"/><path d="M12 10v4" stroke-linecap="round"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg>
+              <span><b>Set it up first.</b> This play is <b>off</b> — nothing sends. Build the rung ladder in Advanced mode below, then flip the switch.</span>
+            </div>
+            <div class="tz-demo" id="tc-demo">
               <div class="tz-item"><div class="tz-tile lock"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#c9d3ff" stroke-width="1.9"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><b>$10</b></div><span><b>Teasers</b> · 1 pic</span></div>
               <span class="tz-arrow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6a6a6a" stroke-width="1.9"><path d="M4 12h14M14 7l5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
               <div class="tz-item"><div class="tz-tile lock"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#c9d3ff" stroke-width="1.9"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><b>$30</b></div><span><b>Beach set</b> · 3 pics</span></div>
               <span class="tz-arrow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6a6a6a" stroke-width="1.9"><path d="M4 12h14M14 7l5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
               <div class="tz-item"><div class="tz-tile lock"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#c9d3ff" stroke-width="1.9"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><b>$50</b></div><span><b>VIP set</b> · 5 pics</span></div>
             </div>
-            <div class="fx-kv">Starts after <b>~20</b> fan messages · adaptive: <b>climbs</b> a rung when he buys, <b>softens</b> when he passes</div>
+            <div class="fx-kv" id="tc-kv">Starts after <b>~20</b> fan messages · adaptive: <b>climbs</b> a rung when he buys, <b>softens</b> when he passes</div>
           </div>
+        </div>
+
+        <!-- ACTIVITY: what this lane actually did (automation run log) -->
+        <div class="fx-card" id="ir-activity">
+          <div class="fx-card-h"><span id="ir-act-title">Pic-backs sent</span> <span style="margin-left:6px;font-size:12.5px;font-weight:600;color:var(--green)" id="ir-act-n">…</span></div>
+          <div class="fx-card-sub" id="ir-act-sub">Every inbound-photo fire from the automation run log — sent, throttled and blocked alike.</div>
+          <div class="fx-status" id="ir-act-strip" style="margin:12px 0 0"></div>
+          <div id="ir-act-body"></div>
         </div>
 
         <!-- ADVANCED (closed by default) -->
@@ -628,38 +674,52 @@
 
               <div class="fx-adv-group"><h4>Photo reply — the pic she sends back</h4>
                 <div class="fx-grid3">
-                  <div class="fx-field"><label>Pics sent back</label><input class="fx-input" value="1"></div>
+                  <div class="fx-field"><label>Pics sent back</label><input class="fx-input" value="1" id="ir-count"></div>
                   <div class="fx-field"><label>Pull the freebie from</label>
-                    <select class="fx-select"><option>Starter — fans under $9.99</option><option>Mid — tipped $10+</option><option>Premium — tipped $100+</option></select>
+                    <select class="fx-select" id="ir-tier"><option value="">loading tiers…</option></select>
                   </div>
-                  <div class="fx-field"><label>Per-fan cooldown (hours)</label><input class="fx-input" value="6"></div>
+                  <div class="fx-field"><label>Per-fan cooldown (hours)</label><input class="fx-input" value="6" id="ir-cool"></div>
                 </div>
                 <div class="fx-grid2" style="margin-top:12px">
-                  <div class="fx-field"><label>Caption with the pic (optional)</label><input class="fx-input" placeholder="media-only — no text"></div>
+                  <div class="fx-field"><label>Caption with the pic (optional)</label><input class="fx-input" placeholder="media-only — no text" id="ir-cap"></div>
                 </div>
               </div>
 
               <div class="fx-adv-group"><h4>Hot teaser — new fans (never paid)</h4>
                 <div class="fx-grid3">
                   <div class="fx-field"><label>Free folder</label>
-                    <select class="fx-select"><option>Teasers</option><option>Beach set</option><option>VIP set</option></select>
+                    <select class="fx-select" id="ht-free-folder"><option>Teasers</option><option>Beach set</option><option>VIP set</option></select>
                   </div>
-                  <div class="fx-field"><label>Pics per teaser</label><input class="fx-input" value="3"></div>
-                  <div class="fx-field"><label>Free teasers per fan, ever</label><input class="fx-input" value="3"></div>
+                  <div class="fx-field"><label>Pics per teaser</label><input class="fx-input" value="3" id="ht-count"></div>
+                  <div class="fx-field"><label>Free teasers per fan, ever</label><input class="fx-input" value="3" id="ht-free-max"></div>
                 </div>
               </div>
 
               <div class="fx-adv-group"><h4>Hot teaser — proven buyers</h4>
                 <div class="fx-grid3">
                   <div class="fx-field"><label>Paid folder</label>
-                    <select class="fx-select"><option>VIP set</option><option>Beach set</option><option>Teasers</option></select>
+                    <select class="fx-select" id="ht-paid-folder"><option>VIP set</option><option>Beach set</option><option>Teasers</option></select>
                   </div>
-                  <div class="fx-field"><label>Unlock price</label><div class="fx-unit" data-unit="$"><input class="fx-input" value="15"></div></div>
-                  <div class="fx-field"><label>Per-thread cooldown (hours)</label><input class="fx-input" value="6"></div>
+                  <div class="fx-field"><label>Unlock price</label><div class="fx-unit" data-unit="$"><input class="fx-input" value="15" id="ht-price"></div></div>
+                  <div class="fx-field"><label>Per-thread cooldown (hours)</label><input class="fx-input" value="6" id="ht-cool"></div>
                 </div>
               </div>
 
-              <div class="fx-adv-group"><h4>Bundle scaling</h4>
+              <div class="fx-adv-group" id="tc-edit"><h4>Conversation teaser ladder — the rungs</h4>
+                <div class="fx-grid3">
+                  <div class="fx-field"><label>Every N of his messages <span style="color:var(--muted2);font-weight:400">— messages between rungs</span></label><input class="fx-input" id="tc-after"></div>
+                  <div class="fx-field"><label>Pics per tease <span style="color:var(--muted2);font-weight:400">— unseen items each rung</span></label><input class="fx-input" id="tc-count"></div>
+                  <div class="fx-field"><label>Climb rule</label><input class="fx-input" id="tc-adaptive" disabled style="opacity:.6"></div>
+                </div>
+                <div style="font-size:12.5px;color:var(--muted);margin:14px 0 8px;line-height:1.5">
+                  Rung 1 fires first, then rung 2 the next time, holding at the last one.
+                  <b style="color:#ddd">Price 0 = a free tease.</b> A rung with no folder is skipped.
+                </div>
+                <div id="tc-rungs"></div>
+                <button class="fx-btn ghost" type="button" id="tc-rung-add" style="height:32px;font-size:12.5px">+ Add rung</button>
+              </div>
+
+              <div class="fx-adv-group" id="ir-bundle"><h4>Bundle scaling <span class="ft-static" style="text-transform:none;letter-spacing:0">STATIC DEMO — not saveable yet</span></h4>
                 <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
                   <span class="fx-switch sm"></span>
                   <span style="font-size:13px;color:#ddd">Scale the pic count with the price — a $30 unlock packs 3 pics, $50 packs 5</span>
@@ -696,6 +756,7 @@
 
 </div>
 
+<script src="_shared/fastt.js"></script>
 <script>
   // ==== CANONICAL SIDEBAR JS (identical on every page — do not fork) ====
   (function(){
@@ -786,5 +847,6 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="tips-image-reply.js" id="page-wiring"></script>
 </body>
 </html>

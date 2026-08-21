@@ -85,6 +85,7 @@ import {
   snapshotKeyOf,
   surfaceOf,
   unseenCountOf,
+  SURFACE_VALUES,
   writeDock,
   writeMoneySnapshot,
   writeSeenTs,
@@ -267,6 +268,56 @@ function parseList(raw: unknown): NotificationItem[] {
     return (raw as { list: NotificationItem[] }).list;
   }
   return [];
+}
+
+/**
+ * Money-rail rescue hatch: hiding the rail on a surface takes its ⚙ (the
+ * only un-hide control) down with it. The 🔔 bell is mounted everywhere, so
+ * it renders this inside its dropdown to offer the way back when the rail is
+ * hidden on the CURRENT surface. Self-contained — it owns the surface read,
+ * the settings-event subscription, the hidden-here check and the restore
+ * write, and returns null when the rail isn't hidden here, so hosts can
+ * mount it unconditionally.
+ */
+export function MoneyRailRestoreButton() {
+  const surface = surfaceOf(usePathname());
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const bump = () => setTick((t) => t + 1);
+    window.addEventListener(SETTINGS_EVENT, bump);
+    return () => window.removeEventListener(SETTINGS_EVENT, bump);
+  }, []);
+  // Reading localStorage at render is safe here: the bell's dropdown (this
+  // component's only host) exists only after a click, well past hydration.
+  // `tick` re-evaluates it whenever the rail's settings change under us.
+  const hiddenHere = useMemo(
+    () => !railVisibleOn(readSettings(), surface),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [surface, tick],
+  );
+  const showHere = () => {
+    const s = readSettings();
+    // Adding the last missing surface normalises to null (= everywhere).
+    writeSettings({
+      ...s,
+      surfaces: parseSurfaces([...(s.surfaces ?? []), surface]),
+    });
+  };
+  if (!hiddenHere) return null;
+  return (
+    <button
+      type="button"
+      onClick={showHere}
+      className="w-full text-left px-3 py-1.5 text-[11px] border-b border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1 flex items-center gap-1.5"
+      title="The Buys & tips rail is hidden on this page — bring it back"
+    >
+      <span aria-hidden>💰</span>
+      <span className="truncate">
+        Buys &amp; tips rail is hidden here —{" "}
+        <span className="text-info">show it on this page</span>
+      </span>
+    </button>
+  );
 }
 
 export function MoneyRail() {
@@ -974,13 +1025,16 @@ function Row({
   return <div className={cls} title={text}>{body}</div>;
 }
 
-/** Order + labels for the "Show on" surface checkboxes. */
-const SURFACE_CHOICES: { key: Surface; label: string }[] = [
-  { key: "inbox", label: "Inbox" },
-  { key: "popup", label: "Solo chat" },
-  { key: "group", label: "Group tab" },
-  { key: "other", label: "Other pages" },
-];
+/** Labels for the "Show on" surface checkboxes — keyed by the canonical
+ *  Surface union, so a new surface in SURFACE_VALUES is a compile error here
+ *  until it gets a label (and its checkbox appears for free). */
+const SURFACE_LABELS: Record<Surface, string> = {
+  inbox: "Inbox",
+  popup: "Solo chat",
+  group: "Group tab",
+  other: "Other pages",
+};
+const SURFACE_CHOICES = SURFACE_VALUES.map((key) => ({ key, label: SURFACE_LABELS[key] }));
 
 /** The ⚙ popover: where the rail shows at all, how many rows each size
  *  shows, and which models feed it. Writes straight through on every change

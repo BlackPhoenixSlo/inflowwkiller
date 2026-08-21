@@ -258,7 +258,7 @@ export default function MakeRightTab({ accountId }: { accountId: string | null }
               onChange={(e) => set({ gift_tier: e.target.value })} />
           </label>
           <label className="space-y-1 block max-w-md">
-            <div className="text-xs text-fg-dim">Apology caption override <span className="opacity-60">(blank = warm auto text)</span></div>
+            <div className="text-xs text-fg-dim">Apology caption override <span className="opacity-60">(blank = warm auto text; ignored for the hard-decline de-escalation apology — that wording is fixed)</span></div>
             <Input value={form.apology_caption ?? ""} placeholder="on me, so sorry babe 💕"
               onChange={(e) => set({ apology_caption: e.target.value })} />
           </label>

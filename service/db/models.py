@@ -1545,6 +1545,15 @@ class AccountAiConfig(Base):
     # Auto-add newly subscribed fans to the include folder (roster-diff pull;
     # the mixed notifications feed is only a latency fast-path). NULL ≡ off.
     audience_auto_add: Mapped[bool | None] = mapped_column(Boolean)
+    # "Block sensitive words" compliance filter: an operator-editable banned-word
+    # list scanned against OUTBOUND text at the send chokepoint (AI + mass paths).
+    # JSON {"words": [str, ...], "mode": "block"|"mask"}. "block" ABORTS a send that
+    # trips a banned word (drop + log); "mask" replaces each hit with first-char +
+    # asterisks and sends it. Whole-word + case-insensitive (an "ass" rule never trips
+    # on "class"). Absent/NULL/empty words → OFF (nothing scanned, current behavior).
+    # This is SEPARATE from apply_word_restriction (the fixed OF-restricted doubler)
+    # and the promo-spam audience guard. Own column to avoid the shallow-merge collision.
+    banned_words_config_json: Mapped[str | None] = mapped_column(Text)
     # Co-performer tagging (media_cotag) — the Brain's per-account overrides for
     # the global env knobs. Both nullable so init_db's ADD-COLUMN catch-up lands
     # them on prod with no backfill.
@@ -1676,6 +1685,12 @@ class FunnelState(Base):
     # "offer taken" halt (#30). Nullable/additive: init_db self-heals it via
     # ALTER TABLE, so no migration (mirrors the rest of funnel_state).
     last_ppv_sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Branching loop guard: how many times a `next` map has re-routed this fan.
+    # A backward `next` can form a cycle; reply_mass_funnel halts the fan once
+    # this passes ~20 hops (done + last_error='loop_guard') so a mis-authored
+    # funnel can't spin forever. Nullable/additive (None == 0), self-heals via
+    # ALTER TABLE like the columns above — a linear funnel never bumps it.
+    hops: Mapped[int | None] = mapped_column(Integer)
     updated_at: Mapped[datetime] = _ts_now()
 
 
@@ -1977,6 +1992,20 @@ class NudgeState(Base):
         # Detector warm-up check + per-account state load.
         Index("ix_nudge_state_account", "account_id", "last_seen_online_at"),
     )
+
+
+class FollowPingState(Base):
+    """Per-(account, fan) state for auto_follow's re-follow PING — unfollow +
+    immediate re-follow of a quiet fan so OnlyFans fires a fresh "started
+    following you" push. Dedicated table (same pattern as NudgeState) so the
+    cooldown survives restarts: without it every run would re-ping the same
+    quiet fans and the "notification" would read as harassment."""
+    __tablename__ = "follow_ping_state"
+
+    account_id: Mapped[str] = mapped_column(String, primary_key=True)
+    fan_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    last_pinged_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    ping_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class AutoreplyState(Base):
@@ -2900,4 +2929,142 @@ class TranslationCache(Base):
         # Backs the age-ordered prune (see translate_api._prune_locked). Without
         # it the cap sweep is a full scan of the largest table nobody reads.
         Index("ix_translation_cache_created", "created_at"),
+    )
+
+
+# ── Growth surfaces (gaps-lane: Infloww-gap features) ────────────────
+# Five net-new tables backing the /growth page + the auto_follow automation.
+# create_all makes these on boot (no alembic); every one is additive — no
+# existing table is touched. See GAP_FEATURES_SPEC.md.
+
+class SmartList(Base):
+    """A saved dynamic fan segment. `rules_json` is a small DSL over per-fan
+    facts (lifetime_spend / recent_spend(days) / last_active_days / status /
+    tag) resolved by smart_lists_api.resolve() into a fan-id set. Consumed as a
+    named audience in the mass composer (include/exclude). Internal — never
+    round-tripped to OnlyFans."""
+    __tablename__ = "smart_lists"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    # JSON: {"match": "all"|"any", "rules": [{"field","op","value"}, ...]}
+    rules_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        Index("ix_smart_lists_account", "account_id"),
+        UniqueConstraint("account_id", "name", name="uq_smart_lists_account_name"),
+    )
+
+
+class TrialLinkMirror(Base):
+    """Light local mirror of an OnlyFans free-trial link (source of truth is OF
+    /trials). We store the create params + last-seen usage so the Growth table
+    renders without a live round-trip and can label a link the operator named.
+    `of_trial_id` links back to the OF entry; NULL until a create round-trips."""
+    __tablename__ = "trial_link_mirrors"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    of_trial_id: Mapped[int | None] = mapped_column(BigInteger)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    subscribe_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
+    subscribe_counts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    url: Mapped[str | None] = mapped_column(Text)
+    # Last-seen usage snapshot from OF (claimCounts) — refreshed on list().
+    claim_counts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        Index("ix_trial_mirror_account", "account_id", "of_trial_id"),
+    )
+
+
+class TrackingLink(Base):
+    """Internal UTM / tracking link. A `slug` (globally unique) is served at the
+    public GET /t/{slug}, which records one TrackingClick row and 302s to
+    `target_url`. Analytics = COUNT(clicks) over time (subs/$ attribution is a
+    TODO — no reliable click→subscriber join exists yet)."""
+    __tablename__ = "tracking_links"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    slug: Mapped[str] = mapped_column(String, nullable=False)
+    target_url: Mapped[str] = mapped_column(Text, nullable=False)
+    # Denormalized click counter (kept in sync on each capture) so the list
+    # renders without an aggregate per row; TrackingClick holds the detail.
+    click_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        UniqueConstraint("slug", name="uq_tracking_links_slug"),
+        Index("ix_tracking_links_account", "account_id"),
+    )
+
+
+class TrackingClick(Base):
+    """One row per hit on GET /t/{slug}. Kept thin — timestamp + a little
+    provenance for the analytics readout (clicks over time / by referer)."""
+    __tablename__ = "tracking_clicks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tracking_link_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("tracking_links.id", ondelete="CASCADE"), nullable=False
+    )
+    clicked_at: Mapped[datetime] = _ts_now()
+    referer: Mapped[str | None] = mapped_column(Text)
+    user_agent: Mapped[str | None] = mapped_column(Text)
+    ip: Mapped[str | None] = mapped_column(String)
+
+    __table_args__ = (
+        Index("ix_tracking_clicks_link_time", "tracking_link_id", "clicked_at"),
+    )
+
+
+class PromoCampaign(Base):
+    """Light local mirror of an OnlyFans subscription promo campaign (source of
+    truth is OF /promotions). Stores the create params + last-seen performance
+    so the Growth list renders and the operator can name/track a campaign.
+    `of_promo_id` links back to the OF entry."""
+    __tablename__ = "promo_campaigns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    of_promo_id: Mapped[int | None] = mapped_column(BigInteger)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    # OF promos are a PERCENT discount off the sub (1–100). `discount_percent` is
+    # the create-time value (OF does not echo it on list, so the mirror is the
+    # only record). price_cents is kept for schema stability but is 0 for OF promos.
+    discount_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    price_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    subscribe_counts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    subscribe_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    message: Mapped[str | None] = mapped_column(Text)
+    promo_type: Mapped[str] = mapped_column(String, nullable=False, default="all")
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    # Last-seen performance snapshot from OF — claimsCount (people who claimed).
+    subscriber_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # ── Auto-reactivate (promo_reactivate automation) ────────────────
+    # Opt-in per campaign: when OF marks the promo finished (time or claims run
+    # out), the automation re-creates it with the SAME discount/caps/message and
+    # repoints of_promo_id at the new one. reactivate_count is the cycle counter
+    # (also the cap check); last_reactivated_at drives the cooldown.
+    auto_reactivate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reactivate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_reactivated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        Index("ix_promo_campaigns_account", "account_id", "of_promo_id"),
     )

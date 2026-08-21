@@ -32,6 +32,7 @@ from datetime import datetime, timedelta
 from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field
 
 HERE = Path(__file__).resolve().parent
@@ -73,6 +74,7 @@ from automation_rules_api import router as _automation_rules_router  # noqa: E40
 from automation_preview_api import router as _automation_preview_router  # noqa: E402
 from translate_api import router as _translate_router  # noqa: E402
 from funnels_api import router as _funnels_router  # noqa: E402
+from funnel_stats_api import router as _funnel_stats_router  # noqa: E402
 from nudge_config_api import router as _nudge_config_router  # noqa: E402
 from webhook_config_api import router as _webhook_config_router  # noqa: E402
 from autoreply_config_api import router as _autoreply_config_router  # noqa: E402
@@ -83,8 +85,15 @@ from ppv_library_config_api import router as _ppv_library_config_router  # noqa:
 from vault_ai_api import router as _vault_ai_router  # noqa: E402
 from scripts_api import router as _scripts_router  # noqa: E402
 from style_config_api import router as _style_config_router  # noqa: E402
+from banned_words_api import router as _banned_words_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
 from settings_transfer_api import router as _settings_transfer_router  # noqa: E402
+# Growth surfaces (gaps-lane: Infloww-gap features) — all self-contained routers.
+from smart_lists_api import router as _smart_lists_router  # noqa: E402
+from trial_links_api import router as _trial_links_router  # noqa: E402
+from tracking_links_api import router as _tracking_links_router  # noqa: E402
+from of_tracking_api import router as _of_tracking_router  # noqa: E402
+from promotions_api import router as _promotions_router  # noqa: E402
 from tenant_keys_api import (  # noqa: E402
     router as _tenant_keys_router,
     admin_router as _tenant_keys_admin_router,
@@ -186,6 +195,7 @@ app.include_router(_automation_rules_router)
 app.include_router(_automation_preview_router)
 app.include_router(_translate_router)
 app.include_router(_funnels_router)
+app.include_router(_funnel_stats_router)
 app.include_router(_nudge_config_router)
 app.include_router(_webhook_config_router)
 app.include_router(_autoreply_config_router)
@@ -196,6 +206,7 @@ app.include_router(_ppv_library_config_router)
 app.include_router(_vault_ai_router)
 app.include_router(_scripts_router)
 app.include_router(_style_config_router)
+app.include_router(_banned_words_router)
 app.include_router(_account_config_router)
 app.include_router(_settings_transfer_router)
 # Per-agency LLM keys. Placed before the auth routers because it is
@@ -211,6 +222,14 @@ app.include_router(_auth_impersonate_router)
 # two principals' surfaces sit together.
 app.include_router(_chatters_router)
 app.include_router(_chatters_admin_router)
+# Growth surfaces: Smart Lists, Trial Links, Tracking Links (+ public /t/{slug}),
+# Profile Promotion. Their /admin/* routes ride the existing admin rewrite +
+# share-token gate; the public /t/{slug} redirect is exempted below.
+app.include_router(_smart_lists_router)
+app.include_router(_trial_links_router)
+app.include_router(_tracking_links_router)
+app.include_router(_of_tracking_router)
+app.include_router(_promotions_router)
 
 # Tenant isolation. Every per-account request passes here: no principal at all is
 # 401, and a principal naming an account it doesn't own is 403.
@@ -346,6 +365,19 @@ async def _account_context(request: Request, call_next):
         _request_ctx.reset(token)
 
 
+# Path prefixes reachable WITHOUT the share token. Keep this an explicit,
+# annotated allowlist rather than a chain of `if startswith(...)` — every entry
+# is a deliberate hole in the gate and they belong where they can be read
+# together:
+#   /auth/     a brand-new friend registers / signs in from the landing page,
+#              so they cannot yet hold any cookie.
+#   /chatter/  a chatter following an owner-issued invite link arrives cold.
+#   /t/        the public tracking-link redirect (Growth → Tracking Links) — a
+#              FAN clicks this from the creator's bio; it records the click and
+#              302s. The only prefix here a non-user ever touches.
+_PUBLIC_PREFIXES = ("/auth/", "/chatter/", "/t/")
+
+
 @app.middleware("http")
 async def _share_token_gate(request: Request, call_next):
     share_token = _effective_share_token()
@@ -353,11 +385,7 @@ async def _share_token_gate(request: Request, call_next):
         return await call_next(request)
     if request.url.path == "/health" or request.url.path == "/livez":
         return await call_next(request)
-    # /auth/* must be reachable without the share-token so a brand-new
-    # friend can register or sign in from the landing page. Same for
-    # /chatter/* — a chatter following an owner-issued invite link
-    # arrives without any cookie at all.
-    if request.url.path.startswith("/auth/") or request.url.path.startswith("/chatter/"):
+    if request.url.path.startswith(_PUBLIC_PREFIXES):
         return await call_next(request)
     if request.cookies.get(_SHARE_COOKIE) == share_token:
         return await call_next(request)
@@ -376,7 +404,14 @@ async def _share_token_gate(request: Request, call_next):
             max_age=7 * 24 * 3600, httponly=True, samesite="lax",
         )
         return resp
-    return Response("unauthorized — link missing or expired", status_code=401)
+    # `no-store` on the REFUSAL, for every path the gate guards — not just the
+    # two static prefixes a retired middleware happened to stamp. An
+    # unauthorized answer is per-request by nature and must never be held by a
+    # browser or a shared proxy; a cached 401 would outlive the token that
+    # fixes it. (401 is not heuristically cacheable, so this is belt-and-
+    # suspenders — but it is the belt the /ui prefix used to get by accident.)
+    return Response("unauthorized — link missing or expired", status_code=401,
+                    headers={"Cache-Control": "no-store"})
 
 
 # ── Setup → Keys: UI-writable secret/key store ─────────────────────
@@ -4662,6 +4697,22 @@ def of_post_comments(post_id: int, limit: int = Query(20, ge=1, le=50), offset: 
 
 # ── Vault ──────────────────────────────────────────────────────
 
+def vault_media_cache_key(*, type: str = "all", list_id: int | None = None,
+                          offset: int = 0, limit: int = 24, sort: str = "desc",
+                          field: str = "recent", q_norm: str = "") -> str:
+    """THE cache key for a /vault/media request — the single place its format
+    lives. tests/test_chatter_access seeds vault_cache through this helper, so
+    a format change (like the `query=` part vault search added) can never
+    silently strand a stale literal and turn the suite red again."""
+    return (f"media:type={type}|list={list_id}|offset={offset}|limit={limit}"
+            f"|sort={sort}|field={field}|query={q_norm}")
+
+
+def vault_lists_cache_key(*, view: str = "main", limit: int = 10, offset: int = 0) -> str:
+    """THE cache key for a /vault/lists request — same single-home rule."""
+    return f"lists:view={view}|limit={limit}|offset={offset}"
+
+
 @app.get("/api/of/v2/vault/media")
 async def of_vault_media(
     limit: int = Query(24, ge=1, le=100),
@@ -4697,7 +4748,8 @@ async def of_vault_media(
     # `query` is part of the cache key so a search result can never be served
     # for a different (or empty) query.
     q_norm = (query or "").strip()
-    key = f"media:type={type}|list={list_id}|offset={offset}|limit={limit}|sort={sort}|field={field}|query={q_norm}"
+    key = vault_media_cache_key(type=type, list_id=list_id, offset=offset,
+                                limit=limit, sort=sort, field=field, q_norm=q_norm)
     if not refresh:
         cached = await vault_cache.get(aid, key)
         if cached is not None:
@@ -4832,7 +4884,7 @@ async def of_vault_lists(view: str = Query("main"), limit: int = Query(10, ge=1,
     # so a cached unfiltered payload is never handed straight to a restricted
     # chatter. None ⇒ no restriction (owner, or unrestricted chatter).
     allowed_folders = await _allowed_folder_ids_for_chatter(aid)
-    key = f"lists:view={view}|limit={limit}|offset={offset}"
+    key = vault_lists_cache_key(view=view, limit=limit, offset=offset)
     result = None
     if not refresh:
         result = await vault_cache.get(aid, key)
@@ -5783,9 +5835,10 @@ def of_delete_bundle(bundle_id: int):
 # ── Promotion campaigns: write side ───────────────────────────
 
 class _PromoBody(BaseModel):
-    price: float = Field(..., ge=0)
+    # OF promos are a % discount off the sub (verified live) — NOT an abs price.
+    discount: int = Field(..., ge=1, le=100)
     subscribe_counts: int = Field(..., ge=1)
-    subscribe_days: int = Field(0, ge=0)
+    subscribe_days: int = Field(30, ge=0)
     message: str = ""
     type: str = "all"
 
@@ -5793,7 +5846,7 @@ class _PromoBody(BaseModel):
 def of_create_promo(body: _PromoBody = Body(...)):
     """Create a promo campaign. Touches public-facing offers; double-check before exposing."""
     return _proxy(lambda: _get_client().create_promo(
-        price=body.price, subscribe_counts=body.subscribe_counts,
+        discount=body.discount, subscribe_counts=body.subscribe_counts,
         subscribe_days=body.subscribe_days, message=body.message, type=body.type,
     ))
 
@@ -8848,23 +8901,66 @@ def root_redirect():
     return RedirectResponse("/ui/")
 
 
-# Belt-and-suspenders cache-bust: when the user updates web/app.js or
-# index.html, we want every browser to refetch on next load. Without this
-# header, browsers (especially behind Tailscale's funnel) hold onto JS for
-# hours and the user sees ancient code despite hard-refreshing. Bypassing
-# the cache for static assets is fine — they're tiny.
-@app.middleware("http")
-async def _no_cache_ui(request: Request, call_next):
-    resp = await call_next(request)
-    if request.url.path.startswith("/ui/"):
-        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+class NoCacheStatic(StaticFiles):
+    """StaticFiles that tells the browser never to hold a copy.
+
+    Belt-and-suspenders cache-bust: both hand-written frontends ship as plain
+    files with no content hashing, so a browser that caches them serves ancient
+    JS after a deploy — especially behind Tailscale's funnel, which held onto
+    bundles for hours despite hard-refreshing. These assets are tiny, so never
+    caching them costs nothing.
+
+    The headers belong ON THE MOUNT. This used to be two near-identical global
+    `@app.middleware("http")` hooks, one per prefix, each running for EVERY
+    request the relay serves just to stamp a static path — and they had already
+    drifted (the /ui copy set three headers, the /infloww copy set one).
+
+    ⚠️ The MISS matters as much as the hit. `StaticFiles.get_response` RAISES
+    `HTTPException(404)` for a file it cannot find, so a naive override never
+    sees that response — it is built later by the exception middleware, bare.
+    The old global hook stamped it (it matched on path, not on outcome), and a
+    404 is heuristically cacheable (RFC 9111 §4.2.2): a browser that asks for
+    a not-yet-deployed asset can pin the miss and keep serving it AFTER the
+    deploy that created the file. So the miss is caught and stamped too.
+    """
+
+    _NO_CACHE = "no-store, no-cache, must-revalidate, max-age=0"
+
+    def _stamp(self, resp: Response) -> Response:
+        resp.headers["Cache-Control"] = self._NO_CACHE
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
-    return resp
+        return resp
+
+    async def get_response(self, path: str, scope) -> Response:
+        try:
+            resp = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            # Rebuild EXACTLY what the app's exception handler would have sent —
+            # FastAPI answers an HTTPException with JSON `{"detail": ...}`, so a
+            # PlainTextResponse here would quietly change every static 404/405
+            # from JSON to text/plain. `exc.headers` is carried too (a 405 names
+            # its Allow: set there); it is None for the ordinary miss.
+            resp = JSONResponse({"detail": exc.detail},
+                                status_code=exc.status_code,
+                                headers=exc.headers)
+        return self._stamp(resp)
 
 
 _WEB_DIR = HERE.parent / "web"
 if _WEB_DIR.is_dir():
-    app.mount("/ui", StaticFiles(directory=_WEB_DIR, html=True), name="ui")
+    app.mount("/ui", NoCacheStatic(directory=_WEB_DIR, html=True), name="ui")
 else:
     log.warning("web/ folder not found at %s — UI disabled", _WEB_DIR)
+
+
+# ── Infloww-skin UI ────────────────────────────────────────────
+# The redesigned (Infloww-look) frontend lives outside service/ as plain
+# HTML + _shared/fastt.js (+ _shared/vault-media.js on the vault pages) + one
+# sibling <page>.js per wired page; same-origin here so its fetch() calls hit
+# the API without CORS. NoCacheStatic serves the whole folder, so the shared
+# modules and the page scripts are covered by the same rule as /ui.
+# Optional: absent in deploys that don't ship it.
+_INFLOWW_DIR = HERE.parent / "ui-redesign" / "infloww-exact"
+if _INFLOWW_DIR.is_dir():
+    app.mount("/infloww", NoCacheStatic(directory=_INFLOWW_DIR, html=True), name="infloww")
