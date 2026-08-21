@@ -649,9 +649,35 @@ async def session_middleware(request: Request, call_next):
                         # write amplification — a chat session fires
                         # hundreds of requests/min.
                         if age > 300:
-                            await s.execute(update(User).where(
-                                User.id == user_id
-                            ).values(last_seen_at=now))
+                            # A cosmetic activity stamp must NEVER be able to
+                            # fail the request it rides on. Two things here:
+                            #
+                            # Its OWN session, because a lock timeout would
+                            # otherwise poison `s` — SQLAlchemy demands a
+                            # rollback after any error, and the impersonation
+                            # overlay below still has reads to do on it.
+                            #
+                            # And SWALLOWED, because a missed bump costs
+                            # nothing (the next request retries) while a raised
+                            # one costs the whole call. Unguarded, this UPDATE
+                            # sat on the 30 s busy_timeout whenever the DB was
+                            # write-contended and surfaced as a 500 on real API
+                            # calls — /admin/messages, /api/of/v2/chats — which
+                            # is how a write-storm turned into a dead-looking
+                            # UI on 2026-08-21. Note the throttle cannot
+                            # re-arm on its own while the write keeps failing:
+                            # `age` is read from the row, so a never-committed
+                            # stamp stays stale and EVERY subsequent request
+                            # retries the write. Failing quietly is what breaks
+                            # that loop.
+                            try:
+                                async with get_session() as s2:
+                                    await s2.execute(update(User).where(
+                                        User.id == user_id
+                                    ).values(last_seen_at=now))
+                            except Exception:
+                                log.debug("last_seen_at bump skipped "
+                                          "(non-fatal)", exc_info=True)
                         _request_user.set(
                             AuthedUser(row.id, row.username, account_ids, is_admin)
                         )
