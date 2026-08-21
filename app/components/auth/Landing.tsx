@@ -185,6 +185,21 @@ export default function Landing() {
           )}
         </form>
 
+        {/* Desktop app. Gated behind sm: like the blurb below — an installer
+            is no use on a phone, and offering one there is just a dead end. */}
+        <a
+          href="/download"
+          className="hidden sm:flex mx-auto max-w-sm w-full items-center gap-3 rounded-xl border border-fg/10 px-4 py-3 hover:border-fg/30 transition-colors"
+        >
+          <span aria-hidden="true" className="text-fg-dim text-lg leading-none">&#8595;</span>
+          <span className="grid gap-0.5">
+            <span className="text-sm font-medium">Get the desktop app</span>
+            <span className="text-xs text-fg-dim">
+              Mac &amp; Windows &mdash; keeps your inbox live in the background.
+            </span>
+          </span>
+        </a>
+
         <section className="hidden sm:block space-y-3 text-sm">
           <p className="text-fg-dim text-center">
             I host this for my friends.{" "}

@@ -25,6 +25,8 @@ import { useReorder } from "@/hooks/useReorder";
 import { usePaidPage, PAID_PAGE_NOTE } from "@/hooks/usePaidPage";
 import { cn } from "@/lib/utils";
 import { proxyImage } from "@/lib/relay";
+import { BroadcastAudiencePicker } from "@/components/audience/BroadcastAudiencePicker";
+import { DEFAULT_BROADCAST_LISTS } from "@/components/audience/fanLists";
 import {
   usePpvLibraryConfig,
   useSavePpvLibraryConfig,
@@ -194,6 +196,12 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   const [capMonth, setCapMonth] = useState(0);
   // "send to everyone" broadcast (default ON) + the optional pause
   const [reachAll, setReachAll] = useState(true);
+  // null = "never configured" → the historical fans + following. An EMPTY SET is
+  // a real operator choice and must survive as one; see buildConfig below.
+  const [bcastInclude, setBcastInclude] = useState<Set<string> | null>(null);
+  const [bcastExclude, setBcastExclude] = useState<Set<string>>(new Set());
+  const [spendCapOn, setSpendCapOn] = useState(false);
+  const [spendCapDollars, setSpendCapDollars] = useState(400);
   const [pauseOn, setPauseOn] = useState(false);
   const [pauseHours, setPauseHours] = useState(12);
   // global price limits (DOLLARS in the UI, cents on the wire) — defaults $3/$200
@@ -275,6 +283,17 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     setCapWeek(caps ? caps.per_week ?? 0 : capDef.per_week);
     setCapMonth(caps ? caps.per_month ?? 0 : capDef.per_month);
     setReachAll(c.reach_all ?? true);
+    // Array vs not — the ONLY distinction that matters here. A stored [] means
+    // "reach nobody new" and must hydrate as an empty Set; null/absent means
+    // never configured and must hydrate as null so the default still applies.
+    // (Don't reach for a truthiness test: [] is truthy in JS, so it happens to
+    // work and reads like it doesn't.)
+    setBcastInclude(Array.isArray(c.broadcast_lists)
+                    ? new Set(c.broadcast_lists) : null);
+    setBcastExclude(new Set((c.broadcast_exclude_lists ?? []).map(String)));
+    const cap = c.max_lifetime_spend_cents ?? 0;
+    setSpendCapOn(cap > 0);
+    if (cap > 0) setSpendCapDollars(Math.round(cap / 100));
     const ph = c.pause_hours ?? 0;
     setPauseOn(ph > 0);
     if (ph > 0) setPauseHours(ph);
@@ -457,6 +476,13 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   const buildConfig = () => ({
     enabled,
     reach_all: reachAll,
+    // ⚠️ buildConfig is a KEY LITERAL and the server validator rebuilds a fresh
+    // dict from it — anything absent here is DROPPED on every save from this
+    // tab. New config keys must be added in BOTH places or they silently vanish
+    // the first time an operator touches an unrelated switch.
+    broadcast_lists: bcastInclude === null ? null : Array.from(bcastInclude),
+    broadcast_exclude_lists: Array.from(bcastExclude).map(Number).filter(Number.isFinite),
+    max_lifetime_spend_cents: spendCapOn ? Math.max(0, spendCapDollars) * 100 : 0,
     pause_hours: pauseOn ? Math.max(1, Math.min(pauseHours || 1, 168)) : 0,
     quiet_hours: quietOn ? ([quietStart, quietEnd] as [number, number]) : null,
     // Always all three keys, zeros included — an absent-key blob runs the house
@@ -565,8 +591,61 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
         </label>
         <div className="text-[11px] text-fg-dim/80 leading-relaxed">
           {reachAll
-            ? <>After the per-tier sends to fans we know (whales pay more, cold fans less), it fires <b>one broadcast to fans + following</b> at the <b>default price (your Base price)</b> — the same audience the daily blasts reach, silent/uncached subs included. Everyone we already messaged is excluded, so no fan gets it twice.</>
+            ? <>After the per-tier sends to fans we know (whales pay more, cold fans less), it fires <b>one broadcast</b> at the <b>default price (your Base price)</b> — reaching silent/uncached subs the tiers can&apos;t see. <b>Every fan already in the system is excluded</b>, whales included: they got this at their own tier price, so nobody is reached twice and no big spender is ever sent the cheap version.</>
             : <>Only fans already in the system get it (priced by tier). Silent/uncached subscribers are <b>not</b> reached.</>}
+        </div>
+        {reachAll && accountId && (
+          <div className="pt-2 border-t border-border/60">
+            <BroadcastAudiencePicker
+              accountId={accountId}
+              include={bcastInclude ?? new Set(DEFAULT_BROADCAST_LISTS)}
+              exclude={bcastExclude}
+              onToggleInclude={(id) => {
+                markDirty();
+                setBcastInclude((prev) => {
+                  const next = new Set(prev ?? DEFAULT_BROADCAST_LISTS);
+                  if (next.has(id)) next.delete(id); else next.add(id);
+                  return next;
+                });
+              }}
+              onToggleExclude={(id) => {
+                markDirty();
+                setBcastExclude((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(id)) next.delete(id); else next.add(id);
+                  return next;
+                });
+              }}
+            />
+          </div>
+        )}
+        <label className="flex items-center gap-2 text-xs cursor-pointer flex-wrap pt-2 border-t border-border/60 mt-2">
+          <input
+            type="checkbox"
+            className="h-3.5 w-3.5 accent-[var(--accent)]"
+            checked={spendCapOn}
+            onChange={(e) => { markDirty(); setSpendCapOn(e.target.checked); }}
+          />
+          <span>Never mass-PPV a fan who has spent over</span>
+          <span className="text-fg-dim">$</span>
+          <input
+            type="number" min={1} max={1000000} disabled={!spendCapOn}
+            className={`${INPUT} w-20`} value={spendCapDollars}
+            onChange={(e) => { markDirty(); setSpendCapDollars(Math.max(1, Number(e.target.value) || 1)); }}
+          />
+          <span>lifetime {spendCapOn ? "" : "(off)"}</span>
+        </label>
+        <div className="text-[11px] text-fg-dim/80 leading-relaxed">
+          Pulls big spenders out of this lane completely — <b>no tier send and no
+          broadcast</b> — so they stay the closer&apos;s to handle 1:1. A fan we have
+          no spend history for is <b>still sent to</b>. Takes effect on the{" "}
+          <b>next run</b>, not on sends already queued.
+          {spendCapOn && (
+            <> Heads-up: lifetime spend counts <b>everything</b> — subscriptions and
+            tips, not just content. A fan on $10/month for {Math.max(1, Math.round(spendCapDollars / 10))} months
+            reaches ${spendCapDollars} without ever buying a PPV. Use Preview to see
+            who this drops before you save.</>
+          )}
         </div>
         <label className="flex items-center gap-2 text-xs cursor-pointer flex-wrap pt-1">
           <input
@@ -1049,7 +1128,12 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
             <div className="flex items-center gap-2 flex-wrap">
               <Button
                 size="sm" variant="secondary"
-                onClick={() => { setPreviewFor(p.id); previewM.mutate({ basePriceCents: p.base_price_cents, priceMinCents: minCents, priceMaxCents: maxCents }); }}
+                onClick={() => { setPreviewFor(p.id); previewM.mutate({ basePriceCents: p.base_price_cents, priceMinCents: minCents, priceMaxCents: maxCents,
+                  // Send the DRAFT cap (0 when the box is unticked) so the
+                  // readout answers "who does this drop" for the number
+                  // currently on screen — the tab's copy promises exactly that,
+                  // and omitting it would silently preview the SAVED cap.
+                  maxLifetimeSpendCents: spendCapOn ? Math.max(0, spendCapDollars) * 100 : 0 }); }}
                 disabled={previewM.isPending}
               >
                 {previewM.isPending && previewFor === p.id ? "Checking…" : "Preview audience"}
@@ -1058,6 +1142,13 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                 <span className="text-[11px] text-fg-dim">
                   {previewM.data.total_fans} fans →{" "}
                   {previewM.data.cells.map((c) => `${c.cell} ${c.recipients}@$${c.price}`).join(" · ") || "none"}
+                  {/* Name the gate whenever it shaped this number. Without it a
+                      capped preview and an empty account look identical. */}
+                  {!!previewM.data.spend_cap_cents && (
+                    <span className="text-warn">
+                      {" "}· excludes fans over ${Math.round(previewM.data.spend_cap_cents / 100)} lifetime
+                    </span>
+                  )}
                 </span>
               )}
               {previewFor === p.id && previewM.isError && (

@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
@@ -27,6 +27,7 @@ import { EmojiPickerButton, EmojiQuickRow, insertAtCursor } from "@/components/c
 import { GifPickerButton, GifPickerStrip, type PickedGif } from "@/components/chat/GifPicker";
 import { TemplatePicker, templateMediaToVault, type PickedTemplate } from "@/components/chat/TemplatePicker";
 import { TagCreatorsPicker, TaggedCreatorChips, type TaggedCreatorChoice } from "@/components/chat/TagCreatorsPicker";
+import { ListColumn, SYSTEM_AUDIENCES, SysChip, useFanLists } from "@/components/audience/fanLists";
 import { localDatetimeToIso, recordSchedule } from "@/lib/scheduleHistory";
 
 import { sanitizePriceInput } from "@/components/chat/Composer";
@@ -46,41 +47,6 @@ function summarizeFanOut(results: FanOutResult[]): string {
   return `${ok}/${results.length} succeeded`;
 }
 
-interface FanList {
-  id: number | string;
-  name?: string;
-  /** OF tags lists as 'custom' or 'build-in' (sic) — case-spelling varies. */
-  type?: string;
-  usersCount?: number;
-}
-/** OF returns either `{list:[…]}` or a bare array depending on params. */
-type ListsResp = { list?: FanList[]; hasMore?: boolean } | FanList[];
-
-/** OF-recognised virtual audience IDs. The /lists endpoint does NOT
- *  return these — they're hardcoded server-side names that `userLists`
- *  accepts. We expose two OF guarantees on every account: All fans and
- *  Following. The desktop app advertises five (adding `recent`, `online`,
- *  `tagged`) but those depend on per-account state and `online` was
- *  intentionally dropped on user request — the "currently online" filter
- *  isn't actionable for scheduled / mass sends. */
-const SYSTEM_AUDIENCES: Array<{ id: string; label: string }> = [
-  { id: "fans",      label: "All fans"  },
-  { id: "following", label: "Following" },
-];
-
-/** Names that should float to the top of the custom-list columns, in
- *  this priority order. Exact lowercase match only — a list named
- *  "fans" sorts first, but variations like "allFans" / "All fans"
- *  stay in alphabetical so they don't crowd the top. */
-const TOP_LIST_NAMES: string[] = [
-  "fans",
-  "following",
-];
-
-function topRank(name: string): number {
-  const i = TOP_LIST_NAMES.indexOf(name.toLowerCase());
-  return i === -1 ? TOP_LIST_NAMES.length : i;
-}
 
 export function MassMessageComposer({
   open,
@@ -198,42 +164,10 @@ export function MassMessageComposer({
   const [unsendAfterHours, setUnsendAfterHours] = useState(seedStr(seed.unsend_after_hours)); // → unsend_after_hours
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const listsQ = useQuery<FanList[]>({
-    queryKey: ["fan-lists", accountId ?? ""],
-    enabled: !!accountId,
-    staleTime: 5 * 60_000,
-    queryFn: async () => {
-      const r = await relay.get<ListsResp>(
-        "/api/of/v2/lists?limit=50",
-        { accountId: accountId! },
-      );
-      return Array.isArray(r) ? r : (r?.list ?? []);
-    },
-  });
-
-  const customLists = useMemo(() => {
-    // OF sometimes tags the built-in "fans"/"following" lists with a type the
-    // type-filter misses; drop any whose id already names a system audience so
-    // they don't show as redundant custom chips sharing a SYSTEM_AUDIENCES id.
-    const systemIds = new Set(SYSTEM_AUDIENCES.map((a) => a.id));
-    const filtered = (listsQ.data ?? []).filter(
-      (l) =>
-        l.type !== "build-in" &&
-        l.type !== "built-in" &&
-        !systemIds.has(String(l.id)),
-    );
-    // Sort: Fans → Following → Online first (mirrors system-audience
-    // order), then alphabetical for everything else. Catches lists the
-    // user manually re-created under those names too.
-    return filtered.slice().sort((a, b) => {
-      const an = (a.name ?? "").toLowerCase();
-      const bn = (b.name ?? "").toLowerCase();
-      const ra = topRank(an);
-      const rb = topRank(bn);
-      if (ra !== rb) return ra - rb;
-      return an.localeCompare(bn);
-    });
-  }, [listsQ.data]);
+  // Shared with the PPV Library broadcast picker: one OF call (same cache key),
+  // one definition of "custom list". `...listsQ` keeps the raw query fields
+  // (data/isLoading/isFetching) this component still reads directly.
+  const { customLists, ...listsQ } = useFanLists(accountId);
 
   // A list shouldn't be in include AND exclude simultaneously — toggling
   // one auto-removes the other to keep the UI consistent.
@@ -1171,42 +1105,6 @@ export function MassMessageComposer({
   );
 }
 
-function ListColumn({
-  lists, loading, selected, onToggle, emptyLabel,
-}: {
-  lists: FanList[];
-  loading: boolean;
-  selected: Set<string>;
-  onToggle: (id: string) => void;
-  emptyLabel: string;
-}) {
-  if (loading) return <div className="text-[11px] text-fg-dim">Loading…</div>;
-  if (lists.length === 0) {
-    return <div className="text-[11px] text-fg-dim italic">{emptyLabel}</div>;
-  }
-  return (
-    <div className="flex flex-col gap-1 max-h-none sm:max-h-32 overflow-visible sm:overflow-y-auto pr-1">
-      {lists.map((l) => {
-        const id = String(l.id);
-        const checked = selected.has(id);
-        return (
-          <label
-            key={id}
-            className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-bg-elev-1/40 rounded px-1 min-h-[40px] sm:min-h-auto py-2 sm:py-0.5"
-          >
-            <input
-              type="checkbox"
-              checked={checked}
-              onChange={() => onToggle(id)}
-            />
-            <span className="flex-1 truncate">{l.name || `List #${id}`}</span>
-            <span className="text-[10px] text-fg-dim shrink-0">({l.usersCount ?? 0})</span>
-          </label>
-        );
-      })}
-    </div>
-  );
-}
 
 /** Compact labelled numeric input for the Online-targeting panel. Blank = the
  *  filter isn't applied; the parent only forwards positive numbers. */
@@ -1234,33 +1132,3 @@ function NumField({
   );
 }
 
-/** Toggle chip for system audiences: off / include (+). Exclude is not offered
- *  because OF ignores system audience names in `excludedLists`. */
-function SysChip({
-  state, onClick, label,
-}: {
-  state: "off" | "in";
-  onClick: () => void;
-  label: string;
-}) {
-  const stateStyles = {
-    off: "bg-transparent text-fg-dim border-border hover:border-border-light",
-    in:  "bg-accent/15 text-accent border-accent/30",
-  };
-  const prefix = state === "in" ? "+ " : "";
-  const hint = state === "off" ? "OF built-in" : "included";
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title="Click to toggle: off → include → off"
-      className={
-        "px-2 py-1 rounded-full border text-[11px] flex items-center gap-1.5 transition-colors " +
-        stateStyles[state]
-      }
-    >
-      <span>{prefix}{label}</span>
-      <span className="opacity-60 no-underline">· {hint}</span>
-    </button>
-  );
-}

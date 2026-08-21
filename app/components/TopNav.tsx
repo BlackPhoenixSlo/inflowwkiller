@@ -298,6 +298,20 @@ export default function TopNav() {
           <ScopeSwitcher />
           <NotificationBell />
           <ErrorBadge />
+          {/* Get the desktop app. A plain <a>, not next/link — /download is a
+           *  static file in public/, outside the router, so client-side nav
+           *  would 404. Icon-only until xl so it costs about what the theme
+           *  toggle costs: the strip above already fights for width, and a
+           *  full text chip here is exactly what pushes the cluster past the
+           *  viewport. Hidden below lg — an installer is no use on a phone. */}
+          <a
+            href="/download"
+            className="hidden lg:flex items-center gap-1.5 px-2 xl:px-3 py-1.5 rounded-lg text-xs text-fg-dim hover:text-fg hover:bg-bg-elev-1 border border-border shrink-0 whitespace-nowrap"
+            title="Get the Fastt desktop app for Mac and Windows"
+          >
+            <span aria-hidden="true">&#8595;</span>
+            <span className="hidden xl:inline">Desktop app</span>
+          </a>
           <button
             type="button"
             onClick={toggle}

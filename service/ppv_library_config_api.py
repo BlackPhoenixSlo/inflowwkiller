@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import account_page
+import audiences
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import AccountAiConfig, AutomationRule, CatalogItem, Message
@@ -40,7 +41,10 @@ from automations.ppv_send import (
     _PRICE_FLOOR_CENTS,
     pick_feed_caption,
     post_to_feed,
+    broadcast_audience,
+    is_list_id,
     price_bounds,
+    spend_bound,
 )
 
 log = logging.getLogger("of-relay.ppv_library_config_api")
@@ -48,6 +52,12 @@ log = logging.getLogger("of-relay.ppv_library_config_api")
 router = APIRouter()
 
 _MAX_PPVS = 50
+# OF's built-in audience NAMES. Legal in `userLists`, silently ignored inside
+# `excludedLists` — which is why the exclude field refuses them outright.
+# DERIVED from the house broadcast constant: these are the same two names the
+# sender defaults to, and a second hardcoded copy would let "what we default to"
+# and "what we refuse to exclude" drift apart.
+_VIRTUAL_AUDIENCES = {str(x).lower() for x in audiences.BROADCAST_LISTS}
 _MAX_MEDIA = 50
 _MAX_PREVIEWS = 10
 _MAX_CAPTION_TEXTS = 20
@@ -195,6 +205,36 @@ def _validate(cfg: dict) -> dict:
     # authored base prices are never rewritten. Always emitted (self-describing
     # blob); price_bounds applies the defaults ($3/$200) + OF hard limits + order.
     out["price_min_cents"], out["price_max_cents"] = price_bounds(cfg)
+    # Whale gate — lifetime-spend ceiling in cents; 0/absent = OFF. Stored
+    # NORMALIZED through the same helper the sender reads it with, so the tab and
+    # the runtime can never disagree about what "off" means. House key name,
+    # shared with ai_chatter / autoreply / nudge_online.
+    out["max_lifetime_spend_cents"] = spend_bound(cfg) or 0
+    # ── the "Send to everyone" audience ──────────────────────────────────
+    # Two DIFFERENTLY-TYPED knobs, not one list picker, because OF's wire is
+    # asymmetric: `userLists` takes virtual audience NAMES ("fans"/"following")
+    # as well as list ids, while `excludedLists` takes list IDS ONLY and
+    # silently IGNORES a virtual name.
+    #
+    # This endpoint owns the REFUSALS (below); `broadcast_audience` owns the
+    # NORMALIZATION — the sender reads the blob through that same helper, so a
+    # value that saves clean and a value that sends can't drift apart.
+    for key in ("broadcast_lists", "broadcast_exclude_lists"):
+        if key in cfg and cfg[key] is not None and not isinstance(cfg[key], (list, tuple)):
+            raise HTTPException(422, f"{key} must be a list")
+    for x in (cfg.get("broadcast_exclude_lists") or []):
+        if isinstance(x, str) and x.strip().lower() in _VIRTUAL_AUDIENCES:
+            # Refuse LOUDLY. OF drops these from excludedLists without an error,
+            # so accepting one would hand the operator a save that looks like it
+            # worked and an exclusion that does nothing.
+            raise HTTPException(
+                422, f"'{x}' is a built-in audience, not a list — OF ignores it in "
+                     "excludedLists. Untick it under 'Send to' instead.")
+        if not is_list_id(x):
+            raise HTTPException(422, "broadcast_exclude_lists must be OF list ids")
+    # None = never configured (the historical fans + following); [] is legal and
+    # means "reach nobody new" — never collapse the two.
+    out["broadcast_lists"], out["broadcast_exclude_lists"] = broadcast_audience(cfg)
     raw = cfg.get("ppvs") or []
     if not isinstance(raw, (list, tuple)):
         raise HTTPException(422, "ppvs must be a list")
@@ -483,6 +523,11 @@ class _PreviewBody(BaseModel):
     # Optional DRAFT price limits (unsaved UI state) — absent → the stored config's.
     price_min_cents: int | None = None
     price_max_cents: int | None = None
+    # Optional DRAFT whale gate. 0 is MEANINGFUL here ("preview with the cap
+    # off"), so absent must stay None and be distinguishable from it — this is
+    # the number the operator is trying to choose, and the preview is how they
+    # choose it.
+    max_lifetime_spend_cents: int | None = None
 
 
 @router.post("/admin/ppv-library-config/preview")
@@ -499,9 +544,16 @@ async def preview_ppv_library(body: _PreviewBody = Body(...)) -> dict[str, Any]:
         draft["price_min_cents"] = body.price_min_cents
     if body.price_max_cents is not None:
         draft["price_max_cents"] = body.price_max_cents
+    if body.max_lifetime_spend_cents is not None:
+        draft["max_lifetime_spend_cents"] = body.max_lifetime_spend_cents
     bounds = price_bounds(draft)
+    cap = spend_bound(draft)
     return {"account_id": body.account_id,
-            **await segment_preview(body.account_id, int(body.base_price_cents or 0), bounds)}
+            # Echo the cap back so the tab can label the drop ("N fans above $X")
+            # without re-deriving the normalization the validator just applied.
+            "spend_cap_cents": cap,
+            **await segment_preview(body.account_id, int(body.base_price_cents or 0),
+                                    bounds, cap)}
 
 
 async def _load_stored_config(account_id: str) -> dict:

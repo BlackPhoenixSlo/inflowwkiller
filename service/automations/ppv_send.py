@@ -70,6 +70,7 @@ import json
 import logging
 import random
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from sqlalchemy import func, select
 
@@ -128,6 +129,79 @@ def price_bounds(cfg: dict | None) -> tuple[int, int]:
     lo = max(_PRICE_FLOOR_CENTS, min(lo, _PRICE_CEIL_CENTS))
     hi = max(lo, min(hi, _PRICE_CEIL_CENTS))
     return lo, hi
+
+
+# Ceiling for the whale gate, in cents. Same key name and the same "0/absent =
+# off" convention ai_chatter, autoreply and nudge_online already use, so an
+# operator who has met this knob once has met it everywhere.
+_SPEND_CAP_MAX_CENTS = 100_000_000   # $1M — a typo guard, not a policy
+# Max entries in either half of the broadcast audience. A typo guard, not a
+# policy — OF has its own limits and we don't know them.
+_MAX_AUDIENCE_LISTS = 25
+
+
+def spend_bound(cfg: dict | None) -> int | None:
+    """Operator whale gate from the top-level library config — lifetime-spend
+    ceiling in cents, or None when off. Fans AT OR ABOVE it leave the tier legs
+    entirely (they stay in the broadcast's exclude set, so they get nothing from
+    this lane at all — the whole point: whales are the closer's, not the blast's).
+
+    0, absent, negative and unparseable all mean OFF. That is deliberate: this
+    gate can only ever SHRINK the money lane, so every ambiguous value has to
+    fail toward sending."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    raw = cfg.get("max_lifetime_spend_cents")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return min(v, _SPEND_CAP_MAX_CENTS) if v > 0 else None
+
+def is_list_id(x) -> bool:
+    """Is `x` an OF fan-list id? The ONE definition — the sender drops what fails
+    this and the save-time validator 422s on it, so a rule written twice would
+    let the two disagree about the same value (accepted at save, dropped at send,
+    and the exclusion protects nobody). `bool` is excluded explicitly: True is an
+    int in Python and would otherwise read as list id 1."""
+    return not isinstance(x, bool) and str(x).strip().lstrip("-").isdigit()
+
+
+def broadcast_audience(cfg: dict | None) -> tuple[list[str] | None, list[int]]:
+    """The "Send to everyone" audience, normalized: (include, exclude).
+
+    ONE definition, shared by the save-time validator and the sender, because the
+    two disagreeing is invisible — both keep sending, just to different people.
+
+    include → OF `userLists`. None means the key was never configured, which is
+    the historical fans + following; an EMPTY LIST is a real operator choice
+    ("reach nobody new") and must survive as one. That distinction is why this
+    returns None rather than falling back here.
+
+    exclude → OF `excludedLists`, which takes list IDS ONLY and silently ignores
+    the virtual names. Non-ids are dropped rather than trusted; the validator
+    additionally 422s on a virtual name so an unsendable exclusion can never be
+    stored in the first place."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    raw_inc = cfg.get("broadcast_lists")
+    include: list[str] | None = None
+    if isinstance(raw_inc, (list, tuple)):
+        include = list(dict.fromkeys(
+            v for v in (str(x).strip() for x in raw_inc[:_MAX_AUDIENCE_LISTS]) if v))
+    raw_exc = cfg.get("broadcast_exclude_lists")
+    exclude: list[int] = []
+    if isinstance(raw_exc, (list, tuple)):
+        seen: set[int] = set()
+        for x in raw_exc[:_MAX_AUDIENCE_LISTS]:
+            if not is_list_id(x):
+                continue
+            v = int(x)
+            if v > 0 and v not in seen:
+                seen.add(v)
+                exclude.append(v)
+    return include, exclude
+
 
 # House-default spacing between PPV blasts: 2/day, 14/week, 60/month — all three
 # even-spread to the SAME 12h minimum gap. Rides into runtime via the _DEFAULTS
@@ -981,8 +1055,27 @@ def _segments(fan_rows: list, last_purchase: dict, now: datetime) -> dict[str, d
     return cells
 
 
-async def _eligible_fans(account_id: str):
+class EligibleFans(NamedTuple):
+    """What the PPV lane may send to, plus why the set shrank. `spend_capped` rides
+    HERE rather than being recounted by the caller because it only means anything
+    against the exact blacklist/bot/hard-skip set `rows` was drawn from."""
+    rows: list
+    last_purchase: dict
+    spend_capped: int
+
+
+async def _eligible_fans(account_id: str, *,
+                         spend_cap: int | None = None) -> EligibleFans:
     """All non-bot, non-blacklisted fans for the account + their last-PURCHASE time.
+    `spend_cap` (cents, None/0 = off) drops fans at or above a lifetime-spend
+    ceiling — the whale gate every other money lane already has under this exact
+    name (ai_chatter $1000, autoreply $20k, nudge_online min/max). See the caller
+    for why it is NOT applied under force_ids.
+    `spend_capped` in the result = how many fans the gate actually removed. Counted
+    HERE, against the SAME blacklist/bot/hard-skip set the rows are drawn from,
+    because a count taken at the call site drifts from the filter it claims to
+    describe: a blacklisted or customs-owed whale was never in this blast, so
+    blaming the gate for him sends the operator hunting a phantom.
     We filter bots/blacklisted HERE because ppv_send passes explicit included_users,
     and the send-side contact guard does NOT bot/blacklist-filter an explicit set.
     Recency is last purchase (Transaction.occurred_at), not last message.
@@ -1020,6 +1113,11 @@ async def _eligible_fans(account_id: str):
                 Fan.account_id == account_id,
                 Fan.is_bot.is_(False),
                 Fan.fan_id.not_in(blacklisted),
+                # Whale gate. A SQL predicate, not a post-filter, so it costs
+                # nothing on an indexed column. `lifetime_spend_cents` is NOT
+                # NULL (default 0), so a fan we have no money history for reads
+                # 0 and PASSES — "if we don't know him, send anyway".
+                *([Fan.lifetime_spend_cents < int(spend_cap)] if spend_cap else []),
             )
         )).all()
         purchases = (await s.execute(
@@ -1031,8 +1129,23 @@ async def _eligible_fans(account_id: str):
         )).all()
     if hard_skip:
         fan_rows = [r for r in fan_rows if int(r[0]) not in hard_skip]
+    spend_capped = 0
+    if spend_cap:
+        # Same predicate as the row query above, inverted — so this counts fans
+        # the CAP removed and nothing else. hard_skip is subtracted in Python for
+        # the same reason it is above: it is a set, not a column.
+        async with get_session() as s:
+            capped = (await s.execute(
+                select(Fan.fan_id).where(
+                    Fan.account_id == account_id,
+                    Fan.is_bot.is_(False),
+                    Fan.fan_id.not_in(blacklisted),
+                    Fan.lifetime_spend_cents >= int(spend_cap),
+                )
+            )).scalars().all()
+        spend_capped = sum(1 for f in capped if int(f) not in hard_skip)
     last_purchase = {int(fid): dt for fid, dt in purchases if fid is not None}
-    return fan_rows, last_purchase
+    return EligibleFans(fan_rows, last_purchase, spend_capped)
 
 
 # Her own 1:1 rows — `ai_chatter._OUR_KINDS`, restated rather than imported because
@@ -1275,23 +1388,17 @@ async def _defer_capped(account_id: str, ppv_id: str, release_at: datetime, now:
 
 
 async def segment_preview(account_id: str, base_price_cents: int,
-                          bounds: tuple[int, int] | None = None) -> dict:
+                          bounds: tuple[int, int], spend_cap: int | None) -> dict:
     """Per-cell recipient counts + prices for a base price — the UI dry-run. Surfaces
     the 'everyone collapses into the cheap cell' case (thin data) BEFORE any send.
-    `bounds` = the operator's (min, max) price limits; None → read them from the
-    account's stored library config (so old callers stay correct)."""
+
+    Both knobs are REQUIRED and already resolved by the caller: it owns the merge of
+    the operator's unsaved draft over the stored config, so deriving them here too
+    would just be a second, lagging opinion about the same blob. `price_bounds` /
+    `spend_bound` are the shared derivations — call those, then call this."""
     now = datetime.utcnow()
-    if bounds is None:
-        async with get_session() as s:
-            row = await s.get(AccountAiConfig, account_id)
-        stored: dict = {}
-        if row is not None and row.ppv_library_config_json:
-            try:
-                stored = json.loads(row.ppv_library_config_json) or {}
-            except Exception:
-                stored = {}
-        bounds = price_bounds(stored)
-    fan_rows, last_purchase = await _eligible_fans(account_id)
+    elig = await _eligible_fans(account_id, spend_cap=spend_cap)
+    fan_rows, last_purchase = elig.rows, elig.last_purchase
     base = max(bounds[0], min(int(base_price_cents or 0), bounds[1]))
     cells = _segments(fan_rows, last_purchase, now)
     plan = [
@@ -1497,6 +1604,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # double-sent. Off until enabled per account (a deploy alone never mass-blasts
     # a sub list).
     reach_all = bool(cfg.get("reach_all", False))
+    # Broadcast audience knobs. Read here beside reach_all (they only ever apply
+    # to that leg) and normalized ONCE, so the payload site below stays a plain
+    # copy. `broadcast_lists` absent → None → the historical fans + following;
+    # present-but-empty → an empty audience, which send_mass_run skips.
+    bcast_lists, bcast_excl = broadcast_audience(cfg)
     # Pause = don't re-touch a fan messaged in the last N hours (the contact
     # guard). Default 0 = NO pause (send to everyone). Applies to both phases.
     try:
@@ -1558,7 +1670,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     "ppv_id": ppv_id, "last_sent_at": last.isoformat() + "Z",
                     "gap_minutes": dup_gap_min}
 
-    fan_rows, last_purchase = await _eligible_fans(account_id)
+    # Whale gate. NOT applied under force_ids: force_ids is the human live-test
+    # escape hatch (it already bypasses the cap and the dup gate), and a forced
+    # send that silently reaches nobody because the test fan happens to be a payer
+    # is the worst possible debugging experience — the operator sees "ok, 0
+    # recipients" and has nothing to grep for. only_fan_ids is a MACHINE scope and
+    # keeps every gate armed, per this module's header convention.
+    spend_cap = spend_bound(cfg)
+    # `spend_capped` comes back with the rows: a blast that quietly reaches fewer
+    # people and says nothing about why is the failure mode `ghost_skipped` was
+    # added for, and only _eligible_fans knows the real eligible set to count
+    # against.
+    fan_rows, last_purchase, spend_capped = await _eligible_fans(
+        account_id, spend_cap=None if force_ids else spend_cap)
     if force_ids:
         fan_rows = [r for r in fan_rows if int(r[0]) in force_ids]
     if only_fan_ids:
@@ -1717,7 +1841,25 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "media_files": media_ids,
             "previews": _rotate_preview(preview_pool, day_idx),
             "price": bcast_cents / 100,               # the DEFAULT price, clamped
-            "user_lists": list(audiences.BROADCAST_LISTS),   # fans + following, nobody else
+            # Operator audience. DEFAULT (key absent) is the historical
+            # fans + following — an account that never opens these controls
+            # behaves byte-identically to before this feature existed.
+            #
+            # ⚠️ The `is None` test is load-bearing and must NOT become
+            # `cfg.get(...) or BROADCAST_LISTS`. This module's house idiom for
+            # optional lists IS `or []` (see preview_options above, online_blast,
+            # mass_premade) — but here an EMPTY list is a real operator decision
+            # ("I deselected everything"), and `or` treats it as falsy and
+            # substitutes fans + following. That is the inversion this lane can
+            # least afford: the operator asks for nobody and gets the entire
+            # subscriber list at the base price.
+            "user_lists": (list(audiences.BROADCAST_LISTS)
+                           if bcast_lists is None else bcast_lists),
+            # Fan lists to skip, server-side. `excluded_user_lists` is the ONLY
+            # exclusion OF honors on a list audience, and send_mass_run APPENDS
+            # the Auto_Exclude id to whatever we pass — it never replaces it, so
+            # naming lists here cannot un-exclude the known fans below.
+            "excluded_user_lists": bcast_excl,
             "excluded_users": known_ids,              # → Auto_Exclude (no double-send)
             "automation_kind": "ppv_send",
             "automation_ref": str(ppv_id),
@@ -1784,6 +1926,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # How many fans the ghost cycle took out of this blast. Without it the run
         # just quietly reaches fewer people and nothing says why.
         "ghost_skipped": ghost_skipped,
+        # How many fans the whale gate took out (0 when it's off). Same reason
+        # ghost_skipped exists: a shrinking audience must say why.
+        "spend_capped": spend_capped,
+        "spend_cap_cents": spend_cap,
         "send_errors": send_errors,
         "broadcast": broadcast, "pause_hours": pause_hours,
         "resend_job_id": resend_job_id, "feed_post": feed_post, "results": results,
